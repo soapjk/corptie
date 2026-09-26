@@ -117,6 +117,19 @@ public struct ClientWorkUpdate: Codable, Sendable, Equatable {
     public var description: String?
     public init(requestId: String) { self.requestId = requestId }
 }
+public struct ClientWorkCreationOptions: Decodable, Sendable {
+    public let agents: [ClientTaskCreationOptions.Resource]
+}
+public struct ClientWorkCreation: Encodable, Sendable {
+    public let requestId: String
+    public let name: String
+    public let description: String
+    public let contributorAgentIds: [String]
+    public init(requestId: String, name: String, description: String, contributorAgentIds: [String]) {
+        self.requestId = requestId; self.name = name; self.description = description
+        self.contributorAgentIds = contributorAgentIds
+    }
+}
 public struct ClientEntityRequest: Codable, Sendable, Equatable {
     public let requestId: String
     public init(requestId: String) { self.requestId = requestId }

@@ -8,15 +8,15 @@ import CorptieConversation
 /// The desktop `MessageComposer` row on iPad: attachment strip, editor, send and
 /// more glyphs inside one shell, model menu beside it. Draft text / images /
 /// mentions live in the workspace so a submission snapshot can clear them safely.
-struct PadComposer: View {
+struct PadComposer<Header: View>: View {
     let connection: PadConnection
     @Bindable var workspace: PadWorkspace
     let sessionID: String
     let scheduleMessage: () -> Void
+    @ViewBuilder let header: () -> Header
     @State private var editor = PadComposerEditor()
     @State private var inputHeight = ComposerShellMetrics.minimumInputHeight
     @State private var composerWidth: CGFloat = 0
-    @State private var isFocused = false
     @State private var mentionQuery: ComposerMentionQuery?
     @State private var mentionSelectionIndex = 0
     @State private var photos: [PhotosPickerItem] = []
@@ -49,6 +49,39 @@ struct PadComposer: View {
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            header().padding(.horizontal, 8)
+            editorRow
+        }
+        .padding(6)
+        .padGlassSurface(in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .shadow(color: .black.opacity(0.06), radius: 4, y: 1.5)
+        // Outside the glass and above the entire module, without presenting a
+        // controller or stealing first responder from the editor.
+        .overlay(alignment: .topLeading) {
+            let suggestions = mentionSuggestions
+            if mentionQuery != nil, !suggestions.isEmpty {
+                GeometryReader { proxy in
+                    let layout = PadMentionMenuPlacement(moduleTop: proxy.frame(in: .named("conversation-viewport")).minY,
+                        moduleWidth: proxy.size.width,
+                        preferredHeight: ComposerMentionMenuMetrics.height(candidateCount: suggestions.count))
+                    if layout.height > 0 {
+                        ComposerMentionMenu(suggestions: suggestions, selectedIndex: mentionSelectionIndex,
+                                            onSelect: selectMention)
+                            .frame(width: layout.width, height: layout.height)
+                            .background(ComposerPalette.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .strokeBorder(Color.black.opacity(0.10), lineWidth: 1))
+                            .shadow(color: .black.opacity(0.12), radius: 4, y: 1)
+                            .offset(y: layout.offsetY)
+                            .accessibilityIdentifier("conversation-composer-mention-menu")
+                    }
+                }
+            }
+        }
+    }
+
+    private var editorRow: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 0) {
                 if !attachedImages.isEmpty {
@@ -73,7 +106,7 @@ struct PadComposer: View {
                         placeholder: "Send a instruction",
                         editor: editor,
                         onHeightChange: { next in if abs(inputHeight - next) > 0.5 { inputHeight = next } },
-                        onFocusChange: { next in if isFocused != next { isFocused = next } },
+                        onFocusChange: { _ in },
                         onSelectionChange: updateMentionQuery,
                         onKey: handleKey,
                         onSubmit: submit,
@@ -90,6 +123,10 @@ struct PadComposer: View {
                     } label: {
                         ComposerActionGlyph(systemName: "paperplane.fill", tint: ComposerPalette.softBlue,
                                             isBusy: isSubmitting, showsSurface: false)
+                            .overlay {
+                                Circle().strokeBorder(ComposerPalette.softBlue.opacity(0.4), lineWidth: 1)
+                                    .allowsHitTesting(false)
+                            }
                             .conversationGlassControl(tint: ComposerPalette.softBlue)
                             .contentShape(Circle().inset(by: -8))
                     }
@@ -120,7 +157,6 @@ struct PadComposer: View {
                     } label: {
                         ComposerActionGlyph(systemName: "ellipsis", tint: ComposerPalette.secondaryText,
                                             weight: .semibold, showsSurface: false)
-                            .conversationGlassControl()
                             .contentShape(Circle().inset(by: -8))
                     }
                     .buttonStyle(.plain)
@@ -134,34 +170,9 @@ struct PadComposer: View {
             }
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             .overlay {
-                shellShape
-                    .strokeBorder(Color.primary.opacity(isFocused ? 0.16 : 0.08), lineWidth: 1)
+                RoundedRectangle(cornerRadius: ComposerShellMetrics.cornerRadius, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.22), lineWidth: 1)
                     .allowsHitTesting(false)
-            }
-            // A text-entry surface is not a pressable control. Keeping the
-            // glass non-interactive avoids the system press-scale separating
-            // it from the focus ring; the send and more buttons remain
-            // interactive glass controls of their own.
-            .padGlassSurface(in: shellShape, interactive: false)
-            // Keep the shadow inside the composer's 12pt gutter so it cannot
-            // be clipped into a hard vertical edge at the split-view divider.
-            .shadow(color: Color.black.opacity(0.06), radius: 4, y: 1.5)
-            // Anchored above the editor rather than presented: a UIKit popover would
-            // take first responder from the text view and drop the keyboard.
-            .overlay(alignment: .topLeading) {
-                let suggestions = mentionSuggestions
-                if mentionQuery != nil, !suggestions.isEmpty {
-                    ComposerMentionMenu(suggestions: suggestions, selectedIndex: mentionSelectionIndex,
-                                        onSelect: selectMention)
-                        .frame(width: composerWidth > 0 ? min(ComposerMentionMenuMetrics.width, composerWidth) : ComposerMentionMenuMetrics.width,
-                               height: ComposerMentionMenuMetrics.height(candidateCount: suggestions.count))
-                        .background(ComposerPalette.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.black.opacity(0.10), lineWidth: 1))
-                        .shadow(color: Color.black.opacity(0.12), radius: 14, y: 6)
-                        .alignmentGuide(.top) { $0[.bottom] + 6 }
-                        .padding(.leading, 10)
-                        .accessibilityIdentifier("conversation-composer-mention-menu")
-                }
             }
             .dropDestination(for: Data.self) { items, _ in
                 guard canAttachImages else { return false }
@@ -194,10 +205,6 @@ struct PadComposer: View {
             guard workspace.composerConfiguration == nil, workspace.capabilities?.composer == true else { return }
             await workspace.configureComposer(connection)
         }
-    }
-
-    private var shellShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: ComposerShellMetrics.cornerRadius, style: .continuous)
     }
 
     // MARK: Mentions
@@ -403,7 +410,8 @@ private struct PadModelMenu: View {
                     ? ""
                     : ComposerModelLabel.reasoningShort(currentReasoningLevel),
                 isBusy: workspace.configuringComposer,
-                maxWidth: maxWidth
+                maxWidth: maxWidth,
+                showsSurface: false
             )
         }
         .buttonStyle(.plain)

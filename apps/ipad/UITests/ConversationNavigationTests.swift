@@ -2,6 +2,36 @@ import XCTest
 
 final class ConversationNavigationTests: XCTestCase {
     @MainActor
+    func testExpandedNavigationRowsRemainBounded() throws {
+        let app = XCUIApplication()
+        app.launch()
+        let resizer = app.otherElements["navigation-rail-resizer"]
+        XCTAssertTrue(resizer.waitForExistence(timeout: 20))
+        let wasExpanded = (resizer.value as? String) == "已展开"
+        if !wasExpanded {
+            let start = resizer.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 80, dy: 0)))
+        }
+        XCTAssertEqual(resizer.value as? String, "已展开")
+        let rail = app.otherElements["navigation-rail"]
+        for index in 0..<4 {
+            let row = app.buttons["tab-\(index)"]
+            XCTAssertTrue(row.isHittable)
+            XCTAssertEqual(row.frame.height, 44, accuracy: 1)
+            XCTAssertLessThanOrEqual(row.frame.width, 200)
+            XCTAssertGreaterThanOrEqual(row.frame.minX, rail.frame.minX)
+            XCTAssertLessThanOrEqual(row.frame.maxX, rail.frame.maxX)
+        }
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        if !wasExpanded {
+            let start = resizer.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: -80, dy: 0)))
+        }
+    }
+
+    @MainActor
     func testPairedDeviceOpensTaskConversation() throws {
         let app = XCUIApplication()
         app.launch()

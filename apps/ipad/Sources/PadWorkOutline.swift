@@ -17,6 +17,13 @@ struct PadWorkOutline: View {
     @Binding var isChatExpanded: Bool
     let createTask: (ClientWork) -> Void
     let onEntityRoute: (PadEntityRoute) -> Void
+    @AppStorage("corptie.mobile.workOutlineSort") private var sortRaw = PadOutlineSort.standard.rawValue
+    @AppStorage("corptie.mobile.workOutlineView") private var viewMode = "groups"
+    @State private var orderedWorks: [ClientWork] = []
+    @State private var orderedTasks: [ClientTask] = []
+    @State private var tasksByWork: [String: [ClientTask]] = [:]
+    @State private var workNames: [String: String] = [:]
+    private var sort: PadOutlineSort { PadOutlineSort(rawValue: sortRaw) ?? .standard }
 
     private var selectedWorkID: String? {
         workspace.selection.flatMap { workspace.sessionsByID[$0]?.workId }
@@ -26,8 +33,20 @@ struct PadWorkOutline: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 8) {
                 chatGroup
-                ForEach(workspace.works) { work in
-                    workGroup(work)
+                if viewMode == "tasks" {
+                    ForEach(orderedTasks) { task in
+                        VStack(alignment: .leading, spacing: 2) {
+                            taskRow(task, sessionID: workspace.sessionIDByTaskID[task.id])
+                            Text(workNames[task.workId] ?? "Work")
+                                .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        .padding(8)
+                        .modifier(WorkGroupCardSurface())
+                        .background(WorkOutlineSelectionBackground(isSelected:
+                            workspace.sessionIDByTaskID[task.id].map { $0 == workspace.selection } ?? false))
+                    }
+                } else {
+                    ForEach(orderedWorks) { work in workGroup(work) }
                 }
                 if workspace.workCursor != nil || workspace.taskCursor != nil || workspace.sessionCursor != nil {
                     Color.clear
@@ -42,7 +61,72 @@ struct PadWorkOutline: View {
             .padding(.vertical, 4)
         }
         .scrollIndicators(.automatic)
+        .safeAreaInset(edge: .top, spacing: 0) { outlineToolbar }
         .background(Color(uiColor: .secondarySystemBackground))
+        .onChange(of: workspace.works, initial: true) { _, _ in rebuildOrder() }
+        .onChange(of: workspace.tasks) { _, _ in rebuildOrder() }
+        .onChange(of: sortRaw) { _, _ in rebuildOrder() }
+        .onChange(of: workspace.latestSessionActivityByWork) { _, activity in
+            guard sort == .updated else { return }
+            orderedWorks = sort.works(workspace.works, latestSessionActivity: activity)
+        }
+    }
+
+    private func rebuildOrder() {
+        orderedWorks = sort.works(workspace.works, latestSessionActivity: workspace.latestSessionActivityByWork)
+        orderedTasks = sort.tasks(workspace.tasks)
+        tasksByWork = Dictionary(grouping: orderedTasks, by: \.workId)
+        workNames = Dictionary(workspace.works.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    private var outlineToolbar: some View {
+        HStack(spacing: 8) {
+            Menu {
+                Picker("排序方式", selection: $sortRaw) {
+                    ForEach(PadOutlineSort.allCases, id: \.rawValue) { mode in
+                        Text(mode.title).tag(mode.rawValue)
+                    }
+                }
+            } label: { toolbarGlyph("arrow.up.arrow.down") }
+            .accessibilityLabel("排序方式")
+            .accessibilityValue(sort.title)
+            .accessibilityIdentifier("work-outline-sort")
+            Menu {
+                Picker("视图", selection: $viewMode) {
+                    Text("Work 分组").tag("groups")
+                    Text("Task 列表").tag("tasks")
+                }
+            } label: { toolbarGlyph(viewMode == "tasks" ? "list.bullet" : "rectangle.3.group") }
+            .accessibilityLabel("切换视图")
+            .accessibilityValue(viewMode == "tasks" ? "Task 列表" : "Work 分组")
+            .accessibilityIdentifier("work-outline-view")
+            Spacer(minLength: 0)
+            Menu {
+                Button("新增 Work", systemImage: "folder.badge.plus") { onEntityRoute(.createWork) }
+                if let work = workspace.works.first(where: { $0.id == selectedWorkID }) {
+                    Button("在当前 Work 新增 Task", systemImage: "plus") { createTask(work) }
+                }
+                Menu("选择 Work 新增 Task") {
+                    ForEach(orderedWorks) { work in Button(work.name) { createTask(work) } }
+                }
+                .disabled(orderedWorks.isEmpty)
+            } label: { toolbarGlyph("plus") }
+            .disabled(entityCommands.isBusy)
+            .accessibilityLabel("新增 Work 或 Task")
+            .accessibilityIdentifier("work-outline-create")
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
+    private func toolbarGlyph(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 16, weight: .medium))
+            .frame(width: 36, height: 36)
+            .padGlassSurface(in: Circle())
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
     }
 
     // MARK: Chat group (independent Sessions)
@@ -119,7 +203,7 @@ struct PadWorkOutline: View {
         return VStack(alignment: .leading, spacing: 2) {
             workHeader(work, isExpanded: isExpanded)
             if isExpanded {
-                ForEach(workspace.tasksByWork[work.id] ?? []) { task in
+                ForEach(tasksByWork[work.id] ?? []) { task in
                     let sessionID = workspace.sessionIDByTaskID[task.id]
                     taskRow(task, sessionID: sessionID)
                         .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
