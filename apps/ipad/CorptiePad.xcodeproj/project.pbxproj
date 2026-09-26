@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 77;
+	objectVersion = 110;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -31,9 +31,9 @@
 		CDEFAFE2E272647572247AA9 /* PadMessageText.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC6E13873D563DA09CEDA230 /* PadMessageText.swift */; };
 		D63C1DEE7FFD71B6DA095C13 /* PadRealtime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BD7A7F7895D087F0661832F /* PadRealtime.swift */; };
 		DD8D258E809AA99B45F46254 /* PadComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33BDC5553967D3CFEA846655 /* PadComposer.swift */; };
-		F7B203311F769B293E665531 /* PairingScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEFC733B6DD2C64DB027A7FF /* PairingScannerView.swift */; };
 		E10101010101010101010001 /* PadEntityCommandState.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10101010101010101010001 /* PadEntityCommandState.swift */; };
 		E10101010101010101010002 /* PadEntityMenus.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10101010101010101010002 /* PadEntityMenus.swift */; };
+		F7B203311F769B293E665531 /* PairingScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEFC733B6DD2C64DB027A7FF /* PairingScannerView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -70,23 +70,21 @@
 		CD053AFE519A5314915A92D2 /* PadWorkOutline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadWorkOutline.swift; sourceTree = "<group>"; };
 		EA09F1A57B1FE419D9113B8A /* CorptieClientCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = CorptieClientCore; path = ../../packages/CorptieClientCore; sourceTree = SOURCE_ROOT; };
 		EEFC733B6DD2C64DB027A7FF /* PairingScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingScannerView.swift; sourceTree = "<group>"; };
+		F10101010101010101010001 /* PadEntityCommandState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadEntityCommandState.swift; sourceTree = "<group>"; };
+		F10101010101010101010002 /* PadEntityMenus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadEntityMenus.swift; sourceTree = "<group>"; };
 		F1B0A3D72E0CB389E0F6C280 /* ConversationNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationNavigationTests.swift; sourceTree = "<group>"; };
 		FA7AEADAC1879CB6F670533B /* PadTaskCreationState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadTaskCreationState.swift; sourceTree = "<group>"; };
 		FF5A45C5E3A93E9FBF347FE9 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		F10101010101010101010001 /* PadEntityCommandState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadEntityCommandState.swift; sourceTree = "<group>"; };
-		F10101010101010101010002 /* PadEntityMenus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadEntityMenus.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		53E3EC186365ABD07299A275 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				25598408CFA5385FBC971453 /* CorptieConversation in Frameworks */,
 				9F0181F5AAD4E7F60432000D /* CorptieClientCore in Frameworks */,
 				33B53F1BD2C73643F6628B2E /* CorptieClientSecurity in Frameworks */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
@@ -170,8 +168,6 @@
 			);
 			buildRules = (
 			);
-			dependencies = (
-			);
 			name = CorptiePad;
 			packageProductDependencies = (
 				F944D4F21CA80D13D90ACC49 /* CorptieConversation */,
@@ -194,8 +190,6 @@
 				1008085449336B9594B084A2 /* PBXTargetDependency */,
 			);
 			name = CorptiePadUITests;
-			packageProductDependencies = (
-			);
 			productName = CorptiePadUITests;
 			productReference = 2BF6C2507169DD5A48E2F967 /* CorptiePadUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
@@ -227,7 +221,7 @@
 				6CF9B5F54313F8EE0C164BC9 /* XCLocalSwiftPackageReference "../../packages/CorptieClientCore" */,
 				1E65EA67679C4C0AD479C48C /* XCLocalSwiftPackageReference "../../packages/CorptieConversation" */,
 			);
-			preferredProjectObjectVersion = 77;
+			preferredProjectObjectVersion = 110;
 			productRefGroup = DF1AE4339BC8840C6CE3193E /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -241,18 +235,15 @@
 /* Begin PBXResourcesBuildPhase section */
 		B231062945488643FBBFBBE7 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				3F6F10F715EA7D498D90C87F /* Assets.xcassets in Resources */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		41DF2FE0E1C4465D4E769562 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				E10101010101010101010001 /* PadEntityCommandState.swift in Sources */,
 				E10101010101010101010002 /* PadEntityMenus.swift in Sources */,
@@ -277,15 +268,12 @@
 				28D1EB31F6E99C9AFDE70C23 /* PadWorkspace.swift in Sources */,
 				F7B203311F769B293E665531 /* PairingScannerView.swift in Sources */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		C00368E053C2ED943A99C563 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 				356497370584053EC96F6A9D /* ConversationNavigationTests.swift in Sources */,
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
@@ -298,7 +286,7 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
-		2BF8EDCBFD745D76A2E09385 /* Release */ = {
+		2BF8EDCBFD745D76A2E09385 /* Release configuration for PBXProject "CorptiePad" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -356,7 +344,7 @@
 			};
 			name = Release;
 		};
-		3888CF956A5DEE48B20EFC93 /* Debug */ = {
+		3888CF956A5DEE48B20EFC93 /* Debug configuration for PBXProject "CorptiePad" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -421,7 +409,7 @@
 			};
 			name = Debug;
 		};
-		8C76A2EDB6B3B2F29DF984FA /* Debug */ = {
+		8C76A2EDB6B3B2F29DF984FA /* Debug configuration for PBXNativeTarget "CorptiePad" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -445,7 +433,7 @@
 			};
 			name = Debug;
 		};
-		C3DB4BF3892B1F5B2E555D04 /* Release */ = {
+		C3DB4BF3892B1F5B2E555D04 /* Release configuration for PBXNativeTarget "CorptiePad" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -469,7 +457,7 @@
 			};
 			name = Release;
 		};
-		CBDC7ACDC32928463B284AB8 /* Debug */ = {
+		CBDC7ACDC32928463B284AB8 /* Debug configuration for PBXNativeTarget "CorptiePadUITests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
@@ -486,7 +474,7 @@
 			};
 			name = Debug;
 		};
-		FE6253EDB080D2547A9042A0 /* Release */ = {
+		FE6253EDB080D2547A9042A0 /* Release configuration for PBXNativeTarget "CorptiePadUITests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
@@ -509,28 +497,25 @@
 		49396D7F5AD8521405A30BB3 /* Build configuration list for PBXNativeTarget "CorptiePadUITests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				CBDC7ACDC32928463B284AB8 /* Debug */,
-				FE6253EDB080D2547A9042A0 /* Release */,
+				CBDC7ACDC32928463B284AB8 /* Debug configuration for PBXNativeTarget "CorptiePadUITests" */,
+				FE6253EDB080D2547A9042A0 /* Release configuration for PBXNativeTarget "CorptiePadUITests" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
 		900428CBB499649ED4D626A9 /* Build configuration list for PBXNativeTarget "CorptiePad" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				8C76A2EDB6B3B2F29DF984FA /* Debug */,
-				C3DB4BF3892B1F5B2E555D04 /* Release */,
+				8C76A2EDB6B3B2F29DF984FA /* Debug configuration for PBXNativeTarget "CorptiePad" */,
+				C3DB4BF3892B1F5B2E555D04 /* Release configuration for PBXNativeTarget "CorptiePad" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
 		994BE7C4288A9CE6501370E6 /* Build configuration list for PBXProject "CorptiePad" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				3888CF956A5DEE48B20EFC93 /* Debug */,
-				2BF8EDCBFD745D76A2E09385 /* Release */,
+				3888CF956A5DEE48B20EFC93 /* Debug configuration for PBXProject "CorptiePad" */,
+				2BF8EDCBFD745D76A2E09385 /* Release configuration for PBXProject "CorptiePad" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
