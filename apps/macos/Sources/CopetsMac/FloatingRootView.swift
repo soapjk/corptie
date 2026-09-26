@@ -3638,6 +3638,7 @@ struct SessionConversationContent: View {
     @State private var scrollTargetTurnID: String?
     @State private var scrollTargetTurnRevision = 0
     @State private var pendingUserInput: CodexThreadItem?
+    @State private var pendingFork: SessionForkSelection?
     let sessionId: String
     let composerDraftRepository: ComposerDraftRepository
     let initialTimelinePosition: AppKitChatTimelinePosition?
@@ -4008,6 +4009,22 @@ struct SessionConversationContent: View {
                     )
                 }
             }
+            .sheet(item: $pendingFork) { selection in
+                SessionForkSheet(selection: selection, backendClient: backendClient)
+            }
+            .onChange(of: selectedSession?.actions?.fork?.available) { _, _ in
+                guard cachedSessionId == sessionId else { return }
+                let entries = Dictionary(uniqueKeysWithValues: cachedDisplayEntries.map { ($0.id, $0) })
+                cachedAppKitRows = cachedAppKitRows.map { old in
+                    guard let entry = entries[old.id] else { return old }
+                    let itemID = forkItemID(for: entry)
+                    guard old.forkItemID != itemID else { return old }
+                    var row = old
+                    row.forkItemID = itemID
+                    row.contentRevision = appKitContentRevision(entry, expandedTurnIds: expandedProcessTurnIds)
+                    return row
+                }
+            }
             .onAppear {
                 if let currentDetail = displayedDetail {
                     updateCachedDisplayEntries(for: currentDetail)
@@ -4248,7 +4265,7 @@ struct SessionConversationContent: View {
             isCollaboration = false
             collaborationRoute = nil
         }
-        return AppKitChatTimelineRow(
+        var row = AppKitChatTimelineRow(
             id: entry.id,
             contentRevision: appKitContentRevision(entry, expandedTurnIds: expandedTurnIds),
             nativeText: text,
@@ -4276,6 +4293,19 @@ struct SessionConversationContent: View {
             messageStatus: messageStatus,
             images: images
         )
+        row.forkItemID = forkItemID(for: entry)
+        return row
+    }
+
+    private func forkItemID(for entry: ChatDisplayEntry) -> String? {
+        if case .message(let item) = entry.kind,
+           item.type == "agentMessage",
+           item.presentationRole == "final_answer",
+           ["complete", "completed", "interrupted", "cancelled", "failed"].contains(item.turnStatus),
+           selectedSession?.actions?.fork?.available == true {
+            return item.id
+        }
+        return nil
     }
 
     private func processExpansionMetadata(
@@ -4405,6 +4435,8 @@ struct SessionConversationContent: View {
 
     private func performNativeTimelineAction(_ action: AppKitChatTimelineRow.Action) {
         switch action.kind {
+        case .forkMessage(let itemID):
+            pendingFork = SessionForkSelection(sessionID: sessionId, itemID: itemID)
         case .codexApproval(let option):
             backendClient.respondToCodexApproval(option: option)
         case .ptyChoice(let option, let choiceID):
@@ -4428,6 +4460,7 @@ struct SessionConversationContent: View {
     ) -> Int {
         var hasher = Hasher()
         hasher.combine(entry.id)
+        hasher.combine(forkItemID(for: entry))
         switch entry.kind {
         case .message(let item):
             hasher.combine(itemSignature(item))

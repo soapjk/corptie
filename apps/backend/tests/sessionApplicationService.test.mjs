@@ -9,6 +9,24 @@ import {
   validateReasoningLevelForModel
 } from "../src/agent-provider/sessionApplicationService.mjs";
 
+test("native fork uses a fresh tool attachment and the ordinary binding finalization without sending a prompt", async () => {
+  const calls = [];
+  const forkSource = { reference: { providerId: "neutral", providerSessionId: "source" }, point: { turnId: "turn" } };
+  const registry = new AgentProviderRegistry([new CallbackAgentProvider({ id: "neutral", displayName: "Neutral", transport: "test",
+    capabilities: [AGENT_PROVIDER_CAPABILITIES.SESSION_FORK] }, {
+    forkSession: async (input, context) => { calls.push("fork"); assert.equal(context.forkSource, forkSource);
+      assert.equal(input.title, "New"); return { id: "new", sessionKind: "assistantChat" }; }
+  })]);
+  const service = new SessionApplicationService({ registry, resolveSessionReference: () => null,
+    toolHostService: { prepareSession: async (_id, context) => {
+      assert.equal(context.actorId, "agent:new"); assert.equal(context.forkSource, undefined); calls.push("tools"); return null;
+    } },
+    bindCreatedSession: async ({ session }) => { calls.push("bind"); return { sessionId: session.id }; }
+  });
+  const result = await service.createSession("neutral", { title: "New", sessionKind: "assistantChat" }, { actorId: "agent:new", forkSource });
+  assert.equal(result.id, "new"); assert.deepEqual(calls, ["tools", "fork", "bind"]);
+});
+
 test("model selection persists only after the Provider acknowledges it", async () => {
   const calls = [];
   let reject = false;
