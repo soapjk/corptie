@@ -5,6 +5,54 @@ import CorptieClientCore
 
 @MainActor
 struct PadTimelineProjectionTests {
+    @Test func workExpansionStartsCollapsedAndRestoresOnlySavedWorkIDs() {
+        let name = "pad-work-expansion-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let store = PadWorkExpansionStore(defaults: defaults)
+
+        #expect(store.load().isEmpty)
+        store.save(["work:b", "work:a"])
+        #expect(store.load() == ["work:a", "work:b"])
+        store.save(["work:b"])
+        #expect(store.load() == ["work:b"])
+        store.save([])
+        #expect(store.load().isEmpty)
+    }
+
+    @Test func processClockMatchesDesktopClientSideAdvancementPolicy() {
+        #expect(PadProcessClockPolicy.canAdvance(
+            isActiveProcess: true,
+            clientIsOnline: true,
+            sessionExecutionStatus: "running",
+            sceneIsActive: true
+        ))
+        #expect(!PadProcessClockPolicy.canAdvance(
+            isActiveProcess: false,
+            clientIsOnline: true,
+            sessionExecutionStatus: "running",
+            sceneIsActive: true
+        ))
+        #expect(!PadProcessClockPolicy.canAdvance(
+            isActiveProcess: true,
+            clientIsOnline: false,
+            sessionExecutionStatus: "running",
+            sceneIsActive: true
+        ))
+        #expect(!PadProcessClockPolicy.canAdvance(
+            isActiveProcess: true,
+            clientIsOnline: true,
+            sessionExecutionStatus: "completed",
+            sceneIsActive: true
+        ))
+        #expect(!PadProcessClockPolicy.canAdvance(
+            isActiveProcess: true,
+            clientIsOnline: true,
+            sessionExecutionStatus: "running",
+            sceneIsActive: false
+        ))
+    }
+
     @Test func serverUserInputStatusOverridesLocalSubmittedReceipt() {
         #expect(padUserInputStatusText("pending", submittedLocally: true) == "已提交，等待会话更新")
         #expect(padUserInputStatusText("submitted", submittedLocally: false) == "已提交，等待会话更新")
