@@ -63,6 +63,7 @@ struct PadHistoryAutoLoadGate: Equatable {
         scope: String,
         before: String?,
         nearTop: Bool,
+        userInitiated: Bool,
         underfilled: Bool,
         isLoading: Bool,
         connectionBusy: Bool
@@ -84,7 +85,10 @@ struct PadHistoryAutoLoadGate: Equatable {
             return before
         }
 
-        guard nearTop, lastNearTopCursor != before else { return nil }
+        // Match the macOS native timeline: programmatic layout, initial
+        // placement and anchor restoration are never allowed to masquerade as
+        // a reader gesture and start pulling older pages.
+        guard userInitiated, nearTop, lastNearTopCursor != before else { return nil }
         lastNearTopCursor = before
         return before
     }
@@ -130,6 +134,12 @@ final class PadWorkspace {
     private(set) var processPresentations: [String: ConversationProcessPresentation] = [:]
     private(set) var processSteps: [String: [ConversationExecutionStep]] = [:]
     @ObservationIgnored private var projectedMessages: [ClientMessage] = []
+    @ObservationIgnored private var projectedMessageLimit = 0
+    @ObservationIgnored private var totalDisplayEntryCount = 0
+    @ObservationIgnored private var visibleMessageLimits: [String: Int] = [:]
+    private static let initialDisplayWeight = 20
+    private static let historyDisplayWeightIncrement = 100
+    private(set) var visibleMessageLimit = 20
     var outgoingStates: [String: String] = [:]
     var outgoingRequestIDs: [String: String] = [:]
     var lastTimelineRevision: Int?
@@ -141,9 +151,12 @@ final class PadWorkspace {
 
     private func refreshDisplayEntries() {
         let source = visibleMessages
-        guard source != projectedMessages else { return }
+        guard source != projectedMessages || visibleMessageLimit != projectedMessageLimit else { return }
         projectedMessages = source
-        displayEntries = ConversationTimeline.makeEntries(from: source)
+        projectedMessageLimit = visibleMessageLimit
+        let allEntries = ConversationTimeline.makeEntries(from: source)
+        totalDisplayEntryCount = allEntries.count
+        displayEntries = Self.visibleEntries(from: allEntries, limit: visibleMessageLimit)
         let now = Date()
         processSteps = Dictionary(uniqueKeysWithValues: displayEntries.compactMap { entry in
             guard case let .process(_, items) = entry.kind else { return nil }
@@ -166,6 +179,44 @@ final class PadWorkspace {
                 duration: ConversationProcessPresentation.durationText(for: items, now: now),
                 currentStepTitle: currentStepTitle))
         })
+    }
+
+    private static func visibleEntries(
+        from entries: [ConversationEntry<ClientMessage>],
+        limit: Int
+    ) -> [ConversationEntry<ClientMessage>] {
+        guard entries.reduce(0, { $0 + $1.displayWeight }) > limit else { return entries }
+        var remainingWeight = limit
+        var startIndex = entries.endIndex
+        while startIndex > entries.startIndex {
+            let candidateIndex = entries.index(before: startIndex)
+            remainingWeight -= entries[candidateIndex].displayWeight
+            startIndex = candidateIndex
+            if remainingWeight <= 0 { break }
+        }
+        return Array(entries[startIndex...])
+    }
+
+    var hasHiddenDisplayHistory: Bool {
+        totalDisplayEntryCount > displayEntries.count
+    }
+
+    /// The presentation window expands locally before an older network page is
+    /// requested. This is the same two-stage history policy as macOS.
+    var historyRequestCursor: String? {
+        if hasHiddenDisplayHistory {
+            return "resident:\(visibleMessageLimit):\(messages.first?.id ?? "empty")"
+        }
+        return before
+    }
+
+    @discardableResult
+    func revealEarlierDisplayEntries() -> Bool {
+        guard hasHiddenDisplayHistory else { return false }
+        visibleMessageLimit += Self.historyDisplayWeightIncrement
+        if let selection { visibleMessageLimits[selection] = visibleMessageLimit }
+        refreshDisplayEntries()
+        return true
     }
 
     /// A window is not a replacement for all loaded history. During submission,
@@ -206,44 +257,82 @@ final class PadWorkspace {
     private(set) var isLoadingEarlier = false
     var historyRestorationAnchor: String?
 
-    struct ResidentTimelineState {
-        var messages: [ClientMessage]
-        var before: String?
-        var lastTimelineRevision: Int?
-        var capabilities: ClientSessionCapabilities?
-        var usage: ClientSessionUsage?
-        var composerConfiguration: ClientComposerConfiguration?
-    }
-
-    @ObservationIgnored private var residentStates: [String: ResidentTimelineState] = [:]
-    @ObservationIgnored private var residentRecency: [String] = []
-    @ObservationIgnored private let residentCapacity = 48
+    /// The same resident-repository boundary used by macOS: realtime owns all
+    /// Session timelines, while selection only projects one resident state.
+    @ObservationIgnored private var timelineRepository = ClientTimelineRepository(capacity: 48)
 
     func saveResidentState(for sessionID: String) {
-        residentStates[sessionID] = ResidentTimelineState(
+        timelineRepository.store(ClientResidentTimeline(
             messages: messages,
             before: before,
-            lastTimelineRevision: lastTimelineRevision,
+            revision: lastTimelineRevision,
             capabilities: capabilities,
             usage: usage,
-            composerConfiguration: composerConfiguration
-        )
-        residentRecency.removeAll { $0 == sessionID }
-        residentRecency.append(sessionID)
-        trimResidentStatesIfNeeded()
+            composer: composerConfiguration
+        ), for: sessionID)
     }
 
-    private func trimResidentStatesIfNeeded() {
-        while residentRecency.count > residentCapacity {
-            let evicted = residentRecency.removeFirst()
-            residentStates.removeValue(forKey: evicted)
+    private func residentKey(for sessionID: String) -> String? {
+        if timelineRepository.peek(sessionID: sessionID) != nil { return sessionID }
+        let normalized = normalizedSessionID(sessionID)
+        return timelineRepository.sessionIDs.first { normalizedSessionID($0) == normalized }
+    }
+
+    private func normalizedSessionID(_ id: String) -> String {
+        for prefix in ["codex:", "logical:", "session:", "pty:", "task:"] where id.hasPrefix(prefix) {
+            return String(id.dropFirst(prefix.count))
+        }
+        return id
+    }
+
+    func isSelectedTimeline(_ sessionID: String) -> Bool {
+        guard let selection else { return false }
+        if selection == sessionID || capabilities?.sessionId == sessionID { return true }
+        return normalizedSessionID(selection) == normalizedSessionID(sessionID)
+    }
+
+    func applyBackgroundTimeline(_ snapshot: ClientTimelineSnapshot) {
+        let key = residentKey(for: snapshot.sessionId) ?? snapshot.sessionId
+        _ = timelineRepository.apply(snapshot, sessionKey: key)
+    }
+
+    @discardableResult
+    func applyBackgroundTimeline(_ delta: ClientTimelineDelta) -> Bool {
+        guard let key = residentKey(for: delta.sessionId) else { return false }
+        switch timelineRepository.apply(delta, sessionKey: key) {
+        case .applied, .duplicate: return true
+        case .requiresSnapshot: return false
+        }
+    }
+
+    /// A revision gap is exceptional (for example an SSE buffer overflow).
+    /// Repair only that background Session; normal background delivery is push-only.
+    func repairBackgroundTimeline(_ connection: PadConnection, sessionID: String) async {
+        do {
+            let api = ClientSessionAPI(transport: try await connection.transport())
+            let caps = try await api.capabilities(sessionId: sessionID)
+            guard caps.readMessages else { return }
+            let page = try await api.messages(sessionId: caps.sessionId)
+            timelineRepository.store(ClientResidentTimeline(
+                messages: page.items,
+                before: page.nextBefore,
+                revision: page.revision,
+                capabilities: caps,
+                usage: nil,
+                composer: nil
+            ), for: caps.sessionId)
+        } catch {
+            // The next server snapshot remains authoritative; a background
+            // repair must never disturb the currently visible conversation.
         }
     }
 
     func selectSession(from oldID: String?, to newID: String?) {
         if let oldID {
+            visibleMessageLimits[oldID] = visibleMessageLimit
             saveResidentState(for: oldID)
         }
+        timelineRepository.pinSessions(Set([newID].compactMap { $0 }))
         commandConfirmation = nil
         timelineGeneration += 1
         composerGeneration += 1
@@ -252,14 +341,15 @@ final class PadWorkspace {
         conversationNotice = ""
         historyRestorationAnchor = nil
         isLoadingEarlier = false
+        visibleMessageLimit = newID.flatMap { visibleMessageLimits[$0] } ?? Self.initialDisplayWeight
 
-        if let newID, let cached = residentStates[newID] {
+        if let newID, let cached = timelineRepository.state(for: newID) {
             messages = cached.messages
             before = cached.before
-            lastTimelineRevision = cached.lastTimelineRevision
+            lastTimelineRevision = cached.revision
             capabilities = cached.capabilities
             usage = cached.usage
-            composerConfiguration = cached.composerConfiguration
+            composerConfiguration = cached.composer
             isLoadingDetail = false
             refreshDisplayEntries()
         } else {
@@ -293,6 +383,7 @@ final class PadWorkspace {
     var status = ""
     var conversationNotice = ""
     var liveStatus = "正在连接实时更新"
+    private(set) var hasReceivedRealtimeState = false
     var messageRevision = 0
     var controlRevision = 0
     var directControlSnapshot: ClientControlSnapshot?
@@ -304,6 +395,7 @@ final class PadWorkspace {
     var inventoryDirty = false
     var messagesDirty = false
     var refreshWorker: Task<Void, Never>?
+    @ObservationIgnored var initialStateRecoveryWorker: Task<Void, Never>?
     var pending: PendingCommand?
     var pushedReceipt: ClientCommandReceipt?
     var pushedReceiptRevision = 0
@@ -312,15 +404,46 @@ final class PadWorkspace {
     @ObservationIgnored private var reconciliationRun: UUID?
     @ObservationIgnored private var receiptReadInFlight = false
     private let defaults: UserDefaults
+    @ObservationIgnored private let initialStateRecoveryDelay: Duration
 
-    init(defaults: UserDefaults = .standard) {
+    init(
+        defaults: UserDefaults = .standard,
+        initialStateRecoveryDelay: Duration = .seconds(2)
+    ) {
         self.defaults = defaults
+        self.initialStateRecoveryDelay = initialStateRecoveryDelay
         pending = defaults.data(forKey: "pendingCommand").flatMap { try? JSONDecoder().decode(PendingCommand.self, from: $0) }
+    }
+
+    /// A v2 stream is not authoritative until its first state snapshot arrives.
+    /// If ready is followed by a malformed/dropped state frame, recover inventory
+    /// exactly once through HTTP. This is a bootstrap safety net, never polling.
+    func scheduleInitialStateRecovery(_ connection: PadConnection) {
+        guard !hasReceivedRealtimeState, initialStateRecoveryWorker == nil else { return }
+        initialStateRecoveryWorker = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.initialStateRecoveryWorker = nil }
+            do { try await Task.sleep(for: self.initialStateRecoveryDelay) } catch { return }
+            guard !Task.isCancelled, connection.connected, !self.hasReceivedRealtimeState else { return }
+            self.liveStatus = "实时连接已建立，正在恢复清单"
+            await self.inventory(connection)
+            guard !Task.isCancelled, connection.connected, !self.hasReceivedRealtimeState else { return }
+            self.liveStatus = connection.notice.isEmpty ? "实时连接正常" : "清单同步失败，正在自动重试"
+        }
     }
 
     func applyRealtimeState(_ snapshot: ClientStateSnapshot) {
         guard snapshot.schemaVersion == 2, snapshot.revision >= realtimeStateRevision else { return }
+        hasReceivedRealtimeState = true
+        initialStateRecoveryWorker?.cancel()
+        initialStateRecoveryWorker = nil
         realtimeStateRevision = snapshot.revision
+        var residentSessionIDs = Set(snapshot.sessions.map(\.id))
+        if let selection { residentSessionIDs.insert(selection) }
+        timelineRepository.retainActiveSessions(
+            residentSessionIDs,
+            pinnedSessionIDs: Set([selection].compactMap { $0 })
+        )
         if works != snapshot.works { works = snapshot.works }
         if tasks != snapshot.tasks { tasks = snapshot.tasks }
         if sessions != snapshot.sessions { sessions = snapshot.sessions }
@@ -329,41 +452,34 @@ final class PadWorkspace {
     }
 
     func applyRealtimeTimeline(_ snapshot: ClientTimelineSnapshot) {
-        guard snapshot.schemaVersion == 2, selection != nil else { return }
+        guard snapshot.schemaVersion == 2 else { return }
+        guard isSelectedTimeline(snapshot.sessionId) else {
+            applyBackgroundTimeline(snapshot)
+            return
+        }
         capabilities = snapshot.capabilities
         usage = snapshot.usage
         composerConfiguration = snapshot.composer
         applyLatestWindow(snapshot.messages.items, cursor: snapshot.messages.nextBefore, revision: snapshot.revision)
+        if let selection { saveResidentState(for: selection) }
         isLoadingDetail = false
         liveStatus = "实时连接正常"
     }
 
     @discardableResult
     func applyRealtimeTimeline(_ delta: ClientTimelineDelta) -> Bool {
-        guard delta.schemaVersion == 2, delta.snapshotRequired == false,
-              delta.baseRevision == (lastTimelineRevision ?? 0) else { return false }
-        var expected = delta.baseRevision
-        var byID = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
-        for change in delta.changes {
-            expected += 1
-            guard change.revision == expected else { return false }
-            switch change.operation {
-            case "upsert":
-                guard let item = change.item, item.id == change.itemId else { return false }
-                byID[item.id] = item
-            case "delete": byID[change.itemId] = nil
-            default: return false
-            }
+        guard isSelectedTimeline(delta.sessionId) else {
+            return applyBackgroundTimeline(delta)
         }
-        guard expected == delta.revision else { return false }
-        let next = byID.values.sorted {
-            let left = $0.createdAt ?? "", right = $1.createdAt ?? ""
-            return left == right ? $0.id < $1.id : left < right
+        guard let selection else { return false }
+        saveResidentState(for: selection)
+        guard case .applied(let state) = timelineRepository.apply(delta, sessionKey: selection) else {
+            return delta.revision <= (lastTimelineRevision ?? 0)
         }
         let previous = messages
-        messages = next
-        lastTimelineRevision = delta.revision
-        if previous != next { messageRevision += 1 }
+        messages = state.messages
+        lastTimelineRevision = state.revision
+        if previous != state.messages { messageRevision += 1 }
         return true
     }
 
@@ -510,7 +626,9 @@ final class PadWorkspace {
     }
 
     func loadEarlierMessagesIfNeeded(_ connection: PadConnection) async {
-        guard selection != nil, before != nil, !isLoadingEarlier, !connection.busy else { return }
+        guard selection != nil, !isLoadingEarlier, !connection.busy else { return }
+        if revealEarlierDisplayEntries() { return }
+        guard before != nil else { return }
         isLoadingEarlier = true
         defer { isLoadingEarlier = false }
         await load(connection, older: true)
@@ -534,7 +652,7 @@ final class PadWorkspace {
             guard !Task.isCancelled, selection == id, generation == timelineGeneration else { return }
             capabilities = caps
             guard caps.readMessages else {
-                conversationNotice = "设备未获消息读取权限，请在 Mac 上授权。"
+                conversationNotice = "当前 Mac 后端没有提供消息读取能力。"
                 return
             }
             let page = try await api.messages(sessionId: caps.sessionId, before: older ? before : nil)
@@ -566,8 +684,7 @@ final class PadWorkspace {
 
     func clearSelectionState() {
         if let id = selection {
-            residentStates.removeValue(forKey: id)
-            residentRecency.removeAll { $0 == id }
+            timelineRepository.remove(id)
         }
         commandConfirmation = nil
         timelineGeneration += 1
@@ -908,7 +1025,7 @@ final class PadWorkspace {
         // their original request identity for reconciliation, never replay.
         guard pending?.requestID == requestID, let failure = error as? ClientServiceFailure,
               ["INVALID_MESSAGE", "INVALID_COMMAND", "INVALID_IMAGES", "INVALID_MENTIONS",
-               "INVALID_SCHEDULE", "CAPABILITY_UNSUPPORTED", "DEVICE_PERMISSION_REQUIRED",
+               "INVALID_SCHEDULE", "CAPABILITY_UNSUPPORTED",
                "INVALID_COMMAND_ARGUMENTS", "PROVIDER_COMMAND_UNSUPPORTED", "COMMAND_CONFIRMATION_REQUIRED",
                "SESSION_NOT_AVAILABLE", "COMMAND_JOURNAL_FULL", "ROUTE_NOT_AVAILABLE"].contains(failure.code) else { return false }
         finishRejectedRequest(requestID: requestID, message: PadConnection.explain(failure))

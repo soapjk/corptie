@@ -1,9 +1,6 @@
 import { createHash } from "node:crypto";
 import { deviceError } from "./clientDeviceAuthority.mjs";
 
-function authorize(identity) {
-  if (!identity.permissions?.includes("works.discuss")) throw deviceError("DEVICE_PERMISSION_REQUIRED", 403);
-}
 function work(api, id) {
   if (typeof id !== "string" || !id.trim() || id.length > 512) throw deviceError("INVALID_WORK_ID", 400);
   const value = api.store.getWork(id);
@@ -12,7 +9,6 @@ function work(api, id) {
 }
 
 export async function clientDiscussionOptions(api, identity, workId) {
-  authorize(identity);
   work(api, workId);
   if (!api.workDiscussion) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
   const catalog = await api.workDiscussion.options();
@@ -34,7 +30,6 @@ export async function clientDiscussionOptions(api, identity, workId) {
  * only discussionResult identifies the resulting Session. No initial turn is sent.
  */
 export async function openClientDiscussion(api, identity, workId, input, revalidateIdentity) {
-  authorize(identity);
   if (!input || typeof input !== "object" || Array.isArray(input)
       || Object.keys(input).some(key => !["requestId", "agentId", "providerId"].includes(key))
       || typeof input.requestId !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(input.requestId)
@@ -55,7 +50,6 @@ export async function openClientDiscussion(api, identity, workId, input, revalid
   if (revalidateIdentity) {
     const current = revalidateIdentity();
     if (current.deviceId !== identity.deviceId) throw deviceError("INVALID_CREDENTIAL", 401);
-    authorize(current);
     identity = current;
   }
   if (!options.providers.some(row => row.id === input.providerId && row.available)) throw deviceError("PROVIDER_CAPABILITY_UNAVAILABLE", 409);

@@ -47,7 +47,7 @@ struct PadEntityCommandTests {
         EntityProtocol.mode = "forbidden"
         let receipt = await archive(state, connection)
         #expect(receipt == nil && state.pending == nil && !state.isBusy)
-        #expect(state.notice.contains("管理 Task"))
+        #expect(state.notice.contains("凭据"))
         #expect(PadEntityCommandState(connection: connection, defaults: defaults).pending == nil)
         EntityProtocol.mode = "completed"
         _ = await archive(state, connection)
@@ -152,7 +152,7 @@ private final class EntityProtocol: URLProtocol, @unchecked Sendable {
         } else { Self.lock.withLock { Self.readCount += 1 } }
         let mode = Self.mode
         switch mode {
-        case "forbidden": respond(403, ["code": "DEVICE_PERMISSION_REQUIRED"])
+        case "forbidden": respond(401, ["code": "INVALID_CREDENTIAL"])
         case "drop":
             client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
         default:

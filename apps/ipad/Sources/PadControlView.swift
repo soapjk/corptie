@@ -64,30 +64,8 @@ struct PadControlView: View {
 
     @ViewBuilder private func detail(_ item: ClientControlItem, kind: ClientControlKind) -> some View {
         if kind == .repositories {
-            List {
-                Section("Worktrees") {
-                    if !store.repositoryError.isEmpty { Text(store.repositoryError).foregroundStyle(.secondary) }
-                    if let detail = store.repository, detail.repository.id == item.id {
-                        ForEach(detail.worktrees) { tree in
-                            VStack(alignment: .leading, spacing: 6) {
-                                Label(tree.branchName ?? "游离 HEAD", systemImage: tree.isMain ? "house" : "arrow.triangle.branch")
-                                Text(PadControlPresentation.status(tree.state)).font(.caption).foregroundStyle(.secondary)
-                                if tree.dirty == true { Text("有未提交修改").font(.caption) }
-                                if let ahead = tree.aheadOfMain, let behind = tree.behindMain {
-                                    Text("领先 \(ahead) · 落后 \(behind)").font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                        if let job = detail.latestJob {
-                            LabeledContent("最近合并计划", value: PadControlPresentation.status(job.status))
-                        }
-                    } else if store.repositoryError.isEmpty { ProgressView("读取分支状态") }
-                }
-                Section { Text("合并、冲突处理、删除和发布操作暂需在 Mac 上完成。外部 Git 修改可通过刷新同步。")
-                    .font(.footnote).foregroundStyle(.secondary) }
-            }
-            .navigationTitle(item.name).navigationBarTitleDisplayMode(.inline)
-            .task(id: item.id) { await store.loadRepository(item.id, connection: connection) }
+            PadWorktreeManagementView(repository: item, connection: connection,
+                                      manager: store.worktrees, openSession: openSession)
         } else {
             Form {
                 if kind == .automations {
@@ -116,7 +94,7 @@ struct PadControlView: View {
     }
 }
 
-private enum PadControlPresentation {
+enum PadControlPresentation {
     static func status(_ value: String) -> String {
         ["active": "等待触发", "paused": "已暂停", "cancelled": "已取消", "expired": "已过期",
          "completed": "已完成", "failed": "失败", "error": "错误", "running": "执行中", "queued": "已触发",

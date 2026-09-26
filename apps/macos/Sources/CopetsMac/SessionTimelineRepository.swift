@@ -1,4 +1,5 @@
 import Combine
+import CorptieClientCore
 import Foundation
 
 /// Observable state for exactly one provider-neutral Session timeline.
@@ -40,40 +41,28 @@ final class SessionTimelineState: ObservableObject {
 final class SessionTimelineRepository {
     static let shared = SessionTimelineRepository()
 
-    private var statesBySessionID: [String: SessionTimelineState] = [:]
-    private var recency: [String] = []
-    private var pinnedSessionIDs: Set<String> = []
-    private let capacity: Int
+    private var residentStates: ResidentSessionCache<SessionTimelineState>
 
     init(capacity: Int = 48) {
-        self.capacity = max(1, capacity)
+        residentStates = ResidentSessionCache(capacity: capacity)
     }
 
     func state(for sessionID: String) -> SessionTimelineState {
-        if let state = statesBySessionID[sessionID] {
-            touch(sessionID)
-            return state
+        residentStates.value(for: sessionID) {
+            SessionTimelineState(sessionID: sessionID)
         }
-        let state = SessionTimelineState(sessionID: sessionID)
-        statesBySessionID[sessionID] = state
-        touch(sessionID)
-        trimIfNeeded()
-        return state
     }
 
     func detail(for sessionID: String) -> CodexThreadDetail? {
-        guard let state = statesBySessionID[sessionID] else { return nil }
-        touch(sessionID)
-        return state.detail
+        residentStates.value(for: sessionID)?.detail
     }
 
     func timelineRevision(for sessionID: String) -> Int {
-        statesBySessionID[sessionID]?.timelineRevision ?? 0
+        residentStates.peek(sessionID)?.timelineRevision ?? 0
     }
 
     func publish(_ detail: CodexThreadDetail, for sessionID: String, timelineRevision: Int? = nil) {
         state(for: sessionID).apply(detail, timelineRevision: timelineRevision)
-        trimIfNeeded()
     }
 
     /// A Workspace transition changes the Provider binding beneath one logical
@@ -83,40 +72,22 @@ final class SessionTimelineRepository {
     /// Session and therefore survive this Provider identity change.
     @discardableResult
     func rebindProviderIdentity(for session: TaskSession) -> CodexThreadDetail? {
-        guard let current = statesBySessionID[session.id]?.detail else { return nil }
+        guard let current = residentStates.peek(session.id)?.detail else { return nil }
         let rebound = SessionTimelineBindingReconciler.rebind(current, to: session)
         publish(rebound, for: session.id)
         return rebound
     }
 
     func remove(_ sessionID: String) {
-        guard !pinnedSessionIDs.contains(sessionID) else { return }
-        statesBySessionID[sessionID] = nil
-        recency.removeAll { $0 == sessionID }
+        residentStates.remove(sessionID)
     }
 
     func pin(_ sessionIDs: Set<String>) {
-        pinnedSessionIDs = sessionIDs
-        trimIfNeeded()
+        residentStates.pin(sessionIDs)
     }
 
     func prune(to validSessionIDs: Set<String>) {
-        statesBySessionID = statesBySessionID.filter { validSessionIDs.contains($0.key) }
-        recency.removeAll { !validSessionIDs.contains($0) }
-        pinnedSessionIDs.formIntersection(validSessionIDs)
-    }
-
-    private func touch(_ sessionID: String) {
-        recency.removeAll { $0 == sessionID }
-        recency.append(sessionID)
-    }
-
-    private func trimIfNeeded() {
-        while statesBySessionID.count > capacity,
-              let evictionIndex = recency.firstIndex(where: { !pinnedSessionIDs.contains($0) }) {
-            let evictedSessionID = recency.remove(at: evictionIndex)
-            statesBySessionID[evictedSessionID] = nil
-        }
+        residentStates.prune(to: validSessionIDs)
     }
 }
 

@@ -96,7 +96,11 @@ private final class NoRedirects: NSObject, URLSessionTaskDelegate, Sendable {
     let certificate: Data?
     init(host: String, certificate: Data?) { self.host = host; self.certificate = certificate }
 
-    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
+    /// Server-trust challenges belong to the task delegate. In particular,
+    /// `URLSession.bytes(for:)` does not route them through the session-level
+    /// challenge callback on iOS, which previously made pinned SSE requests
+    /// fail while ordinary `data(for:)` requests appeared healthy.
+    func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
               let certificate else { completionHandler(.performDefaultHandling, nil); return }

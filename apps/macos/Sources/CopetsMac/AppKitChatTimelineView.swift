@@ -765,17 +765,26 @@ enum ChatBubbleWidthPolicy {
         }
         let fullAvailableWidth = MessageBubbleWidthPolicy.fullAvailableWidth(laneWidth: availableWidth)
         if row.nativeStyle == .process {
-            guard !row.isExpanded else { return fullAvailableWidth }
             let summaryWidth = ceil((row.processPrimarySummary as NSString).size(withAttributes: [
                 .font: NSFont.systemFont(ofSize: 10.5, weight: .medium)
             ]).width)
             let secondaryWidth = row.processCurrentStepTitle.map {
                 ceil(($0 as NSString).size(withAttributes: [
                     .font: NSFont.systemFont(ofSize: 9.5)
-                ]).width) + 20
+                ]).width)
             } ?? 0
-            return min(fullAvailableWidth, max(collapsedProcessWidth,
-                max(summaryWidth + (row.processPlanProgressLabel == nil ? 0 : 64), secondaryWidth) + 58))
+            let progressWidth = row.processPlanProgressLabel.map {
+                ceil(($0 as NSString).size(withAttributes: [
+                    .font: NSFont.systemFont(ofSize: 9, weight: .semibold)
+                ]).width)
+            } ?? 0
+            return MessageBubbleWidthPolicy.processCardWidth(
+                summaryWidth: summaryWidth,
+                secondaryWidth: secondaryWidth,
+                progressLabelWidth: progressWidth,
+                expanded: row.isExpanded,
+                laneWidth: availableWidth
+            )
         }
         if row.collaborationRoute != nil {
             return min(fullAvailableWidth, maximumWidth)
@@ -809,12 +818,7 @@ struct NativeCollaborationRoutePresentation: Hashable {
     let targetWork: String
 }
 
-struct AppKitChatTimelinePosition: Codable, Equatable, Sendable {
-    let rowID: String
-    let offset: Double
-    let absoluteScrollY: Double
-    let followsLatest: Bool
-}
+typealias AppKitChatTimelinePosition = ConversationViewportPosition
 
 enum LiveResizeRowReflowPolicy {
     static func indexes(

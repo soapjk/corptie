@@ -12,6 +12,26 @@ struct MessageBubbleWidthPolicyTests {
         ) == 218)
     }
 
+    @Test("Short collapsed process cards hug their visible header")
+    func shortCollapsedProcessCard() {
+        #expect(MessageBubbleWidthPolicy.processCardWidth(
+            summaryWidth: 42,
+            expanded: false,
+            laneWidth: 700
+        ) == 100)
+    }
+
+    @Test("Collapsed process cards include progress and secondary rows")
+    func collapsedProcessCardVisibleRows() {
+        #expect(MessageBubbleWidthPolicy.processCardWidth(
+            summaryWidth: 80,
+            secondaryWidth: 190,
+            progressLabelWidth: 48,
+            expanded: false,
+            laneWidth: 700
+        ) == 230)
+    }
+
     @Test("Expanded process cards use the bounded timeline lane")
     func expandedProcessCard() {
         #expect(MessageBubbleWidthPolicy.processCardWidth(

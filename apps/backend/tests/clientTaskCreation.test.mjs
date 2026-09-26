@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { ClientSessionAPI } from "../src/application/clientSessionAPI.mjs";
 
-const identity = { deviceId: "device:test", permissions: ["tasks.create"] };
+const identity = { deviceId: "device:test" };
 const input = { requestId: "create_123", workId: "work:test", title: "Task", mainAgentId: "agent:test", providerId: "provider:test" };
 
 test("creation options are Work-scoped, read-only and explicitly projected", async () => {
@@ -22,9 +22,6 @@ test("creation options are Work-scoped, read-only and explicitly projected", asy
           defaultReasoningLevel: "high", path: "PRIVATE" }] : [], currentModel: "model", secret: "PRIVATE" };
     };
     const api = f.make();
-    await assert.rejects(api.taskCreationOptions({ ...identity, permissions: ["inventory.read"] }, "session:test", new URLSearchParams()),
-      { code: "DEVICE_PERMISSION_REQUIRED" });
-    assert.equal(requests.length, 0);
     const choices = await api.taskCreationOptions(identity, "session:test", new URLSearchParams());
     assert.deepEqual(choices.agents, [{ id: "agent:test", name: "Test" }]);
     assert.equal(choices.work.id, "work:test");
@@ -63,11 +60,10 @@ async function fixture() {
   return { store, make, taskCreation, calls: () => calls, close: async () => { await store.close(); await rm(dir, { recursive: true, force: true }); } };
 }
 
-test("task creation uses explicit authority, Work scope, shared callback and durable public receipt", async () => {
+test("task creation uses paired-device identity, Work scope, shared callback and durable public receipt", async () => {
   const f = await fixture();
   try {
     const api = f.make();
-    await assert.rejects(api.createTask({ ...identity, permissions: ["messages.write"] }, "session:test", input), { code: "DEVICE_PERMISSION_REQUIRED" });
     await assert.rejects(api.createTask(identity, "session:test", { ...input, workId: "work:other" }), { code: "TASK_OUTSIDE_WORK" });
     await assert.rejects(api.createTask(identity, "session:test", { ...input, mainAgentId: "agent:other" }), { code: "AGENT_OUTSIDE_WORK" });
     for (const extra of [{ sourceSessionId: "session:other" }, { id: "task:chosen" }, { workspacePath: "/private" }]) {
@@ -86,17 +82,16 @@ test("task creation uses explicit authority, Work scope, shared callback and dur
   } finally { await f.close(); }
 });
 
-test("permission revocation and racing requests cannot dispatch twice", async () => {
+test("identity changes and racing requests cannot dispatch twice", async () => {
   const f = await fixture();
   try {
     const api = f.make();
     await assert.rejects(api.createTask(identity, "session:test", input,
-      () => ({ ...identity, permissions: [] })), { code: "DEVICE_PERMISSION_REQUIRED" });
+      () => ({ deviceId: "device:other" })), { code: "INVALID_CREDENTIAL" });
     assert.equal(f.calls(), 0);
     const results = await Promise.all([api.createTask(identity, "session:test", input), api.createTask(identity, "session:test", input)]);
     assert.equal(f.calls(), 1);
     assert.ok(results.every(result => ["completed", "dispatching"].includes(result.status)));
-    await assert.rejects(api.createTask({ ...identity, permissions: [] }, "session:test", input), { code: "DEVICE_PERMISSION_REQUIRED" });
   } finally { await f.close(); }
 });
 

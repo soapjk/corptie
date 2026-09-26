@@ -7,13 +7,8 @@ const taskFields = ["workId", "title", "description", "acceptanceCriteria", "ver
 const providerFields = ["providerId", "model", "reasoningLevel"];
 const fields = ["requestId", ...taskFields, ...providerFields];
 
-function authorize(identity) {
-  if (!identity.permissions?.includes("tasks.create")) throw deviceError("DEVICE_PERMISSION_REQUIRED", 403);
-}
-
 /** Read-only, Work-scoped choices; never expose configuration, paths, or Provider envelopes. */
 export async function clientTaskCreationCatalog(api, identity, sourceID, query) {
-  authorize(identity);
   if ([...query.keys()].some(key => key !== "providerId") || query.getAll("providerId").length > 1) {
     throw deviceError("INVALID_QUERY", 400);
   }
@@ -55,7 +50,6 @@ export async function clientTaskCreationCatalog(api, identity, sourceID, query) 
 
 /** Device boundary only; creation and Provider operations remain in the shared application service. */
 export async function createClientTask(api, identity, sourceID, input, revalidateIdentity = null) {
-  authorize(identity);
   if (!input || typeof input !== "object" || Array.isArray(input)
       || Object.keys(input).some(key => !fields.includes(key))
       || !/^[A-Za-z0-9_-]{8,128}$/.test(input.requestId ?? "")) throw deviceError("INVALID_TASK_CREATION", 400);
@@ -95,7 +89,6 @@ export async function createClientTask(api, identity, sourceID, input, revalidat
   if (revalidateIdentity) {
     const current = revalidateIdentity();
     if (current.deviceId !== identity.deviceId) throw deviceError("INVALID_CREDENTIAL", 401);
-    authorize(current);
     identity = current;
   }
   // Recheck scope after asynchronous preflight, before claiming or dispatching.

@@ -3623,8 +3623,7 @@ struct SessionConversationContent: View {
     @ObservedObject var presentationCache: SessionPresentationCache
     @ObservedObject private var presentationState: SessionPresentationState
     @State private var expandedProcessTurnIds: Set<String> = []
-    @State private var isFollowingLatest = true
-    @State private var hasNewMessagesBelow = false
+    @State private var viewportState = ConversationViewportState()
     @State private var appKitScrollToBottomRevision = 0
     @State private var displayProjectionTask: Task<Void, Never>?
     @State private var displayProjectionGeneration = 0
@@ -3893,8 +3892,7 @@ struct SessionConversationContent: View {
             earlierHistoryLoadState = backendClient.earlierHistoryLoadState(for: sessionId)
             historyRequestEpoch &+= 1
             timelineRestorationIntent.reset(initialPosition: restorationTimelinePosition)
-            isFollowingLatest = true
-            hasNewMessagesBelow = false
+            viewportState.reset()
             visibleMessageLimit = ChatTimelineFeatureFlags.current.initialDisplayWeight
             expandedProcessTurnIds.removeAll()
             restoreDisplayCacheForCurrentSession()
@@ -3982,7 +3980,7 @@ struct SessionConversationContent: View {
                 rows: rows,
                 scrollToBottomRevision: appKitScrollToBottomRevision,
                 baseDirectory: displayedDetail?.cwd,
-                followsLatest: $isFollowingLatest,
+                followsLatest: followsLatestBinding,
                 onToggleExpansion: toggleNativeProcessExpansion,
                 onAction: performNativeTimelineAction,
                 onNearTop: loadEarlierMessagesIfNeeded,
@@ -4024,28 +4022,24 @@ struct SessionConversationContent: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .sessionTimelineSubmissionAccepted)) { notification in
                 guard notification.object as? String == sessionId else { return }
-                if isFollowingLatest {
+                if viewportState.followsLatest {
                     timelineRestorationIntent.clearAnchor()
                     refreshAfterRestorationAnchorRelinquished()
                 }
             }
             .onChange(of: latestTimelineContentRevision) { _, _ in
-                if !isFollowingLatest {
-                    hasNewMessagesBelow = true
-                }
+                _ = viewportState.timelineTailDidChange()
             }
-            .onChange(of: isFollowingLatest) { _, followsLatest in
+            .onChange(of: viewportState.followsLatest) { _, followsLatest in
                 if followsLatest {
-                    hasNewMessagesBelow = false
                     relinquishRestorationAnchorIfNeeded()
                 }
             }
             .overlay(alignment: .bottomTrailing) {
-                if !isFollowingLatest {
+                if viewportState.showsJumpToLatest {
                     Button {
                         timelineRestorationIntent.clearAnchor()
-                        isFollowingLatest = true
-                        hasNewMessagesBelow = false
+                        viewportState.jumpToLatest()
                         if let currentDetail = displayedDetail {
                             updateCachedDisplayEntries(for: currentDetail)
                         }
@@ -4055,7 +4049,7 @@ struct SessionConversationContent: View {
                             .font(.system(size: 12, weight: .bold))
                             .frame(width: 30, height: 30)
                     }
-                    .buttonStyle(JumpToLatestButtonStyle(highlightsUnread: hasNewMessagesBelow))
+                    .buttonStyle(JumpToLatestButtonStyle(highlightsUnread: viewportState.hasNewMessagesBelow))
                     .help(L10n("Jump to latest message"))
                     .padding(10)
                 }
@@ -4066,6 +4060,13 @@ struct SessionConversationContent: View {
     private var appKitDetailRevision: String {
         guard let detail = displayedDetail else { return "none" }
         return detailSourceSignature(for: detail)
+    }
+
+    private var followsLatestBinding: Binding<Bool> {
+        Binding(
+            get: { viewportState.followsLatest },
+            set: { viewportState.setFollowsLatest($0) }
+        )
     }
 
     private var effectiveInitialTimelinePosition: AppKitChatTimelinePosition? {
@@ -4477,9 +4478,7 @@ struct SessionConversationContent: View {
               let detail = displayedDetail else { return }
         let visibleWeight = cachedDisplayEntries.reduce(0) { $0 + $1.displayWeight }
         let hiddenCount = max(0, cachedTotalDisplayEntryCount - visibleWeight)
-        if !preservingLatestFollow {
-            isFollowingLatest = false
-        }
+        viewportState.prepareForHistoryPrepend(preservingLatestFollow: preservingLatestFollow)
         if hiddenCount > 0 {
             ChatPerformanceRecorder.shared.increment(.historyPrepends)
             ChatPerformanceTrace.event("timeline.history.prepend", value: min(100, hiddenCount))

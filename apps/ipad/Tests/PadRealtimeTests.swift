@@ -42,11 +42,43 @@ struct PadRealtimeTests {
         #expect(workspace.messages.first?.text == "pushed response")
         #expect(workspace.sessions.first?.executionStatus == "running")
         #expect(workspace.realtimeStateRevision == 7)
+        #expect(workspace.hasReceivedRealtimeState)
         #expect(workspace.lastTimelineRevision == 3)
         #expect(workspace.before == "item:1")
         #expect(workspace.directControlSnapshot != nil)
         #expect(PushRealtimeProtocol.requests.count == 1)
         #expect(PushRealtimeProtocol.requests.first?.hasPrefix("/client/v2/events") == true)
+        #expect(PushRealtimeProtocol.requests.first?.contains("sessionId=") == false)
+
+        live.cancel()
+        await live.value
+    }
+
+    @Test func readyWithoutStateUsesOneBootstrapInventoryFallback() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [ReadyOnlyRealtimeProtocol.self]
+        let transport = try BackendTransport(
+            endpoint: BackendEndpoint(URL(string: "https://ready-only.invalid")!),
+            bearerToken: "fixture",
+            configuration: config
+        )
+        let connection = PadConnection(transportOverride: transport)
+        connection.connected = true
+        let workspace = PadWorkspace(initialStateRecoveryDelay: .milliseconds(10))
+        ReadyOnlyRealtimeProtocol.requests = []
+        let live = Task { await workspace.runRealtime(connection) }
+        defer { live.cancel(); ReadyOnlyRealtimeProtocol.stream = nil }
+
+        for _ in 0..<40 {
+            if workspace.sessions.first?.id == "session:recovered" { break }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+
+        #expect(workspace.sessions.first?.id == "session:recovered")
+        #expect(!workspace.hasReceivedRealtimeState)
+        #expect(ReadyOnlyRealtimeProtocol.requests.filter { $0.hasSuffix("/works") }.count == 1)
+        #expect(ReadyOnlyRealtimeProtocol.requests.filter { $0.hasSuffix("/tasks") }.count == 1)
+        #expect(ReadyOnlyRealtimeProtocol.requests.filter { $0.hasSuffix("/sessions") }.count == 1)
 
         live.cancel()
         await live.value
@@ -69,6 +101,31 @@ struct PadRealtimeTests {
             $0.contains("/client/v1/sessions/session:test/messages")
                 && $0.contains("before=item:1")
         })
+
+        live.cancel()
+        await live.value
+    }
+
+    @Test func v2PushCachesUnselectedConversationBeforeItIsOpened() async throws {
+        let (connection, workspace) = try pushFixture()
+        let live = Task { await workspace.runRealtime(connection) }
+        defer { live.cancel(); PushRealtimeProtocol.stream = nil }
+
+        for _ in 0..<40 {
+            if workspace.messages.first?.text == "pushed response" { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let visibleRevision = workspace.messageRevision
+        PushRealtimeProtocol.stream?.sendBackgroundSnapshot()
+        PushRealtimeProtocol.stream?.sendBackgroundDelta()
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(workspace.messageRevision == visibleRevision)
+        #expect(workspace.messages.last?.text == "pushed response")
+        workspace.selection = "session:background"
+        #expect(workspace.messages.last?.text == "completed background response")
+        #expect(workspace.lastTimelineRevision == 10)
+        #expect(PushRealtimeProtocol.requests.count == 1)
 
         live.cancel()
         await live.value
@@ -186,6 +243,47 @@ private final class PushRealtimeProtocol: URLProtocol, @unchecked Sendable {
     }
     private func send(_ event: String, _ json: String) {
         client?.urlProtocol(self, didLoad: Data("event: \(event)\ndata: \(json)\n\n".utf8))
+    }
+    func sendBackgroundSnapshot() {
+        send("timeline-snapshot", #"{"schemaVersion":2,"kind":"snapshot","sessionId":"session:background","revision":9,"messages":{"schemaVersion":1,"sessionId":"session:background","items":[{"id":"item:background","type":"agentMessage","text":"background response"}],"hasEarlier":false,"nextBefore":null,"revision":9},"capabilities":{"schemaVersion":1,"sessionId":"session:background","readMessages":true,"send":{"available":true},"stop":{"available":false}},"usage":null,"composer":null}"#)
+    }
+    func sendBackgroundDelta() {
+        send("timeline-delta", #"{"schemaVersion":2,"kind":"delta","sessionId":"session:background","snapshotRequired":false,"baseRevision":9,"revision":10,"currentRevision":10,"hasMore":false,"changes":[{"revision":10,"itemId":"item:background","operation":"upsert","item":{"id":"item:background","type":"agentMessage","text":"completed background response"}}]}"#)
+    }
+    override func stopLoading() {}
+}
+
+private final class ReadyOnlyRealtimeProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var requests: [String] = []
+    nonisolated(unsafe) static var stream: ReadyOnlyRealtimeProtocol?
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let path = request.url!.path
+        Self.requests.append(path)
+        if path.hasSuffix("/events") {
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+            )!, cacheStoragePolicy: .notAllowed)
+            Self.stream = self
+            client?.urlProtocol(self, didLoad: Data(
+                "event: stream-ready\ndata: {\"schemaVersion\":2,\"pushPayloads\":true,\"eventRecovery\":\"server-snapshot\"}\n\n".utf8
+            ))
+            return
+        }
+        let item: String
+        if path.hasSuffix("/sessions") {
+            item = #"{"schemaVersion":1,"items":[{"id":"session:recovered","title":"Recovered","executionStatus":"complete","updatedAt":"now"}],"hasMore":false,"nextCursor":null}"#
+        } else {
+            item = #"{"schemaVersion":1,"items":[],"hasMore":false,"nextCursor":null}"#
+        }
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(
+            url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(item.utf8))
+        client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
 }
