@@ -124,6 +124,7 @@ import { validateInteractionAnswers } from "./application/interactionInput.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
 import { SkillMcpGateway } from "./application/skillMcpGateway.mjs";
 import { McpRegistryService } from "./application/mcpRegistryService.mjs";
+import { McpSessionAvailabilityService } from "./application/mcpSessionAvailabilityService.mjs";
 import { handleMcpRegistryHttpRequest } from "./application/mcpRegistryHttpApi.mjs";
 import { skillMcpTurnContext } from "./application/skillMcpTurnContext.mjs";
 import { assertSessionToolScope } from "./application/sessionToolScope.mjs";
@@ -548,17 +549,27 @@ const skillRegistryService = new SkillRegistryService({
   }
 });
 const mcpRegistryService = new McpRegistryService({ store });
+// Reconcile exact, durably queued package/Keychain cleanup after a prior crash.
+void mcpRegistryService.drainCleanup().catch(() => {});
+const mcpCleanupInterval = setInterval(() => {
+  void mcpRegistryService.drainCleanup().catch(() => {});
+}, 5 * 60 * 1000);
+mcpCleanupInterval.unref();
 function mcpAssignmentRevisionForAgent(agentId) {
   const skill = skillRegistryService.mcpAssignmentRevisionForAgent(agentId);
   const standalone = mcpRegistryService.assignmentRevisionForAgent(agentId);
   return skill === "none" && standalone === "none" ? "none" : `${skill}:${standalone}`;
 }
 const skillMcpGateway = new SkillMcpGateway({
+  onRuntimeEvent: (event) => mcpRegistryService.recordRuntimeEvent(event),
   resolveServers: async ({ actorId, providerId }) => ({
-    ...await skillRegistryService.mcpServersForAgent(actorId, providerId),
+    ...await skillRegistryService.mcpServersForAgent(actorId, providerId, { isolateFailures: true }),
     ...mcpRegistryService.serversForAgent(actorId)
   }),
   resolveRevision: mcpAssignmentRevisionForAgent
+});
+const mcpSessionAvailabilityService = new McpSessionAvailabilityService({
+  store, gateway: skillMcpGateway, registry: mcpRegistryService
 });
 // 把「Agent 启用的 Skill 解析」注入 AgentContextService，使 Agent 初始化上下文包含 Skill 信息。
 agentContextService.resolveAgentSkills = (agentId) => {
@@ -9830,8 +9841,11 @@ function route(request, response) {
   }
 
   if (url.pathname === "/mcp-servers" || url.pathname.startsWith("/mcp-servers/")
-    || /^\/agents\/[^/]+\/mcp-servers(?:\/[^/]+)?$/.test(url.pathname)) {
+    || url.pathname === "/mcp-availability"
+    || /^\/agents\/[^/]+\/mcp-servers(?:\/[^/]+)?$/.test(url.pathname)
+    || /^\/sessions\/[^/]+\/mcp-availability$/.test(url.pathname)) {
     handleMcpRegistryHttpRequest({ request, response, url, service: mcpRegistryService,
+      availabilityService: mcpSessionAvailabilityService,
       onChanged: (type, payload) => emitEvent(type, payload) }).catch((error) => {
       if (!response.headersSent) sendJson(response, 500, { code: "MCP_MANAGEMENT_FAILED", error: error.message });
     });
@@ -12473,6 +12487,7 @@ function shutdown() {
     taskSummaryService.close();
     turnObservability.flush();
     if (agentWorkQueueInterval) clearInterval(agentWorkQueueInterval);
+    clearInterval(mcpCleanupInterval);
     if (mockProgressTimer) clearInterval(mockProgressTimer);
     if (stateSyncPublishTimer) clearTimeout(stateSyncPublishTimer);
     timelineChangePublisher?.close();

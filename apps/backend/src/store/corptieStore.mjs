@@ -4725,6 +4725,82 @@ export class CorptieStore {
         this.db.run("PRAGMA foreign_keys = ON");
       }
     }
+    this.ensureColumn("mcp_server_registry", "last_checked_at", "TEXT");
+    this.ensureColumn("mcp_server_registry", "last_check_status", "TEXT NOT NULL DEFAULT 'available'");
+    this.ensureColumn("mcp_server_registry", "last_error_code", "TEXT");
+    this.ensureColumn("mcp_server_registry", "observed_tool_names_json", "TEXT NOT NULL DEFAULT '[]'");
+    this.ensureColumn("mcp_server_registry", "source_kind", "TEXT NOT NULL DEFAULT 'direct'");
+    this.ensureColumn("mcp_server_registry", "source_locator", "TEXT");
+    this.ensureColumn("mcp_server_registry", "source_revision", "TEXT");
+    this.ensureColumn("mcp_server_registry", "package_root", "TEXT");
+    this.ensureColumn("mcp_server_registry", "package_hash", "TEXT");
+    this.ensureColumn("mcp_server_registry", "descriptor_path", "TEXT");
+    this.ensureColumn("mcp_server_registry", "config_revision", "INTEGER NOT NULL DEFAULT 1");
+    this.ensureColumn("mcp_server_registry", "credential_ref", "TEXT");
+    this.ensureColumn("mcp_server_registry", "credential_names_json", "TEXT NOT NULL DEFAULT '[]'");
+    this.ensureColumn("mcp_server_registry", "install_request_id", "TEXT");
+    this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_server_install_request
+      ON mcp_server_registry(install_request_id) WHERE install_request_id IS NOT NULL`);
+    this.ensureColumn("agent_mcp_assignments", "credential_ref", "TEXT");
+    this.ensureColumn("agent_mcp_assignments", "credential_names_json", "TEXT NOT NULL DEFAULT '[]'");
+    this.ensureColumn("agent_mcp_assignments", "credential_revision", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("agent_mcp_assignments", "tool_allowlist_json", "TEXT");
+    this.db.run(`CREATE TABLE IF NOT EXISTS mcp_server_package_versions (
+      server_id TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      url TEXT NOT NULL,
+      transport TEXT NOT NULL,
+      command TEXT,
+      args_json TEXT NOT NULL,
+      cwd TEXT,
+      tool_count INTEGER NOT NULL,
+      verified_at TEXT NOT NULL,
+      source_kind TEXT NOT NULL,
+      source_locator TEXT,
+      source_revision TEXT,
+      package_root TEXT NOT NULL,
+      package_hash TEXT NOT NULL,
+      descriptor_path TEXT,
+      credential_ref TEXT,
+      credential_names_json TEXT NOT NULL DEFAULT '[]',
+      retained_at TEXT NOT NULL,
+      PRIMARY KEY (server_id, revision),
+      FOREIGN KEY (server_id) REFERENCES mcp_server_registry(server_id) ON DELETE CASCADE
+    )`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS mcp_cleanup_queue (
+      cleanup_kind TEXT NOT NULL CHECK (cleanup_kind IN ('package_path', 'credential_ref')),
+      target TEXT NOT NULL,
+      server_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (cleanup_kind, target)
+    )`);
+    this.db.run(`CREATE TRIGGER IF NOT EXISTS mcp_assignment_credential_cleanup
+      AFTER DELETE ON agent_mcp_assignments
+      WHEN OLD.credential_ref IS NOT NULL
+      BEGIN
+        INSERT OR IGNORE INTO mcp_cleanup_queue
+          (cleanup_kind, target, server_id, created_at)
+        VALUES ('credential_ref', OLD.credential_ref, OLD.server_id,
+          strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+      END`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS mcp_runtime_events (
+      event_id TEXT PRIMARY KEY,
+      server_id TEXT NOT NULL,
+      agent_id TEXT,
+      provider_id TEXT,
+      logical_session_id TEXT,
+      provider_binding_id TEXT,
+      stage TEXT NOT NULL CHECK (stage IN ('tools-list', 'tool-call')),
+      status TEXT NOT NULL CHECK (status IN ('success', 'failed')),
+      error_code TEXT,
+      tool_name TEXT,
+      tool_count INTEGER,
+      created_at TEXT NOT NULL
+    )`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_mcp_runtime_events_server
+      ON mcp_runtime_events(server_id, created_at DESC, event_id DESC)`);
 
     this.ensureColumn("skill_registry", "source_subpath", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("skill_registry", "package_subpath", "TEXT NOT NULL DEFAULT ''");

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -205,12 +205,14 @@ test("compound Skill discovers, copies, and resolves MCP descriptor resources", 
 
     const agent = value.store.createAgent({ name: "Compound", provider: "codex-app-server" });
     value.store.setAgentRegistrySkills(agent.agentId, [skill.skillId]);
+    await rm(compound, { recursive: true, force: true });
     const servers = await value.service.mcpServersForAgent(agent.agentId, "test");
+    const mcpRoot = await realpath(join(value.service.mcpRuntimeRoot, skill.skillId));
     assert.equal(servers.compound_tools.command, "node");
-    assert.equal(servers.compound_tools.cwd, installedRoot);
-    assert.equal(servers.compound_tools.args[0], join(installedRoot, "server.mjs"));
-    assert.equal(servers.compound_tools.args[2], join(installedRoot, "resources", "schema.json"));
-    assert.equal(servers.compound_tools.env.COMPOUND_ROOT, installedRoot);
+    assert.equal(servers.compound_tools.cwd, mcpRoot);
+    assert.equal(servers.compound_tools.args[0], join(mcpRoot, "server.mjs"));
+    assert.equal(servers.compound_tools.args[2], join(mcpRoot, "resources", "schema.json"));
+    assert.equal(servers.compound_tools.env.COMPOUND_ROOT, mcpRoot);
 
     const client = new Client({ name: "compound-skill-test", version: "1.0.0" });
     const transport = new StdioClientTransport({
@@ -226,10 +228,15 @@ test("compound Skill discovers, copies, and resolves MCP descriptor resources", 
     } finally {
       await client.close();
     }
-    await assert.rejects(
-      value.service.mcpServersForAgent(agent.agentId, "provider-without-skill-runtime"),
-      (error) => error.code === "MCP_PROVIDER_UNSUPPORTED" && /compound/.test(error.message)
-    );
+    await rm(mcpRoot, { recursive: true, force: true });
+    await rm(join(value.runtime, skill.skillId), { recursive: true, force: true });
+    await symlink(join(value.runtimeSecond, skill.skillId), join(value.runtime, skill.skillId), "dir");
+    const providerNeutral = await value.service.mcpServersForAgent(agent.agentId, "openclacky");
+    assert.equal(providerNeutral.compound_tools.cwd, mcpRoot);
+    assert.equal(await pathExists(join(mcpRoot, "server.mjs")), true);
+    value.store.setAgentRegistrySkills(agent.agentId, []);
+    await value.service.remove(skill.skillId);
+    assert.equal(await pathExists(mcpRoot), false);
   } finally {
     await value.store.close();
     await rm(value.directory, { recursive: true, force: true });
@@ -295,7 +302,8 @@ test("plugin manifest binds nested Skills to a package-level MCP descriptor and 
     const agent = value.store.createAgent({ name: "Investor", provider: "codex-app-server" });
     value.store.setAgentRegistrySkills(agent.agentId, [skill.skillId]);
     const servers = await value.service.mcpServersForAgent(agent.agentId, "test");
-    assert.equal(servers.investrace.args[0], join(installedRoot, "scripts", "investrace-mcp.mjs"));
+    assert.equal(servers.investrace.args[0], join(await realpath(join(value.service.mcpRuntimeRoot, skill.skillId)),
+      "scripts", "investrace-mcp.mjs"));
     const client = new Client({ name: "plugin-package-test", version: "1.0.0" });
     const transport = new StdioClientTransport({
       command: servers.investrace.command,
@@ -480,7 +488,7 @@ test("multiple Skills from one plugin share one MCP dependency without a false n
   }
 });
 
-test("different Skill packages with the same MCP server name fail explicitly when enabled together", async () => {
+test("different Skill packages with the same MCP server name receive stable distinct identities", async () => {
   const value = await fixture();
   try {
     const skills = [];
@@ -496,10 +504,54 @@ test("different Skill packages with the same MCP server name fail explicitly whe
 
     const agent = value.store.createAgent({ name: "Conflict", provider: "codex-app-server" });
     value.store.setAgentRegistrySkills(agent.agentId, skills.map((skill) => skill.skillId));
-    await assert.rejects(
-      value.service.mcpServersForAgent(agent.agentId, "test"),
-      (error) => error.code === "MCP_SERVER_NAME_CONFLICT" && /duplicate/.test(error.message)
-    );
+    const servers = await value.service.mcpServersForAgent(agent.agentId, "test");
+    const names = Object.keys(servers);
+    assert.equal(names.length, 2);
+    assert.ok(names.every((name) => /^skill_[a-f0-9]{20}$/.test(name)));
+    assert.ok(Object.values(servers).every((server) => server.displayName === "duplicate"));
+    assert.deepEqual(Object.keys(await value.service.mcpServersForAgent(agent.agentId, "test")), names);
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("Skill MCP Server names cannot alter the resolver result prototype", async () => {
+  const value = await fixture();
+  try {
+    const packageRoot = join(value.directory, "prototype-name");
+    await mkdir(packageRoot, { recursive: true });
+    await writeFile(join(packageRoot, "SKILL.md"), "---\nname: prototype-name\n---\nPrototype test.\n");
+    await writeFile(join(packageRoot, ".mcp.json"), JSON.stringify({
+      mcpServers: { ["__proto__"]: { url: "http://127.0.0.1/prototype" } }
+    }));
+    const skill = await value.service.register({ sourceType: "local", source: packageRoot });
+    const agent = value.store.createAgent({ name: "Prototype", provider: "codex-app-server" });
+    value.store.setAgentRegistrySkills(agent.agentId, [skill.skillId]);
+    const servers = await value.service.mcpServersForAgent(agent.agentId, "test");
+    assert.equal(Object.getPrototypeOf(servers), Object.prototype);
+    assert.equal(Object.hasOwn(servers, "__proto__"), true);
+    assert.equal(servers.__proto__.url, "http://127.0.0.1/prototype");
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("Skill MCP descriptor rejects Server names that collide after normalization", async () => {
+  const value = await fixture();
+  try {
+    const packageRoot = join(value.directory, "normalized-collision");
+    await mkdir(packageRoot, { recursive: true });
+    await writeFile(join(packageRoot, "SKILL.md"), "---\nname: normalized-collision\n---\nCollision test.\n");
+    await writeFile(join(packageRoot, ".mcp.json"), JSON.stringify({
+      mcpServers: {
+        lookup: { url: "http://127.0.0.1/first" },
+        " lookup ": { url: "http://127.0.0.1/second" }
+      }
+    }));
+    await assert.rejects(value.service.register({ sourceType: "local", source: packageRoot }),
+      { code: "MCP_SERVER_NAME_CONFLICT" });
   } finally {
     await value.store.close();
     await rm(value.directory, { recursive: true, force: true });

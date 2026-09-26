@@ -5,6 +5,40 @@ use napi::{Error, Result, Status};
 use std::ffi::{c_char, CStr, CString};
 
 #[napi]
+pub fn mcp_keychain_put(service: String, account: String, secret: napi::bindgen_prelude::Buffer) -> Result<()> {
+    let service = c_string(service)?;
+    let account = c_string(account)?;
+    let status = unsafe { corptie_mcp_keychain_put(service.as_ptr(), account.as_ptr(), secret.as_ptr(), secret.len()) };
+    if status == 0 { Ok(()) } else { Err(keychain_error(status)) }
+}
+
+#[napi]
+pub fn mcp_keychain_get(service: String, account: String) -> Result<Option<napi::bindgen_prelude::Buffer>> {
+    let service = c_string(service)?;
+    let account = c_string(account)?;
+    let mut pointer: *mut u8 = std::ptr::null_mut();
+    let mut length = 0_usize;
+    let status = unsafe { corptie_mcp_keychain_get(service.as_ptr(), account.as_ptr(), &mut pointer, &mut length) };
+    if status == -25300 { return Ok(None); } // errSecItemNotFound
+    if status != 0 { return Err(keychain_error(status)); }
+    let bytes = unsafe { std::slice::from_raw_parts(pointer, length).to_vec() };
+    unsafe { corptie_mcp_keychain_free(pointer, length) };
+    Ok(Some(bytes.into()))
+}
+
+#[napi]
+pub fn mcp_keychain_delete(service: String, account: String) -> Result<()> {
+    let service = c_string(service)?;
+    let account = c_string(account)?;
+    let status = unsafe { corptie_mcp_keychain_delete(service.as_ptr(), account.as_ptr()) };
+    if status == 0 { Ok(()) } else { Err(keychain_error(status)) }
+}
+
+fn keychain_error(status: i32) -> Error {
+    Error::new(Status::GenericFailure, format!("MCP_KEYCHAIN_UNAVAILABLE: Keychain operation failed ({status})."))
+}
+
+#[napi]
 pub fn levenshtein_distance(a: String, b: String) -> u32 {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
@@ -46,6 +80,10 @@ impl Default for NativeSafeTreeResult {
 }
 
 unsafe extern "C" {
+    fn corptie_mcp_keychain_put(service: *const c_char, account: *const c_char, bytes: *const u8, length: usize) -> i32;
+    fn corptie_mcp_keychain_get(service: *const c_char, account: *const c_char, bytes: *mut *mut u8, length: *mut usize) -> i32;
+    fn corptie_mcp_keychain_delete(service: *const c_char, account: *const c_char) -> i32;
+    fn corptie_mcp_keychain_free(bytes: *mut u8, length: usize);
     fn corptie_write_new_file(root: *const c_char, relative: *const c_char, bytes: *const u8, length: usize, out: *mut NativeSafeTreeResult) -> i32;
     fn corptie_inspect_tree(root: *const c_char, relative: *const c_char, out: *mut NativeSafeTreeResult) -> i32;
     fn corptie_remove_tree(

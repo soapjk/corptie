@@ -177,7 +177,11 @@ export class ToolHostService {
           ? this.skillMcpGateway.search({ ...input, ...searchInput })
           : { domains: [] }
       ]);
-      return { ...host, domains: [...host.domains, ...skill.domains] };
+      return {
+        ...host,
+        domains: [...host.domains, ...skill.domains],
+        ...(skill.unavailableServers?.length ? { mcpUnavailableServers: skill.unavailableServers } : {})
+      };
     }
     if (input.tool === TOOL_DOMAIN_LOAD) {
       const scope = exactScope(input);
