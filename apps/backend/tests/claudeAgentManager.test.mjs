@@ -4,6 +4,30 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ClaudeAgentManager, normalizeClaudeRuntimeOptions } from "../src/adapters/claudeAgentManager.mjs";
+test("Claude forks through the SDK at the native message and waits for new input", async () => {
+  const calls = [];
+  const manager = new ClaudeAgentManager({ forkSession: async (...args) => { calls.push(args); return { sessionId: "sdk-child" }; },
+    query: () => assert.fail("Creation must not dispatch a model turn") });
+  manager.start({ id: "source", cwd: "/repo/source", agentSessionId: "sdk-source" });
+  const result = await manager.fork({ id: "child", cwd: "/repo/child", title: "Child", model: "chosen", reasoningLevel: "low" },
+    { forkSource: { reference: { providerSessionId: "source" }, point: { providerMessageId: "native-message" } } });
+  assert.deepEqual(calls, [["sdk-source", { dir: "/repo/source", upToMessageId: "native-message", title: "Child" }]]);
+  assert.equal(manager.get("child").agentSessionId, "sdk-child");
+  assert.equal(manager.get("source").agentSessionId, "sdk-source");
+  assert.equal(result.external.cwd, "/repo/child");
+  assert.equal(manager.get("child").inputQueue.length, 0);
+});
+
+test("Claude persists the native UUID on the final streamed assistant item", () => {
+  const manager = new ClaudeAgentManager();
+  manager.start({ id: "source" });
+  const session = manager.get("source");
+  session.currentTurnId = "turn";
+  manager.updateStreamingAssistant(session, "partial");
+  manager.handleSdkMessage(session, { type: "assistant", uuid: "native-uuid",
+    message: { content: [{ type: "text", text: "final" }], stop_reason: "end_turn" } });
+  assert.equal(JSON.parse(session.items.at(-1).rawMetadataJSON).forkPoint.messageId, "native-uuid");
+});
 test("rejected live model switch leaves the previous selection intact", async () => {
   const manager = new ClaudeAgentManager();
   manager.start({ id: "model-switch-rejected", model: "old" });

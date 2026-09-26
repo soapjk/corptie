@@ -37,6 +37,7 @@ export function createCodexAppServerProvider(operations, options = {}) {
     },
     capabilities: options.capabilities ?? [
       AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
+      ...(typeof operations.forkSession === "function" ? [AGENT_PROVIDER_CAPABILITIES.SESSION_FORK] : []),
       AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
       AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
       AGENT_PROVIDER_CAPABILITIES.SESSION_RESTART,

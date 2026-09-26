@@ -657,6 +657,7 @@ struct SessionNotReadyReason: Codable, Equatable, Sendable {
 }
 
 struct SessionActions: Codable, Equatable, Sendable {
+    var fork: SessionActionAvailability? = nil
     let resume: SessionActionAvailability?
     let prepareExecution: SessionActionAvailability?
     let delete: SessionActionAvailability?

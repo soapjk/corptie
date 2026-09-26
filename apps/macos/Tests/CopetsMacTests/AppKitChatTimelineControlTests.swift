@@ -6,6 +6,29 @@ import CorptieClientCore
 
 @MainActor
 final class AppKitChatTimelineControlTests: XCTestCase {
+    func testForkControlIsLazyAndDoesNotChangeMessageHeight() throws {
+        let plain = AppKitChatTimelineRow(
+            id: "answer", contentRevision: 1, nativeText: "好", copyText: "好",
+            nativeStyle: .agent, title: "", metadata: "", expandableTurnId: nil,
+            isExpanded: false, showsHeader: false
+        )
+        let cell = AppKitChatNativeTextCell(identifier: .init("fork-control"))
+        cell.setContent(plain, availableWidth: 400, onToggleExpansion: { _ in })
+        XCTAssertNil(button(in: cell, identifier: "chat.timeline.fork"))
+        var forkable = plain
+        forkable.forkItemID = "answer"
+        forkable.contentRevision = 2
+        cell.setContent(forkable, availableWidth: 400, onToggleExpansion: { _ in })
+        let control = try XCTUnwrap(button(in: cell, identifier: "chat.timeline.fork"))
+        XCTAssertFalse(control.isHidden)
+        XCTAssertEqual(
+            NativeTimelineLayoutCache.shared.layout(for: forkable, columnWidth: 400).rowHeight,
+            NativeTimelineLayoutCache.shared.layout(for: plain, columnWidth: 400).rowHeight
+        )
+        cell.setContent(plain, availableWidth: 400, onToggleExpansion: { _ in })
+        XCTAssertTrue(control.isHidden)
+    }
+
     func testMessageStatusUsesExistingActionFooterWithoutChangingBodyHeight() throws {
         let queued = try XCTUnwrap(UserMessageStatusPresentation(
             authoritativeStatus: "queued", legacyStatus: nil, queuePosition: 2

@@ -60,6 +60,7 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     },
     capabilities: [
       AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
+      ...(typeof manager.fork === "function" ? [AGENT_PROVIDER_CAPABILITIES.SESSION_FORK] : []),
       AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
       AGENT_PROVIDER_CAPABILITIES.SESSION_BINDING_PROBE,
       AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
@@ -98,6 +99,14 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
       ? { prepareSessionInput: options.prepareSessionInput }
       : {}),
     createSession: (input) => manager.start(input),
+    ...(typeof manager.fork === "function" ? {
+      forkSession: (input, context) => manager.fork(input, context),
+      validateForkPoint: ({ point }) => {
+        if (!point.providerMessageId) throw Object.assign(
+          new Error("这条 Claude 历史回复未记录原生消息位置，暂不能精确分叉；更新后的新回复支持此功能。"),
+          { code: "FORK_POINT_UNAVAILABLE", statusCode: 409 });
+      }
+    } : {}),
     resumeSession: (reference, context = {}) => manager.reconnect(reference.providerSessionId, {
       runtimeOptions: context.toolHost?.providerAttachment
     }),
