@@ -2,6 +2,37 @@ import Foundation
 import Observation
 import CorptieClientCore
 
+struct PadWorkExpansionStore {
+    private static let key = "corptie.mobile.expandedWorkIDs.v1"
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    func load() -> Set<String> {
+        Set(defaults.stringArray(forKey: Self.key) ?? [])
+    }
+
+    func save(_ workIDs: Set<String>) {
+        defaults.set(workIDs.sorted(), forKey: Self.key)
+    }
+}
+
+enum PadProcessClockPolicy {
+    static func canAdvance(
+        isActiveProcess: Bool,
+        clientIsOnline: Bool,
+        sessionExecutionStatus: String?,
+        sceneIsActive: Bool
+    ) -> Bool {
+        isActiveProcess
+            && clientIsOnline
+            && sessionExecutionStatus == "running"
+            && sceneIsActive
+    }
+}
+
 func padUserInputStatusText(_ status: String?, submittedLocally: Bool) -> String {
     switch status {
     case "dispatching": return "正在提交，等待确认"
