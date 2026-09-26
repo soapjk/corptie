@@ -19,7 +19,11 @@ static void set_error(CorptieSourceJournalResult *out, const char *code) {
 #include <unistd.h>
 
 #define CORPTIE_MAX_JOURNALS 128
-#define CORPTIE_MAX_WATCHES 20000
+// Each vnode watch owns a file descriptor. Keep the native fast path well
+// below the process descriptor budget so project-code indexing can never
+// starve Git, Agent Providers, or other backend child processes. Larger
+// source trees deliberately fall back to authoritative full validation.
+#define CORPTIE_MAX_WATCHES 1024
 #define CORPTIE_EVENT_BATCH 256
 
 typedef struct {
@@ -52,6 +56,14 @@ static void clear_watches(CorptieSourceJournal *journal) {
     journal->descriptor_count = 0;
 }
 
+static void degrade_to_root_watch(CorptieSourceJournal *journal) {
+    clear_watches(journal);
+    // A root watch is useful for diagnostics and cheap invalidation hints, but
+    // the journal remains untrusted so callers must perform full validation.
+    (void)add_watch(journal, journal->root);
+    journal->trusted = 0;
+}
+
 static CorptieSourceJournal *lookup(uint64_t handle) {
     pthread_mutex_lock(&journals_lock);
     CorptieSourceJournal *journal = handle < CORPTIE_MAX_JOURNALS ? journals[handle] : NULL;
@@ -80,9 +92,17 @@ int corptie_source_journal_start(const char *root, uint64_t *handle, CorptieSour
 int corptie_source_journal_reset(uint64_t handle, const char *const paths[], size_t count, CorptieSourceJournalResult *out) {
     if (out == NULL) return -1; memset(out, 0, sizeof(*out)); CorptieSourceJournal *journal = lookup(handle);
     if (journal == NULL) { set_error(out, "SOURCE_JOURNAL_HANDLE_INVALID"); return -1; }
-    pthread_mutex_lock(&journal->lock); clear_watches(journal); int failed = add_watch(journal, journal->root) != 0;
+    pthread_mutex_lock(&journal->lock);
+    if (count >= CORPTIE_MAX_WATCHES) {
+        degrade_to_root_watch(journal); journal->epoch += 1; journal->event_id += 1;
+        out->epoch = journal->epoch; out->event_id = journal->event_id; out->trusted = 0;
+        snprintf(out->error_code, sizeof(out->error_code), "%s", "SOURCE_JOURNAL_WATCH_LIMIT");
+        pthread_mutex_unlock(&journal->lock); return 0;
+    }
+    clear_watches(journal); int failed = add_watch(journal, journal->root) != 0;
     for (size_t index = 0; index < count && !failed; index += 1) if (add_watch(journal, paths[index]) < 0) failed = 1;
-    journal->epoch += 1; journal->event_id += 1; if (failed) journal->trusted = 0;
+    if (failed) degrade_to_root_watch(journal); else journal->trusted = 1;
+    journal->epoch += 1; journal->event_id += 1;
     out->epoch = journal->epoch; out->event_id = journal->event_id; out->trusted = journal->trusted;
     if (failed) snprintf(out->error_code, sizeof(out->error_code), "%s", "SOURCE_JOURNAL_WATCH_FAILED");
     pthread_mutex_unlock(&journal->lock); return 0;

@@ -17,7 +17,8 @@ async function createStore() {
 }
 
 function createStartedTask(store) {
-  store.createWork({ id: "o1", name: "Work" });
+  const agent = store.createAgent({ id: "a1", name: "Agent", role: "independentContributor" });
+  store.createWork({ id: "o1", name: "Work", contributorAgentIds: [agent.agentId] });
   store.createTask({ id: "wi1", workId: "o1", title: "Task" });
   store.createSession({
     id: "s1", title: "Worker", provider: "codex-app-server", status: "running",

@@ -717,8 +717,8 @@ test("legacy collaboration migration preserves platform Assistant boundaries wit
     const compatibilityWork = store.getWork(task.targetWorkId);
     const productTask = store.getTask(task.targetTaskId);
     assert.equal(task.protocolVersion, "2.0");
-    assert.deepEqual(compatibilityWork.contributorAgentIds, []);
-    assert.equal(productTask.main_agent_id, null);
+    assert.deepEqual(compatibilityWork.contributorAgentIds, ["platform-assistant"]);
+    assert.equal(productTask.main_agent_id, "platform-assistant");
     assert.equal(task.messages[0].envelope, null);
   } finally {
     await store.close();

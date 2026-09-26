@@ -74,8 +74,11 @@ test("local setup actions require admin credentials and reject browser origins",
     await assert.rejects(setup.authority.exchange(claim), { code: "PAIRING_NOT_APPROVED" });
     setup.authority.approve(claim.pairingId, true);
     const credentials = await setup.authority.exchange(claim);
-    assert.deepEqual(setup.authority.authenticate(credentials.accessToken).permissions,
-      ["inventory.read", "control.read", "messages.read", "messages.write", "sessions.stop"]);
+    assert.deepEqual(setup.authority.authenticate(credentials.accessToken), {
+      deviceId: credentials.deviceId,
+      name: "Test",
+      serverId: credentials.serverId
+    });
     assert.equal((await call("reset", auth)).status, 200);
     assert.throws(() => setup.authority.authenticate(credentials.accessToken), { code: "INVALID_CREDENTIAL" });
     assert.equal((await call("disable", auth)).status, 200);

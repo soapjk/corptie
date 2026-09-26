@@ -14,6 +14,9 @@ export function loadProjectCodeSourceJournalPort() {
     || typeof native.sourceJournalStop !== "function") return null;
   return Object.freeze({
     capability: "native-journal-barrier/v1",
+    // The native journal also enforces this boundary. Publishing it here
+    // avoids allocating and crossing N-API with oversized path collections.
+    maxWatchPaths: 1023,
     open(root) {
       const result = native.sourceJournalStart(root);
       return Object.freeze({ handle: result.handle, trusted: result.trusted === true });

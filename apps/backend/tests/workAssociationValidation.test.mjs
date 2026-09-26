@@ -76,14 +76,14 @@ test("Git repository is an optional capability of a Workspace", async () => {
   }
 });
 
-test("Work contributor associations remain assignable and in scope", async () => {
+test("Work contributor associations remain available and in scope", async () => {
   const f = await fixture();
   try {
     const assistant = f.store.createAgent({ name: "Assistant", role: "assistant" });
-    assert.throws(
-      () => f.service.createWork({ name: "Invalid contributor", contributorAgentIds: [assistant.agentId] }),
-      { code: "AGENT_NOT_ASSIGNABLE", field: "contributorAgentIds[0]" }
-    );
+    const legacyRoleWork = f.service.createWork({
+      name: "Legacy role contributor", contributorAgentIds: [assistant.agentId]
+    });
+    assert.deepEqual(legacyRoleWork.contributorAgentIds, [assistant.agentId]);
     const work = f.service.createWork({ name: "Scoped", contributorAgentIds: [f.contributor.agentId] });
     f.service.createTask({ workId: work.id, title: "Owned task", mainAgentId: f.contributor.agentId });
     assert.throws(

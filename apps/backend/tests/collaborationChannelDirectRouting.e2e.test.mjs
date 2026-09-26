@@ -87,14 +87,16 @@ test("bundled Skill and runtime instruction use exact-alias-first routing", asyn
   const skill = await readFile(new URL(
     "../resources/codex/skills/corptie-collaboration/SKILL.md", import.meta.url
   ), "utf8");
-  const server = await readFile(new URL("../src/server.mjs", import.meta.url), "utf8");
+  const runtimeInstructions = await readFile(new URL(
+    "../src/application/collaborationRuntimeInstructions.mjs", import.meta.url
+  ), "utf8");
 
   assert.match(skill, /call `corptie_collaboration_channel_open` directly/);
   assert.match(skill, /do not pre-discover Sessions or Agents/);
   assert.match(skill, /Only after `RECIPIENT_SESSION_NOT_FOUND` or `RECIPIENT_SESSION_ALIAS_AMBIGUOUS`/);
   assert.match(skill, /requires the direct user's explicit confirmation/);
   assert.match(skill, /target Work and Agent resources/);
-  assert.match(server, /call corptie_collaboration_channel_open directly with recipient_session_name/);
+  assert.match(runtimeInstructions, /call corptie_collaboration_channel_open directly with recipient_session_name/);
 });
 
 async function measuredOpen(value, args) {

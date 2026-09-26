@@ -79,7 +79,8 @@ test("promoteMemoryToSkill 落 skills 表并保留溯源", async () => {
 test("listPromotionCandidates 只返回满足置信度/用量阈值的能力类记忆", async () => {
   const { store, directory } = await createStore();
   try {
-    store.createWork({ id: "o", name: "Work" });
+    const agent = store.createAgent({ id: "a1", name: "Agent", role: "independentContributor" });
+    store.createWork({ id: "o", name: "Work", contributorAgentIds: [agent.agentId] });
     store.createTask({ id: "w", workId: "o", title: "Task" });
     store.createSession({
       id: "s", title: "Worker", provider: "codex-app-server", status: "running",

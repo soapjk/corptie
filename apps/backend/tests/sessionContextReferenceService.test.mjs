@@ -12,9 +12,12 @@ async function fixture() {
   await store.initialize();
   store.createSession({ id: "assistant-session", title: "Assistant", sessionKind: "assistantChat", status: "complete" });
   store.createSession({ id: "referenced-session", title: "Research", sessionKind: "assistantChat", status: "complete", summary: "Stored preview" });
-  const work = store.createWork({ id: "work-a", name: "Ship context", description: "Build references", idealState: "Every Provider shares reliable context" });
-  store.createTask({ id: "task-a", workId: work.id, title: "Implement resolver", description: "Resolve structured context" });
   const agent = store.createAgent({ name: "Researcher", description: "Finds primary sources", role: "independentContributor", capabilities: ["research"] });
+  const work = store.createWork({
+    id: "work-a", name: "Ship context", description: "Build references",
+    contributorAgentIds: [agent.agentId]
+  });
+  store.createTask({ id: "task-a", workId: work.id, title: "Implement resolver", description: "Resolve structured context" });
   const localPath = join(directory, "reference.md");
   await writeFile(localPath, "# Local reference\nUse the shared Provider contract.");
   const service = new SessionContextReferenceService({
@@ -44,13 +47,13 @@ test("Assistant Sessions persist and resolve Provider-neutral context references
     for (const input of inputs) await value.service.create("assistant-session", input);
 
     assert.deepEqual(value.service.list("assistant-session").map((reference) => reference.targetType).sort(), [
-      "agent", "localFile", "work", "session", "task", "webURL"
+      "agent", "localFile", "session", "task", "webURL", "work"
     ]);
     const resolved = await value.service.resolve("assistant-session", { characterBudget: 20_000 });
     assert.match(resolved.prompt, /Local reference/);
     assert.match(resolved.prompt, /Web reference body/);
     assert.match(resolved.prompt, /Work: Ship context/);
-    assert.match(resolved.prompt, /Ideal state: Every Provider shares reliable context/);
+    assert.match(resolved.prompt, /Build references/);
     assert.match(resolved.prompt, /Task: Implement resolver/);
     assert.match(resolved.prompt, /Agent: Researcher/);
     assert.match(resolved.prompt, /The contract changed/);

@@ -179,7 +179,7 @@ test("snapshot derives listed Worktree identities without per-Worktree Git subpr
   const paths = ["/repo", ...Array.from({ length: 15 }, (_, index) => `/repo/worktree-${index + 1}`)];
   const porcelain = Buffer.from(paths.flatMap((path, index) => [
     `worktree ${path}`,
-    `HEAD ${String(index).padStart(40, "0")}`,
+    `HEAD ${String(index + 1).padStart(40, "0")}`,
     `branch refs/heads/${index === 0 ? "main" : `feature/${index}`}`,
     ""
   ]).concat("").join("\0"));
@@ -188,6 +188,9 @@ test("snapshot derives listed Worktree identities without per-Worktree Git subpr
     calls.push(args);
     const cwd = args[1];
     if (args.includes("worktree")) return { stdout: porcelain };
+    if (args.includes("rev-parse")) {
+      return { stdout: `${cwd}\n${cwd === "/repo" ? "/repo/.git" : `${cwd}/.git`}\n/repo/.git\n` };
+    }
     const flag = args.at(-1);
     if (flag === "--show-toplevel") return { stdout: `${cwd}\n` };
     if (flag === "--git-common-dir") return { stdout: "/repo/.git\n" };
@@ -212,7 +215,7 @@ test("snapshot derives listed Worktree identities without per-Worktree Git subpr
   assert.equal(new Set(snapshot.worktrees.map((worktree) => worktree.worktreeId)).size, paths.length);
   assert.equal(snapshot.worktrees[0].isMain, true);
   assert.equal(snapshot.worktrees.slice(1).every((worktree) => !worktree.isMain), true);
-  assert.equal(calls.length, 4, `expected three anchor identity calls and one list call, got ${calls.length}`);
+  assert.equal(calls.length, 2, `expected one anchor identity call and one list call, got ${calls.length}`);
 });
 
 async function git(arguments_, cwd) {

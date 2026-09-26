@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -47,6 +47,26 @@ test("uncertain journals fail over to the existing full validation path", async 
   assert.equal(monitor.summary().fullFallbacks, 1);
 });
 
+test("oversized source sets skip native watch configuration and use full validation", async () => {
+  const port = fakeJournalPort({ maxWatchPaths: 2 });
+  const monitor = new ProjectCodeSourceRevisionMonitor({ port });
+  const snapshot = {
+    ...fixtureSnapshot(),
+    candidates: ["one.js", "two.js", "three.js"].map(name => ({
+      absolutePath: `/tmp/project-code-monitor/${name}`
+    }))
+  };
+  let fullValidations = 0;
+  await monitor.establish({
+    worktreeId: "worktree:test", canonicalRoot: "/tmp/project-code-monitor",
+    build: async () => snapshot, verify: async () => { fullValidations += 1; }
+  });
+  assert.equal(port.resetCounts.get("/tmp/project-code-monitor") ?? 0, 0);
+  assert.equal(fullValidations, 1);
+  assert.equal(monitor.summary().uncertain, 1);
+  assert.equal(monitor.summary().fullFallbacks, 1);
+});
+
 test("native vnode journal observes immediate writes, additions and removals with bounded barriers", { skip: process.platform !== "darwin" }, async (context) => {
   const port = loadProjectCodeSourceJournalPort();
   if (!port) return context.skip("native journal module is unavailable");
@@ -84,6 +104,30 @@ test("native vnode journal observes immediate writes, additions and removals wit
   }
 });
 
+test("native vnode journal rejects oversized watch sets without retaining partial descriptors", { skip: process.platform !== "darwin" }, async (context) => {
+  const port = loadProjectCodeSourceJournalPort();
+  if (!port) return context.skip("native journal module is unavailable");
+  const root = await mkdtemp(join(tmpdir(), "corptie-vnode-budget-"));
+  const file = join(root, "watched.txt");
+  await writeFile(file, "initial");
+  const descriptorsBefore = (await readdir("/dev/fd")).length;
+  const journal = port.open(root);
+  const descriptorsAfterOpen = (await readdir("/dev/fd")).length;
+  try {
+    const result = port.reset(journal, Array.from({ length: 2048 }, () => file));
+    const descriptorsAfterReset = (await readdir("/dev/fd")).length;
+    assert.equal(result.trusted, false);
+    assert.equal(result.errorCode, "SOURCE_JOURNAL_WATCH_LIMIT");
+    assert.ok(descriptorsAfterReset <= descriptorsAfterOpen + 2,
+      `oversized reset retained descriptors: before=${descriptorsAfterOpen} after=${descriptorsAfterReset}`);
+  } finally {
+    port.close(journal);
+    await rm(root, { recursive: true, force: true });
+  }
+  const descriptorsAfterClose = (await readdir("/dev/fd")).length;
+  assert.ok(descriptorsAfterClose <= descriptorsBefore + 2);
+});
+
 test("native monitor invalidates a Snapshot when its Git branch ref advances", { skip: process.platform !== "darwin" }, async (context) => {
   if (!loadProjectCodeSourceJournalPort()) return context.skip("native journal module is unavailable");
   const fixture = await createProjectCodeFixture();
@@ -119,13 +163,18 @@ function fixtureSnapshot() {
   };
 }
 
-function fakeJournalPort() {
+function fakeJournalPort(options = {}) {
   const journals = new Map();
   let uncertain = false;
   return {
     capability: "fake-journal/v1",
+    maxWatchPaths: options.maxWatchPaths,
+    resetCounts: new Map(),
     open(root) { const journal = { root, trusted: true }; journals.set(root, { epoch: 0 }); return journal; },
-    reset(journal) { const value = journals.get(journal.root); value.epoch += 1; return fact(value, uncertain); },
+    reset(journal) {
+      this.resetCounts.set(journal.root, (this.resetCounts.get(journal.root) ?? 0) + 1);
+      const value = journals.get(journal.root); value.epoch += 1; return fact(value, uncertain);
+    },
     barrier(journal) { return fact(journals.get(journal.root), uncertain); },
     close(journal) { journals.delete(journal.root); },
     bump(root) { journals.get(root).epoch += 1; },

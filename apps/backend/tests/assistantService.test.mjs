@@ -17,7 +17,7 @@ async function createStore() {
   return { store, directory };
 }
 
-test("assistant.chat 建目标（规则版意图识别）", async () => {
+test("assistant.chat 建目标要求先选择 Contributor Agent", async () => {
   const { store, directory } = await createStore();
   try {
     const workService = new WorkApplicationService({ store });
@@ -26,28 +26,27 @@ test("assistant.chat 建目标（规则版意图识别）", async () => {
     const result = await assistant.chat("建目标 重构 Corptie");
     assert.equal(result.messages.length, 2);
     assert.equal(result.messages[0].role, "user");
-    const receipt = result.messages[1];
-    assert.equal(receipt.kind, "receipt");
-    assert.equal(receipt.data.type, "work");
-    assert.equal(receipt.data.work.name, "重构 Corptie");
+    const response = result.messages[1];
+    assert.equal(response.role, "assistant");
+    assert.match(response.content, /至少一个 Contributor Agent/);
+    assert.deepEqual(store.listWorks(), []);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("assistant.chat 建工作项（无目标时自动建默认目标）", async () => {
+test("assistant.chat 建工作项在没有 Work 时要求先创建带 Contributor 的 Work", async () => {
   const { store, directory } = await createStore();
   try {
     const workService = new WorkApplicationService({ store });
     const assistant = new AssistantService({ store, workService });
 
     const result = await assistant.chat("建工作项 拆巨文件");
-    const receipt = result.messages[1];
-    assert.equal(receipt.kind, "receipt");
-    assert.equal(receipt.data.type, "task");
-    assert.equal(receipt.data.task.title, "拆巨文件");
-    assert.equal(receipt.data.work.name, "默认目标");
+    const response = result.messages[1];
+    assert.equal(response.role, "assistant");
+    assert.match(response.content, /先新建 Work 并选择 Contributor Agent/);
+    assert.deepEqual(store.listTasks(), []);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -72,7 +71,7 @@ test("assistant.chat 查记忆 + 兜底回复", async () => {
   }
 });
 
-test("intentResolver 注入：LLM 识别意图生效", async () => {
+test("intentResolver 注入：LLM 识别的 Work 创建仍遵守 Contributor 门禁", async () => {
   const { store, directory } = await createStore();
   try {
     const workService = new WorkApplicationService({ store });
@@ -80,14 +79,15 @@ test("intentResolver 注入：LLM 识别意图生效", async () => {
     const assistant = new AssistantService({ store, workService, intentResolver: mockLLM });
 
     const result = await assistant.chat("随便说点什么");
-    assert.equal(result.messages[1].data.work.name, "LLM 识别的目标");
+    assert.match(result.messages[1].content, /至少一个 Contributor Agent/);
+    assert.deepEqual(store.listWorks(), []);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("intentResolver 失败回退规则版", async () => {
+test("intentResolver 失败回退规则版仍遵守 Contributor 门禁", async () => {
   const { store, directory } = await createStore();
   try {
     const workService = new WorkApplicationService({ store });
@@ -97,7 +97,8 @@ test("intentResolver 失败回退规则版", async () => {
     const assistant = new AssistantService({ store, workService, intentResolver: failingLLM });
 
     const result = await assistant.chat("建目标 回退测试");
-    assert.equal(result.messages[1].data.work.name, "回退测试");
+    assert.match(result.messages[1].content, /至少一个 Contributor Agent/);
+    assert.deepEqual(store.listWorks(), []);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });

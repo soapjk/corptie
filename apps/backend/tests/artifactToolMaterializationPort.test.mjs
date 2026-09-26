@@ -45,7 +45,7 @@ test("Artifact public materialization boundary contains no binding, catalog, or 
     readFile(new URL("../src/agent-provider/sessionApplicationService.mjs", import.meta.url), "utf8")
   ]);
   assert.match(dynamicTools, /assertCanonicalToolApplied\(logicalSessionId, input\.tool\)/);
-  assert.match(sessionService, /ensureDomainsApplied\(logicalSessionId, domains, \{/);
+  assert.match(sessionService, /ensureDomainsApplied\(\s*logicalSessionId,\s*requestedDomains,\s*boundary\s*\)/);
   assert.doesNotMatch(dynamicTools, /assertCanonicalToolApplied\([^\n]*providerBindingId/);
   assert.doesNotMatch(sessionService, /ensureDomainsApplied\([^\n]*providerBindingId/);
   assert.doesNotMatch(`${dynamicTools}\n${sessionService}`, /\b(?:codex|claude|openclacky)\b/i);

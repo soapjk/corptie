@@ -2,7 +2,7 @@ import { realpath } from "node:fs/promises";
 import { inspectGitWorkspace } from "../utils/gitWorktreeInventory.mjs";
 
 const TRANSIENT_INSPECTION_CODES = new Set([
-  "EAGAIN", "EBUSY", "EIO", "EMFILE", "ENFILE", "ESTALE", "ETIMEDOUT"
+  "EAGAIN", "EBADF", "EBUSY", "EIO", "EMFILE", "ENFILE", "ESTALE", "ETIMEDOUT"
 ]);
 
 export async function assertWorkspaceRouteUsable(input) {

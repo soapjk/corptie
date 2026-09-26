@@ -17,7 +17,7 @@ async function fixture() {
   const store = new CorptieStore({ dbPath, configPath });
   await store.initialize();
   const agent = store.createAgent({ id: "agent:recall", name: "Recall" });
-  store.createWork({ id: "work:recall", name: "Recall" });
+  store.createWork({ id: "work:recall", name: "Recall", contributorAgentIds: [agent.agentId] });
   store.createTask({ id: "task:recall", workId: "work:recall", title: "Recall" });
   store.createSession({
     id: "session:recall", title: "Recall", provider: "codex-app-server", status: "running",

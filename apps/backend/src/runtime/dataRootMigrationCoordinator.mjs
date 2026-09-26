@@ -207,11 +207,27 @@ async function waitForStableDataRoot(layout, options = {}) {
 async function persistentFileFingerprint(layout) {
   const rows = [];
   async function visit(directory) {
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      // Atomic writers commonly create a temporary entry and rename it between
+      // the parent readdir and the child traversal. A vanished nested entry is
+      // not persistent state and must not abort migration stabilization.
+      if (error?.code === "ENOENT" && directory !== layout.dataRoot) return;
+      throw error;
+    }
+    for (const entry of entries) {
       const path = `${directory}/${entry.name}`;
       if (entry.isDirectory()) await visit(path);
       else if (entry.isFile() && !path.startsWith(`${layout.databaseDirectory}/`)) {
-        const info = await stat(path);
+        let info;
+        try {
+          info = await stat(path);
+        } catch (error) {
+          if (error?.code === "ENOENT") continue;
+          throw error;
+        }
         rows.push(`${path.slice(layout.dataRoot.length)}:${info.size}:${info.mtimeMs}`);
       }
     }

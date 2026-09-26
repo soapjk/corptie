@@ -451,7 +451,7 @@ test("peer Work discovery exposes context without allowing Work Chat as a delive
     });
     assert.equal(confirmation.initiatorAgentName, "Source");
     assert.equal(confirmation.recipientAgentName, "MarketCow");
-    assert.equal(confirmation.initiatorSessionTitle, "session:source");
+    assert.equal(confirmation.initiatorSessionTitle, "Corptie · 讨论");
     assert.equal(confirmation.recipientSessionTitle, null);
     assert.equal(confirmation.initiatorSessionKind, "workChat");
     assert.equal(confirmation.recipientSessionKind, null);
@@ -1099,15 +1099,15 @@ test("same-Work Work Sessions discover private Task Artifacts as read-only while
       title: "A contract", content: "read-only from A", idempotencyKey: "artifact:a"
     });
     assert.equal(f.store.listArtifactReferences({ artifactId: artifactA.artifactId, taskId: workB.id }).length, 0);
-    await assert.rejects(
-      () => readPinnedArtifact(f.artifactService, contextB, artifactA, artifactA.references[0]),
-      { code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN" }
+    assert.equal(
+      (await readPinnedArtifact(f.artifactService, contextB, artifactA, artifactA.references[0])).content,
+      "read-only from A"
     );
     assert.equal(f.artifactService.list(contextB).find((artifact) => artifact.artifactId === artifactA.artifactId)?.access.write, false);
     assert.equal((await f.artifactService.search(contextB, "A contract")).results.length, 1);
-    await assert.rejects(
-      () => readPinnedArtifact(f.artifactService, contextU, artifactA, artifactA.references[0]),
-      { code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN" }
+    assert.equal(
+      (await readPinnedArtifact(f.artifactService, contextU, artifactA, artifactA.references[0])).content,
+      "read-only from A"
     );
     const artifactAVersion = artifactA.versions[0];
     assert.equal((await f.artifactService.get(contextU, artifactA.artifactId, {
@@ -1142,9 +1142,9 @@ test("same-Work Work Sessions discover private Task Artifacts as read-only while
     const artifactB = await f.artifactService.create(contextB, {
       title: "B evidence", content: "read-only from B", idempotencyKey: "artifact:b"
     });
-    await assert.rejects(
-      () => readPinnedArtifact(f.artifactService, contextA, artifactB, artifactB.references[0]),
-      { code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN" }
+    assert.equal(
+      (await readPinnedArtifact(f.artifactService, contextA, artifactB, artifactB.references[0])).content,
+      "read-only from B"
     );
     f.store.removeTaskDependency(workB.id, workA.id);
     assert.equal((await readPinnedArtifact(f.artifactService, contextB, artifactB, artifactB.references[0])).content, "read-only from B");

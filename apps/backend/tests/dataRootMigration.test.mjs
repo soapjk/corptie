@@ -19,7 +19,10 @@ async function fixture(options = {}) {
     manageProcessEnvironment: false
   });
   await store.initialize();
-  const work = store.createWork({ id: "work:migration", name: "Migration" });
+  const agent = store.createAgent({ id: "agent:migration", name: "Migration", role: "independentContributor" });
+  const work = store.createWork({
+    id: "work:migration", name: "Migration", contributorAgentIds: [agent.agentId]
+  });
   store.upsertSession({
     id: "session:migration", title: "Migration", provider: "codex-app-server",
     status: "idle", sessionKind: "workChat", workId: work.id
