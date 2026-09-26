@@ -42,6 +42,7 @@ import {
 import { queryCallerSource, SqliteQueryObservability } from "./queryObservability.mjs";
 import { migrateTaskDomainV1, migrateTaskGoalRemovalV1 } from "./taskSchemaMigration.mjs";
 import { migrateSshWorkspaces, SshWorkspaceRepository } from "./sshWorkspaceRepository.mjs";
+import { migrateSceneDomain } from "../scenes/sceneSchema.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const appSupportName = environmentName === "development" ? "Corptie Development" : "Corptie";
@@ -1084,6 +1085,7 @@ export class CorptieStore {
       throw error;
     }
     migrateTaskDomainV1(this.db);
+    migrateSceneDomain(this);
     this.migrateSessionLogsForeignKey();
     const hadSessionReadReceipts = Boolean(this.selectOne(
       "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_read_receipts'"
