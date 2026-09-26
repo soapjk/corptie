@@ -59,7 +59,7 @@ struct PadReceiptReconciliationTests {
         await workspace.reconcileAutomatically(connection, delays: [.zero, .zero, .zero])
         #expect(ReceiptProtocol.count == 1)
         #expect(workspace.pending != nil)
-        #expect(workspace.status.contains("权限"))
+        #expect(workspace.status.contains("凭据"))
     }
 
     @Test func differentBackendAndCancellationDoNotQuery() async throws {
@@ -106,13 +106,13 @@ private final class ReceiptProtocol: URLProtocol, @unchecked Sendable {
         let requestID = request.url!.lastPathComponent
         let denied = requestID.hasPrefix("denied")
         let status = requestID == "unknown_test" ? "unknown" : ordinal == 1 && requestID != "delayed_test" ? "dispatching" : "completed"
-        let json: [String: Any] = denied ? (requestID == "deniedhttp_test" ? ["error": "Forbidden"] : ["code": "DEVICE_PERMISSION_REQUIRED"]) : [
+        let json: [String: Any] = denied ? (requestID == "deniedhttp_test" ? ["error": "Unauthorized"] : ["code": "INVALID_CREDENTIAL"]) : [
             "schemaVersion": 1, "sessionId": "session:a", "requestId": requestID,
             "kind": "conversation_command", "status": status, "updatedAt": "now",
             "commandResult": ["text": "Goal 已设置", "truncated": false, "messageId": "command:result"]]
         let data = try! JSONSerialization.data(withJSONObject: json)
         let deliver: @Sendable () -> Void = { [self] in
-            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: denied ? 403 : 200,
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: denied ? 401 : 200,
                 httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: data)
             client?.urlProtocolDidFinishLoading(self)

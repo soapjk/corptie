@@ -67,7 +67,11 @@ public struct ClientEvents: Sendable {
                     if let sessionId { query.append(URLQueryItem(name: "sessionId", value: sessionId)) }
                     var request = try transport.endpoint.request(path: ["client", "v2", "events"], query: query)
                     request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-                    request.timeoutInterval = .infinity
+                    // CFNetwork on iPadOS rejects an infinite request timeout for
+                    // streaming data tasks with `NSURLErrorCannotParseResponse`.
+                    // Heartbeats arrive every 10 seconds, so a finite idle timeout
+                    // still permits an indefinitely lived stream.
+                    request.timeoutInterval = 35
                     let (bytes, response) = try await transport.bytes(for: request)
                     guard response.value(forHTTPHeaderField: "Content-Type")?.hasPrefix("text/event-stream") == true else {
                         throw ClientConnectionError.invalidResponse
@@ -112,6 +116,7 @@ public struct ClientEvents: Sendable {
 public struct ClientRealtimeReady: Decodable, Sendable {
     public let schemaVersion: Int
     public let pushPayloads: Bool
+    public let backgroundTimelines: Bool?
     public let eventRecovery: String
 }
 

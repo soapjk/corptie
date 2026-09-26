@@ -133,7 +133,7 @@ final class PadTaskCreationState {
         } catch {
             guard matches(connection), result == nil else { return }
             // Only codes guaranteed to precede dispatch permit another submission.
-            let rejectedCodes: Set<String> = ["DEVICE_PERMISSION_REQUIRED", "INVALID_CREDENTIAL", "INVALID_TASK_CREATION",
+            let rejectedCodes: Set<String> = ["INVALID_CREDENTIAL", "INVALID_TASK_CREATION",
                 "INVALID_ENTITY_NAME", "INVALID_FIELD_TYPE", "INVALID_PRIORITY", "TASK_OUTSIDE_WORK", "AGENT_OUTSIDE_WORK",
                 "AGENT_NOT_FOUND", "SOURCE_SESSION_CHANGED", "SOURCE_SESSION_NOT_FOUND", "SESSION_NOT_AVAILABLE",
                 "PROVIDER_CAPABILITY_UNAVAILABLE", "CAPABILITY_UNSUPPORTED", "ROUTE_NOT_AVAILABLE", "COMMAND_JOURNAL_FULL"]
@@ -158,8 +158,7 @@ final class PadTaskCreationState {
             accept(receipt)
         } catch {
             guard matches(connection), !Task.isCancelled else { return }
-            if let failure = error as? ClientServiceFailure,
-               ["DEVICE_PERMISSION_REQUIRED", "INVALID_CREDENTIAL"].contains(failure.code) {
+            if let failure = error as? ClientServiceFailure, failure.code == "INVALID_CREDENTIAL" {
                 reconciliationDenied = true
             }
             if let failure = error as? ClientConnectionError,

@@ -57,7 +57,6 @@ struct PadAppShell: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .ignoresSafeArea(.keyboard)
         .background {
             Color(uiColor: .systemGroupedBackground)
                 .ignoresSafeArea()
@@ -76,7 +75,10 @@ struct PadAppShell: View {
             guard scenePhase == .active else { return }
             await workspace.reconcileAutomatically(connection)
         }
-        .task(id: "\(scenePhase):\(workspace.selection ?? "")") {
+        // One foreground scene owns one resident event stream. Selecting a
+        // Task only changes the local timeline projection; it must never tear
+        // down the connection and request another bootstrap snapshot.
+        .task(id: scenePhase) {
             guard scenePhase == .active else { controls.pause(); return }
             controls.activate(tab, connection: connection)
             await workspace.runRealtime(connection)

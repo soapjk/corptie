@@ -58,10 +58,10 @@ final class ChatBubbleWidthPolicyTests: XCTestCase {
         XCTAssertEqual(width, 312)
     }
 
-    func testExpandedProcessCardDoesNotFillWideTimeline() {
+    func testExpandedProcessCardFillsTheBoundedTimelineLane() {
         XCTAssertEqual(MessageBubbleWidthPolicy.processCardWidth(
             summaryWidth: 80, expanded: true, laneWidth: 900),
-            ChatBubbleWidthPolicy.maximumWidth)
+            896)
         XCTAssertEqual(MessageBubbleWidthPolicy.processCardWidth(
             summaryWidth: 80, expanded: true, laneWidth: 320), 316)
     }

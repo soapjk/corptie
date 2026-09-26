@@ -1,6 +1,6 @@
 import Foundation
 
-/// Syntax only: the backend catalog and authorization remain authoritative.
+/// Syntax only: the backend catalog and Session capability checks remain authoritative.
 /// Unknown command names must reach command validation, never ordinary chat.
 public struct ClientConversationCommand: Encodable, Sendable, Equatable {
     public let name: String
@@ -26,9 +26,8 @@ public struct ClientConversationCommandCatalog: Decodable, Sendable {
         public let summary: String
         public let available: Bool
         public let reason: String?
-        public let requiredPermissions: [String]
         public let requiresConfirmation: Bool
-        /// A hint for argument-bearing commands, not permission to execute.
+        /// A hint for argument-bearing commands, not authority to execute.
         public let canMutate: Bool
     }
     public let schemaVersion: Int

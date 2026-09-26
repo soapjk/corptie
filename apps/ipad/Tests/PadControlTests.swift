@@ -62,7 +62,7 @@ struct PadControlTests {
         #expect(store.items[.agents]?.isEmpty == true)
         ControlProtocol.fail = true
         await store.refresh(.agents, connection: connection)
-        #expect(store.errors[.agents]?.contains("权限") == true)
+        #expect(store.errors[.agents]?.contains("拒绝") == true)
     }
 
     @Test func changingSessionClearsOldTimelineButReselectingDoesNot() {

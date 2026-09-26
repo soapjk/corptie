@@ -4,9 +4,8 @@ import { validateEntityName } from "../domain/workTaskValidation.mjs";
 
 /**
  * Device-side Work / Task management (the macOS outline context menus).
- * Separate explicit permissions (`tasks.manage`, `works.manage`) — never implied by
- * `messages.write` or `tasks.create`. Every write is a receipt-backed idempotent command
- * that calls the same host services the desktop routes use; nothing here mutates the store.
+ * Every write is a receipt-backed idempotent command that calls the same host
+ * services the desktop routes use; nothing here mutates the store directly.
  */
 export const TASK_PRIORITIES = Object.freeze(["low", "medium", "high", "urgent"]);
 export const TASK_COMMANDS = Object.freeze(["update", "archive", "restart", "delete"]);
@@ -15,9 +14,6 @@ const TASK_TEXT_FIELDS = ["description", "acceptanceCriteria", "verificationCrit
 const REQUEST_ID = /^[A-Za-z0-9_-]{8,128}$/;
 const TEXT_LIMIT = 16_000;
 
-function permission(identity, name) {
-  if (!identity.permissions?.includes(name)) throw deviceError("DEVICE_PERMISSION_REQUIRED", 403);
-}
 function entityId(value, code) {
   if (typeof value !== "string" || !value.trim() || value.length > 512) throw deviceError(code, 400);
   return value;
@@ -103,7 +99,6 @@ export function taskActions(api, task) {
 }
 
 export function clientTaskManagement(api, identity, taskId) {
-  permission(identity, "tasks.manage");
   requireSupport(api);
   const task = requireTask(api, taskId);
   const work = api.store.getWork(task.work_id);
@@ -113,7 +108,6 @@ export function clientTaskManagement(api, identity, taskId) {
 
 /** Desktop deletion plan without host paths; relative file names stay because the user decides on them. */
 export async function clientTaskDeletionPlan(api, identity, taskId) {
-  permission(identity, "tasks.manage");
   const commands = requireSupport(api);
   const task = requireTask(api, taskId);
   let plan;
@@ -136,7 +130,6 @@ export async function clientTaskDeletionPlan(api, identity, taskId) {
 }
 
 export function clientWorkManagement(api, identity, workId) {
-  permission(identity, "works.manage");
   requireSupport(api);
   const work = requireWork(api, workId);
   const deleting = api.store.listTasksByWork(work.id).some(task => task.deletion_status === "deleting");
@@ -145,12 +138,11 @@ export function clientWorkManagement(api, identity, workId) {
 }
 
 export function clientTaskCommand(api, identity, taskId, command, input, revalidateIdentity) {
-  permission(identity, "tasks.manage");
   if (!TASK_COMMANDS.includes(command)) throw deviceError("ROUTE_NOT_AVAILABLE", 404);
   const commands = requireSupport(api);
   const task = requireTask(api, taskId);
   const fields = validateTaskCommand(api, task, command, input);
-  return execute(api, identity, revalidateIdentity, { permissionName: "tasks.manage", kind: `task_${command}`,
+  return execute(api, identity, revalidateIdentity, { kind: `task_${command}`,
     entityId: task.id, requestId: input.requestId, fields, uncertainCode: `TASK_${command.toUpperCase()}_OUTCOME_UNCERTAIN`,
     run: async fingerprint => {
       const current = requireTask(api, task.id);
@@ -181,12 +173,11 @@ export function clientTaskCommand(api, identity, taskId, command, input, revalid
 }
 
 export function clientWorkCommand(api, identity, workId, command, input, revalidateIdentity) {
-  permission(identity, "works.manage");
   if (!WORK_COMMANDS.includes(command)) throw deviceError("ROUTE_NOT_AVAILABLE", 404);
   const commands = requireSupport(api);
   const work = requireWork(api, workId);
   const fields = validateWorkCommand(command, input);
-  return execute(api, identity, revalidateIdentity, { permissionName: "works.manage", kind: `work_${command}`,
+  return execute(api, identity, revalidateIdentity, { kind: `work_${command}`,
     entityId: work.id, requestId: input.requestId, fields, uncertainCode: `WORK_${command.toUpperCase()}_OUTCOME_UNCERTAIN`,
     run: async () => {
       const current = requireWork(api, work.id);
@@ -263,7 +254,7 @@ function validateWorkCommand(command, input) {
 }
 
 /** Fingerprint → replay → revalidate → journal → run → durable receipt. Never dispatches twice. */
-async function execute(api, identity, revalidateIdentity, { permissionName, kind, entityId: id, requestId, fields, uncertainCode, run }) {
+async function execute(api, identity, revalidateIdentity, { kind, entityId: id, requestId, fields, uncertainCode, run }) {
   const fingerprint = createHash("sha256").update(JSON.stringify([kind, id, requestId, fields])).digest("hex");
   const replay = () => {
     const row = api.store.selectOne("SELECT payload_hash FROM client_command_receipts WHERE device_id=? AND request_id=?", [identity.deviceId, requestId]);
@@ -276,7 +267,6 @@ async function execute(api, identity, revalidateIdentity, { permissionName, kind
   if (revalidateIdentity) {
     const current = revalidateIdentity();
     if (current.deviceId !== identity.deviceId) throw deviceError("INVALID_CREDENTIAL", 401);
-    permission(current, permissionName);
     identity = current;
   }
   const raced = replay();

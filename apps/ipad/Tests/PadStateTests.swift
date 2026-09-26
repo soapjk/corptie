@@ -180,17 +180,19 @@ struct PadStateTests {
 
     @Test func historyAutoLoadRequiresReaderPositionAndRearmsForNewCursor() {
         var gate = PadHistoryAutoLoadGate()
-        #expect(gate.requestCursor(scope: "s1", before: "p1", nearTop: false, underfilled: false,
+        #expect(gate.requestCursor(scope: "s1", before: "p1", nearTop: false, userInitiated: true, underfilled: false,
                                    isLoading: false, connectionBusy: false) == nil)
-        #expect(gate.requestCursor(scope: "s1", before: "p1", nearTop: true, underfilled: false,
+        #expect(gate.requestCursor(scope: "s1", before: "p1", nearTop: true, userInitiated: false, underfilled: false,
+                                   isLoading: false, connectionBusy: false) == nil)
+        #expect(gate.requestCursor(scope: "s1", before: "p1", nearTop: true, userInitiated: true, underfilled: false,
                                    isLoading: false,
                                    connectionBusy: false) == "p1")
-        #expect(gate.requestCursor(scope: "s1", before: "p1", nearTop: true, underfilled: false,
+        #expect(gate.requestCursor(scope: "s1", before: "p1", nearTop: true, userInitiated: true, underfilled: false,
                                    isLoading: false,
                                    connectionBusy: false) == nil)
-        #expect(gate.requestCursor(scope: "s1", before: "p2", nearTop: true, underfilled: false,
+        #expect(gate.requestCursor(scope: "s1", before: "p2", nearTop: true, userInitiated: true, underfilled: false,
                                    isLoading: false, connectionBusy: false) == "p2")
-        #expect(gate.requestCursor(scope: "s2", before: "p1", nearTop: true, underfilled: false,
+        #expect(gate.requestCursor(scope: "s2", before: "p1", nearTop: true, userInitiated: true, underfilled: false,
                                    isLoading: false, connectionBusy: false) == "p1")
     }
 
@@ -198,29 +200,29 @@ struct PadStateTests {
         var gate = PadHistoryAutoLoadGate()
         for index in 1...4 {
             let cursor = "p\(index)"
-            #expect(gate.requestCursor(scope: "s1", before: cursor, nearTop: true, underfilled: true,
+            #expect(gate.requestCursor(scope: "s1", before: cursor, nearTop: true, userInitiated: false, underfilled: true,
                                        isLoading: false,
                                        connectionBusy: false) == cursor)
-            #expect(gate.requestCursor(scope: "s1", before: cursor, nearTop: true, underfilled: true,
+            #expect(gate.requestCursor(scope: "s1", before: cursor, nearTop: true, userInitiated: false, underfilled: true,
                                        isLoading: false,
                                        connectionBusy: false) == nil)
         }
-        #expect(gate.requestCursor(scope: "s1", before: "p5", nearTop: true, underfilled: true,
+        #expect(gate.requestCursor(scope: "s1", before: "p5", nearTop: true, userInitiated: false, underfilled: true,
                                    isLoading: false,
                                    connectionBusy: false) == nil)
-        #expect(gate.requestCursor(scope: "s2", before: "p5", nearTop: true, underfilled: true,
+        #expect(gate.requestCursor(scope: "s2", before: "p5", nearTop: true, userInitiated: false, underfilled: true,
                                    isLoading: false, connectionBusy: false) == "p5")
     }
 
     @Test func historyAutoLoadDoesNotConsumeTriggerWhileTransportIsBusy() {
         var gate = PadHistoryAutoLoadGate()
-        #expect(gate.requestCursor(scope: "s1", before: "p1", nearTop: true, underfilled: false,
+        #expect(gate.requestCursor(scope: "s1", before: "p1", nearTop: true, userInitiated: true, underfilled: false,
                                    isLoading: true,
                                    connectionBusy: false) == nil)
-        #expect(gate.requestCursor(scope: "s1", before: "p1", nearTop: true, underfilled: false,
+        #expect(gate.requestCursor(scope: "s1", before: "p1", nearTop: true, userInitiated: true, underfilled: false,
                                    isLoading: false,
                                    connectionBusy: true) == nil)
-        #expect(gate.requestCursor(scope: "s1", before: "p1", nearTop: true, underfilled: false,
+        #expect(gate.requestCursor(scope: "s1", before: "p1", nearTop: true, userInitiated: true, underfilled: false,
                                    isLoading: false,
                                    connectionBusy: false) == "p1")
     }

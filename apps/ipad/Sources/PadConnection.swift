@@ -65,14 +65,14 @@ final class PadConnection {
             case "COMMAND_JOURNAL_FULL": return "后端请求记录已满，暂时无法接受新请求。"
             case "SESSION_NOT_AVAILABLE": return "无法打开这个会话。列表可能已过期，请刷新后重试。"
             case "ROUTE_NOT_AVAILABLE": return "Mac 端暂不支持这项功能，请更新并重启 Corptie。"
-            case "DEVICE_PERMISSION_REQUIRED": return "此设备没有执行该操作的权限，请在 Mac 上检查设备授权。"
+            case "INVALID_CREDENTIAL": return "设备凭据无效或已被撤销，请重新连接。"
             default: return "操作未完成（\(error.code)），请刷新后重试。"
             }
         }
         if let error = error as? ClientConnectionError {
             switch error {
             case .httpStatus(401): return "凭据无效或已过期，请重新连接；不要重复发送消息。"
-            case .httpStatus(403): return "尚未批准配对，或设备没有此操作的权限。请在 Mac 上确认。"
+            case .httpStatus(403): return "Mac 拒绝了这项操作，请刷新状态后重试。"
             case .httpStatus(404): return "请求的内容暂时不可用，请刷新后重试。"
             case .httpStatus(409): return "会话状态或请求发生冲突。请刷新并核对命令回执。"
             default: break
