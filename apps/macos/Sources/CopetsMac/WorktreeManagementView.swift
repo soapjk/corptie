@@ -214,14 +214,18 @@ struct WorktreeManagementView: View {
 
     private var worktreeColumn: some View {
         VStack(spacing: 0) {
-            columnHeader(L10n("Git Worktrees"), systemImage: "arrow.triangle.branch") {
+            columnHeader(L10n("Git Worktrees"), systemImage: "arrow.triangle.branch", showsSelection: true) {
                 Task { await client.refreshSelected() }
             }
             if let project = client.detail?.project {
-                batchSelectionHeader(project)
                 if !isBatchSelecting { worktreeActions(project) }
                 if let job = client.job, job.status != "awaiting_confirmation", job.status != "canceled" {
-                    jobProgress(job)
+                    if job.status == "completed" {
+                        CompletedWorktreeJobView(job: job)
+                            .id("\(job.repositoryId):\(job.id)")
+                    } else {
+                        jobProgress(job)
+                    }
                 }
                 if project.worktrees.isEmpty {
                     ContentUnavailableView(L10n("No Git Worktrees"), systemImage: "arrow.triangle.branch")
@@ -326,9 +330,6 @@ struct WorktreeManagementView: View {
                 .accessibilityIdentifier("worktree.batch.select")
             }
         }
-        .padding(.horizontal, 12)
-        .frame(height: 34)
-        .background(Color.primary.opacity(0.025))
     }
 
     private func batchActionBar(_ project: ManagedGitProject) -> some View {
@@ -897,16 +898,21 @@ struct WorktreeManagementView: View {
         .padding(.vertical, 5)
     }
 
-    private func columnHeader(_ title: String, systemImage: String, refresh: @escaping () -> Void) -> some View {
+    private func columnHeader(_ title: String, systemImage: String, showsSelection: Bool = false, refresh: @escaping () -> Void) -> some View {
         HStack {
-            Label(title, systemImage: systemImage).font(.headline)
-            Spacer()
+            if !showsSelection || !isBatchSelecting {
+                Label(title, systemImage: systemImage).font(.headline)
+            }
+            if showsSelection, let project = client.detail?.project {
+                batchSelectionHeader(project)
+            } else {
+                Spacer()
+            }
             if client.isLoading { ProgressView().controlSize(.small) }
             Button(action: refresh) { Image(systemName: "arrow.clockwise") }
                 .buttonStyle(.plain).help(L10n("Refresh"))
         }
         .padding(.horizontal, 12).frame(height: 42)
-        .background(.bar)
     }
 
     private func detailSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
@@ -1030,6 +1036,63 @@ struct WorktreeManagementView: View {
         case "stopped": .secondary
         case "stale", "configurationMismatch", "unverifiedBuild", "toolsetUpdateRequired", "unhealthy": .orange
         default: .secondary
+        }
+    }
+}
+
+private struct CompletedWorktreeJobView: View {
+    let job: WorktreeIntegrationJob
+    @AppStorage private var isDismissed: Bool
+    @State private var isExpanded = false
+
+    init(job: WorktreeIntegrationJob) {
+        self.job = job
+        _isDismissed = AppStorage(
+            wrappedValue: false,
+            "worktree.completed.dismissed.\(job.repositoryId).\(job.id)",
+            store: CorptieAppEnvironment.userDefaults
+        )
+    }
+
+    var body: some View {
+        if !isDismissed {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    DisclosureGroup(isExpanded: $isExpanded) {
+                        EmptyView()
+                    } label: {
+                        Label(L10n("Completed"), systemImage: "checkmark.circle")
+                        Text("\(job.progress.completed)/\(job.progress.total)")
+                            .monospacedDigit()
+                    }
+                    Button { isDismissed = true } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(L10n("Close"))
+                }
+                if isExpanded {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(job.plan.items, id: \.worktreeId) { item in
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(item.branchName ?? item.path)
+                                        .fontWeight(.medium)
+                                    Text("\(L10n("Commit")): \(localizedIntegrationStatus(item.commitStatus)) · \(L10n("Merge")): \(localizedIntegrationStatus(item.mergeStatus))")
+                                        .foregroundStyle(.secondary)
+                                    if let error = item.error {
+                                        Text(error).foregroundStyle(.red)
+                                    }
+                                }
+                                .textSelection(.enabled)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 180)
+                }
+            }
+            .font(.caption)
+            .padding(10)
         }
     }
 }
