@@ -123,6 +123,8 @@ import { ClientSessionAPI, approvalRequestIsCurrent } from "./application/client
 import { validateInteractionAnswers } from "./application/interactionInput.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
 import { SkillMcpGateway } from "./application/skillMcpGateway.mjs";
+import { McpRegistryService } from "./application/mcpRegistryService.mjs";
+import { handleMcpRegistryHttpRequest } from "./application/mcpRegistryHttpApi.mjs";
 import { skillMcpTurnContext } from "./application/skillMcpTurnContext.mjs";
 import { assertSessionToolScope } from "./application/sessionToolScope.mjs";
 import { requiredToolDomainsForSession as resolveSessionToolDomainRequirements } from "./application/sessionToolDomainRequirements.mjs";
@@ -545,9 +547,18 @@ const skillRegistryService = new SkillRegistryService({
     "claude-sdk": join(corptieClaudeRuntimePaths.pluginPath, "skills")
   }
 });
+const mcpRegistryService = new McpRegistryService({ store });
+function mcpAssignmentRevisionForAgent(agentId) {
+  const skill = skillRegistryService.mcpAssignmentRevisionForAgent(agentId);
+  const standalone = mcpRegistryService.assignmentRevisionForAgent(agentId);
+  return skill === "none" && standalone === "none" ? "none" : `${skill}:${standalone}`;
+}
 const skillMcpGateway = new SkillMcpGateway({
-  resolveServers: ({ actorId, providerId }) => skillRegistryService.mcpServersForAgent(actorId, providerId),
-  resolveRevision: (actorId) => skillRegistryService.mcpAssignmentRevisionForAgent(actorId)
+  resolveServers: async ({ actorId, providerId }) => ({
+    ...await skillRegistryService.mcpServersForAgent(actorId, providerId),
+    ...mcpRegistryService.serversForAgent(actorId)
+  }),
+  resolveRevision: mcpAssignmentRevisionForAgent
 });
 // 把「Agent 启用的 Skill 解析」注入 AgentContextService，使 Agent 初始化上下文包含 Skill 信息。
 agentContextService.resolveAgentSkills = (agentId) => {
@@ -1410,7 +1421,7 @@ const sessionApplicationService = new SessionApplicationService({
     // history from either Provider or session_items.
     const directUserIntentContext = buildDirectUserMessageEvidence(store, reference, messageContext);
     const skillRoutingContext = skillMcpTurnContext(
-      skillRegistryService.mcpAssignmentRevisionForAgent(session?.agentId)
+      mcpAssignmentRevisionForAgent(session?.agentId)
     );
     const contexts = [baseContext, skillRoutingContext, mentionContext, directUserIntentContext, memoryContext]
       .filter((item) => item?.prompt);
@@ -9814,6 +9825,15 @@ function route(request, response) {
       ...getSshWorkspaceServices()
     }).catch(() => {
       if (!response.headersSent) sendJson(response, 500, { error: "SSH configuration operation failed." });
+    });
+    return;
+  }
+
+  if (url.pathname === "/mcp-servers" || url.pathname.startsWith("/mcp-servers/")
+    || /^\/agents\/[^/]+\/mcp-servers(?:\/[^/]+)?$/.test(url.pathname)) {
+    handleMcpRegistryHttpRequest({ request, response, url, service: mcpRegistryService,
+      onChanged: (type, payload) => emitEvent(type, payload) }).catch((error) => {
+      if (!response.headersSent) sendJson(response, 500, { code: "MCP_MANAGEMENT_FAILED", error: error.message });
     });
     return;
   }
