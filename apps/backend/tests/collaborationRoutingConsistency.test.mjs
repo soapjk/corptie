@@ -202,7 +202,7 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
     const discoveredSource = discovery.agents.find((agent) => agent.agentId === sourceAgent.agentId);
     assert.equal(capabilities.sourceSessionId, "session:authoritative");
     assert.equal(capabilities.taskId, AUTHORITATIVE_TASK);
-    assert.ok(capabilities.actions.includes("collaboration.request"));
+    assert.ok(capabilities.actions.includes("tasks.create"));
     assert.equal(discoveredSource.sessionId, capabilities.sourceSessionId);
     assert.equal(discoveredSource.currentTaskId, capabilities.taskId);
     assert.deepEqual(discoveredSource.runtimeBinding, {
@@ -256,7 +256,7 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
       [AUTHORITATIVE_TASK]
     );
     const terminalCapabilities = await authoritative.get("/internal/collaboration/session-capabilities");
-    assert.equal(terminalCapabilities.actions.includes("collaboration.request"), false);
+    assert.equal(terminalCapabilities.actions.includes("tasks.create"), false);
     await assert.rejects(
       authoritative.post("/internal/collaboration/task-confirmations", marketCowSwitchRequest(marketCow, marketCowWork)),
       (error) => error.code === "COLLABORATION_REQUEST_FORBIDDEN"
@@ -350,7 +350,7 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
     });
     const stagedCountBeforeReverseRoute = staged.length;
     const child = await recipientRuntime.post("/internal/collaboration/task-confirmations", {
-      recipientSessionName: "session:authoritative",
+      recipientSessionId: "session:authoritative",
       targetWorkId: sourceWork.id,
       type: "question",
       title: "Follow up through the trusted parent relationship",
@@ -410,8 +410,8 @@ test("collaboration request permission is absent and the endpoint returns a stru
       sessionScope: { sessionId: "provider:assistant", workId: sourceWork.id }
     });
     const capabilities = await client.get("/internal/collaboration/session-capabilities");
-    assert.equal(capabilities.actions.includes("collaboration.request"), false);
-    assert.equal(capabilities.denials["collaboration.request"].code, "COLLABORATION_REQUEST_FORBIDDEN");
+    assert.equal(capabilities.actions.includes("tasks.create"), false);
+    assert.equal(capabilities.denials["tasks.create"].code, "COLLABORATION_REQUEST_FORBIDDEN");
     await assert.rejects(
       client.post("/internal/collaboration/task-confirmations", marketCowSwitchRequest(target, targetWork)),
       (error) => error.code === "COLLABORATION_REQUEST_FORBIDDEN"

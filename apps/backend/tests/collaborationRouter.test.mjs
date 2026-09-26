@@ -86,18 +86,14 @@ test("offline 不参与路由 + collaboration_sessions 生命周期", async () =
   }
 });
 
-test("助手 Agent 不入协作目录：registerAgent 拒绝 + route 过滤", async () => {
+test("legacy role labels do not make a user Agent unroutable", async () => {
   const { store, directory } = await createStore();
   try {
     const router = new CollaborationRouter({ store });
 
-    // 1) registerAgent 显式拒绝 assistant
-    assert.throws(
-      () => router.registerAgent({ agentId: "butler", role: "assistant", capabilityTags: ["meta"] }),
-      AssistantNotRoutableError
-    );
+    router.registerAgent({ agentId: "butler", role: "assistant", capabilityTags: ["meta"] });
 
-    // 2) 即便有历史数据把 assistant 写进目录，route 也要过滤掉（双保险）
+    // Historical role labels are cosmetic; routing is capability-based.
     store.upsertCollaborator({
       entryType: "agent",
       entryId: "assistant-1",
@@ -109,7 +105,7 @@ test("助手 Agent 不入协作目录：registerAgent 拒绝 + route 过滤", as
 
     const ranked = router.route({ requiredCapabilities: ["backend"] });
     const ids = ranked.map((x) => x.candidate.entry_id);
-    assert.ok(!ids.includes("assistant-1"));
+    assert.ok(ids.includes("assistant-1"));
     assert.ok(ids.includes("a1"));
   } finally {
     await store.close();

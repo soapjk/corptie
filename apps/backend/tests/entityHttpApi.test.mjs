@@ -968,7 +968,7 @@ test("POST /works → 创建，GET /works → 列表", async () => {
     assert.ok(created.body.id);
     const chat = services.store.getWorkChatSession(created.body.id);
     assert.ok(chat);
-    assert.equal(chat.title, "重构Corptie_Chat");
+    assert.equal(chat.title, "重构Corptie · 讨论");
 
     const listed = await callApi({ method: "GET", pathname: "/works", ...services });
     assert.equal(listed.statusCode, 200);
@@ -2733,7 +2733,7 @@ test("Session 创建响应返回可直接增量写入客户端的完整分类与
     assert.equal(worker.body.session.sessionKind, "worker");
     assert.equal(worker.body.session.taskId, task.body.id);
     assert.equal(worker.body.session.agentId, contributor.body.agent.agentId);
-    assert.equal(worker.body.session.title, "自定义 Worker");
+    assert.equal(worker.body.session.title, "任务");
     assert.equal(Object.hasOwn(worker.body.session, "avatarPath"), false);
 
     const assistant = await callApi({

@@ -132,23 +132,25 @@ export class ProjectCodeSourceRevisionMonitor {
     if (entry.journals.has(root)) return;
     try {
       const journal = this.port.open(root);
-      if (!journal.trusted) entry.uncertain = true;
+      if (!journal.trusted) this.#markUncertain(entry);
       entry.journals.set(root, journal);
     } catch {
-      entry.uncertain = true;
-      this.stats.uncertain += 1;
+      this.#markUncertain(entry);
     }
   }
 
   #configure(entry, snapshot) {
     for (const [root, journal] of entry.journals) {
       const paths = root === entry.root ? sourceWatchPaths(snapshot, entry.root) : gitWatchPaths(root, snapshot);
+      if (Number.isSafeInteger(this.port.maxWatchPaths) && paths.length > this.port.maxWatchPaths) {
+        this.#markUncertain(entry);
+        continue;
+      }
       try {
         const result = this.port.reset(journal, paths);
-        if (!result.trusted) entry.uncertain = true;
+        if (!result.trusted) this.#markUncertain(entry);
       } catch {
-        entry.uncertain = true;
-        this.stats.uncertain += 1;
+        this.#markUncertain(entry);
       }
     }
   }
@@ -163,11 +165,14 @@ export class ProjectCodeSourceRevisionMonitor {
         if (!value.trusted) trusted = false;
       } catch { trusted = false; }
     }
-    if (!trusted) {
-      entry.uncertain = true;
-      this.stats.uncertain += 1;
-    }
+    if (!trusted) this.#markUncertain(entry);
     return Object.freeze({ trusted, epochs: Object.freeze(epochs), roots: Object.freeze(Object.keys(epochs)) });
+  }
+
+  #markUncertain(entry) {
+    if (entry.uncertain) return;
+    entry.uncertain = true;
+    this.stats.uncertain += 1;
   }
 
   async #fallbackBuild(entry, build) {

@@ -348,8 +348,8 @@ export function handleCollaborationHttpRequest({
           actorAgentId,
           { validateContext: true }
         );
-        if (!sourceCapabilities.actions.includes("collaboration.request")) {
-          const denial = sourceCapabilities.denials?.["collaboration.request"];
+        if (!sourceCapabilities.actions.includes("tasks.create")) {
+          const denial = sourceCapabilities.denials?.["tasks.create"];
           throw apiError(
             denial?.code ?? "COLLABORATION_REQUEST_FORBIDDEN",
             denial?.reason ?? "The authenticated Session does not have collaboration.request permission.",

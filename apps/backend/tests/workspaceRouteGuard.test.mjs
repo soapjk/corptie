@@ -164,3 +164,23 @@ test("preserves retryability when transient workspace inspection is exhausted", 
   );
   assert.equal(inspections, 3);
 });
+
+test("reports descriptor exhaustion as retryable infrastructure failure instead of a missing worktree", async () => {
+  for (const code of ["EBADF", "EMFILE", "ENFILE"]) {
+    await assert.rejects(
+      () => assertWorkspaceRouteUsable({
+        store: { getGitWorktree: () => worktree },
+        logicalSession: route(),
+        providerThreadId: "thread:active",
+        inspectWorkspace: async () => {
+          throw Object.assign(new Error(`spawn ${code}`), { code });
+        },
+        workspaceInspectionRetries: 0
+      }),
+      (error) => error.code === "WORKSPACE_INSPECTION_TRANSIENT"
+        && error.retryable === true
+        && error.cause?.code === code
+        && !error.message.includes("missing")
+    );
+  }
+});

@@ -15,7 +15,12 @@ async function fixture() {
   const store = new CorptieStore({ dbPath, configPath });
   await store.initialize();
   const entities = new WorkApplicationService({ store });
-  const work = entities.createWork({ id: "work:completion", name: "Completion" });
+  const agent = store.createAgent({
+    id: "agent:completion-fixture", name: "Completion Fixture", role: "independentContributor"
+  });
+  const work = entities.createWork({
+    id: "work:completion", name: "Completion", contributorAgentIds: [agent.agentId]
+  });
   const task = entities.createTask({
     id: "task:completion", workId: work.id,
     title: "Ship completion authorization", lifecycleState: "in_progress"

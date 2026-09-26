@@ -158,9 +158,14 @@ test("deleting a Logical Session tombstones its route when startup audit retains
       id: "task:delete-audit", workId: "work:delete-audit",
       title: "Delete audit", mainAgentId: agent.agentId
     });
+    const missingWorkspace = store.createWorkspace({
+      workspaceId: "workspace:missing", kind: "linkedLocal", ownership: "externalManaged",
+      rootPath: "/tmp/delete-audit", canonicalRootPath: "/tmp/delete-audit"
+    });
     store.db.run(
-      `INSERT INTO git_repositories (repository_id, common_git_dir, discovered_at, last_validated_at)
-       VALUES ('repository:missing','/tmp/delete-audit.git','2026-09-02T00:00:00.000Z','2026-09-02T00:00:00.000Z')`
+      `INSERT INTO git_repositories (repository_id, workspace_id, common_git_dir, discovered_at, last_validated_at)
+       VALUES ('repository:missing',?,'/tmp/delete-audit.git','2026-09-02T00:00:00.000Z','2026-09-02T00:00:00.000Z')`,
+      [missingWorkspace.workspaceId]
     );
     store.db.run(
       `INSERT INTO work_session_startup_operations (
@@ -194,32 +199,30 @@ test("deleting a Logical Session tombstones its route when startup audit retains
   }
 });
 
-test("legacy Work acceptance criteria migrate to the evolving ideal state", async () => {
+test("Work description persists across store restart under the current Work schema", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-work-ideal-state-"));
   const dbPath = join(directory, "corptie.sqlite");
   const configPath = join(directory, "config.json");
   const initialStore = new CorptieStore({ dbPath, configPath });
   try {
     await initialStore.initialize();
-    initialStore.createWork({ id: "work:legacy", name: "Long-lived work" });
+    const agent = initialStore.createAgent({ id: "agent:legacy-work", name: "Legacy Work" });
+    initialStore.createWork({
+      id: "work:legacy", name: "Long-lived work",
+      description: "The system continuously becomes easier to evolve.",
+      contributorAgentIds: [agent.agentId]
+    });
     await initialStore.close();
-
-    const legacyDatabase = new DatabaseSync(dbPath);
-    legacyDatabase.exec("ALTER TABLE works RENAME COLUMN ideal_state TO acceptance_criteria");
-    legacyDatabase.prepare(
-      "UPDATE works SET acceptance_criteria = ? WHERE id = ?"
-    ).run("The system continuously becomes easier to evolve.", "work:legacy");
-    legacyDatabase.close();
 
     const migratedStore = new CorptieStore({ dbPath, configPath });
     await migratedStore.initialize();
     assert.equal(
-      migratedStore.getWork("work:legacy").idealState,
+      migratedStore.getWork("work:legacy").description,
       "The system continuously becomes easier to evolve."
     );
     const columns = migratedStore.selectAll("PRAGMA table_info(works)").map((column) => column.name);
-    assert.equal(columns.includes("ideal_state"), true);
-    assert.equal(columns.includes("acceptance_criteria"), false);
+    assert.equal(columns.includes("description"), true);
+    assert.equal(columns.includes("ideal_state"), false);
     await migratedStore.close();
   } finally {
     await initialStore.close().catch(() => {});
@@ -1208,8 +1211,10 @@ test("conflict-resolution launch finalizes all visible bindings in one transacti
   });
   try {
     await store.initialize();
-    store.createWork({ id: "work:conflict", name: "Resolve conflict" });
-    store.createAgent({ id: "agent:conflict", name: "Conflict Agent", role: "independentContributor" });
+    const agent = store.createAgent({ id: "agent:conflict", name: "Conflict Agent", role: "independentContributor" });
+    store.createWork({
+      id: "work:conflict", name: "Resolve conflict", contributorAgentIds: [agent.agentId]
+    });
     store.createTask({
       id: "task:conflict",
       workId: "work:conflict",
@@ -1315,7 +1320,8 @@ test("Session kind persists explicitly and Task binding classifies worker sessio
       provider: "codex-app-server",
       status: "complete"
     });
-    store.createWork({ id: "work:1", name: "Work" });
+    const agent = store.createAgent({ id: "agent:session-kind", name: "Session Kind" });
+    store.createWork({ id: "work:1", name: "Work", contributorAgentIds: [agent.agentId] });
     store.createTask({ id: "task:1", workId: "work:1", title: "Work item" });
     store.bindSessionToTask("worker-session", "task:1", "work:1");
     const worker = store.getSession("worker-session");
@@ -1349,7 +1355,8 @@ test("workspace route replacement preserves the stable Work Session and Task own
       provider: "codex-app-server",
       status: "complete"
     });
-    store.createWork({ id: "work:one", name: "Work" });
+    const agent = store.createAgent({ id: "agent:route-replacement", name: "Route Replacement" });
+    store.createWork({ id: "work:one", name: "Work", contributorAgentIds: [agent.agentId] });
     store.createTask({ id: "task:one", workId: "work:one", title: "Work item" });
     store.bindSessionToTask("worker-session", "task:one", "work:one");
     store.createLogicalSessionRoute({
@@ -1426,7 +1433,8 @@ test("retiring a Worktree preserves the Work Session while making its workspace 
       status: "complete",
       rawStatus: { capabilities: { canSend: true, canInterrupt: true } }
     });
-    store.createWork({ id: "work:retired", name: "Work" });
+    const agent = store.createAgent({ id: "agent:retired", name: "Retired" });
+    store.createWork({ id: "work:retired", name: "Work", contributorAgentIds: [agent.agentId] });
     store.createTask({
       id: "task:retired",
       workId: "work:retired",
@@ -1496,7 +1504,7 @@ test("retiring a Worktree preserves the Work Session while making its workspace 
   }
 });
 
-test("Assistant agents receive distinct workspaces and reject explicit reuse", async () => {
+test("Agents receive distinct default workspaces and may explicitly share one", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-assistant-workspaces-"));
   const store = new CorptieStore({
     dbPath: join(directory, "corptie.sqlite"),
@@ -1508,18 +1516,16 @@ test("Assistant agents receive distinct workspaces and reject explicit reuse", a
     const second = store.createAgent({ id: "assistant:second", name: "Second", role: "assistant" });
 
     assert.notEqual(first.workDir, second.workDir);
-    assert.match(first.workDir, /assistants\/assistant%3Afirst\/workspace$/);
-    assert.throws(
-      () => store.updateAgent(second.agentId, { workDir: first.workDir }),
-      (error) => error.code === "ASSISTANT_WORKSPACE_CONFLICT"
-    );
+    assert.match(first.workDir, /agents\/assistant%3Afirst\/workspace$/);
+    const updated = store.updateAgent(second.agentId, { workDir: first.workDir });
+    assert.equal(updated.workDir, first.workDir);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("legacy shared Assistant workspaces are split during store migration", async () => {
+test("explicitly shared Agent workspaces survive store restart", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-assistant-workspace-migration-"));
   const dbPath = join(directory, "corptie.sqlite");
   const configPath = join(directory, "config.json");
@@ -1530,7 +1536,6 @@ test("legacy shared Assistant workspaces are split during store migration", asyn
     await firstStore.initialize();
     firstStore.createAgent({ id: "assistant:first", name: "First", role: "assistant" });
     firstStore.createAgent({ id: "assistant:second", name: "Second", role: "assistant" });
-    firstStore.db.run("DROP INDEX idx_agents_assistant_work_dir");
     firstStore.db.run(
       "UPDATE agents SET work_dir = ? WHERE agent_id IN (?, ?)",
       [sharedWorkspace, "assistant:first", "assistant:second"]
@@ -1542,8 +1547,8 @@ test("legacy shared Assistant workspaces are split during store migration", asyn
       await migratedStore.initialize();
       const first = migratedStore.getAgent("assistant:first");
       const second = migratedStore.getAgent("assistant:second");
-      assert.notEqual(first.workDir.toLowerCase(), second.workDir.toLowerCase());
-      assert.equal([first.workDir, second.workDir].includes(sharedWorkspace), true);
+      assert.equal(first.workDir, sharedWorkspace);
+      assert.equal(second.workDir, sharedWorkspace);
     } finally {
       await migratedStore.close();
     }

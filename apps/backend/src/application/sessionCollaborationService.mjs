@@ -52,7 +52,7 @@ export class SessionCollaborationService {
       workId: scope.session.workId,
       taskId: scope.session.taskId,
       actions: ["sessions.discover", "sessions.get", "channels.open", "channels.list", "channels.get",
-        "channels.message_send", "channels.revoke", ...(scope.session.workId ? ["tasks.list", "tasks.get"] : []), ...(canCreate
+        "channels.message_send", "channels.revoke", ...(scope.session.workId ? ["tasks.list", "tasks.get"] : []), ...(canCreate && !requestDenial
         ? ["tasks.create", "tasks.relate", "tasks.share_artifact"]
         : [])],
       denials: requestDenial ? { "tasks.create": requestDenial } : {},

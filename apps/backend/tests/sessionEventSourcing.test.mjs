@@ -398,6 +398,10 @@ test("canonical completion migration tolerates retained events whose historical 
 test("deleting a Session retains an inert tombstone and audit events without allowing resurrection", async () => {
   const { store, directory } = await createStore();
   try {
+    const agent = store.createAgent({ id: "agent:deleted-session", name: "Deleted Session" });
+    store.createWork({
+      id: "work:shared", name: "Shared", contributorAgentIds: [agent.agentId]
+    });
     store.upsertSession({
       id: "session:deleted",
       title: "Original title",
@@ -469,7 +473,10 @@ test("deleting a Worker Session clears its active Task pointer but retains audit
       provider: "provider-neutral-fixture",
       status: "complete"
     });
-    store.createWork({ id: "work:worker", name: "Work" });
+    const agent = store.createAgent({ id: "agent:worker-event", name: "Worker Event", role: "independentContributor" });
+    store.createWork({
+      id: "work:worker", name: "Work", contributorAgentIds: [agent.agentId]
+    });
     store.createTask({
       id: "task:worker",
       workId: "work:worker",

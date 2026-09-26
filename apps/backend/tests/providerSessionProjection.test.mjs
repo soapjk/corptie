@@ -124,7 +124,7 @@ test("a newly created Provider Session persists provider-neutral entity ownershi
   }
 });
 
-test("a Provider Session without a product classification is rejected at the write boundary", async () => {
+test("an unbound Provider Session defaults to Assistant Chat and invalid explicit kinds are rejected", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-unclassified-projection-"));
   const store = new CorptieStore({
     dbPath: join(directory, "corptie.sqlite"),
@@ -138,15 +138,13 @@ test("a Provider Session without a product classification is rejected at the wri
       status: "complete",
       external: { provider: "codex-app-server", threadId: "unowned", sessionId: "unowned" }
     };
-    assert.throws(
-      () => persistProviderSessionProjection(store, providerSession),
-      { code: "SESSION_CLASSIFICATION_REQUIRED" }
-    );
+    const projected = persistProviderSessionProjection(store, providerSession);
+    assert.equal(projected.sessionKind, "assistantChat");
     assert.throws(
       () => persistProviderSessionProjection(store, { ...providerSession, sessionKind: " " }),
       { code: "SESSION_KIND_INVALID" }
     );
-    assert.equal(store.getSession(providerSession.id), null);
+    assert.equal(store.getSession(providerSession.id).sessionKind, "assistantChat");
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });

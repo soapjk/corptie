@@ -3,7 +3,9 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 test("runtime instructions route long non-interactive work through background Automation wakeup", async () => {
-  const source = await readFile(new URL("../src/server.mjs", import.meta.url), "utf8");
+  const source = await readFile(new URL(
+    "../src/application/collaborationRuntimeInstructions.mjs", import.meta.url
+  ), "utf8");
   const instruction = source.split("\n").find((line) => line.includes(
     "for non-interactive work expected to exceed two minutes"
   ));

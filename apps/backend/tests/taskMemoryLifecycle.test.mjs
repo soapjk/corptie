@@ -13,7 +13,10 @@ async function fixture() {
   const configPath = join(directory, "config.json");
   const store = new CorptieStore({ dbPath, configPath });
   await store.initialize();
-  store.createWork({ id: "work:memory", name: "Memory lifecycle" });
+  const agent = store.createAgent({ id: "agent:memory", name: "Memory", role: "independentContributor" });
+  store.createWork({
+    id: "work:memory", name: "Memory lifecycle", contributorAgentIds: [agent.agentId]
+  });
   for (const taskId of ["task:one", "task:two"]) {
     store.createTask({
       id: taskId,

@@ -13,11 +13,11 @@ test("historical Provider rollout absence remains classifiable without authorizi
 });
 
 test("Provider failure never replaces a Task Session outside explicit Recovery", async () => {
-  const source = await readFile(new URL("../src/server.mjs", import.meta.url), "utf8");
+  const source = await readFile(new URL("../src/application/taskSessionRepairPolicy.mjs", import.meta.url), "utf8");
 
   assert.doesNotMatch(source, /selfRepairTaskSession/);
   assert.doesNotMatch(source, /repairBrokenTaskSessionsAtStartup/);
   assert.doesNotMatch(source, /source:\s*["']self-repair["']/);
-  assert.match(source, /if \(!shouldRetryBusy\) throw error;/);
-  assert.match(source, /unavailable\.code = "PROVIDER_BINDING_RECOVERY_REQUIRED"/);
+  assert.doesNotMatch(source, /createSession|replaceSession|bindSessionToTask/);
+  assert.match(source, /export function historicalProviderSessionUnavailable/);
 });

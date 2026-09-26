@@ -26,8 +26,15 @@ function createStartedExecution(store, {
   sessionId = "s1",
   agentId = "a1"
 } = {}) {
+  if (agentId && !store.getAgent(agentId)) {
+    store.createAgent({ id: agentId, name: agentId, role: "independentContributor" });
+  }
+  const contributorAgentId = agentId ?? `agent:${workId}`;
+  if (!store.getAgent(contributorAgentId)) {
+    store.createAgent({ id: contributorAgentId, name: contributorAgentId, role: "independentContributor" });
+  }
   if (!store.getWork(workId)) {
-    store.createWork({ id: workId, name: workId });
+    store.createWork({ id: workId, name: workId, contributorAgentIds: [contributorAgentId] });
   }
   store.createTask({ id: taskId, workId, title: taskId });
   store.createSession({

@@ -248,7 +248,7 @@ test("state publication is mutation-driven and subscriptions own no polling sche
 
 test("synthetic Session progress is opt-in and its scheduler is released", async () => {
   const source = await readFile(sourceURL, "utf8");
-  assert.match(source, /if \(process\.env\.CORPTIE_ENABLE_MOCK_SESSIONS === "1"\)[\s\S]*seedSessions\(\)/);
+  assert.match(source, /if \(!developmentPreview && process\.env\.CORPTIE_ENABLE_MOCK_SESSIONS === "1"\)[\s\S]*seedSessions\(\)/);
   assert.match(source, /mockProgressTimer = setInterval\(updateMockProgress, 2500\)/);
   assert.match(source, /shutdown[\s\S]*clearInterval\(mockProgressTimer\)/);
 });

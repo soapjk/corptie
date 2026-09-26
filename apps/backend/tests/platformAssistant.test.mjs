@@ -102,6 +102,7 @@ test("platform operations are denied to user Agents and use product services for
       providerThreadId: "thread:assistant", providerSessionId: "session:assistant",
       providerId: "codex-app-server", boundCwd: directory, sessionName: "Corptie"
     });
+    store.grantSessionCapability("session:assistant", "platform.manage");
     const logical = store.getLogicalSession("logical:assistant");
     const creationMessage = store.createUserMessageDelivery({
       deliveryId: "delivery:platform-create", messageId: "message:platform-create",
