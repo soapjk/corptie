@@ -42,7 +42,7 @@ test("Codex A→B→A plan notifications remain three physical events but one ti
         hasEarlier: false,
         items: store.getItems(sessionId)
       }) });
-    const devicePage = await deviceAPI.messages({ permissions: ["messages.read"] },
+    const devicePage = await deviceAPI.messages({ deviceId: "device:test" },
       "session:one", new URLSearchParams());
     const devicePlan = devicePage.items.find((item) => item.type === "executionPlan");
     assert.equal(devicePlan.id, plans[0].id);

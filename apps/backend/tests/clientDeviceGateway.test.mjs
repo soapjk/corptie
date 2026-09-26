@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import https from "node:https";
 import http from "node:http";
-import { requireDevicePermission } from "../src/application/clientSessionAPI.mjs";
 import { ClientDeviceAuthority } from "../src/application/clientDeviceAuthority.mjs";
 import { ClientDeviceGateway, startConfiguredDeviceGateway } from "../src/application/clientDeviceGateway.mjs";
 
@@ -30,12 +29,8 @@ test("pairing requires local approval, exchanges once, rotates and revokes persi
     const results = await Promise.allSettled([a.exchange(claim), a.exchange(claim)]);
     assert.equal(results.filter(r => r.status === "fulfilled").length, 1);
     const creds = results.find(r => r.status === "fulfilled").value;
-    assert.equal(a.authenticate(creds.accessToken).permissions.includes("sessions.commands"), false);
-    assert.equal(a.authenticate(creds.accessToken).permissions.includes("sessions.clear"), false);
+    assert.deepEqual(Object.keys(a.authenticate(creds.accessToken)).sort(), ["deviceId", "name", "serverId"]);
     assert.equal(a.canDeliverScheduledMessage(creds.deviceId), true);
-    await a.setPermissions(creds.deviceId, ["messages.read"]);
-    assert.equal(a.canDeliverScheduledMessage(creds.deviceId), false);
-    await a.setPermissions(creds.deviceId, ["messages.read", "messages.write"]);
     assert.equal(a.authenticate(creds.accessToken).deviceId, creds.deviceId);
     const disk = await readFile(join(f.dir, "auth", "devices.json"), "utf8");
     assert.equal(disk.includes(creds.accessToken), false);
@@ -54,7 +49,7 @@ test("pairing requires local approval, exchanges once, rotates and revokes persi
   } finally { await f.close(); }
 });
 
-test("permission edits compare the confirmed grants atomically and preserve concurrent revocations", async () => {
+test("legacy per-feature grants are removed and never exposed after restart", async () => {
   const f = await fixture();
   try {
     const a = f.authority;
@@ -62,16 +57,15 @@ test("permission edits compare the confirmed grants atomically and preserve conc
     const claim = a.claim({ ...invite, name: "Test iPad" });
     a.approve(invite.pairingId, true);
     const creds = await a.exchange(claim);
-    const original = a.authenticate(creds.accessToken).permissions;
-    const withCommands = [...original, "sessions.commands"];
-    await a.setPermissions(creds.deviceId, withCommands, [...original].reverse());
-    assert.deepEqual(a.authenticate(creds.accessToken).permissions, withCommands);
-    await assert.rejects(a.setPermissions(creds.deviceId, [...original, "sessions.clear"], original), { code: "PERMISSIONS_CHANGED" });
-    assert.deepEqual(a.authenticate(creds.accessToken).permissions, withCommands);
-    await a.setPermissions(creds.deviceId, ["messages.read"], withCommands);
-    await assert.rejects(a.setPermissions(creds.deviceId, withCommands, withCommands), { code: "PERMISSIONS_CHANGED" });
-    assert.deepEqual(a.authenticate(creds.accessToken).permissions, ["messages.read"]);
-    await assert.rejects(a.setPermissions(creds.deviceId, [], "invalid"), { code: "INVALID_PERMISSIONS" });
+    const file = join(f.dir, "auth", "devices.json");
+    const state = JSON.parse(await readFile(file, "utf8"));
+    state.devices[0].permissions = ["messages.read"];
+    await writeFile(file, JSON.stringify(state));
+    const restored = new ClientDeviceAuthority(join(f.dir, "auth"));
+    await restored.initialize();
+    assert.equal(restored.list().devices[0].permissions, undefined);
+    assert.equal(JSON.parse(await readFile(file, "utf8")).devices[0].permissions, undefined);
+    assert.equal(restored.authenticate(creds.accessToken).deviceId, creds.deviceId);
   } finally { await f.close(); }
 });
 
@@ -107,6 +101,7 @@ test("gateway is disabled by default and always disabled in preview", async () =
 test("real TLS route boundary and authenticated local approval", async () => {
   const f = await fixture();
   const approvalCalls = [];
+  const worktreeCalls = [];
   const avatarPath = join(f.dir, "avatar.png");
   await writeFile(avatarPath, Buffer.from("89504e470d0a1a0a", "hex"));
   const gateway = new ClientDeviceGateway(f.authority, { readAPI: {
@@ -118,75 +113,72 @@ test("real TLS route boundary and authenticated local approval", async () => {
   }, controlAPI: {
     list: async kind => ({ schemaVersion: 1, items: [{ id: `${kind}:one` }] }),
     repository: async id => ({ schemaVersion: 1, repository: { id } })
+  }, worktreeAPI: {
+    repository: async (id, options) => ({ repository: { id }, project: { worktrees: [] }, options }),
+    gitHubPushStatus: async (repositoryId, worktreeId) => ({ repositoryId, worktreeId, gitHubPush: { available: true } }),
+    developmentService: async repositoryId => ({ projectId: repositoryId, service: { state: "stopped" } }),
+    job: id => ({ job: { id, status: "running" } }),
+    createPlan: async (repositoryId, input) => ({ job: { id: "job:one", repositoryId, input } }),
+    deleteWorktree: async (repositoryId, worktreeId) => ({ result: { repositoryId, worktreeId } }),
+    workspaceAction: async (repositoryId, worktreeId, action, input) => {
+      worktreeCalls.push({ repositoryId, worktreeId, action, input }); return { ok: true };
+    },
+    developmentServiceAction: async (repositoryId, action, input) => ({ repositoryId, action, input }),
+    jobAction: async (jobId, action, input) => ({ job: { id: jobId, action, input } })
   }, sessionAPI: {
     commandCatalog(identity, sessionId) {
-      requireDevicePermission(identity, "messages.read");
       return { schemaVersion: 1, sessionId, commands: [{ name: "goal" }] };
     },
     conversationCommand(identity, sessionId, input, revalidate) {
-      requireDevicePermission(identity, "sessions.commands");
       assert.equal(revalidate().deviceId, identity.deviceId);
       return { schemaVersion: 1, sessionId, requestId: input.requestId, kind: "conversation_command", status: "completed" };
     },
-    messages(identity, sessionId) { requireDevicePermission(identity, "messages.read"); return { schemaVersion: 1, sessionId, items: [] }; },
+    messages(identity, sessionId) { return { schemaVersion: 1, sessionId, items: [] }; },
     approval(identity, sessionId, input, revalidate) {
-      requireDevicePermission(identity, "messages.write");
       assert.equal(revalidate().deviceId, identity.deviceId);
       approvalCalls.push({ sessionId, input });
       return { schemaVersion: 1, sessionId, itemId: input.itemId, status: "submitted" };
     },
     command(identity, sessionId, kind, input) {
-      requireDevicePermission(identity, kind === "send" ? "messages.write" : "sessions.stop");
       return { schemaVersion: 1, sessionId, kind, requestId: input.requestId, status: "dispatching" };
     },
     receipt(identity, requestId) { return { requestId, deviceId: identity.deviceId }; },
     capabilities() { return { schemaVersion: 1 }; },
     createTask(identity, sessionId, input, revalidate) {
-      requireDevicePermission(identity, "tasks.create");
       assert.equal(revalidate().deviceId, identity.deviceId);
       return { schemaVersion: 1, sessionId, requestId: input.requestId, kind: "create_task", status: "completed" };
     },
     taskCreationOptions(identity, sessionId, query) {
-      requireDevicePermission(identity, "tasks.create");
       return { schemaVersion: 1, sourceSessionId: sessionId, providerId: query.get("providerId") };
     },
     configuration(identity, sessionId, input) {
-      requireDevicePermission(identity, "messages.write");
       return { schemaVersion: 1, sessionId, currentModel: input?.model ?? "current" };
     },
     readReceipt(identity, sessionId, input) {
-      requireDevicePermission(identity, "messages.read");
       return { schemaVersion: 1, sessionId, lastAgentMessageSequence: 7, lastReadMessageSequence: input.throughSequence };
     },
     image(identity, sessionId, query) {
-      requireDevicePermission(identity, "messages.read");
       if (query.get("path") !== "chat-resources/session/a.png") throw Object.assign(new Error("IMAGE_NOT_AVAILABLE"), { code: "IMAGE_NOT_AVAILABLE", status: 404 });
       return { data: Buffer.from("png-bytes"), contentType: "image/png", byteLength: 9 };
     },
     async usage(identity, sessionId) {
-      requireDevicePermission(identity, "messages.read");
       return { schemaVersion: 1, sessionId, context: { usedTokens: 10, contextWindow: 100, remainingTokens: 90, usedPercent: 10 }, account: null };
     },
     entityCommands: {},
     taskManagement(identity, taskId) {
-      requireDevicePermission(identity, "tasks.manage");
       return { schemaVersion: 1, task: { id: taskId }, actions: {} };
     },
     async taskDeletionPlan(identity, taskId) {
-      requireDevicePermission(identity, "tasks.manage");
       return { schemaVersion: 1, taskId, status: "safe" };
     },
     workManagement(identity, workId) {
-      requireDevicePermission(identity, "works.manage");
       return { schemaVersion: 1, work: { id: workId }, actions: {} };
     },
     taskCommand(identity, taskId, command, input, revalidate) {
-      requireDevicePermission(identity, "tasks.manage");
       assert.equal(revalidate().deviceId, identity.deviceId);
       return { schemaVersion: 1, requestId: input.requestId, kind: `task_${command}`, status: "completed", entityResult: { taskId } };
     },
     workCommand(identity, workId, command, input, revalidate) {
-      requireDevicePermission(identity, "works.manage");
       assert.equal(revalidate().deviceId, identity.deviceId);
       return { schemaVersion: 1, requestId: input.requestId, kind: `work_${command}`, status: "completed", entityResult: { workId } };
     }
@@ -254,8 +246,7 @@ test("real TLS route boundary and authenticated local approval", async () => {
     assert.equal((await call(composerPath, { token: creds.accessToken })).body.currentModel, "current");
     assert.equal((await call(composerPath, { token: creds.accessToken, method: "POST", value: { model: "new" } })).body.currentModel, "new");
     assert.equal((await call(composerPath, { token: creds.accessToken, method: "DELETE" })).status, 404);
-    assert.deepEqual((await call("/client/v1/me", { token: creds.accessToken })).body.permissions,
-      ["inventory.read", "control.read", "messages.read", "messages.write", "sessions.stop"]);
+    assert.equal((await call("/client/v1/me", { token: creds.accessToken })).body.permissions, undefined);
     assert.equal((await call("/client/v1/control/agents", { token: creds.accessToken })).status, 200);
     assert.equal((await call("/client/v1/capabilities", { token: creds.accessToken })).body.controlRead, true);
     assert.equal((await call(messagesPath, { token: creds.accessToken })).status, 200);
@@ -273,7 +264,8 @@ test("real TLS route boundary and authenticated local approval", async () => {
     }
     assert.equal((await call("/client/v1/control/repositories/repo%3Aone", { token: creds.accessToken })).body.repository.id, "repo:one");
     assert.equal((await call("/client/v1/capabilities", { token: creds.accessToken })).body.controlRead, true);
-    assert.equal((await call("/client/v1/capabilities", { token: creds.accessToken })).body.controlWrite, false);
+    assert.equal((await call("/client/v1/capabilities", { token: creds.accessToken })).body.controlWrite, true);
+    assert.equal((await call("/client/v1/worktrees/repositories/repo%3Aone", { token: creds.accessToken })).status, 200);
     assert.equal((await call(messagesPath, { token: creds.accessToken })).body.sessionId, "session:test");
     const readReceiptPath = "/client/v1/sessions/session%3Atest/read-receipt";
     assert.equal((await call(readReceiptPath, { method: "POST", value: { throughSequence: 7 } })).status, 401);
@@ -303,23 +295,11 @@ test("real TLS route boundary and authenticated local approval", async () => {
     const commandsPath = "/client/v1/sessions/session%3Atest/conversation-commands";
     assert.equal((await call(commandsPath, { token: creds.accessToken })).body.commands[0].name, "goal");
     const commandInput = { requestId: "command_123", name: "goal", arguments: "test" };
-    assert.equal((await call(commandsPath, { token: creds.accessToken, method: "POST", value: commandInput })).status, 403);
-    const previousPermissions = f.authority.authenticate(creds.accessToken).permissions;
-    const granted = await call("/internal/client-devices/permissions", { local: true, token, method: "POST",
-      value: { deviceId: creds.deviceId, permissions: [...previousPermissions, "sessions.commands"], expectedPermissions: previousPermissions } });
-    assert.equal(granted.status, 200);
-    const staleEdit = await call("/internal/client-devices/permissions", { local: true, token, method: "POST",
-      value: { deviceId: creds.deviceId, permissions: [...previousPermissions, "sessions.clear"], expectedPermissions: previousPermissions } });
-    assert.equal(staleEdit.status, 409);
-    assert.equal(staleEdit.body.code, "PERMISSIONS_CHANGED");
-    assert.equal(f.authority.authenticate(creds.accessToken).permissions.includes("sessions.clear"), false);
     assert.equal((await call(commandsPath, { token: creds.accessToken, method: "POST", value: commandInput })).body.status, "completed");
+    assert.equal((await call("/internal/client-devices/permissions", { local: true, token, method: "POST",
+      value: { deviceId: creds.deviceId, permissions: [] } })).status, 404);
     const createPath = "/client/v1/sessions/session%3Atest/tasks";
     const createInput = { requestId: "create_123", title: "Task" };
-    assert.equal((await call(createPath, { token: creds.accessToken, method: "POST", value: createInput })).status, 403);
-    const beforeCreateGrant = f.authority.authenticate(creds.accessToken).permissions;
-    await call("/internal/client-devices/permissions", { local: true, token, method: "POST",
-      value: { deviceId: creds.deviceId, permissions: [...beforeCreateGrant, "tasks.create"], expectedPermissions: beforeCreateGrant } });
     const created = await call(createPath, { token: creds.accessToken, method: "POST", value: createInput });
     assert.equal(created.status, 202);
     assert.equal(created.body.kind, "create_task");
@@ -328,21 +308,12 @@ test("real TLS route boundary and authenticated local approval", async () => {
     assert.equal(choices.status, 200);
     assert.equal(choices.body.providerId, "provider:test");
     assert.equal((await call(`${createPath}?work=other`, { token: creds.accessToken, method: "POST", value: createInput })).status, 403);
-    await call("/internal/client-devices/permissions", { local: true, token, method: "POST",
-      value: { deviceId: creds.deviceId, permissions: beforeCreateGrant } });
-    // Work / Task management is a separate explicit grant; messages.write + tasks.create never imply it.
+    // Pairing approval exposes every client feature supported by the server.
     const taskPath = "/client/v1/tasks/task%3Aone";
     const workPath = "/client/v1/works/work%3Aone";
-    assert.equal((await call(`${taskPath}/management`, { token: creds.accessToken })).status, 403);
-    assert.equal((await call(`${workPath}/management`, { token: creds.accessToken })).status, 403);
-    assert.equal((await call(`${taskPath}/archive`, { token: creds.accessToken, method: "POST", value: { requestId: "archive_123", archived: true } })).status, 403);
-    assert.equal((await call("/client/v1/capabilities", { token: creds.accessToken })).body.taskManagement, false);
-    const beforeManageGrant = f.authority.authenticate(creds.accessToken).permissions;
-    await call("/internal/client-devices/permissions", { local: true, token, method: "POST",
-      value: { deviceId: creds.deviceId, permissions: [...beforeManageGrant, "tasks.manage"], expectedPermissions: beforeManageGrant } });
     const capabilities = (await call("/client/v1/capabilities", { token: creds.accessToken })).body;
     assert.equal(capabilities.taskManagement, true);
-    assert.equal(capabilities.workManagement, false);
+    assert.equal(capabilities.workManagement, true);
     assert.equal((await call(`${taskPath}/management`, { token: creds.accessToken })).body.task.id, "task:one");
     assert.equal((await call(`${taskPath}/deletion`, { token: creds.accessToken })).body.status, "safe");
     assert.equal((await call(`${taskPath}/management?x=1`, { token: creds.accessToken })).status, 403);
@@ -354,17 +325,11 @@ test("real TLS route boundary and authenticated local approval", async () => {
     assert.equal(archived.body.kind, "task_archive");
     assert.deepEqual(archived.body.entityResult, { taskId: "task:one" });
     assert.equal((await call(`${taskPath}/delete`, { token: creds.accessToken, method: "POST", value: { requestId: "delete_1234", mode: "safe" } })).body.kind, "task_delete");
-    assert.equal((await call(`${workPath}/management`, { token: creds.accessToken })).status, 403);
-    assert.equal((await call(`${workPath}/delete`, { token: creds.accessToken, method: "POST", value: { requestId: "delete_work1" } })).status, 403);
-    const beforeWorkGrant = f.authority.authenticate(creds.accessToken).permissions;
-    await call("/internal/client-devices/permissions", { local: true, token, method: "POST",
-      value: { deviceId: creds.deviceId, permissions: [...beforeWorkGrant, "works.manage"], expectedPermissions: beforeWorkGrant } });
     assert.equal((await call(`${workPath}/management`, { token: creds.accessToken })).body.work.id, "work:one");
-    assert.equal((await call(`${workPath}/update`, { token: creds.accessToken, method: "POST", value: { requestId: "update_work1", name: "New" } })).body.kind, "work_update");
+    const workUpdate = await call(`${workPath}/update`, { token: creds.accessToken, method: "POST", value: { requestId: "update_work1", name: "New" } });
+    assert.equal(workUpdate.status, 202, JSON.stringify(workUpdate.body));
+    assert.equal(workUpdate.body.kind, "work_update");
     assert.equal((await call(`${workPath}/deletion`, { token: creds.accessToken })).status, 404);
-    await call("/internal/client-devices/permissions", { local: true, token, method: "POST",
-      value: { deviceId: creds.deviceId, permissions: beforeCreateGrant } });
-    assert.equal((await call(`${taskPath}/management`, { token: creds.accessToken })).status, 403);
     const sent = await call(messagesPath, { token: creds.accessToken, method: "POST", value: { requestId: "request_123", text: "test" } });
     assert.equal(sent.status, 202);
     assert.equal(sent.body.kind, "send");

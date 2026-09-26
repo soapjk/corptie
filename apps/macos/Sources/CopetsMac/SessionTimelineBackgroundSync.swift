@@ -1,4 +1,5 @@
 import Foundation
+import CorptieClientCore
 
 enum SessionTimelineBackgroundSyncPolicy {
     static func shouldSchedule(
@@ -55,29 +56,33 @@ enum SessionTimelineChangeMerger {
         if revision <= localRevision { return .duplicate }
         guard baseRevision == localRevision else { return .requiresSnapshot }
 
-        var itemsByID = Dictionary(detail.items.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
-        var expectedRevision = localRevision
-        for change in changes {
-            guard change.revision == expectedRevision + 1 else { return .requiresSnapshot }
-            expectedRevision = change.revision
-            switch change.operation {
-            case "upsert":
-                guard let item = change.item, item.id == change.itemId else {
-                    return .requiresSnapshot
-                }
-                itemsByID[item.id] = item
-            case "delete":
-                itemsByID[change.itemId] = nil
-            default:
-                return .requiresSnapshot
-            }
+        let sharedChanges = changes.map {
+            TimelineRevisionChange(
+                revision: $0.revision,
+                itemID: $0.itemId,
+                operation: $0.operation,
+                item: $0.item
+            )
         }
-        guard expectedRevision == revision else { return .requiresSnapshot }
-        let ordered = itemsByID.values.sorted(by: timelineItemPrecedes)
-        return .applied(
-            detail: replacingItems(in: detail, with: ordered),
-            revision: revision
-        )
+        switch TimelineRevisionMerger.merge(
+            currentItems: detail.items,
+            localRevision: localRevision,
+            baseRevision: baseRevision,
+            revision: revision,
+            changes: sharedChanges,
+            itemID: { $0.id },
+            precedes: timelineItemPrecedes
+        ) {
+        case .applied(let items, let revision):
+            return .applied(
+                detail: replacingItems(in: detail, with: items),
+                revision: revision
+            )
+        case .duplicate:
+            return .duplicate
+        case .requiresSnapshot:
+            return .requiresSnapshot
+        }
     }
 
     private static func timelineItemPrecedes(_ left: CodexThreadItem, _ right: CodexThreadItem) -> Bool {

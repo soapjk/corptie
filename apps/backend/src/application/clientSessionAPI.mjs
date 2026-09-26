@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { deviceError } from "./clientDeviceAuthority.mjs";
-import { validateSessionCommand, sessionCommandPermissions, sessionCommandNeedsConfirmation } from "../commands/sessionCommandCatalog.mjs";
+import { validateSessionCommand, sessionCommandNeedsConfirmation } from "../commands/sessionCommandCatalog.mjs";
 import { parseSlashCommand } from "../commands/unifiedCommands.mjs";
 import { createClientTask, clientTaskCreationCatalog } from "./clientTaskCreation.mjs";
 import { clientDiscussionOptions, openClientDiscussion } from "./clientWorkDiscussion.mjs";
@@ -8,10 +8,6 @@ import { clientTaskManagement, clientTaskDeletionPlan, clientWorkManagement, cli
 import { publicToolExecution } from "../utils/toolExecutionProjection.mjs";
 import { publicChangeSet } from "../utils/changeSetProjection.mjs";
 import { publicUserInput, validateInteractionAnswers } from "./interactionInput.mjs";
-
-export function requireDevicePermission(identity, permission) {
-  if (!identity.permissions?.includes(permission)) throw deviceError("DEVICE_PERMISSION_REQUIRED", 403);
-}
 
 function approvalMetadata(item) {
   try {
@@ -140,7 +136,6 @@ export class ClientSessionAPI {
   }
 
   async messages(identity, sessionId, query) {
-    requireDevicePermission(identity, "messages.read");
     sessionId = this.session(sessionId).sessionId;
     if ([...query.keys()].some(k => !["limit", "before"].includes(k))
         || query.getAll("limit").length > 1 || query.getAll("before").length > 1) throw deviceError("INVALID_QUERY", 400);
@@ -148,6 +143,10 @@ export class ClientSessionAPI {
     if (!/^[1-9]$|^[1-4][0-9]$|^50$/.test(rawLimit)) throw deviceError("INVALID_LIMIT", 400);
     const limit = Number(rawLimit), anchor = query.get("before");
     if (anchor != null && (!anchor || anchor.length > 1024)) throw deviceError("INVALID_ANCHOR", 400);
+    return this.messageWindow(sessionId, { limit, anchor });
+  }
+
+  async messageWindow(sessionId, { limit, anchor = null }) {
     const window = await this.readWindow(sessionId, { anchorKind: "item", anchorId: anchor,
       before: limit, after: 0, limit: limit + (anchor ? 1 : 0) });
     if (anchor && (window.anchor?.status === "missing" || !window.items.some(item => item.id === anchor))) throw deviceError("ANCHOR_NOT_FOUND", 409);
@@ -161,8 +160,7 @@ export class ClientSessionAPI {
     return result;
   }
 
-  async realtimeTimeline(identity, id, after = null) {
-    requireDevicePermission(identity, "messages.read");
+  async realtimeTimeline(identity, id, after = null, { includeDetail = true } = {}) {
     const { sessionId } = this.session(id);
     const localRevision = Number(after);
     if (Number.isSafeInteger(localRevision) && localRevision > 0) {
@@ -180,13 +178,15 @@ export class ClientSessionAPI {
         };
       }
     }
-    const query = new URLSearchParams({ limit: "50" });
-    const messages = await this.messages(identity, sessionId, query);
+    // Match the desktop repository window: keep a wider bounded source window
+    // resident, then let each client expose the last 20 semantic message
+    // weights. A 50-row raw window can collapse to only one or two cards when
+    // a turn contains many reasoning/tool events.
+    const messages = await this.messageWindow(sessionId, { limit: 200 });
     const capabilities = this.capabilities(identity, sessionId);
-    let usage = null;
-    try { usage = await this.usage(identity, sessionId); } catch {}
-    let composer = null;
-    if (identity.permissions.includes("messages.write")) {
+    let usage = null, composer = null;
+    if (includeDetail) {
+      try { usage = await this.usage(identity, sessionId); } catch {}
       try { composer = await this.configuration(identity, sessionId); } catch {}
     }
     return { schemaVersion: 2, kind: "snapshot", sessionId,
@@ -195,7 +195,6 @@ export class ClientSessionAPI {
   }
 
   async approval(identity, id, input, revalidateIdentity = null) {
-    requireDevicePermission(identity, "messages.write");
     if (!input || typeof input !== "object" || Array.isArray(input)
       || Object.keys(input).some(key => !["itemId", "optionId"].includes(key))
       || typeof input.itemId !== "string" || !input.itemId || input.itemId.length > 300
@@ -221,7 +220,6 @@ export class ClientSessionAPI {
     if (revalidateIdentity) {
       const current = revalidateIdentity();
       if (current.deviceId !== identity.deviceId) throw deviceError("INVALID_CREDENTIAL", 401);
-      requireDevicePermission(current, "messages.write");
     }
     const key = `${sessionId}:${item.id}`;
     if (this.approvalsInFlight.has(key)) throw deviceError("APPROVAL_IN_PROGRESS", 409);
@@ -251,7 +249,6 @@ export class ClientSessionAPI {
   }
 
   async userInput(identity, id, input, revalidateIdentity = null) {
-    requireDevicePermission(identity, "messages.write");
     if (!input || typeof input !== "object" || Array.isArray(input)
       || Object.keys(input).some((key) => !["itemId", "answers"].includes(key))
       || typeof input.itemId !== "string" || !input.itemId || input.itemId.length > 300) {
@@ -274,7 +271,6 @@ export class ClientSessionAPI {
     if (revalidateIdentity) {
       const current = revalidateIdentity();
       if (current.deviceId !== identity.deviceId) throw deviceError("INVALID_CREDENTIAL", 401);
-      requireDevicePermission(current, "messages.write");
     }
     const key = `${sessionId}:${item.id}`;
     if (this.userInputInFlight.has(key)) throw deviceError("USER_INPUT_IN_PROGRESS", 409);
@@ -302,7 +298,6 @@ export class ClientSessionAPI {
 
   /** Bytes of one managed attachment of this Session. Same ownership check as the desktop image route. */
   async image(identity, id, query) {
-    requireDevicePermission(identity, "messages.read");
     const { sessionId } = this.session(id);
     if ([...query.keys()].some(k => k !== "path") || query.getAll("path").length !== 1) throw deviceError("INVALID_QUERY", 400);
     const managedPath = query.get("path");
@@ -320,7 +315,6 @@ export class ClientSessionAPI {
 
   /** Acknowledge agent messages through an exact cursor the device rendered; never "everything". */
   readReceipt(identity, id, input) {
-    requireDevicePermission(identity, "messages.read");
     const { sessionId } = this.session(id);
     const through = input?.throughSequence;
     if (!Number.isSafeInteger(through) || through < 0 || Object.keys(input).some(key => key !== "throughSequence")) {
@@ -354,23 +348,18 @@ export class ClientSessionAPI {
       composer: Boolean(this.composer),
       sendImages: Boolean(this.images?.available(resolved.session)),
       sendMentions: true,
-      scheduleMessage: Boolean(this.schedule) && identity.permissions.includes("messages.write"),
-      createTask: { available: Boolean(this.taskCreation) && Boolean(resolved.session.workId)
-          && identity.permissions.includes("tasks.create"),
-        reason: !identity.permissions.includes("tasks.create") ? "DEVICE_PERMISSION_REQUIRED"
-          : !this.taskCreation ? "CAPABILITY_UNSUPPORTED" : !resolved.session.workId ? "WORK_REQUIRED" : null },
+      scheduleMessage: Boolean(this.schedule),
+      createTask: { available: Boolean(this.taskCreation) && Boolean(resolved.session.workId),
+        reason: !this.taskCreation ? "CAPABILITY_UNSUPPORTED" : !resolved.session.workId ? "WORK_REQUIRED" : null },
       currentModel: resolved.session.external?.currentModel ?? null,
       currentReasoningLevel: resolved.session.external?.currentReasoningLevel ?? null,
-      readMessages: identity.permissions.includes("messages.read"),
-      send: { available: identity.permissions.includes("messages.write") && actions.send?.available === true,
-        reason: identity.permissions.includes("messages.write") ? actions.send?.reason ?? null : "DEVICE_PERMISSION_REQUIRED" },
-      stop: { available: identity.permissions.includes("sessions.stop") && actions.interrupt?.available === true,
-        reason: identity.permissions.includes("sessions.stop") ? actions.interrupt?.reason ?? null : "DEVICE_PERMISSION_REQUIRED" } };
+      readMessages: true,
+      send: { available: actions.send?.available === true, reason: actions.send?.reason ?? null },
+      stop: { available: actions.interrupt?.available === true, reason: actions.interrupt?.reason ?? null } };
   }
 
   /** Context window and account quota of a Session: the desktop ChatUsageBar data, read-only. */
   async usage(identity, id) {
-    requireDevicePermission(identity, "messages.read");
     const { sessionId } = this.session(id);
     if (!this.usageReader) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
     const snapshot = await this.usageReader(sessionId);
@@ -407,7 +396,6 @@ export class ClientSessionAPI {
   }
 
   async configuration(identity, id, input = null) {
-    requireDevicePermission(identity, "messages.write");
     const { sessionId, session } = this.session(id);
     if (!this.composer) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
     if (input !== null) {
@@ -442,17 +430,13 @@ export class ClientSessionAPI {
   }
 
   async commandCatalog(identity, id) {
-    requireDevicePermission(identity, "messages.read");
     const { sessionId } = this.session(id);
     if (!this.conversationCommands) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
     const commands = await this.conversationCommands.list(sessionId);
-    return { schemaVersion: 1, sessionId, commands: commands.map(command => {
-      const permitted = command.requiredPermissions.every(permission => identity.permissions.includes(permission));
-      return { ...command, available: command.available && permitted,
-        reason: permitted ? command.reason : "DEVICE_PERMISSION_REQUIRED",
-        // Argument-bearing goal/model operations need separate write authority.
-        canMutate: identity.permissions.includes("sessions.commands") };
-    }) };
+    return { schemaVersion: 1, sessionId, commands: commands.map(({ requiredPermissions: _, ...command }) => ({
+      ...command,
+      canMutate: true
+    })) };
   }
 
   async conversationCommand(identity, id, input, revalidateIdentity = null) {
@@ -462,7 +446,6 @@ export class ClientSessionAPI {
         || (input.confirmed !== undefined && typeof input.confirmed !== "boolean")) throw deviceError("INVALID_COMMAND", 400);
     const command = { name: input.name, arguments: input.arguments };
     validateSessionCommand(command);
-    for (const permission of sessionCommandPermissions(command)) requireDevicePermission(identity, permission);
     // Fingerprint the submitted target, not a binding that a command may replace.
     const fingerprint = createHash("sha256").update(JSON.stringify([id, "conversation_command", command.name, command.arguments])).digest("hex");
     const existing = this.store.selectOne("SELECT payload_hash FROM client_command_receipts WHERE device_id = ? AND request_id = ?", [identity.deviceId, input.requestId]);
@@ -477,7 +460,6 @@ export class ClientSessionAPI {
     if (revalidateIdentity) {
       const current = revalidateIdentity();
       if (current.deviceId !== identity.deviceId) throw deviceError("INVALID_CREDENTIAL", 401);
-      for (const permission of sessionCommandPermissions(command)) requireDevicePermission(current, permission);
       identity = current;
     }
     // Validation may await a capability read. Claim synchronously afterwards;
@@ -513,7 +495,6 @@ export class ClientSessionAPI {
   }
 
   async command(identity, sessionId, kind, input) {
-    requireDevicePermission(identity, kind === "send" ? "messages.write" : "sessions.stop");
     if (!input || typeof input !== "object" || Array.isArray(input)
         || Object.keys(input).some(k => !["requestId", ...(kind === "send" ? ["text", "images", "mentions", "schedule"] : [])].includes(k))
         || !/^[A-Za-z0-9_-]{8,128}$/.test(input.requestId ?? "")) throw deviceError("INVALID_COMMAND", 400);

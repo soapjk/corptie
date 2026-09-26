@@ -17,6 +17,13 @@ struct PinnedTLSTests {
         let transport = try BackendTransport(endpoint: endpoint, certificate: fixture.certificate)
         let (data, _) = try await transport.data(for: endpoint.request(path: ["test"]))
         #expect(String(data: data, encoding: .utf8) == "ok")
+        // Streaming uses URLSession.bytes(for:) and must receive the identical
+        // pinned-certificate trust handling as ordinary request bodies.
+        let streamTransport = try BackendTransport(endpoint: endpoint, certificate: fixture.certificate)
+        let (bytes, _) = try await streamTransport.bytes(for: endpoint.request(path: ["test"]))
+        var streamed = Data()
+        for try await byte in bytes { streamed.append(byte) }
+        #expect(String(data: streamed, encoding: .utf8) == "ok")
         let unpinned = try BackendTransport(endpoint: endpoint)
         await #expect(throws: (any Error).self) { try await unpinned.data(for: endpoint.request(path: ["test"])) }
         let wrongPin = try BackendTransport(endpoint: endpoint, certificate: fixture.otherCertificate)

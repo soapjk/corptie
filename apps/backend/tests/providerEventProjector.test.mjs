@@ -53,7 +53,7 @@ test("streamed chart reply retains one stable item and exact fenced text through
     }), binding });
     const api = new ClientSessionAPI({ store,
       readWindow: async () => ({ revision: 1, hasEarlier: false, items: store.getItems(binding.sessionId) }) });
-    const identity = { permissions: ["messages.read"] };
+    const identity = { deviceId: "device:test" };
     const during = await api.messages(identity, binding.sessionId, new URLSearchParams());
     assert.equal(during.items.find((candidate) => candidate.id === itemId)?.text, prefix);
 

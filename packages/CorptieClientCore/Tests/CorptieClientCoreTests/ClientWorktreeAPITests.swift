@@ -1,0 +1,45 @@
+import Foundation
+import Testing
+@testable import CorptieClientCore
+
+@Suite(.serialized) struct ClientWorktreeAPITests {
+    @Test func fullRepositoryContractAndActionsStayOnClosedClientRoutes() async throws {
+        WorktreeProtocol.handler = { request in
+            #expect(request.url?.host == "127.0.0.1")
+            if request.httpMethod == "POST" {
+                #expect(request.url?.path == "/client/v1/worktrees/repositories/repo:one/workspaces/tree:one/actions/push")
+                return #"{"projectId":"repo:one","workspaceId":"tree:one","action":"push","result":{"pushed":true,"committed":false,"commitMessage":null,"headOid":"abc","branch":"task/test","destinationUrl":"https://github.com/example/repo"},"project":{"worktrees":[]}}"#
+            }
+            #expect(request.url?.path == "/client/v1/worktrees/repositories/repo:one")
+            #expect(request.url?.query == "forceFresh=true")
+            return #"{"repository":{"id":"repo:one","path":"/repo","name":"Repo","discoveredAt":"now","lastValidatedAt":"now","mainPath":"/repo","availability":"available","worktreeCount":1},"project":{"repositoryId":"repo:one","inventoryVersion":"1","mainWorktreeId":"tree:one","mainPath":"/repo","mainBranch":"main","mainHeadOid":"abc","pendingWorktreeCount":0,"worktrees":[{"worktreeId":"tree:one","path":"/repo","isMain":true,"availability":"available","headOid":"abc","branchName":"main","isDetached":false,"isLocked":false,"lockReason":null,"isPrunable":false,"pruneReason":null,"state":"ready","dirty":false,"statusSummary":"clean","diffStat":null,"changedFiles":[],"operationState":null,"conflictFiles":[],"mergedIntoMain":true,"synchronizedWithMain":true,"aheadOfMain":0,"behindMain":0,"pendingIntegration":false,"associations":[],"deletionBlocker":null,"gitHubPush":null}]},"latestJob":null}"#
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [WorktreeProtocol.self]
+        let transport = try BackendTransport(endpoint: BackendEndpoint(URL(string: "http://127.0.0.1:1")!),
+                                             configuration: configuration)
+        let api = ClientWorktreeAPI(transport: transport)
+        let detail = try await api.repository("repo:one", forceFresh: true)
+        #expect(detail.project.worktrees.first?.branchName == "main")
+        let result = try await api.push(repositoryId: "repo:one", worktreeId: "tree:one")
+        #expect(result.pushed)
+        #expect(result.branch == "task/test")
+    }
+}
+
+private final class WorktreeProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var handler: ((URLRequest) throws -> String)?
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        do {
+            let json = try Self.handler?(request) ?? "{}"
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
+                                           headerFields: ["Content-Type": "application/json"])!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(json.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+        } catch { client?.urlProtocol(self, didFailWithError: error) }
+    }
+    override func stopLoading() {}
+}

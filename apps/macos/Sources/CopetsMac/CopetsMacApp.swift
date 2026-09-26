@@ -1453,7 +1453,7 @@ enum CorptiePermissionManager {
 enum SettingsWindowLayout {
     // Keep enough room for six equal tab targets, including the longest
     // supported localized labels, without truncation or an overflow control.
-    static let contentSize = NSSize(width: 860, height: 680)
+    static let contentSize = NSSize(width: 880, height: 680)
 }
 
 enum SettingsTab: Hashable, CaseIterable {

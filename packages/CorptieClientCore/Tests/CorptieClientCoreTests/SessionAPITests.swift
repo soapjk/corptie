@@ -256,7 +256,7 @@ private final class SessionProtocol: URLProtocol, @unchecked Sendable {
         } else if path.hasSuffix("conversation-commands") {
             #expect(path == "/client/v1/sessions/session:test/conversation-commands")
             if request.httpMethod == "GET" {
-                json = #"{"schemaVersion":1,"sessionId":"session:test","commands":[{"name":"goal","usage":"/goal","summary":"管理目标","available":true,"requiredPermissions":["messages.read"],"requiresConfirmation":false,"canMutate":false}]}"#
+                json = #"{"schemaVersion":1,"sessionId":"session:test","commands":[{"name":"goal","usage":"/goal","summary":"管理目标","available":true,"requiresConfirmation":false,"canMutate":false}]}"#
             } else {
                 #expect(request.httpMethod == "POST")
                 var data = request.httpBody ?? Data()

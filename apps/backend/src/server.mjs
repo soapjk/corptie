@@ -118,6 +118,7 @@ import { startConfiguredDeviceGateway } from "./application/clientDeviceGateway.
 import { createDeviceSetup } from "./application/clientDeviceSetup.mjs";
 import { ClientReadAPI } from "./application/clientReadAPI.mjs";
 import { ClientControlReadAPI } from "./application/clientControlReadAPI.mjs";
+import { ClientWorktreeManagementAPI } from "./application/clientWorktreeManagementAPI.mjs";
 import { ClientSessionAPI, approvalRequestIsCurrent } from "./application/clientSessionAPI.mjs";
 import { validateInteractionAnswers } from "./application/interactionInput.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
@@ -4166,7 +4167,10 @@ function resolveTimelineChangeSessionAliases(sessionId) {
 function scheduleTimelineChangePublish(change = {}) {
   const sessionIds = resolveTimelineChangeSessionAliases(change.sessionId);
   clientDeviceGateway?.events.invalidate({ sessionId: change.sessionId, sessionIds });
-  clientDeviceGateway?.events.publishTimeline(sessionIds);
+  // V2 streams receive every changed Session in the background. Use the
+  // canonical source id once; aliases remain necessary only for legacy
+  // notification matching.
+  clientDeviceGateway?.events.publishTimeline(change.sessionId);
   timelineChangePublisher?.schedule(change);
 }
 
@@ -12050,6 +12054,11 @@ function startBackendRuntime() {
       repositories: () => worktreeIntegrationJobService.repositories()
     }, repository: id => worktreeIntegrationJobService.repository(id),
     resolveSession: id => store.getLogicalSession(id)?.legacySessionId ?? null }),
+    worktreeAPI: new ClientWorktreeManagementAPI({
+      worktrees: worktreeIntegrationJobService,
+      projects: projectApplicationService,
+      emit: emitEvent
+    }),
     sessionAPIFactory: () => new ClientSessionAPI({ store, readWindow: readSessionTimelineWindow,
       send: sendUnifiedSessionMessage, stop: interruptUnifiedSession,
       respondToApproval: respondUnifiedSessionApproval,
