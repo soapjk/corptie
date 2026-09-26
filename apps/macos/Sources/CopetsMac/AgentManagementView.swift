@@ -25,6 +25,7 @@ struct AgentManagementView: View {
     @State private var isCreatingAgent = false
     @State private var isRegisteringSkill = false
     @State private var isShowingSkillsSheet = false
+    @State private var isShowingMcpSheet = false
     @State private var selectedAgentForDetail: Agent?
     @State private var agentForSessionCreation: Agent?
     @State private var pendingSkillDeletion: SkillDeletionImpact?
@@ -53,6 +54,9 @@ struct AgentManagementView: View {
             skillsColumn
                 .frame(width: AgentsSkillsLayoutMetrics.skillsColumnWidth)
                 .frame(minHeight: 520, idealHeight: 680)
+        }
+        .sheet(isPresented: $isShowingMcpSheet) {
+            McpManagementView(agents: client.agents)
         }
         .sheet(isPresented: $isCreatingAgent) {
             AgentCreateView()
@@ -118,6 +122,12 @@ struct AgentManagementView: View {
                     }
                     .help(L10n("Show Skills"))
                 }
+                Button {
+                    isShowingMcpSheet = true
+                } label: {
+                    Label("MCP", systemImage: "point.3.connected.trianglepath.dotted")
+                }
+                .help("管理独立 MCP Server")
                 Button {
                     isCreatingAgent = true
                 } label: {
