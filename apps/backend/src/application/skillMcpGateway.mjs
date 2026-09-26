@@ -1,9 +1,10 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { toolDiscoveryContract } from "./toolDiscoveryContracts.mjs";
+import { restrictedMcpFetch } from "./restrictedMcpFetch.mjs";
 
 // Keeps Skill MCP processes behind Corptie's authenticated, Session-scoped MCP
 // server. Provider bindings therefore remain stable when Agent assignments
@@ -16,7 +17,12 @@ export class SkillMcpGateway {
     this.resolveServers = options.resolveServers;
     this.resolveRevision = options.resolveRevision ?? (() => "none");
     this.timeoutMs = Number(options.timeoutMs ?? 10_000);
+    this.retryMs = Number(options.retryMs ?? 10_000);
     this.connectServer = options.connectServer ?? ((serverName, config) => connectServer(serverName, config, this.timeoutMs));
+    this.onRuntimeEvent = options.onRuntimeEvent ?? null;
+    // Runtime configs can contain Header or environment credentials. Never
+    // expose an unkeyed digest of those values in a public catalog version.
+    this.fingerprintKey = randomBytes(32);
     this.entries = new Map();
     this.pending = new Map();
   }
@@ -80,10 +86,17 @@ export class SkillMcpGateway {
         }, profile)))
       }));
     }
-    return Object.freeze({ catalogVersion: entry.catalogVersion, domains: Object.freeze(domains) });
+    return Object.freeze({
+      catalogVersion: entry.catalogVersion,
+      domains: Object.freeze(domains),
+      unavailableServers: entry.unavailableServers
+    });
   }
 
   async domain(input = {}, domainId) {
+    const entry = await this.#entry(input);
+    const unavailable = entry.unavailableServers.find((server) => server.domainId === domainId);
+    if (unavailable) throw gatewayError("MCP_SERVER_UNAVAILABLE", `Assigned MCP server is unavailable: ${domainId} (${unavailable.code}).`, 503);
     const result = await this.search({
       ...input,
       intent: "",
@@ -105,11 +118,39 @@ export class SkillMcpGateway {
     if (!target) throw gatewayError("HOST_TOOL_UNSUPPORTED", `Unsupported assigned Skill MCP tool: ${input.tool}`, 404);
     // #entry re-resolves the current assignment fingerprint before every call,
     // so removing a Skill revokes access even if a Provider retained an old list.
-    return withTimeout(
-      target.client.callTool({ name: target.remoteName, arguments: input.arguments ?? {} }),
-      this.timeoutMs,
-      `Skill MCP tool ${input.tool} timed out.`
-    );
+    const event = { serverId: target.serverId, agentId: input.actorId,
+      providerId: input.providerId ?? input.metadata?.providerId,
+      logicalSessionId: input.metadata?.logicalSessionId,
+      bindingId: input.metadata?.bindingId,
+      stage: "tool-call", toolName: target.remoteName };
+    try {
+      const result = await withTimeout(
+        target.client.callTool({ name: target.remoteName, arguments: input.arguments ?? {} }),
+        this.timeoutMs,
+        `Skill MCP tool ${input.tool} timed out.`
+      );
+      this.#emitRuntimeEvent({ ...event, status: result?.isError ? "failed" : "success",
+        errorCode: result?.isError ? "MCP_TOOL_RESULT_ERROR" : null });
+      return result;
+    } catch (error) {
+      this.#emitRuntimeEvent({ ...event, status: "failed", errorCode: error?.code });
+      throw error;
+    }
+  }
+
+  async availability(input = {}) {
+    const entry = await this.#entry(input);
+    return Object.freeze({
+      catalogVersion: entry.catalogVersion,
+      servers: Object.freeze(entry.assignedServers.map((server) => {
+        const unavailable = entry.unavailableServers.find((item) => item.serverName === server.serverName);
+        const toolNames = [...entry.tools.entries()]
+          .filter(([, target]) => target.serverName === server.serverName)
+          .map(([name]) => name);
+        return Object.freeze({ ...server, available: !unavailable,
+          errorCode: unavailable?.code ?? null, toolNames: Object.freeze(toolNames) });
+      }))
+    });
   }
 
   async close() {
@@ -118,58 +159,161 @@ export class SkillMcpGateway {
     await Promise.all(entries.flatMap((entry) => entry.clients.map((client) => client.close().catch(() => {}))));
   }
 
+  #emitRuntimeEvent(event) {
+    if (!event.serverId || !this.onRuntimeEvent) return;
+    try { this.onRuntimeEvent(event); } catch { /* diagnostics never change tool authorization */ }
+  }
+
   async #entry(input) {
     const actorId = requiredText(input.actorId, "actorId");
     const providerId = requiredText(input.providerId ?? input.metadata?.providerId, "providerId");
     const key = `${actorId}\u0000${providerId}`;
     const servers = await this.resolveServers({ actorId, providerId, context: input.metadata ?? {} });
-    const fingerprint = sha256(stableStringify(servers ?? {}));
+    const fingerprint = createHmac("sha256", this.fingerprintKey)
+      .update(stableStringify(servers ?? {})).digest("hex");
     const existing = this.entries.get(key);
-    if (existing?.fingerprint === fingerprint) return existing;
-    if (this.pending.has(key)) return this.pending.get(key);
-    const promise = this.#connect(servers ?? {}, fingerprint)
+    if (existing?.fingerprint === fingerprint && Date.now() < existing.retryAfter) return existing;
+    const pending = this.pending.get(key);
+    if (pending?.fingerprint === fingerprint) return pending.promise;
+    if (pending) {
+      await pending.promise;
+      return this.#entry(input);
+    }
+    const promise = this.#connect(servers ?? {}, fingerprint, {
+      agentId: actorId, providerId,
+      logicalSessionId: input.metadata?.logicalSessionId,
+      bindingId: input.metadata?.bindingId
+    })
       .then(async (next) => {
         const previous = this.entries.get(key);
         this.entries.set(key, next);
         if (previous) await Promise.all(previous.clients.map((client) => client.close().catch(() => {})));
         return next;
       })
-      .finally(() => this.pending.delete(key));
-    this.pending.set(key, promise);
+      .finally(() => {
+        if (this.pending.get(key)?.promise === promise) this.pending.delete(key);
+      });
+    this.pending.set(key, { fingerprint, promise });
     return promise;
   }
 
-  async #connect(servers, fingerprint) {
+  async #connect(servers, fingerprint, context) {
     const clients = [];
-    const tools = new Map();
-    const definitions = [];
+    let tools = new Map();
+    let definitions = [];
+    let ambiguousToolNames = new Set();
+    const unavailableServers = [];
+    const assignedServers = Object.freeze(Object.entries(servers).map(([serverName, config]) => Object.freeze({
+      serverName,
+      serverLabel: config.displayName ?? serverName,
+      domainId: serverName.startsWith("standalone_") ? `mcp:${serverName}` : `skill-mcp:${serverName}`,
+      toolPolicy: config.toolAllowlist == null ? "all"
+        : config.toolAllowlist.length === 0 ? "none" : "selected"
+    })));
     try {
       for (const [serverName, config] of Object.entries(servers)) {
-        const client = await this.connectServer(serverName, config);
-        clients.push(client);
-        const listed = await withTimeout(client.listTools(), this.timeoutMs, `Skill MCP server ${serverName} tools/list timed out.`);
-        for (const raw of listed?.tools ?? []) {
-          const remoteName = requiredText(raw?.name, "tool.name");
-          // Standalone Servers get stable canonical names, so two installations
-          // may expose the same remote tool name without shadowing each other.
-          const name = serverName.startsWith("standalone_")
-            ? `${serverName}__${remoteName}` : remoteName;
-          if (tools.has(name)) throw gatewayError("MCP_TOOL_NAME_CONFLICT", `Assigned Skill MCP tool name conflicts: ${name}`, 409);
-          const definition = Object.freeze({
-            name,
-            description: typeof raw.description === "string" ? raw.description : "",
-            inputSchema: raw.inputSchema && typeof raw.inputSchema === "object"
-              ? raw.inputSchema
-              : { type: "object", properties: {}, additionalProperties: false },
-            ...(raw.annotations ? { annotations: raw.annotations } : {})
-          });
-          definitions.push(definition);
-          tools.set(name, { client, remoteName, serverName, serverLabel: config.displayName ?? serverName, definition });
+        let client;
+        try {
+          if (config.unavailableCode) {
+            throw gatewayError(config.unavailableCode, `Skill MCP server ${serverName} credentials are unavailable.`, 503);
+          }
+          client = await this.connectServer(serverName, config);
+          const listed = await withTimeout(client.listTools(), this.timeoutMs, `Skill MCP server ${serverName} tools/list timed out.`);
+          if (!Array.isArray(listed?.tools)) {
+            throw gatewayError("MCP_TOOL_SCHEMA_INVALID", `Skill MCP server ${serverName} returned an invalid tool list.`, 422);
+          }
+          if (listed.tools.length === 0) {
+            throw gatewayError("MCP_TOOLS_EMPTY", `Skill MCP server ${serverName} returned no tools.`, 422);
+          }
+          if (listed.tools.length > 256) {
+            throw gatewayError("MCP_TOOLS_TOO_MANY", `Skill MCP server ${serverName} returned too many tools.`, 422);
+          }
+          const serverTools = [];
+          const serverNames = new Set();
+          const observedNames = new Set();
+          // Keep each Server's catalog changes isolated until its entire tool
+          // list is valid. A later malformed tool must not rename a healthy
+          // Server's existing canonical tools.
+          const candidateTools = new Map(tools);
+          const candidateDefinitions = [...definitions];
+          const candidateAmbiguousNames = new Set(ambiguousToolNames);
+          if (config.toolAllowlist != null && !Array.isArray(config.toolAllowlist)) {
+            throw gatewayError("MCP_TOOL_ALLOWLIST_INVALID", `Assigned MCP server ${serverName} has an invalid tool policy.`, 422);
+          }
+          const allowedNames = config.toolAllowlist == null ? null : new Set(config.toolAllowlist);
+          for (const raw of listed.tools) {
+            const remoteName = typeof raw?.name === "string" ? raw.name.trim() : "";
+            if (!remoteName || raw?.inputSchema?.type !== "object") {
+              throw gatewayError("MCP_TOOL_SCHEMA_INVALID", `Skill MCP server ${serverName} returned an invalid tool schema.`, 422);
+            }
+            if (observedNames.has(remoteName)) {
+              throw gatewayError("MCP_TOOL_NAME_CONFLICT", `Assigned MCP server ${serverName} returned duplicate tool names.`, 409);
+            }
+            observedNames.add(remoteName);
+            if (allowedNames && !allowedNames.has(remoteName)) continue;
+            let name = serverName.startsWith("standalone_")
+              ? `${serverName}__${remoteName}` : remoteName;
+            if (candidateAmbiguousNames.has(name) && !serverName.startsWith("standalone_")) {
+              name = qualifiedSkillToolName(serverName, remoteName);
+            } else if (candidateTools.has(name)) {
+              const previous = candidateTools.get(name);
+              if (!previous.serverName.startsWith("standalone_")) {
+                const previousName = qualifiedSkillToolName(previous.serverName, previous.remoteName);
+                if (candidateTools.has(previousName)) {
+                  throw gatewayError("MCP_TOOL_NAME_CONFLICT", `Assigned Skill MCP tool name conflicts: ${previousName}`, 409);
+                }
+                const previousDefinition = Object.freeze({ ...previous.definition, name: previousName });
+                candidateDefinitions[candidateDefinitions.indexOf(previous.definition)] = previousDefinition;
+                candidateTools.delete(name);
+                candidateTools.set(previousName, { ...previous, definition: previousDefinition });
+              }
+              candidateAmbiguousNames.add(name);
+              if (!serverName.startsWith("standalone_")) name = qualifiedSkillToolName(serverName, remoteName);
+            }
+            if (candidateTools.has(name) || serverNames.has(name)) {
+              throw gatewayError("MCP_TOOL_NAME_CONFLICT", `Assigned Skill MCP tool name conflicts: ${name}`, 409);
+            }
+            serverNames.add(name);
+            const definition = Object.freeze({
+              name,
+              description: typeof raw.description === "string" ? raw.description : "",
+              inputSchema: raw.inputSchema,
+              ...(raw.annotations ? { annotations: raw.annotations } : {})
+            });
+            serverTools.push({ name, remoteName, definition });
+          }
+          clients.push(client);
+          for (const { name, remoteName, definition } of serverTools) {
+            candidateDefinitions.push(definition);
+            candidateTools.set(name, { client, remoteName, serverName, serverId: config.serverId,
+              serverLabel: config.displayName ?? serverName, definition });
+          }
+          definitions = candidateDefinitions;
+          tools = candidateTools;
+          ambiguousToolNames = candidateAmbiguousNames;
+          this.#emitRuntimeEvent({ ...context, serverId: config.serverId,
+            stage: "tools-list", status: "success", toolCount: listed.tools.length });
+        } catch (error) {
+          if (client) await client.close().catch(() => {});
+          unavailableServers.push(Object.freeze({
+            domainId: serverName.startsWith("standalone_") ? `mcp:${serverName}` : `skill-mcp:${serverName}`,
+            serverName,
+            serverLabel: config.displayName ?? serverName,
+            code: typeof error?.code === "string" ? error.code : "MCP_CONNECTION_FAILED"
+          }));
+          this.#emitRuntimeEvent({ ...context, serverId: config.serverId,
+            stage: "tools-list", status: "failed", errorCode: error?.code });
+          continue;
         }
       }
       definitions.sort((left, right) => left.name.localeCompare(right.name));
       const catalogVersion = `skill-mcp:1:${sha256(`${fingerprint}:${stableStringify(definitions)}`)}`;
-      return Object.freeze({ fingerprint, catalogVersion, clients, tools, definitions: Object.freeze(definitions) });
+      return Object.freeze({
+        fingerprint, catalogVersion, clients, tools, assignedServers,
+        definitions: Object.freeze(definitions),
+        unavailableServers: Object.freeze(unavailableServers),
+        retryAfter: unavailableServers.length ? Date.now() + this.retryMs : Number.POSITIVE_INFINITY
+      });
     } catch (error) {
       await Promise.all(clients.map((client) => client.close().catch(() => {})));
       throw error;
@@ -178,6 +322,9 @@ export class SkillMcpGateway {
 }
 
 async function connectServer(serverName, config, timeoutMs) {
+  if (config.unavailableCode) {
+    throw gatewayError(config.unavailableCode, `Skill MCP server ${serverName} credentials are unavailable.`, 503);
+  }
   const client = new Client({ name: "corptie-skill-mcp-gateway", version: "1.0.0" });
   try {
     await withTimeout(client.connect(createTransport(config)), timeoutMs, `Skill MCP server ${serverName} initialize timed out.`);
@@ -191,12 +338,14 @@ async function connectServer(serverName, config, timeoutMs) {
 function createTransport(server = {}) {
   if (server.type === "http") {
     return new StreamableHTTPClientTransport(new URL(requiredText(server.url, "server.url")), {
-      requestInit: server.headers ? { headers: server.headers } : undefined
+      requestInit: server.headers ? { headers: server.headers } : undefined,
+      fetch: restrictedMcpFetch(server.url)
     });
   }
   if (server.type === "sse") {
     return new SSEClientTransport(new URL(requiredText(server.url, "server.url")), {
-      requestInit: server.headers ? { headers: server.headers } : undefined
+      requestInit: server.headers ? { headers: server.headers } : undefined,
+      fetch: restrictedMcpFetch(server.url)
     });
   }
   return new StdioClientTransport({
@@ -228,6 +377,10 @@ function stableStringify(value) {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function qualifiedSkillToolName(serverName, remoteName) {
+  return `skill_${sha256(serverName).slice(0, 20)}__${remoteName}`;
 }
 
 function searchableText(value) {
