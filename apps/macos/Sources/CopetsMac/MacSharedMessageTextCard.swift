@@ -13,6 +13,10 @@ struct MacSharedMessageTextCard: View {
     var toggle: () -> Void = {}
     var performAction: (AppKitChatTimelineRow.Action) -> Void = { _ in }
 
+    var presentedMessageStatus: UserMessageStatusPresentation? {
+        row.nativeStyle == .user ? row.messageStatus : nil
+    }
+
     static func supports(_ row: AppKitChatTimelineRow) -> Bool {
         supportsProcess(row) || (row.nativeStyle != .process && !row.showsHeader && !row.isCollaboration
             && row.collaborationRoute == nil && row.processCount == nil && row.expandableTurnId == nil
@@ -77,7 +81,8 @@ struct MacSharedMessageTextCard: View {
         MessageTextCard(messageID: row.id, role: row.nativeStyle == .user ? .user : .agent,
             timestamp: row.hoverTimestamp, showsActions: row.showsMessageActionBar,
             actionsAlwaysVisible: false, cardWidth: layout.cardWidth,
-            cardHeight: layout.rowHeight - (row.showsMessageActionBar ? 28 : 2), copy: copy) {
+            cardHeight: layout.rowHeight - (row.showsMessageActionBar ? 28 : 2),
+            status: presentedMessageStatus, copy: copy) {
             VStack(alignment: .leading, spacing: 0) {
                 if row.nativeStyle == .user && !row.images.isEmpty {
                     attachmentStrip.padding(.bottom, 8)
