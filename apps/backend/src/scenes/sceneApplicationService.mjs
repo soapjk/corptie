@@ -217,6 +217,149 @@ export class SceneApplicationService {
     }));
   }
 
+  bindSession(instanceId, sessionId, { makeDefault = true } = {}) {
+    const scene = this.requireScene(instanceId);
+    const normalizedSessionId = requiredString(sessionId, "sessionId");
+    if (!this.store.getSession(normalizedSessionId)) {
+      throw sceneError("SCENE_SESSION_NOT_FOUND", 404, "Session was not found.");
+    }
+    const createdAt = this.now();
+    this.store.runInTransaction(() => {
+      if (makeDefault) {
+        this.store.db.run(
+          `UPDATE scene_session_bindings SET is_default=0 WHERE instance_id=?`,
+          [scene.instanceId]
+        );
+      }
+      this.store.db.run(
+        `INSERT INTO scene_session_bindings (instance_id, session_id, is_default, created_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(instance_id, session_id) DO UPDATE SET is_default=excluded.is_default`,
+        [scene.instanceId, normalizedSessionId, makeDefault ? 1 : 0, createdAt]
+      );
+      this.store.scheduleSave();
+    });
+    return { instanceId: scene.instanceId, sessionId: normalizedSessionId, isDefault: makeDefault };
+  }
+
+  sessionCanAccess(instanceId, sessionId) {
+    if (!sessionId) return false;
+    return Boolean(this.store.selectOne(
+      `SELECT 1 FROM scene_session_bindings WHERE instance_id=? AND session_id=?`,
+      [instanceId, sessionId]
+    ));
+  }
+
+  previewCommand(input, { ttlMilliseconds = 5 * 60_000 } = {}) {
+    const instanceId = requiredString(input?.instanceId, "instanceId");
+    const command = requiredString(input?.command, "command");
+    if (!COMMANDS.has(command)) {
+      throw sceneError("SCENE_COMMAND_UNSUPPORTED", 400, `Unsupported scene command: ${command}`);
+    }
+    const scene = this.requireScene(instanceId);
+    const payload = this.preparePreviewPayload(command, input?.payload);
+    const commandInput = {
+      ...input,
+      payload,
+      expectedInstanceRevision: input?.expectedInstanceRevision ?? scene.instanceRevision,
+      idempotencyKey: input?.idempotencyKey ?? `preview:${this.createId()}`
+    };
+    const commandHash = createHash("sha256").update(stableStringify({
+      command: commandInput.command,
+      payload: commandInput.payload ?? {},
+      expectedInstanceRevision: commandInput.expectedInstanceRevision,
+      sourceSessionId: commandInput.sourceSessionId ?? null,
+      sourceKind: commandInput.sourceKind ?? "manual"
+    })).digest("hex");
+    const marker = Symbol("scene-preview-rollback");
+    let changes;
+    try {
+      this.store.runInTransaction(() => {
+        const template = this.getTemplate(scene.templateId, scene.templateVersion);
+        if (!template.allowedActions.includes(command)) {
+          throw sceneError("SCENE_COMMAND_FORBIDDEN", 422, "Template does not allow this command.");
+        }
+        changes = command === "batchApply"
+          ? this.applyBatch(scene, template, commandInput.payload)
+          : [this.applySingle(scene, template, commandInput.command, commandInput.payload)];
+        throw marker;
+      });
+    } catch (error) {
+      if (error !== marker) throw error;
+    }
+    const createdAt = this.now();
+    const expiresAt = new Date(Date.parse(createdAt) + ttlMilliseconds).toISOString();
+    const previewToken = `scene-preview:${this.createId()}`;
+    const preview = {
+      previewToken,
+      instanceId,
+      instanceRevision: scene.instanceRevision,
+      commandHash,
+      changes,
+      expiresAt
+    };
+    this.store.db.run(
+      `INSERT INTO scene_command_previews (
+         preview_token, instance_id, session_id, command_json, command_hash,
+         expected_instance_revision, preview_json, expires_at, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [previewToken, instanceId, commandInput.sourceSessionId ?? null,
+        JSON.stringify(commandInput), commandHash, scene.instanceRevision,
+        JSON.stringify(preview), expiresAt, createdAt]
+    );
+    this.store.scheduleSave();
+    return preview;
+  }
+
+  preparePreviewPayload(command, payload) {
+    if (command === "createRecord" && payload && typeof payload === "object" && !Array.isArray(payload)) {
+      return payload.recordId ? payload : { ...payload, recordId: `scene-record:${this.createId()}` };
+    }
+    if (command === "batchApply" && Array.isArray(payload?.commands)) {
+      return {
+        ...payload,
+        commands: payload.commands.map((entry) => ({
+          ...entry,
+          payload: this.preparePreviewPayload(entry?.command, entry?.payload)
+        }))
+      };
+    }
+    return payload;
+  }
+
+  commitPreview(previewToken, { sessionId, idempotencyKey } = {}) {
+    const token = requiredString(previewToken, "previewToken");
+    return this.store.runInTransaction(() => {
+      const row = this.store.selectOne(
+        `SELECT * FROM scene_command_previews WHERE preview_token=?`, [token]
+      );
+      if (!row) throw sceneError("SCENE_PREVIEW_NOT_FOUND", 404, "Scene command preview was not found.");
+      if (row.consumed_at) throw conflict("SCENE_PREVIEW_CONSUMED", "Scene command preview was already committed.");
+      if (Date.parse(row.expires_at) <= Date.parse(this.now())) {
+        throw conflict("SCENE_PREVIEW_EXPIRED", "Scene command preview has expired.");
+      }
+      if (row.session_id && row.session_id !== sessionId) {
+        throw sceneError("SCENE_PREVIEW_FORBIDDEN", 403, "Scene command preview belongs to another Session.");
+      }
+      const scene = this.requireScene(row.instance_id);
+      if (scene.instanceRevision !== Number(row.expected_instance_revision)) {
+        throw conflict("SCENE_PREVIEW_STALE", "Scene changed after the preview was created.", { scene });
+      }
+      const commandInput = JSON.parse(row.command_json);
+      const result = this.executeCommand({
+        ...commandInput,
+        idempotencyKey: idempotencyKey ?? commandInput.idempotencyKey,
+        sourceSessionId: row.session_id ?? commandInput.sourceSessionId
+      });
+      this.store.db.run(
+        `UPDATE scene_command_previews SET consumed_at=? WHERE preview_token=? AND consumed_at IS NULL`,
+        [this.now(), token]
+      );
+      this.store.scheduleSave();
+      return { ...result, previewToken: token };
+    });
+  }
+
   applyBatch(scene, template, payload) {
     const commands = payload?.commands;
     if (!Array.isArray(commands) || commands.length < 1 || commands.length > 100) {
