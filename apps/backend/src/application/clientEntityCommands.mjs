@@ -137,6 +137,31 @@ export function clientWorkManagement(api, identity, workId) {
     actions: { edit: action(true), delete: action(!deleting, "WORK_TASK_DELETING") } };
 }
 
+export function clientWorkCreationOptions(api) {
+  const commands = requireSupport(api);
+  if (!commands.createWork) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
+  return { schemaVersion: 1, agents: api.store.listAgents().map(agent => ({ id: agent.agentId, name: agent.name })) };
+}
+
+export function createClientWork(api, identity, input, revalidateIdentity) {
+  const commands = requireSupport(api);
+  if (!commands.createWork) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
+  const code = "INVALID_WORK_COMMAND";
+  knownFields(input, ["requestId", "name", "description", "contributorAgentIds"], code);
+  const fields = { name: name(input.name, "name", "Work", code).trim(),
+    description: text(input.description ?? "", code) };
+  if (!Array.isArray(input.contributorAgentIds) || !input.contributorAgentIds.length
+      || input.contributorAgentIds.length > 100) throw deviceError(code, 400);
+  fields.contributorAgentIds = [...new Set(input.contributorAgentIds.map(id => entityId(id, code)))].sort();
+  for (const id of fields.contributorAgentIds) if (!api.store.getAgent(id)) throw deviceError("AGENT_NOT_FOUND", 404);
+  return execute(api, identity, revalidateIdentity, { kind: "work_create", entityId: "works",
+    requestId: input.requestId, fields, uncertainCode: "WORK_CREATE_OUTCOME_UNCERTAIN",
+    run: async fingerprint => {
+      const work = await commands.createWork({ ...fields, id: `work:device:${fingerprint}` });
+      return { workId: work.id, name: work.name };
+    } });
+}
+
 export function clientTaskCommand(api, identity, taskId, command, input, revalidateIdentity) {
   if (!TASK_COMMANDS.includes(command)) throw deviceError("ROUTE_NOT_AVAILABLE", 404);
   const commands = requireSupport(api);

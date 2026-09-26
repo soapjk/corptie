@@ -5,6 +5,76 @@ import CorptieClientCore
 
 @Suite(.serialized) @MainActor
 struct PadControlTests {
+    @Test func worktreeErrorsPreserveStageAndServerCode() {
+        let rejected = PadWorktreeFailure.describe(
+            ClientServiceFailure(statusCode: 400, code: "BRANCH_OPERATION_INVALID"),
+            stage: "生成集成计划", mutation: true)
+        #expect(rejected.contains("生成集成计划"))
+        #expect(rejected.contains("BRANCH_OPERATION_INVALID"))
+        #expect(rejected.contains("HTTP 400"))
+        #expect(!rejected.contains("同步失败"))
+        let unknown = PadWorktreeFailure.describe(URLError(.timedOut), stage: "确认计划", mutation: true)
+        #expect(unknown.contains("不要重复提交"))
+        let read = PadWorktreeFailure.describe(URLError(.timedOut), stage: "读取仓库状态")
+        #expect(!read.contains("执行结果未确认"))
+    }
+    @Test func mentionMenuStaysAboveComposerWithinAvailableViewport() {
+        let full = PadMentionMenuPlacement(moduleTop: 600, moduleWidth: 500, preferredHeight: 326)
+        #expect(full.width == 360 && full.height == 326)
+        #expect(full.offsetY + full.height == -8)
+        let keyboard = PadMentionMenuPlacement(moduleTop: 180, moduleWidth: 280, preferredHeight: 326)
+        #expect(keyboard.width == 280 && keyboard.height == 164)
+        #expect(180 + keyboard.offsetY == 8)
+        #expect(keyboard.offsetY + keyboard.height == -8)
+        let unavailable = PadMentionMenuPlacement(moduleTop: 10, moduleWidth: 280, preferredHeight: 326)
+        #expect(unavailable.height == 0)
+    }
+    @Test func workActivitySortTracksAllSessionsAndFallsBackOnlyWithoutSessions() throws {
+        let workspace = PadWorkspace()
+        workspace.works = try JSONDecoder().decode([ClientWork].self, from: Data("""
+        [{"id":"a","name":"A","status":"active","updatedAt":"2026-09-30"},
+         {"id":"b","name":"B","status":"active","updatedAt":"2026-09-01"},
+         {"id":"c","name":"C","status":"active","updatedAt":"2026-09-03"}]
+        """.utf8))
+        func sessions(_ latest: String) throws -> [ClientSession] {
+            try JSONDecoder().decode([ClientSession].self, from: Data("""
+            [{"id":"a1","title":"A","workId":"a","taskId":"task:a","executionStatus":"complete","updatedAt":"2026-09-02"},
+             {"id":"b1","title":"B","workId":"b","taskId":"task:b","executionStatus":"complete","updatedAt":"2026-09-01"},
+             {"id":"b2","title":"Discussion","workId":"b","sessionKind":"workChat","executionStatus":"complete","updatedAt":"\(latest)"},
+             {"id":"chat","title":"Chat","executionStatus":"complete","updatedAt":"2026-10-01"}]
+            """.utf8))
+        }
+        workspace.sessions = try sessions("2026-09-04")
+        workspace.rebuildGroups()
+        #expect(workspace.latestSessionActivityByWork == ["a": "2026-09-02", "b": "2026-09-04"])
+        #expect(PadOutlineSort.updated.works(workspace.works,
+            latestSessionActivity: workspace.latestSessionActivityByWork).map(\.id) == ["b", "c", "a"])
+        workspace.sessions = try sessions("2026-09-01")
+        workspace.rebuildGroups()
+        #expect(PadOutlineSort.updated.works(workspace.works,
+            latestSessionActivity: workspace.latestSessionActivityByWork).map(\.id) == ["c", "a", "b"])
+        workspace.sessions = []
+        workspace.rebuildGroups()
+        #expect(workspace.latestSessionActivityByWork.isEmpty)
+    }
+    @Test func outlineSortPreservesDefaultAndUsesStableTies() throws {
+        let works = try JSONDecoder().decode([ClientWork].self, from: Data("""
+        [{"id":"b","name":"B","status":"active","updatedAt":"2026-01-02"},
+         {"id":"a","name":"A","status":"active","updatedAt":"2026-01-02"},
+         {"id":"c","name":"C","status":"active","updatedAt":"2026-01-03"}]
+        """.utf8))
+        #expect(PadOutlineSort.standard.works(works).map(\.id) == ["b", "a", "c"])
+        #expect(PadOutlineSort.updated.works(works).map(\.id) == ["c", "a", "b"])
+        #expect(PadOutlineSort.name.works(works).map(\.id) == ["a", "b", "c"])
+        let tasks = try JSONDecoder().decode([ClientTask].self, from: Data("""
+        [{"id":"b","title":"B","workId":"w","lifecycleState":"todo","executionStatus":"idle","updatedAt":"2026-01-01"},
+         {"id":"a","title":"A","workId":"w","lifecycleState":"todo","executionStatus":"idle","updatedAt":"2026-01-02"},
+         {"id":"c","title":"C","workId":"w","lifecycleState":"todo","executionStatus":"idle","updatedAt":"2026-01-03","archived":true}]
+        """.utf8))
+        #expect(PadOutlineSort.standard.tasks(tasks).map(\.id) == ["b", "a"])
+        #expect(PadOutlineSort.updated.tasks(tasks).map(\.id) == ["a", "b"])
+        #expect(PadOutlineSort.name.tasks(tasks).map(\.id) == ["a", "b"])
+    }
     private func fixture() throws -> (PadConnection, PadControlStore) {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [ControlProtocol.self]

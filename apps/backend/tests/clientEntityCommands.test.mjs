@@ -20,6 +20,7 @@ async function fixture() {
   store.createSession({ id: "session:task", title: "Worker", workId: "work:test", taskId: task.id, agentId: "agent:test", status: "complete" });
   const calls = [];
   const entityCommands = {
+    createWork: async input => { calls.push(["createWork", input]); return store.createWork(input); },
     updateTask: async (id, patch) => { calls.push(["updateTask", id, patch]); return store.updateTask(id, patch); },
     setTaskArchived: async (id, archived) => { calls.push(["setTaskArchived", id, archived]); return store.setTaskArchived(id, archived); },
     restartTask: async (id, context) => { calls.push(["restartTask", id, context]); return { status: "restarted", secret: "PRIVATE" }; },
@@ -35,12 +36,34 @@ async function fixture() {
     deleteTask: async (id, input, actor) => { calls.push(["deleteTask", id, input, actor]); return { accepted: true, operation: { operationId: "op:1", state: "queued", path: "PRIVATE" } }; },
     updateWork: async (id, patch) => { calls.push(["updateWork", id, patch]); return store.updateWork(id, patch); },
     deleteWork: async id => { calls.push(["deleteWork", id]); return store.deleteWork(id); }
-  };
+};
   let restart = { available: true, reason: null };
   const make = (options = {}) => new ClientSessionAPI({ store, actions: () => ({ restart }), entityCommands, ...options });
   return { store, task, make, calls, setRestart: value => { restart = value; },
     close: async () => { await store.close(); await rm(dir, { recursive: true, force: true }); } };
 }
+
+test("Work creation shares services, validates contributors and returns replay-safe receipts", async () => {
+  const f = await fixture();
+  try {
+    const api = f.make();
+    assert.ok(api.workCreationOptions().agents.some(agent => agent.id === "agent:test"));
+    const input = { requestId: "create-work-001", name: "NewWork", description: "Scope", contributorAgentIds: ["agent:test"] };
+    const first = await api.createWork(works, input);
+    assert.equal(first.status, "completed");
+    assert.equal(first.kind, "work_create");
+    assert.equal(first.entityResult.name, "NewWork");
+    const replay = await api.createWork(works, input);
+    assert.deepEqual(replay.entityResult, first.entityResult);
+    assert.equal(f.calls.filter(row => row[0] === "createWork").length, 1);
+    await assert.rejects(async () => api.createWork(works, { ...input, name: "Different" }), { code: "IDEMPOTENCY_CONFLICT" });
+    await assert.rejects(async () => api.createWork(works, { ...input, requestId: "create-work-002", contributorAgentIds: [] }), { code: "INVALID_WORK_COMMAND" });
+    await assert.rejects(async () => api.createWork(works, { ...input, requestId: "create-work-003", contributorAgentIds: ["agent:missing"] }), { code: "AGENT_NOT_FOUND" });
+    await assert.rejects(async () => api.createWork(works, { ...input, requestId: "create-work-004" }, () => { throw Object.assign(new Error(), { code: "INVALID_CREDENTIAL" }); }), { code: "INVALID_CREDENTIAL" });
+    assert.equal(f.calls.filter(row => row[0] === "createWork").length, 1);
+    assert.throws(() => f.make({ entityCommands: {} }).workCreationOptions(), { code: "CAPABILITY_UNSUPPORTED" });
+  } finally { await f.close(); }
+});
 
 test("management projections are available to every paired device and mirror the desktop menu gates", async () => {
   const f = await fixture();

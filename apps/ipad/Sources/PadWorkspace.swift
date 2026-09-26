@@ -2,6 +2,54 @@ import Foundation
 import Observation
 import CorptieClientCore
 
+/// Pure geometry: menu stays above the module and inside the conversation's
+/// visible top edge, including after the keyboard or split view changes size.
+struct PadMentionMenuPlacement {
+    let width: CGFloat
+    let height: CGFloat
+    let offsetY: CGFloat
+    init(moduleTop: CGFloat, moduleWidth: CGFloat, preferredHeight: CGFloat) {
+        let gap: CGFloat = 8
+        width = max(0, min(360, moduleWidth))
+        height = max(0, min(preferredHeight, moduleTop - gap * 2))
+        offsetY = -height - gap
+    }
+}
+
+enum PadOutlineSort: String, CaseIterable {
+    case standard, updated, name
+    var title: String {
+        switch self { case .standard: "默认顺序"; case .updated: "最近更新"; case .name: "名称" }
+    }
+    func works(_ items: [ClientWork], latestSessionActivity: [String: String] = [:]) -> [ClientWork] {
+        guard self != .standard else { return items }
+        return items.sorted {
+            if self == .updated {
+                let left = latestSessionActivity[$0.id] ?? $0.updatedAt
+                let right = latestSessionActivity[$1.id] ?? $1.updatedAt
+                if left != right { return left > right }
+            }
+            if self == .name {
+                let order = $0.name.localizedStandardCompare($1.name)
+                if order != .orderedSame { return order == .orderedAscending }
+            }
+            return $0.id < $1.id
+        }
+    }
+    func tasks(_ items: [ClientTask]) -> [ClientTask] {
+        let visible = items.filter { !$0.archived }
+        guard self != .standard else { return visible }
+        return visible.sorted {
+            if self == .updated, $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
+            if self == .name {
+                let order = $0.title.localizedStandardCompare($1.title)
+                if order != .orderedSame { return order == .orderedAscending }
+            }
+            return $0.id < $1.id
+        }
+    }
+}
+
 struct PadWorkExpansionStore {
     private static let key = "corptie.mobile.expandedWorkIDs.v1"
     private let defaults: UserDefaults
@@ -135,6 +183,7 @@ final class PadWorkspace {
     /// Sessions outside any Work (macOS "Chat" group), in inventory order.
     private(set) var independentSessions: [ClientSession] = []
     var sessionsByID: [String: ClientSession] = [:]
+    private(set) var latestSessionActivityByWork: [String: String] = [:]
     private(set) var processingWorkIDs: Set<String> = []
     private(set) var executionByTaskID: [String: String] = [:]
     private(set) var activityByTaskID: [String: TaskSessionActivity] = [:]
@@ -363,6 +412,7 @@ final class PadWorkspace {
     }
 
     func selectSession(from oldID: String?, to newID: String?) {
+        usageRevision = nil
         if let oldID {
             visibleMessageLimits[oldID] = visibleMessageLimit
             saveResidentState(for: oldID)
@@ -496,7 +546,7 @@ final class PadWorkspace {
             return
         }
         capabilities = snapshot.capabilities
-        usage = snapshot.usage
+        if let incoming = snapshot.usage { usage = incoming }
         composerConfiguration = snapshot.composer
         applyLatestWindow(snapshot.messages.items, cursor: snapshot.messages.nextBefore, revision: snapshot.revision)
         if let selection { saveResidentState(for: selection) }
@@ -516,6 +566,7 @@ final class PadWorkspace {
         }
         let previous = messages
         messages = state.messages
+        usage = state.usage
         lastTimelineRevision = state.revision
         if previous != state.messages { messageRevision += 1 }
         return true
@@ -577,7 +628,12 @@ final class PadWorkspace {
         var processing: Set<String> = []
         // Device inventory contains only live Sessions. Index once, never scan per rendered row.
         var latestByTask: [String: ClientSession] = [:]
+        var latestByWork: [String: String] = [:]
         for session in sessions {
+            // Includes Work discussions, even though they have no Task binding.
+            if let workID = session.workId, !session.updatedAt.isEmpty {
+                latestByWork[workID] = max(latestByWork[workID] ?? "", session.updatedAt)
+            }
             guard let taskID = session.taskId else { continue }
             if latestByTask[taskID].map({ $0.updatedAt < session.updatedAt }) ?? true {
                 latestByTask[taskID] = session
@@ -598,6 +654,7 @@ final class PadWorkspace {
                 processing.insert(task.workId)
             }
         }
+        if latestSessionActivityByWork != latestByWork { latestSessionActivityByWork = latestByWork }
         if executionByTaskID != execution { executionByTaskID = execution }
         if activityByTaskID != activity { activityByTaskID = activity }
         if sessionIDByTaskID != resolvedSessionIDs { sessionIDByTaskID = resolvedSessionIDs }
@@ -744,6 +801,19 @@ final class PadWorkspace {
         isLoadingDetail = false
     }
 
+    /// Compatibility repair for hosts whose resident snapshots omit usage.
+    /// Never refresh an already populated value or start a polling loop.
+    func repairMissingUsage(_ connection: PadConnection) async {
+        guard usage == nil, let id = selection else { return }
+        let generation = timelineGeneration
+        do {
+            let api = ClientSessionAPI(transport: try await connection.transport())
+            guard selection == id, !Task.isCancelled else { return }
+            await loadUsage(api, sessionID: id, routedID: capabilities?.sessionId ?? id, generation: generation)
+            if selection == id { saveResidentState(for: id) }
+        } catch { }
+    }
+
     /// One usage read per applied timeline window (desktop refreshes after each
     /// live usage burst). Hosts without a usage reader answer 409; that clears it.
     func loadUsage(_ api: ClientSessionAPI, sessionID: String, routedID: String, generation: Int) async {
@@ -756,10 +826,13 @@ final class PadWorkspace {
             if usage != snapshot { usage = snapshot }
         } catch is CancellationError {
             return
-        } catch {
+        } catch let failure as ClientServiceFailure where failure.code == "CAPABILITY_UNSUPPORTED" {
             guard selection == sessionID, generation == timelineGeneration else { return }
             usageRevision = revision
-            if usage != nil { usage = nil }
+            usage = nil
+        } catch {
+            guard selection == sessionID, generation == timelineGeneration else { return }
+            // Keep the last valid value on transient failures; a later push repairs it.
         }
     }
 

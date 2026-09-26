@@ -10,6 +10,7 @@ struct PadThreadMetaView: View {
     let capabilities: ClientSessionCapabilities?
     let usage: ClientSessionUsage?
     @State private var showingNotReadyReason = false
+    @State private var showingActivity = false
 
     private var isReady: Bool {
         // Older hosts do not project readiness; treat their sessions as ready like the desktop did.
@@ -19,14 +20,25 @@ struct PadThreadMetaView: View {
         SessionExecutionState(executionStatus: session?.executionStatus)
     }
 
+    private var compactStatus: String {
+        switch executionState {
+        case .running: "执行中"
+        case .blocked: "待处理"
+        case .complete: "已完成"
+        case .failed: "已失败"
+        case .cancelled: "已停止"
+        case nil: "待开始"
+        }
+    }
+
     var body: some View {
         HStack(spacing: 10) {
-            HStack(spacing: 5) {
+            HStack(spacing: 2) {
                 Button {
                     if !isReady { showingNotReadyReason = true }
                 } label: {
                     SessionReadinessLight(isReady: isReady)
-                        .frame(width: 28, height: 28)
+                        .frame(width: 16, height: 28)
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
@@ -41,17 +53,42 @@ struct PadThreadMetaView: View {
                         code: reason?.code)
                         .presentationCompactAdaptation(.popover)
                 }
-                if let executionState {
-                    SessionExecutionStatusText(state: executionState)
-                    if let activity = session?.activityStatus, !activity.isEmpty {
-                        ActivityStatusText(text: activity, isActive: executionState == .running, fontSize: 9)
-                            .layoutPriority(-1)
+                Button {
+                    showingActivity = true
+                } label: {
+                    Group {
+                        if let executionState {
+                            SessionExecutionStatusText(state: executionState, label: compactStatus)
+                        } else {
+                            Text(compactStatus)
+                        }
                     }
+                    .lineLimit(1)
+                    .frame(width: 32, height: 32, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(compactStatus)
+                .accessibilityValue(session?.activityStatus ?? "")
+                .accessibilityHint("查看执行详情")
+                .popover(isPresented: $showingActivity) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(compactStatus).font(.headline)
+                        if let activity = session?.activityStatus, !activity.isEmpty {
+                            Text(activity).font(.callout).textSelection(.enabled)
+                        }
+                    }
+                    .padding(16)
+                    .frame(idealWidth: 280, maxWidth: 320, alignment: .leading)
+                    .presentationCompactAdaptation(.popover)
                 }
             }
+            .padding(.leading, 2)
+            .padding(.trailing, 5)
+            // Three-character labels share a compact slot; full activity text
+            // lives in the popover rather than changing this row's geometry.
+            .frame(width: 58, height: 32, alignment: .leading)
             .accessibilityIdentifier("conversation-execution-state")
-
-            Spacer(minLength: 8)
 
             if let usage {
                 PadUsageBar(usage: usage)
@@ -59,7 +96,6 @@ struct PadThreadMetaView: View {
         }
         .font(.system(size: 9, weight: .semibold))
         .foregroundStyle(ComposerPalette.secondaryText)
-        .frame(maxWidth: .infinity)
     }
 }
 
@@ -90,6 +126,8 @@ private struct PadUsageBar: View {
                     progress: usedPercent / 100,
                     color: SessionMetaPalette.color(for: SessionUsagePolicy.contextTone(usedPercent: usedPercent)),
                     numericValue: used)
+                    .padding(.horizontal, 10)
+                    .frame(height: 32)
                     .accessibilityLabel("Context: \(SessionUsagePolicy.exactTokens(used)) / \(SessionUsagePolicy.exactTokens(Double(window))) · \(SessionUsagePolicy.percent(usedPercent, maximumFractionDigits: 2))% used")
                     .accessibilityIdentifier("conversation-usage-context")
             }
@@ -99,6 +137,8 @@ private struct PadUsageBar: View {
                     value: "\(SessionUsagePolicy.percent(quota.remaining))%",
                     progress: quota.remaining / 100,
                     color: SessionMetaPalette.color(for: SessionUsagePolicy.quotaTone(remainingPercent: quota.remaining)))
+                    .padding(.horizontal, 10)
+                    .frame(height: 32)
                     .accessibilityLabel("\(SessionUsagePolicy.quotaLabel(provider: usage.account?.provider)): \(SessionUsagePolicy.percent(quota.remaining, maximumFractionDigits: 2))% remaining")
                     .accessibilityIdentifier("conversation-usage-quota")
             }

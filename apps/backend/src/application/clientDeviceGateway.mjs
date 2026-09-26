@@ -119,6 +119,19 @@ export class ClientDeviceGateway {
       }
       const identity = this.authority.authenticate(bearer(request));
       this.sockets.set(request.socket, identity.deviceId);
+      if (path === "/client/v1/works/create" && this.sessionAPI) {
+        if (request.method === "GET") {
+          const result = this.sessionAPI.workCreationOptions();
+          this.authority.authenticate(bearer(request));
+          return reply(response, 200, result);
+        }
+        if (request.method === "POST") {
+          const input = await body(request, 64 * 1024);
+          return reply(response, 202, await this.sessionAPI.createWork(this.authority.authenticate(bearer(request)),
+            input, () => this.authority.authenticate(bearer(request))));
+        }
+        throw deviceError("ROUTE_NOT_AVAILABLE", 404);
+      }
       if (discussion && this.sessionAPI && ["GET", "POST"].includes(request.method)) {
         let workId;
         try { workId = decodeURIComponent(discussion[1]); } catch { throw deviceError("INVALID_WORK_ID", 400); }
@@ -329,6 +342,7 @@ export class ClientDeviceGateway {
           workDiscussion: Boolean(this.sessionAPI?.workDiscussion),
           taskManagement: Boolean(this.sessionAPI?.entityCommands),
           workManagement: Boolean(this.sessionAPI?.entityCommands),
+          workCreation: Boolean(this.sessionAPI?.entityCommands?.createWork),
           inventoryLists: Boolean(this.readAPI), messages: Boolean(this.sessionAPI),
           controlRead: Boolean(this.controlAPI), controlWrite: Boolean(this.worktreeAPI),
           eventStream: true, eventRecovery: "snapshot-on-connect",
