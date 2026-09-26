@@ -2693,7 +2693,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         configureCollaborationSentStatus(row.showsCollaborationSentStatus)
         configureImages(row.images, rowID: row.id)
         copiedText = row.copyText
-        configureMessageStatus(row.messageStatus, cardWidth: layout.cardWidth)
+        configureMessageStatus(row.messageStatus)
         let showsMessageActions = row.showsMessageActionBar
         NSLayoutConstraint.deactivate([
             cardBottomStandardConstraint,
@@ -3031,7 +3031,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         }
     }
 
-    private func configureMessageStatus(_ status: UserMessageStatusPresentation?, cardWidth: CGFloat) {
+    private func configureMessageStatus(_ status: UserMessageStatusPresentation?) {
         hasVisibleMessageStatus = status != nil
         guard let status else {
             messageStatusButton.isHidden = true
@@ -3041,7 +3041,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         let language = Locale.current.language.languageCode?.identifier ?? "en"
         messageStatusDetail = status.detail(languageCode: language)
         messageStatusButton.isHidden = false
-        messageStatusButton.title = cardWidth >= 120 ? status.shortLabel(languageCode: language) : ""
+        messageStatusButton.title = status.shortLabel(languageCode: language)
         messageStatusButton.image = NSImage(
             systemSymbolName: status.symbolName,
             accessibilityDescription: messageStatusDetail

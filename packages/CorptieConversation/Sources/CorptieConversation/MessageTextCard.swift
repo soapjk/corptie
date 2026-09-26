@@ -55,10 +55,8 @@ public struct MessageTextCard<Content: View>: View {
                     if let status {
                         Button { showingStatusDetail = true } label: {
                             Label {
-                                if (cardWidth ?? MessageBubbleWidthPolicy.maximumWidth) >= 120 {
-                                    Text(status.shortLabel(languageCode: Locale.current.language.languageCode?.identifier ?? "en"))
-                                        .lineLimit(1)
-                                }
+                                Text(status.shortLabel(languageCode: Locale.current.language.languageCode?.identifier ?? "en"))
+                                    .lineLimit(1)
                             } icon: {
                                 Image(systemName: status.symbolName)
                             }
@@ -95,10 +93,9 @@ public struct MessageTextCard<Content: View>: View {
                 }
                 .padding(.horizontal, 2)
                 .frame(height: 22)
+                .fixedSize(horizontal: true, vertical: false)
             }
         }
-        .frame(idealWidth: cardWidth, maxWidth: cardWidth ?? MessageBubbleWidthPolicy.maximumWidth,
-               alignment: role == .user ? .trailing : .leading)
         .onHover { hovering = $0 }
         .onChange(of: messageID) { hovering = false }
     }
