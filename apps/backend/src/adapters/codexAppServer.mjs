@@ -476,6 +476,10 @@ export class CodexAppServerClient {
     return result;
   }
 
+  async clearThreadGoal(threadId) {
+    return this.request("thread/goal/clear", { threadId });
+  }
+
   requireThreadToolPlanConfirmation(threadId, options = {}, overrides = {}) {
     if (!Array.isArray(options.dynamicTools)) return null;
     const definitions = options.dynamicTools;

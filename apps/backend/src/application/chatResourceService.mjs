@@ -94,6 +94,34 @@ export class ChatResourceService {
     return { removed: true };
   }
 
+  async copyForkMetadata(value, source, target, cache = new Map()) {
+    if (!value || typeof value !== "object") return value;
+    if (Array.isArray(value)) {
+      const values = [];
+      for (const entry of value) values.push(await this.copyForkMetadata(entry, source, target, cache));
+      return values;
+    }
+    const copy = {};
+    for (const [key, entry] of Object.entries(value)) {
+      copy[key] = await this.copyForkMetadata(entry, source, target, cache);
+    }
+    if (typeof value.managedPath === "string") {
+      if (!cache.has(value.managedPath)) {
+        try {
+          const image = await this.readImage(source, value.managedPath);
+          const cloned = await this.importImageData(target, image.data, value.fileName ?? basename(value.managedPath));
+          cache.set(value.managedPath, cloned.managedPath);
+        } catch (error) {
+          if (!["CHAT_IMAGE_MISSING", "CHAT_IMAGE_FORBIDDEN"].includes(error.code)) throw error;
+          cache.set(value.managedPath, this.missingImagePath(target, basename(value.managedPath)));
+        }
+      }
+      copy.managedPath = cache.get(value.managedPath);
+      copy.originalPath = null;
+    }
+    return copy;
+  }
+
   resolveAbsolutePath(reference, managedPath) {
     this.#assertOwned(reference, managedPath);
     return this.#safePath(managedPath);

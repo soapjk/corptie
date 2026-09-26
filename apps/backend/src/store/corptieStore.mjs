@@ -1144,7 +1144,24 @@ export class CorptieStore {
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
       );
 
+      CREATE TABLE IF NOT EXISTS session_fork_operations (
+        request_id TEXT PRIMARY KEY,
+        fingerprint TEXT NOT NULL,
+        source_session_id TEXT NOT NULL,
+        source_binding_id TEXT NOT NULL,
+        source_item_id TEXT NOT NULL,
+        target_task_id TEXT UNIQUE,
+        target_session_id TEXT,
+        state TEXT NOT NULL,
+        input_json TEXT NOT NULL,
+        result_json TEXT,
+        error_code TEXT,
+        error_message TEXT,
+        created_at TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_session_fork_target ON session_fork_operations(target_session_id);
       CREATE INDEX IF NOT EXISTS idx_session_items_session_id ON session_items(session_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_session_items_latest
       ON session_items(session_id, created_at DESC, id DESC);

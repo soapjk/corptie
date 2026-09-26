@@ -1,5 +1,6 @@
 export const AGENT_PROVIDER_CAPABILITIES = Object.freeze({
   SESSION_CREATE: "session.create",
+  SESSION_FORK: "session.fork",
   SESSION_RESUME: "session.resume",
   SESSION_DELETE: "session.delete",
   SESSION_RESTART: "session.restart",
@@ -42,6 +43,7 @@ export const AGENT_PROVIDER_CAPABILITIES = Object.freeze({
 // 这些能力是独立开关，不应耦合声明。
 export const AGENT_PROVIDER_METHOD_BY_CAPABILITY = Object.freeze({
   [AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE]: "createSession",
+  [AGENT_PROVIDER_CAPABILITIES.SESSION_FORK]: "forkSession",
   [AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME]: "resumeSession",
   [AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE]: "deleteSession",
   [AGENT_PROVIDER_CAPABILITIES.SESSION_RESTART]: "restartSession",

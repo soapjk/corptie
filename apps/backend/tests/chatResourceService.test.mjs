@@ -7,6 +7,19 @@ import { ChatResourceService } from "../src/application/chatResourceService.mjs"
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
 
+test("forked history copies images into the new Session without broadening resource access", async () => {
+  const root = await mkdtemp(join(os.tmpdir(), "corptie-fork-image-"));
+  const service = new ChatResourceService({ environmentRoot: root });
+  await service.initialize();
+  const source = { sessionId: "source" }, target = { sessionId: "target" };
+  const image = await service.importImageData(source, PNG, "image.png");
+  const cloned = await service.copyForkMetadata({ payload: { images: [image] } }, source, target);
+  const path = cloned.payload.images[0].managedPath;
+  assert.notEqual(path, image.managedPath);
+  assert.deepEqual((await service.readImage(target, path)).data, PNG);
+  await assert.rejects(service.readImage(target, image.managedPath), { code: "CHAT_IMAGE_FORBIDDEN" });
+});
+
 test("device uploads use generated owned paths and never retain a source path", async () => {
   const root = await mkdtemp(join(os.tmpdir(), "corptie-device-image-"));
   const service = new ChatResourceService({ environmentRoot: root, idFactory: () => "upload" });

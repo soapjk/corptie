@@ -572,11 +572,13 @@ final class NativeTimelineLayoutCache {
 }
 
 struct AppKitChatTimelineRow: Identifiable {
+    var forkItemID: String? = nil
     var isWorkspaceCard = false
     typealias ProcessState = ConversationProcessState
 
     struct Action: Identifiable {
         enum Kind {
+            case forkMessage(itemID: String)
             case codexApproval(CodexApprovalOption)
             case ptyChoice(CodexApprovalOption, choiceID: String)
             case userInput(itemID: String)
@@ -593,7 +595,7 @@ struct AppKitChatTimelineRow: Identifiable {
     }
 
     let id: String
-    let contentRevision: Int
+    var contentRevision: Int
     let nativeText: String
     let rawStatusText: String
     let copyText: String
@@ -2380,6 +2382,8 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private let rawStatusTextView = NSTextView()
     private let disclosureButton = NSButton()
     private let copyButton = NSButton()
+    private var forkButton: NSButton?
+    private var forkItemID: String?
     private let messageActionBar = NSStackView()
     private let actionStack = NSStackView()
     private let collaborationSentStatus = NSStackView()
@@ -2693,6 +2697,8 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         configureCollaborationSentStatus(row.showsCollaborationSentStatus)
         configureImages(row.images, rowID: row.id)
         copiedText = row.copyText
+        forkItemID = row.forkItemID
+        configureForkButton()
         configureMessageStatus(row.messageStatus)
         let showsMessageActions = row.showsMessageActionBar
         NSLayoutConstraint.deactivate([
@@ -3080,6 +3086,34 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         popover.contentViewController = controller
         popover.contentSize = NSSize(width: 300, height: 90)
         popover.show(relativeTo: messageStatusButton.bounds, of: messageStatusButton, preferredEdge: .maxY)
+    }
+
+    @objc private func forkMessage() {
+        guard let forkItemID else { return }
+        onAction?(.init(id: "fork:\(forkItemID)", label: "创建分支", isDestructive: false,
+                        kind: .forkMessage(itemID: forkItemID)))
+    }
+
+    private func configureForkButton() {
+        if forkItemID != nil, forkButton == nil {
+            let button = NSButton()
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.isBordered = false
+            button.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: "从此处创建分支")
+            button.imagePosition = .imageOnly
+            button.target = self
+            button.action = #selector(forkMessage)
+            button.toolTip = "从这一轮创建分支"
+            button.setAccessibilityLabel("从这一轮创建分支")
+            button.identifier = NSUserInterfaceItemIdentifier("chat.timeline.fork")
+            messageActionBar.addArrangedSubview(button)
+            NSLayoutConstraint.activate([
+                button.widthAnchor.constraint(equalToConstant: 22),
+                button.heightAnchor.constraint(equalToConstant: 22)
+            ])
+            forkButton = button
+        }
+        forkButton?.isHidden = forkItemID == nil
     }
 
     @objc private func toggleDisclosure() {

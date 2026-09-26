@@ -26,6 +26,7 @@ export class ClaudeAgentManager {
     this.onProviderEvent = options.onProviderEvent ?? null;
     this.resolveRuntimeOptions = options.resolveRuntimeOptions ?? null;
     this.queryFactory = options.query ?? query;
+    this.forkSessionFactory = options.forkSession ?? forkSession;
     this.environment = options.environment ?? (() => process.env);
     this.structuredPlanEvents = options.structuredPlanEvents !== false;
   }
@@ -108,6 +109,17 @@ export class ClaudeAgentManager {
 
   get(id) {
     return this.sessions.get(id) ?? null;
+  }
+
+  async fork(input, { forkSource }) {
+    const source = await this.sessionForOperation(forkSource.reference.providerSessionId);
+    if (source.turnState !== "idle" || !source.agentSessionId || !forkSource.point.providerMessageId) {
+      throw Object.assign(new Error("Claude 历史中缺少可验证的分叉消息位置，请选择更新后的完整回复。"), { code: "FORK_POINT_UNAVAILABLE" });
+    }
+    const result = await this.forkSessionFactory(source.agentSessionId, {
+      dir: source.cwd, upToMessageId: forkSource.point.providerMessageId, title: input.title
+    });
+    return this.start({ ...input, prompt: "", agentSessionId: result.sessionId });
   }
 
   storedSession(id) {
@@ -1040,10 +1052,11 @@ export class ClaudeAgentManager {
           .join("\n\n")
           .trim();
         if (session.streamingAssistant && finalText) {
-          this.updateStreamingAssistant(session, finalText, { completed: true });
+          this.updateStreamingAssistant(session, finalText, { completed: true, providerMessageId: message.uuid });
         } else {
           for (const item of items.filter((item) => item.type === "agentMessage")) {
-            this.appendItem(session, { ...item, presentationRole: "commentary" });
+            this.appendItem(session, { ...item, presentationRole: "commentary",
+              rawMetadataJSON: JSON.stringify({ forkPoint: { messageId: message.uuid } }) });
           }
         }
         for (const item of items.filter((item) => item.type !== "agentMessage")) {
@@ -1215,9 +1228,10 @@ export class ClaudeAgentManager {
         type: "agentMessage",
         title: "Claude Code",
         text: value,
+        ...(options.providerMessageId ? { rawMetadataJSON: JSON.stringify({ forkPoint: { messageId: options.providerMessageId } }) } : {}),
         presentationRole: "commentary"
       });
-      session.streamingAssistant = { itemId: item.id, text: value };
+      session.streamingAssistant = options.completed === true ? null : { itemId: item.id, text: value };
       return item;
     }
     const index = session.items.findIndex((item) => item.id === existing.itemId);
@@ -1228,6 +1242,10 @@ export class ClaudeAgentManager {
     const item = {
       ...session.items[index],
       text: value,
+      ...(options.providerMessageId ? { rawMetadataJSON: JSON.stringify({
+        ...JSON.parse(session.items[index].rawMetadataJSON ?? "{}"),
+        forkPoint: { messageId: options.providerMessageId }
+      }) } : {}),
       // SDK assistant completion closes a message, not the product Turn.
       // Formal-answer promotion happens only when the Turn settles.
       presentationRole: "commentary"
