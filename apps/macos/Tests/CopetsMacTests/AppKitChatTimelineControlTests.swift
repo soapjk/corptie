@@ -1,10 +1,34 @@
 import AppKit
 import SwiftUI
 import XCTest
+import CorptieClientCore
 @testable import CorptieMac
 
 @MainActor
 final class AppKitChatTimelineControlTests: XCTestCase {
+    func testMessageStatusUsesExistingActionFooterWithoutChangingBodyHeight() throws {
+        let queued = try XCTUnwrap(UserMessageStatusPresentation(
+            authoritativeStatus: "queued", legacyStatus: nil, queuePosition: 2
+        ))
+        let plain = AppKitChatTimelineRow(
+            id: "user", contentRevision: 1, nativeText: "Hello", copyText: "Hello",
+            nativeStyle: .user, title: "", metadata: "", expandableTurnId: nil,
+            isExpanded: false, showsHeader: false
+        )
+        let withStatus = AppKitChatTimelineRow(
+            id: "user", contentRevision: 2, nativeText: "Hello", copyText: "Hello",
+            nativeStyle: .user, title: "", metadata: "", expandableTurnId: nil,
+            isExpanded: false, showsHeader: false, messageStatus: queued
+        )
+        XCTAssertTrue(withStatus.showsMessageActionBar)
+        XCTAssertEqual(withStatus.copyText, plain.copyText)
+        XCTAssertEqual(withStatus.nativeText, plain.nativeText)
+        XCTAssertEqual(
+            NativeTimelineLayoutCache.shared.layout(for: withStatus, columnWidth: 400).rowHeight,
+            NativeTimelineLayoutCache.shared.layout(for: plain, columnWidth: 400).rowHeight
+        )
+    }
+
     func testImageMessageReservesStableNativeRowGeometry() {
         let plain = AppKitChatTimelineRow(
             id: "plain", contentRevision: 1, nativeText: "Image", copyText: "Image",
@@ -366,6 +390,70 @@ final class AppKitChatTimelineControlTests: XCTestCase {
 
         XCTAssertTrue(processButton.attributedTitle.string.contains("Working for 1m 12s"))
         XCTAssertTrue(processButton.attributedTitle.string.contains("2 steps"))
+    }
+
+    func testRunningProcessClockUpdatesOnlyVisibleCellWithoutReloadOrScroll() throws {
+        let harness = makeHarness(followsLatest: false)
+        let startedAt = Date(timeIntervalSince1970: 1_000)
+        let process = AppKitChatTimelineRow(
+            id: "running-clock", contentRevision: 1, nativeText: "", copyText: "",
+            nativeStyle: .process, title: "", metadata: "", expandableTurnId: "turn",
+            isExpanded: false, processCount: 1, processDuration: "4.0s",
+            processStartedAt: startedAt, processState: .running
+        )
+        harness.coordinator.apply(rows: [process])
+        XCTAssertFalse(harness.coordinator.isProcessClockScheduled)
+        harness.coordinator.setProcessClockEnabled(true)
+        XCTAssertTrue(harness.coordinator.isProcessClockScheduled)
+
+        let cell = try XCTUnwrap(harness.tableView.view(atColumn: 0, row: 0,
+            makeIfNecessary: true) as? AppKitChatNativeTextCell)
+        let button = try XCTUnwrap(button(in: cell, identifier: "chat.timeline.process"))
+        let configurations = cell.contentConfigurationCount
+        let rowHeight = harness.coordinator.tableView(harness.tableView, heightOfRow: 0)
+        let scrollY = harness.scrollView.contentView.bounds.minY
+        cell.refreshProcessElapsed(now: startedAt.addingTimeInterval(5))
+        XCTAssertTrue(button.attributedTitle.string.contains("Working for 5.0s"))
+        cell.refreshProcessElapsed(now: startedAt.addingTimeInterval(6))
+        XCTAssertTrue(button.attributedTitle.string.contains("Working for 6.0s"))
+        XCTAssertEqual(cell.contentConfigurationCount, configurations)
+        XCTAssertEqual(harness.coordinator.tableView(harness.tableView, heightOfRow: 0), rowHeight)
+        XCTAssertEqual(harness.scrollView.contentView.bounds.minY, scrollY)
+
+        harness.coordinator.setProcessClockEnabled(false)
+        XCTAssertFalse(harness.coordinator.isProcessClockScheduled)
+        let final = AppKitChatTimelineRow(
+            id: "running-clock", contentRevision: 2, nativeText: "", copyText: "",
+            nativeStyle: .process, title: "", metadata: "", expandableTurnId: "turn",
+            isExpanded: false, processCount: 1, processDuration: "6.0s",
+            processStartedAt: startedAt, processState: .completed
+        )
+        harness.coordinator.apply(rows: [final])
+        harness.coordinator.setProcessClockEnabled(true)
+        XCTAssertFalse(harness.coordinator.isProcessClockScheduled)
+    }
+
+    func testRunningProcessClockAdvancesWithoutAnyNewServerRows() async throws {
+        let harness = makeHarness(followsLatest: false)
+        let start = Date().addingTimeInterval(-4)
+        let process = AppKitChatTimelineRow(
+            id: "idle-stream-clock", contentRevision: 1, nativeText: "", copyText: "",
+            nativeStyle: .process, title: "", metadata: "", expandableTurnId: "turn",
+            isExpanded: false, processCount: 1, processDuration: "4.0s",
+            processStartedAt: start, processState: .running
+        )
+        harness.coordinator.apply(rows: [process])
+        harness.window.layoutIfNeeded()
+        let cell = try XCTUnwrap(harness.tableView.view(atColumn: 0, row: 0,
+            makeIfNecessary: true) as? AppKitChatNativeTextCell)
+        let button = try XCTUnwrap(button(in: cell, identifier: "chat.timeline.process"))
+        let originalTitle = button.attributedTitle.string
+        let originalConfigurations = cell.contentConfigurationCount
+        harness.coordinator.setProcessClockEnabled(true)
+        try await Task.sleep(for: .milliseconds(1_250))
+        XCTAssertNotEqual(button.attributedTitle.string, originalTitle)
+        XCTAssertEqual(cell.contentConfigurationCount, originalConfigurations)
+        harness.coordinator.setProcessClockEnabled(false)
     }
 
     func testTerminalExecutionSummariesKeepElapsedDurationAcrossOutcomes() {

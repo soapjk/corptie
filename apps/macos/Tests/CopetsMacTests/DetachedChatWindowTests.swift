@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import CorptieMac
@@ -34,8 +35,11 @@ struct DetachedChatWindowTests {
         #expect(source.contains("window?.performDrag(with: event)"))
         #expect(source.contains("func windowDidEndLiveResize(_ notification: Notification)"))
         #expect(source.contains("panel.setFrame(frame, display: true, animate: true)"))
-        #expect(source.contains("Menu {"))
+        #expect(source.contains(".popover(isPresented: $showsWindowPresets"))
         #expect(source.contains("DetachedWindowTrafficLightButton("))
+        #expect(source.contains("panel.setFrameUsingName(frameName)"))
+        #expect(source.contains("panel.setFrameAutosaveName(frameName)"))
+        #expect(source.contains("panel.saveFrame(usingName:"))
     }
 
     @Test
@@ -50,7 +54,7 @@ struct DetachedChatWindowTests {
             normalSize: normal,
             minimumSize: minimum
         )
-        #expect(right == NSRect(x: 2_900, y: 50, width: 400, height: 1_800))
+        #expect(right == NSRect(x: 2_500, y: 50, width: 800, height: 1_800))
 
         let left = DetachedChatWindowGeometry.frame(
             for: .narrowLeft,
@@ -58,7 +62,16 @@ struct DetachedChatWindowTests {
             normalSize: normal,
             minimumSize: minimum
         )
-        #expect(left == NSRect(x: 100, y: 50, width: 400, height: 1_800))
+        #expect(left == NSRect(x: 100, y: 50, width: 800, height: 1_800))
+
+        let smallerScreen = NSRect(x: 0, y: 0, width: 1_440, height: 900)
+        let narrowOnSmallerScreen = DetachedChatWindowGeometry.frame(
+            for: .narrowRight,
+            visibleFrame: smallerScreen,
+            normalSize: normal,
+            minimumSize: minimum
+        )
+        #expect(narrowOnSmallerScreen.width == 440)
 
         let maximized = DetachedChatWindowGeometry.frame(
             for: .maximized,
@@ -67,6 +80,42 @@ struct DetachedChatWindowTests {
             minimumSize: minimum
         )
         #expect(maximized == screen)
+    }
+
+    @Test
+    func detachedWindowRestoredFrameStaysVisibleAndPreservesPosition() {
+        let primary = NSRect(x: 0, y: 0, width: 1_440, height: 900)
+        let secondary = NSRect(x: 1_440, y: 0, width: 1_920, height: 1_080)
+        let requested = NSRect(x: 1_700, y: 180, width: 620, height: 740)
+
+        #expect(DetachedChatWindowGeometry.constrainedFrame(
+            requested,
+            in: [primary, secondary],
+            fallback: primary
+        ) == requested)
+        #expect(DetachedChatWindowGeometry.constrainedFrame(
+            requested,
+            in: [primary],
+            fallback: primary
+        ) == NSRect(x: 820, y: 160, width: 620, height: 740))
+        #expect(DetachedChatWindowFrameStore.name(for: "session:one")
+            != DetachedChatWindowFrameStore.name(for: "session:two"))
+    }
+
+    @Test @MainActor
+    func appKitPersistsDetachedWindowPositionAndSize() {
+        let name = DetachedChatWindowFrameStore.name(for: "test:\(UUID().uuidString)")
+        defer { NSWindow.removeFrame(usingName: name) }
+        let initial = NSRect(x: 120, y: 130, width: 440, height: 520)
+        let expected = NSRect(x: 230, y: 240, width: 600, height: 700)
+        let panel = NSPanel(contentRect: initial, styleMask: [.resizable], backing: .buffered, defer: false)
+        #expect(panel.setFrameAutosaveName(name))
+        panel.setFrame(expected, display: false)
+        panel.saveFrame(usingName: name)
+
+        let reopened = NSPanel(contentRect: initial, styleMask: [.resizable], backing: .buffered, defer: false)
+        #expect(reopened.setFrameUsingName(name))
+        #expect(reopened.frame == expected)
     }
 
     @Test

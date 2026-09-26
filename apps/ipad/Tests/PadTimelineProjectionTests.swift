@@ -22,6 +22,7 @@ struct PadTimelineProjectionTests {
         workspace.messages = messages
         #expect(workspace.displayEntries.map(\.id) == ["message:u", "process:t", "message:a"])
         #expect(workspace.processPresentations["process:t"]?.state == .running)
+        #expect(workspace.activeProcessEntryID == "process:t")
         #expect(workspace.processPresentations["process:t"]?.duration == nil)
         #expect(workspace.processSteps["process:t"]?.map(\.kind) == [.context, .action])
         #expect(workspace.processPresentations["process:t"]?.currentStepTitle == "Used tool")
@@ -32,6 +33,7 @@ struct PadTimelineProjectionTests {
         workspace.selection = "session:b"
         #expect(workspace.displayEntries.isEmpty)
         #expect(workspace.processPresentations.isEmpty)
+        #expect(workspace.activeProcessEntryID == nil)
         #expect(workspace.processSteps.isEmpty)
         workspace.selection = "session:a"
         #expect(workspace.displayEntries.map(\.id) == ["message:u", "process:t", "message:a", "message:pending"])
@@ -82,12 +84,14 @@ struct PadTimelineProjectionTests {
         let running = try JSONDecoder().decode([ClientMessage].self, from: Data(
             #"[{"id":"tool","turnId":"turn","type":"mcpToolCall","title":"Fetch records","text":"Fetching","turnStatus":"running","status":"running"}]"#.utf8))
         workspace.messages = running
+        #expect(workspace.activeProcessEntryID == "process:turn")
         #expect(workspace.processPresentations["process:turn"]?.currentStepTitle == "Fetch records")
 
         let completed = try JSONDecoder().decode([ClientMessage].self, from: Data(
             #"[{"id":"tool","turnId":"turn","type":"mcpToolCall","title":"Fetch records","text":"Fetched","turnStatus":"completed","status":"completed"}]"#.utf8))
         workspace.messages = completed
         #expect(workspace.processPresentations["process:turn"]?.state == .completed)
+        #expect(workspace.activeProcessEntryID == nil)
         #expect(workspace.processPresentations["process:turn"]?.currentStepTitle == nil)
     }
 }
