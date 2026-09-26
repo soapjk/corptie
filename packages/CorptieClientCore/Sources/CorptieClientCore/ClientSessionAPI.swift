@@ -393,6 +393,12 @@ public struct ClientSessionAPI: Sendable {
     public func workManagement(workId: String) async throws -> ClientWorkManagement {
         try await read(transport.endpoint.request(path: ["client", "v1", "works", workId, "management"]))
     }
+    public func workCreationOptions() async throws -> ClientWorkCreationOptions {
+        try await read(transport.endpoint.request(path: ["client", "v1", "works", "create"]))
+    }
+    public func createWork(_ body: ClientWorkCreation) async throws -> ClientCommandReceipt {
+        try await post(path: ["client", "v1", "works", "create"], body: body)
+    }
     public func taskCommand<Body: Encodable>(taskId: String, command: ClientTaskCommand, body: Body) async throws -> ClientCommandReceipt {
         try await post(path: ["client", "v1", "tasks", taskId, command.rawValue], body: body)
     }

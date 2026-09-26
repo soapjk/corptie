@@ -3,6 +3,38 @@ import Testing
 @testable import CorptieClientCore
 
 @Suite(.serialized) struct ClientWorktreeAPITests {
+    @Test func integrationPlanUsesBackendOperationNamesAndOrderedSourcesOnWire() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [WorktreeProtocol.self]
+        let api = ClientWorktreeAPI(transport: try BackendTransport(
+            endpoint: BackendEndpoint(URL(string: "http://127.0.0.1:1")!), configuration: configuration))
+        for operation in ClientWorktreePlanOperation.allCases {
+            WorktreeProtocol.handler = { request in
+                #expect(request.httpMethod == "POST")
+                #expect(request.url?.path == "/client/v1/worktrees/repositories/repo:one/integration-plans")
+                let body = try JSONSerialization.jsonObject(with: requestBody(request)) as! [String: Any]
+                #expect(body["operationType"] as? String == operation.rawValue)
+                #expect(body["targetWorktreeId"] as? String == "main")
+                #expect(body["sourceWorktreeIds"] as? [String] == (operation == .converge ? ["main", "b", "a"] : ["b", "a"]))
+                return #"{"job":{"id":"job:1","repositoryId":"repo:one","status":"awaiting_confirmation","phase":"plan","planFingerprint":"fingerprint","createdAt":"now","updatedAt":"now","plan":{"repositoryId":"repo:one","mainWorktreeId":"main","mainPath":"/repo","mainHeadBefore":"abc","inventoryVersion":"1","mergeOrder":[],"blockingRisks":[],"items":[]},"progress":{"completed":0,"total":2,"fraction":0}}}"#
+            }
+            let job = try await api.preparePlan(repositoryId: "repo:one", operationType: operation,
+                                                sources: ["b", "a", "b"], target: "main")
+            #expect(job.id == "job:1")
+        }
+    }
+
+    @Test func invalidPlanSelectionIsRejectedBeforeTransport() throws {
+        #expect(throws: ClientServiceFailure.self) {
+            try ClientWorktreePlanRequest(operation: .merge, sources: ["main"], target: "main")
+        }
+        #expect(throws: ClientServiceFailure.self) {
+            try ClientWorktreePlanRequest(operation: .synchronize, sources: ["a"], target: "")
+        }
+        #expect(throws: ClientServiceFailure.self) {
+            try ClientWorktreePlanRequest(operation: .merge, sources: ["main", "a"], target: "main")
+        }
+    }
     @Test func fullRepositoryContractAndActionsStayOnClosedClientRoutes() async throws {
         WorktreeProtocol.handler = { request in
             #expect(request.url?.host == "127.0.0.1")
@@ -25,6 +57,22 @@ import Testing
         #expect(result.pushed)
         #expect(result.branch == "task/test")
     }
+}
+
+private func requestBody(_ request: URLRequest) throws -> Data {
+    if let body = request.httpBody { return body }
+    guard let stream = request.httpBodyStream else { return Data() }
+    stream.open()
+    defer { stream.close() }
+    var body = Data()
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    while stream.hasBytesAvailable {
+        let count = stream.read(&buffer, maxLength: buffer.count)
+        if count < 0 { throw stream.streamError ?? URLError(.cannotDecodeRawData) }
+        if count == 0 { break }
+        body.append(contentsOf: buffer.prefix(count))
+    }
+    return body
 }
 
 private final class WorktreeProtocol: URLProtocol, @unchecked Sendable {

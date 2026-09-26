@@ -228,7 +228,7 @@ public struct ClientTimelineRepository {
             before: before,
             revision: snapshot.revision,
             capabilities: snapshot.capabilities,
-            usage: snapshot.usage,
+            usage: snapshot.usage ?? existing?.usage,
             composer: snapshot.composer
         )
         cache.store(state, for: key)
@@ -266,9 +266,16 @@ public struct ClientTimelineRepository {
         case .applied(let messages, let revision):
             state.messages = messages
             state.revision = revision
+            if let usage = delta.usage { state.usage = usage }
             cache.store(state, for: key)
             return .applied(state)
         case .duplicate:
+            // Usage can change without a message revision (for example quota updates).
+            if let usage = delta.usage, usage != state.usage {
+                state.usage = usage
+                cache.store(state, for: key)
+                return .applied(state)
+            }
             return .duplicate
         case .requiresSnapshot:
             return .requiresSnapshot

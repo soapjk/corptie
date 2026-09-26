@@ -36,7 +36,7 @@ test("device history preserves typed timeline presentation without leaking provi
   } finally { await f.close(); }
 });
 
-test("background realtime snapshots skip selected-only usage and composer detail", async () => {
+test("background snapshots and usage-only deltas carry durable usage without Provider reads", async () => {
   const f = await fixture();
   try {
     const windowRequests = [];
@@ -46,16 +46,29 @@ test("background realtime snapshots skip selected-only usage and composer detail
         return { revision: 3, hasEarlier: false, items: [] };
       } });
     let usageReads = 0, composerReads = 0;
-    api.usage = async () => { usageReads += 1; return { schemaVersion: 1 }; };
+    api.usageReader = async () => { usageReads += 1; return {}; };
+    f.store.upsertSessionUsageSnapshot({ sessionId: "session:test", providerId: "test",
+      context: { usedTokens: 10, contextWindow: 100, remainingTokens: 90 },
+      account: { available: true, provider: "test", rateLimits: { primary: { usedPercent: 20 } } } });
     api.configuration = async () => { composerReads += 1; return { schemaVersion: 1 }; };
 
     const background = await api.realtimeTimeline(identity, "session:test", 0, { includeDetail: false });
-    assert.equal(background.usage, null);
+    assert.equal(background.usage.context.usedTokens, 10);
+    assert.equal(background.usage.account.rateLimits.primary.usedPercent, 20);
     assert.equal(background.composer, null);
     assert.equal(usageReads, 0);
     assert.equal(composerReads, 0);
     assert.equal(windowRequests[0].before, 200,
       "resident push warms the same wide bounded source window used by desktop presentation");
+
+    api.store.sessionTimelineChangesAfter = () => ({ snapshotRequired: false, baseRevision: 3,
+      revision: 3, currentRevision: 3, hasMore: false, changes: [] });
+    f.store.upsertSessionUsageSnapshot({ sessionId: "session:test", providerId: "test",
+      context: { usedTokens: 30, contextWindow: 100, remainingTokens: 70 } });
+    const delta = await api.realtimeTimeline(identity, "session:test", 3, { includeDetail: false });
+    assert.equal(delta.kind, "delta");
+    assert.equal(delta.usage.context.usedTokens, 30);
+    assert.equal(usageReads, 0);
 
     await api.realtimeTimeline(identity, "session:test", 0, { includeDetail: true });
     assert.equal(usageReads, 1);

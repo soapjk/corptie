@@ -268,6 +268,37 @@ public struct ClientWorktreeCommitDecision: Encodable, Equatable, Sendable {
     }
 }
 
+/// Request values deliberately differ from the operation names in a returned plan.
+public enum ClientWorktreePlanOperation: String, CaseIterable, Sendable {
+    case merge = "batch_merge"
+    case synchronize = "one_way_sync"
+    case converge
+}
+
+public struct ClientWorktreePlanRequest: Encodable, Sendable {
+    public let operationType: ClientWorktreePlanOperation
+    public let sourceWorktreeIds: [String]
+    public let targetWorktreeId: String
+    public init(operation: ClientWorktreePlanOperation, sources: [String], target: String) throws {
+        guard !target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ClientServiceFailure(statusCode: 400, code: "TARGET_WORKTREE_REQUIRED")
+        }
+        var seen = Set<String>()
+        let ordered = sources.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && seen.insert($0).inserted }
+        guard ordered.contains(where: { $0 != target }) else {
+            throw ClientServiceFailure(statusCode: 400, code: "SOURCE_WORKTREE_REQUIRED")
+        }
+        guard operation == .converge || !ordered.contains(target) else {
+            throw ClientServiceFailure(statusCode: 400, code: "SOURCE_EQUALS_TARGET")
+        }
+        operationType = operation
+        sourceWorktreeIds = operation == .converge && !ordered.contains(target) ? [target] + ordered : ordered
+        targetWorktreeId = target
+    }
+}
+
+extension ClientWorktreePlanOperation: Encodable {}
+
 public struct ClientWorktreeAPI: Sendable {
     private let transport: BackendTransport
     private let decoder = JSONDecoder()
@@ -290,13 +321,12 @@ public struct ClientWorktreeAPI: Sendable {
         try await get(["client", "v1", "worktrees", "repositories", repositoryId, "development-service"])
     }
 
-    public func preparePlan(repositoryId: String, operationType: String? = nil,
+    public func preparePlan(repositoryId: String, operationType: ClientWorktreePlanOperation? = nil,
                             sources: [String]? = nil, target: String? = nil) async throws -> ClientWorktreeJob {
-        struct Body: Encodable { let operationType: String?; let sourceWorktreeIds: [String]?; let targetWorktreeId: String? }
+        let body = try operationType.map { try ClientWorktreePlanRequest(operation: $0, sources: sources ?? [], target: target ?? "") }
         let envelope: JobEnvelope = try await post(["client", "v1", "worktrees", "repositories", repositoryId,
                                                     "integration-plans"],
-                                                   Body(operationType: operationType, sourceWorktreeIds: sources,
-                                                        targetWorktreeId: target))
+                                                   body.map(PlanBody.explicit) ?? .automatic)
         return envelope.job
     }
 
@@ -396,6 +426,15 @@ public struct ClientWorktreeAPI: Sendable {
 }
 
 private struct EmptyBody: Encodable {}
+private enum PlanBody: Encodable {
+    case automatic, explicit(ClientWorktreePlanRequest)
+    func encode(to encoder: Encoder) throws {
+        switch self {
+        case .automatic: try EmptyBody().encode(to: encoder)
+        case .explicit(let request): try request.encode(to: encoder)
+        }
+    }
+}
 private struct EmptyResponse: Decodable {}
 private struct JobEnvelope: Decodable { let job: ClientWorktreeJob }
 private struct ResultEnvelope<Result: Decodable>: Decodable { let result: Result }

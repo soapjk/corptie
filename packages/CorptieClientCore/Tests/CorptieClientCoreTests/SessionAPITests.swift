@@ -3,6 +3,18 @@ import Testing
 @testable import CorptieClientCore
 
 struct SessionAPITests {
+    @Test func workCreationUsesPairedDeviceRouteAndTypedReceipt() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SessionProtocol.self]
+        let transport = try BackendTransport(endpoint: BackendEndpoint(URL(string: "https://unit-test.invalid")!),
+            bearerToken: "test-only", configuration: config)
+        let api = ClientSessionAPI(transport: transport)
+        #expect(try await api.workCreationOptions().agents.map(\.id) == ["agent:test"])
+        let receipt = try await api.createWork(ClientWorkCreation(requestId: "work_create1", name: "NewWork",
+            description: "Scope", contributorAgentIds: ["agent:test"]))
+        #expect(receipt.kind == "work_create")
+        #expect(receipt.entityResult?.workId == "work:new")
+    }
     @Test func taskCreationUsesScopedRouteAndKeepsStructuredReceipt() async throws {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [SessionProtocol.self]
@@ -221,6 +233,13 @@ private final class SessionProtocol: URLProtocol, @unchecked Sendable {
             let route = path.split(separator: "/").last.map(String.init) ?? ""
             let body = (try? JSONSerialization.jsonObject(with: Self.body(of: request))) as? [String: Any]
             switch (path, route, request.httpMethod) {
+            case ("/client/v1/works/create", _, "GET"):
+                json = #"{"schemaVersion":1,"agents":[{"id":"agent:test","name":"Test"}]}"#
+            case ("/client/v1/works/create", _, "POST"):
+                #expect(body?["name"] as? String == "NewWork")
+                #expect(body?["contributorAgentIds"] as? [String] == ["agent:test"])
+                #expect(body?["requestId"] as? String == "work_create1")
+                json = #"{"schemaVersion":1,"requestId":"work_create1","sessionId":"","kind":"work_create","status":"completed","updatedAt":"now","entityResult":{"workId":"work:new","name":"NewWork"}}"#
             case ("/client/v1/tasks/task:one/management", _, "GET"):
                 json = #"{"schemaVersion":1,"task":{"id":"task:one","workId":"work:one","title":"Task","description":"","acceptanceCriteria":"","verificationCriteria":"","priority":"medium","lifecycleState":"todo","archived":false,"mainAgentId":"agent:test","deletionStatus":null},"agents":[{"id":"agent:test","name":"Test"}],"priorities":["low","medium","high","urgent"],"actions":{"rename":{"available":true,"reason":null},"edit":{"available":true,"reason":null},"restart":{"available":false,"reason":"PROVIDER_INITIALIZING"},"archive":{"available":true,"reason":null},"unarchive":{"available":false,"reason":"TASK_NOT_ARCHIVED"},"delete":{"available":true,"reason":null}}}"#
             case ("/client/v1/tasks/task:one/deletion", _, "GET"):
