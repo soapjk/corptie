@@ -77,12 +77,40 @@ export function migrateSceneDomain(store) {
       FOREIGN KEY (instance_id) REFERENCES scene_instances(instance_id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS scene_command_previews (
+      preview_token TEXT PRIMARY KEY,
+      instance_id TEXT NOT NULL,
+      session_id TEXT,
+      command_json TEXT NOT NULL,
+      command_hash TEXT NOT NULL,
+      expected_instance_revision INTEGER NOT NULL,
+      preview_json TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      consumed_at TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (instance_id) REFERENCES scene_instances(instance_id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS scene_session_bindings (
+      instance_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      is_default INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (instance_id, session_id),
+      FOREIGN KEY (instance_id) REFERENCES scene_instances(instance_id) ON DELETE CASCADE,
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    );
+
     CREATE INDEX IF NOT EXISTS idx_scene_instances_updated
       ON scene_instances(status, updated_at DESC, instance_id);
     CREATE INDEX IF NOT EXISTS idx_scene_records_view
       ON scene_records(instance_id, record_type, deleted_at, updated_at DESC, record_id);
     CREATE INDEX IF NOT EXISTS idx_scene_mutations_revision
       ON scene_mutations(instance_id, instance_revision);
+    CREATE INDEX IF NOT EXISTS idx_scene_previews_expiry
+      ON scene_command_previews(instance_id, expires_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_scene_default_session
+      ON scene_session_bindings(instance_id) WHERE is_default=1;
   `);
 
   const seededAt = new Date(0).toISOString();

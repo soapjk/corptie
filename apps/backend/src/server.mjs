@@ -180,6 +180,9 @@ import { memoryDynamicTools, callMemoryDynamicTool } from "./application/memoryD
 import { SkillRegistryService } from "./application/skillRegistryService.mjs";
 import { skillDynamicTools, callSkillDynamicTool } from "./application/skillDynamicTools.mjs";
 import { CollaborationRouter } from "./application/collaborationRouter.mjs";
+import { SceneApplicationService } from "./scenes/sceneApplicationService.mjs";
+import { sceneDynamicTools, callSceneDynamicTool } from "./scenes/sceneDynamicTools.mjs";
+import { handleSceneHttpRequest } from "./scenes/sceneHttpApi.mjs";
 import { MemoryExtractor, createMemoryClassifier } from "./application/memoryExtractor.mjs";
 import { AssistantService, createAssistantIntentResolver } from "./application/assistantService.mjs";
 import { handleEntityHttpRequest } from "./application/entityHttpApi.mjs";
@@ -471,6 +474,7 @@ const taskCompletionService = new TaskCompletionService({
 });
 const artifactService = new ArtifactService({ store });
 const chatResourceService = new ChatResourceService({ store });
+const sceneService = new SceneApplicationService({ store });
 let benchmarkControlPlane = null;
 const dataRootMigrationCoordinator = new DataRootMigrationCoordinator({
   store,
@@ -705,6 +709,14 @@ const hostToolCatalog = new HostToolCatalog([
     tools: workChatDynamicTools,
     authorize: ({ metadata }) => Boolean(metadata?.sessionId),
     execute: (input) => callWorkChatDynamicTool(workChatOperationService, input)
+  },
+  {
+    id: "scenes",
+    domainId: "scenes",
+    domainRevision: "1",
+    tools: sceneDynamicTools,
+    authorize: ({ metadata }) => Boolean(metadata?.sessionId),
+    execute: (input) => callSceneDynamicTool(sceneService, input)
   }
 ]);
 let toolHostService = null;
@@ -9525,7 +9537,10 @@ function route(request, response) {
       || /^\/sessions\/[^/]+\/(stored-snapshot|history|timeline\/window|timeline\/changes|events|usage|context-references|images)$/.test(url.pathname)
       || /^\/works\/[^/]+(?:\/(tasks|artifacts))?$/.test(url.pathname)
       || /^\/tasks\/[^/]+(?:\/(sessions|snapshots|artifacts))?$/.test(url.pathname)
-      || /^\/artifacts\/[^/]+$/.test(url.pathname);
+      || /^\/artifacts\/[^/]+$/.test(url.pathname)
+      || url.pathname === "/scene-templates"
+      || url.pathname === "/scenes"
+      || /^\/scenes\/[^/]+(?:\/(views\/[^/]+|changes))?$/.test(url.pathname);
     if (request.method !== "GET" || !readable) {
       sendJson(response, 403, { code: "DEVELOPMENT_PREVIEW_READ_ONLY",
         error: "开发版数据预览：只浏览、不执行；此操作已禁用。" });
@@ -9573,6 +9588,8 @@ function route(request, response) {
     });
     return;
   }
+
+  if (handleSceneHttpRequest({ request, response, url, service: sceneService })) return;
 
   const taskSummaryRefreshMatch = url.pathname.match(/^\/tasks\/([^/]+)\/summary-refresh$/);
   if (taskSummaryRefreshMatch && request.method === "POST") {
