@@ -42,10 +42,13 @@ extension PadWorkspace {
                 liveStatus = "正在连接实时更新"
                 realtimeConnected = false
                 let api = ClientEvents(transport: try await connection.transport())
+                // The v2 stream pushes resident snapshots and subsequent
+                // deltas for every active Session. Keep it global so changing
+                // the visible Task remains a local projection operation.
                 for try await update in api.subscribeRealtime(
-                    sessionId: selection,
+                    sessionId: nil,
                     stateRevision: realtimeStateRevision,
-                    timelineRevision: lastTimelineRevision ?? 0
+                    timelineRevision: 0
                 ) {
                     try Task.checkCancellation()
                     guard realtimeGeneration == generation else { return }
@@ -53,12 +56,14 @@ extension PadWorkspace {
                     switch update {
                     case .ready:
                         receivedV2Ready = true
-                        liveStatus = "实时连接正常"
                         realtimeConnected = true
                         lastRealtimePulseAt = Date()
                         realtimePausedAt = nil
+                        liveStatus = hasReceivedRealtimeState ? "实时连接正常" : "实时连接已建立，正在同步数据"
+                        scheduleInitialStateRecovery(connection)
                     case .state(let snapshot):
                         applyRealtimeState(snapshot)
+                        liveStatus = "实时连接正常"
                     case .control(let snapshot):
                         directControlSnapshot = snapshot
                         controlRevision += 1
@@ -68,23 +73,31 @@ extension PadWorkspace {
                         if !applyRealtimeTimeline(delta) {
                             // A verified revision gap is one of the few allowed
                             // fallback reads; normal updates never reach this path.
-                            messagesDirty = true
-                            scheduleRefresh(connection)
+                            if isSelectedTimeline(delta.sessionId) {
+                                messagesDirty = true
+                                scheduleRefresh(connection)
+                            } else {
+                                await repairBackgroundTimeline(connection, sessionID: delta.sessionId)
+                            }
                         }
                     case .receipt(let receipt):
                         pushedReceipt = receipt
                         pushedReceiptRevision += 1
                         if pending?.requestID == receipt.requestId { settle(receipt) }
                     case .heartbeat:
-                        liveStatus = "实时连接正常"
                         realtimeConnected = true
                         lastRealtimePulseAt = Date()
                         realtimePausedAt = nil
+                        liveStatus = hasReceivedRealtimeState ? "实时连接正常" : "实时连接已建立，正在同步数据"
                     }
                 }
             } catch {
                 if Task.isCancelled { return }
                 if !receivedV2Ready {
+                    // The initial stream is preferred, but a transport-level
+                    // failure must never leave a newly opened client empty.
+                    // This is one finite bootstrap read, not polling.
+                    await inventory(connection)
                     await runLegacyRealtime(connection, generation: generation)
                     return
                 }

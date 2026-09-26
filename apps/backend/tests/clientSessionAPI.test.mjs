@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { ClientSessionAPI, approvalRequestIsCurrent } from "../src/application/clientSessionAPI.mjs";
 
-const identity = { deviceId: "device:one", permissions: ["inventory.read", "messages.read", "messages.write", "sessions.stop"] };
+const identity = { deviceId: "device:one" };
 
 test("device history preserves typed timeline presentation without leaking provider envelopes", async () => {
   const f = await fixture();
@@ -33,6 +33,33 @@ test("device history preserves typed timeline presentation without leaking provi
     for (const key of ["rawMetadataJSON", "rawEventEnvelope", "providerCredentials"]) {
       assert.equal(Object.hasOwn(items[0], key), false);
     }
+  } finally { await f.close(); }
+});
+
+test("background realtime snapshots skip selected-only usage and composer detail", async () => {
+  const f = await fixture();
+  try {
+    const windowRequests = [];
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks,
+      readWindow: async (_sessionId, options) => {
+        windowRequests.push(options);
+        return { revision: 3, hasEarlier: false, items: [] };
+      } });
+    let usageReads = 0, composerReads = 0;
+    api.usage = async () => { usageReads += 1; return { schemaVersion: 1 }; };
+    api.configuration = async () => { composerReads += 1; return { schemaVersion: 1 }; };
+
+    const background = await api.realtimeTimeline(identity, "session:test", 0, { includeDetail: false });
+    assert.equal(background.usage, null);
+    assert.equal(background.composer, null);
+    assert.equal(usageReads, 0);
+    assert.equal(composerReads, 0);
+    assert.equal(windowRequests[0].before, 200,
+      "resident push warms the same wide bounded source window used by desktop presentation");
+
+    await api.realtimeTimeline(identity, "session:test", 0, { includeDetail: true });
+    assert.equal(usageReads, 1);
+    assert.equal(composerReads, 1);
   } finally { await f.close(); }
 });
 
@@ -101,8 +128,6 @@ test("device approval uses a current item and one declared option, without expos
       { id: "allow", label: "Allow Once", role: "approve", selected: false },
       { id: "deny", label: "Deny", role: "deny", selected: false }
     ]);
-    await assert.rejects(api.approval({ ...identity, permissions: ["messages.read"] }, "session:test",
-      { itemId: item.id, optionId: "allow" }), { code: "DEVICE_PERMISSION_REQUIRED" });
     await assert.rejects(api.approval(identity, "session:test", { itemId: item.id, optionId: "other" }),
       { code: "INVALID_APPROVAL_OPTION" });
     const result = await api.approval(identity, "session:test", { itemId: item.id, optionId: "allow" });
@@ -258,7 +283,7 @@ test("device receives the same bounded file-change summary without Review or Und
   } finally { await f.close(); }
 });
 
-test("conversation commands need explicit authority, persist public results and deduplicate across restart", async () => {
+test("conversation commands persist public results and deduplicate across restart", async () => {
   const f = await fixture();
   try {
     let calls = 0;
@@ -270,17 +295,14 @@ test("conversation commands need explicit authority, persist public results and 
     } };
     const api = new ClientSessionAPI({ store: f.store, ...callbacks, conversationCommands: commands });
     const input = { requestId: "goal_request_1", name: "goal", arguments: "build the app" };
-    await assert.rejects(api.conversationCommand(identity, "session:test", input), { code: "DEVICE_PERMISSION_REQUIRED" });
-    assert.equal(calls, 0);
-    const authorized = { ...identity, permissions: [...identity.permissions, "sessions.commands"] };
-    const result = await api.conversationCommand(authorized, "session:test", input);
+    const result = await api.conversationCommand(identity, "session:test", input);
     assert.equal(result.status, "completed");
     assert.equal(result.kind, "conversation_command");
     assert.deepEqual(result.commandResult, { text: "Goal 已设置", truncated: false, messageId: "command:goal-result" });
     const restored = new ClientSessionAPI({ store: f.store, ...callbacks, conversationCommands: commands });
-    assert.deepEqual(await restored.conversationCommand(authorized, "session:test", input), result);
+    assert.deepEqual(await restored.conversationCommand(identity, "session:test", input), result);
     assert.equal(calls, 1);
-    await assert.rejects(restored.conversationCommand(authorized, "session:test", { ...input, arguments: "other" }), { code: "IDEMPOTENCY_CONFLICT" });
+    await assert.rejects(restored.conversationCommand(identity, "session:test", { ...input, arguments: "other" }), { code: "IDEMPOTENCY_CONFLICT" });
   } finally { await f.close(); }
 });
 
@@ -293,31 +315,29 @@ test("concurrent command validation claims one durable dispatch and uncertain ou
     const commands = { list: async () => [], validate: async () => { await Promise.resolve(); },
       execute: async () => { calls++; await dispatch; throw new Error("lost response after side effect"); } };
     const api = new ClientSessionAPI({ store: f.store, ...callbacks, conversationCommands: commands });
-    const authorized = { ...identity, permissions: [...identity.permissions, "sessions.commands"] };
     const input = { requestId: "goal_request_2", name: "goal", arguments: "pause" };
-    const first = api.conversationCommand(authorized, "session:test", input);
-    const second = await api.conversationCommand(authorized, "session:test", input);
+    const first = api.conversationCommand(identity, "session:test", input);
+    const second = await api.conversationCommand(identity, "session:test", input);
     assert.equal(second.status, "dispatching");
     finish();
     assert.equal((await first).status, "unknown");
-    assert.equal((await api.conversationCommand(authorized, "session:test", input)).status, "unknown");
+    assert.equal((await api.conversationCommand(identity, "session:test", input)).status, "unknown");
     assert.equal(calls, 1);
   } finally { await f.close(); }
 });
 
-test("clear requires separate authority and confirmation; permission revocation during validation prevents dispatch", async () => {
+test("clear requires confirmation and identity changes during validation prevent dispatch", async () => {
   const f = await fixture();
   try {
     let calls = 0;
     const commands = { list: async () => [], validate: async () => {}, execute: async () => { calls++; return { text: "cleared", conversationCleared: true }; } };
     const api = new ClientSessionAPI({ store: f.store, ...callbacks, conversationCommands: commands });
     const input = { requestId: "clear_request_1", name: "clear", arguments: "" };
-    const authorized = { ...identity, permissions: [...identity.permissions, "sessions.clear"] };
-    await assert.rejects(api.conversationCommand(identity, "session:test", { ...input, confirmed: true }), { code: "DEVICE_PERMISSION_REQUIRED" });
-    await assert.rejects(api.conversationCommand(authorized, "session:test", input), { code: "COMMAND_CONFIRMATION_REQUIRED" });
-    await assert.rejects(api.conversationCommand(authorized, "session:test", { ...input, confirmed: true }, () => identity), { code: "DEVICE_PERMISSION_REQUIRED" });
+    await assert.rejects(api.conversationCommand(identity, "session:test", input), { code: "COMMAND_CONFIRMATION_REQUIRED" });
+    await assert.rejects(api.conversationCommand(identity, "session:test", { ...input, confirmed: true },
+      () => ({ deviceId: "device:other" })), { code: "INVALID_CREDENTIAL" });
     assert.equal(calls, 0);
-    const result = await api.conversationCommand(authorized, "session:test", { ...input, confirmed: true });
+    const result = await api.conversationCommand(identity, "session:test", { ...input, confirmed: true });
     assert.equal(result.status, "completed");
     assert.equal(result.commandResult.conversationCleared, true);
     assert.equal(calls, 1);
@@ -333,7 +353,7 @@ test("command queries, unsupported capabilities and invalid arguments are explic
       execute: async () => { calls++; return { text: "no active goal" }; } };
     const api = new ClientSessionAPI({ store: f.store, ...callbacks, conversationCommands: commands });
     const catalog = await api.commandCatalog(identity, "session:test");
-    assert.equal(catalog.commands[0].canMutate, false);
+    assert.equal(catalog.commands[0].canMutate, true);
     assert.equal((await api.conversationCommand(identity, "session:test", { requestId: "query_request_1", name: "goal", arguments: "" })).status, "completed");
     await assert.rejects(api.conversationCommand(identity, "session:test", { requestId: "query_request_2", name: "status", arguments: "unexpected" }), { code: "INVALID_COMMAND_ARGUMENTS" });
     await assert.rejects(api.conversationCommand(identity, "session:test", { requestId: "query_request_3", name: "ps", arguments: "" }), { code: "CAPABILITY_UNSUPPORTED" });
@@ -399,12 +419,11 @@ test("scheduled messages are scoped and deduplicated without immediate model sen
     for (const bad of [{ ...schedule, process: { pid: 1 } }, { ...schedule, intervalSeconds: 0 }, { ...schedule, runAt: "invalid" }]) {
       await assert.rejects(api.command(identity, "session:test", "send", { ...input, schedule: bad }), { code: "INVALID_SCHEDULE" });
     }
-    await assert.rejects(api.command({ ...identity, permissions: [] }, "session:test", "send", input), { code: "DEVICE_PERMISSION_REQUIRED" });
     assert.equal(scheduled.length, 1);
   } finally { await f.close(); }
 });
 
-test("composer configuration resolves Session identity, checks permissions and uses neutral callbacks", async () => {
+test("composer configuration resolves Session identity and uses neutral callbacks", async () => {
   const f = await fixture();
   try {
     const calls = [];
@@ -420,7 +439,6 @@ test("composer configuration resolves Session identity, checks permissions and u
     assert.equal(result.currentModel, "model:test");
     assert.equal(Object.hasOwn(result.models[0], "secret"), false);
     assert.deepEqual(calls, [["session:test", "model", "model:test"]]);
-    await assert.rejects(api.configuration({ ...identity, permissions: ["messages.read"] }, "session:test", { model: "x" }), { code: "DEVICE_PERMISSION_REQUIRED" });
     await assert.rejects(api.configuration(identity, "session:test", { reasoningLevel: "high" }), { code: "CAPABILITY_UNSUPPORTED" });
     for (const input of [{}, [], { model: "x", source: "admin" }, { provider: "x" }, { model: "" }]) {
       await assert.rejects(api.configuration(identity, "session:test", input), { code: "INVALID_CONFIGURATION" });
@@ -452,7 +470,7 @@ test("commands dispatch once, replay durable receipt and reject changed payload"
   } finally { await f.close(); }
 });
 
-test("permissions, provider capabilities and payload boundaries precede execution", async () => {
+test("provider capabilities and payload boundaries precede execution", async () => {
   const f = await fixture();
   try {
     let calls = 0;
@@ -462,7 +480,6 @@ test("permissions, provider capabilities and payload boundaries precede executio
       await assert.rejects(api.command(identity, "session:test", "send", { requestId: `request_${provider}`, text: "test" }), { code: "CAPABILITY_UNSUPPORTED" });
     }
     const api = new ClientSessionAPI({ store: f.store, ...callbacks });
-    await assert.rejects(api.command({ ...identity, permissions: ["inventory.read"] }, "session:test", "send", { requestId: "request_123", text: "test" }), { code: "DEVICE_PERMISSION_REQUIRED" });
     for (const text of ["", "/clear", "a".repeat(16001)]) {
       await assert.rejects(api.command(identity, "session:test", "send", { requestId: "request_123", text }), { code: "INVALID_MESSAGE" });
     }
@@ -511,7 +528,6 @@ test("capabilities carry Session readiness and usage is a sanitized read-only pr
           primary: { usedPercent: 40, windowDurationMins: 300, resetsAt: 1700000000 }, secondary: null },
         rateLimitsByLimitId: { default: { limitId: "default", limitName: null,
           primary: { usedPercent: null, windowDurationMins: null, resetsAt: null }, secondary: null } } } });
-    await assert.rejects(api.usage({ ...identity, permissions: ["inventory.read"] }, "session:test"), { code: "DEVICE_PERMISSION_REQUIRED" });
     await assert.rejects(api.usage(identity, "session:missing"), { code: "SESSION_NOT_AVAILABLE" });
   } finally { await f.close(); }
 });
@@ -538,7 +554,6 @@ test("uncertain dispatch is never automatically replayed; reads project only pub
     assert.equal(older.nextBefore, "older");
     await assert.rejects(api.messages(identity, "session:test", new URLSearchParams("before=missing")), { code: "ANCHOR_NOT_FOUND" });
     await assert.rejects(api.messages(identity, "session:test", new URLSearchParams("limit=100")), { code: "INVALID_LIMIT" });
-    await assert.rejects(api.messages({ ...identity, permissions: [] }, "session:test", new URLSearchParams()), { code: "DEVICE_PERMISSION_REQUIRED" });
   } finally { await f.close(); }
 });
 
@@ -584,7 +599,6 @@ test("read receipts acknowledge an exact rendered cursor and publish through the
     for (const input of [{}, { throughSequence: -1 }, { throughSequence: "1" }, { throughSequence: 0, extra: true }]) {
       assert.throws(() => api.readReceipt(identity, "session:test", input), { code: "INVALID_READ_SEQUENCE", status: 400 });
     }
-    assert.throws(() => api.readReceipt({ ...identity, permissions: [] }, "session:test", { throughSequence: 0 }), { status: 403 });
     assert.throws(() => api.readReceipt(identity, "session:missing", { throughSequence: 0 }), { code: "SESSION_NOT_AVAILABLE" });
   } finally { await f.close(); }
 });
@@ -623,7 +637,6 @@ test("message attachments project managed paths only and stream through the owne
     for (const query of [new URLSearchParams(), new URLSearchParams({ path: "" }), new URLSearchParams([["path", "a"], ["path", "b"]]), new URLSearchParams({ path: "a", extra: "1" })]) {
       await assert.rejects(api.image(identity, "session:test", query), { status: query.get("path") === "" ? 404 : 400 });
     }
-    await assert.rejects(api.image({ ...identity, permissions: [] }, "session:test", new URLSearchParams({ path: "a" })), { status: 403 });
     await assert.rejects(api.image(identity, "session:missing", new URLSearchParams({ path: "a" })), { code: "SESSION_NOT_AVAILABLE" });
     const noImages = new ClientSessionAPI({ store: f.store, ...callbacks });
     await assert.rejects(noImages.image(identity, "session:test", new URLSearchParams({ path: "a" })), { code: "IMAGE_NOT_AVAILABLE", status: 404 });

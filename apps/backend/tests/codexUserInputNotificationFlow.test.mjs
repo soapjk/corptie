@@ -52,7 +52,7 @@ test("Codex native questions reach one shared timeline item and accept one secre
       readWindow: async (sessionId) => ({ revision: store.sessionTimelineRevision(sessionId),
         hasEarlier: false, items: store.getItems(sessionId) }),
       respondToUserInput: async (_sessionId, input) => client.respondToUserInput("thread:one", input) });
-    const identity = { deviceId: "device:one", permissions: ["messages.read", "messages.write"] };
+    const identity = { deviceId: "device:one" };
     const page = await api.messages(identity, "session:one", new URLSearchParams());
     const publicItem = page.items.find((candidate) => candidate.id === item.id);
     assert.equal(publicItem.userInput.questions.length, 2);

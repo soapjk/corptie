@@ -27,7 +27,7 @@ test("persisted approval options and submission status reach the mobile window",
         return { ...result.window, revision: result.timelineRevision };
       },
       send: async () => {}, stop: async () => {}, actions: () => ({}) });
-    const identity = { deviceId: "device:one", permissions: ["messages.read"] };
+    const identity = { deviceId: "device:one" };
     const first = await api.messages(identity, "approval-session", new URLSearchParams());
     assert.deepEqual(first.items[0].options.map(option => [option.id, option.label, option.role]),
       [["yes", "允许", "approve"], ["no", "拒绝", "deny"]]);

@@ -133,7 +133,19 @@ struct PadComposer: View {
                 }
             }
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-            .modifier(ComposerShellSurface(isFocused: isFocused))
+            .overlay {
+                shellShape
+                    .strokeBorder(Color.primary.opacity(isFocused ? 0.16 : 0.08), lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
+            // A text-entry surface is not a pressable control. Keeping the
+            // glass non-interactive avoids the system press-scale separating
+            // it from the focus ring; the send and more buttons remain
+            // interactive glass controls of their own.
+            .padGlassSurface(in: shellShape, interactive: false)
+            // Keep the shadow inside the composer's 12pt gutter so it cannot
+            // be clipped into a hard vertical edge at the split-view divider.
+            .shadow(color: Color.black.opacity(0.06), radius: 4, y: 1.5)
             // Anchored above the editor rather than presented: a UIKit popover would
             // take first responder from the text view and drop the keyboard.
             .overlay(alignment: .topLeading) {
@@ -182,6 +194,10 @@ struct PadComposer: View {
             guard workspace.composerConfiguration == nil, workspace.capabilities?.composer == true else { return }
             await workspace.configureComposer(connection)
         }
+    }
+
+    private var shellShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: ComposerShellMetrics.cornerRadius, style: .continuous)
     }
 
     // MARK: Mentions

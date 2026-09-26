@@ -1,0 +1,562 @@
+import SwiftUI
+import CorptieClientCore
+
+struct PadWorktreeManagementView: View {
+    let repository: ClientControlItem
+    let connection: PadConnection
+    @Bindable var manager: PadWorktreeStore
+    let openSession: (String) -> Void
+    @State private var operationDraft: PadWorktreeOperationDraft?
+    @State private var pendingDelete: ClientManagedWorktree?
+    @State private var pendingCleanup: [ClientManagedWorktree] = []
+    @State private var showingPlan = false
+    @State private var showingJobReview = false
+
+    var body: some View {
+        Group {
+            if let detail = manager.detail {
+                GeometryReader { proxy in
+                    if proxy.size.width >= 760 {
+                        HStack(spacing: 0) {
+                            worktreeList(detail).frame(width: min(330, proxy.size.width * 0.36))
+                            Divider()
+                            detailPane(detail)
+                        }
+                    } else {
+                        detailPane(detail)
+                    }
+                }
+            } else if manager.loading {
+                ProgressView("正在读取 Worktree…")
+            } else {
+                ContentUnavailableView("无法读取仓库", systemImage: "externaldrive.badge.exclamationmark",
+                    description: Text(manager.errorMessage ?? "请稍后重试。"))
+            }
+        }
+        .navigationTitle(repository.name)
+        .toolbar { toolbar }
+        .task(id: repository.id) { await manager.load(repository.id, connection: connection) }
+        .sheet(item: $operationDraft) { draft in
+            PadWorktreeOperationSheet(draft: draft) { confirmed in
+                Task { await manager.execute(confirmed, connection: connection) }
+            }
+        }
+        .sheet(isPresented: $showingPlan) {
+            if let project = manager.detail?.project {
+                PadWorktreePlanSheet(project: project) { operation, sources, target in
+                    Task { await manager.preparePlan(operation: operation, sources: sources,
+                                                     target: target, connection: connection) }
+                }
+            }
+        }
+        .sheet(isPresented: $showingJobReview) {
+            if let job = manager.job {
+                PadWorktreeJobReview(job: job) { decisions in
+                    Task { await manager.jobAction("confirm", decisions: decisions, connection: connection) }
+                }
+            }
+        }
+        .confirmationDialog("删除 Worktree？", isPresented: Binding(
+            get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }
+        ), titleVisibility: .visible) {
+            if let worktree = pendingDelete {
+                Button("删除 Worktree 与本地分支", role: .destructive) {
+                    pendingDelete = nil
+                    Task { await manager.delete(worktree, connection: connection) }
+                }
+            }
+            Button("取消", role: .cancel) { pendingDelete = nil }
+        } message: {
+            Text("不会执行远程 Git 推送，也不会删除 GitHub 上的分支。")
+        }
+        .confirmationDialog("清理已合并 Worktree？", isPresented: Binding(
+            get: { !pendingCleanup.isEmpty }, set: { if !$0 { pendingCleanup = [] } }
+        ), titleVisibility: .visible) {
+            Button("清理 \(pendingCleanup.count) 个 Worktree", role: .destructive) {
+                let targets = pendingCleanup; pendingCleanup = []
+                Task { await manager.cleanup(targets, connection: connection) }
+            }
+            Button("取消", role: .cancel) { pendingCleanup = [] }
+        } message: { Text("只会删除已合并、干净且未被会话或 Task 使用的 Worktree。") }
+        .alert("Worktree 操作失败", isPresented: Binding(
+            get: { manager.errorMessage != nil },
+            set: { if !$0 { manager.errorMessage = nil } }
+        )) { Button("好", role: .cancel) {} } message: { Text(manager.errorMessage ?? "") }
+        .alert("操作完成", isPresented: Binding(
+            get: { manager.notice != nil }, set: { if !$0 { manager.notice = nil } }
+        )) { Button("好", role: .cancel) {} } message: { Text(manager.notice ?? "") }
+    }
+
+    @ToolbarContentBuilder private var toolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            if manager.loading || manager.planning { ProgressView().controlSize(.small) }
+            Menu {
+                Button("生成集成计划", systemImage: "arrow.triangle.merge") { showingPlan = true }
+                Button("快速生成全部待处理计划", systemImage: "wand.and.stars") {
+                    Task { await manager.preparePlan(connection: connection) }
+                }
+                if let targets = cleanupTargets, !targets.isEmpty {
+                    Button("清理 \(targets.count) 个已合并 Worktree", systemImage: "trash", role: .destructive) {
+                        pendingCleanup = targets
+                    }
+                }
+            } label: { Label("管理", systemImage: "ellipsis.circle") }
+            .disabled(manager.detail == nil || manager.planning)
+            Button("刷新", systemImage: "arrow.clockwise") {
+                Task { await manager.load(repository.id, connection: connection, force: true) }
+            }.disabled(manager.loading)
+        }
+    }
+
+    private func worktreeList(_ detail: ClientManagedRepositoryDetail) -> some View {
+        List(selection: Binding(get: { manager.selectedWorktreeID }, set: { id in
+            guard let id else { return }
+            Task { await manager.select(id, connection: connection) }
+        })) {
+            Section {
+                ForEach(detail.project.worktrees) { worktree in
+                    worktreeRow(worktree).tag(worktree.worktreeId)
+                }
+            } header: {
+                Text("\(detail.project.worktrees.count) 个 Worktree")
+            }
+        }
+        .listStyle(.sidebar)
+    }
+
+    private func worktreeRow(_ worktree: ClientManagedWorktree) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Image(systemName: worktree.isMain ? "house.fill" : "arrow.triangle.branch")
+                    .foregroundStyle(worktree.isMain ? Color.accentColor : Color.secondary)
+                Text(worktree.branchName ?? "游离 HEAD").lineLimit(1)
+                Spacer()
+                if manager.busyWorktreeIDs.contains(worktree.worktreeId) { ProgressView().controlSize(.mini) }
+            }
+            HStack(spacing: 6) {
+                statusPill(worktreeLabel(worktree), color: worktreeColor(worktree))
+                if worktree.dirty == true { statusPill("未提交", color: .orange) }
+                if worktree.pendingIntegration { statusPill("待集成", color: .blue) }
+            }
+            Text(worktree.path).font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(1)
+        }
+        .padding(.vertical, 3)
+    }
+
+    private func detailPane(_ detail: ClientManagedRepositoryDetail) -> some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 16) {
+                if detail.project.worktrees.count > 1 {
+                    Picker("Worktree", selection: Binding(get: { manager.selectedWorktreeID ?? "" }, set: { id in
+                        Task { await manager.select(id, connection: connection) }
+                    })) {
+                        ForEach(detail.project.worktrees) { worktree in
+                            Text(worktree.branchName ?? worktree.path).tag(worktree.worktreeId)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if let worktree = manager.selectedWorktree {
+                    worktreeOverview(worktree)
+                    worktreeChanges(worktree)
+                    worktreeAssociations(worktree)
+                    worktreeActions(worktree)
+                }
+                if let service = manager.service { serviceCard(service) }
+                if let job = manager.job { jobCard(job) }
+            }
+            .padding(20)
+            .frame(maxWidth: 820, alignment: .leading)
+        }
+        .refreshable { await manager.load(repository.id, connection: connection, force: true) }
+    }
+
+    private func worktreeOverview(_ worktree: ClientManagedWorktree) -> some View {
+        card("状态", systemImage: "info.circle") {
+            HStack(spacing: 8) {
+                statusPill(worktreeLabel(worktree), color: worktreeColor(worktree))
+                if worktree.dirty == true { statusPill("有未提交修改", color: .orange) }
+                if worktree.synchronizedWithMain == true { statusPill("已同步", color: .green) }
+                if worktree.pendingIntegration { statusPill("待集成", color: .blue) }
+            }
+            infoRow("分支", worktree.branchName ?? "游离 HEAD", monospaced: true)
+            infoRow("路径", worktree.path, monospaced: true)
+            if let oid = worktree.headOid { infoRow("HEAD", String(oid.prefix(12)), monospaced: true) }
+            infoRow("与主分支", "领先 \(worktree.aheadOfMain ?? 0) · 落后 \(worktree.behindMain ?? 0)")
+            if let summary = worktree.statusSummary, !summary.isEmpty { Text(summary).font(.footnote).foregroundStyle(.secondary) }
+            if let operation = worktree.operationState { Label("正在进行 Git 操作：\(operation)", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) }
+            if worktree.isLocked { Label(worktree.lockReason ?? "Worktree 已锁定", systemImage: "lock.fill").foregroundStyle(.orange) }
+        }
+    }
+
+    @ViewBuilder private func worktreeChanges(_ worktree: ClientManagedWorktree) -> some View {
+        if !worktree.changedFiles.isEmpty || !worktree.conflictFiles.isEmpty {
+            card("文件", systemImage: "doc.on.doc") {
+                if let stat = worktree.diffStat { Text(stat).font(.caption.monospaced()).foregroundStyle(.secondary) }
+                ForEach(worktree.conflictFiles, id: \.self) { file in
+                    Label(file, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).font(.footnote.monospaced())
+                }
+                ForEach(worktree.changedFiles.prefix(80), id: \.self) { file in
+                    Text(file).font(.footnote.monospaced()).textSelection(.enabled)
+                }
+                if worktree.changedFiles.count > 80 { Text("另有 \(worktree.changedFiles.count - 80) 个文件").foregroundStyle(.secondary) }
+            }
+        }
+    }
+
+    @ViewBuilder private func worktreeAssociations(_ worktree: ClientManagedWorktree) -> some View {
+        if !worktree.associations.isEmpty {
+            card("关联会话与 Task", systemImage: "link") {
+                ForEach(Array(worktree.associations.enumerated()), id: \.offset) { _, association in
+                    Button {
+                        if let session = association.sessionId { openSession(session) }
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(association.taskTitle ?? association.title ?? association.logicalSessionId)
+                                if let task = association.taskId { Text(task).font(.caption).foregroundStyle(.secondary) }
+                            }
+                            Spacer()
+                            if association.active { statusPill("活跃", color: .green) }
+                            Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(association.sessionId == nil)
+                }
+            }
+        }
+    }
+
+    private func worktreeActions(_ worktree: ClientManagedWorktree) -> some View {
+        card("操作", systemImage: "wrench.and.screwdriver") {
+            let busy = manager.busyWorktreeIDs.contains(worktree.worktreeId)
+            ShareLink(item: worktree.path) { Label("共享 Worktree 路径", systemImage: "square.and.arrow.up") }
+            if worktree.isMain {
+                Button("提交主 Worktree 修改", systemImage: "checkmark.circle") { prepare(worktree) }
+                    .disabled(busy || worktree.dirty != true)
+            } else {
+                Button("提交、同步、合并…", systemImage: "arrow.triangle.merge") { prepare(worktree) }.disabled(busy)
+                Button("仅与主分支同步", systemImage: "arrow.triangle.2.circlepath") {
+                    Task { await manager.synchronize(worktree, connection: connection) }
+                }.disabled(busy || worktree.availability != "available")
+            }
+            if let push = manager.pushStatuses[worktree.worktreeId] {
+                Button("推送到 GitHub", systemImage: "arrow.up.circle") {
+                    Task { await manager.push(worktree, connection: connection) }
+                }
+                .disabled(busy || !push.available || !push.pending)
+                if let destination = push.destinationUrl { Text(destination).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+                if let error = push.error { Text(error).font(.caption).foregroundStyle(.orange) }
+            }
+            Divider()
+            Button("删除 Worktree 与本地分支", systemImage: "trash", role: .destructive) {
+                if deletionBlocker(worktree) == nil { pendingDelete = worktree }
+                else { manager.errorMessage = deletionBlocker(worktree) }
+            }.disabled(busy || worktree.isMain)
+        }
+    }
+
+    private func serviceCard(_ status: ClientDevelopmentServiceStatus) -> some View {
+        card("开发服务", systemImage: "server.rack") {
+            HStack {
+                statusPill(serviceLabel(status.service), color: status.service.healthy == true ? .green : status.service.running == true ? .orange : .secondary)
+                if status.toolset.requiresUpdate { statusPill("Toolset 待更新", color: .orange) }
+                else if status.toolset.installed { statusPill("Toolset 已安装", color: .green) }
+            }
+            Picker("服务配置", selection: Binding(get: { status.toolset.selectedProfile }, set: { profile in
+                Task { await manager.serviceAction(status.toolset.installed ? "profile" : "initialize",
+                                                   profileID: profile, connection: connection) }
+            })) {
+                ForEach(status.toolset.profiles) { profile in Text(profile.label).tag(profile.id) }
+            }
+            .disabled(manager.serviceBusy || status.toolset.profiles.isEmpty)
+            HStack {
+                if status.service.running == true {
+                    Button("重新构建并启动", systemImage: "hammer") {
+                        Task { await manager.serviceAction("restart", profileID: status.toolset.selectedProfile, connection: connection) }
+                    }
+                    Button("停止", systemImage: "stop.fill", role: .destructive) {
+                        Task { await manager.serviceAction("stop", connection: connection) }
+                    }
+                } else {
+                    Button("构建并启动", systemImage: "play.fill") {
+                        Task { await manager.serviceAction("start", profileID: status.toolset.selectedProfile, connection: connection) }
+                    }
+                }
+            }.disabled(manager.serviceBusy || !status.toolset.configured)
+            Button(status.toolset.requiresUpdate ? "更新 Corptie Scripts Toolset" : "初始化 Toolset",
+                   systemImage: "shippingbox") {
+                Task { await manager.serviceAction(status.toolset.requiresUpdate ? "update" : "initialize",
+                                                   profileID: status.toolset.selectedProfile, connection: connection) }
+            }.disabled(manager.serviceBusy || (status.toolset.installed && !status.toolset.requiresUpdate))
+            if let error = status.service.configurationError { Text(error).font(.footnote).foregroundStyle(.orange) }
+            if let detail = status.service.verificationDetail { Text(detail).font(.footnote).foregroundStyle(.secondary) }
+        }
+    }
+
+    private func jobCard(_ job: ClientWorktreeJob) -> some View {
+        card("集成任务", systemImage: "arrow.triangle.merge") {
+            HStack {
+                statusPill(jobStatus(job.status), color: job.status == "completed" ? .green : job.status == "failed" ? .red : .blue)
+                Text("\(job.progress.completed) / \(job.progress.total)").foregroundStyle(.secondary)
+            }
+            ProgressView(value: job.progress.fraction)
+            Text("阶段：\(job.phase)").font(.footnote).foregroundStyle(.secondary)
+            ForEach(job.plan.blockingRisks, id: \.code) { risk in
+                Label(risk.message, systemImage: "exclamationmark.triangle.fill").font(.footnote).foregroundStyle(.orange)
+            }
+            if let error = job.error { Text(error).font(.footnote).foregroundStyle(.red) }
+            HStack {
+                if job.status == "awaiting_confirmation" {
+                    Button("查看并确认计划", systemImage: "checkmark.seal") { showingJobReview = true }
+                }
+                if job.status == "paused" {
+                    Button("重新验证并继续", systemImage: "arrow.clockwise") {
+                        Task { await manager.jobAction("retry", connection: connection) }
+                    }
+                    if job.hasMergeConflict {
+                        Button("交给 Agent 解决冲突", systemImage: "person.crop.circle.badge.gearshape") {
+                            Task { await manager.jobAction("resolve-conflict", connection: connection) }
+                        }
+                    }
+                }
+                if job.canCancel {
+                    Button("取消任务", role: .destructive) {
+                        Task { await manager.jobAction("cancel", connection: connection) }
+                    }
+                }
+            }
+            if let session = job.conflictResolution?.sessionId ?? job.conflictAutomation?.sessionId {
+                Button("查看冲突处理会话", systemImage: "bubble.left.and.bubble.right") { openSession(session) }
+            }
+        }
+    }
+
+    private func prepare(_ worktree: ClientManagedWorktree) {
+        Task {
+            if let draft = await manager.prepareOperation(worktree, connection: connection) { operationDraft = draft }
+        }
+    }
+
+    private var cleanupTargets: [ClientManagedWorktree]? {
+        manager.detail?.project.worktrees.filter { !$0.isMain && deletionBlocker($0) == nil }
+    }
+
+    private func deletionBlocker(_ worktree: ClientManagedWorktree) -> String? {
+        if let blocker = worktree.deletionBlocker { return blocker.reason }
+        if worktree.isMain { return "主 Worktree 不能删除。" }
+        if worktree.availability != "available" { return "Worktree 当前不可用。" }
+        if worktree.isLocked { return worktree.lockReason ?? "Worktree 已锁定。" }
+        if worktree.operationState != nil { return "Worktree 正在进行 Git 操作。" }
+        if !worktree.conflictFiles.isEmpty { return "请先解决冲突。" }
+        if worktree.dirty != false { return "请先提交或放弃未提交修改。" }
+        if worktree.mergedIntoMain != true { return "请先合并到主分支。" }
+        if !worktree.associations.isEmpty { return "请先移动或结束关联的会话与 Task。" }
+        return nil
+    }
+
+    private func worktreeLabel(_ worktree: ClientManagedWorktree) -> String {
+        if worktree.availability != "available" { return "不可用" }
+        if !worktree.conflictFiles.isEmpty { return "有冲突" }
+        if worktree.mergedIntoMain == true { return "已合并" }
+        return worktree.isMain ? "主分支" : "未合并"
+    }
+    private func worktreeColor(_ worktree: ClientManagedWorktree) -> Color {
+        if worktree.availability != "available" || !worktree.conflictFiles.isEmpty { return .red }
+        if worktree.mergedIntoMain == true || worktree.isMain { return .green }
+        return .orange
+    }
+    private func serviceLabel(_ service: ClientProjectServiceStatus) -> String {
+        if service.running == true, service.healthy == true { return "运行正常" }
+        if service.running == true { return "运行异常" }
+        return "已停止"
+    }
+    private func jobStatus(_ value: String) -> String {
+        ["awaiting_confirmation": "等待确认", "queued": "已排队", "running": "执行中",
+         "paused": "已暂停", "completed": "已完成", "failed": "失败",
+         "cancellation_requested": "正在取消", "cancelled": "已取消", "replanning": "正在重建计划"][value] ?? value
+    }
+
+    private func card<Content: View>(_ title: String, systemImage: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(title, systemImage: systemImage).font(.headline)
+            content()
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func infoRow(_ label: String, _ value: String, monospaced: Bool = false) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(label).foregroundStyle(.secondary).frame(width: 76, alignment: .leading)
+            Text(value).font(monospaced ? .footnote.monospaced() : .body).textSelection(.enabled)
+        }
+    }
+
+    private func statusPill(_ text: String, color: Color) -> some View {
+        Text(text).font(.caption.weight(.semibold)).foregroundStyle(color)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(color.opacity(0.12), in: Capsule())
+    }
+}
+
+private struct PadWorktreeOperationSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State var draft: PadWorktreeOperationDraft
+    let confirm: (PadWorktreeOperationDraft) -> Void
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Worktree") {
+                    LabeledContent("分支", value: draft.worktree.branchName ?? "游离 HEAD")
+                    Text(draft.worktree.path).font(.caption.monospaced()).textSelection(.enabled)
+                }
+                if draft.worktree.dirty == true {
+                    Section("提交修改") {
+                        TextField("提交信息", text: $draft.commitMessage, axis: .vertical).lineLimit(3...6)
+                        if draft.protection?.requiresDecision == true {
+                            Picker("私密文件", selection: Binding(get: { draft.privateFilesDecision ?? "exclude" },
+                                                                  set: { draft.privateFilesDecision = $0 })) {
+                                Text("排除并继续").tag("exclude")
+                                Text("包含并继续").tag("include")
+                                Text("取消操作").tag("cancel")
+                            }
+                            Toggle("以后不再提醒", isOn: $draft.neverRemindPrivateFiles)
+                            ForEach(draft.protection?.protectedPaths ?? [], id: \.self) { Text($0).font(.caption.monospaced()) }
+                        }
+                    }
+                }
+                if !draft.worktree.isMain {
+                    Section("执行") {
+                        Toggle("与主分支同步", isOn: $draft.synchronizeWithMain)
+                        Toggle("合并到主分支", isOn: $draft.mergeIntoMain)
+                        Toggle("完成后重启开发服务", isOn: $draft.restartService)
+                    }
+                }
+            }
+            .navigationTitle(draft.worktree.isMain ? "提交修改" : "Worktree 操作")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("执行") { confirm(draft); dismiss() }
+                        .disabled(draft.worktree.dirty == true && draft.commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }.presentationDetents([.medium, .large])
+    }
+}
+
+private struct PadWorktreePlanSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let project: ClientManagedGitProject
+    let submit: (String, [String], String) -> Void
+    @State private var operation = "merge"
+    @State private var sources: [String] = []
+    @State private var target = ""
+    var body: some View {
+        NavigationStack {
+            Form {
+                Picker("操作", selection: $operation) {
+                    Text("按顺序合并").tag("merge")
+                    Text("仅同步分支").tag("sync")
+                    Text("收敛到目标分支").tag("converge")
+                }
+                Section("来源 Worktree") {
+                    ForEach(project.worktrees.filter { !$0.isMain }) { tree in
+                        Toggle(tree.branchName ?? tree.path, isOn: Binding(
+                            get: { sources.contains(tree.worktreeId) },
+                            set: { enabled in
+                                if enabled, !sources.contains(tree.worktreeId) { sources.append(tree.worktreeId) }
+                                else if !enabled { sources.removeAll { $0 == tree.worktreeId } }
+                            }
+                        ))
+                    }
+                }
+                if sources.count > 1 {
+                    Section("执行顺序") {
+                        ForEach(sources, id: \.self) { id in
+                            Text(project.worktrees.first { $0.worktreeId == id }?.branchName ?? id)
+                        }
+                        .onMove { offsets, destination in sources.move(fromOffsets: offsets, toOffset: destination) }
+                    }
+                }
+                Section("目标") {
+                    Picker("目标分支", selection: $target) {
+                        ForEach(project.worktrees) { tree in Text(tree.branchName ?? tree.path).tag(tree.worktreeId) }
+                    }
+                }
+            }
+            .navigationTitle("生成集成计划")
+            .onAppear { target = project.mainWorktreeId }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("生成审查计划") { submit(operation, sources, target); dismiss() }
+                        .disabled(sources.isEmpty || target.isEmpty || sources.contains(target))
+                }
+            }
+        }.presentationDetents([.large])
+    }
+}
+
+private struct PadWorktreeJobReview: View {
+    @Environment(\.dismiss) private var dismiss
+    let job: ClientWorktreeJob
+    let confirm: ([ClientWorktreeCommitDecision]) -> Void
+    @State private var decisions: [String: String] = [:]
+    @State private var neverRemind: Set<String> = []
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("计划") {
+                    LabeledContent("操作", value: job.plan.operationType ?? "merge")
+                    LabeledContent("目标", value: job.plan.targetBranchName ?? "main")
+                    LabeledContent("Worktree", value: "\(job.plan.items.count)")
+                }
+                if !job.plan.blockingRisks.isEmpty {
+                    Section("阻塞风险") {
+                        ForEach(job.plan.blockingRisks, id: \.code) { risk in
+                            Label(risk.message, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        }
+                    }
+                }
+                ForEach(job.plan.items) { item in
+                    Section(item.branchName ?? item.path) {
+                        Text(item.statusSummary).font(.footnote)
+                        LabeledContent("领先 / 落后", value: "\(item.aheadOfMain ?? 0) / \(item.behindMain ?? 0)")
+                        if item.commitProtection?.requiresDecision == true {
+                            Picker("私密文件", selection: Binding(get: { decisions[item.worktreeId] ?? "exclude" },
+                                                                  set: { decisions[item.worktreeId] = $0 })) {
+                                Text("排除").tag("exclude"); Text("包含").tag("include"); Text("取消").tag("cancel")
+                            }
+                            Toggle("以后不再提醒", isOn: Binding(
+                                get: { neverRemind.contains(item.worktreeId) },
+                                set: { enabled in
+                                    if enabled { neverRemind.insert(item.worktreeId) } else { neverRemind.remove(item.worktreeId) }
+                                }
+                            ))
+                        }
+                    }
+                }
+            }
+            .navigationTitle("审查集成计划")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("确认并执行") {
+                        confirm(job.plan.items.compactMap { item in
+                            guard item.commitProtection?.requiresDecision == true else { return nil }
+                            return ClientWorktreeCommitDecision(worktreeId: item.worktreeId,
+                                decision: decisions[item.worktreeId] ?? "exclude",
+                                neverRemind: neverRemind.contains(item.worktreeId))
+                        }); dismiss()
+                    }.disabled(!job.plan.blockingRisks.isEmpty)
+                }
+            }
+        }
+    }
+}
