@@ -22,6 +22,15 @@ public static func durationText<Item: ConversationTimelineItem>(
         end = itemDates.max()
     }
     guard let end else { return nil }
+    return durationText(startedAt: start, endingAt: end)
+}
+
+public static func startedAt<Item: ConversationTimelineItem>(for items: [Item]) -> Date? {
+    items.lazy.compactMap(\.processStartedAt).first.flatMap(dateParser.date(from:))
+        ?? items.compactMap { $0.createdAt.flatMap(dateParser.date(from:)) }.min()
+}
+
+public static func durationText(startedAt start: Date, endingAt end: Date, showSeconds: Bool = false) -> String? {
     let duration = end.timeIntervalSince(start)
     guard duration > 0.05 else { return nil }
     if duration < 10 { return String(format: "%.1fs", duration) }
@@ -29,9 +38,12 @@ public static func durationText<Item: ConversationTimelineItem>(
     if seconds < 60 { return "\(seconds)s" }
     let minutes = seconds / 60
     let remainder = seconds % 60
-    if minutes < 60 { return remainder == 0 ? "\(minutes)m" : "\(minutes)m \(remainder)s" }
+    if minutes < 60 {
+        return showSeconds || remainder != 0 ? "\(minutes)m \(remainder)s" : "\(minutes)m"
+    }
     let hours = minutes / 60
     let minuteRemainder = minutes % 60
+    if showSeconds { return "\(hours)h \(minuteRemainder)m \(remainder)s" }
     return minuteRemainder == 0 ? "\(hours)h" : "\(hours)h \(minuteRemainder)m"
 }
     private static let dateParser = ProcessDateParser()
@@ -53,4 +65,3 @@ private final class ProcessDateParser: @unchecked Sendable {
         return fractional.date(from: value) ?? standard.date(from: value)
     }
 }
-

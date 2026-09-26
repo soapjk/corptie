@@ -1,4 +1,5 @@
 import SwiftUI
+import CorptieClientCore
 #if canImport(AppKit)
 import AppKit
 #else
@@ -17,16 +18,20 @@ public struct MessageTextCard<Content: View>: View {
     private let actionsAlwaysVisible: Bool
     private let cardWidth: CGFloat?
     private let cardHeight: CGFloat?
+    private let status: UserMessageStatusPresentation?
     private let copy: () -> Void
     private let content: Content
     @State private var hovering = false
+    @State private var showingStatusDetail = false
 
     public init(messageID: String, role: Role, timestamp: String, showsActions: Bool,
                 actionsAlwaysVisible: Bool, cardWidth: CGFloat? = nil, cardHeight: CGFloat? = nil,
+                status: UserMessageStatusPresentation? = nil,
                 copy: @escaping () -> Void, @ViewBuilder content: () -> Content) {
         self.messageID = messageID; self.role = role; self.timestamp = timestamp; self.showsActions = showsActions
         self.actionsAlwaysVisible = actionsAlwaysVisible
         self.cardWidth = cardWidth; self.cardHeight = cardHeight
+        self.status = status
         self.copy = copy; self.content = content()
     }
 
@@ -45,25 +50,51 @@ public struct MessageTextCard<Content: View>: View {
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .strokeBorder(border, lineWidth: 1)
                 }
-            if showsActions {
+            if showsActions || status != nil {
                 HStack(spacing: 6) {
-                    if !timestamp.isEmpty {
-                        Text(timestamp).font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(Color(red: 0.38, green: 0.41, blue: 0.43))
-                            .lineLimit(1)
+                    if let status {
+                        Button { showingStatusDetail = true } label: {
+                            Label {
+                                if (cardWidth ?? MessageBubbleWidthPolicy.maximumWidth) >= 120 {
+                                    Text(status.shortLabel(languageCode: Locale.current.language.languageCode?.identifier ?? "en"))
+                                        .lineLimit(1)
+                                }
+                            } icon: {
+                                Image(systemName: status.symbolName)
+                            }
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(statusColor(status.tone))
+                        }
+                        .buttonStyle(.plain)
+                        .help(status.detail(languageCode: Locale.current.language.languageCode?.identifier ?? "en"))
+                        .accessibilityLabel(status.detail(languageCode: Locale.current.language.languageCode?.identifier ?? "en"))
+                        .accessibilityIdentifier("message-processing-state")
+                        .popover(isPresented: $showingStatusDetail) {
+                            Text(status.detail(languageCode: Locale.current.language.languageCode?.identifier ?? "en"))
+                                .font(.caption)
+                                .padding(12)
+                                .frame(maxWidth: 260, alignment: .leading)
+                        }
                     }
-                    Button(action: copy) {
-                        Image(systemName: "doc.on.doc").frame(width: 22, height: 22)
+                    if showsActions {
+                        if !timestamp.isEmpty && status == nil {
+                            Text(timestamp).font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(Color(red: 0.38, green: 0.41, blue: 0.43))
+                                .lineLimit(1)
+                        }
+                        Button(action: copy) {
+                            Image(systemName: "doc.on.doc").frame(width: 22, height: 22)
+                        }
+                        .buttonStyle(.plain)
+                        .help("复制消息")
+                        .accessibilityLabel("复制消息")
+                        .accessibilityIdentifier("chat.timeline.copy")
+                        .opacity(actionsAlwaysVisible || hovering ? 1 : 0)
+                        .accessibilityHidden(!actionsAlwaysVisible && !hovering)
                     }
-                    .buttonStyle(.plain)
-                    .help("复制消息")
-                    .accessibilityLabel("复制消息")
-                    .accessibilityIdentifier("chat.timeline.copy")
                 }
                 .padding(.horizontal, 2)
                 .frame(height: 22)
-                .opacity(actionsAlwaysVisible || hovering ? 1 : 0)
-                .accessibilityHidden(!actionsAlwaysVisible && !hovering)
             }
         }
         .frame(idealWidth: cardWidth, maxWidth: cardWidth ?? MessageBubbleWidthPolicy.maximumWidth,
@@ -82,5 +113,14 @@ public struct MessageTextCard<Content: View>: View {
     }
     private var border: Color {
         role == .user ? Color.accentColor.opacity(0.3) : Color.primary.opacity(0.08)
+    }
+
+    private func statusColor(_ tone: UserMessageStatusPresentation.Tone) -> Color {
+        switch tone {
+        case .neutral: .secondary
+        case .amber: .orange
+        case .green: .green
+        case .red: .red
+        }
     }
 }

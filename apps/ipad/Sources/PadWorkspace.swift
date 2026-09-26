@@ -128,6 +128,7 @@ final class PadWorkspace {
     }
     private(set) var displayEntries: [ConversationEntry<ClientMessage>] = []
     private(set) var processPresentations: [String: ConversationProcessPresentation] = [:]
+    private(set) var activeProcessEntryID: String?
     private(set) var processSteps: [String: [ConversationExecutionStep]] = [:]
     @ObservationIgnored private var projectedMessages: [ClientMessage] = []
     var outgoingStates: [String: String] = [:]
@@ -166,6 +167,9 @@ final class PadWorkspace {
                 duration: ConversationProcessPresentation.durationText(for: items, now: now),
                 currentStepTitle: currentStepTitle))
         })
+        activeProcessEntryID = displayEntries.last(where: {
+            processPresentations[$0.id]?.state == .running
+        })?.id
     }
 
     /// A window is not a replacement for all loaded history. During submission,
@@ -293,6 +297,9 @@ final class PadWorkspace {
     var status = ""
     var conversationNotice = ""
     var liveStatus = "正在连接实时更新"
+    var realtimeConnected = false
+    var lastRealtimePulseAt: Date?
+    var realtimePausedAt: Date?
     var messageRevision = 0
     var controlRevision = 0
     var directControlSnapshot: ClientControlSnapshot?

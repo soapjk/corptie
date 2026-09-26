@@ -334,10 +334,17 @@ struct ConversationView: View {
                                     })
                                     .id(message.id)
                             }
-                        case .process:
+                        case .process(_, let items):
                             if let presentation = workspace.processPresentations[entry.id] {
                                 PadProcessCard(steps: workspace.processSteps[entry.id] ?? [], presentation: presentation,
-                                               laneWidth: laneWidth)
+                                               laneWidth: laneWidth,
+                                               startedAt: items.contains(where: { $0.processEndedAt != nil })
+                                                   ? nil : ConversationProcessPresentation.startedAt(for: items),
+                                               canAdvance: entry.id == workspace.activeProcessEntryID
+                                                   && connection.connected && workspace.realtimeConnected
+                                                   && workspace.sessions.first(where: { $0.id == sessionID })?.executionStatus == "running",
+                                               lastRealtimePulseAt: workspace.lastRealtimePulseAt,
+                                               realtimePausedAt: workspace.realtimePausedAt)
                                     .id(sessionID + ":" + entry.id)
                             }
                         }
@@ -603,6 +610,10 @@ private struct PadProcessCard: View {
     let steps: [ConversationExecutionStep]
     let presentation: ConversationProcessPresentation
     let laneWidth: CGFloat
+    let startedAt: Date?
+    let canAdvance: Bool
+    let lastRealtimePulseAt: Date?
+    let realtimePausedAt: Date?
     @State private var expanded = false
     private var latestPlan: ConversationExecutionPlan? { steps.compactMap(\.plan).last }
     private var state: ConversationProcessState { presentation.state }
@@ -625,9 +636,47 @@ private struct PadProcessCard: View {
         }
     }
     var body: some View {
-        ProcessCard(summary: ConversationProcessPresentation(
-                        state: presentation.state, count: presentation.count,
-                        duration: presentation.duration).summary,
+        Group {
+            if canAdvance, state == .running, let startedAt {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    processCard(summary: summary(at: confirmedTime(context.date), startedAt: startedAt))
+                }
+            } else {
+                processCard(summary: pausedSummary)
+            }
+        }
+        .frame(width: cardWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier("conversation-process")
+    }
+
+    private var staticSummary: String {
+        ConversationProcessPresentation(state: presentation.state, count: presentation.count,
+            duration: presentation.duration).summary
+    }
+
+    private var pausedSummary: String {
+        guard state == .running, let startedAt, let realtimePausedAt else {
+            return staticSummary
+        }
+        return summary(at: realtimePausedAt, startedAt: startedAt)
+    }
+
+    private func confirmedTime(_ now: Date) -> Date {
+        guard let lastRealtimePulseAt else { return now }
+        return min(now, lastRealtimePulseAt.addingTimeInterval(30))
+    }
+
+    private func summary(at date: Date, startedAt: Date) -> String {
+        let duration = ConversationProcessPresentation.durationText(
+            startedAt: startedAt, endingAt: date, showSeconds: true)
+            ?? presentation.duration
+        return ConversationProcessPresentation(state: presentation.state, count: presentation.count,
+            duration: duration).summary
+    }
+
+    private func processCard(summary: String) -> some View {
+        ProcessCard(summary: summary,
                     secondary: presentation.currentStepTitle,
                     symbol: state.symbolName, tint: tint, expanded: expanded,
                     progress: latestPlan?.completionFraction,
@@ -643,9 +692,6 @@ private struct PadProcessCard: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(width: cardWidth, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityIdentifier("conversation-process")
     }
 }
 
@@ -1049,16 +1095,15 @@ private struct MobileMessageBubble: View {
         guard message.type == "agentMessage", message.status != "selected" else { return [] }
         return message.options ?? []
     }
-    private var processingLabel: String? {
+    private var messageStatus: UserMessageStatusPresentation? {
         guard fromUser else { return nil }
-        switch UserMessageProcessingState(authoritativeValue: message.userMessageStatus, legacyStatus: message.status) {
-        case .queued: return message.queuePosition.map { "Queued · \($0)" } ?? "Queued"
-        case .processing: return "Processing"
-        case .failed: return "Processing failed"
-        case .cancelled: return "Cancelled"
-        case .consumed: return nil
-        case .none: return deliveryState
-        }
+        return UserMessageStatusPresentation(
+            authoritativeStatus: message.userMessageStatus,
+            legacyStatus: message.status,
+            localDeliveryState: deliveryState,
+            queuePosition: message.queuePosition,
+            processingError: message.processingError
+        )
     }
     private var cardWidth: CGFloat {
         let availableLane = laneWidth > 0 ? laneWidth : MessageBubbleWidthPolicy.maximumWidth
@@ -1072,13 +1117,10 @@ private struct MobileMessageBubble: View {
         HStack(alignment: .bottom, spacing: 0) {
             if fromUser { Spacer(minLength: 0) }
             VStack(alignment: fromUser ? .trailing : .leading, spacing: 5) {
-                if let processingLabel {
-                    Text(processingLabel).font(.caption2).foregroundStyle(.secondary)
-                        .accessibilityIdentifier("message-processing-state")
-                }
                 MessageTextCard(messageID: message.id, role: fromUser ? .user : .agent,
                     timestamp: ConversationTimestampText.messageLabel(createdAt: message.createdAt),
                     showsActions: true, actionsAlwaysVisible: true, cardWidth: cardWidth,
+                    status: messageStatus,
                     copy: { UIPasteboard.general.string = ConversationMessageDisplayText.copyText(
                         type: message.type, authoritativeText: message.text,
                         presentationText: message.presentationText, displayedText: displayText) }) {

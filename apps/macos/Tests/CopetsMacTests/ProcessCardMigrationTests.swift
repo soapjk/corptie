@@ -4,6 +4,27 @@ import XCTest
 
 @MainActor
 final class ProcessCardMigrationTests: XCTestCase {
+    func testSharedProcessCellUpdatesElapsedTextWithoutRemeasuring() {
+        _ = NSApplication.shared
+        let start = Date(timeIntervalSince1970: 1_000)
+        let process = AppKitChatTimelineRow(
+            id: "shared-clock", contentRevision: 1, nativeText: "", copyText: "",
+            nativeStyle: .process, title: "", metadata: "", expandableTurnId: "turn",
+            isExpanded: false, processCount: 1, processDuration: "4.0s",
+            processStartedAt: start, processState: .running
+        )
+        let cell = AppKitSharedMessageTextCell(identifier: .init("shared-clock"))
+        cell.setContent(process, availableWidth: 320, onToggleExpansion: { _ in })
+        let configurations = cell.contentConfigurationCount
+        let widthUpdates = cell.widthLayoutUpdateCount
+        cell.refreshProcessElapsed(now: start.addingTimeInterval(5))
+        XCTAssertEqual(cell.displayedProcessSummary, "Working for 5.0s · 1 step")
+        cell.refreshProcessElapsed(now: start.addingTimeInterval(6))
+        XCTAssertEqual(cell.displayedProcessSummary, "Working for 6.0s · 1 step")
+        XCTAssertEqual(cell.contentConfigurationCount, configurations)
+        XCTAssertEqual(cell.widthLayoutUpdateCount, widthUpdates)
+    }
+
     func testThousandProcessRowsReuseAndScrollWithinNativeBudget() throws {
         guard ProcessInfo.processInfo.environment["CORPTIE_PROCESS_AB"] == "1" else {
             throw XCTSkip("Opt-in real-list performance gate")

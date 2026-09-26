@@ -41,6 +41,8 @@ struct PadRealtimeTests {
 
         #expect(workspace.messages.first?.text == "pushed response")
         #expect(workspace.sessions.first?.executionStatus == "running")
+        #expect(workspace.realtimeConnected)
+        #expect(workspace.lastRealtimePulseAt != nil)
         #expect(workspace.realtimeStateRevision == 7)
         #expect(workspace.lastTimelineRevision == 3)
         #expect(workspace.before == "item:1")
@@ -50,6 +52,8 @@ struct PadRealtimeTests {
 
         live.cancel()
         await live.value
+        #expect(!workspace.realtimeConnected)
+        #expect(workspace.realtimePausedAt != nil)
     }
 
     @Test func v2PushCursorLoadsAndPrependsEarlierHistory() async throws {

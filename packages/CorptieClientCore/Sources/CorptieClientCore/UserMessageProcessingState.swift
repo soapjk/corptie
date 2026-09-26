@@ -1,3 +1,5 @@
+import Foundation
+
 /// Shared authoritative lifecycle mapping for desktop and mobile messages.
 public enum UserMessageProcessingState: String, Equatable, Sendable {
     case queued, processing, consumed, failed, cancelled
@@ -14,5 +16,119 @@ public enum UserMessageProcessingState: String, Equatable, Sendable {
         case "running", "processing": self = .processing
         default: return nil
         }
+    }
+}
+
+/// Presentation of an outgoing user's message, not of the Session's overall
+/// execution. A transport receipt never proves that the Provider started.
+public struct UserMessageStatusPresentation: Equatable, Sendable {
+    public enum Kind: Equatable, Sendable {
+        case sending, deliveryUnknown, accepted, queued, processing
+        case deliveryFailed, processingFailed, cancelled
+    }
+
+    public let kind: Kind
+    public let queuePosition: Int?
+    public let failureReason: String?
+
+    public init?(authoritativeStatus: String?, legacyStatus: String?,
+                 localDeliveryState: String? = nil, queuePosition: Int? = nil,
+                 processingError: String? = nil) {
+        if let state = UserMessageProcessingState(
+            authoritativeValue: authoritativeStatus, legacyStatus: legacyStatus
+        ) {
+            switch state {
+            case .queued: kind = .queued
+            case .processing: kind = .processing
+            case .failed: kind = .processingFailed
+            case .cancelled: kind = .cancelled
+            case .consumed: return nil
+            }
+            self.queuePosition = kind == .queued && (queuePosition ?? 0) > 0 ? queuePosition : nil
+            failureReason = kind == .processingFailed ? Self.nonempty(processingError) : nil
+            return
+        }
+        // An unknown authoritative value must not fall back to a stale local
+        // "Sent" receipt or an older legacy status.
+        if authoritativeStatus != nil {
+            kind = .deliveryUnknown
+            self.queuePosition = nil
+            failureReason = nil
+            return
+        }
+        guard let localDeliveryState = Self.nonempty(localDeliveryState) else { return nil }
+        if localDeliveryState.hasPrefix("发送失败：") {
+            kind = .deliveryFailed
+            failureReason = Self.nonempty(String(localDeliveryState.dropFirst("发送失败：".count)))
+        } else {
+            switch localDeliveryState {
+            case "Sending": kind = .sending
+            case "Sent": kind = .accepted
+            case "送达状态未确认": kind = .deliveryUnknown
+            default: kind = .deliveryUnknown
+            }
+            failureReason = nil
+        }
+        self.queuePosition = nil
+    }
+
+    public var symbolName: String {
+        switch kind {
+        case .sending: "paperplane"
+        case .deliveryUnknown: "questionmark.circle"
+        case .accepted: "checkmark.circle"
+        case .queued: "clock"
+        case .processing: "circle.dotted.circle"
+        case .deliveryFailed, .processingFailed: "exclamationmark.circle.fill"
+        case .cancelled: "xmark.circle"
+        }
+    }
+
+    public enum Tone: Sendable { case neutral, amber, green, red }
+    public var tone: Tone {
+        switch kind {
+        case .queued: .amber
+        case .processing: .green
+        case .deliveryFailed, .processingFailed: .red
+        default: .neutral
+        }
+    }
+
+    public func shortLabel(languageCode: String) -> String {
+        let chinese = languageCode.lowercased().hasPrefix("zh")
+        switch kind {
+        case .sending: return chinese ? "发送中" : "Sending"
+        case .deliveryUnknown: return chinese ? "待确认" : "Unconfirmed"
+        case .accepted: return chinese ? "已接收" : "Received"
+        case .queued: return chinese ? "排队中" : "Queued"
+        case .processing: return chinese ? "处理中" : "Processing"
+        case .deliveryFailed: return chinese ? "发送失败" : "Send failed"
+        case .processingFailed: return chinese ? "处理失败" : "Processing failed"
+        case .cancelled: return chinese ? "已取消" : "Cancelled"
+        }
+    }
+
+    public func detail(languageCode: String) -> String {
+        let label = shortLabel(languageCode: languageCode)
+        let chinese = languageCode.lowercased().hasPrefix("zh")
+        if let failureReason { return "\(label)：\(failureReason)" }
+        if kind == .queued, let queuePosition {
+            return chinese ? "\(label)，当前第 \(queuePosition) 位" : "\(label), position \(queuePosition)"
+        }
+        if kind == .deliveryUnknown {
+            return chinese ? "送达状态尚未确认；为避免重复消息，不会自动重发。"
+                : "Delivery is unconfirmed. The message will not be resent automatically."
+        }
+        if kind == .accepted {
+            return chinese ? "服务端已接收；这不代表模型已开始处理。"
+                : "Received by the server; the model may not have started yet."
+        }
+        return label
+    }
+
+    private static func nonempty(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else { return nil }
+        return trimmed
     }
 }

@@ -7,6 +7,7 @@ import CorptieClientCore
 struct MacSharedMessageTextCard: View {
     let row: AppKitChatTimelineRow
     let layout: NativeTimelineLayoutCache.Layout
+    var processSummaryOverride: String? = nil
     var baseDirectory: String?
     var copy: () -> Void = {}
     var toggle: () -> Void = {}
@@ -41,7 +42,7 @@ struct MacSharedMessageTextCard: View {
     }
 
     private var processCard: some View {
-        ProcessCard(summary: row.processPrimarySummary, secondary: row.processCurrentStepTitle,
+        ProcessCard(summary: processSummaryOverride ?? row.processPrimarySummary, secondary: row.processCurrentStepTitle,
                     symbol: row.processState.symbolName,
                     tint: Color(nsColor: row.processState.color), expanded: row.isExpanded,
                     progress: row.processPlanProgress, progressLabel: row.processPlanProgressLabel,
@@ -279,6 +280,7 @@ protocol AppKitChatRowRendering: AnyObject {
                     onToggleExpansion: @escaping (String) -> Void,
                     onAction: @escaping (AppKitChatTimelineRow.Action) -> Void)
     func updateLayoutIfContentUnchanged(_ row: AppKitChatTimelineRow, availableWidth: CGFloat) -> Bool
+    func refreshProcessElapsed(now: Date)
 }
 
 /// One hosting tree per reusable native row; no duplicate legacy view tree.
@@ -288,6 +290,8 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
     private var measuredLayout: NativeTimelineLayoutCache.Layout?
     private var baseDirectory: String?
     private var measuredWidth: CGFloat?
+    private var elapsedSummary: String?
+    var displayedProcessSummary: String? { elapsedSummary }
     private var onToggleExpansion: (String) -> Void = { _ in }
     private var onAction: (AppKitChatTimelineRow.Action) -> Void = { _ in }
     private(set) var contentConfigurationCount = 0
@@ -316,6 +320,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
                     onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in }) {
         precondition(MacSharedMessageTextCard.supports(row))
         self.row = row; self.baseDirectory = baseDirectory
+        elapsedSummary = nil
         self.onToggleExpansion = onToggleExpansion
         self.onAction = onAction
         measuredLayout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth)
@@ -336,9 +341,10 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         return true
     }
 
-    private func updateHost() {
+    private func updateHost(needsLayout: Bool = true) {
         guard let row, let measuredLayout else { return }
-        let root = MacSharedMessageTextCard(row: row, layout: measuredLayout, baseDirectory: baseDirectory,
+        let root = MacSharedMessageTextCard(row: row, layout: measuredLayout,
+            processSummaryOverride: elapsedSummary, baseDirectory: baseDirectory,
             copy: { [weak self] in self?.copyRepresentedMessage() },
             toggle: { [weak self] in self?.toggleRepresentedProcess() },
             performAction: { [weak self] action in self?.onAction(action) })
@@ -351,7 +357,16 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
             addSubview(host)
             self.host = host
         }
-        needsLayout = true
+        if needsLayout { self.needsLayout = true }
+    }
+
+    func refreshProcessElapsed(now: Date) {
+        guard let row, row.nativeStyle == .process, row.processState == .running,
+              row.processStartedAt != nil else { return }
+        let summary = row.processSummaryText(now: now, advancing: true, includesCurrentStep: false)
+        guard elapsedSummary != summary else { return }
+        elapsedSummary = summary
+        updateHost(needsLayout: false)
     }
 
     override func layout() {

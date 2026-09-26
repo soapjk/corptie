@@ -24,11 +24,15 @@ extension PadWorkspace {
         let generation = UUID()
         refreshWorker?.cancel(); refreshWorker = nil
         realtimeGeneration = generation
+        realtimeConnected = false
+        realtimePausedAt = nil
         defer {
             if realtimeGeneration == generation {
                 refreshWorker?.cancel()
                 refreshWorker = nil
                 liveStatus = "实时更新已暂停"
+                realtimeConnected = false
+                realtimePausedAt = Date()
             }
         }
         var failures = 0
@@ -36,6 +40,7 @@ extension PadWorkspace {
         while !Task.isCancelled && connection.connected {
             do {
                 liveStatus = "正在连接实时更新"
+                realtimeConnected = false
                 let api = ClientEvents(transport: try await connection.transport())
                 for try await update in api.subscribeRealtime(
                     sessionId: selection,
@@ -49,6 +54,9 @@ extension PadWorkspace {
                     case .ready:
                         receivedV2Ready = true
                         liveStatus = "实时连接正常"
+                        realtimeConnected = true
+                        lastRealtimePulseAt = Date()
+                        realtimePausedAt = nil
                     case .state(let snapshot):
                         applyRealtimeState(snapshot)
                     case .control(let snapshot):
@@ -69,6 +77,9 @@ extension PadWorkspace {
                         if pending?.requestID == receipt.requestId { settle(receipt) }
                     case .heartbeat:
                         liveStatus = "实时连接正常"
+                        realtimeConnected = true
+                        lastRealtimePulseAt = Date()
+                        realtimePausedAt = nil
                     }
                 }
             } catch {
@@ -80,6 +91,8 @@ extension PadWorkspace {
             }
             failures = min(failures + 1, 5)
             liveStatus = "连接中断，正在自动重连"
+            realtimeConnected = false
+            realtimePausedAt = Date()
             do { try await Task.sleep(for: .seconds(min(30, 1 << failures))) } catch { return }
         }
     }
@@ -89,12 +102,16 @@ extension PadWorkspace {
         while !Task.isCancelled && connection.connected && realtimeGeneration == generation {
             do {
                 liveStatus = "正在连接兼容模式实时更新"
+                realtimeConnected = false
                 let api = ClientEvents(transport: try await connection.transport())
                 for try await update in api.subscribe() {
                     try Task.checkCancellation()
                     guard realtimeGeneration == generation else { return }
                     failures = 0
                     liveStatus = "兼容模式实时连接正常"
+                    realtimeConnected = true
+                    lastRealtimePulseAt = Date()
+                    realtimePausedAt = nil
                     if update.control == true { controlRevision += 1 }
                     inventoryDirty = inventoryDirty || update.inventory
                     messagesDirty = messagesDirty || sessionMatchesUpdate(update)
@@ -105,6 +122,8 @@ extension PadWorkspace {
             }
             failures = min(failures + 1, 5)
             liveStatus = "兼容模式连接中断，正在自动重连"
+            realtimeConnected = false
+            realtimePausedAt = Date()
             do { try await Task.sleep(for: .seconds(min(30, 1 << failures))) } catch { return }
         }
     }

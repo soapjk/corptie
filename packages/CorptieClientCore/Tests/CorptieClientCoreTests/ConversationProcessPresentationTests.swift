@@ -24,6 +24,17 @@ struct ConversationProcessPresentationTests {
         }
         #expect(ConversationProcessPresentation.durationText(for: [running],
             now: base.addingTimeInterval(-5)) == nil)
+        #expect(ConversationProcessPresentation.startedAt(for: [running]) == base)
+        #expect(ConversationProcessPresentation.durationText(
+            startedAt: base, endingAt: base.addingTimeInterval(5)) == "5.0s")
+        #expect(ConversationProcessPresentation.durationText(
+            startedAt: base, endingAt: base.addingTimeInterval(6)) == "6.0s")
+        #expect(ConversationProcessPresentation.durationText(
+            startedAt: base, endingAt: base.addingTimeInterval(60), showSeconds: true) == "1m 0s")
+        #expect(ConversationProcessPresentation.durationText(
+            startedAt: base, endingAt: base.addingTimeInterval(3_660), showSeconds: true) == "1h 1m 0s")
+        #expect(ConversationProcessPresentation.durationText(
+            startedAt: base, endingAt: base.addingTimeInterval(3_661), showSeconds: true) == "1h 1m 1s")
         let invalid = try item(["createdAt": "bad-date", "turnStatus": "completed"])
         #expect(ConversationProcessPresentation.durationText(for: [invalid]) == nil)
     }
