@@ -1,9 +1,26 @@
 import SwiftUI
 import XCTest
+import CorptieClientCore
 @testable import CorptieMac
 
 @MainActor
 final class ProcessCardMigrationTests: XCTestCase {
+    func testSharedUserMessageCardRetainsProcessingStatus() throws {
+        let queued = try XCTUnwrap(UserMessageStatusPresentation(
+            authoritativeStatus: "queued", legacyStatus: nil, queuePosition: 2
+        ))
+        let row = AppKitChatTimelineRow(
+            id: "user-status", contentRevision: 1, nativeText: "Hello", copyText: "Hello",
+            nativeStyle: .user, title: "", metadata: "", expandableTurnId: nil,
+            isExpanded: false, showsHeader: false, messageStatus: queued
+        )
+        XCTAssertTrue(MacSharedMessageTextCard.supports(row))
+        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 400)
+        let card = MacSharedMessageTextCard(row: row, layout: layout)
+        XCTAssertEqual(card.presentedMessageStatus, queued)
+        XCTAssertTrue(row.showsMessageActionBar)
+    }
+
     func testSharedProcessCellUpdatesElapsedTextWithoutRemeasuring() {
         _ = NSApplication.shared
         let start = Date(timeIntervalSince1970: 1_000)
