@@ -5,8 +5,6 @@ import { join } from "node:path";
 const token = () => randomBytes(32).toString("base64url");
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const validToken = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
-export const DEFAULT_CLIENT_DEVICE_PERMISSIONS = Object.freeze(["inventory.read", "control.read", "messages.read", "messages.write", "sessions.stop"]);
-export const CLIENT_DEVICE_PERMISSIONS = Object.freeze([...DEFAULT_CLIENT_DEVICE_PERMISSIONS, "sessions.commands", "sessions.clear", "tasks.create", "works.discuss", "tasks.manage", "works.manage"]);
 export const deviceError = (code, status = 401) => Object.assign(new Error(code), { code, status });
 
 /** Device credentials authorize client access, never impersonate a Session or Agent. */
@@ -30,6 +28,14 @@ export class ClientDeviceAuthority {
       if (this.state.version !== 1 || typeof this.state.serverId !== "string" || !Array.isArray(this.state.devices)) {
         throw deviceError("INVALID_AUTH_STORE", 500);
       }
+      // Pairing approval is the sole device authorization boundary. Remove
+      // legacy per-feature grants so an old device receives the same client
+      // capabilities as a newly paired one.
+      let migrated = false;
+      for (const device of this.state.devices) {
+        if (Object.hasOwn(device, "permissions")) { delete device.permissions; migrated = true; }
+      }
+      if (migrated) await this.save(this.state);
       await chmod(file, 0o600);
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
@@ -114,7 +120,6 @@ export class ClientDeviceAuthority {
       const result = await this.change(state => {
         if (state.devices.length >= 100) throw deviceError("DEVICE_LIMIT", 409);
         const device = { id: randomUUID(), name: item.name, createdAt: this.now(), revoked: false,
-          permissions: [...DEFAULT_CLIENT_DEVICE_PERMISSIONS],
           refreshExpiresAt: this.now() + 30 * 86400_000 };
         state.devices.push(device);
         return this.issue(device, state.serverId);
@@ -147,35 +152,12 @@ export class ClientDeviceAuthority {
     if (!validToken(accessToken)) throw deviceError("INVALID_CREDENTIAL");
     const device = this.state.devices.find(d => d.accessHash === hash(accessToken));
     if (!device || device.revoked || device.accessExpiresAt <= this.now()) throw deviceError("INVALID_CREDENTIAL");
-    return { deviceId: device.id, name: device.name, serverId: this.state.serverId,
-      permissions: device.permissions ?? [...DEFAULT_CLIENT_DEVICE_PERMISSIONS] };
+    return { deviceId: device.id, name: device.name, serverId: this.state.serverId };
   }
 
   canDeliverScheduledMessage(deviceId) {
     const device = this.state.devices.find(item => item.id === deviceId);
-    return Boolean(device && !device.revoked && device.refreshExpiresAt > this.now()
-      && (device.permissions ?? DEFAULT_CLIENT_DEVICE_PERMISSIONS).includes("messages.write"));
-  }
-
-  async setPermissions(id, permissions, expectedPermissions = undefined) {
-    const allowed = CLIENT_DEVICE_PERMISSIONS;
-    if (!Array.isArray(permissions) || permissions.length > allowed.length
-        || permissions.some(p => !allowed.includes(p))) throw deviceError("INVALID_PERMISSIONS", 400);
-    if (expectedPermissions !== undefined && (!Array.isArray(expectedPermissions)
-        || expectedPermissions.length > allowed.length || expectedPermissions.some(p => !allowed.includes(p)))) {
-      throw deviceError("INVALID_PERMISSIONS", 400);
-    }
-    await this.change(state => {
-      const device = state.devices.find(d => d.id === id && !d.revoked);
-      if (!device) throw deviceError("DEVICE_NOT_FOUND", 404);
-      if (expectedPermissions !== undefined
-          && JSON.stringify([...new Set(expectedPermissions)].sort())
-            !== JSON.stringify([...new Set(device.permissions ?? DEFAULT_CLIENT_DEVICE_PERMISSIONS)].sort())) {
-        throw deviceError("PERMISSIONS_CHANGED", 409);
-      }
-      device.permissions = [...new Set(permissions)];
-    });
-    return { deviceId: id, permissions: [...new Set(permissions)] };
+    return Boolean(device && !device.revoked && device.refreshExpiresAt > this.now());
   }
 
   async revoke(id) {
@@ -190,9 +172,7 @@ export class ClientDeviceAuthority {
   }
 
   list() {
-    return { devices: this.state.devices.map(({ id, name, createdAt, revoked, permissions }) => ({ id, name, createdAt, revoked,
-      permissions: permissions ?? [...DEFAULT_CLIENT_DEVICE_PERMISSIONS] })),
-      availablePermissions: [...CLIENT_DEVICE_PERMISSIONS],
+    return { devices: this.state.devices.map(({ id, name, createdAt, revoked }) => ({ id, name, createdAt, revoked })),
       pending: [...this.pending].filter(([, p]) => p.expiresAt > this.now() && p.status === "pending")
         .map(([pairingId, p]) => ({ pairingId, name: p.name, expiresAt: p.expiresAt })) };
   }

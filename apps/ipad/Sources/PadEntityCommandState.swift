@@ -26,7 +26,7 @@ final class PadEntityCommandState {
         let result: ClientEntityCommandResult?
     }
     /// Codes the host guarantees are raised before any receipt is journaled.
-    static let preDispatchCodes: Set<String> = ["DEVICE_PERMISSION_REQUIRED", "INVALID_CREDENTIAL", "INVALID_TASK_COMMAND",
+    static let preDispatchCodes: Set<String> = ["INVALID_CREDENTIAL", "INVALID_TASK_COMMAND",
         "INVALID_WORK_COMMAND", "INVALID_TASK_ID", "INVALID_WORK_ID", "TASK_NOT_FOUND", "WORK_NOT_FOUND", "AGENT_OUTSIDE_WORK",
         "AGENT_NOT_FOUND", "IDEMPOTENCY_CONFLICT", "CAPABILITY_UNSUPPORTED", "ROUTE_NOT_AVAILABLE", "COMMAND_JOURNAL_FULL"]
 
@@ -113,7 +113,7 @@ final class PadEntityCommandState {
             accept(receipt)
         } catch {
             guard matches(connection), !Task.isCancelled else { return }
-            if let failure = error as? ClientServiceFailure, ["DEVICE_PERMISSION_REQUIRED", "INVALID_CREDENTIAL"].contains(failure.code) {
+            if let failure = error as? ClientServiceFailure, failure.code == "INVALID_CREDENTIAL" {
                 reconciliationDenied = true
             }
             if let failure = error as? ClientConnectionError, failure == .httpStatus(401) || failure == .httpStatus(403) {
@@ -156,8 +156,6 @@ final class PadEntityCommandState {
 
     static func explain(_ failure: ClientServiceFailure, label: String) -> String {
         switch failure.code {
-        case "DEVICE_PERMISSION_REQUIRED":
-            return "此设备未获得 Work / Task 管理授权，请在 Mac 的设备设置中开启「管理 Task」或「管理 Work」。"
         case "TASK_DELETING": return "该 Task 正在删除，无法\(label)。"
         case "WORK_TASK_DELETING": return "Work 内有 Task 正在删除，请稍后再试。"
         case "TASK_ARCHIVED": return "Task 已归档。"

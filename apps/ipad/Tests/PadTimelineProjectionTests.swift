@@ -90,4 +90,23 @@ struct PadTimelineProjectionTests {
         #expect(workspace.processPresentations["process:turn"]?.state == .completed)
         #expect(workspace.processPresentations["process:turn"]?.currentStepTitle == nil)
     }
+
+    @Test func residentSourceWindowUsesMacSemanticDisplayWeightAndExpandsLocally() {
+        let name = "pad-resident-window-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let workspace = PadWorkspace(defaults: defaults)
+        workspace.selection = "session:resident"
+        workspace.messages = (0..<35).map { ClientMessage(id: "message:\($0)", text: "Message \($0)") }
+
+        #expect(workspace.displayEntries.count == 20)
+        #expect(workspace.displayEntries.first?.id == "message:message:15")
+        #expect(workspace.hasHiddenDisplayHistory)
+        #expect(workspace.historyRequestCursor?.hasPrefix("resident:") == true)
+
+        #expect(workspace.revealEarlierDisplayEntries())
+        #expect(workspace.displayEntries.count == 35)
+        #expect(!workspace.hasHiddenDisplayHistory)
+        #expect(workspace.historyRequestCursor == nil)
+    }
 }

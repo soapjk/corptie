@@ -25,6 +25,7 @@ enum PadTab: Int, CaseIterable, Identifiable {
 
 @MainActor @Observable
 final class PadControlStore {
+    var worktrees = PadWorktreeStore()
     var items: [ClientControlKind: [ClientControlItem]] = [:]
     var cursors: [ClientControlKind: String] = [:]
     var errors: [ClientControlKind: String] = [:]
@@ -152,7 +153,7 @@ final class PadControlStore {
     }
     static func explain(_ error: Error) -> String {
         switch error {
-        case ClientConnectionError.httpStatus(403): "设备未获四页浏览权限，请在 Mac 的设备设置中授权。"
+        case ClientConnectionError.httpStatus(403): "Mac 拒绝了这项请求，请刷新后重试。"
         case ClientConnectionError.httpStatus(404): "此资源或接口不可用，请检查 Mac 后端版本。"
         case ClientConnectionError.httpStatus(401): "设备授权已失效，请重新连接。"
         default: "同步失败，已保留上次数据。请重试。"
