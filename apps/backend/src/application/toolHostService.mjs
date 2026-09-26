@@ -182,7 +182,7 @@ export class ToolHostService {
     if (input.tool === TOOL_DOMAIN_LOAD) {
       const scope = exactScope(input);
       const domainId = requiredText(input.arguments?.domain_id, "domain_id");
-      if (domainId.startsWith("skill-mcp:") && this.skillMcpGateway) {
+      if ((domainId.startsWith("skill-mcp:") || domainId.startsWith("mcp:")) && this.skillMcpGateway) {
         const contract = await this.skillMcpGateway.domain(input, domainId);
         if (!contract) throw toolError("TOOL_DOMAIN_NOT_FOUND", `Assigned Skill MCP domain is unavailable: ${domainId}`, 404);
         const expectedCatalogVersion = requiredText(input.arguments?.expected_catalog_version, "expected_catalog_version");

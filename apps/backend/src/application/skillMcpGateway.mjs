@@ -46,18 +46,20 @@ export class SkillMcpGateway {
     }
     const domains = [];
     for (const [serverName, tools] of grouped) {
-      const domainId = `skill-mcp:${serverName}`;
-      const domainText = searchableText(`${domainId} ${serverName}`);
+      const domainId = serverName.startsWith("standalone_")
+        ? `mcp:${serverName}` : `skill-mcp:${serverName}`;
+      const serverLabel = tools[0]?.target?.serverLabel ?? serverName;
+      const domainText = searchableText(`${domainId} ${serverName} ${serverLabel}`);
       if (hintTerms.length > 0 && !hintTerms.every((term) => domainText.includes(term))) continue;
       const ranked = tools.map(({ name, target }) => {
-        const haystack = searchableText(`${name} ${target.definition.description ?? ""} ${serverName}`);
+        const haystack = searchableText(`${name} ${target.definition.description ?? ""} ${serverName} ${serverLabel}`);
         const matches = queryTerms.filter((term) => haystack.includes(term)).length;
         return { name, target, score: haystack.includes(query) ? matches + 2 : matches };
       }).filter(({ score }) => queryTerms.length === 0 || score > 0)
         .sort((left, right) => right.score - left.score || left.name.localeCompare(right.name));
       if (queryTerms.length > 0 && ranked.length === 0) continue;
       const recommendedTool = recommendedToolName(ranked.map(({ name }) => name));
-      const profile = { aliases: Object.freeze([serverName, domainId, `skill mcp ${serverName}`]), recommendedTool };
+      const profile = { aliases: Object.freeze([serverName, serverLabel, domainId, `mcp ${serverLabel}`]), recommendedTool };
       domains.push(Object.freeze({
         domainId,
         domainRevision: entry.catalogVersion,
@@ -85,7 +87,7 @@ export class SkillMcpGateway {
     const result = await this.search({
       ...input,
       intent: "",
-      domainHint: String(domainId).replace(/^skill-mcp:/, ""),
+      domainHint: String(domainId).replace(/^(?:skill-mcp|mcp):/, ""),
       toolLimit: Number.MAX_SAFE_INTEGER
     });
     return result.domains.find((domain) => domain.domainId === domainId) ?? null;
@@ -147,7 +149,11 @@ export class SkillMcpGateway {
         clients.push(client);
         const listed = await withTimeout(client.listTools(), this.timeoutMs, `Skill MCP server ${serverName} tools/list timed out.`);
         for (const raw of listed?.tools ?? []) {
-          const name = requiredText(raw?.name, "tool.name");
+          const remoteName = requiredText(raw?.name, "tool.name");
+          // Standalone Servers get stable canonical names, so two installations
+          // may expose the same remote tool name without shadowing each other.
+          const name = serverName.startsWith("standalone_")
+            ? `${serverName}__${remoteName}` : remoteName;
           if (tools.has(name)) throw gatewayError("MCP_TOOL_NAME_CONFLICT", `Assigned Skill MCP tool name conflicts: ${name}`, 409);
           const definition = Object.freeze({
             name,
@@ -158,7 +164,7 @@ export class SkillMcpGateway {
             ...(raw.annotations ? { annotations: raw.annotations } : {})
           });
           definitions.push(definition);
-          tools.set(name, { client, remoteName: name, serverName, definition });
+          tools.set(name, { client, remoteName, serverName, serverLabel: config.displayName ?? serverName, definition });
         }
       }
       definitions.sort((left, right) => left.name.localeCompare(right.name));
@@ -197,7 +203,7 @@ function createTransport(server = {}) {
     command: requiredText(server.command, "server.command"),
     args: server.args ?? [],
     cwd: server.cwd,
-    env: { ...process.env, ...(server.env ?? {}) },
+    env: server.isolatedEnv ? { ...(server.env ?? {}) } : { ...process.env, ...(server.env ?? {}) },
     stderr: "pipe"
   });
 }
