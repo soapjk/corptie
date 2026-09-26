@@ -22,6 +22,8 @@ import {
 import { createCodexProviderRuntime } from "./agent-provider/bootstrap/codexProviderRuntime.mjs";
 import { choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/choiceParser.mjs";
 import { SessionApplicationService } from "./agent-provider/sessionApplicationService.mjs";
+import { SessionForkService } from "./application/sessionForkService.mjs";
+import { createForkWorktree } from "./runtime/forkWorktree.mjs";
 import { AGENT_PROVIDER_CAPABILITIES } from "./agent-provider/contracts.mjs";
 import { withResolvedSessionActions } from "./agent-provider/sessionActions.mjs";
 import { withSessionReadiness } from "./application/sessionReadiness.mjs";
@@ -1019,6 +1021,7 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
   codexOperations: {
     prepareSessionInput: prepareCodexProviderSessionInput,
     createSession: createCodexProviderSession,
+    forkSession: (input, context) => codexThreadCreationQueue.run(() => createCodexProviderSessionNow(input, context.forkSource)),
     resumeSession: resumeCodexProviderSession,
     probeBinding: probeCodexProviderBinding,
     prepareExecution: prepareCodexProviderExecution,
@@ -1313,7 +1316,10 @@ const sessionApplicationService = new SessionApplicationService({
   resolveRequiredToolDomains: requiredToolDomainsForSession,
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
   resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
-  assertMessageDispatchAllowed: (reference) => assertSessionRecoveryMessageBoundary(reference),
+  assertMessageDispatchAllowed: (reference) => {
+    sessionForkService.assertCanDispatch(reference.sessionId);
+    return assertSessionRecoveryMessageBoundary(reference);
+  },
   recoverUnavailableSession: async ({ sessionId, reference, error, context }) => {
     if (!reference.logicalSessionId || !context.idempotencyKey) {
       const recoveryError = new Error("Automatic recovery requires a logical Session and stable message idempotency key.");
@@ -2370,14 +2376,17 @@ taskExecutionOrchestrator = new TaskExecutionOrchestrator({
 });
 const startupWorktreePreparer = new WorktreeStartupPreparer({
   store,
-  ensureWorkspace: ensureTaskWorkspace
+  ensureWorkspace: async (input) => {
+    const source = await sessionForkService.contextForTask(input.task.id);
+    return source ? prepareConversationForkWorkspace(source, input.task.id) : ensureTaskWorkspace(input);
+  }
 });
 const providerWorkspaceBindingService = new ProviderWorkspaceBindingService({
   registry: agentProviderRegistry
 });
 const providerWorkSessionPort = new ProviderWorkSessionPort({
   workspaceBinding: providerWorkspaceBindingService,
-  createSession: ({ taskId, assigneeAgentId, providerId, title, model, reasoningLevel, workspace }) => {
+  createSession: async ({ taskId, assigneeAgentId, providerId, title, model, reasoningLevel, workspace }) => {
     const task = workService.getTask(taskId);
     const agent = store.getAgent(assigneeAgentId);
     return createProviderWorkSession({
@@ -2390,6 +2399,7 @@ const providerWorkSessionPort = new ProviderWorkSessionPort({
       title,
       model,
       reasoningLevel,
+      forkSource: await sessionForkService.contextForTask(taskId),
       workingDirectory: workspace.canonicalExecutionPath ?? workspace.canonicalWorktreePath,
       autoUniqueTitle: true,
       deferInitialPromptUntilBound: true,
@@ -2528,6 +2538,45 @@ workSessionStartApplicationService = new WorkSessionStartApplicationService({
   providerRegistry: agentProviderRegistry,
   resolveProviderId: resolveSessionProviderId
 });
+const sessionForkService = new SessionForkService({
+  store, registry: agentProviderRegistry, sessionService: sessionApplicationService, workService,
+  startWorkSession: (command) => workSessionStartApplicationService.start(command),
+  copyMetadata: (...args) => chatResourceService.copyForkMetadata(...args),
+  createChat: async ({ source, input }) => {
+    const logical = store.getLogicalSessionByLegacySessionId(source.session.id);
+    const workspace = logical?.repositoryId ? await prepareConversationForkWorkspace(source, `chat:${input.requestId}`) : null;
+    const session = await createSessionThroughApplication(source.reference.providerId, {
+      title: input.title, cwd: workspace?.path ?? source.session.external?.cwd,
+      sessionKind: "assistantChat", model: source.session.external?.currentModel,
+      reasoningLevel: source.session.external?.currentReasoningLevel,
+      ...(workspace ? { runtimeWorkspaceRoots: [workspace.path] } : {})
+    }, { source: "conversation-fork", actorId: source.session.agentId,
+      sessionKind: "assistantChat", forkSource: source, forkRequestId: input.requestId });
+    collaborationCore.bindSession({ agentId: source.session.agentId, sessionId: session.id });
+    const agent = store.getAgent(source.session.agentId);
+    if (agent && isPlatformAssistant(agent)) store.grantSessionCapability(session.id, "platform.manage");
+    return session;
+  },
+  onChanged: (type, payload) => emitEvent(type, payload)
+});
+
+async function prepareConversationForkWorkspace(source, targetId) {
+  const logical = store.getLogicalSessionByLegacySessionId(source.session.id);
+  const sourcePath = logical?.activeBinding?.boundCwd;
+  if (!logical?.repositoryId || !sourcePath || logical.activeBinding.bindingId !== source.reference.bindingId) {
+    throw Object.assign(new Error("源会话没有有效的 Git Worktree 绑定。"), { code: "FORK_WORKSPACE_UNAVAILABLE" });
+  }
+  const suffix = createHash("sha256").update(targetId).digest("hex").slice(0, 24);
+  const targetPath = resolve(store.layout.worktreesDirectory, logical.repositoryId.split(":").at(-1), `fork-${suffix}`);
+  const created = await createForkWorktree({ sourcePath, targetPath, branchName: `fork/${suffix}` });
+  const snapshot = await createGitWorkspaceSnapshot(targetPath);
+  if (snapshot.repository.id !== logical.repositoryId) throw new Error("Fork Repository identity changed.");
+  store.upsertGitWorkspaceSnapshot(snapshot);
+  const worktree = snapshot.worktrees.find(row => resolve(row.canonicalPath || row.path) === targetPath);
+  if (!worktree) throw new Error("Fork Worktree was not inventoried.");
+  await ensureArtifactCommitHook(targetPath, { dbPath: store.dbPath });
+  return { ...created, worktreeId: worktree.worktreeId, reused: false };
+}
 const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService({
   store,
   inspectProject: async (projectId, options = {}) => {
@@ -5648,6 +5697,11 @@ async function createGatewaySession(input = {}) {
 }
 
 async function createSessionThroughApplication(providerId, input = {}, context = {}) {
+  if (context.forkSource) {
+    const reference = context.forkSource.reference;
+    const materialization = store.getSessionToolCatalogMaterialization(reference.logicalSessionId, reference.bindingId);
+    context = { ...context, desiredToolDomains: desiredToolDomainIds(materialization) };
+  }
   const cwd = sessionWorkspacePath(input.cwd);
   await assertDirectory(cwd);
   const requestedTitle = typeof input.title === "string" ? input.title.trim() : "";
@@ -5675,6 +5729,10 @@ async function createSessionThroughApplication(providerId, input = {}, context =
   const releaseTitle = reserveSessionTitle(title);
   try {
     const createdSession = await sessionApplicationService.createSession(providerId, prepared, context);
+    if (context.forkSource) {
+      const operationId = context.forkRequestId ?? sessionForkService.forTask(context.taskId)?.request_id;
+      if (operationId) sessionForkService.recordTarget(operationId, createdSession.id);
+    }
     const session = input.sessionKind
       ? (store.setSessionKind(createdSession.id, input.sessionKind, context.actorId) ?? {
           ...createdSession,
@@ -5753,6 +5811,7 @@ async function createProviderWorkSession({
   runtimeWorkspaceRoots = null,
   deferInitialPromptUntilBound = false,
   deferToolHostFinalization = false,
+  forkSource = null,
   observePerformance = () => {}
 }) {
   const providerId = resolveSessionProviderId(requestedProviderId);
@@ -5797,7 +5856,8 @@ async function createProviderWorkSession({
       workId,
       taskId,
       sessionKind: "worker",
-      deferToolHostFinalization
+      deferToolHostFinalization,
+      forkSource
     }
   );
   observePerformance("providerSessionCreateMs", performance.now() - phaseStartedAt);
@@ -6122,7 +6182,7 @@ async function createCodexProviderSession(input = {}) {
   return codexThreadCreationQueue.run(() => createCodexProviderSessionNow(input));
 }
 
-async function createCodexProviderSessionNow(input = {}) {
+async function createCodexProviderSessionNow(input = {}, forkSource = null) {
   const creationId = randomUUID();
   activeCodexThreadCreation = { creationId, title: input.title, startedAt: Date.now() };
   try {
@@ -6147,7 +6207,7 @@ async function createCodexProviderSessionNow(input = {}) {
       collaborationAgentId,
       input.toolHost?.metadata
     );
-    const started = await codexRuntime.startThread({
+    const threadOptions = {
       cwd: input.cwd,
       ...permissions,
       runtimeWorkspaceRoots: input.runtimeWorkspaceRoots,
@@ -6156,7 +6216,30 @@ async function createCodexProviderSessionNow(input = {}) {
       ...providerThreadOptions,
       developerInstructions: [providerThreadOptions.developerInstructions, input.recoveryContext]
         .filter(Boolean).join("\n\n") || undefined
-    });
+    };
+    const started = forkSource
+      ? await codexRuntime.forkThread(forkSource.reference.providerSessionId, {
+          ...withPersistedCodexToolConfirmation(forkSource.reference, threadOptions),
+          lastTurnId: forkSource.point.turnId, deferGoalContinuation: true
+        })
+      : await codexRuntime.startThread(threadOptions);
+    if (forkSource) {
+      try {
+        const actualCwd = started.cwd ?? started.thread?.cwd;
+        if (!actualCwd || resolve(actualCwd) !== resolve(input.cwd)) {
+          throw Object.assign(new Error("Codex 分支未绑定到新工作区。"), { code: "FORK_CWD_MISMATCH" });
+        }
+        const lastTurn = started.thread?.turns?.at(-1);
+        if (lastTurn && lastTurn.id !== forkSource.point.turnId) {
+          throw Object.assign(new Error("Codex 分支历史未截止到选中的轮次。"), { code: "FORK_HISTORY_MISMATCH" });
+        }
+        await codexRuntime.clearThreadGoal(started.thread.id);
+      }
+      catch (error) {
+        await codexRuntime.archiveThread(started.thread.id).catch(() => {});
+        throw error;
+      }
+    }
     const session = withCodexSessionPermissions({
       ...mapCodexThreadToSession({
         ...started.thread,
@@ -9511,7 +9594,7 @@ function route(request, response) {
       "/state/snapshot", "/state/changes", "/state/events", "/session-timelines/revisions",
       "/works", "/tasks", "/agents", "/workspaces", "/repositories", "/artifacts", "/memories",
       "/automations", "/scheduled-tasks", "/scheduled-session-tasks"].includes(url.pathname)
-      || /^\/sessions\/[^/]+\/(stored-snapshot|history|timeline\/window|timeline\/changes|events|usage|context-references|images)$/.test(url.pathname)
+      || /^\/sessions\/[^/]+\/(stored-snapshot|history|timeline\/window|timeline\/changes|events|usage|context-references|images|fork)$/.test(url.pathname)
       || /^\/works\/[^/]+(?:\/(tasks|artifacts))?$/.test(url.pathname)
       || /^\/tasks\/[^/]+(?:\/(sessions|snapshots|artifacts))?$/.test(url.pathname)
       || /^\/artifacts\/[^/]+$/.test(url.pathname);
@@ -10955,6 +11038,17 @@ function route(request, response) {
       .catch((error) => {
         sendJson(response, errorStatus(error, unifiedErrorStatus(error)), sessionTitleErrorPayload(error));
       });
+    return;
+  }
+
+  const sessionForkMatch = url.pathname.match(/^\/sessions\/([^/]+)\/fork$/);
+  if (sessionForkMatch && ["GET", "POST"].includes(request.method)) {
+    const sessionId = decodeURIComponent(sessionForkMatch[1]);
+    const operation = request.method === "GET"
+      ? sessionForkService.preview(sessionId, url.searchParams.get("itemId"))
+      : readJson(request).then(input => sessionForkService.create(sessionId, input));
+    operation.then(result => sendJson(response, request.method === "POST" ? 201 : 200, result))
+      .catch(error => sendJson(response, errorStatus(error, 409), { error: error.message, code: error.code ?? "FORK_FAILED" }));
     return;
   }
 

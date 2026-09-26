@@ -82,8 +82,9 @@ export class SessionApplicationService {
     if (hasPreparedToolHost && context.deferSessionBinding !== true) {
       throw new TypeError("A prepared Tool Host attachment is only valid for an internal route transition.");
     }
+    const { forkSource: _forkSource, ...attachmentContext } = context;
     const bootstrapContext = this.#materializationContext({
-      ...context,
+      ...attachmentContext,
       sessionKind: context.sessionKind ?? preparedInput.sessionKind ?? "legacy"
     });
     const toolHost = hasPreparedToolHost
@@ -94,9 +95,13 @@ export class SessionApplicationService {
             ...bootstrapContext
           })
         : null;
+    const forkSource = context.forkSource ?? null;
+    if (forkSource && forkSource.reference?.providerId !== providerId) {
+      throw new TypeError("A conversation fork must retain its Provider.");
+    }
     const session = await this.registry.invoke(
       providerId,
-      AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
+      forkSource ? AGENT_PROVIDER_CAPABILITIES.SESSION_FORK : AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
       toolHost ? { ...preparedInput, toolHost } : preparedInput,
       context
     );
@@ -448,10 +453,11 @@ export class SessionApplicationService {
   }
 
   #materializationContext(context = {}) {
+    const { forkSource: _forkSource, ...attachmentContext } = context;
     const required = this.resolveRequiredToolDomains(context);
     const desired = Array.isArray(context.desiredToolDomains) ? context.desiredToolDomains : [];
     return {
-      ...context,
+      ...attachmentContext,
       desiredToolDomains: [...new Set([
         ...desired,
         ...(Array.isArray(required) ? required : [])

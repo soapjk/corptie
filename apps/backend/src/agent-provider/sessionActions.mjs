@@ -2,6 +2,7 @@ import { AGENT_PROVIDER_CAPABILITIES, providerSupports } from "./contracts.mjs";
 
 const ACTION_CAPABILITIES = Object.freeze({
   resume: AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+  fork: AGENT_PROVIDER_CAPABILITIES.SESSION_FORK,
   prepareExecution: AGENT_PROVIDER_CAPABILITIES.SESSION_EXECUTION_PREPARE,
   delete: AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
   restart: AGENT_PROVIDER_CAPABILITIES.SESSION_RESTART,
@@ -61,6 +62,11 @@ export function sessionActionAvailability(action, session, providerOrDescriptor,
   }
 
   const legacy = session.capabilities ?? {};
+  if (action === "fork") {
+    if (!["worker", "assistantChat"].includes(session.sessionKind)) return unavailable("SESSION_KIND_UNSUPPORTED", false);
+    if (session.archived || ["running", "blocked"].includes(session.status)) return unavailable("SESSION_BUSY", true);
+    return available();
+  }
   if (action === "resume") {
     return legacy.canReconnect === false
       ? unavailable("SESSION_ALREADY_CONNECTED", true)
