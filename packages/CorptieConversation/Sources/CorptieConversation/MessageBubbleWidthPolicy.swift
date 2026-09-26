@@ -54,8 +54,8 @@ public enum MessageBubbleWidthPolicy {
         return hasAttachments ? min(fullAvailable, max(attachmentMinimumWidth, preferred)) : preferred
     }
 
-    /// Process cards expand to the whole bounded lane. Collapsed cards hug the
-    /// widest visible header row instead of retaining a fixed desktop-era floor.
+    /// Expanded process cards share the ordinary message width ceiling instead
+    /// of filling the timeline lane. Collapsed cards hug their visible rows.
     /// Hosts measure their platform fonts once and share this clamp/padding rule.
     public static func processCardWidth(
         summaryWidth: CGFloat,
@@ -65,7 +65,7 @@ public enum MessageBubbleWidthPolicy {
         laneWidth: CGFloat
     ) -> CGFloat {
         let fullAvailable = fullAvailableWidth(laneWidth: laneWidth)
-        guard !expanded else { return fullAvailable }
+        guard !expanded else { return min(fullAvailable, maximumWidth) }
         let progressWidth = progressLabelWidth > 0 ? progressLabelWidth + 8 : 0
         let headerWidth = summaryWidth + progressWidth + 58
         let secondaryRowWidth = secondaryWidth > 0 ? secondaryWidth + 40 : 0

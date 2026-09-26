@@ -58,12 +58,20 @@ final class ChatBubbleWidthPolicyTests: XCTestCase {
         XCTAssertEqual(width, 312)
     }
 
-    func testExpandedProcessCardFillsTheBoundedTimelineLane() {
+    func testExpandedProcessCardUsesMessageWidthCeiling() {
         XCTAssertEqual(MessageBubbleWidthPolicy.processCardWidth(
             summaryWidth: 80, expanded: true, laneWidth: 900),
-            896)
+            ChatBubbleWidthPolicy.maximumWidth)
         XCTAssertEqual(MessageBubbleWidthPolicy.processCardWidth(
             summaryWidth: 80, expanded: true, laneWidth: 320), 316)
+
+        let process = AppKitChatTimelineRow(
+            id: "expanded-process", contentRevision: 1, nativeText: "Step details",
+            copyText: "Step details", nativeStyle: .process, title: "", metadata: "",
+            expandableTurnId: "turn", isExpanded: true, processCount: 1
+        )
+        XCTAssertEqual(NativeTimelineLayoutCache.shared.layout(
+            for: process, columnWidth: 900).cardWidth, ChatBubbleWidthPolicy.maximumWidth)
     }
 
     /// The AppKit wrapper only measures; the clamp the iPad applies is the shared one.

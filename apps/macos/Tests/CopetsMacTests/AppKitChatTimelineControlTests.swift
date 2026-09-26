@@ -29,6 +29,25 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         )
     }
 
+    func testShortNativeUserMessageKeepsStatusLabel() throws {
+        let status = try XCTUnwrap(UserMessageStatusPresentation(
+            authoritativeStatus: "processing", legacyStatus: nil
+        ))
+        let message = AppKitChatTimelineRow(
+            id: "short-user", contentRevision: 1, nativeText: "好", copyText: "好",
+            nativeStyle: .user, title: "", metadata: "", expandableTurnId: nil,
+            isExpanded: false, showsHeader: false, messageStatus: status
+        )
+        let cell = AppKitChatNativeTextCell(identifier: .init("short-status"))
+        cell.frame = .init(x: 0, y: 0, width: 400, height: 70)
+        cell.setContent(message, availableWidth: 400, onToggleExpansion: { _ in })
+        cell.layoutSubtreeIfNeeded()
+        let statusButton = try XCTUnwrap(button(in: cell, identifier: "chat.timeline.message-status"))
+        XCTAssertEqual(statusButton.title, status.shortLabel(
+            languageCode: Locale.current.language.languageCode?.identifier ?? "en"))
+        XCTAssertFalse(statusButton.isHidden)
+    }
+
     func testImageMessageReservesStableNativeRowGeometry() {
         let plain = AppKitChatTimelineRow(
             id: "plain", contentRevision: 1, nativeText: "Image", copyText: "Image",
