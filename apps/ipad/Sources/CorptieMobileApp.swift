@@ -5,6 +5,7 @@ import CorptieConversation
 
 @main
 struct CorptieMobileApp: App {
+    @UIApplicationDelegateAdaptor(PadAppDelegate.self) private var appDelegate
     @State private var connection = PadConnection()
     var body: some Scene {
         WindowGroup {
@@ -105,9 +106,8 @@ struct PairingView: View {
 struct WorkspaceView: View {
     let connection: PadConnection
     @Bindable var workspace: PadWorkspace
-    @State private var expandedWorkIDs: Set<String> = []
+    @State private var expandedWorkIDs = PadWorkExpansionStore().load()
     @State private var isChatExpanded = true
-    @State private var initializedExpansion = false
     @State private var taskCreationRoute: PadTaskCreationRoute?
     @State private var taskCreationStates: [String: PadTaskCreationState] = [:]
     @State private var columnVisibility = NavigationSplitViewVisibility.all
@@ -200,6 +200,7 @@ struct WorkspaceView: View {
                 }
             case .deleteWork(let work):
                 PadDeleteWorkSheet(connection: connection, commands: commands, work: work) {
+                    expandedWorkIDs.remove(work.id)
                     if let selected = workspace.selection,
                        workspace.sessionsByID[selected]?.workId == work.id {
                         workspace.selection = nil
@@ -207,11 +208,8 @@ struct WorkspaceView: View {
                 }
             }
         }
-        .onChange(of: workspace.works.map(\.id), initial: true) { _, ids in
-            if !initializedExpansion, !ids.isEmpty {
-                expandedWorkIDs = Set(ids)
-                initializedExpansion = true
-            }
+        .onChange(of: expandedWorkIDs) { _, workIDs in
+            PadWorkExpansionStore().save(workIDs)
         }
         .task(id: "\(commands.pending?.requestID ?? ""):active=\(scenePhase == .active)") {
             guard scenePhase == .active, commands.pending != nil else { return }
@@ -256,6 +254,7 @@ struct WorkspaceView: View {
 }
 
 struct ConversationView: View {
+    @Environment(\.scenePhase) private var scenePhase
     let connection: PadConnection
     @Bindable var workspace: PadWorkspace
     let sessionID: String
@@ -344,11 +343,13 @@ struct ConversationView: View {
                                                laneWidth: laneWidth,
                                                startedAt: items.contains(where: { $0.processEndedAt != nil })
                                                    ? nil : ConversationProcessPresentation.startedAt(for: items),
-                                               canAdvance: entry.id == workspace.activeProcessEntryID
-                                                   && connection.connected && workspace.realtimeConnected
-                                                   && workspace.sessions.first(where: { $0.id == sessionID })?.executionStatus == "running",
-                                               lastRealtimePulseAt: workspace.lastRealtimePulseAt,
-                                               realtimePausedAt: workspace.realtimePausedAt)
+                                               canAdvance: PadProcessClockPolicy.canAdvance(
+                                                   isActiveProcess: entry.id == workspace.activeProcessEntryID,
+                                                   clientIsOnline: connection.connected,
+                                                   sessionExecutionStatus: workspace.sessions.first(where: {
+                                                       $0.id == sessionID
+                                                   })?.executionStatus,
+                                                   sceneIsActive: scenePhase == .active))
                                     .id(sessionID + ":" + entry.id)
                             }
                         }
@@ -754,9 +755,8 @@ private struct PadProcessCard: View {
     let laneWidth: CGFloat
     let startedAt: Date?
     let canAdvance: Bool
-    let lastRealtimePulseAt: Date?
-    let realtimePausedAt: Date?
     @State private var expanded = false
+    @State private var locallyPausedAt: Date?
     private var latestPlan: ConversationExecutionPlan? { steps.compactMap(\.plan).last }
     private var state: ConversationProcessState { presentation.state }
     private var summary: String {
@@ -772,7 +772,7 @@ private struct PadProcessCard: View {
                 : "计划 \(plan.steps.filter { $0.status == "completed" }.count)/\(plan.steps.count)"
         }
     }
-    private var cardWidth: CGFloat {
+    private func cardWidth(summary: String) -> CGFloat {
         let availableLane = laneWidth > 0 ? laneWidth : MessageBubbleWidthPolicy.maximumWidth
         let summaryWidth = ceil((summary as NSString).size(withAttributes: [
             .font: UIFont.systemFont(ofSize: 10.5, weight: .medium)
@@ -806,15 +806,21 @@ private struct PadProcessCard: View {
         Group {
             if canAdvance, state == .running, let startedAt {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
-                    processCard(summary: summary(at: confirmedTime(context.date), startedAt: startedAt))
+                    processCard(summary: summary(at: context.date, startedAt: startedAt))
                 }
             } else {
                 processCard(summary: pausedSummary)
             }
         }
-        .frame(width: cardWidth, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("conversation-process")
+        .onChange(of: canAdvance, initial: true) { previous, current in
+            if previous && !current {
+                locallyPausedAt = Date()
+            } else if current {
+                locallyPausedAt = nil
+            }
+        }
     }
 
     private var staticSummary: String {
@@ -823,15 +829,10 @@ private struct PadProcessCard: View {
     }
 
     private var pausedSummary: String {
-        guard state == .running, let startedAt, let realtimePausedAt else {
+        guard state == .running, let startedAt, let locallyPausedAt else {
             return staticSummary
         }
-        return summary(at: realtimePausedAt, startedAt: startedAt)
-    }
-
-    private func confirmedTime(_ now: Date) -> Date {
-        guard let lastRealtimePulseAt else { return now }
-        return min(now, lastRealtimePulseAt.addingTimeInterval(30))
+        return summary(at: locallyPausedAt, startedAt: startedAt)
     }
 
     private func summary(at date: Date, startedAt: Date) -> String {
@@ -856,6 +857,7 @@ private struct PadProcessCard: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(width: cardWidth(summary: summary), alignment: .leading)
     }
 }
 
