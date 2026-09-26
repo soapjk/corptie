@@ -89,6 +89,18 @@ private final class DetachedChatWindowController: NSObject, NSWindowDelegate {
         panel.isMovableByWindowBackground = true
         panel.minSize = NSSize(width: 220, height: 420)
         panel.maxSize = NSSize(width: 10_000, height: 10_000)
+        let frameName = DetachedChatWindowFrameStore.name(for: sessionID)
+        if panel.setFrameUsingName(frameName) {
+            let visibleFrames = NSScreen.screens.map(\.visibleFrame)
+            let restoredFrame = DetachedChatWindowGeometry.constrainedFrame(
+                panel.frame,
+                in: visibleFrames,
+                fallback: visibleFrame,
+                minimumSize: panel.minSize
+            )
+            panel.setFrame(restoredFrame, display: false)
+        }
+        panel.setFrameAutosaveName(frameName)
         panel.contentView = DetachedChatHostingView(
             rootView: DetachedChatWindowView(
                 sessionID: sessionID,
@@ -110,6 +122,7 @@ private final class DetachedChatWindowController: NSObject, NSWindowDelegate {
     }
 
     func close() {
+        panel.saveFrame(usingName: DetachedChatWindowFrameStore.name(for: sessionID))
         panel.delegate = nil
         panel.close()
     }
@@ -125,14 +138,15 @@ private final class DetachedChatWindowController: NSObject, NSWindowDelegate {
             minimumSize: panel.minSize
         )
         panel.setFrame(frame, display: true, animate: true)
-        DetachedChatWindowSizeStore.save(frame.size, for: sessionID)
+        panel.saveFrame(usingName: DetachedChatWindowFrameStore.name(for: sessionID))
     }
 
     func windowDidEndLiveResize(_ notification: Notification) {
-        DetachedChatWindowSizeStore.save(panel.frame.size, for: sessionID)
+        panel.saveFrame(usingName: DetachedChatWindowFrameStore.name(for: sessionID))
     }
 
     func windowWillClose(_ notification: Notification) {
+        panel.saveFrame(usingName: DetachedChatWindowFrameStore.name(for: sessionID))
         closeHandler(sessionID)
     }
 
@@ -179,6 +193,27 @@ enum DetachedChatWindowGeometry {
         )
     }
 
+    static func constrainedFrame(
+        _ requested: NSRect,
+        in visibleFrames: [NSRect],
+        fallback: NSRect,
+        minimumSize: NSSize = NSSize(width: 220, height: 420)
+    ) -> NSRect {
+        let overlap: (NSRect) -> CGFloat = { frame in
+            let intersection = frame.intersection(requested)
+            return intersection.width * intersection.height
+        }
+        let screen = visibleFrames.max { overlap($0) < overlap($1) }
+            .flatMap { overlap($0) > 0 ? $0 : nil } ?? fallback
+        let size = constrainedSize(requested.size, in: screen, minimumSize: minimumSize)
+        return NSRect(
+            x: min(max(requested.minX, screen.minX), screen.maxX - size.width),
+            y: min(max(requested.minY, screen.minY), screen.maxY - size.height),
+            width: size.width,
+            height: size.height
+        )
+    }
+
     static func frame(
         for preset: DetachedChatWindowPreset,
         visibleFrame: NSRect,
@@ -190,7 +225,11 @@ enum DetachedChatWindowGeometry {
             let size = constrainedSize(normalSize, in: visibleFrame, minimumSize: minimumSize)
             return centeredFrame(size: size, in: visibleFrame)
         case .narrowRight, .narrowLeft:
-            let width = min(visibleFrame.width, max(minimumSize.width, visibleFrame.width / 8))
+            let previousWidth = min(
+                visibleFrame.width,
+                max(minimumSize.width, visibleFrame.width / 8)
+            )
+            let width = min(visibleFrame.width, previousWidth * 2)
             let x = preset == .narrowRight ? visibleFrame.maxX - width : visibleFrame.minX
             return NSRect(x: x, y: visibleFrame.minY, width: width, height: visibleFrame.height)
         case .maximized:
@@ -205,6 +244,12 @@ enum DetachedChatWindowGeometry {
             width: size.width,
             height: size.height
         )
+    }
+}
+
+enum DetachedChatWindowFrameStore {
+    static func name(for sessionID: String) -> String {
+        "detachedChatWindow.frame.v1.\(sessionID)"
     }
 }
 
@@ -253,6 +298,7 @@ private struct DetachedChatWindowView: View {
     @ObservedObject private var backendClient = BackendClient.shared
     @StateObject private var layoutState = PanelLayoutState()
     @State private var draftRepository = ComposerDraftRepository()
+    @State private var showsWindowPresets = false
 
     let sessionID: String
     let close: () -> Void
@@ -276,26 +322,31 @@ private struct DetachedChatWindowView: View {
                     action: returnToMain
                 )
 
-                Menu {
-                    ForEach(DetachedChatWindowPreset.allCases, id: \.self) { preset in
-                        Button {
-                            applyWindowPreset(preset)
-                        } label: {
-                            Label(preset.title, systemImage: preset.systemImage)
+                DetachedWindowTrafficLightButton(
+                    color: Color(red: 0.188, green: 0.784, blue: 0.251),
+                    systemImage: "rectangle.3.group",
+                    help: L10n("Window size and position"),
+                    action: { showsWindowPresets.toggle() }
+                )
+                .popover(isPresented: $showsWindowPresets, arrowEdge: .bottom) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(DetachedChatWindowPreset.allCases, id: \.self) { preset in
+                            Button {
+                                showsWindowPresets = false
+                                applyWindowPreset(preset)
+                            } label: {
+                                Label(preset.title, systemImage: preset.systemImage)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 6)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
-                } label: {
-                    DetachedWindowTrafficLightLabel(
-                        color: Color(red: 0.188, green: 0.784, blue: 0.251),
-                        systemImage: "rectangle.3.group"
-                    )
+                    .padding(6)
+                    .frame(minWidth: 180)
                 }
-                .buttonStyle(.plain)
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help(L10n("Window size and position"))
-                .accessibilityLabel(L10n("Window size and position"))
 
                 ZStack(alignment: .leading) {
                     DetachedChatWindowDragArea()
