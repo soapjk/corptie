@@ -5,11 +5,12 @@ import Testing
 struct MainTabContentLayoutTests {
     @Test
     func selectedIndexTracksTheStableTabOrder() {
-        #expect(AppTab.allCases == [.console, .automations, .worktrees, .agents])
+        #expect(AppTab.allCases == [.console, .automations, .scenes, .worktrees, .agents])
         #expect(AppTab.console.index == 0)
         #expect(AppTab.automations.index == 1)
-        #expect(AppTab.worktrees.index == 2)
-        #expect(AppTab.agents.index == 3)
+        #expect(AppTab.scenes.index == 2)
+        #expect(AppTab.worktrees.index == 3)
+        #expect(AppTab.agents.index == 4)
         #expect(AppTab.console.systemImage == "circle.hexagongrid.fill")
     }
 
