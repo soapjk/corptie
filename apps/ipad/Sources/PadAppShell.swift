@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import CorptieClientCore
+@preconcurrency import UserNotifications
 
 /// Feature state and the single event subscription outlive individual navigation pages.
 struct PadAppShell: View {
@@ -11,6 +12,7 @@ struct PadAppShell: View {
     @State private var tab = PadTab.workspace
     @State private var sheet: Sheet?
     @State private var isKeyboardVisible = false
+    private let notificationManager = PadNotificationManager.shared
     @AppStorage("corptie.mobile.navigationRailExpanded") private var navigationRailExpanded = true
     private enum Sheet: String, Identifiable { case settings; var id: String { rawValue } }
 
@@ -19,6 +21,10 @@ struct PadAppShell: View {
     }
 
     var body: some View {
+        synchronizedContent
+    }
+
+    private var appContent: some View {
         HStack(spacing: 0) {
             if usesNavigationRail {
                 PadNavigationRail(
@@ -78,18 +84,86 @@ struct PadAppShell: View {
         // One foreground scene owns one resident event stream. Selecting a
         // Task only changes the local timeline projection; it must never tear
         // down the connection and request another bootstrap snapshot.
-        .task(id: scenePhase) {
-            guard scenePhase == .active else { controls.pause(); return }
+        .task {
             controls.activate(tab, connection: connection)
+            // Keep the single server-pushed stream resident while the scene is
+            // backgrounded. iPadOS may suspend the process, but the client must
+            // not voluntarily tear down its only notification data source.
             await workspace.runRealtime(connection)
         }
-        .onChange(of: scenePhase) { if scenePhase != .active { controls.pause() } }
+    }
+
+    private var synchronizedContent: some View {
+        appContent
+        .onChange(of: scenePhase) {
+            if scenePhase == .active { controls.activate(tab, connection: connection) }
+            else { controls.pause() }
+        }
         .onChange(of: tab) { if scenePhase == .active { controls.activate(tab, connection: connection) } }
         .onChange(of: workspace.controlRevision) {
             if let snapshot = workspace.directControlSnapshot { controls.apply(snapshot) }
             else { controls.invalidate(connection) }
         }
+        .onChange(of: workspace.sessions) { _, sessions in
+            notificationManager.syncSessions(sessions)
+        }
+        .onChange(of: controls.items[.automations] ?? []) { _, automations in
+            notificationManager.syncAutomations(automations)
+        }
+        .onChange(of: workspace.selection) { _, sessionID in
+            updateNotificationVisibility(sessionID: sessionID)
+        }
+        .onChange(of: tab) { _, _ in
+            updateNotificationVisibility(sessionID: workspace.selection)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .padNotificationNavigationRequested)) { notification in
+            navigateFromNotification(notification.userInfo ?? [:])
+        }
+        .task {
+            notificationManager.setScope("\(connection.serverID)|\(connection.address)")
+            notificationManager.updateVisibility(
+                sessionID: workspace.selection,
+                tab: tab,
+                sceneIsActive: scenePhase == .active
+            )
+            notificationManager.syncSessions(workspace.sessions)
+            notificationManager.syncAutomations(controls.items[.automations] ?? [])
+            if let pending = notificationManager.takePendingNavigation() {
+                navigateFromNotification(pending)
+            }
+            await notificationManager.requestAuthorizationIfNeeded()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            notificationManager.updateVisibility(
+                sessionID: workspace.selection,
+                tab: tab,
+                sceneIsActive: phase == .active
+            )
+        }
         .onDisappear { controls.pause() }
+    }
+
+    private func updateNotificationVisibility(sessionID: String?) {
+        notificationManager.updateVisibility(
+            sessionID: sessionID,
+            tab: tab,
+            sceneIsActive: scenePhase == .active
+        )
+    }
+
+    private func navigateFromNotification(_ userInfo: [AnyHashable: Any]) {
+        if let sessionID = userInfo["sessionId"] as? String, !sessionID.isEmpty {
+            workspace.selection = sessionID
+            tab = .workspace
+        } else if userInfo["destination"] as? String == "automation" {
+            if let automationID = userInfo["automationId"] as? String {
+                controls.selections[.automations] = automationID
+                controls.routes[.automations] = PadControlSelection(kind: .automations, id: automationID)
+            }
+            tab = .automations
+        } else {
+            tab = .workspace
+        }
     }
 }
 
@@ -252,28 +326,244 @@ private struct PadBottomTabBar: View {
     }
 }
 
+private enum PadSettingsTab: String, CaseIterable, Identifiable {
+    case general
+    case notifications
+    case devices
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .general: "通用"
+        case .notifications: "通知"
+        case .devices: "设备接入"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .general: "gearshape"
+        case .notifications: "bell"
+        case .devices: "ipad.and.iphone"
+        }
+    }
+}
+
 private struct PadSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     let connection: PadConnection
     let workspace: PadWorkspace
+    @State private var selectedTab = PadSettingsTab.general
+
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("连接的 Mac") {
-                    LabeledContent("地址", value: connection.address)
-                    LabeledContent("服务器", value: connection.serverID)
-                    Text(workspace.liveStatus).foregroundStyle(.secondary)
-                    Button("断开连接", role: .destructive) { connection.disconnect(); dismiss() }
-                        .disabled(connection.busy)
-                }
-                Section("功能与版本") {
-                    Text("连接获批后可浏览、发送和停止。/goal 等修改类命令与清空会话上下文，需要在 Mac 的设备接入设置中另外授权。")
-                    Text("当前移动版：四页浏览、实时消息、发送与停止。自动化编辑、Git 操作与 Agent / Skill 编辑尚未接入。")
-                        .font(.footnote).foregroundStyle(.secondary)
+        NavigationSplitView {
+            List {
+                ForEach(PadSettingsTab.allCases) { tab in
+                    Button {
+                        selectedTab = tab
+                    } label: {
+                        Label(tab.title, systemImage: tab.symbol)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(selectedTab == tab ? Color.accentColor.opacity(0.12) : Color.clear)
+                    .accessibilityIdentifier("settings.tab.\(tab.rawValue)")
+                    .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
                 }
             }
-            .navigationTitle("设置").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .navigationTitle("设置")
+            .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 260)
+        } detail: {
+            NavigationStack {
+                Group {
+                    switch selectedTab {
+                    case .general:
+                        PadGeneralSettingsView(connection: connection, workspace: workspace)
+                    case .notifications:
+                        PadNotificationSettingsView()
+                    case .devices:
+                        PadDeviceSettingsView(connection: connection, workspace: workspace) {
+                            dismiss()
+                        }
+                    }
+                }
+                .navigationTitle(selectedTab.title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("完成") { dismiss() }
+                    }
+                }
+            }
         }
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+    }
+}
+
+private struct PadGeneralSettingsView: View {
+    let connection: PadConnection
+    let workspace: PadWorkspace
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("环境", value: "iPadOS Development")
+                LabeledContent("服务器", value: connection.serverID)
+                LabeledContent("实时同步", value: workspace.liveStatus)
+            } header: {
+                Text("通用")
+            } footer: {
+                Text("会话、自动化、Worktree 与 Agent 数据均由已配对的 Mac 通过长连接主动推送。")
+            }
+
+            Section("外观") {
+                LabeledContent("界面", value: "跟随系统")
+                LabeledContent("布局", value: UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "紧凑")
+            }
+        }
+    }
+}
+
+private struct PadDeviceSettingsView: View {
+    let connection: PadConnection
+    let workspace: PadWorkspace
+    let disconnected: () -> Void
+
+    var body: some View {
+        Form {
+            Section("连接的 Mac") {
+                LabeledContent("地址", value: connection.address)
+                LabeledContent("服务器", value: connection.serverID)
+                Label(workspace.liveStatus, systemImage: workspace.realtimeConnected ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(workspace.realtimeConnected ? Color.green : Color.secondary)
+            }
+            Section {
+                Button("断开连接", role: .destructive) {
+                    connection.disconnect()
+                    disconnected()
+                }
+                .disabled(connection.busy)
+            } footer: {
+                Text("此 iPad 已由你在 Mac 上扫码批准，使用与其他已批准客户端一致的功能权限。")
+            }
+        }
+    }
+}
+
+private struct PadNotificationSettingsView: View {
+    @Environment(\.scenePhase) private var scenePhase
+    @Bindable private var preferences = PadNotificationPreferences.shared
+    @State private var authorizationStatus: UNAuthorizationStatus?
+    private let manager = PadNotificationManager.shared
+
+    var body: some View {
+        Form {
+            Section {
+                notificationToggle(
+                    "计划任务通知",
+                    description: "计划任务完成、终态失败、取消或过期时通知；周期完成会自动覆盖，避免刷屏。",
+                    isOn: $preferences.notifyOnAutomations
+                )
+            }
+
+            Section("任务通知") {
+                notificationToggle(
+                    "所有会话都在等待交互",
+                    description: "至少一个会话曾在运行，并且当前已无会话运行时通知一次。",
+                    isOn: $preferences.notifyWhenAllSessionsWaiting
+                )
+
+                Picker("等待通知声音", selection: $preferences.waitingSoundEnabled) {
+                    Text("默认").tag(true)
+                    Text("关闭").tag(false)
+                }
+                .disabled(!preferences.notifyWhenAllSessionsWaiting)
+
+                notificationToggle(
+                    "会话完成",
+                    description: "会话从运行变为完成，并且最终回复已经可靠写入时通知。",
+                    isOn: $preferences.notifyOnComplete
+                )
+                notificationToggle(
+                    "会话需要交互",
+                    description: "会话从运行变为阻塞时通知。",
+                    isOn: $preferences.notifyOnBlocked
+                )
+                notificationToggle(
+                    "会话失败",
+                    description: "会话从运行变为失败时通知。",
+                    isOn: $preferences.notifyOnFailed
+                )
+            }
+
+            Section {
+                HStack {
+                    Label(authorizationLabel, systemImage: authorizationSymbol)
+                    Spacer()
+                    if authorizationStatus == .notDetermined {
+                        Button("允许通知") { Task { await requestAuthorization() } }
+                    } else if authorizationStatus == .denied {
+                        Button("打开系统设置") { openSystemSettings() }
+                    }
+                }
+                Button("发送测试通知") {
+                    Task {
+                        await manager.sendTestNotification()
+                        await refreshAuthorizationStatus()
+                    }
+                }
+            } footer: {
+                Text("如果最后一个会话的终态同时使全部会话停止运行，Corptie 只发送一条合并通知。当前正在查看目标会话时不会重复弹出横幅。")
+            }
+        }
+        .task { await refreshAuthorizationStatus() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await refreshAuthorizationStatus() } }
+        }
+    }
+
+    private func notificationToggle(_ title: String, description: String, isOn: Binding<Bool>) -> some View {
+        Toggle(isOn: isOn) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                Text(description)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var authorizationLabel: String {
+        switch authorizationStatus {
+        case .authorized, .provisional, .ephemeral: "系统通知已允许"
+        case .denied: "系统通知已拒绝"
+        case .notDetermined: "尚未请求系统通知权限"
+        case nil: "正在检查通知权限…"
+        @unknown default: "无法读取系统通知状态"
+        }
+    }
+
+    private var authorizationSymbol: String {
+        switch authorizationStatus {
+        case .authorized, .provisional, .ephemeral: "checkmark.circle.fill"
+        case .denied: "exclamationmark.triangle.fill"
+        default: "bell.badge"
+        }
+    }
+
+    private func requestAuthorization() async {
+        await manager.requestAuthorizationIfNeeded()
+        await refreshAuthorizationStatus()
+    }
+
+    private func refreshAuthorizationStatus() async {
+        authorizationStatus = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+    }
+
+    private func openSystemSettings() {
+        guard let url = URL(string: UIApplication.openNotificationSettingsURLString) else { return }
+        UIApplication.shared.open(url)
     }
 }
