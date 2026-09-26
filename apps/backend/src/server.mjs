@@ -3836,6 +3836,7 @@ function publishCommittedProviderWake(providerEvent, createdAt) {
   }
   if (providerEvent.type === "usage.updated") {
     const sessionId = resolveProviderEventBinding(providerEvent)?.sessionId ?? null;
+    if (sessionId) clientDeviceGateway?.events.publishTimeline(sessionId);
     const usage = sessionId ? store.getSessionUsageSnapshot(sessionId) : null;
     if (usage?.context) {
       const usageEvent = eventLog.append({
@@ -6957,12 +6958,18 @@ function readSessionUsage(sessionId, session = store.getSession(sessionId)) {
       provider,
       model: storedUsage?.model ?? session.external?.currentModel ?? null
     },
-    persistAccount: (account) => store.upsertSessionUsageSnapshot({
-      sessionId,
-      providerId: session.external?.provider ?? provider,
-      model: account.model ?? storedUsage?.model ?? session.external?.currentModel ?? null,
-      account
-    }),
+    persistAccount: (account) => {
+      const result = store.upsertSessionUsageSnapshot({
+        sessionId,
+        providerId: session.external?.provider ?? provider,
+        model: account.model ?? storedUsage?.model ?? session.external?.currentModel ?? null,
+        account
+      });
+      if (JSON.stringify(storedUsage?.account) !== JSON.stringify(account)) {
+        clientDeviceGateway?.events.publishTimeline(sessionId);
+      }
+      return result;
+    },
     resetForecast: session.external?.provider === "codex-app-server"
       ? codexResetForecastMonitor?.snapshot() ?? null
       : null
@@ -12159,6 +12166,7 @@ function startBackendRuntime() {
       usage: sessionId => readSessionUsage(sessionId),
       // Same services the desktop entity routes call; the device layer adds permission, DTO and receipt boundaries.
       entityCommands: {
+        createWork: input => workService.createWork(input),
         updateTask: (taskId, patch) => workService.updateTask(taskId, patch),
         setTaskArchived: async (taskId, archived) => {
           const task = await setTaskArchivedForEntityRoutes(taskId, archived);

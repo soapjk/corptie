@@ -1,7 +1,21 @@
 import Testing
+import Foundation
 @testable import CorptieClientCore
 
 struct ResidentTimelineRepositoryTests {
+    @Test func usageOnlyPushUpdatesResidentStateWithoutMovingMessages() throws {
+        var repository = ClientTimelineRepository()
+        repository.store(state(revision: 3), for: "session:test")
+        let data = Data(#"{"schemaVersion":2,"kind":"delta","sessionId":"session:test","snapshotRequired":false,"baseRevision":3,"revision":3,"currentRevision":3,"hasMore":false,"changes":[],"usage":{"schemaVersion":1,"sessionId":"session:test","context":{"usedTokens":30,"contextWindow":100,"remainingTokens":70},"account":null}}"#.utf8)
+        let delta = try JSONDecoder().decode(ClientTimelineDelta.self, from: data)
+        guard case .applied(let updated) = repository.apply(delta) else {
+            Issue.record("Usage-only push must update a resident timeline")
+            return
+        }
+        #expect(updated.usage?.context?.usedTokens == 30)
+        #expect(updated.messages.isEmpty)
+        #expect(updated.revision == 3)
+    }
     @Test func pinnedSelectionSurvivesBoundedResidentEviction() {
         var cache = ResidentSessionCache<Int>(capacity: 2)
         cache.store(1, for: "selected")

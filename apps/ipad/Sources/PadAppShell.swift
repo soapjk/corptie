@@ -183,7 +183,6 @@ private struct PadNavigationRail: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                .background(isSelected ? Color.accentColor.opacity(0.10) : Color.clear)
                 .help(item.title)
                 .accessibilityLabel(item.title)
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
@@ -255,19 +254,40 @@ private struct PadNavigationRail: View {
     }
 
     private func railLabel(symbol: String, title: String, selected: Bool = false) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: symbol)
-                .font(.system(size: 16, weight: selected ? .semibold : .medium))
-                .frame(width: 40, height: 40)
+        ZStack {
+            if selected {
+                if isExpanded {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.accentColor.opacity(0.10))
+                } else {
+                    Circle()
+                        .fill(Color.accentColor.opacity(0.10))
+                        .frame(width: 40, height: 40)
+                }
+            }
+
             if isExpanded {
-                Text(title)
-                    .font(.system(size: 15, weight: selected ? .semibold : .medium))
-                    .lineLimit(1)
-                Spacer(minLength: 4)
+                HStack(spacing: 10) {
+                    railIcon(symbol, selected: selected)
+                    Text(title)
+                        .font(.system(size: 15, weight: selected ? .semibold : .medium))
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                }
+            } else {
+                railIcon(symbol, selected: selected)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .frame(maxWidth: .infinity)
+        .frame(height: 44)
         .contentShape(Rectangle())
+    }
+
+    private func railIcon(_ symbol: String, selected: Bool) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 16, weight: selected ? .semibold : .medium))
+            .frame(width: 40, height: 40)
     }
 }
 

@@ -4,7 +4,7 @@ import { validateSessionCommand, sessionCommandNeedsConfirmation } from "../comm
 import { parseSlashCommand } from "../commands/unifiedCommands.mjs";
 import { createClientTask, clientTaskCreationCatalog } from "./clientTaskCreation.mjs";
 import { clientDiscussionOptions, openClientDiscussion } from "./clientWorkDiscussion.mjs";
-import { clientTaskManagement, clientTaskDeletionPlan, clientWorkManagement, clientTaskCommand, clientWorkCommand } from "./clientEntityCommands.mjs";
+import { clientTaskManagement, clientTaskDeletionPlan, clientWorkManagement, clientTaskCommand, clientWorkCommand, clientWorkCreationOptions, createClientWork } from "./clientEntityCommands.mjs";
 import { publicToolExecution } from "../utils/toolExecutionProjection.mjs";
 import { publicChangeSet } from "../utils/changeSetProjection.mjs";
 import { publicUserInput, validateInteractionAnswers } from "./interactionInput.mjs";
@@ -125,6 +125,10 @@ export class ClientSessionAPI {
   taskManagement(identity, taskId) { return clientTaskManagement(this, identity, taskId); }
   taskDeletionPlan(identity, taskId) { return clientTaskDeletionPlan(this, identity, taskId); }
   workManagement(identity, workId) { return clientWorkManagement(this, identity, workId); }
+  workCreationOptions() { return clientWorkCreationOptions(this); }
+  createWork(identity, input, revalidateIdentity = null) {
+    return createClientWork(this, identity, input, revalidateIdentity);
+  }
   taskCommand(identity, taskId, command, input, revalidateIdentity = null) {
     return clientTaskCommand(this, identity, taskId, command, input, revalidateIdentity);
   }
@@ -162,6 +166,10 @@ export class ClientSessionAPI {
 
   async realtimeTimeline(identity, id, after = null, { includeDetail = true } = {}) {
     const { sessionId } = this.session(id);
+    // Resident timelines carry durable usage even when they are not selected.
+    // Never call a Provider for every streamed message or background bootstrap.
+    let usage = null;
+    try { usage = await this.usage(identity, sessionId, { cached: true }); } catch {}
     const localRevision = Number(after);
     if (Number.isSafeInteger(localRevision) && localRevision > 0) {
       const envelope = this.store.sessionTimelineChangesAfter(sessionId, localRevision, 200);
@@ -171,6 +179,7 @@ export class ClientSessionAPI {
           kind: "delta",
           sessionId,
           ...envelope,
+          usage,
           changes: envelope.changes.map(change => ({
             ...change,
             item: change.item ? publicClientMessage(change.item) : null
@@ -184,7 +193,7 @@ export class ClientSessionAPI {
     // a turn contains many reasoning/tool events.
     const messages = await this.messageWindow(sessionId, { limit: 200 });
     const capabilities = this.capabilities(identity, sessionId);
-    let usage = null, composer = null;
+    let composer = null;
     if (includeDetail) {
       try { usage = await this.usage(identity, sessionId); } catch {}
       try { composer = await this.configuration(identity, sessionId); } catch {}
@@ -359,10 +368,12 @@ export class ClientSessionAPI {
   }
 
   /** Context window and account quota of a Session: the desktop ChatUsageBar data, read-only. */
-  async usage(identity, id) {
+  async usage(identity, id, { cached = false } = {}) {
     const { sessionId } = this.session(id);
-    if (!this.usageReader) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
-    const snapshot = await this.usageReader(sessionId);
+    if (!cached && !this.usageReader) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
+    const snapshot = cached
+      ? this.store.getSessionUsageSnapshot(sessionId)
+      : await this.usageReader(sessionId);
     const number = value => (typeof value === "number" && Number.isFinite(value) ? value : null);
     const window = value => value && typeof value === "object"
       ? { usedPercent: number(value.usedPercent), windowDurationMins: number(value.windowDurationMins), resetsAt: number(value.resetsAt) }

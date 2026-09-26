@@ -185,6 +185,8 @@ struct WorkspaceView: View {
         }
         .sheet(item: $entityRoute) { route in
             switch route {
+            case .createWork:
+                PadCreateWorkSheet(connection: connection, commands: commands)
             case .editWork(let work):
                 PadEditWorkSheet(connection: connection, commands: commands, work: work) { }
             case .renameTask(let task):
@@ -434,6 +436,7 @@ struct ConversationView: View {
                 if !hadCachedCapabilities || viewportState.followsLatest {
                     reader.scrollTo("latest", anchor: .bottom)
                 }
+                await workspace.repairMissingUsage(connection)
             }
             .onChange(of: workspace.messageRevision) {
                 if viewportState.timelineTailDidChange() {
@@ -498,6 +501,7 @@ struct ConversationView: View {
         }
         .safeAreaInset(edge: .top, spacing: 0) { conversationHeader }
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
+        .coordinateSpace(name: "conversation-viewport")
         .background(Color(uiColor: .systemGroupedBackground))
         .toolbar(.hidden, for: .navigationBar)
         .confirmationDialog("已核对消息与执行状态？清除记录不会取消后台执行。", isPresented: $confirmForget, titleVisibility: .visible) {
@@ -593,6 +597,30 @@ struct ConversationView: View {
     }
 
     private var conversationHeader: some View {
+        let session = workspace.sessionsByID[sessionID]
+        let title = workspace.tasks.first(where: { $0.id == session?.taskId })?.title
+            ?? session?.title ?? "会话"
+
+        return VStack(spacing: 4) {
+            Text(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "会话" : title)
+                .font(.title3.weight(.semibold))
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+                .padGlassSurface(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .frame(maxWidth: 360)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("conversation-task-title")
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 16)
+        .padding(.top, 4)
+        .padding(.bottom, 8)
+    }
+
+    private var conversationStatusRow: some View {
         HStack(spacing: 8) {
             PadThreadMetaView(session: workspace.sessionsByID[sessionID],
                               capabilities: workspace.capabilities, usage: workspace.usage)
@@ -601,7 +629,8 @@ struct ConversationView: View {
             let isRunning = SessionExecutionState(executionStatus: session?.executionStatus) == .running
                 || SessionExecutionState(executionStatus: workspace.executionByTaskID[session?.taskId ?? ""]) == .running
             let canStop = isRunning && workspace.capabilities?.stop.available == true
-            if canStop {
+            ZStack {
+              if canStop {
                 Button {
                     Task { await workspace.command(connection, stop: true) }
                 } label: {
@@ -609,33 +638,25 @@ struct ConversationView: View {
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.red)
                         .frame(width: 28, height: 28)
-                        .conversationGlassControl(tint: .red)
-                        .frame(minWidth: 44, minHeight: 44)
+                        .padGlassSurface(in: Circle(), tint: .red.opacity(0.12))
+                        .overlay {
+                            Circle().strokeBorder(Color.red.opacity(0.45), lineWidth: 1)
+                                .allowsHitTesting(false)
+                        }
+                        .frame(width: 44, height: 32)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(connection.busy || workspace.pending != nil)
                 .accessibilityLabel("停止当前运行")
                 .accessibilityIdentifier("conversation-stop")
+              }
             }
+            // Reserve the same slot while idle; stop visibility must not change
+            // either the status row height or the space available to usage text.
+            .frame(width: 44, height: 32)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
-        .background(alignment: .top) {
-            Rectangle()
-                .fill(.ultraThinMaterial)
-                .mask {
-                    LinearGradient(
-                        colors: [.black, .black.opacity(0.72), .clear],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                }
-                .frame(height: 72)
-                .ignoresSafeArea(edges: .top)
-                .allowsHitTesting(false)
-        }
     }
 
     private var composer: some View {
@@ -683,30 +704,55 @@ struct ConversationView: View {
                 }
             }
             PadComposer(connection: connection, workspace: workspace, sessionID: sessionID,
-                        scheduleMessage: { composerSheet = .schedule })
+                        scheduleMessage: { composerSheet = .schedule }) {
+                conversationStatusRow
+            }
         }
         .padding(.horizontal, 12)
         .padding(.top, 10)
         .padding(.bottom, 8)
-        .background {
-            Rectangle()
-                .fill(.ultraThinMaterial)
-                .mask {
-                    LinearGradient(
-                        colors: [.clear, .black.opacity(0.72), .black],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                }
-                .ignoresSafeArea(edges: .bottom)
-                .allowsHitTesting(false)
-        }
+        .background { ConversationChromeBackdrop(isBottom: true) }
     }
 
     private func slashCommandPrefix(_ text: String) -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix("/"), !trimmed.contains(where: { $0.isWhitespace }) else { return nil }
         return String(trimmed.dropFirst())
+    }
+}
+
+/// Edge-only separation. The control row itself is transparent: each control
+/// supplies its own glass surface, with no solid toolbar backing between them.
+private struct ConversationChromeBackdrop: View {
+    let isBottom: Bool
+    private let depth: CGFloat = 18
+    private var surface: Color { Color(uiColor: .systemGroupedBackground) }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if isBottom { fade }
+            Color.clear
+            if !isBottom { fade }
+        }
+        .mask {
+            HStack(spacing: 0) {
+                LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: 12)
+                Rectangle()
+                LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: 12)
+            }
+        }
+        .padding(isBottom ? .top : .bottom, -depth)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private var fade: some View {
+        // Fade to zero on both sides so there is no seam at the transparent row.
+        LinearGradient(colors: [.clear, surface.opacity(0.35), .clear],
+                       startPoint: .top, endPoint: .bottom)
+            .frame(height: depth)
     }
 }
 

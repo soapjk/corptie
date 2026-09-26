@@ -4,6 +4,7 @@ import CorptieConversation
 
 /// Dialogs and sheets for touch-based Work / Task management actions.
 enum PadEntityRoute: Identifiable {
+    case createWork
     case editWork(ClientWork)
     case renameTask(ClientTask)
     case editTask(ClientTask)
@@ -12,12 +13,90 @@ enum PadEntityRoute: Identifiable {
 
     var id: String {
         switch self {
+        case .createWork: return "create-work"
         case .editWork(let w): return "edit-work-\(w.id)"
         case .renameTask(let t): return "rename-task-\(t.id)"
         case .editTask(let t): return "edit-task-\(t.id)"
         case .deleteTask(let t): return "delete-task-\(t.id)"
         case .deleteWork(let w): return "delete-work-\(w.id)"
         }
+    }
+}
+
+struct PadCreateWorkSheet: View {
+    let connection: PadConnection
+    let commands: PadEntityCommandState
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var description = ""
+    @State private var selectedAgents: Set<String> = []
+    @State private var options: ClientWorkCreationOptions?
+    @State private var error: String?
+    @State private var loading = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Work") {
+                    TextField("名称", text: $name)
+                    Text("名称仅支持中文、英文字母和数字。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    TextField("描述（可选）", text: $description, axis: .vertical)
+                }
+                Section("参与 Agent（至少选择一个）") {
+                    if let options {
+                        if options.agents.isEmpty { Text("暂无可用 Agent，请先在 Mac 上配置。").foregroundStyle(.secondary) }
+                        ForEach(options.agents) { agent in
+                            Toggle(agent.name, isOn: Binding(get: { selectedAgents.contains(agent.id) }, set: {
+                                if $0 { selectedAgents.insert(agent.id) } else { selectedAgents.remove(agent.id) }
+                            }))
+                        }
+                    } else if loading { ProgressView("加载创建选项…") }
+                }
+                if let error {
+                    Section {
+                        Text(error).foregroundStyle(.red)
+                        if options == nil { Button("重试") { Task { await loadOptions() } }.disabled(loading) }
+                    }
+                }
+                if !commands.notice.isEmpty { Text(commands.notice).font(.footnote) }
+            }
+            .disabled(commands.isBusy)
+            .navigationTitle("新增 Work")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("创建") { Task { await create() } }
+                        .disabled(options == nil || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || selectedAgents.isEmpty || commands.isBusy)
+                }
+            }
+            .task { await loadOptions() }
+            .onChange(of: commands.outcome) { _, outcome in
+                if outcome?.pending.kind == "work_create", outcome?.status == "completed" { dismiss() }
+            }
+        }
+        .interactiveDismissDisabled(commands.submitting)
+    }
+
+    private func loadOptions() async {
+        loading = true; error = nil
+        defer { loading = false }
+        do {
+            options = try await ClientSessionAPI(transport: connection.transport()).workCreationOptions()
+        } catch let failure as ClientServiceFailure where ["CAPABILITY_UNSUPPORTED", "ROUTE_NOT_AVAILABLE"].contains(failure.code) {
+            error = "此 Mac 服务端尚未支持新增 Work，请更新服务端后重试。"
+        } catch { self.error = PadConnection.explain(error) }
+    }
+
+    private func create() async {
+        let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let receipt = await commands.run(connection, target: .work("new"), kind: "work_create", label: "新增 Work") { api, requestID in
+            try await api.createWork(ClientWorkCreation(requestId: requestID, name: title,
+                description: description, contributorAgentIds: selectedAgents.sorted()))
+        }
+        if receipt?.status == "completed" { dismiss() }
     }
 }
 

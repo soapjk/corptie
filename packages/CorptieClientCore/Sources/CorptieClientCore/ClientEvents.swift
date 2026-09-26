@@ -164,6 +164,7 @@ public struct ClientTimelineDelta: Decodable, Sendable {
     public let currentRevision: Int
     public let hasMore: Bool
     public let changes: [ClientTimelineChange]
+    public let usage: ClientSessionUsage?
 }
 
 public enum ClientRealtimeUpdate: Sendable {
