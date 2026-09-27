@@ -169,11 +169,14 @@ export class ArtifactService {
   list(contextInput, options = {}) {
     const context = this.context(contextInput);
     const relatedTaskIds = this.#relatedTaskIds(context);
-    const artifacts = this.store.listArtifacts({
+    const listOptions = {
       includeRevoked: options.includeRevoked === true,
       limit: options.limit ?? null,
       offset: options.offset ?? 0
-    });
+    };
+    const artifacts = options.currentWorkOnly === true
+      ? this.store.listArtifactsByWork(context.workId, listOptions)
+      : this.store.listArtifacts(listOptions);
     return artifacts.filter((artifact) => artifact.status === "revoked"
       ? options.includeRevoked === true && this.#canManageArtifact(context, artifact)
       : this.#canRead(context, artifact, relatedTaskIds))

@@ -81,7 +81,8 @@ function publicClientMessage(item) {
 
 /** v1 text messaging + stop commands. Provider-neutral callbacks, durable at-most-once dispatch. */
 export class ClientSessionAPI {
-  constructor({ store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null, respondToApproval = null, respondToUserInput = null, onReceiptChanged = null }) {
+  constructor({ store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null, respondToApproval = null, respondToUserInput = null, onReceiptChanged = null, inspector = null }) {
+    this.inspector = inspector;
     Object.assign(this, { store, readWindow, send, stop, actions, resolveSession, composer, images, schedule, conversationCommands });
     // Optional host projections: Session readiness (desktop ThreadMetaView light) and usage (context / quota).
     this.readiness = readiness;
@@ -437,6 +438,7 @@ export class ClientSessionAPI {
       status: row.status === "dispatching" && !this.inFlight.has(key) ? "unknown" : row.status,
       errorCode: row.error_code, updatedAt: row.updated_at,
       ...(row.result_json ? { [row.kind === "create_task" ? "taskResult" : row.kind === "open_work_discussion" ? "discussionResult"
+        : row.kind.startsWith("inspector:") ? "inspectorResult"
         : /^(task|work)_/.test(row.kind) ? "entityResult" : "commandResult"]: JSON.parse(row.result_json) } : {}) };
   }
 

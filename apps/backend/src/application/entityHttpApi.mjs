@@ -13,7 +13,7 @@ import {
 } from "../runtime/agentAvatar.mjs";
 import { assertPlatformAssistantPatch, isPlatformAssistant } from "../utils/platformAssistantIdentity.mjs";
 import { presentTaskAcceptance } from "./taskAcceptance.mjs";
-import { presentMemory } from "./memoryOperationService.mjs";
+import { presentMemory, createUserMemory } from "./memoryOperationService.mjs";
 import { validateEntityName, validateWorkInput } from "../domain/workTaskValidation.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
@@ -1236,21 +1236,7 @@ export function handleEntityHttpRequest({
       if (request.method === "POST" && path === "/memories") {
         const input = await readJson(request);
         validateMemoryInput(input, hubService.store);
-        const memory = hubService.store.createMemory({
-          ownerType: input.ownerType,
-          ownerId: input.ownerId,
-          taskId: input.ownerType === "task" ? input.ownerId : null,
-          kind: input.kind,
-          content: input.content,
-          tags: input.tags,
-          sourceType: "user",
-          sourceSessionId: input.sourceSessionId ?? null,
-          trustLevel: "trusted"
-        });
-        hubService.store.createMemoryAudit({
-          memoryId: memory.id, action: "remember", actorType: "user", actorId: "user:local-macos",
-          after: memory
-        });
+        const memory = createUserMemory(hubService.store, input, "user:local-macos");
         return sendJson(response, 201, memory);
       }
       // 从 Session 事件流提炼记忆（13 主路径）：MemoryExtractor 提取 + kind→owner 分流 + 乐观应用。
@@ -1339,7 +1325,7 @@ function statusForCode(code) {
 }
 
 // 记忆字段校验：ownerType/ownerId/kind/content 必填，缺失即 400（防 owner_id=null 撞 NOT NULL）。
-function validateMemoryInput(input = {}, store) {
+export function validateMemoryInput(input = {}, store) {
   rejectUnknownFields(input, new Set(["ownerType", "ownerId", "kind", "content", "tags", "sourceSessionId"]));
   const required = [
     ["ownerType", input.ownerType],

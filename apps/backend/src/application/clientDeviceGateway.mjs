@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { ClientDeviceAuthority, deviceError } from "./clientDeviceAuthority.mjs";
 import { ClientEventStream } from "./clientEventStream.mjs";
+import { ClientInspectorStream } from "./clientInspectorStream.mjs";
 
 export const reply = (response, status, body) => {
   response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store",
@@ -51,6 +52,7 @@ export class ClientDeviceGateway {
     this.sessionAPI = sessionAPI;
     this.controlAPI = controlAPI;
     this.worktreeAPI = worktreeAPI;
+    this.inspectorEvents = new ClientInspectorStream({ snapshot: (identity, id) => this.sessionAPI.inspector.snapshot(identity, id) });
     this.events = new ClientEventStream({
       stateSnapshot: async () => this.readAPI?.realtimeSnapshot?.() ?? null,
       controlSnapshot: async () => this.controlAPI?.realtimeSnapshot?.() ?? null,
@@ -119,6 +121,31 @@ export class ClientDeviceGateway {
       }
       const identity = this.authority.authenticate(bearer(request));
       this.sockets.set(request.socket, identity.deviceId);
+      const inspector = /^\/client\/v1\/sessions\/([^/]+)\/inspector(?:\/(events|read|commands))?$/.exec(path);
+      if (inspector && this.sessionAPI?.inspector) {
+        const id = decode(inspector[1], "INVALID_SESSION_ID");
+        const authenticate = () => this.authority.authenticate(bearer(request));
+        this.sessionAPI.inspector.scope(id, identity);
+        if (request.method === "GET" && inspector[2] === "events") {
+          return this.inspectorEvents.attach(response, authenticate, id);
+        }
+        if (request.method === "GET" && !inspector[2]) {
+          const result = await this.sessionAPI.inspector.snapshot(identity, id);
+          authenticate(); return reply(response, 200, result);
+        }
+        if (request.method === "POST" && inspector[2] === "read") {
+          const input = await body(request);
+          const result = await this.sessionAPI.inspector.read(authenticate(), id, input.resource, input.parameters);
+          authenticate(); return reply(response, 200, result);
+        }
+        if (request.method === "POST" && inspector[2] === "commands") {
+          const input = await body(request, 12 * 1024 * 1024);
+          const result = await this.sessionAPI.inspector.command(this.sessionAPI, authenticate(), id, input, authenticate);
+          this.inspectorEvents.invalidate();
+          return reply(response, 202, result);
+        }
+        throw deviceError("ROUTE_NOT_AVAILABLE", 404);
+      }
       if (path === "/client/v1/works/create" && this.sessionAPI) {
         if (request.method === "GET") {
           const result = this.sessionAPI.workCreationOptions();
