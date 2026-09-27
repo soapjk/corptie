@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import CorptieClientCore
 
 struct ArtifactSectionView: View {
     @ObservedObject private var client = ArtifactAPIClient.shared
@@ -186,13 +187,11 @@ struct ArtifactSectionView: View {
 
 enum ArtifactVersionSelectionPolicy {
     static func preferredVersion(for artifact: WorkArtifact, taskId: String?) -> Int {
-        if let taskId,
-           let reference = artifact.references.first(where: {
-               $0.taskId == taskId && $0.revokedAt == nil
-           }) {
-            return reference.pinnedVersion
+        let pinned = taskId.flatMap { taskId in
+            artifact.references.first { $0.taskId == taskId && $0.revokedAt == nil }?.pinnedVersion
         }
-        return artifact.approvedVersion ?? artifact.currentVersion
+        return ConversationInspectorPolicy.preferredArtifactVersion(pinned: pinned,
+            approved: artifact.approvedVersion, current: artifact.currentVersion)
     }
 }
 

@@ -7,6 +7,7 @@ public struct ClientInventoryPage<Item: Decodable & Sendable>: Decodable, Sendab
     public let nextCursor: String?
 }
 public struct ClientWork: Decodable, Sendable, Identifiable, Equatable {
+    public let description: String?
     public let id: String
     public let name: String
     public let status: String
@@ -14,17 +15,21 @@ public struct ClientWork: Decodable, Sendable, Identifiable, Equatable {
     public let hasAvatar: Bool
     public let updatedAt: String
 
-    enum CodingKeys: String, CodingKey { case id, name, status, hasAvatar, updatedAt }
+    enum CodingKeys: String, CodingKey { case id, name, status, hasAvatar, updatedAt, description }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
         status = try container.decode(String.self, forKey: .status)
         hasAvatar = try container.decodeIfPresent(Bool.self, forKey: .hasAvatar) ?? false
         updatedAt = try container.decode(String.self, forKey: .updatedAt)
     }
 }
 public struct ClientTask: Decodable, Sendable, Identifiable, Equatable {
+    public let description: String?
+    public let acceptanceCriteria: String?
+    public let verificationCriteria: String?
     public let id: String
     public let title: String
     public let workId: String
@@ -40,12 +45,15 @@ public struct ClientTask: Decodable, Sendable, Identifiable, Equatable {
     public let updatedAt: String
 
     enum CodingKeys: String, CodingKey {
-        case id, title, workId, lifecycleState, executionStatus, currentSessionId, hasPendingScheduledWake, deletionStatus, archived, updatedAt
+        case id, title, workId, lifecycleState, executionStatus, currentSessionId, hasPendingScheduledWake, deletionStatus, archived, updatedAt, description, acceptanceCriteria, verificationCriteria
     }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
         title = try container.decode(String.self, forKey: .title)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+        acceptanceCriteria = try container.decodeIfPresent(String.self, forKey: .acceptanceCriteria)
+        verificationCriteria = try container.decodeIfPresent(String.self, forKey: .verificationCriteria)
         workId = try container.decode(String.self, forKey: .workId)
         lifecycleState = try container.decode(String.self, forKey: .lifecycleState)
         executionStatus = try container.decode(String.self, forKey: .executionStatus)
@@ -57,6 +65,7 @@ public struct ClientTask: Decodable, Sendable, Identifiable, Equatable {
     }
 }
 public struct ClientSession: Decodable, Sendable, Identifiable, Equatable {
+    public let summary: String?
     public let id: String
     public let title: String
     public let workId: String?
@@ -70,7 +79,7 @@ public struct ClientSession: Decodable, Sendable, Identifiable, Equatable {
     public let updatedAt: String
 
     enum CodingKeys: String, CodingKey {
-        case id, title, workId, taskId, sessionKind, executionStatus, activityStatus
+        case id, title, workId, taskId, sessionKind, executionStatus, activityStatus, summary
         case lastAgentMessageSequence, lastReadMessageSequence, updatedAt
     }
     public init(from decoder: Decoder) throws {
@@ -80,6 +89,7 @@ public struct ClientSession: Decodable, Sendable, Identifiable, Equatable {
         workId = try container.decodeIfPresent(String.self, forKey: .workId)
         taskId = try container.decodeIfPresent(String.self, forKey: .taskId)
         sessionKind = try container.decodeIfPresent(String.self, forKey: .sessionKind)
+        summary = try container.decodeIfPresent(String.self, forKey: .summary)
         executionStatus = try container.decode(String.self, forKey: .executionStatus)
         activityStatus = try container.decodeIfPresent(String.self, forKey: .activityStatus)
         lastAgentMessageSequence = try container.decodeIfPresent(Int.self, forKey: .lastAgentMessageSequence) ?? 0

@@ -1,5 +1,6 @@
 import SwiftUI
 import CorptieClientCore
+import CorptieConversation
 
 // 控制台主视图：三栏布局。
 // 净新增独立文件，不碰 FloatingRootView.swift 巨石。
@@ -1334,31 +1335,11 @@ struct CorptieTaskDetailView: View {
     }
 
     private var taskDefinitionSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if hasContent(task.description) {
-                detailTextSection(
-                    title: L10n("Description"),
-                    systemImage: "text.alignleft",
-                    text: task.description
-                )
-            }
-
-            if hasContent(task.acceptanceCriteria) {
-                detailTextSection(
-                    title: L10n("Acceptance Criteria"),
-                    systemImage: "checklist",
-                    text: task.acceptanceCriteria
-                )
-            }
-
-            if hasContent(task.verificationCriteria) {
-                detailTextSection(
-                    title: L10n("Verification Criteria"),
-                    systemImage: "checkmark.seal",
-                    text: task.verificationCriteria
-                )
-            }
-        }
+        ConversationTaskDefinition(description: task.description,
+            acceptance: task.acceptanceCriteria, verification: task.verificationCriteria,
+            descriptionTitle: L10n("Description"), acceptanceTitle: L10n("Acceptance Criteria"),
+            verificationTitle: L10n("Verification Criteria"),
+            expandLabel: L10n("Expand"), collapseLabel: L10n("Collapse"))
     }
 
     private var hasTaskDefinitionContent: Bool {

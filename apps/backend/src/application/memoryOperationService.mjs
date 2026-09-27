@@ -363,6 +363,13 @@ function mostSpecificScope(context) {
   return "agent";
 }
 
+export function createUserMemory(store, input, actorId) {
+  const memory = store.createMemory({ ...input, taskId: input.ownerType === "task" ? input.ownerId : null,
+    sourceType: "user", sourceSessionId: input.sourceSessionId ?? null, trustLevel: "trusted" });
+  store.createMemoryAudit({ memoryId: memory.id, action: "remember", actorType: "user", actorId, after: memory });
+  return memory;
+}
+
 export function presentMemory(memory) {
   return {
     id: memory.id,
