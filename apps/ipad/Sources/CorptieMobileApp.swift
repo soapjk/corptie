@@ -1243,52 +1243,15 @@ private struct PadUserInputCard: View {
             Text("需要你的输入").font(.headline)
             if let request = message.userInput, request.schemaVersion == 1 {
                 if message.status == "pending" && !submitted {
-                    ForEach(request.questions) { question in
-                        VStack(alignment: .leading, spacing: 6) {
-                            if !question.header.isEmpty {
-                                Text(question.header).font(.caption).foregroundStyle(.secondary)
-                            }
-                            Text(question.question).font(.subheadline)
-                            if let options = question.options {
-                                ForEach(options, id: \.label) { option in
-                                    Button {
-                                        var values = selected[question.id, default: []]
-                                        if !values.insert(option.label).inserted { values.remove(option.label) }
-                                        selected[question.id] = values
-                                    } label: {
-                                        HStack(alignment: .top, spacing: 8) {
-                                            Image(systemName: selected[question.id, default: []].contains(option.label)
-                                                ? "checkmark.circle.fill" : "circle")
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                Text(option.label)
-                                                if !option.description.isEmpty {
-                                                    Text(option.description).font(.caption).foregroundStyle(.secondary)
-                                                }
-                                            }
-                                            Spacer(minLength: 0)
-                                        }
-                                    }
-                                    .buttonStyle(.plain)
-                                    .accessibilityIdentifier("user-input-option-\(question.id)-\(option.label)")
-                                }
-                                if question.isOther {
-                                    TextField("其他答案", text: textBinding(question.id))
-                                        .textFieldStyle(.roundedBorder)
-                                }
-                            } else if question.isSecret {
-                                SecureField("输入答案", text: textBinding(question.id))
-                                    .textFieldStyle(.roundedBorder)
-                            } else {
-                                TextField("输入答案", text: textBinding(question.id), axis: .vertical)
-                                    .lineLimit(1...4)
-                                    .textFieldStyle(.roundedBorder)
-                            }
-                        }
-                    }
+                    ConversationInputFields(request: request, selected: $selected, typed: $typed)
+                        .disabled(submitting)
                     Button("提交答案") { Task { await submit(request) } }
                         .buttonStyle(.borderedProminent)
                         .disabled(submitting || answers(for: request) == nil)
                         .accessibilityIdentifier("user-input-submit")
+                    if request.canCancel == true {
+                        Button("取消请求") { Task { await submit(request, cancelling: true) } }.disabled(submitting)
+                    }
                 } else {
                     Text(statusText).font(.caption).foregroundStyle(.secondary)
                 }
@@ -1313,34 +1276,19 @@ private struct PadUserInputCard: View {
         padUserInputStatusText(message.status, submittedLocally: submitted)
     }
 
-    private func textBinding(_ id: String) -> Binding<String> {
-        Binding(get: { typed[id] ?? "" }, set: { typed[id] = $0 })
-    }
-
     private func answers(for request: ConversationUserInput) -> [String: [String]]? {
-        var result: [String: [String]] = [:]
-        for question in request.questions {
-            let entered = (typed[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            var values = question.options?.compactMap { option in
-                selected[question.id, default: []].contains(option.label) ? option.label : nil
-            } ?? []
-            if !entered.isEmpty { values.append(entered) }
-            guard !values.isEmpty, values.count <= 12,
-                  values.allSatisfy({ $0.count <= 4_000 }) else { return nil }
-            result[question.id] = values
-        }
-        return result
+        request.answers(selected: selected, typed: typed)
     }
 
-    private func submit(_ request: ConversationUserInput) async {
-        guard !submitting, !submitted, let answers = answers(for: request) else { return }
+    private func submit(_ request: ConversationUserInput, cancelling: Bool = false) async {
+        guard !submitting, !submitted, let answers = cancelling ? [:] : answers(for: request) else { return }
         submitting = true
         errorText = nil
         defer { submitting = false }
         do {
             let api = ClientSessionAPI(transport: try await connection.transport())
-            let response = try await api.respondToUserInput(sessionId: sessionID, itemId: message.id, answers: answers)
-            guard response.status == "submitted" else { return }
+            let response = try await api.respondToUserInput(sessionId: sessionID, itemId: message.id, answers: answers, action: cancelling ? "cancel" : "submit")
+            guard ["submitted", "cancelled"].contains(response.status) else { return }
             submitted = true
             typed.removeAll()
             selected.removeAll()

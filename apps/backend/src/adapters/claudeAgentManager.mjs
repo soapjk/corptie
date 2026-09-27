@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import { publicUserInput, validateInteractionAnswers } from "../application/interactionInput.mjs";
+import { question, elicitationInput, elicitationResponse, interactionError } from "../application/structuredInteraction.mjs";
 import { readFile } from "node:fs/promises";
 import { forkSession, query } from "@anthropic-ai/claude-agent-sdk";
 import { createdAtFromOrNow } from "../utils/timestamps.mjs";
@@ -552,7 +554,7 @@ export class ClaudeAgentManager {
   }
 
   applyPermissionModeToPendingChoices(session, permissionMode) {
-    if (!hasPendingChoices(session) || !["bypassPermissions", "dontAsk"].includes(permissionMode)) {
+    if (!(session.pendingChoices?.size > 0) || !["bypassPermissions", "dontAsk"].includes(permissionMode)) {
       return;
     }
     const allow = permissionMode === "bypassPermissions";
@@ -569,6 +571,7 @@ export class ClaudeAgentManager {
     session.items = session.items.map((item) => item.type === "choice" && item.status === "pending"
       ? { ...item, status: allow ? "allowed" : "denied" }
       : item);
+    if (session.pendingInteractions?.size > 0) return;
     session.turnState = "running";
     session.phase = "working";
     session.status = "running";
@@ -817,7 +820,8 @@ export class ClaudeAgentManager {
           ...runtimeOptions,
           ...(this.executable ? { pathToClaudeCodeExecutable: this.executable() } : {}),
           ...permissionOptions,
-          canUseTool: async (toolName, input, options) => this.handleToolRequest(session, toolName, input, options)
+          canUseTool: async (toolName, input, options) => this.handleToolRequest(session, toolName, input, options),
+          onElicitation: (request, options) => this.handleElicitation(session, request, options)
         }
       });
       session.queryTask = this.consumeQuery(session);
@@ -963,6 +967,20 @@ export class ClaudeAgentManager {
   }
 
   async handleToolRequest(session, toolName, input, options = {}) {
+    if (toolName === "AskUserQuestion") {
+      const model = publicUserInput({ schemaVersion: 1, kind: "question", isBlocking: true, canCancel: true,
+        questions: (Array.isArray(input?.questions) ? input.questions : []).map((q, i) => question(`question-${i}`, q?.question, null, {
+          header: q?.header, isOther: true, selectionMode: q?.multiSelect === true ? "multiple" : "single",
+          options: Array.isArray(q?.options) ? q.options.map(o => ({ label: o?.label, description: o?.description ?? "" })) : null
+        })) });
+      if (!model) {
+        this.appendItem(session, { type: "system", title: "交互未支持", text: "问题格式无法完整展示，已拒绝请求。", status: "failed" });
+        return { behavior: "deny", message: "Unsupported question schema. Ask in plain language instead." };
+      }
+      return this.waitForInteraction(session, model, response => response.action === "cancel"
+        ? { behavior: "deny", message: "User cancelled the question." }
+        : { behavior: "allow", updatedInput: { ...input, answers: Object.fromEntries(input.questions.map((q, i) => [q.question, response.answers[`question-${i}`].join(", ")])) } }, options.signal);
+    }
     console.log(`[claude-sdk] tool request id=${session.id} tool=${toolName} requestId=${options.requestId ?? ""} toolUseID=${options.toolUseID ?? ""} suggestions=${Array.isArray(options?.suggestions) ? options.suggestions.length : 0}`);
     const choice = buildToolChoice(toolName, input, options);
     if (!choice) {
@@ -993,6 +1011,34 @@ export class ClaudeAgentManager {
 
   handleSdkMessage(session, message) {
     session.updatedAt = new Date().toISOString();
+    if (message?.type === "tool_progress") {
+      const id = session.pendingToolCalls?.get(message.tool_use_id);
+      const item = id ? session.items.find(item => item.id === id) : null;
+      const seconds = Math.floor(Number(message.elapsed_time_seconds));
+      if (item && Number.isFinite(seconds) && seconds >= 0 && item.elapsedSeconds !== seconds
+        && !["completed", "failed", "cancelled"].includes(item.status)) {
+        item.elapsedSeconds = seconds;
+        item.presentationText = `${item.text ?? ""}\n已执行 ${seconds} 秒`;
+        this.emitProviderEvent(session, { type: "execution.notice", turnId: item.turnId,
+          itemId: item.id, item, occurredAt: session.updatedAt });
+      }
+      return;
+    }
+    if (message?.type === "tool_use_summary" || message?.type === "auth_status"
+      || (message?.type === "system" && message.subtype === "compact_boundary")) {
+      const id = `${session.id}:notice:${message.uuid ?? `${session.currentTurnId}:${message.type}:${message.subtype ?? ""}`}`;
+      if (session.items.some(item => item.id === id)) return;
+      const compact = message.subtype === "compact_boundary";
+      const auth = message.type === "auth_status";
+      // Authentication output can contain credentials. Never persist it.
+      const text = compact ? "上下文已压缩"
+        : auth ? (message.error ? "认证失败，请检查 Provider 登录状态。" : message.isAuthenticating ? "正在认证" : "认证流程已结束")
+          : providerSafeToolText(String(message.summary ?? "")).slice(0, 4000);
+      this.appendItem(session, { id, type: compact ? "contextCompaction" : "system",
+        title: compact ? "上下文压缩" : auth ? "认证状态" : "执行摘要",
+        text, status: message.error ? "failed" : "completed", neutralNotice: true });
+      return;
+    }
     console.log(`[claude-sdk] message id=${session.id} type=${message?.type ?? "unknown"} subtype=${message?.subtype ?? ""}`);
     if (message?.session_id && !session.agentSessionId) {
       session.agentSessionId = message.session_id;
@@ -1078,6 +1124,7 @@ export class ClaudeAgentManager {
     }
 
     if (message?.type === "result") {
+      this.expireInteractions(session);
       const failure = claudeSdkResultError(message, {
         secretValues: [this.environment()?.ANTHROPIC_API_KEY].filter(Boolean)
       });
@@ -1397,6 +1444,8 @@ export class ClaudeAgentManager {
       title: item.title,
       text: item.text,
       options: item.options ?? null,
+      ...(item.userInput ? { userInput: item.userInput } : {}),
+      ...(item.neutralNotice ? { neutralNotice: true } : {}),
       status: item.status ?? null,
       toolUseId: item.toolUseId ?? null,
       changeSet: item.changeSet ?? null,
@@ -1563,6 +1612,7 @@ export class ClaudeAgentManager {
   }
 
   resolveAllPendingChoices(session, message) {
+    this.expireInteractions(session);
     for (const pendingDecision of session.pendingChoices?.values?.() ?? []) {
       pendingDecision.resolve({ behavior: "deny", message });
     }
@@ -1572,6 +1622,69 @@ export class ClaudeAgentManager {
     }
     session.pendingChoice = null;
     session.pendingDecision = null;
+  }
+
+  async handleElicitation(session, request, options = {}) {
+    try {
+      return await this.waitForInteraction(session, elicitationInput(request), input => {
+        const response = elicitationResponse(request, input);
+        // Claude exposes MCP ElicitResult (optional object), whereas Codex
+        // app-server requires an explicit nullable content field.
+        return response.content == null ? { action: response.action } : response;
+      }, options.signal);
+    } catch (error) {
+      this.appendItem(session, { type: "system", title: "交互未支持", text: "外部工具的表单无法安全展示，已取消请求。", status: "failed" });
+      return { action: "cancel" };
+    }
+  }
+
+  waitForInteraction(session, model, translate, signal) {
+    if (signal?.aborted) return Promise.resolve(translate({ action: "cancel" }));
+    session.pendingInteractions ??= new Map();
+    session.turnState = "requires_action";
+    session.phase = "waiting_approval";
+    const item = this.appendItem(session, { type: "userInput", title: "需要你的输入",
+      text: model.questions[0].question, status: "pending", userInput: model,
+      rawMetadataJSON: JSON.stringify({ userInput: model }) });
+    return new Promise(resolve => {
+      const abort = () => this.settleInteraction(session, item.id, "expired", translate({ action: "cancel" }));
+      session.pendingInteractions.set(item.id, { model, translate, resolve,
+        cleanup: () => signal?.removeEventListener("abort", abort) });
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
+    });
+  }
+
+  respondToUserInput(id, input) {
+    const session = this.get(id);
+    if (!session) throw Object.assign(new Error("Session not found."), { code: "USER_INPUT_NOT_PENDING" });
+    const pending = session.pendingInteractions?.get(input.itemId);
+    if (!pending) throw Object.assign(new Error("Question is no longer pending."), { code: "USER_INPUT_NOT_PENDING" });
+    if (input.action !== "cancel" && !validateInteractionAnswers(pending.model, input.answers)) throw interactionError();
+    const response = pending.translate(input);
+    this.settleInteraction(session, input.itemId, input.action === "cancel" ? "cancelled" : "submitted", response);
+    return this.toSessionSummary(session);
+  }
+
+  settleInteraction(session, id, status, response) {
+    const pending = session.pendingInteractions?.get(id);
+    if (!pending) return;
+    session.pendingInteractions.delete(id);
+    pending.cleanup();
+    const index = session.items.findIndex(item => item.id === id);
+    if (index >= 0) {
+      const item = { ...session.items[index], status };
+      session.items[index] = item;
+      this.emitProviderEvent(session, { type: status === "submitted" ? "interaction.submitted" : "interaction.resolved",
+        turnId: item.turnId, itemId: id, item, occurredAt: new Date().toISOString() });
+    }
+    pending.resolve(response);
+  }
+
+  expireInteractions(session) {
+    for (const [id, pending] of session.pendingInteractions ?? []) {
+      this.settleInteraction(session, id, "expired", pending.translate({ action: "cancel" }));
+    }
   }
 
   notifyTurnSettled(session, event) {
@@ -1610,6 +1723,8 @@ export class ClaudeAgentManager {
 }
 
 function claudeItemProviderEventType(item) {
+  if (item?.neutralNotice) return "execution.notice";
+  if (item?.type === "userInput") return "interaction.requested";
   if (item?.type === "agentMessage" || item?.type === "reasoning") {
     return "assistant.message.delta";
   }
@@ -1620,7 +1735,7 @@ function claudeItemProviderEventType(item) {
 }
 
 function hasPendingChoices(session) {
-  return (session.pendingChoices?.size ?? 0) > 0;
+  return (session.pendingChoices?.size ?? 0) > 0 || (session.pendingInteractions?.size ?? 0) > 0;
 }
 
 function latestPendingDecision(session) {

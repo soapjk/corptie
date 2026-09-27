@@ -6642,6 +6642,7 @@ async function respondCodexProviderUserInput(reference, input = {}, context = {}
   const summary = context.summary ?? reference.metadata?.session;
   await codexRuntime.respondToUserInput(reference.providerSessionId, {
     itemId: input.itemId,
+    action: input.action,
     answers: input.answers
   });
   // The transport acknowledgement is not evidence that the Provider resumed.
@@ -8224,6 +8225,7 @@ async function respondUnifiedSessionApproval(sessionId, input = {}, source = { t
   return session;
 }
 
+const userInputDispatches = new Set();
 async function respondUnifiedSessionUserInput(sessionId, input = {}, source = { type: "desktop" }) {
   const reference = requireSessionReference(sessionId);
   const item = store.getSessionItem(reference.sessionId, input.itemId);
@@ -8234,15 +8236,42 @@ async function respondUnifiedSessionUserInput(sessionId, input = {}, source = { 
     error.code = "USER_INPUT_NOT_PENDING";
     throw error;
   }
-  if (!validateInteractionAnswers(item.userInput, input.answers)) {
+  const cancelling = input.action === "cancel" && item.userInput?.canCancel === true;
+  if ((input.action != null && !["submit", "cancel"].includes(input.action))
+    || (input.action === "cancel" && !cancelling)
+    || (!cancelling && !validateInteractionAnswers(item.userInput, input.answers))) {
     const error = new Error("Every question requires a valid answer.");
     error.code = "INVALID_USER_INPUT_ANSWER";
     throw error;
   }
-  return sessionApplicationService.respondToUserInput(sessionId, input, {
-    summary: reference.metadata.session,
-    source
-  });
+  const key = `${reference.sessionId}:${item.id}`;
+  if (userInputDispatches.has(key)) throw Object.assign(new Error("回答正在提交。"), { code: "USER_INPUT_IN_PROGRESS" });
+  userInputDispatches.add(key);
+  store.upsertTimelineItemProjection(reference.sessionId, { ...item, status: "dispatching" });
+  try {
+    let result;
+    if (item.userInput?.responseMode === "message") {
+      if (!cancelling) {
+        const text = [`回答消息 ${item.id} 中的问题：`, ...item.userInput.questions.map(q => `${q.question}\n${input.answers[q.id].join("；")}`)].join("\n\n");
+        await sendUnifiedSessionMessage(sessionId, text, source);
+      }
+      result = store.getSession(reference.sessionId);
+    } else {
+      result = await sessionApplicationService.respondToUserInput(sessionId, input, { summary: reference.metadata.session, source });
+    }
+    const current = store.getSessionItem(reference.sessionId, item.id);
+    if (current && ["pending", "dispatching", "submitted"].includes(current.status)) {
+      store.upsertTimelineItemProjection(reference.sessionId, { ...current, status: cancelling ? "cancelled" : "submitted" });
+    }
+    emitEvent("SessionUserInputResponded", { sessionId: reference.sessionId, itemId: item.id,
+      status: cancelling ? "cancelled" : "submitted" }, { sessionId: reference.sessionId, source });
+    return result;
+  } catch (error) {
+    const current = store.getSessionItem(reference.sessionId, item.id);
+    if (current?.status === "dispatching") store.upsertTimelineItemProjection(reference.sessionId, { ...current,
+      status: error?.code === "INVALID_USER_INPUT_ANSWER" ? "pending" : error?.code === "USER_INPUT_NOT_PENDING" ? "expired" : "unknown" });
+    throw error;
+  } finally { userInputDispatches.delete(key); }
 }
 
 async function resolveCollaborationConfirmation(confirmationId, approved, source = { type: "desktop" }) {

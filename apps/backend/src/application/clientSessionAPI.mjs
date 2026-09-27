@@ -259,7 +259,7 @@ export class ClientSessionAPI {
 
   async userInput(identity, id, input, revalidateIdentity = null) {
     if (!input || typeof input !== "object" || Array.isArray(input)
-      || Object.keys(input).some((key) => !["itemId", "answers"].includes(key))
+      || Object.keys(input).some((key) => !["itemId", "answers", "action"].includes(key))
       || typeof input.itemId !== "string" || !input.itemId || input.itemId.length > 300) {
       throw deviceError("INVALID_USER_INPUT", 400);
     }
@@ -273,7 +273,8 @@ export class ClientSessionAPI {
       throw deviceError("USER_INPUT_OUTCOME_UNCERTAIN", 409);
     }
     if (item.status !== "pending") throw deviceError("USER_INPUT_NOT_PENDING", 409);
-    if (!validateInteractionAnswers(item.userInput, input.answers)) {
+    if ((input.action != null && !["submit", "cancel"].includes(input.action))
+      || (input.action === "cancel" ? item.userInput?.canCancel !== true : !validateInteractionAnswers(item.userInput, input.answers))) {
       throw deviceError("INVALID_USER_INPUT_ANSWER", 400);
     }
     if (!this.respondToUserInput) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
@@ -287,22 +288,22 @@ export class ClientSessionAPI {
     this.store.upsertTimelineItemProjection(sessionId, { ...item, status: "dispatching" });
     try {
       await this.respondToUserInput(sessionId, {
-        itemId: item.id, answers: input.answers
+        itemId: item.id, answers: input.answers, ...(input.action ? { action: input.action } : {})
       }, { type: "remote-client", deviceId: identity.deviceId });
       const current = this.store.getSessionItem(sessionId, item.id);
       if (current?.status === "dispatching") {
-        this.store.upsertTimelineItemProjection(sessionId, { ...current, status: "submitted" });
+        this.store.upsertTimelineItemProjection(sessionId, { ...current, status: input.action === "cancel" ? "cancelled" : "submitted" });
       }
     } catch (error) {
       const current = this.store.getSessionItem(sessionId, item.id);
       if (current?.status === "dispatching") {
         this.store.upsertTimelineItemProjection(sessionId, {
-          ...current, status: error?.code === "USER_INPUT_NOT_PENDING" ? "expired" : "unknown"
+          ...current, status: error?.code === "INVALID_USER_INPUT_ANSWER" ? "pending" : error?.code === "USER_INPUT_NOT_PENDING" ? "expired" : "unknown"
         });
       }
       throw error;
     } finally { this.userInputInFlight.delete(key); }
-    return { schemaVersion: 1, sessionId, itemId: item.id, status: "submitted" };
+    return { schemaVersion: 1, sessionId, itemId: item.id, status: input.action === "cancel" ? "cancelled" : "submitted" };
   }
 
   /** Bytes of one managed attachment of this Session. Same ownership check as the desktop image route. */

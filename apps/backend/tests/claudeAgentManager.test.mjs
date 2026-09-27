@@ -1368,7 +1368,7 @@ test("Claude permissions can switch while a turn is waiting for approval", async
   assert.equal(updated.external.permissionMode, "bypassPermissions");
 });
 
-test("Claude AskUserQuestion handles the SDK questions array one question at a time", async () => {
+test("Claude AskUserQuestion submits the complete question set atomically", async () => {
   const manager = new ClaudeAgentManager();
   manager.start({ id: "claude-questions", cwd: "/tmp/project" });
   const session = manager.get("claude-questions");
@@ -1395,22 +1395,12 @@ test("Claude AskUserQuestion handles the SDK questions array one question at a t
     ]
   });
 
-  let detail = manager.detail("claude-questions");
-  assert.match(detail.items.at(-1).text, /Question 1 of 2/);
-  assert.deepEqual(detail.items.at(-1).options.map((option) => option.label), ["Keep", "Ignore"]);
-
-  manager.respondToChoice("claude-questions", {
-    choiceId: detail.items.at(-1).id,
-    optionId: "question-0-option-0"
-  });
-  detail = manager.detail("claude-questions");
-  assert.equal(detail.items.at(-2).status, "selected");
-  assert.match(detail.items.at(-1).text, /Question 2 of 2/);
-  assert.deepEqual(detail.items.at(-1).options.map((option) => option.label), ["Ignore", "Track"]);
-
-  manager.respondToChoice("claude-questions", {
-    choiceId: detail.items.at(-1).id,
-    optionId: "question-1-option-0"
+  const detail = manager.detail("claude-questions");
+  assert.equal(detail.items.at(-1).type, "userInput");
+  assert.equal(detail.items.at(-1).userInput.questions.length, 2);
+  manager.respondToUserInput("claude-questions", {
+    itemId: detail.items.at(-1).id,
+    answers: { "question-0": ["Keep"], "question-1": ["Ignore"] }
   });
   assert.deepEqual(await resolutionPromise, {
     behavior: "allow",

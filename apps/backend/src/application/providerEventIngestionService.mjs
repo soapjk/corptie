@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { providerSafeDiagnosticPayload } from "../utils/providerRawMetadata.mjs";
 
 export const PROVIDER_EVENT_TYPES = new Set([
+  "execution.notice",
   "turn.started",
   "turn.completed",
   "turn.failed",
@@ -204,6 +205,7 @@ export class ProviderEventIngestionService {
 }
 
 const PROJECTED_ITEM_EVENT_TYPES = new Set([
+  "execution.notice",
   "user.message.accepted",
   "assistant.message.started",
   "assistant.message.delta",

@@ -9,8 +9,10 @@ export function validateInteractionAnswers(userInput, answers) {
     || Object.keys(answers).some((id) => !ids.has(id))) return false;
   for (const question of questions) {
     const values = answers[question.id];
-    if (!Array.isArray(values) || values.length < 1 || values.length > 12
+    if (!Array.isArray(values) || values.length < (question.required === false ? 0 : 1) || values.length > 12
       || values.some((value) => typeof value !== "string" || !value.trim() || value.length > 4_000)) return false;
+    if (new Set(values).size !== values.length || (question.selectionMode === "single" && values.length > 1)) return false;
+    if (!values.length) continue;
     if (question.options == null) {
       if (values.length !== 1) return false;
     } else {
@@ -24,11 +26,14 @@ export function validateInteractionAnswers(userInput, answers) {
 }
 
 export function publicUserInput(userInput) {
+  if (userInput?.kind != null && !["question", "form", "url", "permissions"].includes(userInput.kind)) return null;
+  if (userInput?.responseMode != null && !["message", "request"].includes(userInput.responseMode)) return null;
   if (userInput?.schemaVersion !== 1 || !Array.isArray(userInput.questions)
     || userInput.questions.length < 1 || userInput.questions.length > 10) return null;
   const questions = [];
   const ids = new Set();
   for (const question of userInput.questions) {
+    if (question?.selectionMode != null && !["single", "multiple"].includes(question.selectionMode)) return null;
     if (typeof question?.id !== "string" || !question.id || question.id.length > 200
       || ids.has(question.id) || typeof question.question !== "string"
       || !question.question || question.question.length > 2_000) return null;
@@ -51,7 +56,13 @@ export function publicUserInput(userInput) {
       header: typeof question.header === "string" ? question.header.slice(0, 200) : "",
       question: question.question,
       isOther: question.isOther === true, isSecret: question.isSecret === true,
+      ...(question.selectionMode ? { selectionMode: question.selectionMode } : {}),
+      ...(question.required === false ? { required: false } : {}),
       options });
   }
-  return { schemaVersion: 1, isBlocking: userInput.isBlocking === true, questions };
+  return { schemaVersion: 1, isBlocking: userInput.isBlocking === true, questions,
+    ...(userInput.kind ? { kind: userInput.kind } : {}),
+    ...(userInput.responseMode ? { responseMode: userInput.responseMode } : {}),
+    ...(userInput.canCancel === true ? { canCancel: true } : {}),
+    ...(typeof userInput.url === "string" && /^https?:\/\//i.test(userInput.url) ? { url: userInput.url } : {}) };
 }
