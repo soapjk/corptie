@@ -71,6 +71,7 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_CLEAR,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
+      ...(typeof manager.respondToUserInput === "function" ? [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_USER_INPUT] : []),
       ...(options.structuredPlanEvents !== false
         ? [AGENT_PROVIDER_CAPABILITIES.EXECUTION_PLAN_EVENTS] : []),
       AGENT_PROVIDER_CAPABILITIES.CONFIGURATION_VALIDATE,
@@ -123,6 +124,9 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     clearConversation: (reference) => manager.clear(reference.providerSessionId),
     interrupt: (reference) => manager.interrupt(reference.providerSessionId),
     respondToApproval: (reference, approval) => manager.respondToChoice(reference.providerSessionId, approval),
+    ...(typeof manager.respondToUserInput === "function" ? {
+      respondToUserInput: (reference, input) => manager.respondToUserInput(reference.providerSessionId, input)
+    } : {}),
     validateConfiguration: (configuration) => validateClaudeProviderConfiguration(configuration, {
       environment: options.environment?.() ?? process.env
     }),

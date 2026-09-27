@@ -8,6 +8,7 @@ import { providerRawMetadataJSON } from "../utils/providerRawMetadata.mjs";
 import { toolExecutionForItem, withToolExecutionMetadata } from "../utils/toolExecutionProjection.mjs";
 import { changeSetForCodexItem, withChangeSetMetadata } from "../utils/changeSetProjection.mjs";
 import { codexUserInputItem, codexUserInputResponse, normalizeCodexUserInputRequest } from "./codexUserInput.mjs";
+import { asyncQuestionInput, structuredRequest, structuredResponse } from "../application/structuredInteraction.mjs";
 import { defaultWorkspacePath } from "../utils/workspacePaths.mjs";
 import { assertCodexNoToolsRuntime, codexNoToolsConfig } from "./codexNoToolsPolicy.mjs";
 import {
@@ -877,7 +878,7 @@ export class CodexAppServerClient {
     // clients do not keep presenting an answerable card after a reconnect.
     for (const [threadId, requests] of this.serverRequestsByThread) {
       for (const request of requests.values()) {
-        if (request.method === "item/tool/requestUserInput") {
+        if (request.interaction || request.method === "item/tool/requestUserInput") {
           this.emitUserInputNotification(threadId, request, "corptie/codexUserInputResolved", "expired");
         }
       }
@@ -964,7 +965,7 @@ export class CodexAppServerClient {
   respondToUserInput(threadId, input = {}) {
     const requests = this.serverRequestsByThread.get(threadId);
     const request = Array.from(requests?.values() ?? []).find((candidate) =>
-      candidate.method === "item/tool/requestUserInput"
+      (candidate.interaction || candidate.method === "item/tool/requestUserInput")
       && input.itemId === `${threadId}:app-server-user-input:${String(candidate.requestId)}`);
     if (!request || request.responding || request.responded) {
       return Promise.reject(Object.assign(new Error("Codex user-input request is no longer pending"), {
@@ -973,17 +974,18 @@ export class CodexAppServerClient {
     }
     let response;
     try {
-      response = codexUserInputResponse(request, input.answers);
+      response = request.interaction ? structuredResponse(request, input) : codexUserInputResponse(request, input.answers);
     } catch (error) {
       return Promise.reject(error);
     }
     request.responding = true;
+    request.cancelled = input.action === "cancel";
     return this.respondToServerRequest(request.requestId, response).then(
       (result) => {
         request.responding = false;
         request.responded = true;
         if (this.serverRequestsByThread.get(threadId)?.get(request.requestId) === request) {
-          this.emitUserInputNotification(threadId, request, "corptie/codexUserInputSubmitted", "submitted");
+          this.emitUserInputNotification(threadId, request, "corptie/codexUserInputSubmitted", input.action === "cancel" ? "cancelled" : "submitted");
         }
         return result;
       },
@@ -1101,6 +1103,16 @@ export class CodexAppServerClient {
     this.notifications.push(request);
 
     const threadId = request.params.threadId;
+    if (threadId && ["item/permissions/requestApproval", "mcpServer/elicitation/request"].includes(request.method)) {
+      try {
+        request.interaction = structuredRequest(request);
+        request.requestId = message.id;
+        if (!this.serverRequestsByThread.has(threadId)) this.serverRequestsByThread.set(threadId, new Map());
+        this.serverRequestsByThread.get(threadId).set(message.id, request);
+        this.emitUserInputNotification(threadId, request, "corptie/codexUserInputRequested", "pending");
+      } catch (error) { this.rejectUnsupportedRequest(message, error.message); }
+      return;
+    }
     if (threadId && request.method === "item/tool/requestUserInput"
       && normalizeCodexUserInputRequest({ ...request, requestId: message.id })) {
       if (!this.serverRequestsByThread.has(threadId)) {
@@ -1142,7 +1154,22 @@ export class CodexAppServerClient {
           item: mapServerRequestToItem(threadId, request)
         }
       });
+      return;
     }
+    this.rejectUnsupportedRequest(message, "当前客户端尚不支持这种交互请求。");
+  }
+
+  rejectUnsupportedRequest(message, reason) {
+    const threadId = message.params?.threadId;
+    if (threadId) this.onNotification?.({ method: "item/completed", params: { threadId,
+      turnId: message.params?.turnId ?? threadId, item: { id: `${threadId}:unsupported:${message.id}`,
+        type: "warning", title: "交互未支持", text: `${reason}\n${message.method}`, status: "failed" } } });
+    // Explicitly close the native request; never leave a hidden waiter alive.
+    const result = message.method === "item/permissions/requestApproval" ? { permissions: {}, scope: "turn" }
+      : message.method === "mcpServer/elicitation/request" ? { action: "cancel", content: null } : null;
+    if (result) void this.respondToServerRequest(message.id, result).catch(() => {});
+    else if (this.process?.stdin?.writable) this.process.stdin.write(`${JSON.stringify({ id: message.id,
+      error: { code: -32601, message: "Unsupported interactive request" } })}\n`);
   }
 
   emitUserInputNotification(threadId, request, method, status) {
@@ -1170,9 +1197,9 @@ export class CodexAppServerClient {
     const request = this.serverRequestsByThread.get(threadId)?.get(requestId);
     if (!request) return;
     this.removeServerRequest(threadId, requestId);
-    if (request.method === "item/tool/requestUserInput") {
+    if (request.interaction || request.method === "item/tool/requestUserInput") {
       this.emitUserInputNotification(threadId, request, "corptie/codexUserInputResolved",
-        request.responding || request.responded ? "submitted" : "expired");
+        request.cancelled ? "cancelled" : request.responding || request.responded ? "submitted" : "expired");
     }
   }
 
@@ -1329,7 +1356,7 @@ export class CodexAppServerClient {
         ?? (turn.error ? "failed" : "completed");
       if (completedTurnId) {
         for (const request of this.serverRequestsByThread.get(threadId)?.values() ?? []) {
-          if (request.method === "item/tool/requestUserInput"
+          if ((request.interaction || request.method === "item/tool/requestUserInput")
             && request.params?.turnId === completedTurnId) {
             this.removeServerRequest(threadId, request.requestId);
           }
@@ -1679,6 +1706,13 @@ function mapThreadItem(turn, item) {
     createdAt: createdAtFrom(item, turn),
     rawMetadataJSON: providerRawMetadataJSON("codex-app-server", item, { source: "provider_item" })
   };
+  const userInput = asyncQuestionInput(item);
+  if (userInput) {
+    mapped.type = "userInput";
+    mapped.status = "pending";
+    mapped.userInput = userInput;
+    mapped.rawMetadataJSON = JSON.stringify({ ...JSON.parse(mapped.rawMetadataJSON), userInput });
+  }
   const toolExecution = toolExecutionForItem(mapped, {
     input: codexToolInput(item),
     result: item.aggregatedOutput ?? item.result ?? item.output ?? item.error ?? null

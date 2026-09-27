@@ -1920,12 +1920,12 @@ final class BackendClient: ObservableObject {
     }
 
     func respondToUserInput(sessionID: String, itemID: String,
-                            answers: [String: [String]]) async throws {
+                            answers: [String: [String]], action: String = "submit") async throws {
         var request = URLRequest(url: baseURL.appending(path: "sessions/\(sessionID)/actions/user-input"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "content-type")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "itemId": itemID, "answers": answers
+            "itemId": itemID, "answers": answers, "action": action
         ])
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse,

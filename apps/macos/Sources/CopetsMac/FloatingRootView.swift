@@ -3494,7 +3494,7 @@ typealias DetailView = SessionConversationContent
 private struct ConversationUserInputSheet: View {
     @Environment(\.dismiss) private var dismiss
     let item: CodexThreadItem
-    let submit: ([String: [String]]) async throws -> Void
+    let submit: ([String: [String]], String) async throws -> Void
     @State private var selected: [String: Set<String>] = [:]
     @State private var typed: [String: String] = [:]
     @State private var submitting = false
@@ -3506,41 +3506,17 @@ private struct ConversationUserInputSheet: View {
             if let request = item.userInput, request.schemaVersion == 1 {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
-                        ForEach(request.questions) { question in
-                            VStack(alignment: .leading, spacing: 8) {
-                                if !question.header.isEmpty {
-                                    Text(question.header).font(.caption).foregroundStyle(.secondary)
-                                }
-                                Text(question.question).font(.body)
-                                if let options = question.options {
-                                    ForEach(options, id: \.label) { option in
-                                        Toggle(isOn: optionBinding(question.id, label: option.label)) {
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                Text(option.label)
-                                                if !option.description.isEmpty {
-                                                    Text(option.description).font(.caption).foregroundStyle(.secondary)
-                                                }
-                                            }
-                                        }
-                                        .toggleStyle(.checkbox)
-                                    }
-                                    if question.isOther {
-                                        TextField("其他答案", text: textBinding(question.id))
-                                    }
-                                } else if question.isSecret {
-                                    SecureField("输入答案", text: textBinding(question.id))
-                                } else {
-                                    TextField("输入答案", text: textBinding(question.id))
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
+                        ConversationInputFields(request: request, selected: $selected, typed: $typed)
+                            .disabled(submitting)
                     }
                     .padding(.trailing, 8)
                 }
                 if let errorText { Text(errorText).font(.caption).foregroundStyle(.red) }
                 HStack {
-                    Button("取消") { dismiss() }.disabled(submitting)
+                    Button("关闭") { dismiss() }.disabled(submitting)
+                    if request.canCancel == true {
+                        Button("取消请求") { Task { await send(request, cancelling: true) } }.disabled(submitting)
+                    }
                     Spacer()
                     Button("提交答案") { Task { await send(request) } }
                         .buttonStyle(.borderedProminent)
@@ -3554,44 +3530,21 @@ private struct ConversationUserInputSheet: View {
             }
         }
         .padding(20)
-        .frame(minWidth: 460, minHeight: 280)
+        .frame(width: 480, height: 440)
         .accessibilityIdentifier("conversation-user-input")
     }
 
-    private func textBinding(_ id: String) -> Binding<String> {
-        Binding(get: { typed[id] ?? "" }, set: { typed[id] = $0 })
-    }
-
-    private func optionBinding(_ id: String, label: String) -> Binding<Bool> {
-        Binding(get: { selected[id, default: []].contains(label) }, set: { enabled in
-            var values = selected[id, default: []]
-            if enabled { values.insert(label) } else { values.remove(label) }
-            selected[id] = values
-        })
-    }
-
     private func answers(for request: ConversationUserInput) -> [String: [String]]? {
-        var result: [String: [String]] = [:]
-        for question in request.questions {
-            let entered = (typed[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            var values = question.options?.compactMap { option in
-                selected[question.id, default: []].contains(option.label) ? option.label : nil
-            } ?? []
-            if !entered.isEmpty { values.append(entered) }
-            guard !values.isEmpty, values.count <= 12,
-                  values.allSatisfy({ $0.count <= 4_000 }) else { return nil }
-            result[question.id] = values
-        }
-        return result
+        request.answers(selected: selected, typed: typed)
     }
 
-    private func send(_ request: ConversationUserInput) async {
-        guard !submitting, let answers = answers(for: request) else { return }
+    private func send(_ request: ConversationUserInput, cancelling: Bool = false) async {
+        guard !submitting, let answers = cancelling ? [:] : answers(for: request) else { return }
         submitting = true
         errorText = nil
         defer { submitting = false }
         do {
-            try await submit(answers)
+            try await submit(answers, cancelling ? "cancel" : "submit")
             typed.removeAll()
             selected.removeAll()
             dismiss()
@@ -4003,9 +3956,9 @@ struct SessionConversationContent: View {
                 historyRequestEpoch: historyRequestEpoch
             )
             .sheet(item: $pendingUserInput) { item in
-                ConversationUserInputSheet(item: item) { answers in
+                ConversationUserInputSheet(item: item) { answers, action in
                     try await backendClient.respondToUserInput(
-                        sessionID: sessionId, itemID: item.id, answers: answers
+                        sessionID: sessionId, itemID: item.id, answers: answers, action: action
                     )
                 }
             }
@@ -4342,6 +4295,7 @@ struct SessionConversationContent: View {
             case "dispatching": sections.append("正在提交，等待确认")
             case "unknown": sections.append("提交结果待同步，请勿重复提交")
             case "expired": sections.append("此问题已失效")
+            case "cancelled": sections.append("已取消请求")
             default: break
             }
         }
