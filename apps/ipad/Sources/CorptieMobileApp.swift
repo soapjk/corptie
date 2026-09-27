@@ -262,6 +262,7 @@ struct ConversationView: View {
     let sessionID: String
     let messageImages: PadMessageImageStore
     @State private var confirmForget = false
+    @AppStorage("conversation.showsDetailInspector") private var showsDetailInspector = false
     @State private var viewportState = ConversationViewportState()
     @State private var historyViewport = TimelineHistoryViewportState()
     @State private var historyAutoLoadGate = PadHistoryAutoLoadGate()
@@ -516,6 +517,12 @@ struct ConversationView: View {
         .sheet(item: $attachmentPreview) { preview in
             PadAttachmentViewer(connection: connection, preview: preview)
         }
+        .inspector(isPresented: $showsDetailInspector) {
+            PadConversationInspector(workspace: workspace, connection: connection, sessionID: sessionID,
+                close: { showsDetailInspector = false })
+                .id(sessionID)
+                .inspectorColumnWidth(min: 280, ideal: 320, max: 400)
+        }
     }
 
     private var timelineCoordinateSpace: String {
@@ -615,9 +622,17 @@ struct ConversationView: View {
                 .accessibilityIdentifier("conversation-task-title")
         }
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 56)
         .padding(.top, 4)
         .padding(.bottom, 8)
+        .overlay(alignment: .trailing) {
+            Button { showsDetailInspector.toggle() } label: {
+                Image(systemName: "sidebar.right").frame(width: 44, height: 44)
+            }
+            .accessibilityLabel(showsDetailInspector ? "关闭详情" : "显示详情")
+            .accessibilityIdentifier("conversation-detail-toggle")
+            .padding(.trailing, 8)
+        }
     }
 
     private var conversationStatusRow: some View {

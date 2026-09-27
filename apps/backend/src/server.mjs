@@ -119,6 +119,8 @@ import { clientCapabilities } from "./application/clientCapabilities.mjs";
 import { startConfiguredDeviceGateway } from "./application/clientDeviceGateway.mjs";
 import { createDeviceSetup } from "./application/clientDeviceSetup.mjs";
 import { ClientReadAPI } from "./application/clientReadAPI.mjs";
+import { ClientInspectorAPI } from "./application/clientInspectorAPI.mjs";
+import { inspectorFileImporter } from "./application/clientInspectorFiles.mjs";
 import { ClientControlReadAPI } from "./application/clientControlReadAPI.mjs";
 import { ClientWorktreeManagementAPI } from "./application/clientWorktreeManagementAPI.mjs";
 import { ClientSessionAPI, approvalRequestIsCurrent } from "./application/clientSessionAPI.mjs";
@@ -4181,6 +4183,7 @@ function publishStateChangesIfNeeded() {
 }
 
 function scheduleStateSyncPublish() {
+  clientDeviceGateway?.inspectorEvents.invalidate();
   clientDeviceGateway?.events.invalidate({ inventory: true, control: true });
   clientDeviceGateway?.events.publishState();
   if (stateSyncClients.size === 0 || stateSyncPublishTimer) return;
@@ -12241,6 +12244,15 @@ function startBackendRuntime() {
       emit: emitEvent
     }),
     sessionAPIFactory: () => new ClientSessionAPI({ store, readWindow: readSessionTimelineWindow,
+      inspector: new ClientInspectorAPI({ store, resolveSession: requireSessionReference,
+        references: sessionContextReferenceService, artifacts: artifactService,
+        schedules: scheduledSessionTaskService, observability: turnObservability,
+        providers: () => agentProviderRegistry.descriptors().map(descriptor => ({ id: descriptor.id, name: descriptor.displayName,
+          available: [AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE, AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+            AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND].every(capability => agentProviderRegistry.supports(descriptor.id, capability)) })),
+        switchProvider: switchSessionProvider, updateTask: (id, fields) => workService.updateTask(id, fields),
+        inspectTaskWorktree, reclaimTaskWorktree,
+        importFile: inspectorFileImporter({ store, references: sessionContextReferenceService, artifacts: artifactService }) }),
       send: sendUnifiedSessionMessage, stop: interruptUnifiedSession,
       respondToApproval: respondUnifiedSessionApproval,
       respondToUserInput: respondUnifiedSessionUserInput,

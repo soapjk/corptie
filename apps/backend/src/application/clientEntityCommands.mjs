@@ -279,7 +279,7 @@ function validateWorkCommand(command, input) {
 }
 
 /** Fingerprint → replay → revalidate → journal → run → durable receipt. Never dispatches twice. */
-async function execute(api, identity, revalidateIdentity, { kind, entityId: id, requestId, fields, uncertainCode, run }) {
+export async function executeClientCommand(api, identity, revalidateIdentity, { kind, entityId: id, requestId, fields, uncertainCode, run }) {
   const fingerprint = createHash("sha256").update(JSON.stringify([kind, id, requestId, fields])).digest("hex");
   const replay = () => {
     const row = api.store.selectOne("SELECT payload_hash FROM client_command_receipts WHERE device_id=? AND request_id=?", [identity.deviceId, requestId]);
@@ -313,3 +313,5 @@ async function execute(api, identity, revalidateIdentity, { kind, entityId: id, 
   } finally { api.inFlight.delete(key); }
   return api.receipt(identity, requestId);
 }
+
+const execute = executeClientCommand;
