@@ -349,12 +349,12 @@ public struct ClientSessionAPI: Sendable {
         return try await read(request)
     }
     public func respondToUserInput(sessionId: String, itemId: String,
-                                   answers: [String: [String]]) async throws -> ClientUserInputResponse {
-        struct Body: Encodable { let itemId: String; let answers: [String: [String]] }
+                                   answers: [String: [String]], action: String? = nil) async throws -> ClientUserInputResponse {
+        struct Body: Encodable { let itemId: String; let answers: [String: [String]]; let action: String? }
         var request = try transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "user-input"])
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(Body(itemId: itemId, answers: answers))
+        request.httpBody = try JSONEncoder().encode(Body(itemId: itemId, answers: answers, action: action))
         return try await read(request)
     }
     /// Acknowledges agent messages through `throughSequence` (same host receipt macOS submits on open).

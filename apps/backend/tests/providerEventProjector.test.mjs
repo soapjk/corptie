@@ -280,6 +280,33 @@ test("turn completion expires a still-pending question without inventing an answ
   }
 });
 
+test("async questions survive turn completion and cannot resurrect after a submitted reply", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    const item = { id: "async:question", type: "userInput", status: "pending", turnId: "turn:one",
+      text: "Choose", rawMetadataJSON: JSON.stringify({ userInput: {
+        schemaVersion: 1, responseMode: "message", isBlocking: false,
+        questions: [{ id: "q", question: "Choose", isOther: true, options: null }]
+      } }) };
+    projector.project({ binding, event: event("turn.started") });
+    projector.project({ binding, event: event("interaction.requested", { payload: { item } }) });
+    projector.project({ binding, event: event("turn.completed") });
+    assert.equal(store.getSessionItem(binding.sessionId, item.id).status, "pending");
+    assert.equal(store.getSession(binding.sessionId).status, "complete");
+    store.upsertTimelineItemProjection(binding.sessionId, { ...store.getSessionItem(binding.sessionId, item.id), status: "submitted" });
+    projector.project({ binding, event: event("interaction.requested", { payload: { item } }) });
+    assert.equal(store.getSessionItem(binding.sessionId, item.id).status, "submitted");
+    projector.project({ binding, event: event("execution.notice", { payload: { item: {
+      id: "compact", type: "contextCompaction", text: "Compressed", status: "completed"
+    } } }) });
+    assert.equal(store.listUnsettledSessionTurns(binding.sessionId).length, 0);
+    assert.equal(store.getSessionItem(binding.sessionId, "compact").type, "contextCompaction");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("plan snapshots update one stable timeline item and preserve step identities", async () => {
   const { directory, store, projector } = await fixture();
   try {

@@ -89,11 +89,34 @@ public struct ConversationUserInput: Decodable, Sendable, Hashable {
         public let isOther: Bool
         public let isSecret: Bool
         public let options: [Option]?
+        public let selectionMode: String?
+        public let required: Bool?
     }
 
     public let schemaVersion: Int
     public let isBlocking: Bool
     public let questions: [Question]
+    public let kind: String?
+    public let responseMode: String?
+    public let canCancel: Bool?
+    public let url: String?
+
+    public func answers(selected: [String: Set<String>], typed: [String: String]) -> [String: [String]]? {
+        var result: [String: [String]] = [:]
+        for question in questions {
+            let entered = (typed[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            var values = question.options?.compactMap { selected[question.id, default: []].contains($0.label) ? $0.label : nil } ?? []
+            if !entered.isEmpty && (question.options == nil || question.isOther) {
+                if question.selectionMode == "single" { values = [] }
+                values.append(entered)
+            }
+            guard (question.required == false || !values.isEmpty), values.count <= 12,
+                  question.selectionMode != "single" || values.count <= 1,
+                  values.allSatisfy({ $0.count <= 4_000 }) else { return nil }
+            result[question.id] = values
+        }
+        return result
+    }
 }
 
 public protocol ConversationExecutionItem: ConversationTimelineItem {

@@ -7,6 +7,7 @@ const TERMINAL_EVENT_STATUS = new Map([
 ]);
 
 const ITEM_EVENT_TYPES = new Set([
+  "execution.notice",
   "user.message.accepted",
   "assistant.message.started",
   "assistant.message.delta",
@@ -68,7 +69,7 @@ export class ProviderEventProjector {
         : null;
       timelineChanged = this.persistItem(
         sessionId,
-        ["completed", "failed", "cancelled"].includes(settledTurnStatus)
+        ["completed", "failed", "cancelled"].includes(settledTurnStatus) && !isAsyncInput(event.payload.item)
           ? { ...event.payload.item, turnStatus: settledTurnStatus,
             status: event.payload.item.status === "pending" ? "expired" : event.payload.item.status }
           : event.payload.item,
@@ -178,7 +179,7 @@ export class ProviderEventProjector {
         timelineChanged = this.persistItem(sessionId, {
           ...item,
           turnStatus: TERMINAL_EVENT_STATUS.get(event.type),
-          status: item.status === "pending" ? "expired" : item.status
+          status: item.status === "pending" && !isAsyncInput(item) ? "expired" : item.status
         }, event.bindingId) || timelineChanged;
       }
     }
@@ -270,6 +271,12 @@ export class ProviderEventProjector {
   persistItem(sessionId, item, bindingId, delivery = null, task = null) {
     if (!item?.id) return false;
     let canonicalItem = item;
+    if (item.type === "userInput" && item.status === "pending") {
+      const existing = this.store.getSessionItem?.(sessionId, item.id);
+      if (existing?.bindingId === bindingId && ["dispatching", "submitted", "cancelled", "expired", "unknown"].includes(existing.status)) {
+        canonicalItem = { ...item, status: existing.status };
+      }
+    }
     if (item.type === "userMessage" && delivery) {
       canonicalItem = {
         ...item,
@@ -412,6 +419,7 @@ function finiteUsageNumber(value) {
 
 function projectedTurnStatus(event, terminalOutcome = null) {
   if (terminalOutcome) return terminalOutcome.status;
+  if (event.type === "execution.notice") return null;
   // Configuration notices belong to the timeline, not to an executing Turn.
   // Adapters may deliver them through the item stream while no Turn is active.
   if (ITEM_EVENT_TYPES.has(event.type) && event.payload?.item?.type === "system") return null;
@@ -438,7 +446,7 @@ function sessionStatus(event, unsettled, previousStatus, isCurrentRoute, termina
 function finalItemForTurn(payload, turnId) {
   return [...(payload?.items ?? [])].reverse().find((item) =>
     item?.turnId === turnId
-    && item?.type === "agentMessage"
+    && (item?.type === "agentMessage" || isAsyncInput(item))
     && item?.presentationRole === "final_answer"
     && typeof item.text === "string"
     && item.text.trim()
@@ -526,7 +534,7 @@ function publicTurnFailureMessage(error) {
 function latestAgentItemFromPayload(payload) {
   const items = payload?.items ?? (payload?.item ? [payload.item] : []);
   return [...items].reverse().find((item) =>
-    item?.type === "agentMessage"
+    (item?.type === "agentMessage" || isAsyncInput(item))
     && typeof item.text === "string"
     && item.text.trim()
   ) ?? null;
@@ -570,4 +578,10 @@ function projectionError(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+function isAsyncInput(item) {
+  if (item?.userInput?.responseMode === "message") return true;
+  try { return JSON.parse(item?.rawMetadataJSON)?.userInput?.responseMode === "message"; }
+  catch { return false; }
 }
