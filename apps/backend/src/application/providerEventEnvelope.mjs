@@ -1,6 +1,7 @@
 import { toolExecutionForItem, withToolExecutionMetadata } from "../utils/toolExecutionProjection.mjs";
 import { changeSetForCodexItem, withChangeSetMetadata } from "../utils/changeSetProjection.mjs";
 import { providerSafeToolText } from "../utils/providerRawMetadata.mjs";
+import { asyncQuestionInput } from "./structuredInteraction.mjs";
 
 const TOOL_ITEM_TYPES = new Set([
   "commandExecution",
@@ -44,7 +45,8 @@ export function mapCodexProviderNotification({ message, binding, liveItems = [],
       ? liveItems.find((candidate) => candidate?.id === itemId) ?? params.item ?? null
       : params.item ?? null)
   ), method);
-  const type = codexEventType(method, params.item, turn);
+  const type = item?.type === "userInput" && ["item/started", "item/completed"].includes(method)
+    ? "interaction.requested" : item?.type === "warning" ? "execution.notice" : codexEventType(method, params.item, turn);
   if (!type) return null;
   return providerEnvelope(binding, {
     providerEventId: optionalText(params.providerEventId ?? params.eventId),
@@ -310,6 +312,13 @@ function projectedDetailItem(detail, event) {
 
 function normalizeTimelineItem(item) {
   if (!item || typeof item !== "object" || Array.isArray(item)) return item ?? null;
+  const userInput = asyncQuestionInput(item);
+  if (userInput) {
+    let raw = {};
+    try { raw = JSON.parse(item.rawMetadataJSON) ?? {}; } catch { /* Native item. */ }
+    item = { ...item, type: "userInput", status: "pending", userInput,
+      rawMetadataJSON: JSON.stringify({ ...raw, userInput }) };
+  }
   const role = normalizedPresentationRole(item.presentationRole ?? item.phase);
   const tool = TOOL_ITEM_TYPES.has(item.type);
   return {

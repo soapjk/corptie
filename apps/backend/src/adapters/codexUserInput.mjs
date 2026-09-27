@@ -39,7 +39,7 @@ export function normalizeCodexUserInputRequest(request) {
 }
 
 export function codexUserInputItem(threadId, request) {
-  const userInput = normalizeCodexUserInputRequest(request);
+  const userInput = request.interaction ? { ...request.interaction, requestId: String(request.requestId), turnId: request.params?.turnId ?? threadId } : normalizeCodexUserInputRequest(request);
   if (!userInput || typeof threadId !== "string" || !threadId) return null;
   return {
     id: `${threadId}:app-server-user-input:${userInput.requestId}`,
@@ -52,6 +52,7 @@ export function codexUserInputItem(threadId, request) {
     createdAt: request.params?.createdAt ?? null,
     // This is an adapter projection of question definitions, never answers.
     rawMetadataJSON: JSON.stringify({ userInput: {
+      ...request.interaction,
       schemaVersion: userInput.schemaVersion,
       isBlocking: userInput.isBlocking,
       questions: userInput.questions

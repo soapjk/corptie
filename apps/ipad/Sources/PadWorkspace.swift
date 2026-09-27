@@ -86,6 +86,7 @@ func padUserInputStatusText(_ status: String?, submittedLocally: Bool) -> String
     case "dispatching": return "正在提交，等待确认"
     case "unknown": return "提交结果待同步，请勿重复提交"
     case "submitted": return "已提交，等待会话更新"
+    case "cancelled": return "已取消请求"
     case "pending" where submittedLocally: return "已提交，等待会话更新"
     default: return "此问题已失效"
     }
