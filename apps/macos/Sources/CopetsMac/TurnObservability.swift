@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import CorptieClientCore
 
 struct TurnTimeCategory: Decodable, Equatable {
     let inclusiveMs: Double?
@@ -83,9 +84,7 @@ struct TurnTraceSpan: Decodable, Identifiable, Equatable {
     var activityPhase: String? { nil }
     var codeLocation: String? { nil }
     var durationMs: Double {
-        guard let start = Decimal(string: startObservedAtUnixNano),
-              let end = Decimal(string: endObservedAtUnixNano) else { return 0 }
-        return NSDecimalNumber(decimal: end - start).doubleValue / 1_000_000
+        ConversationInspectorPolicy.spanDurationMilliseconds(start: startObservedAtUnixNano, end: endObservedAtUnixNano)
     }
 }
 

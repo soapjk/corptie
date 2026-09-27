@@ -3064,12 +3064,7 @@ struct SessionDetailPanel: View {
         systemImage: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Label(title, systemImage: systemImage)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.tertiary)
-            content()
-        }
+        ConversationInspectorSection(title: title, systemImage: systemImage, content: content)
     }
 
     private func detailFields(_ fields: [(String, String)]) -> some View {

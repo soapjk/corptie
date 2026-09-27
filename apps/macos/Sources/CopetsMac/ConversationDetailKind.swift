@@ -1,4 +1,5 @@
 import Foundation
+import CorptieClientCore
 
 /// Presentation classification only. Session remains the executor and owner
 /// of runtime capabilities; no new backend actor or lifecycle is introduced.
@@ -6,10 +7,10 @@ enum ConversationDetailKind: String {
     case chatDetail, workDetail, taskDetail
 
     static func resolve(_ kind: SessionKind) -> Self? {
-        switch kind {
-        case .assistantChat: .chatDetail
-        case .workChat: .workDetail
-        case .worker: .taskDetail
+        switch ConversationInspectorKind.resolve(sessionKind: kind.rawValue, taskID: nil, workID: nil) {
+        case .chat: .chatDetail
+        case .work: .workDetail
+        case .task: .taskDetail
         case .legacy: nil
         }
     }
