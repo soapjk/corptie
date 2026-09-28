@@ -4,38 +4,40 @@ import Testing
 struct ProviderModelLoadingLifecycleTests {
     @Test
     func startupDoesNotWaitForProviderModelDiscovery() throws {
-        let source = try backendClientSource()
+        let clientSource = try backendClientSource()
 
-        let start = try #require(source.range(of: "    func start() {"))
-        let stop = try #require(source.range(
+        let start = try #require(clientSource.range(of: "    func start() {"))
+        let stop = try #require(clientSource.range(
             of: "    func stop() {",
-            range: start.upperBound..<source.endIndex
+            range: start.upperBound..<clientSource.endIndex
         ))
-        let startupBody = source[start.lowerBound..<stop.lowerBound]
+        let startupBody = clientSource[start.lowerBound..<stop.lowerBound]
         #expect(startupBody.contains("await loadProviders()"))
         #expect(!startupBody.contains("loadModels(for:"))
 
-        let storeReady = try #require(source.range(of: "if eventName == \"BackendStoreReady\""))
-        let replayRequired = try #require(source.range(
+        let router = try source(named: "Backend/BackendEventRouter.swift")
+        let storeReady = try #require(router.range(of: "if eventName == \"BackendStoreReady\""))
+        let replayRequired = try #require(router.range(
             of: "if eventName == \"EventReplayRequired\"",
-            range: storeReady.upperBound..<source.endIndex
+            range: storeReady.upperBound..<router.endIndex
         ))
-        let storeReadyBody = source[storeReady.lowerBound..<replayRequired.lowerBound]
-        #expect(storeReadyBody.contains("await loadProviders()"))
+        let storeReadyBody = router[storeReady.lowerBound..<replayRequired.lowerBound]
+        #expect(storeReadyBody.contains("await ports.loadProviders()"))
+        #expect(clientSource.contains("loadProviders: { [weak self] in"))
         #expect(!storeReadyBody.contains("loadModels(for:"))
     }
 
     @Test
     func modelDiscoveryRemainsAvailableOnDemand() throws {
-        let backendClient = try backendClientSource()
+        let backendClient = try source(named: "Backend/BackendClientSettingsAndCreation.swift")
         #expect(backendClient.contains("func loadModelsForSelectedSession(forceRefresh: Bool = false) async"))
         #expect(backendClient.contains("await loadModels(for: provider, forceRefresh: forceRefresh)"))
 
-        let floatingRootView = try source(named: "FloatingRootView.swift")
+        let floatingRootView = try source(named: "Floating/NewSession/NewAgentSessionSheet.swift")
         #expect(floatingRootView.contains("private func loadModelsForCurrentAgent()"))
         #expect(floatingRootView.contains("await backendClient.loadModels(for: provider)"))
 
-        let appSource = try source(named: "CopetsMacApp.swift")
+        let appSource = try source(named: "Settings/SettingsView.swift")
         #expect(appSource.contains("await backendClient.loadModels(for: \"codex-pty\")"))
     }
 

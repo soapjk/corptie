@@ -57,11 +57,10 @@ test("Claude and OpenClacky workspace managers atomically prepare desired-only T
       `${managerName} must carry Tool desired state in the atomic route commit`
     );
   }
-  const helperBegin = source.indexOf("async function prepareDesiredWorkspaceToolMaterialization");
-  const helperEnd = source.indexOf("\nfunction desiredToolDomainIds", helperBegin);
-  const helper = source.slice(helperBegin, helperEnd);
+  const helperSource = await readFile(new URL("../src/application/sessionToolBindingProjection.mjs", import.meta.url), "utf8");
+  const helperBegin = helperSource.indexOf("async function prepareDesiredWorkspaceToolMaterialization");
+  const helper = helperSource.slice(helperBegin, helperSource.indexOf("\n  return {", helperBegin));
   assert.notEqual(helperBegin, -1);
-  assert.notEqual(helperEnd, -1);
   assert.match(helper, /getSessionToolCatalogMaterialization/);
   assert.match(helper, /desiredToolDomainIds\(source\)/);
   assert.match(helper, /prepareDesiredReplacement/);

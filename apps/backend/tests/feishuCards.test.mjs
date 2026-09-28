@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { FeishuGatewayManager } from "../src/feishu/feishuGatewayManager.mjs";
 import {
-  FeishuGatewayManager,
   buildAgentPickerCard,
   buildApprovalCard,
   buildCollaborationConfirmationCard,
@@ -10,7 +10,7 @@ import {
   buildMessageCard,
   buildSessionListCard,
   buildWorkspacePickerCard
-} from "../src/feishu/feishuGatewayManager.mjs";
+} from "../src/feishu/feishuPresentation.mjs";
 
 function cardButtons(card) {
   return card.body.elements.flatMap((element) =>

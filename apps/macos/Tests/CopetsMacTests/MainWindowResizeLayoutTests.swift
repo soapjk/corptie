@@ -62,7 +62,11 @@ struct MainWindowResizeLayoutTests {
         view.layoutSubtreeIfNeeded()
         let exactLayoutsBeforeStability = view.layoutStatistics.exactLayouts
 
-        try await Task.sleep(for: .milliseconds(350))
+        // Wait for the coalesced layout, not for a fixed scheduler interval.
+        for _ in 0..<60 {
+            if view.layoutStatistics.exactLayouts > exactLayoutsBeforeStability { break }
+            try await Task.sleep(for: .milliseconds(25))
+        }
 
         #expect(view.layoutStatistics.exactLayouts == exactLayoutsBeforeStability + 1)
         #expect(view.renderedContentSize == view.bounds.size)

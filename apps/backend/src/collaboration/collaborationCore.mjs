@@ -1,7 +1,23 @@
 import { randomUUID } from "node:crypto";
+import { CollaborationAgentDirectory } from "./collaborationAgentDirectory.mjs";
+import { CollaborationRecordWriter } from "./collaborationRecordWriter.mjs";
+import { CollaborationTaskScope } from "./collaborationTaskScope.mjs";
+import { CollaborationDeliveryReader } from "./collaborationDeliveryReader.mjs";
+import { CollaborationTaskChannels } from "./collaborationTaskChannels.mjs";
+import { CollaborationServiceDirectory } from "./collaborationServiceDirectory.mjs";
+import { requiredId, requiredText, optionalText, assertKnownFields, stringList, positiveInteger, domainError } from "./collaborationValidation.mjs";
+import { migrateCollaborationProtocol } from "./collaborationProtocolMigrations.mjs";
 import {
-  COLLABORATION_PROTOCOL_VERSION,
-  createCollaborationEnvelope
+  taskFromRow,
+  messageFromRow,
+  artifactFromRow,
+  eventFromRow,
+  deliveryFromRow,
+  taskConfirmationFromRow,
+  sessionPresentationSnapshot
+} from "./collaborationRecordProjection.mjs";
+import {
+  COLLABORATION_PROTOCOL_VERSION
 } from "./collaborationProtocol.mjs";
 
 const TERMINAL_TASK_STATUSES = new Set(["completed", "rejected", "canceled", "escalated"]);
@@ -22,311 +38,73 @@ export class CollaborationCore {
     this.store = store;
     this.idFactory = options.idFactory ?? randomUUID;
     this.clock = options.clock ?? (() => new Date().toISOString());
+    this.serviceDirectory = new CollaborationServiceDirectory({
+      store, clock: () => this.clock(), requireAgent: (agentId) => this.#requireAgent(agentId)
+    });
+    this.taskChannels = new CollaborationTaskChannels({
+      store, clock: () => this.clock(), idFactory: () => this.idFactory(),
+      terminalTaskStatuses: TERMINAL_TASK_STATUSES,
+      getDeliveryEnvelope: (id) => this.getDeliveryEnvelope(id),
+      getAgentForSession: (id) => this.getAgentForSession(id),
+      sessionIdentityMatches: (...args) => this.#sessionIdentityMatches(...args),
+      stableSessionIdentity: (...args) => this.#stableSessionIdentity(...args),
+      appendEvent: (...args) => this.#appendEvent(...args),
+      transaction: (...args) => this.#transaction(...args),
+    });
+    this.deliveryReader = new CollaborationDeliveryReader({
+      store, clock: () => this.clock(), listArtifacts: (taskId) => this.listArtifacts(taskId)
+    });
+    this.taskScope = new CollaborationTaskScope({
+      store,
+      stableSessionIdentity: (id) => this.#stableSessionIdentity(id),
+      getAgentForSession: (id) => this.getAgentForSession(id)
+    });
+    this.recordWriter = new CollaborationRecordWriter({
+      store, clock: () => this.clock(), idFactory: () => this.idFactory(),
+      stableSessionIdentity: (id) => this.#stableSessionIdentity(id),
+      sessionIdentityMatches: (actual, expected) => this.#sessionIdentityMatches(actual, expected),
+      requireService: (id) => this.#requireService(id)
+    });
+    this.agentDirectory = new CollaborationAgentDirectory({
+      store, clock: () => this.clock(), idFactory: () => this.idFactory(),
+      requireAgent: (...args) => this.#requireAgent(...args),
+      transaction: (...args) => this.#transaction(...args),
+      stableSessionIdentity: (...args) => this.#stableSessionIdentity(...args),
+      invalidateChannelsForSession: (...args) => this.#invalidateChannelsForSession(...args),
+    });
     this.initialize();
   }
 
   initialize() {
-    const legacy = this.#migrateLegacyCollaborationRequests();
-    const result = this.#migrateSessionActorProtocol();
-    if (this.store.db) this.#recordChannelSchemaMigration();
-    return legacy.status === "applied" ? legacy : result;
-  }
-
-  registerAgent(input) {
-    const agentId = requiredId(input.agentId, "agentId");
-    const name = requiredText(input.name, "name");
-    const timestamp = this.clock();
-    const existing = this.getAgent(agentId);
-    this.store.db.run(
-      `INSERT INTO agents (
-        agent_id, name, description, status, capabilities_json, current_session_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
-      ON CONFLICT(agent_id) DO UPDATE SET
-        name = excluded.name,
-        description = excluded.description,
-        status = excluded.status,
-        capabilities_json = excluded.capabilities_json,
-        updated_at = excluded.updated_at`,
-      [
-        agentId,
-        name,
-        optionalText(input.description) ?? "",
-        "available",
-        JSON.stringify(stringList(input.capabilities)),
-        existing?.createdAt ?? timestamp,
-        timestamp
-      ]
-    );
-    this.store.scheduleSave();
-    return this.getAgent(agentId);
-  }
-
-  getAgent(agentId) {
-    const row = this.store.selectOne("SELECT * FROM agents WHERE agent_id = ?", [agentId]);
-    return row ? agentFromRow(row, this.store) : null;
-  }
-
-  getAgentForSession(sessionId) {
-    const logical = this.store.getLogicalSession(sessionId)
-      ?? this.store.getLogicalSessionByLegacySessionId(sessionId);
-    const row = this.store.selectOne(
-      `SELECT a.* FROM agents a
-       JOIN agent_sessions s ON s.agent_id = a.agent_id
-       WHERE s.session_id IN (?, ?) AND s.unbound_at IS NULL
-       ORDER BY s.bound_at DESC LIMIT 1`,
-      [sessionId, logical?.legacySessionId ?? sessionId]
-    );
-    return row ? agentFromRow(row, this.store, logical) : null;
-  }
-
-  resolveAgentBySessionName(sessionName) {
-    const logical = this.store.getLogicalSessionByName(sessionName);
-    if (!logical) return null;
-    const row = this.store.selectOne(
-      `SELECT a.* FROM agents a
-       JOIN agent_sessions binding ON binding.agent_id = a.agent_id
-       WHERE binding.unbound_at IS NULL
-         AND binding.session_id IN (?, ?)
-       ORDER BY binding.bound_at DESC LIMIT 1`,
-      [logical.logicalSessionId, logical.legacySessionId]
-    );
-    return row ? agentFromRow(row, this.store, logical) : null;
-  }
-
-  listAgents(options = {}) {
-    const agents = this.store.selectAll("SELECT * FROM agents ORDER BY name ASC")
-      .map((row) => agentFromRow(row, this.store));
-    return options.status ? agents.filter((agent) => agent.status === options.status) : agents;
-  }
-
-  bindSession(input) {
-    const agent = this.#requireAgent(input.agentId);
-    const sessionId = requiredId(input.sessionId, "sessionId");
-    const timestamp = this.clock();
-    this.#transaction(() => {
-      const other = this.store.selectOne(
-        "SELECT agent_id FROM agent_sessions WHERE session_id = ? AND unbound_at IS NULL",
-        [sessionId]
-      );
-      if (other && other.agent_id !== agent.agentId) {
-        throw domainError("SESSION_ALREADY_BOUND", `Session ${sessionId} is already bound to agent ${other.agent_id}.`);
-      }
-      const current = this.store.selectOne(
-        "SELECT binding_id FROM agent_sessions WHERE agent_id = ? AND session_id = ? AND unbound_at IS NULL",
-        [agent.agentId, sessionId]
-      );
-      if (!current) {
-        this.store.db.run(
-          "INSERT INTO agent_sessions (binding_id, agent_id, session_id, bound_at, unbound_at) VALUES (?, ?, ?, ?, NULL)",
-          [this.idFactory(), agent.agentId, sessionId, timestamp]
-        );
-      }
-      this.store.db.run(
-        `UPDATE sessions SET
-           agent_id = ?,
-           session_kind = CASE
-             WHEN session_kind = 'legacy' AND work_id IS NULL AND task_id IS NULL THEN 'assistantChat'
-             ELSE session_kind
-           END,
-           updated_at = ?
-         WHERE id = ?
-           AND (
-             agent_id IS NOT ?
-             OR (session_kind = 'legacy' AND work_id IS NULL AND task_id IS NULL)
-           )`,
-        [agent.agentId, timestamp, sessionId, agent.agentId]
-      );
-      // Re-observing an existing Provider projection must not rotate an Agent's
-      // current Session through every historical active binding. Only a newly
-      // created binding advances the recency cursor.
-      if (!current) {
-        this.store.db.run(
-          `UPDATE agents SET current_session_id = ?, updated_at = ?
-           WHERE agent_id = ? AND current_session_id IS NOT ?`,
-          [sessionId, timestamp, agent.agentId, sessionId]
-        );
-      }
-    });
-    return this.getAgent(agent.agentId);
-  }
-
-  unbindSession(agentId) {
-    const agent = this.#requireAgent(agentId);
-    if (!agent.currentSessionId) return agent;
-    const timestamp = this.clock();
-    this.#transaction(() => {
-      this.store.db.run(
-        "UPDATE agent_sessions SET unbound_at = ? WHERE agent_id = ? AND unbound_at IS NULL",
-        [timestamp, agent.agentId]
-      );
-      this.store.db.run(
-        "UPDATE agents SET current_session_id = NULL, updated_at = ? WHERE agent_id = ?",
-        [timestamp, agent.agentId]
-      );
-    });
-    return this.getAgent(agent.agentId);
-  }
-
-  detachSession(sessionId) {
-    const normalizedSessionId = requiredId(sessionId, "sessionId");
-    const stableSessionId = this.#stableSessionIdentity(normalizedSessionId);
-    const agent = this.store.selectOne(
-      `SELECT a.agent_id
-       FROM agents a
-       LEFT JOIN agent_sessions s
-         ON s.agent_id = a.agent_id
-        AND s.session_id = ?
-        AND s.unbound_at IS NULL
-       WHERE a.current_session_id = ? OR s.session_id = ?
-       LIMIT 1`,
-      [normalizedSessionId, normalizedSessionId, normalizedSessionId]
-    );
-    if (!agent) return null;
-
-    const timestamp = this.clock();
-    this.#transaction(() => {
-      this.#invalidateChannelsForSession(stableSessionId, "session_detached", timestamp);
-      this.store.db.run(
-        "UPDATE agent_sessions SET unbound_at = ? WHERE session_id = ? AND unbound_at IS NULL",
-        [timestamp, normalizedSessionId]
-      );
-      this.store.db.run(
-        `UPDATE agents SET
-           current_session_id = (
-             SELECT session_id FROM agent_sessions
-             WHERE agent_id = ? AND unbound_at IS NULL
-             ORDER BY bound_at DESC LIMIT 1
-           ),
-           updated_at = ?
-         WHERE agent_id = ?`,
-        [agent.agent_id, timestamp, agent.agent_id]
-      );
-    });
-    this.store.scheduleSave();
-    return this.getAgent(agent.agent_id);
-  }
-
-  detachMissingSessionBindings() {
-    const sessionIds = this.store.selectAll(
-      `SELECT DISTINCT session_id
-       FROM (
-         SELECT current_session_id AS session_id
-         FROM agents
-         WHERE current_session_id IS NOT NULL
-         UNION
-         SELECT session_id
-         FROM agent_sessions
-         WHERE unbound_at IS NULL
-       )
-       WHERE session_id NOT IN (SELECT id FROM sessions)`
-    ).map((row) => row.session_id);
-
-    return sessionIds
-      .map((sessionId) => this.detachSession(sessionId))
-      .filter(Boolean);
-  }
-
-  registerService(input) {
-    const serviceId = requiredId(input.serviceId, "serviceId");
-    const owner = this.#requireAgent(input.ownerAgentId);
-    const timestamp = this.clock();
-    const existing = this.getService(serviceId);
-    if (existing && existing.ownerAgentId !== owner.agentId) {
-      throw domainError("SERVICE_OWNER_MISMATCH", "Service ownership transfer requires a separate explicit workflow.");
-    }
-    const status = input.status ?? existing?.status ?? "unknown";
-    if (!["unknown", "stopped", "starting", "running", "degraded", "failed", "inactive"].includes(status)) {
-      throw domainError("INVALID_SERVICE_STATUS", `Unsupported service status: ${status}`);
-    }
-    this.store.db.run(
-      `INSERT INTO services (
-        service_id, name, description, owner_agent_id, current_version, status, endpoint,
-        repository_root, metadata_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(service_id) DO UPDATE SET
-        name = excluded.name,
-        description = excluded.description,
-        current_version = excluded.current_version,
-        status = excluded.status,
-        endpoint = excluded.endpoint,
-        repository_root = excluded.repository_root,
-        metadata_json = excluded.metadata_json,
-        updated_at = excluded.updated_at`,
-      [
-        serviceId,
-        requiredText(input.name, "name"),
-        optionalText(input.description) ?? "",
-        owner.agentId,
-        optionalText(input.currentVersion),
-        status,
-        optionalText(input.endpoint),
-        optionalText(input.repositoryRoot),
-        JSON.stringify(input.metadata ?? {}),
-        existing?.createdAt ?? timestamp,
-        timestamp
-      ]
-    );
-    this.store.scheduleSave();
-    return this.getService(serviceId);
-  }
-
-  updateService(serviceId, actorAgentId, patch = {}) {
-    const service = this.#requireService(serviceId);
-    if (service.ownerAgentId !== actorAgentId) {
-      throw domainError("SERVICE_OWNER_REQUIRED", `Only ${service.ownerAgentId} may update service ${serviceId}.`);
-    }
-    return this.registerService({
-      serviceId,
-      ownerAgentId: service.ownerAgentId,
-      name: patch.name ?? service.name,
-      description: patch.description ?? service.description,
-      currentVersion: patch.currentVersion ?? service.currentVersion,
-      status: patch.status ?? service.status,
-      endpoint: patch.endpoint ?? service.endpoint,
-      repositoryRoot: patch.repositoryRoot ?? service.repositoryRoot,
-      metadata: patch.metadata ?? service.metadata
+    return migrateCollaborationProtocol({
+      store: this.store,
+      clock: () => this.clock(),
+      requireAgent: (...args) => this.#requireAgent(...args),
+      workForSession: (...args) => this.#workForSession(...args),
+      ensureCompatibilityWork: (...args) => this.#ensureCompatibilityWork(...args),
+      isAssignableContributor: (...args) => this.#isAssignableContributor(...args),
+      ensureWorkContributor: (...args) => this.#ensureWorkContributor(...args),
+      ensureCollaborationTask: (...args) => this.#ensureCollaborationTask(...args),
+      syncTaskStatus: (...args) => this.#syncTaskStatus(...args),
     });
   }
 
-  getService(serviceId) {
-    const row = this.store.selectOne("SELECT * FROM services WHERE service_id = ?", [serviceId]);
-    return row ? serviceFromRow(row) : null;
-  }
+  registerAgent(...args) { return this.agentDirectory.registerAgent(...args); }
+  getAgent(...args) { return this.agentDirectory.getAgent(...args); }
+  getAgentForSession(...args) { return this.agentDirectory.getAgentForSession(...args); }
+  resolveAgentBySessionName(...args) { return this.agentDirectory.resolveAgentBySessionName(...args); }
+  listAgents(...args) { return this.agentDirectory.listAgents(...args); }
+  bindSession(...args) { return this.agentDirectory.bindSession(...args); }
+  unbindSession(...args) { return this.agentDirectory.unbindSession(...args); }
+  detachSession(...args) { return this.agentDirectory.detachSession(...args); }
+  detachMissingSessionBindings(...args) { return this.agentDirectory.detachMissingSessionBindings(...args); }
 
-  listServices(options = {}) {
-    const conditions = [];
-    const params = [];
-    if (options.ownerAgentId) {
-      conditions.push("owner_agent_id = ?");
-      params.push(options.ownerAgentId);
-    }
-    if (options.status) {
-      conditions.push("status = ?");
-      params.push(options.status);
-    }
-    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-    return this.store.selectAll(`SELECT * FROM services ${where} ORDER BY name ASC`, params).map(serviceFromRow);
-  }
-
-  addServiceConsumer(serviceId, agentId) {
-    this.#requireService(serviceId);
-    this.#requireAgent(agentId);
-    this.store.db.run(
-      "INSERT OR IGNORE INTO service_consumers (service_id, agent_id, created_at) VALUES (?, ?, ?)",
-      [serviceId, agentId, this.clock()]
-    );
-    this.store.scheduleSave();
-    return this.listServiceConsumers(serviceId);
-  }
-
-  listServiceConsumers(serviceId) {
-    return this.store.selectAll(
-      `SELECT a.* FROM agents a
-       JOIN service_consumers c ON c.agent_id = a.agent_id
-       WHERE c.service_id = ? ORDER BY a.name ASC`,
-      [serviceId]
-    ).map((row) => agentFromRow(row, this.store));
-  }
+  registerService(input) { return this.serviceDirectory.registerService(input); }
+  updateService(serviceId, actorAgentId, patch = {}) { return this.serviceDirectory.updateService(serviceId, actorAgentId, patch); }
+  getService(serviceId) { return this.serviceDirectory.getService(serviceId); }
+  listServices(options = {}) { return this.serviceDirectory.listServices(options); }
+  addServiceConsumer(serviceId, agentId) { return this.serviceDirectory.addServiceConsumer(serviceId, agentId); }
+  listServiceConsumers(serviceId) { return this.serviceDirectory.listServiceConsumers(serviceId); }
 
   createTask(input) {
     assertKnownFields(input, TASK_INPUT_FIELDS);
@@ -672,46 +450,8 @@ export class CollaborationCore {
     ));
   }
 
-  getChannel(taskId) {
-    const row = this.store.selectOne(
-      "SELECT * FROM collaboration_channels WHERE task_id = ?",
-      [requiredId(taskId, "taskId")]
-    );
-    return row ? channelFromRow(row) : null;
-  }
-
-  resolveDirectReplyRoute(deliveryId) {
-    const envelope = this.getDeliveryEnvelope(deliveryId);
-    if (!envelope) throw domainError("DELIVERY_NOT_FOUND", `Delivery ${deliveryId} was not found.`);
-    const reply = this.#isReplyEnvelope(envelope);
-
-    const channel = this.getChannel(envelope.task.taskId);
-    if (channel?.status === "active") {
-      const senderSessionId = this.#stableSessionIdentity(envelope.message.envelope.sender.sessionId);
-      const expectedSenderSessionId = reply ? channel.recipientSessionId : channel.initiatorSessionId;
-      const expectedSenderAgentId = reply ? channel.recipientAgentId : channel.initiatorAgentId;
-      const expectedRecipientAgentId = reply ? channel.initiatorAgentId : channel.recipientAgentId;
-      const targetSessionId = reply ? channel.initiatorSessionId : channel.recipientSessionId;
-      if (senderSessionId === expectedSenderSessionId
-          && envelope.message.senderAgentId === expectedSenderAgentId
-          && envelope.delivery.recipientAgentId === expectedRecipientAgentId) {
-        const route = this.#activeProviderRoute(targetSessionId, expectedRecipientAgentId);
-        if (route) return { ...route, mode: "channel", channel };
-        this.#invalidateChannel(channel.channelId, reply ? "initiator_session_unavailable" : "recipient_session_unavailable");
-      } else {
-        this.#invalidateChannel(channel.channelId, "task_endpoint_mismatch");
-      }
-    }
-
-    if (!reply) return null;
-    const fallbackSessionId = this.#stableSessionIdentity(envelope.message.envelope.recipient.sessionId);
-    const fallback = this.#activeProviderRoute(fallbackSessionId, envelope.delivery.recipientAgentId);
-    if (fallback) return { ...fallback, mode: "fallback", channel: this.getChannel(envelope.task.taskId) };
-    throw domainError(
-      "COLLABORATION_CHANNEL_UNAVAILABLE",
-      `No valid collaboration channel or original Session route remains for task ${envelope.task.taskId}.`
-    );
-  }
+  getChannel(taskId) { return this.taskChannels.getChannel(taskId); }
+  resolveDirectReplyRoute(deliveryId) { return this.taskChannels.resolveDirectReplyRoute(deliveryId); }
 
   rerouteTaskRecipient(taskId, recipientSessionId, details = {}) {
     const task = this.#requireTask(taskId);
@@ -1052,129 +792,14 @@ export class CollaborationCore {
     return recovered ? this.getDelivery(deliveryId) : null;
   }
 
-  getDeliveryEnvelope(deliveryId) {
-    const row = this.store.selectOne(
-      `SELECT d.*, m.task_id, m.sender_agent_id, m.sender_session_id, m.recipient_session_id AS message_recipient_session_id,
-              m.message_type, m.body,
-              m.protocol_version, m.source_work_id AS message_source_work_id,
-              m.target_work_id AS message_target_work_id,
-              m.source_task_id AS message_source_task_id, m.target_task_id AS message_target_task_id,
-              m.evidence_json, m.payload_json, m.error_json, m.resource_version, m.created_at AS message_created_at,
-              t.context_id, t.service_id, t.type AS task_type, t.status AS task_status,
-              t.initiator_agent_id, t.recipient_agent_id AS task_recipient_agent_id,
-              t.initiator_session_id, t.recipient_session_id AS task_recipient_session_id,
-              t.initiator_name_at_send, t.recipient_name_at_send,
-              t.routing_version, t.route_status, t.routing_intent,
-              t.source_work_id, t.target_work_id, t.source_task_id, t.target_task_id,
-              t.iteration, t.max_iterations, t.title, t.summary,
-              t.acceptance_criteria_json, a.name AS sender_agent_name,
-              s.name AS service_name
-       FROM collaboration_deliveries d
-       JOIN collaboration_messages m ON m.message_id = d.message_id
-       JOIN collaboration_requests t ON t.task_id = m.task_id
-       JOIN agents a ON a.agent_id = m.sender_agent_id
-       LEFT JOIN services s ON s.service_id = t.service_id
-       WHERE d.delivery_id = ?`,
-      [deliveryId]
-    );
-    if (!row) return null;
-    const latestArtifact = this.listArtifacts(row.task_id).at(-1) ?? null;
-    return {
-      delivery: deliveryFromRow(row),
-      message: {
-        messageId: row.message_id,
-        taskId: row.task_id,
-        senderAgentId: row.sender_agent_id,
-        senderAgentName: row.sender_agent_name,
-        recipientAgentId: row.recipient_agent_id,
-        messageType: row.message_type,
-        body: row.body,
-        evidence: parseJson(row.evidence_json, []),
-        resourceVersion: row.resource_version || null,
-        createdAt: row.message_created_at,
-        envelope: row.sender_session_id && row.message_recipient_session_id ? createCollaborationEnvelope({
-          messageId: row.message_id,
-          taskId: row.task_id,
-          messageType: row.message_type,
-          senderAgentId: row.sender_agent_id,
-          recipientAgentId: row.recipient_agent_id,
-          senderSessionId: row.sender_session_id,
-          recipientSessionId: row.message_recipient_session_id,
-          sourceWorkId: row.message_source_work_id,
-          targetWorkId: row.message_target_work_id,
-          sourceTaskId: row.message_source_task_id,
-          targetTaskId: row.message_target_task_id,
-          payload: parseJson(row.payload_json, {
-            body: row.body,
-            evidence: parseJson(row.evidence_json, []),
-            resourceVersion: row.resource_version || null
-          }),
-          timestamp: row.message_created_at,
-          error: parseJson(row.error_json, null)
-        }) : null
-      },
-      task: {
-        taskId: row.task_id,
-        targetTaskId: row.target_task_id,
-        contextId: row.context_id,
-        initiatorAgentId: row.initiator_agent_id,
-        recipientAgentId: row.task_recipient_agent_id,
-        initiatorSessionId: row.initiator_session_id || null,
-        recipientSessionId: row.task_recipient_session_id || null,
-        initiatorNameAtSend: row.initiator_name_at_send || null,
-        recipientNameAtSend: row.recipient_name_at_send || null,
-        sourceWorkId: row.source_work_id,
-        targetWorkId: row.target_work_id,
-        sourceTaskId: row.source_task_id || null,
-        taskId: row.task_id,
-        serviceId: row.service_id || null,
-        serviceName: row.service_name || null,
-        type: row.task_type,
-        status: row.task_status,
-        iteration: Number(row.iteration),
-        maxIterations: Number(row.max_iterations),
-        title: row.title,
-        summary: row.summary,
-        acceptanceCriteria: parseJson(row.acceptance_criteria_json, []),
-        routingVersion: row.routing_version == null ? null : Number(row.routing_version),
-        routeStatus: row.route_status || "unresolved",
-        routingIntent: row.routing_intent || null
-      },
-      latestArtifact
-    };
-  }
-
+  getDeliveryEnvelope(deliveryId) { return this.deliveryReader.getDeliveryEnvelope(deliveryId); }
   listPendingDeliveries(limit = 100, maxAttempts = Number.MAX_SAFE_INTEGER) {
-    return this.store.selectAll(
-      `SELECT * FROM collaboration_deliveries
-       WHERE status IN ('pending', 'failed')
-         AND attempt_count < ?
-         AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-       ORDER BY created_at ASC LIMIT ?`,
-      [
-        Math.max(1, Number(maxAttempts) || Number.MAX_SAFE_INTEGER),
-        this.clock(),
-        Math.max(1, Math.min(1000, Number(limit) || 100))
-      ]
-    ).map(deliveryFromRow);
+    return this.deliveryReader.listPendingDeliveries(limit, maxAttempts);
   }
-
   listQueuedDeliveriesForAgent(agentId, limit = 100) {
-    return this.store.selectAll(
-      `SELECT * FROM collaboration_deliveries
-       WHERE recipient_agent_id = ? AND status = 'queued'
-       ORDER BY created_at ASC LIMIT ?`,
-      [agentId, Math.max(1, Math.min(1000, Number(limit) || 100))]
-    ).map(deliveryFromRow);
+    return this.deliveryReader.listQueuedDeliveriesForAgent(agentId, limit);
   }
-
-  listQueuedDeliveries(limit = 100) {
-    return this.store.selectAll(
-      `SELECT * FROM collaboration_deliveries WHERE status = 'queued'
-       ORDER BY created_at ASC LIMIT ?`,
-      [Math.max(1, Math.min(1000, Number(limit) || 100))]
-    ).map(deliveryFromRow);
-  }
+  listQueuedDeliveries(limit = 100) { return this.deliveryReader.listQueuedDeliveries(limit); }
 
   claimDelivery(deliveryId) {
     const timestamp = this.clock();
@@ -1294,158 +919,16 @@ export class CollaborationCore {
     return this.getDelivery(deliveryId);
   }
 
-  #isReplyEnvelope(envelope) {
-    return this.#sessionIdentityMatches(
-      envelope.message.envelope.sender.sessionId,
-      envelope.task.recipientSessionId
-    ) && this.#sessionIdentityMatches(
-      envelope.message.envelope.recipient.sessionId,
-      envelope.task.initiatorSessionId
-    );
-  }
-
-  #activeProviderRoute(sessionId, agentId) {
-    if (!sessionId) return null;
-    const logical = this.store.getLogicalSession(sessionId)
-      ?? this.store.getLogicalSessionByLegacySessionId(sessionId);
-    const providerSessionId = logical?.legacySessionId ?? sessionId;
-    const session = this.store.getSession(providerSessionId);
-    if ((logical && !logical.activeBinding) || session?.archived) return null;
-    const bound = this.getAgentForSession(providerSessionId);
-    if ((!session && !bound) || bound?.agentId !== agentId) return null;
-    return {
-      sessionId: logical?.logicalSessionId ?? sessionId,
-      providerSessionId
-    };
-  }
-
   #establishChannel(deliveryId, targetSessionId, timestamp) {
-    const envelope = this.getDeliveryEnvelope(deliveryId);
-    if (!envelope) throw domainError("DELIVERY_NOT_FOUND", `Delivery ${deliveryId} was not found.`);
-    const targetStableId = this.#stableSessionIdentity(targetSessionId);
-    const senderStableId = this.#stableSessionIdentity(envelope.message.envelope.sender.sessionId);
-    if (!senderStableId || !targetStableId) {
-      this.#appendEvent(envelope.task.taskId, "collaboration_channel_unavailable", null, {
-        deliveryId,
-        reason: "session_endpoint_missing"
-      }, timestamp);
-      return null;
-    }
-    const reply = this.#isReplyEnvelope(envelope);
-    const initiatorSessionId = reply ? targetStableId : senderStableId;
-    const recipientSessionId = reply ? senderStableId : targetStableId;
-    const existing = this.getChannel(envelope.task.taskId);
-    const initiatorRoute = this.#activeProviderRoute(initiatorSessionId, envelope.task.initiatorAgentId);
-    const recipientRoute = this.#activeProviderRoute(recipientSessionId, envelope.task.recipientAgentId);
-    if (!initiatorRoute || !recipientRoute) {
-      if (existing?.status === "active") {
-        this.store.db.run(
-          `UPDATE collaboration_channels SET status='invalid', invalidated_reason=?,
-           invalidated_at=?, updated_at=? WHERE channel_id=? AND status='active'`,
-          ["session_endpoint_unavailable_after_delivery", timestamp, timestamp, existing.channelId]
-        );
-      }
-      this.#appendEvent(envelope.task.taskId, "collaboration_channel_unavailable", null, {
-        channelId: existing?.channelId ?? null,
-        deliveryId,
-        reason: "session_endpoint_unavailable_after_delivery"
-      }, timestamp);
-      return null;
-    }
-    const channelId = existing?.channelId ?? this.idFactory();
-    this.store.db.run(
-      `INSERT INTO collaboration_channels (
-        channel_id, task_id, initiator_agent_id, recipient_agent_id,
-        initiator_session_id, recipient_session_id, status,
-        established_delivery_id, last_delivery_id, invalidated_reason,
-        established_at, updated_at, invalidated_at, closed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL, ?, ?, NULL, NULL)
-      ON CONFLICT(task_id) DO UPDATE SET
-        initiator_agent_id=excluded.initiator_agent_id,
-        recipient_agent_id=excluded.recipient_agent_id,
-        initiator_session_id=excluded.initiator_session_id,
-        recipient_session_id=excluded.recipient_session_id,
-        status='active', last_delivery_id=excluded.last_delivery_id,
-        invalidated_reason=NULL, updated_at=excluded.updated_at,
-        invalidated_at=NULL, closed_at=NULL`,
-      [
-        channelId, envelope.task.taskId, envelope.task.initiatorAgentId, envelope.task.recipientAgentId,
-        initiatorSessionId, recipientSessionId, deliveryId, deliveryId, timestamp, timestamp
-      ]
-    );
-    this.#appendEvent(envelope.task.taskId, existing ? "collaboration_channel_updated" : "collaboration_channel_established", null, {
-      channelId,
-      deliveryId,
-      initiatorSessionId,
-      recipientSessionId
-    }, timestamp);
-  }
-
-  #invalidateChannel(channelId, reason) {
-    const channel = this.store.selectOne(
-      "SELECT * FROM collaboration_channels WHERE channel_id = ? AND status = 'active'",
-      [channelId]
-    );
-    if (!channel) return null;
-    const timestamp = this.clock();
-    this.#transaction(() => {
-      this.store.db.run(
-        `UPDATE collaboration_channels SET status='invalid', invalidated_reason=?,
-         invalidated_at=?, updated_at=? WHERE channel_id=? AND status='active'`,
-        [reason, timestamp, timestamp, channelId]
-      );
-      this.#appendEvent(channel.task_id, "collaboration_channel_invalidated", null, {
-        channelId,
-        reason
-      }, timestamp);
-    });
-    return this.getChannel(channel.task_id);
+    return this.taskChannels.establishChannel(deliveryId, targetSessionId, timestamp);
   }
 
   #invalidateChannelsForSession(sessionId, reason, timestamp) {
-    if (!sessionId) return;
-    const channels = this.store.selectAll(
-      `SELECT channel_id, task_id FROM collaboration_channels
-       WHERE status='active' AND (initiator_session_id=? OR recipient_session_id=?)`,
-      [sessionId, sessionId]
-    );
-    for (const channel of channels) {
-      this.store.db.run(
-        `UPDATE collaboration_channels SET status='invalid', invalidated_reason=?,
-         invalidated_at=?, updated_at=? WHERE channel_id=? AND status='active'`,
-        [reason, timestamp, timestamp, channel.channel_id]
-      );
-      this.#appendEvent(channel.task_id, "collaboration_channel_invalidated", null, {
-        channelId: channel.channel_id,
-        reason,
-        sessionId
-      }, timestamp);
-    }
+    return this.taskChannels.invalidateChannelsForSession(sessionId, reason, timestamp);
   }
 
   #closeChannelIfSettled(deliveryId, timestamp) {
-    const row = this.store.selectOne(
-      `SELECT t.task_id, t.status, c.channel_id,
-              (SELECT COUNT(*) FROM collaboration_deliveries pending
-               JOIN collaboration_messages pm ON pm.message_id=pending.message_id
-               WHERE pm.task_id=t.task_id AND pending.status!='delivered') AS unsettled_count
-       FROM collaboration_deliveries d
-       JOIN collaboration_messages m ON m.message_id=d.message_id
-       JOIN collaboration_requests t ON t.task_id=m.task_id
-       LEFT JOIN collaboration_channels c ON c.task_id=t.task_id AND c.status='active'
-       WHERE d.delivery_id=?`,
-      [deliveryId]
-    );
-    if (!row?.channel_id || !TERMINAL_TASK_STATUSES.has(row.status) || Number(row.unsettled_count) > 0) return;
-    this.store.db.run(
-      `UPDATE collaboration_channels SET status='closed', closed_at=?, updated_at=?
-       WHERE channel_id=? AND status='active'`,
-      [timestamp, timestamp, row.channel_id]
-    );
-    this.#appendEvent(row.task_id, "collaboration_channel_closed", null, {
-      channelId: row.channel_id,
-      reason: "task_terminal"
-    }, timestamp);
+    return this.taskChannels.closeChannelIfSettled(deliveryId, timestamp);
   }
 
   #listTasks(column, sessionId, options) {
@@ -1541,123 +1024,12 @@ export class CollaborationCore {
     }
   }
 
-  #insertMessage(input) {
-    const idempotencyKey = optionalText(input.idempotencyKey);
-    if (idempotencyKey) {
-      const existing = this.store.selectOne(
-        "SELECT * FROM collaboration_messages WHERE sender_session_id = ? AND idempotency_key = ?",
-        [this.#stableSessionIdentity(requiredId(input.senderSessionId, "senderSessionId")), idempotencyKey]
-      );
-      if (existing) {
-        if (existing.task_id !== input.taskId) throw domainError("IDEMPOTENCY_CONFLICT", "Message idempotency key belongs to another task.");
-        return messageFromRow(existing);
-      }
-    }
-    const messageId = input.messageId ?? this.idFactory();
-    const timestamp = input.timestamp ?? this.clock();
-    const taskScope = this.store.selectOne(
-      `SELECT initiator_agent_id, recipient_agent_id, initiator_session_id, recipient_session_id,
-              source_work_id, target_work_id, source_task_id, target_task_id
-       FROM collaboration_requests WHERE task_id = ?`,
-      [input.taskId]
-    );
-    const sendsForward = this.#sessionIdentityMatches(input.senderSessionId, taskScope?.initiator_session_id);
-    const senderSessionId = this.#stableSessionIdentity(input.senderSessionId
-      ?? (sendsForward ? taskScope?.initiator_session_id : taskScope?.recipient_session_id)
-      ?? null);
-    const recipientSessionId = this.#stableSessionIdentity(input.recipientSessionId
-      ?? (sendsForward ? taskScope?.recipient_session_id : taskScope?.initiator_session_id)
-      ?? null);
-    if (!senderSessionId || !recipientSessionId || senderSessionId === recipientSessionId) {
-      throw domainError("DISTINCT_SESSIONS_REQUIRED", "Every collaboration message requires two explicit, distinct Sessions.");
-    }
-    const sourceWorkId = input.sourceWorkId
-      ?? (sendsForward ? taskScope?.source_work_id : taskScope?.target_work_id);
-    const targetWorkId = input.targetWorkId
-      ?? (sendsForward ? taskScope?.target_work_id : taskScope?.source_work_id);
-    const sourceTaskId = input.sourceTaskId ?? taskScope?.source_task_id ?? null;
-    const targetTaskId = input.targetTaskId ?? taskScope?.target_task_id;
-    const payload = {
-      body: requiredText(input.body, "body"),
-      evidence: input.evidence ?? [],
-      resourceVersion: optionalText(input.resourceVersion)
-    };
-    const envelope = createCollaborationEnvelope({
-      messageId,
-      taskId: input.taskId,
-      messageType: input.messageType,
-      senderAgentId: input.senderAgentId,
-      recipientAgentId: input.recipientAgentId,
-      senderSessionId,
-      recipientSessionId,
-      sourceWorkId,
-      targetWorkId,
-      sourceTaskId,
-      targetTaskId,
-      payload,
-      timestamp,
-      error: input.error ?? null
-    });
-    this.store.db.run(
-      `INSERT INTO collaboration_messages (
-        message_id, task_id, protocol_version, source_work_id, target_work_id,
-        source_task_id, target_task_id, sender_agent_id, recipient_agent_id,
-        sender_session_id, recipient_session_id, message_type, body,
-        evidence_json, payload_json, error_json, resource_version, idempotency_key, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        messageId, input.taskId, envelope.version, sourceWorkId, targetWorkId,
-        sourceTaskId, targetTaskId, input.senderAgentId, input.recipientAgentId,
-        senderSessionId, recipientSessionId, input.messageType,
-        payload.body, JSON.stringify(payload.evidence), JSON.stringify(payload),
-        envelope.error ? JSON.stringify(envelope.error) : null, payload.resourceVersion,
-        idempotencyKey, timestamp
-      ]
-    );
-    this.store.db.run(
-      `INSERT INTO collaboration_deliveries (
-        delivery_id, message_id, recipient_agent_id, recipient_session_id, status, attempt_count, next_attempt_at,
-        delivered_at, target_turn_id, last_error, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'pending', 0, NULL, NULL, NULL, NULL, ?, ?)`,
-      [input.deliveryId ?? this.idFactory(), messageId, input.recipientAgentId, recipientSessionId, timestamp, timestamp]
-    );
-    return messageFromRow(this.store.selectOne("SELECT * FROM collaboration_messages WHERE message_id = ?", [messageId]));
-  }
-
+  #insertMessage(input) { return this.recordWriter.insertMessage(input); }
   #insertArtifact(task, producerAgentId, producerSessionId, input, timestamp) {
-    if (task.serviceId) {
-      const service = this.#requireService(task.serviceId);
-      if (service.ownerAgentId !== producerAgentId) {
-        throw domainError("SERVICE_OWNER_REQUIRED", `Only ${service.ownerAgentId} may publish artifacts for ${service.serviceId}.`);
-      }
-    }
-    const artifactId = optionalText(input.artifactId) ?? this.idFactory();
-    this.store.db.run(
-      `INSERT INTO collaboration_artifacts (
-        artifact_id, task_id, producer_agent_id, producer_session_id, type, name, uri, metadata_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        artifactId, task.taskId, producerAgentId, this.#stableSessionIdentity(producerSessionId), requiredText(input.type, "artifact.type"),
-        requiredText(input.name, "artifact.name"), requiredText(input.uri, "artifact.uri"),
-        JSON.stringify(input.metadata ?? {}), timestamp
-      ]
-    );
-    return artifactId;
+    return this.recordWriter.insertArtifact(task, producerAgentId, producerSessionId, input, timestamp);
   }
-
   #appendEvent(taskId, type, actorAgentId, payload, timestamp, actorSessionId = null) {
-    const row = this.store.selectOne(
-      "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM collaboration_events WHERE task_id = ?",
-      [taskId]
-    );
-    const sequence = Number(row?.sequence ?? 0) + 1;
-    this.store.db.run(
-      `INSERT INTO collaboration_events (
-        event_id, task_id, sequence, type, actor_agent_id, actor_session_id, payload_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [this.idFactory(), taskId, sequence, type, actorAgentId ?? null,
-        this.#stableSessionIdentity(actorSessionId), JSON.stringify(payload ?? {}), timestamp ?? this.clock()]
-    );
+    return this.recordWriter.appendEvent(taskId, type, actorAgentId, payload, timestamp, actorSessionId);
   }
 
   #updateTaskStatus(taskId, status, timestamp, iteration) {
@@ -1709,173 +1081,15 @@ export class CollaborationCore {
     }
   }
 
-  #resolveTaskScope(input, initiator, recipient) {
-    const initiatorRoute = this.#routeForSession(input.initiatorSessionId);
-    const recipientRoute = this.#routeForSession(input.recipientSessionId);
-    const targetWorkId = recipientRoute?.workId ?? this.#resolveWorkForAgent(
-      recipient, optionalText(input.targetWorkId), "targetWorkId"
-    );
-    const sourceWorkId = initiatorRoute?.workId
-      ?? (initiator.agentKind === "platformAssistant" && !input.sourceWorkId
-        ? targetWorkId
-        : this.#resolveWorkForAgent(initiator, optionalText(input.sourceWorkId), "sourceWorkId"));
-    if (input.sourceWorkId && input.sourceWorkId !== sourceWorkId) {
-      throw domainError("SOURCE_WORK_SPOOFED", "sourceWorkId is derived from the authenticated source Session.");
-    }
-    if (input.targetWorkId && input.targetWorkId !== targetWorkId) {
-      throw domainError("TARGET_WORK_MISMATCH", "targetWorkId does not match the selected recipient Session.");
-    }
-    const sourceTaskId = optionalText(input.sourceTaskId);
-    if (sourceTaskId) {
-      const task = this.store.getTask(sourceTaskId);
-      if (!task) throw domainError("TASK_NOT_FOUND", `Task ${sourceTaskId} was not found.`);
-      if (task.work_id !== sourceWorkId) {
-        throw domainError("TASK_WORK_MISMATCH", "The source Task does not belong to the source Work.");
-      }
-    }
-    return {
-      sourceWorkId,
-      targetWorkId,
-      sourceTaskId,
-      routingVersion: recipientRoute?.routingVersion ?? null,
-      routeStatus: recipientRoute?.routeStatus ?? "unresolved",
-      initiatorBindingId: initiatorRoute?.bindingId ?? null,
-      recipientBindingId: recipientRoute?.bindingId ?? null,
-      targetTaskId: recipientRoute?.taskId ?? null
-    };
-  }
-
-  #assertSessionParticipants(input, initiator, recipient, options = {}) {
-    const initiatorSessionId = optionalText(input.initiatorSessionId);
-    const recipientSessionId = optionalText(input.recipientSessionId);
-    if (!initiatorSessionId) throw domainError("INITIATOR_SESSION_REQUIRED", "Collaboration requires an explicit source Session.");
-    if (options.requireRecipient && !recipientSessionId) {
-      throw domainError("RECIPIENT_SESSION_REQUIRED", "A formal collaboration Task cannot be created before its target Session exists.");
-    }
-    if (recipientSessionId && this.#stableSessionIdentity(initiatorSessionId) === this.#stableSessionIdentity(recipientSessionId)) {
-      throw domainError("DISTINCT_SESSIONS_REQUIRED", "Collaboration requires two explicit, distinct Sessions.");
-    }
-    if (initiatorSessionId) {
-      const sourceAgent = this.getAgentForSession(initiatorSessionId);
-      if (sourceAgent?.agentId !== initiator.agentId) {
-        throw domainError("INITIATOR_SESSION_AGENT_MISMATCH", "The selected source Session is not bound to initiatorAgentId.");
-      }
-    }
-    if (recipientSessionId) {
-      const targetAgent = this.getAgentForSession(recipientSessionId);
-      if (targetAgent?.agentId !== recipient.agentId) {
-        throw domainError("RECIPIENT_SESSION_AGENT_MISMATCH", "The selected target Session is not bound to recipientAgentId.");
-      }
-    }
-  }
-
-  #initialRecipientSessionId(input, recipient) {
-    const explicit = optionalText(input.recipientSessionId);
-    return explicit ? this.#stableSessionIdentity(explicit) : null;
-  }
-
-  #routeForSession(sessionId) {
-    const normalized = optionalText(sessionId);
-    if (!normalized) return null;
-    const logical = this.store.getLogicalSession(normalized)
-      ?? this.store.getLogicalSessionByLegacySessionId(normalized);
-    const session = logical?.legacySessionId
-      ? this.store.getSession(logical.legacySessionId)
-      : this.store.getSession(normalized);
-    if (!session) throw domainError("SESSION_NOT_FOUND", `Session ${normalized} was not found.`);
-    const binding = logical?.activeBinding ?? null;
-    return {
-      workId: session.workId ?? null,
-      taskId: session.taskId ?? null,
-      routingVersion: logical?.routingVersion ?? null,
-      bindingId: binding?.bindingId ?? null,
-      routeStatus: binding?.state === "active" ? "active" : "unresolved"
-    };
-  }
-
-  #resolveWorkForAgent(agent, requestedWorkId, field) {
-    const session = agent.currentSessionId ? this.store.getSession(agent.currentSessionId) : null;
-    const sessionWorkId = session?.workId ?? session?.work_id ?? null;
-    const workId = requestedWorkId ?? sessionWorkId;
-    if (!workId) return this.#ensureCompatibilityWork(agent).id;
-    const work = this.store.getWork(workId);
-    if (!work) throw domainError("WORK_NOT_FOUND", `${field} ${workId} was not found.`);
-    const contributorIds = work.contributorAgentIds ?? work.contributor_agent_ids ?? [];
-    const ownsTask = this.store.listTasksByWork(workId)
-      .some((task) => task.main_agent_id === agent.agentId);
-    if (sessionWorkId !== workId && !contributorIds.includes(agent.agentId) && !ownsTask) {
-      throw domainError("WORK_AGENT_NOT_AUTHORIZED", `Agent ${agent.agentId} is not assigned to Work ${workId}.`);
-    }
-    if (sessionWorkId === workId && this.#isAssignableContributor(agent)) {
-      this.#ensureWorkContributor(workId, agent.agentId);
-    }
-    return workId;
-  }
-
-  #isAssignableContributor(agent) {
-    return agent.status === "available";
-  }
-
-  #ensureCompatibilityWork(agent) {
-    const id = `work:collaboration:${encodeURIComponent(agent.agentId)}`;
-    return this.store.getWork(id) ?? this.store.createWork({
-      id,
-      name: `${agent.name} collaboration boundary`,
-      description: "Compatibility Work created for collaboration from an unscoped legacy Session.",
-      status: "active",
-      tags: ["system:collaboration-compatibility"],
-      contributorAgentIds: this.#isAssignableContributor(agent) ? [agent.agentId] : []
-    });
-  }
-
-  #ensureWorkContributor(workId, agentId) {
-    const work = this.store.getWork(workId);
-    if (!work) throw domainError("WORK_NOT_FOUND", `Work ${workId} was not found.`);
-    if (work.contributorAgentIds.includes(agentId)) return work;
-    return this.store.updateWork(workId, {
-      contributorAgentIds: [...work.contributorAgentIds, agentId]
-    });
-  }
-
-  #validateRequestedTask(taskId, targetWorkId, recipientAgentId) {
-    const task = this.store.getTask(taskId);
-    if (!task) throw domainError("TASK_NOT_FOUND", `Task ${taskId} was not found.`);
-    if (task.work_id !== targetWorkId) {
-      throw domainError("TASK_WORK_MISMATCH", "The collaboration Task must belong to the target Work.");
-    }
-    if (recipientAgentId && task.main_agent_id && task.main_agent_id !== recipientAgentId) {
-      throw domainError("TASK_AGENT_MISMATCH", `Task ${taskId} is assigned to another Agent.`);
-    }
-    if (task.lifecycle_state === "done") {
-      throw domainError("TASK_TERMINAL", `Task ${taskId} is already terminal.`);
-    }
-    return task;
-  }
-
-  #ensureCollaborationTask(input) {
-    if (input.requestedTaskId) {
-      const existing = this.#validateRequestedTask(
-        input.requestedTaskId,
-        input.targetWorkId,
-        input.recipientAgentId
-      );
-      if (input.recipientAgentId && !existing.main_agent_id) {
-        return this.store.updateTask(existing.id, { mainAgentId: input.recipientAgentId });
-      }
-      return existing;
-    }
-    const id = `task:collaboration:${input.taskId}`;
-    return this.store.getTask(id) ?? this.store.createTask({
-      id,
-      workId: input.targetWorkId,
-      title: input.title,
-      description: input.summary,
-      acceptanceCriteria: input.acceptanceCriteria.map((entry) => `- ${entry}`).join("\n"),
-      priority: "medium",
-      lifecycleState: input.lifecycleState ?? "todo",
-      mainAgentId: input.recipientAgentId
-    });
-  }
+  #resolveTaskScope(...args) { return this.taskScope.resolveTaskScope(...args); }
+  #assertSessionParticipants(...args) { return this.taskScope.assertSessionParticipants(...args); }
+  #initialRecipientSessionId(...args) { return this.taskScope.initialRecipientSessionId(...args); }
+  #routeForSession(...args) { return this.taskScope.routeForSession(...args); }
+  #isAssignableContributor(...args) { return this.taskScope.isAssignableContributor(...args); }
+  #ensureCompatibilityWork(...args) { return this.taskScope.ensureCompatibilityWork(...args); }
+  #ensureWorkContributor(...args) { return this.taskScope.ensureWorkContributor(...args); }
+  #validateRequestedTask(...args) { return this.taskScope.validateRequestedTask(...args); }
+  #ensureCollaborationTask(...args) { return this.taskScope.ensureCollaborationTask(...args); }
 
   #syncTaskStatus(productTaskId, collaborationTaskId, taskStatus, timestamp) {
     const executionStatus = taskStatus === "working" || taskStatus === "revision_requested"
@@ -1893,127 +1107,6 @@ export class CollaborationCore {
     this.store.updateTask(productTaskId, { executionStatus });
   }
 
-  #migrateLegacyCollaborationRequests() {
-    const migrationId = "collaboration-work-task-v2";
-    if (!this.store.db) {
-      return { status: "deferred", migrationId, migratedTaskCount: 0 };
-    }
-    if (this.store.selectOne(
-      "SELECT migration_id FROM data_migrations WHERE migration_id = ?",
-      [migrationId]
-    )) {
-      return { status: "already-applied", migrationId, migratedTaskCount: 0 };
-    }
-    const rows = this.store.selectAll(
-      `SELECT * FROM collaboration_requests
-       WHERE protocol_version = '1.0' OR source_work_id IS NULL OR target_work_id IS NULL OR target_task_id IS NULL`
-    );
-    return this.store.runInTransaction(() => {
-      for (const row of rows) {
-        const initiator = this.#requireAgent(row.initiator_agent_id);
-        const recipient = this.#requireAgent(row.recipient_agent_id);
-        const sourceWorkId = this.#workForSession(row.initiator_session_id)
-          ?? this.#ensureCompatibilityWork(initiator).id;
-        let targetWorkId = this.#workForSession(row.recipient_session_id)
-          ?? this.#ensureCompatibilityWork(recipient).id;
-        if (targetWorkId === sourceWorkId) {
-          targetWorkId = this.#ensureCompatibilityWork(recipient).id;
-        }
-        if (this.#isAssignableContributor(initiator)) {
-          this.#ensureWorkContributor(sourceWorkId, initiator.agentId);
-        }
-        if (this.#isAssignableContributor(recipient)) {
-          this.#ensureWorkContributor(targetWorkId, recipient.agentId);
-        }
-        const task = this.#ensureCollaborationTask({
-          requestedTaskId: row.target_task_id,
-          taskId: row.task_id,
-          targetWorkId,
-          recipientAgentId: this.#isAssignableContributor(recipient) ? recipient.agentId : null,
-          title: row.title,
-          summary: row.summary,
-          acceptanceCriteria: parseJson(row.acceptance_criteria_json, []),
-          // Legacy Task state is not Task review state. The Task migration
-          // may create the resource, but only Task workflows may advance or
-          // cancel it.
-          lifecycleState: "todo"
-        });
-        this.store.db.run(
-          `UPDATE collaboration_requests SET protocol_version = ?, source_work_id = ?,
-           target_work_id = ?, target_task_id = ? WHERE task_id = ?`,
-          ["2.0", sourceWorkId, targetWorkId, task.id, row.task_id]
-        );
-        const messages = this.store.selectAll(
-          "SELECT * FROM collaboration_messages WHERE task_id = ? ORDER BY created_at, message_id",
-          [row.task_id]
-        );
-        for (const message of messages) {
-          const forward = message.sender_agent_id === row.initiator_agent_id;
-          const messageSourceWorkId = forward ? sourceWorkId : targetWorkId;
-          const messageTargetWorkId = forward ? targetWorkId : sourceWorkId;
-          const payload = {
-            body: message.body,
-            evidence: parseJson(message.evidence_json, []),
-            resourceVersion: message.resource_version || null
-          };
-          this.store.db.run(
-            `UPDATE collaboration_messages SET protocol_version = ?, source_work_id = ?,
-             target_work_id = ?, source_task_id = ?, target_task_id = ?, payload_json = ?, error_json = ?
-             WHERE message_id = ?`,
-            [
-              "2.0", messageSourceWorkId, messageTargetWorkId,
-              row.source_task_id || null, task.id, JSON.stringify(payload),
-              message.error_json, message.message_id
-            ]
-          );
-        }
-        this.#syncTaskStatus(task.id, row.task_id, row.status, row.updated_at);
-      }
-      this.store.db.run(
-        "INSERT INTO data_migrations (migration_id, applied_at) VALUES (?, ?)",
-        [migrationId, new Date().toISOString()]
-      );
-      this.store.scheduleSave();
-      return { status: "applied", migrationId, migratedTaskCount: rows.length };
-    });
-  }
-
-  #migrateSessionActorProtocol() {
-    const migrationId = "collaboration-session-actors-v3";
-    if (!this.store.db) return { status: "deferred", migrationId, migratedTaskCount: 0 };
-    if (this.store.selectOne("SELECT migration_id FROM data_migrations WHERE migration_id = ?", [migrationId])) {
-      return { status: "already-applied", migrationId, migratedTaskCount: 0 };
-    }
-    const rows = this.store.selectAll(
-      `SELECT task_id FROM collaboration_requests
-       WHERE initiator_session_id IS NOT NULL AND TRIM(initiator_session_id) <> ''
-         AND recipient_session_id IS NOT NULL AND TRIM(recipient_session_id) <> ''
-         AND initiator_session_id <> recipient_session_id`
-    );
-    return this.store.runInTransaction(() => {
-      for (const row of rows) {
-        this.store.db.run("UPDATE collaboration_requests SET protocol_version='3.0' WHERE task_id=?", [row.task_id]);
-        this.store.db.run(
-          `UPDATE collaboration_messages SET protocol_version='3.0'
-           WHERE task_id=? AND sender_session_id IS NOT NULL AND recipient_session_id IS NOT NULL
-             AND sender_session_id <> recipient_session_id`,
-          [row.task_id]
-        );
-      }
-      this.store.db.run("INSERT INTO data_migrations (migration_id, applied_at) VALUES (?, ?)", [migrationId, this.clock()]);
-      this.store.scheduleSave();
-      return { status: "applied", migrationId, migratedTaskCount: rows.length };
-    });
-  }
-
-  #recordChannelSchemaMigration() {
-    const migrationId = "collaboration-session-channels-v1";
-    this.store.db.run(
-      "INSERT OR IGNORE INTO data_migrations (migration_id, applied_at) VALUES (?, ?)",
-      [migrationId, this.clock()]
-    );
-    if (this.store.db.getRowsModified() > 0) this.store.scheduleSave();
-  }
 
   #workForSession(sessionId) {
     if (!sessionId) return null;
@@ -2082,314 +1175,4 @@ export class CollaborationCore {
       return result;
     });
   }
-}
-
-function agentFromRow(row, store, sessionReference = null) {
-  const selectedSessionId = typeof sessionReference === "string"
-    ? sessionReference
-    : sessionReference?.logicalSessionId ?? sessionReference?.legacySessionId ?? row.current_session_id;
-  const logical = selectedSessionId
-    ? (store.getLogicalSession(selectedSessionId) ?? store.getLogicalSessionByLegacySessionId(selectedSessionId))
-    : null;
-  const selectedProviderSessionId = logical?.legacySessionId ?? selectedSessionId;
-  const selectedSession = selectedProviderSessionId ? store.getSession(selectedProviderSessionId) : null;
-  const currentSession = row.current_session_id ? store.getSession(row.current_session_id) : null;
-  const workIds = store.listWorks()
-    .filter((work) => (work.contributorAgentIds ?? []).includes(row.agent_id))
-    .map((work) => work.id);
-  return {
-    agentId: row.agent_id,
-    name: row.name,
-    sessionName: logical?.sessionName ?? selectedSession?.title ?? null,
-    sessionId: logical?.logicalSessionId ?? selectedSession?.id ?? null,
-    providerSessionId: selectedSession?.id ?? null,
-    description: row.description,
-    role: row.role,
-    agentKind: row.agent_kind ?? "user",
-    systemPrompt: row.system_prompt ?? "",
-    status: "available",
-    capabilities: parseJson(row.capabilities_json, []),
-    currentSessionId: row.current_session_id || null,
-    currentWorkId: currentSession?.workId ?? null,
-    currentTaskId: currentSession?.taskId ?? null,
-    workIds,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at
-  };
-}
-
-function serviceFromRow(row) {
-  return {
-    serviceId: row.service_id,
-    name: row.name,
-    description: row.description,
-    ownerAgentId: row.owner_agent_id,
-    currentVersion: row.current_version || null,
-    status: row.status,
-    endpoint: row.endpoint || null,
-    repositoryRoot: row.repository_root || null,
-    metadata: parseJson(row.metadata_json, {}),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at
-  };
-}
-
-function taskFromRow(row, store = null) {
-  const sourceWork = store?.getWork(row.source_work_id);
-  const targetWork = store?.getWork(row.target_work_id);
-  const sourceTask = row.source_task_id ? store?.getTask(row.source_task_id) : null;
-  const targetTask = row.target_task_id ? store?.getTask(row.target_task_id) : null;
-  const initiatorSession = store ? sessionPresentationSnapshot(store, row.initiator_session_id) : null;
-  const recipientSession = store ? sessionPresentationSnapshot(store, row.recipient_session_id) : null;
-  return {
-    taskId: row.task_id,
-    contextId: row.context_id,
-    parentTaskId: row.parent_task_id || null,
-    protocolVersion: row.protocol_version,
-    sourceWorkId: row.source_work_id,
-    sourceWorkName: sourceWork?.name ?? null,
-    targetWorkId: row.target_work_id,
-    targetWorkName: targetWork?.name ?? null,
-    sourceTaskId: row.source_task_id || null,
-    sourceTaskTitle: sourceTask?.title ?? null,
-    targetTaskId: row.target_task_id || null,
-    taskTitle: targetTask?.title ?? null,
-    initiatorAgentId: row.initiator_agent_id,
-    recipientAgentId: row.recipient_agent_id,
-    initiatorSessionId: row.initiator_session_id || null,
-    recipientSessionId: row.recipient_session_id || null,
-    // Compatibility field names; presentation always resolves the current
-    // resource-derived Session name instead of retaining a stale snapshot.
-    initiatorNameAtSend: initiatorSession?.title ?? row.initiator_name_at_send ?? null,
-    recipientNameAtSend: recipientSession?.title ?? row.recipient_name_at_send ?? null,
-    routingVersion: row.routing_version == null ? null : Number(row.routing_version),
-    routeStatus: row.route_status || "unresolved",
-    routingIntent: row.routing_intent || null,
-    artifactStatus: row.artifact_status || "pending",
-    acceptanceStatus: row.acceptance_status || "pending",
-    initiatorBindingId: row.initiator_binding_id || null,
-    recipientBindingId: row.recipient_binding_id || null,
-    serviceId: row.service_id || null,
-    type: row.type,
-    status: row.status,
-    iteration: Number(row.iteration),
-    maxIterations: Number(row.max_iterations),
-    title: row.title,
-    summary: row.summary,
-    acceptanceCriteria: parseJson(row.acceptance_criteria_json, []),
-    idempotencyKey: row.idempotency_key || null,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    completedAt: row.completed_at || null
-  };
-}
-
-function messageFromRow(row) {
-  const payload = parseJson(row.payload_json, {
-    body: row.body,
-    evidence: parseJson(row.evidence_json, []),
-    resourceVersion: row.resource_version || null
-  });
-  const error = parseJson(row.error_json, null);
-  const envelope = row.sender_session_id && row.recipient_session_id ? createCollaborationEnvelope({
-    messageId: row.message_id,
-    taskId: row.task_id,
-    messageType: row.message_type,
-    senderAgentId: row.sender_agent_id,
-    recipientAgentId: row.recipient_agent_id,
-    senderSessionId: row.sender_session_id,
-    recipientSessionId: row.recipient_session_id,
-    sourceWorkId: row.source_work_id,
-    targetWorkId: row.target_work_id,
-    sourceTaskId: row.source_task_id,
-    targetTaskId: row.target_task_id,
-    payload,
-    timestamp: row.created_at,
-    error
-  }) : null;
-  return {
-    messageId: row.message_id,
-    taskId: row.task_id,
-    senderAgentId: row.sender_agent_id,
-    recipientAgentId: row.recipient_agent_id,
-    senderSessionId: row.sender_session_id || null,
-    recipientSessionId: row.recipient_session_id || null,
-    messageType: row.message_type,
-    body: row.body,
-    evidence: parseJson(row.evidence_json, []),
-    resourceVersion: row.resource_version || null,
-    idempotencyKey: row.idempotency_key || null,
-    createdAt: row.created_at,
-    envelope
-  };
-}
-
-function artifactFromRow(row) {
-  return {
-    artifactId: row.artifact_id,
-    taskId: row.task_id,
-    producerAgentId: row.producer_agent_id,
-    producerSessionId: row.producer_session_id || null,
-    type: row.type,
-    name: row.name,
-    uri: row.uri,
-    metadata: parseJson(row.metadata_json, {}),
-    createdAt: row.created_at
-  };
-}
-
-function eventFromRow(row) {
-  return {
-    eventId: row.event_id,
-    taskId: row.task_id,
-    sequence: Number(row.sequence),
-    type: row.type,
-    actorAgentId: row.actor_agent_id || null,
-    actorSessionId: row.actor_session_id || null,
-    payload: parseJson(row.payload_json, {}),
-    createdAt: row.created_at
-  };
-}
-
-function deliveryFromRow(row) {
-  return {
-    deliveryId: row.delivery_id,
-    messageId: row.message_id,
-    recipientAgentId: row.recipient_agent_id,
-    recipientSessionId: row.recipient_session_id || row.message_recipient_session_id || null,
-    status: row.status,
-    attemptCount: Number(row.attempt_count),
-    nextAttemptAt: row.next_attempt_at || null,
-    deliveredAt: row.delivered_at || null,
-    targetTurnId: row.target_turn_id || null,
-    lastError: row.last_error || null,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at
-  };
-}
-
-function channelFromRow(row) {
-  return {
-    channelId: row.channel_id,
-    taskId: row.task_id,
-    initiatorAgentId: row.initiator_agent_id,
-    recipientAgentId: row.recipient_agent_id,
-    initiatorSessionId: row.initiator_session_id,
-    recipientSessionId: row.recipient_session_id,
-    status: row.status,
-    establishedDeliveryId: row.established_delivery_id,
-    lastDeliveryId: row.last_delivery_id,
-    invalidatedReason: row.invalidated_reason || null,
-    establishedAt: row.established_at,
-    updatedAt: row.updated_at,
-    invalidatedAt: row.invalidated_at || null,
-    closedAt: row.closed_at || null
-  };
-}
-
-function taskConfirmationFromRow(row, core) {
-  const request = parseJson(row.request_json, {});
-  const presentation = request.presentation ?? {};
-  const initiator = core.getAgent(row.initiator_agent_id);
-  const recipient = core.getAgent(row.recipient_agent_id);
-  const recipientRouteUnresolved = Boolean(request.routingIntent || request.sessionAgentId) && !row.recipient_session_id;
-  const initiatorSessionId = row.initiator_session_id || initiator?.sessionId || null;
-  const recipientSessionId = row.recipient_session_id || (recipientRouteUnresolved ? null : recipient?.sessionId) || null;
-  const currentInitiator = sessionPresentationSnapshot(core.store, initiatorSessionId);
-  const currentRecipient = sessionPresentationSnapshot(core.store, recipientSessionId);
-  return {
-    confirmationId: row.confirmation_id,
-    initiatorAgentId: row.initiator_agent_id,
-    initiatorSessionId,
-    initiatorAgentName: presentation.initiatorAgentName || initiator?.name || row.initiator_agent_id,
-    initiatorSessionTitle: currentInitiator?.title ?? presentation.initiatorSession?.title ?? null,
-    initiatorSessionKind: presentation.initiatorSession?.sessionKind || null,
-    initiatorTaskId: presentation.initiatorSession?.taskId || request.sourceTaskId || null,
-    recipientAgentId: row.recipient_agent_id,
-    recipientSessionId,
-    recipientAgentName: presentation.recipientAgentName || recipient?.name || row.recipient_agent_id,
-    recipientSessionTitle: currentRecipient?.title ?? presentation.recipientSession?.title ?? null,
-    recipientSessionKind: presentation.recipientSession?.sessionKind || null,
-    recipientTaskId: presentation.recipientSession?.taskId || request.targetTaskId || null,
-    sourceWorkId: presentation.sourceWork?.id || request.sourceWorkId || null,
-    sourceWorkName: presentation.sourceWork?.name || request.sourceWorkId || null,
-    targetWorkId: presentation.targetWork?.id || request.targetWorkId || null,
-    targetWorkName: presentation.targetWork?.name || request.targetWorkId || null,
-    sourceSessionId: row.source_session_id || null,
-    sourceTurnId: row.source_turn_id || null,
-    request,
-    status: row.status,
-    taskId: row.task_id || null,
-    createdAt: row.created_at,
-    resolvedAt: row.resolved_at || null
-  };
-}
-
-function sessionPresentationSnapshot(store, sessionId) {
-  if (!sessionId) return null;
-  const logical = store.getLogicalSession(sessionId) ?? store.getLogicalSessionByLegacySessionId(sessionId);
-  const providerSessionId = logical?.legacySessionId ?? sessionId;
-  const session = store.getSession(providerSessionId);
-  if (!session) return null;
-  return {
-    id: logical?.logicalSessionId ?? session.logicalSessionId ?? session.id,
-    title: logical?.sessionName ?? session.title,
-    sessionKind: session.sessionKind,
-    taskId: session.taskId ?? null
-  };
-}
-
-function requiredId(value, field) {
-  const text = requiredText(value, field);
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(text)) {
-    throw domainError("INVALID_ID", `${field} contains unsupported characters.`);
-  }
-  return text;
-}
-
-function requiredText(value, field) {
-  if (typeof value !== "string" || !value.trim()) {
-    throw domainError("VALIDATION_ERROR", `${field} is required.`);
-  }
-  return value.trim();
-}
-
-function optionalText(value) {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function assertKnownFields(input, allowed) {
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
-    throw domainError("INVALID_INPUT", "Collaboration task input must be an object.");
-  }
-  const unknown = Object.keys(input).find((field) => !allowed.has(field));
-  if (unknown) throw domainError("UNKNOWN_FIELD", `Unknown collaboration task field: ${unknown}.`);
-}
-
-function stringList(value) {
-  if (!Array.isArray(value)) return [];
-  return [...new Set(value.map((entry) => String(entry).trim()).filter(Boolean))];
-}
-
-function positiveInteger(value, fallback) {
-  if (value == null) return fallback;
-  const number = Number(value);
-  if (!Number.isInteger(number) || number < 1) {
-    throw domainError("VALIDATION_ERROR", "maxIterations must be a positive integer.");
-  }
-  return number;
-}
-
-function parseJson(value, fallback) {
-  try {
-    return value ? JSON.parse(value) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function domainError(code, message) {
-  const error = new Error(message);
-  error.code = code;
-  return error;
 }

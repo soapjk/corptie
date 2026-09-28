@@ -59,6 +59,7 @@ enum LocalDeviceAdminClient {
 /// Local management only; never enables a listener implicitly or stores credentials in preferences.
 struct ClientDevicesSettingsView: View {
     @ObservedObject private var backendClient = BackendClient.shared
+    @ObservedObject private var settingsState = BackendClient.shared.settingsController
     @State private var confirmReset = false
     @State private var inventory: ClientDeviceInventory?
     @State private var invite: ClientDeviceInvite?

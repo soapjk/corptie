@@ -25,8 +25,9 @@ struct SessionInterruptObservabilityTests {
 
     @Test
     func everyInterruptButtonDeclaresItsOwnSurface() throws {
-        let rootSource = try source(named: "FloatingRootView.swift")
-        let taskSource = try source(named: "WarRoomView.swift")
+        let rootSource = try source(named: "Floating/SessionList/SessionCards.swift")
+            + source(named: "Conversation/Composer/MessageComposer.swift")
+        let taskSource = try source(named: "WorkTasks/CorptieTaskDetailView.swift")
 
         #expect(rootSource.contains("surface: .sessionListRowControl"))
         let headerSource = try source(named: "SessionHeaderStopButton.swift")
@@ -34,7 +35,7 @@ struct SessionInterruptObservabilityTests {
         #expect(headerSource.contains("session.executionTaskStatus == .running && session.canInterruptNow"))
         #expect(headerSource.contains(".disabled(!backendClient.isOnline)"))
         #expect(!rootSource.contains("surface: .sessionDetailComposerControl"))
-        for name in ["FloatingRootView.swift", "WorkspaceMessagePanel.swift", "DetachedChatWindowManager.swift"] {
+        for name in ["Conversation/ConversationHeader.swift", "WorkspaceMessagePanel.swift", "DetachedChatWindowManager.swift"] {
             #expect(try source(named: name).contains("SessionHeaderStopButton(session: session)"))
         }
         #expect(taskSource.contains("surface: .taskDetailExecutionControl"))
@@ -43,9 +44,9 @@ struct SessionInterruptObservabilityTests {
     @Test
     func stopButtonHasDefinedCircleAndPrecedesDetachButton() throws {
         let button = try source(named: "SessionHeaderStopButton.swift")
-        #expect(button.contains(".background(Color.red.opacity(0.22), in: Circle())"))
-        #expect(button.contains("Circle().strokeBorder(Color.red.opacity(0.45), lineWidth: 1)"))
-        let root = try source(named: "FloatingRootView.swift")
+        #expect(button.contains(".conversationGlassControl(tint: .red)"))
+        #expect(button.contains(".contentShape(Circle())"))
+        let root = try source(named: "Conversation/ConversationHeader.swift")
         let start = try #require(root.range(of: "struct DetailHeaderView: View"))
         let header = root[start.lowerBound...]
         let stop = try #require(header.range(of: "SessionHeaderStopButton(session: session)"))

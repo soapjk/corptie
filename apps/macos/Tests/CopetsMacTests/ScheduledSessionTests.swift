@@ -339,6 +339,128 @@ struct ScheduledSessionBackendClientTests {
     }
 }
 
+@MainActor
+struct ScheduledTaskControllerTests {
+    @Test func refreshRequestedDuringLoadRunsOneFollowUpPass() async {
+        let api = SchedulingAPIStub()
+        let selection = SessionSelectionController()
+        let panel = SessionSupplementaryDataController()
+        let commands = SessionCommandController()
+        let controller = ScheduledTaskController(
+            api: api, selection: selection, supplementary: panel,
+            commands: commands, selectedSession: { nil }
+        )
+        let task = makeTask(id: "task:1", sessionId: "session:1", version: 1, nextRunAt: nil)
+        api.onList = { [weak api, weak controller] _ in
+            if api?.listCalls == 1 { await controller?.loadAutomations() }
+            return [task]
+        }
+
+        await controller.loadAutomations()
+
+        #expect(api.listCalls == 2)
+        #expect(controller.automations.map(\.id) == ["task:1"])
+        #expect(!controller.isLoadingAutomations)
+        #expect(controller.automationsError == nil)
+        #expect(panel.selectedScheduledTasks.isEmpty)
+    }
+
+    @Test func staleSelectionGenerationCannotPublishIntoReturnedSession() async {
+        let api = SchedulingAPIStub()
+        let selection = SessionSelectionController()
+        let panel = SessionSupplementaryDataController()
+        let commands = SessionCommandController()
+        let session = makeSession(id: "session:1")
+        let generation = selection.select(session.id)
+        let controller = ScheduledTaskController(
+            api: api, selection: selection, supplementary: panel,
+            commands: commands, selectedSession: { session }
+        )
+        api.onList = { _ in
+            selection.select("session:other")
+            selection.select(session.id)
+            return [makeTask(id: "task:stale", sessionId: session.id, version: 1, nextRunAt: nil)]
+        }
+
+        await controller.loadScheduledTasks(for: session, expectedSelectionGeneration: generation)
+
+        #expect(panel.selectedScheduledTasks.isEmpty)
+        #expect(!panel.isLoadingScheduledTasks)
+        #expect(api.listSessionIDs == [session.id])
+    }
+
+    @Test func sharedCommandStatePreventsDuplicateMutationAndReleasesOnFailure() async {
+        let api = SchedulingAPIStub()
+        let commands = SessionCommandController()
+        let controller = ScheduledTaskController(
+            api: api, selection: SessionSelectionController(),
+            supplementary: SessionSupplementaryDataController(),
+            commands: commands, selectedSession: { nil }
+        )
+        let task = makeTask(id: "task:1", sessionId: "session:1", version: 1, nextRunAt: nil)
+        commands.scheduledTaskMutationIds.insert(task.id)
+        let duplicate = await controller.performAutomationAction(.retry, task: task)
+        #expect(!duplicate)
+        #expect(api.mutations.isEmpty)
+        commands.scheduledTaskMutationIds.remove(task.id)
+        api.onMutation = { throw BackendError.message("unavailable") }
+
+        let failed = await controller.performAutomationAction(.retry, task: task)
+
+        #expect(!failed)
+        #expect(api.mutations == ["POST automations/task:1/resume"])
+        #expect(commands.scheduledTaskMutationIds.isEmpty)
+        #expect(controller.automationsError?.contains("unavailable") == true)
+        #expect(api.listCalls == 0)
+    }
+
+    @Test func selectedListUsesExistingPanelAndCommandOwners() async {
+        let api = SchedulingAPIStub()
+        let selection = SessionSelectionController()
+        let panel = SessionSupplementaryDataController()
+        let commands = SessionCommandController()
+        let session = makeSession(id: "session:1")
+        selection.select(session.id)
+        commands.scheduledTaskError = "previous failure"
+        api.onList = { _ in [
+            makeTask(id: "task:1", sessionId: session.id, version: 1, nextRunAt: nil),
+            makeTask(id: "task:wrong", sessionId: "other", version: 1, nextRunAt: nil),
+            makeTask(id: "task:1", sessionId: session.id, version: 2, nextRunAt: nil)
+        ] }
+        let controller = ScheduledTaskController(
+            api: api, selection: selection, supplementary: panel,
+            commands: commands, selectedSession: { session }
+        )
+
+        await controller.loadScheduledTasks(for: session)
+
+        #expect(panel.selectedScheduledTasks.map(\.id) == ["task:1"])
+        #expect(panel.selectedScheduledTasks.first?.resourceVersion == 2)
+        #expect(commands.scheduledTaskError == nil)
+        #expect(controller.automations.isEmpty)
+    }
+}
+
+@MainActor
+private final class SchedulingAPIStub: ScheduledTaskServing {
+    var listCalls = 0
+    var listSessionIDs: [String?] = []
+    var mutations: [String] = []
+    var onList: (String?) async throws -> [ScheduledSessionTask] = { _ in [] }
+    var onMutation: () throws -> Void = {}
+
+    func list(logicalSessionId: String?) async throws -> [ScheduledSessionTask] {
+        listCalls += 1
+        listSessionIDs.append(logicalSessionId)
+        return try await onList(logicalSessionId)
+    }
+
+    func mutate(method: String, path: String, body: [String: Any]?) async throws {
+        mutations.append("\(method) \(path)")
+        try onMutation()
+    }
+}
+
 private func makeTask(
     id: String,
     sessionId: String,
@@ -447,11 +569,11 @@ final class ScheduledSessionUITests: XCTestCase {
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/CopetsMac")
         let sessionsView = try String(
-            contentsOf: sourceRoot.appendingPathComponent("UnifiedConsoleView.swift"),
+            contentsOf: sourceRoot.appendingPathComponent("Console/SessionDetailPanel.swift"),
             encoding: .utf8
         )
         let conversationView = try String(
-            contentsOf: sourceRoot.appendingPathComponent("FloatingRootView.swift"),
+            contentsOf: sourceRoot.appendingPathComponent("Conversation/SessionConversationContent.swift"),
             encoding: .utf8
         )
 

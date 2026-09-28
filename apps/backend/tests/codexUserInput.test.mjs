@@ -185,8 +185,8 @@ test("app-server shutdown expires unanswered and submitted requests from its gen
   const notifications = [];
   const client = new CodexAppServerClient({ onNotification: (value) => notifications.push(value) });
   const child = { kill: () => true };
-  client.process = child;
-  client.activeProcessGeneration = 1;
+  client.transport.process = child;
+  client.transport.activeProcessGeneration = 1;
   client.respondToServerRequest = async () => ({ ok: true });
   for (const id of ["request:one", "request:two"]) {
     client.handleServerRequest({ id, method: request.method, params: {

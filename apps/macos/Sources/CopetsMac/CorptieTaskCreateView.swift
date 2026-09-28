@@ -49,6 +49,7 @@ enum CorptieTaskCreateProviderPolicy {
 
 // 新建 Task 表单（sheet）。Task 与 Work Session 伴生，创建成功后立即启动其 Session。
 struct CorptieTaskCreateView: View {
+    @ObservedObject private var modelCatalog = BackendClient.shared.modelCatalog
     @ObservedObject private var client = EntityAPIClient.shared
     @ObservedObject private var backendClient = BackendClient.shared
     @Environment(\.dismiss) private var dismiss
@@ -169,14 +170,14 @@ struct CorptieTaskCreateView: View {
         .task {
             async let agents: Void = client.refreshAgents()
             async let works: Void = client.refreshWorks()
-            if backendClient.agentProviders.isEmpty { await backendClient.loadProviders() }
+            if modelCatalog.agentProviders.isEmpty { await backendClient.loadProviders() }
             _ = await (agents, works)
             reconcileWorkSelection()
             reconcileProviderSelection()
         }
         .onChange(of: client.works) { _, _ in reconcileWorkSelection() }
         .onChange(of: selectedWorkId) { _, _ in reconcileAgentSelection() }
-        .onChange(of: backendClient.agentProviders) { _, _ in reconcileProviderSelection() }
+        .onChange(of: modelCatalog.agentProviders) { _, _ in reconcileProviderSelection() }
         .task(id: selectedProviderId) { await loadModelChoices() }
         .onChange(of: selectedModelId) { _, _ in reconcileReasoning() }
     }
@@ -260,7 +261,7 @@ struct CorptieTaskCreateView: View {
     }
 
     private var creatableProviders: [AgentProviderDescriptor] {
-        backendClient.agentProviders.filter { $0.supports("session.create") }
+        modelCatalog.agentProviders.filter { $0.supports("session.create") }
     }
 
     private var providerSection: some View {
@@ -349,8 +350,8 @@ struct CorptieTaskCreateView: View {
     private func reconcileProviderSelection() {
         selectedProviderId = CorptieTaskCreateProviderPolicy.selection(
             current: selectedProviderId,
-            preferred: backendClient.defaultSessionProviderId,
-            providers: backendClient.agentProviders
+            preferred: modelCatalog.defaultSessionProviderId,
+            providers: modelCatalog.agentProviders
         )
     }
 
