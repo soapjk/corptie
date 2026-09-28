@@ -3,6 +3,7 @@ import { AGENT_PROVIDER_CAPABILITIES } from "../agent-provider/contracts.mjs";
 import { validateEntityName } from "../domain/workTaskValidation.mjs";
 
 const terminal = new Set(["completed", "complete", "interrupted", "cancelled", "canceled", "failed"]);
+const priorities = new Set(["low", "medium", "high"]);
 function fail(code, message, statusCode = 409) { throw Object.assign(new Error(message), { code, statusCode }); }
 function json(value) { try { return JSON.parse(value ?? "null"); } catch { return null; } }
 
@@ -47,10 +48,14 @@ export class SessionForkService {
   }
 
   async preview(sessionId, itemId) {
-    const { session, reference, point } = await this.source(sessionId, itemId);
+    const { session, reference, point, item } = await this.source(sessionId, itemId);
     const task = session.taskId ? this.store.getTask(session.taskId) : null;
     const work = task ? this.store.getWork(task.work_id) : null;
     const agent = this.store.getAgent(session.agentId);
+    const turnNumber = Number(this.store.selectOne(
+      "SELECT COUNT(DISTINCT turn_id) AS count FROM session_items WHERE session_id=? AND binding_id=? AND rowid<=? AND type IN ('userMessage','agentMessage')",
+      [session.id, reference.bindingId, item.ordinal]
+    )?.count ?? 0);
     return { schemaVersion: 1, sourceSessionId: session.id, sourceItemId: itemId,
       sourceBindingId: reference.bindingId, turnId: point.turnId, kind: session.sessionKind,
       suggestedTitle: `${String(session.title ?? "").replace(/[^\p{Script=Han}a-zA-Z0-9]/gu, "").slice(0, 60)}分支`,
@@ -58,18 +63,22 @@ export class SessionForkService {
       providerName: this.registry.get(reference.providerId).descriptor.displayName,
       model: session.external?.currentModel ?? null,
       reasoningLevel: session.external?.currentReasoningLevel ?? null,
+      sourceSessionTitle: session.title, sourceTurnNumber: turnNumber,
+      sourceExcerpt: String(item.presentation_text || item.text || "").trim().slice(0, 280),
       description: task?.description ?? "", acceptanceCriteria: task?.acceptance_criteria ?? "",
+      verificationCriteria: task?.verification_criteria ?? "", priority: task?.priority ?? "medium",
       hasWorktree: Boolean(this.store.getLogicalSessionByLegacySessionId(session.id)?.activeWorkspaceId) };
   }
 
   async create(sessionId, input) {
-    const fields = ["requestId", "itemId", "sourceBindingId", "title", "description", "acceptanceCriteria"];
+    const fields = ["requestId", "itemId", "sourceBindingId", "title", "description", "acceptanceCriteria", "verificationCriteria", "priority"];
     if (!input || Object.keys(input).some(key => !fields.includes(key))
       || !/^[A-Za-z0-9_-]{8,128}$/.test(input.requestId ?? "")
       || typeof input.itemId !== "string" || typeof input.sourceBindingId !== "string") fail("INVALID_FORK_INPUT", "分叉请求不完整。", 400);
-    for (const key of ["title", "description", "acceptanceCriteria"]) {
+    for (const key of ["title", "description", "acceptanceCriteria", "verificationCriteria"]) {
       if (input[key] !== undefined && (typeof input[key] !== "string" || input[key].length > 16000)) fail("INVALID_FORK_INPUT", "分支信息过长。", 400);
     }
+    if (input.priority !== undefined && !priorities.has(input.priority)) fail("INVALID_FORK_INPUT", "分支优先级无效。", 400);
     validateEntityName(input.title, "title", "分支");
     const fingerprint = createHash("sha256").update(JSON.stringify([sessionId, ...fields.map(key => input[key] ?? null)])).digest("hex");
     const existing = this.operation(input.requestId);
@@ -137,7 +146,8 @@ export class SessionForkService {
         const task = this.workService.createTask({ id: taskId, workId: parent.work_id,
           title: input.title, description: input.description ?? parent.description ?? "",
           acceptanceCriteria: input.acceptanceCriteria ?? parent.acceptance_criteria ?? "",
-          verificationCriteria: parent.verification_criteria ?? "", priority: parent.priority,
+          verificationCriteria: input.verificationCriteria ?? parent.verification_criteria ?? "",
+          priority: input.priority ?? parent.priority,
           mainAgentId: parent.main_agent_id }, { creationOrigin: { originType: "direct_user", operationId: input.requestId } });
         const current = this.store.getTask(task.id);
         const started = await this.startWorkSession({ taskId, assigneeAgentId: parent.main_agent_id,

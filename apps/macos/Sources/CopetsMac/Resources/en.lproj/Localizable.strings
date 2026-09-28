@@ -1096,3 +1096,22 @@
 "连接并验证" = "Connect and verify";
 
 "将发送只读 Python 检查代码，通过 SSH 运行 Git 读取仓库及 Worktree 清单。不会安装文件或绑定工作树；结果保存在本机，远端可能保留连接审计记录。" = "Read-only Python inspection code will be sent over SSH to run Git and read the repository and Worktree inventory. No files will be installed and no Worktree will be bound. Results are saved locally; the host may retain connection audit records.";
+
+/* Conversation fork */
+"Create Task Branch" = "Create Task Branch";
+"Create Chat Branch" = "Create Chat Branch";
+"Create Branch" = "Create Branch";
+"Branch from %@ · Turn %d" = "Branch from %@ · Turn %d";
+"This turn has no text preview." = "This turn has no text preview.";
+"Verification Criteria" = "Verification Criteria";
+"History through this turn and the current workspace, including uncommitted changes, will be copied. No instruction will run automatically." = "History through this turn and the current workspace, including uncommitted changes, will be copied. No instruction will run automatically.";
+"History through this turn will be copied. No instruction will run automatically." = "History through this turn will be copied. No instruction will run automatically.";
+"Loading branch details…" = "Loading branch details…";
+"Creating Task, copying workspace, and forking history…" = "Creating Task, copying workspace, and forking history…";
+"Creating Chat and forking history…" = "Creating Chat and forking history…";
+"Create a branch from this turn" = "Create a branch from this turn";
+"Work Chat does not support conversation branching." = "Work Chat does not support conversation branching.";
+"The current Provider does not support native conversation branching." = "The current Provider does not support native conversation branching.";
+"Wait for the current turn to finish before creating a branch." = "Wait for the current turn to finish before creating a branch.";
+"Copy Message" = "Copy Message";
+"Time: %@" = "Time: %@";

@@ -10,7 +10,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
         AppKitChatTimelineRow(id: id, contentRevision: revision, nativeText: text,
             copyText: text, nativeStyle: .agent, title: "Corptie", metadata: "",
             expandableTurnId: nil, isExpanded: false,
-            showsHeader: header, hoverTimestamp: "12:34")
+            showsHeader: header, contextTimestamp: "12:34")
     }
 
     func testEligibilityDoesNotDropUnmigratedContent() {

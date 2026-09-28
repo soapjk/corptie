@@ -18,11 +18,19 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         )
     }
 
-    private func builder(allowsFork: Bool = true) -> ConversationNativeRowBuilder {
+    private func builder(allowsFork: Bool = true, unavailableReason: String? = nil) -> ConversationNativeRowBuilder {
         ConversationNativeRowBuilder(
             sessionTitle: "Session", workingDirectory: nil, allowsFork: allowsFork,
+            forkUnavailableReason: unavailableReason,
             imageURL: { _ in nil }
         )
+    }
+
+    func testCompletedAnswerExplainsUnavailableForkWithoutMakingItActionable() throws {
+        let row = builder(allowsFork: false, unavailableReason: "Work Chat 不支持分叉")
+            .nativeAppKitRow(ChatDisplayEntry(kind: .message(try item())), expandedTurnIds: [])
+        XCTAssertNil(row.forkItemID)
+        XCTAssertEqual(row.forkUnavailableReason, "Work Chat 不支持分叉")
     }
 
     func testFinalAnswerForkAvailabilityChangesRevisionWithoutChangingIdentity() throws {
