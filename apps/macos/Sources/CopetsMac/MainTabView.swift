@@ -12,14 +12,9 @@ enum TwoPaneLayoutMetrics {
 
 enum MainWindowLayoutMetrics {
     static let titlebarHeight: CGFloat = 32
-    static let tabItemWidth: CGFloat = 42
-    static let tabBarHeight: CGFloat = 26
     static let taskSurfaceWidth: CGFloat = 220
     static let titlebarTrailingInset: CGFloat = 12
 
-    static var tabBarWidth: CGFloat {
-        CGFloat(AppTab.allCases.count) * tabItemWidth
-    }
 }
 
 enum MainWindowPageLayoutMetrics {
@@ -424,105 +419,29 @@ private struct MainTabPageHost: NSViewRepresentable {
     }
 }
 
-// MARK: - 胶囊式 Tab 栏
-// 固定尺寸的纯图标 Tab；选中项使用内嵌的小胶囊和反色前景。
+// MARK: - 左侧导航与常驻页面
 
-struct UnderlineTabBar: View {
-    @Binding var selection: AppTab
-
-    private let selectionAnimation = Animation.timingCurve(
-        0.22,
-        0.9,
-        0.24,
-        1.0,
-        duration: 0.15
-    )
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ForEach(AppTab.allCases) { tab in
-                UnderlineTabButton(
-                    tab: tab,
-                    isSelected: selection == tab
-                ) {
-                    select(tab)
-                }
-                .frame(width: MainWindowLayoutMetrics.tabItemWidth)
-            }
-        }
-        .frame(height: MainWindowLayoutMetrics.tabBarHeight)
-        .contentShape(Rectangle())
-        .modifier(MainWindowTabGlass())
-    }
-
-    private func select(_ tab: AppTab) {
-        withAnimation(selectionAnimation) {
-            selection = tab
-        }
-    }
-}
-
-private struct MainWindowTabGlass: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
-            content.glassEffect(.clear.interactive(), in: .capsule)
-        } else {
-            content.background(.ultraThinMaterial, in: Capsule())
-        }
-    }
-}
-
-private struct UnderlineTabButton: View {
-    let tab: AppTab
-    let isSelected: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: tab.systemImage)
-                .font(.system(
-                    size: 13,
-                    weight: isSelected ? .semibold : .regular
-                ))
-                .frame(height: 16)
-                .foregroundStyle(
-                    isSelected
-                        ? Color(nsColor: .windowBackgroundColor)
-                        : Color.secondary
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background {
-                    Capsule()
-                        .fill(isSelected ? Color.primary : Color.clear)
-                        .padding(.horizontal, 3)
-                        .padding(.vertical, 2)
-                }
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(tab.title)
-        .accessibilityLabel(tab.title)
-        .accessibilityIdentifier("main-tab.\(tab.rawValue)")
-        .accessibilityValue(isSelected ? "selected" : "not-selected")
-        .animation(.easeInOut(duration: 0.15), value: isSelected)
-    }
-}
-
-// MARK: - 主窗口独立渲染表面
-
-/// The heavyweight page surface starts at AppKit's native title-bar safe area;
-/// no second spacer row is reserved below the compact title-bar controls.
 struct MainWindowContentView: View {
+    @AppStorage("corptie.mac.navigationRailExpanded") private var navigationRailExpanded = true
     @StateObject private var router = AppTabRouter.shared
     @StateObject private var selectionState = AppTabRouter.shared.selectionState
     @EnvironmentObject private var resizeState: MainWindowResizeState
 
     var body: some View {
-        MainTabPageHost(
-            selection: selectionState.selectedTab,
-            router: router,
-            resizeState: resizeState
-        )
+        HStack(spacing: 0) {
+            MainWindowNavigationRail(selection: Binding(
+                get: { selectionState.selectedTab },
+                set: { router.selectTab($0) }
+            ), isExpanded: $navigationRailExpanded)
+            .frame(width: MainNavigationRailLayout.width(expanded: navigationRailExpanded))
+
+            MainTabPageHost(
+                selection: selectionState.selectedTab,
+                router: router,
+                resizeState: resizeState
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
         .ignoresSafeArea(.container, edges: .top)
         // MainTabPageContainer and MainWindowSurfaceContainer already clip to
         // window bounds. A SwiftUI clip here uses the safe-area layout bounds
@@ -542,23 +461,7 @@ struct MainWindowContentView: View {
 /// glyphs and frames from stretching and snapping at root layout commits.
 struct MainWindowFixedChromeView: View {
     var body: some View {
-        MainWindowChromeControls(
-            openSettings: { AppDelegate.shared?.openSettings() }
-        )
-    }
-}
-
-/// The center tab bar keeps its original fixed 42-point item geometry. AppKit
-/// moves this surface to the current window center without resizing the host.
-struct MainWindowTabBarSurfaceView: View {
-    @StateObject private var router = AppTabRouter.shared
-    @StateObject private var selectionState = AppTabRouter.shared.selectionState
-
-    var body: some View {
-        UnderlineTabBar(selection: Binding(
-            get: { selectionState.selectedTab },
-            set: { router.selectTab($0) }
-        ))
+        MainWindowChromeControls()
     }
 }
 
@@ -574,7 +477,6 @@ struct MainWindowTaskSurfaceView: View {
 /// Keeps fixed window actions isolated from the resident tab page hierarchy.
 private struct MainWindowChromeControls: View {
     @ObservedObject private var windowState = MainWindowPresentationState.shared
-    let openSettings: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
@@ -592,12 +494,6 @@ private struct MainWindowChromeControls: View {
             .accessibilityValue(L10n(windowState.isPinned ? "On" : "Off"))
             .accessibilityIdentifier("main-window.pin")
 
-            Button(action: openSettings) {
-                chromeIcon(systemName: "gearshape", isActive: false)
-            }
-            .buttonStyle(.plain)
-            .help(L10n("设置"))
-            .accessibilityIdentifier("main-window.settings")
         }
     }
 

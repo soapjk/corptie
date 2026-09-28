@@ -100,40 +100,19 @@ struct MainWindowResizeLayoutTests {
 
     @MainActor
     @Test
-    func titlebarSurfacesKeepCompactGeometryAndStableAnchors() {
-        let centerChrome = NSView(frame: .zero)
+    func titlebarContainsOnlyTrailingStatusNotNavigation() {
         let trailingChrome = NSView(frame: .zero)
-        let controller = MainWindowTitlebarAccessoryController(
-            centerSurface: centerChrome,
-            trailingSurface: trailingChrome
-        )
+        let controller = MainWindowTitlebarAccessoryController(trailingSurface: trailingChrome)
         let view = controller.surfaceView
         #expect(controller.layoutAttribute == .top)
-        #expect(controller.view === view)
-        #expect(view.intrinsicContentSize.height == MainWindowLayoutMetrics.titlebarHeight)
-        view.frame = NSRect(x: 0, y: 0, width: 1_200, height: 32)
-        view.layoutSubtreeIfNeeded()
-        #expect(centerChrome.frame.size == NSSize(
-            width: MainWindowLayoutMetrics.tabBarWidth,
-            height: MainWindowLayoutMetrics.tabBarHeight
-        ))
-        #expect(centerChrome.frame.midX == view.bounds.midX)
-        #expect(centerChrome.frame.midY == view.bounds.midY)
-        #expect(trailingChrome.frame.size == NSSize(width: 220, height: 22))
-        #expect(view.bounds.maxX - trailingChrome.frame.maxX == 12)
-        #expect(trailingChrome.frame.midY == view.bounds.midY)
-
-        view.frame.size = NSSize(width: 1_420, height: 32)
-        view.layoutSubtreeIfNeeded()
-        #expect(centerChrome.frame.size == NSSize(
-            width: MainWindowLayoutMetrics.tabBarWidth,
-            height: MainWindowLayoutMetrics.tabBarHeight
-        ))
-        #expect(abs(centerChrome.frame.midX - view.bounds.midX) < 0.01)
-        #expect(trailingChrome.frame.size == NSSize(width: 220, height: 22))
-        #expect(abs(view.bounds.maxX - trailingChrome.frame.maxX - 12) < 0.01)
-        #expect(centerChrome.superview === view)
-        #expect(trailingChrome.superview === view)
+        #expect(view.subviews.count == 1)
+        for width: CGFloat in [1_200, 1_420] {
+            view.frame = NSRect(x: 0, y: 0, width: width, height: 32)
+            view.layoutSubtreeIfNeeded()
+            #expect(trailingChrome.frame.size == NSSize(width: 220, height: 22))
+            #expect(view.bounds.maxX - trailingChrome.frame.maxX == 12)
+            #expect(trailingChrome.frame.midY == view.bounds.midY)
+        }
     }
 
     @Test
@@ -155,7 +134,7 @@ struct MainWindowResizeLayoutTests {
         let chrome = MainWindowLeadingChromeAccessoryController()
 
         #expect(chrome.layoutAttribute == .left)
-        #expect(chrome.hostingView.frame.width == 56)
+        #expect(chrome.hostingView.frame.width == 24)
         #expect(chrome.hostingView.frame.height >= 22)
         #expect(chrome.view === chrome.hostingView)
     }
