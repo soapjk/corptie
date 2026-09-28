@@ -22,17 +22,12 @@ struct SessionCorptieTaskDetailCard: View {
 
     var body: some View {
         Group {
-            if let task {
-                let work = entityClient.works.first { $0.id == task.workId }
-                CorptieTaskDetailView(
-                    task: task,
-                    contributorAgentIds: work?.contributorAgentIds ?? [],
-                    onRequestReload: {
-                        Task { await entityClient.refreshWorks() }
-                    },
-                    showsHeader: showsHeader,
-                    embedsInParentScroll: embedsInParentScroll
-                )
+            if let task, decoratesSurface {
+                ConversationDetailDashboard(actions: { EmptyView() }) {
+                    taskDetail(task, embedsInParentScroll: true)
+                }
+            } else if let task {
+                taskDetail(task, embedsInParentScroll: embedsInParentScroll)
             } else if isLoading {
                 ProgressView()
                     .controlSize(.small)
@@ -46,7 +41,6 @@ struct SessionCorptieTaskDetailCard: View {
             }
         }
         .frame(maxHeight: embedsInParentScroll ? nil : .infinity)
-        .modifier(DetailRailSurfaceModifier(enabled: decoratesSurface))
         .task(id: taskId) {
             isLoading = true
             if entityClient.works.isEmpty {
@@ -68,31 +62,17 @@ struct SessionCorptieTaskDetailCard: View {
             }
         }
     }
-}
 
-struct DetailRailSurfaceModifier: ViewModifier {
-    let enabled: Bool
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        // Decorate the same content identity when switching workspace modes.
-        content
-            // A surface is also a containment boundary: a fixed frame alone
-            // does not prevent native children or overlays drawing outside it.
-            // Keep one content identity across modes; disabled surfaces have
-            // no rounded corners, as before.
-            .clipShape(RoundedRectangle(cornerRadius: enabled ? 12 : 0, style: .continuous))
-            .background {
-                if enabled {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.regularMaterial)
-                }
-            }
-            .overlay {
-                if enabled {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(Color(nsColor: .separatorColor).opacity(0.42), lineWidth: 1)
-                }
-            }
-            .shadow(color: Color.black.opacity(enabled ? 0.055 : 0), radius: enabled ? 9 : 0, x: 0, y: enabled ? 3 : 0)
+    private func taskDetail(_ task: CorptieTask, embedsInParentScroll: Bool) -> some View {
+        let work = entityClient.works.first { $0.id == task.workId }
+        return CorptieTaskDetailView(
+            task: task,
+            contributorAgentIds: work?.contributorAgentIds ?? [],
+            onRequestReload: {
+                Task { await entityClient.refreshWorks() }
+            },
+            showsHeader: showsHeader,
+            embedsInParentScroll: embedsInParentScroll
+        )
     }
 }

@@ -43,7 +43,6 @@ struct SessionConversationContent: View {
     @State private var displayedWorkspaceRecoveryStatus: WorkspaceRecoveryStatus?
     @State private var scrollTargetTurnID: String?
     @State private var scrollTargetTurnRevision = 0
-    @State private var pendingUserInput: CodexThreadItem?
     @State private var pendingFork: SessionForkSelection?
     let sessionId: String
     let composerDraftRepository: ComposerDraftRepository
@@ -409,13 +408,6 @@ struct SessionConversationContent: View {
                 scrollToTurnRevision: scrollTargetTurnRevision,
                 historyRequestEpoch: historyRequestEpoch
             )
-            .sheet(item: $pendingUserInput) { item in
-                ConversationUserInputSheet(item: item) { answers, action in
-                    try await backendClient.respondToUserInput(
-                        sessionID: sessionId, itemID: item.id, answers: answers, action: action
-                    )
-                }
-            }
             .sheet(item: $pendingFork) { selection in
                 SessionForkSheet(selection: selection, backendClient: backendClient)
             }
@@ -442,10 +434,6 @@ struct SessionConversationContent: View {
             .onChange(of: appKitDetailRevision) { _, _ in
                 if let currentDetail = displayedDetail {
                     updateCachedDisplayEntries(for: currentDetail)
-                }
-                if let pendingUserInput,
-                   displayedDetail?.items.first(where: { $0.id == pendingUserInput.id })?.status != "pending" {
-                    self.pendingUserInput = nil
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .sessionTimelineSubmissionAccepted)) { notification in
@@ -521,6 +509,7 @@ struct SessionConversationContent: View {
         let expandedTurnIds = expansionSnapshot ?? expandedProcessTurnIds
         var row = nativeAppKitRow(entry, expandedTurnIds: expandedTurnIds)
         row.isWorkspaceCard = presentation == .workspaceCard
+        row.sessionID = sessionId
         return row
     }
 
@@ -584,8 +573,6 @@ struct SessionConversationContent: View {
             backendClient.respondToCodexApproval(option: option)
         case .ptyChoice(let option, let choiceID):
             backendClient.respondToPtyChoice(option: option, choiceId: choiceID)
-        case .userInput(let itemID):
-            pendingUserInput = displayedDetail?.items.first(where: { $0.id == itemID && $0.status == "pending" })
         case .sendMessage(let message):
             backendClient.sendMessage(message)
         case .collaborationConfirmation(let id, let approve):
