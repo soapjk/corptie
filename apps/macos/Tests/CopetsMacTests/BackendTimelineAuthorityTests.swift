@@ -9,7 +9,7 @@ struct BackendTimelineAuthorityTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appending(path: "Sources/CopetsMac/BackendClient.swift")
+            .appending(path: "Sources/CopetsMac/Backend/SessionMessageController.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         let acknowledgement = try #require(source.range(
             of: "guard (200..<300).contains(httpResponse.statusCode)"

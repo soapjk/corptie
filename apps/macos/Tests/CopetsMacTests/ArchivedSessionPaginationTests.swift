@@ -29,9 +29,11 @@ struct ArchivedSessionPaginationTests {
         let testFile = URL(fileURLWithPath: #filePath)
         let root = testFile.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         return (
-            try String(contentsOf: root.appendingPathComponent("Sources/CopetsMac/BackendClient.swift"), encoding: .utf8),
-            try String(contentsOf: root.appendingPathComponent("Sources/CopetsMac/CopetsMacApp.swift"), encoding: .utf8),
-            try String(contentsOf: root.appendingPathComponent("Sources/CopetsMac/UnifiedConsoleView.swift"), encoding: .utf8)
+            try String(contentsOf: root.appendingPathComponent("Sources/CopetsMac/Backend/ArchivedSessionController.swift"), encoding: .utf8),
+            try String(contentsOf: root.appendingPathComponent("Sources/CopetsMac/Settings/ArchivedSessionsSettingsTab.swift"), encoding: .utf8),
+            try ["UnifiedConsoleView.swift", "Console/UnifiedConsoleOutline.swift", "Console/UnifiedConsoleWorkTaskList.swift"]
+                .map { try String(contentsOf: root.appendingPathComponent("Sources/CopetsMac/\($0)"), encoding: .utf8) }
+                .joined(separator: "\n")
         )
     }
 }

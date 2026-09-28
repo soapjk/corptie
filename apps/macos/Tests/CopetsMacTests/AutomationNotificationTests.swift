@@ -74,7 +74,7 @@ struct AutomationNotificationTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Sources/CopetsMac/BackendClient.swift")
+            .appendingPathComponent("Sources/CopetsMac/Backend/BackendEventRouter.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         let start = try #require(source.range(of: "if eventName == \"AutomationSessionActivationRequested\""))
         let end = try #require(source.range(

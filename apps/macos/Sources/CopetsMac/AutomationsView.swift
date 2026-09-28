@@ -29,6 +29,7 @@ struct AutomationsView: View {
     @EnvironmentObject private var router: AppTabRouter
     @EnvironmentObject private var sidebarState: TabSidebarState
     @StateObject private var backendClient = BackendClient.shared
+    @ObservedObject private var scheduling = BackendClient.shared.scheduledTaskController
     @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     @State private var category: AutomationCategory? = .all
     @State private var editingAutomation: ScheduledSessionTask?
@@ -36,12 +37,12 @@ struct AutomationsView: View {
 
     private var visibleAutomations: [ScheduledSessionTask] {
         switch category ?? .all {
-        case .all: backendClient.automations
-        case .running: backendClient.automations.filter {
+        case .all: scheduling.automations
+        case .running: scheduling.automations.filter {
             $0.lastRunStatus == .claimed || $0.lastRunStatus == .queued || $0.lastRunStatus == .running
         }
-        case .failed: backendClient.automations.filter { $0.status == .error || $0.lastRunStatus == .failed }
-        case .history: backendClient.automations.filter { !$0.runs.isEmpty }
+        case .failed: scheduling.automations.filter { $0.status == .error || $0.lastRunStatus == .failed }
+        case .history: scheduling.automations.filter { !$0.runs.isEmpty }
         }
     }
 
@@ -64,13 +65,13 @@ struct AutomationsView: View {
             .padding(.leading, MainWindowPageLayoutMetrics.halfColumnSpacing)
         }
         .padding(MainWindowPageLayoutMetrics.outerPadding)
-        .task { await backendClient.loadAutomations() }
+        .task { await scheduling.loadAutomations() }
         .sheet(item: $editingAutomation) { automation in
             if let session = targetSession(for: automation) {
                 ScheduledTaskEditorSheet(
                     session: session,
                     existingTask: automation,
-                    onSaved: { Task { await backendClient.loadAutomations() } }
+                    onSaved: { Task { await scheduling.loadAutomations() } }
                 )
                 .environmentObject(backendClient)
             }
@@ -87,9 +88,9 @@ struct AutomationsView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            if backendClient.isLoadingAutomations { ProgressView().controlSize(.small) }
+            if scheduling.isLoadingAutomations { ProgressView().controlSize(.small) }
             Button {
-                Task { await backendClient.loadAutomations() }
+                Task { await scheduling.loadAutomations() }
             } label: {
                 Label(L10n("Refresh"), systemImage: "arrow.clockwise")
             }
@@ -99,7 +100,7 @@ struct AutomationsView: View {
 
     @ViewBuilder
     private var content: some View {
-        if backendClient.isLoadingAutomations && backendClient.automations.isEmpty {
+        if scheduling.isLoadingAutomations && scheduling.automations.isEmpty {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if visibleAutomations.isEmpty {
             ContentUnavailableView(
@@ -120,11 +121,11 @@ struct AutomationsView: View {
                             AutomationCard(
                                 automation: automation,
                                 targetName: targetName(for: automation),
-                                isMutating: backendClient.scheduledTaskMutationIds.contains(automation.id),
+                                isMutating: commandState.scheduledTaskMutationIds.contains(automation.id),
                                 openTarget: { openTarget(automation) },
                                 edit: { edit(automation) },
                                 perform: { action in
-                                    Task { await backendClient.performAutomationAction(action, task: automation) }
+                                    Task { await scheduling.performAutomationAction(action, task: automation) }
                                 }
                             )
                             .id(automation.id)
@@ -139,13 +140,13 @@ struct AutomationsView: View {
                 }
                 .onChange(of: router.pendingAutomationId, initial: true) { _, automationID in
                     guard let automationID,
-                          backendClient.automations.contains(where: { $0.id == automationID }) else { return }
+                          scheduling.automations.contains(where: { $0.id == automationID }) else { return }
                     category = .all
                     focusedAutomationID = automationID
                     withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(automationID, anchor: .center) }
                     router.consumeAutomation(automationID)
                 }
-                .onChange(of: backendClient.automations.map(\.id)) { _, automationIDs in
+                .onChange(of: scheduling.automations.map(\.id)) { _, automationIDs in
                     guard let automationID = router.pendingAutomationId,
                           automationIDs.contains(automationID) else { return }
                     category = .all
@@ -155,7 +156,7 @@ struct AutomationsView: View {
                 }
             }
             .overlay(alignment: .bottomLeading) {
-                if let error = backendClient.automationsError {
+                if let error = scheduling.automationsError {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
                         .foregroundStyle(.red)

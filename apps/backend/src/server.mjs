@@ -1,179 +1,136 @@
 import http from "node:http";
+import { routeBackendHttpRequest } from "./application/backendHttpRouter.mjs";
+import { createProductEventPublisher } from "./application/productEventPublisher.mjs";
+import { createStartupRecoveryOperations } from "./application/startupRecoveryOperations.mjs";
+import {
+  createSessionToolBindingProjection, desiredToolDomainIds
+} from "./application/sessionToolBindingProjection.mjs";
+import { createCodexNotificationReceiver } from "./adapters/codexNotificationReceiver.mjs";
+import { createClaudeNotificationReceiver } from "./adapters/claudeNotificationReceiver.mjs";
+import { createRuntimeAgentWorkQueue } from "./runtime/runtimeAgentWorkQueue.mjs";
 import { createCodexReplyProbe, createClaudeReplyProbe, createOpenClackyReplyProbe } from "./agent-provider/providers/providerReplyProbe.mjs";
 import { FirstRunSetupService } from "./application/firstRunSetupService.mjs";
-import { collaborationRuntimeInstructions } from "./application/collaborationRuntimeInstructions.mjs";
-import { buildDirectUserMessageEvidence } from "./application/directUserMessageEvidence.mjs";
 import { resolveExternalCommand } from "./utils/externalCommand.mjs";
-import { createHash, randomUUID } from "node:crypto";
-import { execFile, spawn } from "node:child_process";
-import { accessSync, constants } from "node:fs";
-import { copyFile, mkdtemp, readFile, realpath, stat, mkdir, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
-import { deflateRawSync } from "node:zlib";
-import os from "node:os";
+import { createMockSessionFixtures } from "./application/mockSessionFixtures.mjs";
+import { createBackendShutdown } from "./application/backendShutdown.mjs";
+import { createWorkspaceTransitionContextReader } from "./application/workspaceTransitionContextReader.mjs";
+import { execFile } from "node:child_process";
+import { basename, dirname, join, resolve } from "node:path";
+import { pathExists, assertDirectory } from "./utils/localPathAccess.mjs";
+import { sendJson, readJson } from "./application/backendHttpIO.mjs";
+import { proxyEnvForProfile } from "./adapters/providerProxyEnv.mjs";
+import { safeTurnFileChanges, turnDiffFor, writeTurnPatch, prepareExternalDiff, launchDiffTool } from "./application/turnDiffReview.mjs";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { startup } from "@anthropic-ai/claude-agent-sdk";
+import { createProviderModelCatalogLoaders } from "./adapters/providerModelCatalogLoaders.mjs";
 import {
-  codexPreDispatchRecoveryError,
-  mapCodexThreadToLegacyTimelineItems,
-  mapCodexThreadToSession
+  codexAppServerSessionCapabilities, readCodexDefaultConfig,
+  createCodexSessionConfiguration
+} from "./adapters/codexSessionConfiguration.mjs";
+import { createCodexConversationClear } from "./adapters/codexConversationClear.mjs";
+import { createCodexSessionCommands } from "./adapters/codexSessionCommands.mjs";
+import { createCodexTurnDispatcher } from "./adapters/codexTurnDispatcher.mjs";
+import { createCodexSessionCreator } from "./adapters/codexSessionCreator.mjs";
+import {
+  mapCodexThreadToLegacyTimelineItems
 } from "./adapters/codexAppServer.mjs";
 import { createCodexProviderRuntime } from "./agent-provider/bootstrap/codexProviderRuntime.mjs";
-import { choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/choiceParser.mjs";
-import { SessionApplicationService } from "./agent-provider/sessionApplicationService.mjs";
-import { SessionForkService } from "./application/sessionForkService.mjs";
+import { configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/choiceParser.mjs";
+import { createCodexChoiceProjection } from "./adapters/codexChoiceProjection.mjs";
+import { createSessionApplicationComposition } from "./application/sessionApplicationComposition.mjs";
+import { createSessionForkOperations } from "./application/sessionForkOperations.mjs";
 import { createForkWorktree } from "./runtime/forkWorktree.mjs";
-import { AGENT_PROVIDER_CAPABILITIES } from "./agent-provider/contracts.mjs";
-import { withResolvedSessionActions } from "./agent-provider/sessionActions.mjs";
-import { withSessionReadiness } from "./application/sessionReadiness.mjs";
+import { createSessionReadinessProjection } from "./application/sessionReadinessProjection.mjs";
 import { SessionBindingReadinessProbe } from "./application/sessionBindingReadinessProbe.mjs";
-import { providerDeliveryFailureStatus } from "./application/providerDeliveryStatus.mjs";
+import { createSessionMessageOperation } from "./application/sessionMessageOperation.mjs";
 import { SessionStateDiagnostics } from "./application/sessionStateDiagnostics.mjs";
 import { ProjectApplicationService } from "./application/projectApplicationService.mjs";
-import {
-  ProjectWorktreeIntegrationService,
-  presentProjectIntegrationRun
-} from "./application/projectWorktreeIntegrationService.mjs";
-import { WorktreeIntegrationJobService } from "./application/worktreeIntegrationJobService.mjs";
-import {
-  storedSessionIdForListSession
-} from "./application/sessionListOrder.mjs";
+import { createWorktreeIntegrationServices } from "./application/worktreeIntegrationComposition.mjs";
 import { BackgroundAgentService } from "./application/backgroundAgentService.mjs";
 import { FoundationModelSettings } from "./application/foundationModelSettings.mjs";
 import { taskCollaborationEdges } from "./application/taskCollaborationEdges.mjs";
 import { TaskSummaryService } from "./application/taskSummaryService.mjs";
 import { createSkillPackageDiscoveryAssistant } from "./application/skillPackageDiscoveryAssistant.mjs";
-import { HostToolCatalog } from "./application/hostToolCatalog.mjs";
-import {
-  codexAppliedToolProofIsCurrent,
-  confirmOrRestoreCodexToolPlan
-} from "./application/codexToolPlanConfirmation.mjs";
+import { createHostToolCatalog } from "./application/hostToolCatalogComposition.mjs";
 import { appliedToolMaterializationReceipt } from "./agent-provider/toolSchemaCapabilities.mjs";
 import {
   ProviderSessionLifecycle,
   codexLifecycleAdapter
 } from "./application/providerSessionLifecycle.mjs";
-import { PlatformOperationService } from "./application/platformOperationService.mjs";
-import { inspectFailedStartupDeletion } from "./application/failedStartupDeletionInspection.mjs";
+import { createPlatformOperationComposition } from "./application/platformOperationComposition.mjs";
+import { createTaskWorktreeOperations } from "./application/taskWorktreeOperations.mjs";
+import { createProjectWorktreeOperations } from "./application/projectWorktreeOperations.mjs";
 import { PlatformConfirmationService } from "./application/platformConfirmationService.mjs";
 import { SessionCollaborationService } from "./application/sessionCollaborationService.mjs";
 import { SessionChannelService } from "./collaboration/sessionChannelService.mjs";
-import { authorizeCollaborationTool } from "./collaboration/collaborationToolAuthorization.mjs";
-import {
-  activeStoredSessionProjections,
-  canonicalSessionIdFromEventPayload,
-  persistProviderSessionProjection,
-  persistSessionModelSelection,
-  visibleStoredSessionProjections
-} from "./application/providerSessionProjection.mjs";
-import { platformDynamicTools, callPlatformDynamicTool } from "./application/platformDynamicTools.mjs";
+import { loadStartupSessionInventory } from "./application/startupSessionInventory.mjs";
+import { createManagedProviderSessionProjection } from "./application/managedProviderSessionProjection.mjs";
+import { createProjectWorktreeStatusReader } from "./application/projectWorktreeStatusReader.mjs";
 import { WorkChatContextService } from "./application/workChatContextService.mjs";
 import { WorkDiscussionApplicationService } from "./application/workDiscussionApplicationService.mjs";
-import {
-  WorkChatOperationService,
-  workChatDynamicTools,
-  callWorkChatDynamicTool
-} from "./application/workChatDynamicTools.mjs";
-import { SessionWorkspaceCoordinator } from "./application/sessionWorkspaceCoordinator.mjs";
+import { WorkChatOperationService } from "./application/workChatDynamicTools.mjs";
+import { createSessionWorkspaceComposition } from "./application/sessionWorkspaceComposition.mjs";
+import { createWorkspaceSessionToolAuthority } from "./application/workspaceSessionToolAuthority.mjs";
+import { createProviderTerminalLifecycle } from "./application/providerTerminalLifecycle.mjs";
+import { createProviderWorkspaceSwitches } from "./application/providerWorkspaceSwitchOperation.mjs";
 import { resolveWorkspaceTransitionRuntime } from "./application/workspaceTransitionRuntimeRouting.mjs";
-import { assertManualSessionArchiveAllowed } from "./domain/sessionArchivePolicy.mjs";
-import { resolveConflictResolutionAgentContext } from "./application/conflictResolutionAgentContext.mjs";
-import { SessionProviderSwitchCoordinator } from "./application/sessionProviderSwitchCoordinator.mjs";
-import { loadSessionUsageSnapshot } from "./application/sessionUsageSnapshot.mjs";
-import { SessionWorktreeService } from "./application/sessionWorktreeService.mjs";
-import { SessionWorkspaceOperationService } from "./application/sessionWorkspaceOperationService.mjs";
-import {
-  isConflictResolutionWorkspace
-} from "./runtime/conflictResolutionWorkspacePermissions.mjs";
-import { TaskExecutionOrchestrator } from "./application/taskExecutionOrchestrator.mjs";
+import { archiveStoredSession } from "./application/sessionArchiveOperation.mjs";
+import { handleSessionOrganizationHttpRequest } from "./application/sessionOrganizationHttpApi.mjs";
+import { createSessionUsageReader } from "./application/sessionUsageReader.mjs";
+import { createTaskExecutionComposition } from "./application/taskExecutionComposition.mjs";
 import { TaskWorkspaceService } from "./application/taskWorkspaceService.mjs";
-import { WorkSessionStartupCoordinator } from "./application/workSessionStartupCoordinator.mjs";
-import { ManagedSandboxStartupCoordinator } from "./application/managedSandboxStartupCoordinator.mjs";
-import { WorkSessionStartApplicationService } from "./application/workSessionStartApplicationService.mjs";
-import { WorktreeStartupPreparer } from "./application/worktreeStartupPreparer.mjs";
+import { createWorkSessionStartupComposition } from "./application/workSessionStartupComposition.mjs";
 import {
-  ProviderWorkspaceBindingService,
   persistedProviderWorkspaceProof
 } from "./agent-provider/providerWorkspaceBindingService.mjs";
-import { ProviderWorkSessionPort } from "./agent-provider/providerWorkSessionPort.mjs";
-import { TaskDeletionService } from "./application/taskDeletionService.mjs";
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
-import { buildWorkSessionContext, mergeWorkerSessionContexts } from "./application/workSessionContext.mjs";
-import { sessionResponsibilityInstructions } from "./application/sessionResponsibilityInstructions.mjs";
 import { ArtifactService } from "./application/artifactService.mjs";
 import { ChatResourceService } from "./application/chatResourceService.mjs";
-import {
-  conversationMessageText,
-  normalizeConversationMessage
-} from "./application/conversationMessage.mjs";
 import { migrateStoreOffMainThread } from "./store/storeMigrationRunner.mjs";
-import { TimelineReadPool } from "./store/timelineReadPool.mjs";
-import { BenchmarkControlPlane } from "./benchmark/controlPlane.mjs";
+import { createSessionTimelineReader } from "./application/sessionTimelineReader.mjs";
+import { createBenchmarkControlPlaneComposition } from "./application/benchmarkControlPlaneComposition.mjs";
 import { handleBenchmarkHttpRequest } from "./benchmark/httpApi.mjs";
-import { createArtifactEvidencePort } from "./benchmark/ports.mjs";
-import { createBenchmarkProductionPorts } from "./benchmark/productionPorts.mjs";
-import { artifactDynamicTools, authorizeArtifactDynamicTool, callArtifactDynamicTool } from "./application/artifactDynamicTools.mjs";
 import { handleArtifactHttpRequest } from "./application/artifactHttpApi.mjs";
 import { clientCapabilities } from "./application/clientCapabilities.mjs";
-import { startConfiguredDeviceGateway } from "./application/clientDeviceGateway.mjs";
-import { createDeviceSetup } from "./application/clientDeviceSetup.mjs";
-import { ClientReadAPI } from "./application/clientReadAPI.mjs";
-import { ClientInspectorAPI } from "./application/clientInspectorAPI.mjs";
-import { inspectorFileImporter } from "./application/clientInspectorFiles.mjs";
-import { ClientControlReadAPI } from "./application/clientControlReadAPI.mjs";
-import { ClientWorktreeManagementAPI } from "./application/clientWorktreeManagementAPI.mjs";
-import { ClientSessionAPI, approvalRequestIsCurrent } from "./application/clientSessionAPI.mjs";
-import { validateInteractionAnswers } from "./application/interactionInput.mjs";
+import { startClientDeviceGateway } from "./application/clientDeviceGatewayComposition.mjs";
+import { scheduleBackendStartupMaintenance } from "./application/backendStartupMaintenance.mjs";
+import { createSessionInteractionCommands } from "./application/sessionInteractionCommands.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
 import { SkillMcpGateway } from "./application/skillMcpGateway.mjs";
 import { McpRegistryService } from "./application/mcpRegistryService.mjs";
 import { McpSessionAvailabilityService } from "./application/mcpSessionAvailabilityService.mjs";
 import { handleMcpRegistryHttpRequest } from "./application/mcpRegistryHttpApi.mjs";
-import { skillMcpTurnContext } from "./application/skillMcpTurnContext.mjs";
-import { assertSessionToolScope } from "./application/sessionToolScope.mjs";
+import { handleSessionToolHttpRequest } from "./application/sessionToolHttpApi.mjs";
 import { requiredToolDomainsForSession as resolveSessionToolDomainRequirements } from "./application/sessionToolDomainRequirements.mjs";
 import { ToolMaterializationPort } from "./application/toolMaterializationPort.mjs";
 import {
   RegistryToolMaterializationPort,
   ToolHostMaterializationCoordinator
 } from "./application/toolHostMaterializationCoordinator.mjs";
-import { ToolBootstrapBindingPreflight } from "./application/toolBootstrapBindingPreflight.mjs";
-import { EmptyProviderBindingPreflight } from "./application/emptyProviderBindingPreflight.mjs";
-import { SerializedOperationQueue } from "./application/serializedOperationQueue.mjs";
+import { createProviderStartupPreflights } from "./agent-provider/bootstrap/providerStartupPreflightComposition.mjs";
 import { SessionBindingRepository } from "./agent-provider/sessionBindingRepository.mjs";
 import { createClaudeProviderRuntime } from "./agent-provider/bootstrap/claudeProviderBootstrap.mjs";
-import { OpenClackyManager, mergeOpenClackyRuntimeInstructions } from "./adapters/openClackyManager.mjs";
+import { createOpenClackyRuntimeManager } from "./agent-provider/bootstrap/openClackyRuntimeManagerComposition.mjs";
 import { createOpenClackyProvider } from "./agent-provider/providers/openClackyProvider.mjs";
-import { CODEX_TOOL_SCHEMA_CAPABILITIES } from "./agent-provider/providers/codexAppServerProvider.mjs";
 import { openClackyToolHostAttachment } from "./agent-provider/providers/openClackyToolHostAttachment.mjs";
 import { OpenClackyWorkspaceTransitionPort } from "./agent-provider/adapters/openClackyWorkspaceTransitionPort.mjs";
 import { ClaudeWorkspaceTransitionPort } from "./agent-provider/adapters/claudeWorkspaceTransitionPort.mjs";
 import {
   claudeToolHostAttachment,
-  codexToolHostAttachment,
-  createAgentProviderRuntimeRegistry
+  codexToolHostAttachment
 } from "./agent-provider/bootstrap/agentProviderBootstrap.mjs";
-import { FeishuGatewayManager, formatFeishuFailureForLog } from "./feishu/feishuGatewayManager.mjs";
-import { isClearCommand, parseSlashCommand } from "./commands/unifiedCommands.mjs";
+import { createProviderRuntimeRegistryComposition } from "./agent-provider/bootstrap/providerRuntimeRegistryComposition.mjs";
+import { FeishuGatewayManager } from "./feishu/feishuGatewayManager.mjs";
+import { handleFeishuHttpRequest } from "./feishu/feishuHttpApi.mjs";
 import { CollaborationCore } from "./collaboration/collaborationCore.mjs";
 import { CollaborationDeliveryDispatcher } from "./collaboration/collaborationDeliveryDispatcher.mjs";
 import { CollaborationDeliveryRouteResolver } from "./collaboration/collaborationDeliveryRouteResolver.mjs";
-import { formatTrustedChannelMessage, formatTrustedCollaborationEvent } from "./collaboration/trustedCollaborationEvent.mjs";
-import { collaborationMessagePresentationRoute } from "./collaboration/collaborationPresentationRoute.mjs";
-import { collaborationWorkPresentation } from "./collaboration/collaborationWorkPresentation.mjs";
-import { handleCollaborationHttpRequest } from "./collaboration/collaborationHttpApi.mjs";
+import { createSessionChannelDeliveryOperation } from "./application/sessionChannelDeliveryOperation.mjs";
+import { createCollaborationDeliveryQueue } from "./collaboration/collaborationDeliveryQueue.mjs";
+import { createCollaborationTimelinePresentation } from "./collaboration/collaborationTimelinePresentation.mjs";
+import { createCollaborationHttpRoutes } from "./application/collaborationHttpComposition.mjs";
 import { WorkApplicationService } from "./application/workApplicationService.mjs";
 import { createTaskAndSession } from "./application/taskCreationApplicationService.mjs";
-import {
-  presentTaskAcceptance,
-  taskExecutionPatch,
-  taskExecutionPrompt
-} from "./application/taskAcceptance.mjs";
-import {
-  callTaskAcceptanceDynamicTool,
-  taskAcceptanceDynamicTools
-} from "./application/taskAcceptanceDynamicTools.mjs";
 import { TaskCompletionService } from "./application/taskCompletionService.mjs";
 import { SessionRuntimeReleaseService } from "./application/sessionRuntimeReleaseService.mjs";
 import { HubService, createOpenAiEmbedder } from "./application/hubService.mjs";
@@ -181,89 +138,49 @@ import { AgentContextService } from "./application/agentContextService.mjs";
 import { MemoryOperationService } from "./application/memoryOperationService.mjs";
 import { MemoryRecallService } from "./application/memoryRecallService.mjs";
 import { MemoryLifecycleService } from "./application/memoryLifecycleService.mjs";
-import { memoryDynamicTools, callMemoryDynamicTool } from "./application/memoryDynamicTools.mjs";
 import { SkillRegistryService } from "./application/skillRegistryService.mjs";
-import { skillDynamicTools, callSkillDynamicTool } from "./application/skillDynamicTools.mjs";
 import { CollaborationRouter } from "./application/collaborationRouter.mjs";
 import { SceneApplicationService } from "./scenes/sceneApplicationService.mjs";
-import { sceneDynamicTools, callSceneDynamicTool } from "./scenes/sceneDynamicTools.mjs";
 import { handleSceneHttpRequest } from "./scenes/sceneHttpApi.mjs";
 import { MemoryExtractor, createMemoryClassifier } from "./application/memoryExtractor.mjs";
 import { AssistantService, createAssistantIntentResolver } from "./application/assistantService.mjs";
-import { handleEntityHttpRequest } from "./application/entityHttpApi.mjs";
+import { createEntityHttpRoutes } from "./application/entityHttpComposition.mjs";
 import { handleSshWorkspaceHttpRequest } from "./application/sshWorkspaceHttpApi.mjs";
 import { SshConnectionService } from "./application/sshConnectionService.mjs";
 import { SshWorkspaceProbeService } from "./application/sshWorkspaceProbeService.mjs";
 import { SshWorkspaceTransport } from "./runtime/sshWorkspaceTransport.mjs";
 import { SessionContextReferenceService } from "./application/sessionContextReferenceService.mjs";
-import { resolveMessageMentionContext } from "./application/messageMentionContext.mjs";
-import { handleSessionContextReferenceHttpRequest } from "./application/sessionContextReferenceHttpApi.mjs";
 import { ScheduledSessionTaskService } from "./application/scheduledSessionTaskService.mjs";
 import { createScheduledSessionRouteResolver } from "./application/scheduledSessionRoute.mjs";
-import { handleScheduledSessionTaskHttpRequest } from "./application/scheduledSessionTaskHttpApi.mjs";
-import {
-  scheduledSessionTaskDynamicTools,
-  callScheduledSessionTaskDynamicTool
-} from "./application/scheduledSessionTaskDynamicTools.mjs";
-import { handleDshRpcRequest } from "./dsh-adapter/dshRpcAdapter.mjs";
-import { handleDshWebStatic, isDshWebStaticPath } from "./dsh-adapter/dshWebStatic.mjs";
+import { handleDshHttpRequest } from "./dsh-adapter/dshHttpApi.mjs";
+import { handlePlatformConfirmationHttpRequest } from "./application/platformConfirmationHttpApi.mjs";
+import { handleSessionTurnHttpRequest } from "./application/sessionTurnHttpApi.mjs";
+import { handleBackendRestartHttpRequest, handleBackendHealthHttpRequest } from "./application/backendLifecycleHttpApi.mjs";
+import { rejectDevelopmentPreviewWrite, rejectUnavailableStoreRequest } from "./application/backendHttpGuards.mjs";
 import {
   handleDshWebSocketUpgrade,
   broadcastDshMuxFrame,
   broadcastDshHostFrame,
 } from "./dsh-adapter/dshWebSocket.mjs";
-import { mapEvent as mapDshEvent } from "./dsh-adapter/dshEventMapper.mjs";
-import { storedSessionDetail } from "./application/storedSessionDetail.mjs";
+import { createDshLivePublisher } from "./dsh-adapter/dshLivePublisher.mjs";
 import { DataRootMigrationCoordinator } from "./runtime/dataRootMigrationCoordinator.mjs";
 import { BackendDataRootOwnership } from "./runtime/backendDataRootOwnership.mjs";
 import { ProviderEventIngestionService } from "./application/providerEventIngestionService.mjs";
 import { ProviderTurnResponseWatchdog } from "./application/providerTurnResponseWatchdog.mjs";
-import { ProviderNeutralCodeTaskExecutionService } from "./application/providerNeutralCodeTaskExecutionService.mjs";
 import { ProviderEventProjector } from "./application/providerEventProjector.mjs";
 import { LegacySessionHistoryRepairService } from "./application/legacySessionHistoryRepairService.mjs";
-import {
-  ProviderSessionRecoveryPort,
-  SessionRecoveryCoordinator,
-  renderReplayManifestForProvider,
-  stableRecoveryHash
-} from "./application/sessionRecovery.mjs";
-import {
-  parseSessionRecoveryHandoff,
-  sessionRecoveryHandoffPrompt
-} from "./application/sessionRecoveryHandoff.mjs";
-import {
-  mapClaudeProviderEvent,
-  mapClaudeTurnSettled,
-  mapCodexProviderNotification,
-  mapOpenClackyProviderChange
-} from "./application/providerEventEnvelope.mjs";
+import { createSessionRecoveryComposition } from "./agent-provider/bootstrap/sessionRecoveryComposition.mjs";
 import { CorptieStore } from "./store/corptieStore.mjs";
 import { resolveCodexCommand } from "./utils/codexCommand.mjs";
-import { isPlatformAssistant, resolvePlatformAdminSession } from "./utils/platformAssistantIdentity.mjs";
-import { isProductSessionKind } from "./utils/sessionKinds.mjs";
+import { resolvePlatformAdminSession } from "./utils/platformAssistantIdentity.mjs";
 import { environmentForCommand } from "./utils/externalCommand.mjs";
 import {
-  applyWorkspaceContinuationPresentation,
-  mergeStoredSessionPresentation,
-  preferredSessionCwd,
-  preferredSessionTitle,
   sessionHasActiveRun,
   workspaceContinuationKeepsSessionActive
 } from "./utils/sessionPresentation.mjs";
 import { defaultWorkspacePath, sessionWorkspacePath } from "./utils/workspacePaths.mjs";
-import {
-  assertSessionTitleAvailable,
-  defaultSessionTitleForAgent,
-  defaultSessionTitleForTask,
-  defaultSessionTitleForWorkspace,
-  deduplicateSessionTitles,
-  normalizeSessionTitle,
-  resolveAvailableAgentSessionTitle,
-  resolveAvailableSessionTitle,
-  suggestAvailableSessionTitle
-} from "./utils/sessionTitles.mjs";
 import { ensureCorptieCodexRuntime, resolveCorptieRuntimePaths } from "./runtime/corptieCodexRuntime.mjs";
-import { recoverCollaborationDeliveriesAfterCodexRolloutRepair } from "./application/collaborationDeliveryInfrastructureRecovery.mjs";
+import { createProviderStartupMaintenance } from "./agent-provider/bootstrap/providerStartupMaintenance.mjs";
 import { ensureAgentWorkDir, recoverableAgentWorkDir } from "./runtime/agentWorkDir.mjs";
 import { clearWorkAvatar as clearWorkAvatarFile } from "./runtime/agentAvatar.mjs";
 import { ensureCorptieClaudeRuntime, resolveCorptieClaudeRuntimePaths } from "./runtime/corptieClaudeRuntime.mjs";
@@ -271,47 +188,15 @@ import { ensureCorptieOpenClackyRuntime, resolveCorptieOpenClackyRuntimePaths } 
 import { OpenClackyServerRuntime, resolveOpenClackyCommand, resolveOpenClackyManagedPort } from "./runtime/openClackyServerRuntime.mjs";
 import {
   codexPermissionsForSession,
-  codexRuntimeWorkspaceRoots,
-  codexTurnPermissionOptions,
-  hasCodexSessionPermissions,
   normalizeCodexApprovalPolicy,
-  normalizeCodexSandbox,
-  withCodexSessionPermissions
+  normalizeCodexSandbox
 } from "./utils/codexPermissions.mjs";
+import { normalizeNewSessionDefaults } from "./utils/newSessionDefaults.mjs";
+import { configureBackendLogging } from "./utils/backendLogging.mjs";
+import { createPersistentRuntimeLifecycle } from "./application/persistentRuntimeLifecycle.mjs";
+import { createCollaborationProviderOptions } from "./adapters/collaborationProviderOptions.mjs";
 import {
-  codexTurnRuntimeConfig,
-  hasCodexSessionRuntimeConfig,
-  withCodexSessionRuntimeConfig
-} from "./utils/codexRuntimeConfig.mjs";
-import {
-  normalizeNewSessionDefaults,
-  resolveNewCodexRuntimeConfig
-} from "./utils/newSessionDefaults.mjs";
-import { configureBackendLogging, suspendBackendLogging } from "./utils/backendLogging.mjs";
-import {
-  automationTimelineItems,
-  collaborationEnvelopeFailure
-} from "./utils/sessionEventPresentation.mjs";
-import {
-  collaborationMcpEnvironment,
-  collaborationMcpServerName
-} from "./utils/collaborationRuntime.mjs";
-import { collaborationDynamicTools, callCollaborationDynamicTool } from "./collaboration/collaborationDynamicTools.mjs";
-import { CollaborationHttpClient } from "./mcp/collaborationHttpClient.mjs";
-import { choiceParserBackoffKey, choiceParserRetryDelayMs } from "./utils/choiceParserBackoff.mjs";
-import {
-  agentWorkPreDeliveryRetryDecision,
-  agentWorkFailureMessage,
-  assertAgentWorkSessionReference,
-  interruptedAgentWorkRecoveryPatch,
-  shouldReportAgentWorkQueued,
-  userMessageStatusForAgentWork
-} from "./utils/agentWorkQueue.mjs";
-import {
-  logSessionMessageLatency,
-  logSessionMessageFailure,
-  normalizeSessionMessageLatencyTrace,
-  sessionMessageLatencyTraceFromHeaders
+  logSessionMessageLatency
 } from "./utils/sessionMessageLatency.mjs";
 import { createGitWorkspaceSnapshot, inspectGitWorkspace } from "./utils/gitWorktreeInventory.mjs";
 import { ForkingWorkspaceTransitionManager } from "./runtime/forkingWorkspaceTransitionManager.mjs";
@@ -319,45 +204,74 @@ import { GitWorkspaceManager } from "./runtime/gitWorkspaceManager.mjs";
 import { GitHubPushManager } from "./runtime/gitHubPushManager.mjs";
 import { GitCommitProtection } from "./runtime/gitCommitProtection.mjs";
 import { ensureArtifactCommitHook } from "./runtime/artifactCommitHook.mjs";
-import { PROJECT_TOOLSET_ISOLATED_ACTIONS, ProjectToolsetManager } from "./runtime/projectToolsetManager.mjs";
-import { createProjectToolsetProductionComposition } from "./application/projectToolsetProductionComposition.mjs";
-import { CodexResetForecastMonitor } from "./runtime/codexResetForecastMonitor.mjs";
-import { resolveProjectWorktreeCommitMessage } from "./runtime/projectCommitMessage.mjs";
-import { workspaceDynamicTools } from "./runtime/workspaceDynamicTools.mjs";
-import { ProjectCodeSearchApplicationService } from "./project-code/projectCodeApplicationService.mjs";
-import {
-  createProjectCodeHostNamespace,
-  PROJECT_CODE_MODEL_RECOMMENDATION_ENABLED
-} from "./project-code/projectCodeDynamicTools.mjs";
-import { ProjectCodeIndexStore } from "./project-code/projectCodeIndexStore.mjs";
-import { ProjectCodeSearchService } from "./project-code/projectCodeSearchService.mjs";
-import { ProjectCodeSourceRevisionMonitor } from "./project-code/projectCodeSourceRevisionMonitor.mjs";
-import { ProjectCodeRunIsolationPort } from "./project-code/projectCodeRunIsolationPort.mjs";
-import { RepositorySourceSnapshotBuilder } from "./project-code/projectCodeSnapshot.mjs";
-import { ProjectCodeStartupReceiptRepository } from "./project-code/projectCodeStartupReceiptRepository.mjs";
+import { ProjectToolsetManager } from "./runtime/projectToolsetManager.mjs";
+import { handleSessionGitHttpRequest } from "./application/sessionGitHttpApi.mjs";
+import { handleSessionToolsetHttpRequest } from "./application/sessionToolsetHttpApi.mjs";
+import { handleSessionWorkspaceHttpRequest } from "./application/sessionWorkspaceHttpApi.mjs";
+import { createProjectCodeProductionComposition } from "./application/projectCodeProductionComposition.mjs";
+import { initializeBackendStoreReadiness } from "./application/backendStoreReadiness.mjs";
+import { activateStartupSessions } from "./application/startupSessionActivation.mjs";
+import { createProjectWorktreeGitOperations } from "./application/projectWorktreeGitOperations.mjs";
+import { createSessionGitHubPushOperations } from "./application/sessionGitHubPushOperations.mjs";
+import { PROJECT_CODE_MODEL_RECOMMENDATION_ENABLED } from "./project-code/projectCodeDynamicTools.mjs";
 import { assertWorkspaceRouteUsable } from "./runtime/workspaceRouteGuard.mjs";
 import { WorkspaceRoutePreparationCache } from "./runtime/workspaceRoutePreparationCache.mjs";
-import { sanitizeSessionCommitMessage, sessionCommitMessagePrompt } from "./utils/sessionCommitMessage.mjs";
+import { createCommitMessageOperations } from "./application/commitMessageOperations.mjs";
 import {
   resumeWorkAfterTransition,
   workspaceTransitionBlocksWork
 } from "./runtime/workspaceTransitionBarrier.mjs";
 import { ReplayEventLog } from "./utils/replayEventLog.mjs";
-import { deliveredStateRevision, StateSyncService } from "./application/stateSyncService.mjs";
-import { SessionTimelineChangePublisher } from "./application/sessionTimelineChangePublisher.mjs";
+import { handleStateSyncHttpRequest } from "./application/stateSyncHttpApi.mjs";
+import { handleSettingsReadHttpRequest, handleSettingsUpdateHttpRequest } from "./application/settingsHttpApi.mjs";
+import { handleFoundationModelUpdateHttpRequest, handleChoiceParserTestHttpRequest } from "./application/modelSettingsHttpApi.mjs";
+import { BackendRuntimeActivity } from "./application/backendRuntimeActivity.mjs";
 import { CodeTaskObservabilityService } from "./observability/codeTaskObservability.mjs";
 import { handleCodeTaskObservabilityHttpRequest } from "./observability/codeTaskObservabilityHttpApi.mjs";
 import { OBSERVABILITY_DEPENDENCY_PINS } from "./observability/dependencyContractManifest.mjs";
 import {
-  resolveDurableEventSessionId,
   resolveStableSessionIdForProviderDetail
 } from "./application/providerSessionIdentity.mjs";
 import { RunIsolationAuthorityResolver, RunIsolationExecutionCoordinator } from "./runIsolation/index.mjs";
+import { handleSessionTimelineHttpRequest } from "./application/sessionTimelineHttpApi.mjs";
+import { handleSessionInteractionHttpRequest } from "./application/sessionInteractionHttpApi.mjs";
+import { handleSessionConfigurationHttpRequest } from "./application/sessionConfigurationHttpApi.mjs";
+import { handleProviderModelsHttpRequest, handleProviderSetupHttpRequest } from "./application/providerSetupHttpApi.mjs";
+import { handleProjectWorkspaceHttpRequest } from "./application/projectWorkspaceHttpApi.mjs";
+import { handleSessionCollectionHttpRequest } from "./application/sessionCollectionHttpApi.mjs";
+import { handleSessionMutationHttpRequest } from "./application/sessionMutationHttpApi.mjs";
+import { deleteSessionWithOptionalMerge } from "./application/sessionDeletionOperation.mjs";
+import { handleSessionRecoveryHttpRequest, handleSessionExecutionHttpRequest } from "./application/sessionExecutionHttpApi.mjs";
+import { createControlPlaneProjection } from "./application/controlPlaneProjection.mjs";
+import { createSessionTitleReservations } from "./application/sessionTitleReservations.mjs";
+import { createSessionTaskCommands } from "./application/sessionTaskCommands.mjs";
+import { createTaskSessionProjection } from "./application/taskSessionProjection.mjs";
+import { createProviderEventPublisher } from "./application/providerEventPublisher.mjs";
+import { createTimelineChangeDispatcher } from "./application/timelineChangeDispatcher.mjs";
+import { createScheduledSessionBoundary } from "./application/scheduledSessionBoundary.mjs";
+import { createProjectActionHandlers } from "./application/projectActionHandlers.mjs";
+import { createSessionWorkspacePresentation, historicalDetailProjection } from "./application/sessionWorkspacePresentation.mjs";
+import { createProjectToolsetStatusReader } from "./application/projectToolsetStatusReader.mjs";
+import { createProviderSessionRouteBootstrap } from "./application/providerSessionRouteBootstrap.mjs";
+import { createSessionProviderAttachments } from "./application/sessionProviderAttachments.mjs";
 import {
-  DEFAULT_SESSION_HISTORY_WINDOW,
-  MAX_SESSION_HISTORY_PAGE,
-  normalizeSessionHistoryLimit
-} from "./application/sessionHistoryWindow.mjs";
+  prepareCodexProviderSessionInput as prepareCodexLaunchInput,
+  prepareClaudeProviderSessionInput as prepareClaudeLaunchInput,
+  startPreparedWorkSession as startPreparedWorkSessionWithAuthority
+} from "./application/sessionLaunchPreparation.mjs";
+import { seedDevelopmentFixtures } from "./application/developmentFixtureSeed.mjs";
+import {
+  createProjectToolsetAuthority, runtimeSourceIdentity
+} from "./application/projectToolsetAuthority.mjs";
+import { userMessageCommandSource } from "./domain/sessionMessageCommandSource.mjs";
+import { createSessionWorkspaceInspection } from "./application/sessionWorkspaceInspection.mjs";
+import { createSessionCreationOperation } from "./application/sessionCreationOperation.mjs";
+import { createEntitySessionLaunchers } from "./application/entitySessionLaunchers.mjs";
+import { createPostTurnWorkspaceOperations } from "./application/postTurnWorkspaceOperations.mjs";
+import { createGatewayInventoryReader } from "./application/gatewayInventoryReader.mjs";
+import { createCollaborationConfirmationCommands } from "./collaboration/collaborationConfirmationCommands.mjs";
+import { createProviderResponseHandlers } from "./application/providerResponseHandlers.mjs";
+import { createStateSyncPublisher } from "./application/stateSyncPublisher.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 // A copied data root remains non-executable even if a later launch omits flags.
@@ -378,6 +292,7 @@ let runIsolationAuthorityResolver = new RunIsolationAuthorityResolver();
 // 打开会话时前端只渲染尾部一屏，全量 text（千级消息约 1MB+）是切会话延迟的主因。
 const execFileAsync = promisify(execFile);
 const sessions = new Map();
+const { seedSessions, updateMockProgress } = createMockSessionFixtures({ sessions, now, emitEvent });
 // The global product-event stream is only a wake-up/side-effect transport; the
 // revisioned state stream and durable Session event log remain authoritative.
 // Keep enough events for ordinary reconnects without retaining every event for
@@ -386,13 +301,21 @@ const eventLog = new ReplayEventLog({
   capacity: Number(process.env.CORPTIE_GLOBAL_EVENT_REPLAY_CAPACITY ?? 4096)
 });
 const sseClients = new Set();
+let productEventPublisher = null;
 // Each state-stream client owns its own delivered revision. A shared cursor
 // lets a newly connected client advance past a change before existing clients
 // receive it, leaving their Session list stale until another mutation occurs.
-const stateSyncClients = new Map();
-let stateSyncPublishTimer = null;
-let timelineChangePublisher = null;
-let mockProgressTimer = null;
+const stateSyncPublisher = createStateSyncPublisher({
+  readService: () => stateSyncService,
+  readRevision: () => store.stateRevision(),
+  recordSessionDiagnostic: (...args) => sessionStateDiagnostics.record(...args),
+  invalidateDevices: () => {
+    clientDeviceGateway?.inspectorEvents.invalidate();
+    clientDeviceGateway?.events.invalidate({ inventory: true, control: true });
+    clientDeviceGateway?.events.publishState();
+  }
+});
+const { stateSyncClients, writeStateSyncFrame, publishStateChangesIfNeeded, scheduleStateSyncPublish } = stateSyncPublisher;
 let stateSyncService = null;
 let sessionBindingReadinessProbe = null;
 let backendStoreReady = false;
@@ -407,20 +330,26 @@ let workSessionStartApplicationService = null;
 let sessionRecoveryCoordinator = null;
 let projectToolsetProduction = null;
 let projectToolsetInitializer = null;
-const sessionEventListeners = new Set();
-const dshLiveTurns = new Map();
-const dshLiveSequenceBySession = new Map();
-const codexChoiceOptionsCache = new Map();
-const pendingCodexChoiceParses = new Set();
-const taskMemoryExtractions = new Map();
-const startupMaintenanceTasks = new Set();
-const codexChoiceParseRetryAfter = new Map();
-const reconcilingWorkspacePaths = new Set();
-const reservedSessionTitleKeys = new Set();
+const dshLivePublisher = createDshLivePublisher({
+  lastSessionEventSequence: (sessionId) => store.lastSessionEventSequence(sessionId),
+  broadcastDshMuxFrame, broadcastDshHostFrame
+});
+const { publishDshPromptStart, publishDshPromptFailure } = dshLivePublisher;
+const runtimeActivity = new BackendRuntimeActivity({
+  emitEvent,
+  tickAgentWorkQueue: (...args) => tickAgentWorkQueue(...args),
+  updateMockProgress
+});
 const reportedUnclassifiedProviderSessionIds = new Set();
-const choiceGenerations = new Map();
 const sessionCollaborationV2Enabled = process.env.CORPTIE_SESSION_COLLABORATION_V2 !== "0";
 const store = new CorptieStore();
+const {
+  sessionToolMetadata, resolveDynamicToolCallMetadata, resolveToolHostBinding,
+  prospectiveToolHostBinding, prepareDesiredWorkspaceToolMaterialization
+} = createSessionToolBindingProjection({
+  store,
+  prepareDesiredReplacement: (input) => toolHostMaterializationCoordinator.prepareDesiredReplacement(input)
+});
 let sshWorkspaceServices;
 function getSshWorkspaceServices() {
   if (sshWorkspaceServices?.dataRoot !== store.dataRoot) {
@@ -431,7 +360,6 @@ function getSshWorkspaceServices() {
   }
   return sshWorkspaceServices;
 }
-let timelineReadPool = null;
 const turnObservability = new CodeTaskObservabilityService({
   store,
   environment: environmentName,
@@ -446,6 +374,20 @@ const turnObservability = new CodeTaskObservabilityService({
 });
 const providerEventProjector = new ProviderEventProjector({ store });
 let providerTurnResponseWatchdog = null;
+const { scheduleTimelineChangePublish } = createTimelineChangeDispatcher({
+  store,
+  resolveSessionReference: (sessionId) => sessionBindingRepository?.resolve(sessionId),
+  invalidateDevices: (change) => clientDeviceGateway?.events.invalidate(change),
+  publishDeviceTimeline: (sessionId) => clientDeviceGateway?.events.publishTimeline(sessionId),
+  scheduleTimelineChange: (change) => runtimeActivity.scheduleTimelineChange(change)
+});
+const providerEventPublisher = createProviderEventPublisher({
+  store, eventLog, sseClients, now, resolveProviderEventBinding,
+  scheduleTimelineChangePublish, scheduleStateSyncPublish, scheduleAgentWorkDrain,
+  onCommittedMessageDelivery: (envelope) => taskSummaryService.onCommittedMessageDelivery(envelope),
+  publishDeviceTimeline: (sessionId) => clientDeviceGateway?.events.publishTimeline(sessionId)
+});
+const { publishProviderEventOutbox, notifySessionEventListeners } = providerEventPublisher;
 const providerEventIngestion = new ProviderEventIngestionService({
   store,
   resolveBinding: resolveProviderEventBinding,
@@ -459,12 +401,32 @@ const providerEventIngestion = new ProviderEventIngestionService({
 });
 const workspaceRoutePreparationCache = new WorkspaceRoutePreparationCache({ ttlMs: 15_000 });
 let codexResetForecastMonitor = null;
+const { sessionWithLogicalWorkspace } = createSessionWorkspacePresentation({ store });
+const codexChoiceProjection = createCodexChoiceProjection({
+  store, developmentPreview, upsertManagedCodexSession, emitEvent, now
+});
+const { scheduleCodexChoiceParseForText, bumpChoiceGeneration } = codexChoiceProjection;
+const sessionTitleReservations = createSessionTitleReservations({ store });
+const { reserveSessionTitle } = sessionTitleReservations;
 const collaborationCore = new CollaborationCore(store);
+const {
+  workspaceInventory, requireAgentLogicalSession,
+  callWorkspaceDynamicTool, validateProjectCodeHostRoute
+} = createWorkspaceSessionToolAuthority({
+  store, collaborationCore,
+  getSessionWorkspaceOperations: () => sessionWorkspaceOperations
+});
+const managedProviderSessionProjection = createManagedProviderSessionProjection({
+  store, collaborationCore, sessionWithLogicalWorkspace,
+  workspaceRoutePreparationCache,
+  getStartupReceipt: (logicalSessionId) => projectCodeStartupReceipts?.require(logicalSessionId) ?? null,
+  reportedUnclassifiedProviderSessionIds, now, emitEvent
+});
 const workService = new WorkApplicationService({
   store,
   onEntityChanged: (type, payload) => emitEvent(type, payload)
 });
-const workDiscussionService = new WorkDiscussionApplicationService({ workService, launch: launchWorkChatSession });
+const workDiscussionService = new WorkDiscussionApplicationService({ workService, launch: (input) => launchWorkChatSession(input) });
 let sessionRuntimeReleaseService = null;
 const taskCompletionService = new TaskCompletionService({
   store,
@@ -476,6 +438,13 @@ const taskCompletionService = new TaskCompletionService({
     });
     sessionRuntimeReleaseService?.releaseCompletedTaskSessions(task.id);
   }
+});
+const {
+  reportTaskAcceptanceForAgent, getBoundTaskForAgent,
+  reviseTaskForSession, completeTaskForSession
+} = createSessionTaskCommands({
+  store, collaborationCore, workService, taskCompletionService,
+  presentTaskForClient: (task) => presentTaskForClient(task)
 });
 const artifactService = new ArtifactService({ store });
 const chatResourceService = new ChatResourceService({ store });
@@ -492,6 +461,20 @@ const workChatContextService = new WorkChatContextService({ store, artifactServi
 let workChatOperationService = null;
 let sessionCollaborationService = null;
 const sessionChannelService = new SessionChannelService({ store, collaborationCore });
+const {
+  dispatchSessionChannelDelivery, inspectCollaborationSession,
+  resumeCollaborationSession, startCollaborationTurn
+} = createSessionChannelDeliveryOperation({
+  store, sessionChannelService, now,
+  resumeSession: (sessionId, context) => sessionApplicationService.resumeSession(sessionId, context),
+  sendMessage: sendUnifiedSessionMessage
+});
+const {
+  agentWorkTimelineItem,
+  collaborationConfirmationTimelineItem,
+  sessionChannelAuthorizationTimelineItem,
+  sessionChannelMessageTimelineItem
+} = createCollaborationTimelinePresentation({ store, collaborationCore, sessionChannelService });
 const hubService = new HubService({
   store,
   embedder: createOpenAiEmbedder(store.choiceParserSettings())
@@ -510,6 +493,19 @@ const collaborationRouter = new CollaborationRouter({ store });
 const memoryExtractor = new MemoryExtractor({
   store,
   classifyMany: createMemoryClassifier(store.choiceParserSettings())
+});
+const taskSessionProjection = createTaskSessionProjection({
+  store, memoryExtractor, emitEvent, sessionWithLogicalWorkspace
+});
+const { settleEntityTaskFromSession, settleTaskForWorkspaceContinuation, reconcileEntityTasksAtStartup } = taskSessionProjection;
+const handleCommittedProviderTerminalLifecycle = createProviderTerminalLifecycle({
+  store, emitEvent,
+  recordWorkSettled: (task) => workspaceContinuationCoordinator.recordWorkSettled(task),
+  settleEntityTaskFromSession, collaborationCore,
+  refreshWorkspaceInventoryAfterTurn: (...args) => refreshWorkspaceInventoryAfterTurn(...args),
+  continuePendingWorkspaceTransition: (...args) => continuePendingWorkspaceTransition(...args),
+  continuePendingProviderSwitch: (...args) => continuePendingProviderSwitch(...args),
+  resumeWorkAfterTransition, scheduleAgentWorkDrain
 });
 const assistantService = new AssistantService({
   store,
@@ -535,6 +531,19 @@ const bundledGitCommitProtectionPath = fileURLToPath(new URL(
 ));
 const corptieCodexRuntimePaths = resolveCorptieRuntimePaths({ environmentName });
 const corptieClaudeRuntimePaths = resolveCorptieClaudeRuntimePaths({ environmentName });
+const {
+  requiredWorkspaceInstructionSources, knownGlobalInstructionSources,
+  sessionTransitionCheckpoint, storedTransitionTimelineItems
+} = createWorkspaceTransitionContextReader({
+  store, bundledAgentMemoryPath, corptieCodexRuntimePaths,
+  corptieClaudeRuntimePaths
+});
+const {
+  collaborationThreadOptionsWithAgentContext, collaborationProviderRuntimeOptionsWithAgentContext,
+  claudeCollaborationRuntimeOptionsWithAgentContext, collaborationAgentContextInstructions
+} = createCollaborationProviderOptions({
+  agentContextService, corptieClaudeRuntimePaths, collaborationMcpServerPath, port, environmentName
+});
 const corptieOpenClackyRuntimePaths = resolveCorptieOpenClackyRuntimePaths({ environmentName });
 const configuredOpenClackyBaseURL = process.env.OPENCLACKY_BASE_URL?.trim() || null;
 const managedOpenClackyRuntime = configuredOpenClackyBaseURL ? null : new OpenClackyServerRuntime({
@@ -607,6 +616,15 @@ const collaborationDispatcher = new CollaborationDeliveryDispatcher({
   }
 });
 const resolveScheduledSessionRoute = createScheduledSessionRouteResolver({ store, collaborationCore });
+const {
+  authorizeScheduledSessionTask, enqueueScheduledSessionWork,
+  scheduledSessionHttpActor, scheduledSessionHttpLogicalSessionId
+} = createScheduledSessionBoundary({
+  store, environmentName, collaborationCore, emitEvent, scheduleAgentWorkDrain,
+  canDeliverScheduledMessage: (deviceId) => clientDeviceGateway?.authority.canDeliverScheduledMessage(deviceId),
+  registerRuntimeQueuedWork: (...args) => registerRuntimeQueuedWork(...args),
+  runtimeQueuePosition: (...args) => runtimeQueuePosition(...args)
+});
 const scheduledSessionTaskService = new ScheduledSessionTaskService({
   store,
   environment: environmentName,
@@ -637,105 +655,28 @@ const scheduledSessionTaskService = new ScheduledSessionTaskService({
 let platformOperationService = null;
 let toolMaterializationPort = null;
 const platformConfirmationService = new PlatformConfirmationService({ store });
-const hostToolCatalog = new HostToolCatalog([
-  {
-    id: "memory",
-    tools: memoryDynamicTools,
-    execute: (input) => callMemoryDynamicTool(memoryOperationService, input)
-  },
-  {
-    id: "artifacts",
-    domainRevision: "2",
-    tools: artifactDynamicTools,
-    authorize: authorizeArtifactDynamicTool,
-    execute: (input) => callArtifactDynamicTool(artifactService, input, { toolMaterializationPort })
-  },
-  {
-    id: "workspace",
-    tools: workspaceDynamicTools,
-    execute: (input) => callWorkspaceDynamicTool(input)
-  },
-  createProjectCodeHostNamespace({
-    getService: () => projectCodeApplicationService,
-    validateRoute: validateProjectCodeHostRoute
-  }),
-  {
-    id: "collaboration",
-    tools: sessionCollaborationV2Enabled
-      ? collaborationDynamicTools
-      : collaborationDynamicTools.filter((tool) => !tool.name.startsWith("corptie_sessions_")
-        && !tool.name.startsWith("corptie_collaboration_tasks_")
-        && tool.name !== "corptie_collaboration_capabilities"),
-    authorize: authorizeCollaborationTool,
-    execute: (input) => {
-      const client = new CollaborationHttpClient({
-        agentId: input.actorId,
-        baseUrl: `http://127.0.0.1:${port}`,
-        sessionScope: {
-          sessionId: input.metadata?.sessionId,
-          workId: input.metadata?.workId,
-          taskId: input.metadata?.taskId
-        }
-      });
-      return callCollaborationDynamicTool(client, input.tool, input.arguments);
-    }
-  },
-  {
-    id: "skills",
-    tools: skillDynamicTools,
-    execute: (input) => callSkillDynamicTool(skillRegistryService, input)
-  },
-  {
-    id: "scheduled-tasks",
-    tools: scheduledSessionTaskDynamicTools,
-    // Codex cannot add dynamic tools through thread/resume. Advertise the
-    // contracts during bootstrap, then fail closed until the authoritative
-    // Session binding has refreshed this thread's Tool Host metadata.
-    authorize: ({ actorId }) => Boolean(actorId),
-    execute: (input) => {
-      if (!input.metadata?.sessionId || !input.metadata?.logicalSessionId) {
-        const error = new Error("Automation tools require an authenticated logical Session binding.");
-        error.code = "SESSION_AUTHENTICATION_REQUIRED";
-        throw error;
-      }
-      return callScheduledSessionTaskDynamicTool(scheduledSessionTaskService, input);
-    }
-  },
-  {
-    id: "task-acceptance",
-    tools: taskAcceptanceDynamicTools,
-    execute: (input) => callTaskAcceptanceDynamicTool({
-      getBoundTask: getBoundTaskForAgent,
-      reportAcceptance: reportTaskAcceptanceForAgent,
-      completeTask: completeTaskForSession,
-      reviseTask: reviseTaskForSession
-    }, input)
-  },
-  {
-    id: "platform",
-    tools: platformDynamicTools,
-    // Catalog visibility is not authorization. Platform operations revalidate
-    // their concrete resource and administrative scope when called.
-    authorize: () => true,
-    execute: (input) => callPlatformDynamicTool(platformOperationService, input)
-  },
-  {
-    id: "work-chat",
-    tools: workChatDynamicTools,
-    authorize: ({ metadata }) => Boolean(metadata?.sessionId),
-    execute: (input) => callWorkChatDynamicTool(workChatOperationService, input)
-  },
-  {
-    id: "scenes",
-    domainId: "scenes",
-    domainRevision: "1",
-    tools: sceneDynamicTools,
-    authorize: ({ metadata }) => Boolean(metadata?.sessionId),
-    execute: (input) => callSceneDynamicTool(sceneService, input)
-  }
-]);
+const hostToolCatalog = createHostToolCatalog({
+  memoryOperationService, artifactService, callWorkspaceDynamicTool,
+  validateProjectCodeHostRoute,
+  getProjectCodeApplicationService: () => projectCodeApplicationService,
+  sessionCollaborationV2Enabled, port, skillRegistryService,
+  scheduledSessionTaskService, getBoundTaskForAgent,
+  reportTaskAcceptanceForAgent, completeTaskForSession,
+  reviseTaskForSession, sceneService,
+  getToolMaterializationPort: () => toolMaterializationPort,
+  getPlatformOperationService: () => platformOperationService,
+  getWorkChatOperationService: () => workChatOperationService
+});
 let toolHostService = null;
 const codexAppServerCommand = () => firstRunSetup.command("codex-app-server", resolveCodexCommand);
+const { loadCodexModels, loadClaudeModels } = createProviderModelCatalogLoaders({
+  store, codexAppServerCommand, corptieCodexRuntimePaths, environmentForCommand,
+  execFileAsync, readCodexDefaultConfig, defaultWorkspacePath,
+  claudeCommand: () => firstRunSetup.command("claude-sdk", () => resolveExternalCommand("claude"))
+});
+const { ensureCodexSessionPermissions, resolvedNewCodexRuntimeConfig } = createCodexSessionConfiguration({
+  store, upsertManagedCodexSession, loadCodexModels
+});
 const codexRuntime = createCodexProviderRuntime({
   command: codexAppServerCommand,
   env: () => ({
@@ -853,123 +794,12 @@ const claudeProviderRuntime = createClaudeProviderRuntime({
   executable: () => firstRunSetup.command("claude-sdk", () => resolveExternalCommand("claude", { environmentVariables: ["CORPTIE_CLAUDE_PATH"] })),
   resolveRuntimeOptions: (providerSessionId) => claudeRuntimeOptionsForSession(providerSessionId)
 });
-const openClackyManager = new OpenClackyManager({
-  baseURL: configuredOpenClackyBaseURL ?? managedOpenClackyRuntime.baseURL,
-  accessKey: process.env.OPENCLACKY_ACCESS_KEY,
-  ensureRuntime: managedOpenClackyRuntime ? () => managedOpenClackyRuntime.ensureRunning() : null,
-  stopRuntime: managedOpenClackyRuntime ? () => managedOpenClackyRuntime.stop() : null,
-  runtimeDirectory: corptieOpenClackyRuntimePaths.runtimeRoot,
-  resolveOwnedSessionIds: () => store.listActiveProviderSessionIds("openclacky"),
-  featureFlags: {
-    toolHostBridge: store.settings().openclackyBridge?.toolHostBridge !== false,
-    workspaceTransition: store.settings().openclackyBridge?.workspaceTransition !== false
-  },
-  onToolCall: (input) => toolHostService.execute(input),
-  resolveSessionBootstrap: async (input) => {
-    const actorId = input.toolHost?.actorId ?? input.actorId ?? null;
-    const metadata = input.toolHost?.metadata ?? input.metadata ?? null;
-    const agentContext = actorId ? await collaborationAgentContextInstructions(actorId, metadata) : "";
-    // The Adapter places a recovery ReplayManifest in input.runtimeInstructions.
-    // Preserve it alongside the ordinary Session instructions so OpenClacky can
-    // rebuild context through initialization injection without a replay API.
-    const runtimeInstructions = mergeOpenClackyRuntimeInstructions(
-      actorId ? collaborationRuntimeInstructions(actorId, metadata) : null,
-      input.runtimeInstructions
-    );
-    const systemPrompt = [agentContext].filter(Boolean).join("\n\n") || null;
-    return {
-      body: {
-        runtime_directory: corptieOpenClackyRuntimePaths.runtimeRoot,
-        ...(systemPrompt ? { system_prompt_append: systemPrompt } : {}),
-        ...(runtimeInstructions ? { runtime_instructions: runtimeInstructions } : {}),
-        ...(metadata ? { corptie_metadata: metadata } : {})
-      },
-      summary: {
-        hasSystemPrompt: Boolean(systemPrompt),
-        hasRuntimeInstructions: Boolean(runtimeInstructions),
-        runtimeDirectory: corptieOpenClackyRuntimePaths.runtimeRoot,
-        scope: metadata ?? null
-      }
-    };
-  },
-  onSessionChanged: (change) => {
-    const sessionId = change.session?.id
-      ?? (change.sessionId ? `openclacky:${String(change.sessionId).replace(/^openclacky:/, "")}` : null);
-    const providerEvent = change.event ?? null;
-    const providerEventType = String(providerEvent?.type ?? "");
-    if (sessionId) {
-      sessionStateDiagnostics.record(sessionId, "providerReceived", {
-        providerId: "openclacky",
-        turnId: providerEvent?.turn_id ?? null,
-        eventName: providerEventType || change.type || "session-changed"
-      });
-    }
-    try {
-      const logical = sessionId ? store.getLogicalSessionByLegacySessionId(sessionId) : null;
-      const physicalSessionId = String(providerEvent?.session_id ?? change.sessionId ?? sessionId ?? "")
-        .replace(/^openclacky:/, "");
-      const providerBinding = physicalSessionId
-        ? store.getAgentSessionBindingByProviderSession("openclacky", physicalSessionId)
-        : null;
-      if (providerEvent) {
-        const envelopeBinding = providerBinding ?? {
-          bindingId: `unresolved:openclacky:${physicalSessionId || "unknown"}`,
-          providerId: "openclacky",
-          providerSessionId: physicalSessionId || "unknown",
-          logicalSessionId: logical?.logicalSessionId ?? null,
-          routingVersion: Number(logical?.routingVersion ?? 1)
-        };
-        const envelope = mapOpenClackyProviderChange({
-          change,
-          binding: envelopeBinding,
-          receivedAt: now()
-        });
-        if (envelope) {
-          const ingestion = providerEventIngestion.ingest(envelope);
-          if (ingestion.status === "applied") {
-            handleCommittedProviderTerminalLifecycle({
-              event: ingestion.event,
-              projection: ingestion.projection,
-              logicalRoute: logical
-            });
-          }
-          if (sessionId && providerEventType === "task_finished") {
-            sessionStateDiagnostics.record(sessionId, "persisted", {
-              status: store.getSession(sessionId)?.status ?? null,
-              eventName: providerEventType
-            });
-          }
-          if (ingestion.status === "quarantined" && sessionId) {
-            sessionStateDiagnostics.record(sessionId, "providerEventQuarantined", {
-              eventName: providerEventType,
-              code: ingestion.code,
-              bindingId: envelope.bindingId
-            });
-          }
-          return;
-        }
-      }
-
-      // Creation/resume/rename/configuration callbacks are command results, not
-      // product-state events. Their application services persist the explicit
-      // command result; only real-time Provider events may project execution or
-      // Timeline state here.
-      if (!providerEvent) return;
-    } catch (error) {
-      console.error(`[provider-notification] isolated failure provider=openclacky session=${sessionId ?? "unknown"} event=${providerEventType || change.type || "unknown"} code=${error?.code ?? "unknown"} error=${error?.message ?? error}`);
-      if (sessionId) {
-        sessionStateDiagnostics.record(sessionId, "providerError", {
-          eventName: providerEventType || change.type || "unknown",
-          code: error?.code ?? null,
-          error: error?.message ?? String(error)
-        });
-        const physicalSessionId = String(providerEvent?.session_id ?? change.sessionId ?? sessionId)
-          .replace(/^openclacky:/, "");
-        const binding = store.getAgentSessionBindingByProviderSession("openclacky", physicalSessionId);
-        if (binding) store.markProviderBindingCursorDegraded(binding, now());
-      }
-    }
-  }
+const openClackyManager = createOpenClackyRuntimeManager({
+  configuredOpenClackyBaseURL, managedOpenClackyRuntime,
+  corptieOpenClackyRuntimePaths, store,
+  executeToolCall: (input) => toolHostService.execute(input),
+  collaborationAgentContextInstructions, sessionStateDiagnostics,
+  providerEventIngestion, handleCommittedProviderTerminalLifecycle, now
 });
 const openClackyWorkspaceTransitionManager = new ForkingWorkspaceTransitionManager({
   store,
@@ -1023,6 +853,31 @@ const claudeWorkspaceTransitionManager = new ForkingWorkspaceTransitionManager({
     enqueueWorkspaceContinuationSafely(event.transitionId);
   }
 });
+const providerWorkspaceSwitches = createProviderWorkspaceSwitches({
+  store, ensureLogicalRouteForCodexSession, sessionTransitionCheckpoint,
+  workspaceTransitionManager, claudeWorkspaceTransitionManager,
+  openClackyWorkspaceTransitionManager,
+  collaborationThreadOptionsForSession, emitEvent
+});
+const {
+  resumeCodexProviderSession, probeCodexProviderBinding, deleteCodexProviderSession,
+  renameCodexProviderSession, readCodexProviderAccountUsage, readCodexProviderSessionUsage,
+  interruptCodexProviderSession, updateCodexProviderConfiguration,
+  updateCodexProviderPermissions, respondCodexProviderApproval, respondCodexProviderUserInput
+} = createCodexSessionCommands({
+  store, codexRuntime, now, codexAppServerSessionCapabilities, upsertManagedCodexSession,
+  withPersistedCodexToolConfirmation, collaborationThreadOptionsForSession,
+  invalidateWorkspaceRoute: (logicalSessionId) => workspaceRoutePreparationCache.invalidate(logicalSessionId)
+});
+const { sendCodexProviderMessage } = createCodexTurnDispatcher({
+  store, codexRuntime, resolvePreparedWorkspaceRoute, bumpChoiceGeneration,
+  ensureCodexSessionPermissions, sessionWithLogicalWorkspace, collaborationThreadOptionsForSession
+});
+const { clearCodexAppServerSession } = createCodexConversationClear({
+  store, codexRuntime, collaborationCore, ensureCodexSessionPermissions,
+  reserveSessionTitle, collaborationThreadOptionsForSession, codexAppServerSessionCapabilities,
+  ensureLogicalRouteForCodexSession, sessionWithLogicalWorkspace, upsertManagedCodexSession, emitEvent
+});
 const gitWorkspaces = new GitWorkspaceManager({
   store,
   transitions: workspaceTransitionManager,
@@ -1044,99 +899,41 @@ const gitHubPushes = new GitHubPushManager({
   commitProtection: gitCommitProtection,
   ensureCommitGate: (path) => ensureArtifactCommitHook(path, { dbPath: store.dbPath })
 });
-const openClackyProvider = createOpenClackyProvider(openClackyManager, {
-  attachTools: async (attachment) => openClackyToolHostAttachment(attachment),
-  applyToolPlanAtTurnBoundary: applyOpenClackyToolPlanAtTurnBoundary,
-  prepareWorkspaceTransition: (reference, input = {}) => switchOpenClackyProviderWorkspace(reference, input),
-  readSessionUsage: async (reference) => store.getSessionUsageSnapshot(reference.sessionId)?.context ?? null,
-  bindWorkspace: (input) => persistedProviderWorkspaceProof(store, input),
-  inspectWorkspaceBinding: (input) => persistedProviderWorkspaceProof(store, input)
-});
-const agentProviderRegistry = createAgentProviderRuntimeRegistry({
-  claudeProvider: claudeProviderRuntime,
-  codexOperations: {
-    prepareSessionInput: prepareCodexProviderSessionInput,
-    createSession: createCodexProviderSession,
-    forkSession: (input, context) => codexThreadCreationQueue.run(() => createCodexProviderSessionNow(input, context.forkSource)),
-    resumeSession: resumeCodexProviderSession,
-    probeBinding: probeCodexProviderBinding,
-    prepareExecution: prepareCodexProviderExecution,
-    stabilizeRecoverySession: stabilizeCodexRecoverySession,
-    deleteSession: deleteCodexProviderSession,
-    disconnectSession: (reference) => codexRuntime.archiveThread(reference.providerSessionId),
-    restartSession: restartCodexProviderSession,
-    renameSession: renameCodexProviderSession,
-    listModels: loadCodexModels,
-    send: sendCodexProviderMessage,
-    executeCommand: (reference, command) => codexRuntime.executeCommand(reference.providerSessionId, command),
-    clearConversation: (reference, context = {}) => clearCodexAppServerSession(
-      reference.sessionId,
-      reference.metadata.session,
-      context.source
-    ),
-    interrupt: interruptCodexProviderSession,
-    respondToApproval: respondCodexProviderApproval,
-    respondToUserInput: respondCodexProviderUserInput,
-    manageTurnChanges: manageCodexTurnChanges,
-    switchModel: (reference, model) => updateCodexProviderConfiguration(reference, { currentModel: model }),
-    switchReasoning: (reference, reasoningLevel) => updateCodexProviderConfiguration(reference, { currentReasoningLevel: reasoningLevel }),
-    updatePermissions: updateCodexProviderPermissions,
-    readAccountUsage: readCodexProviderAccountUsage,
-    readSessionUsage: readCodexProviderSessionUsage,
-    prepareWorkspaceTransition: switchCodexProviderWorkspace,
-    bindWorkspace: (input) => persistedProviderWorkspaceProof(store, input),
-    inspectWorkspaceBinding: (input) => persistedProviderWorkspaceProof(store, input),
-    attachTools: async (attachment) => codexToolHostAttachment(
-      attachment,
-      withWorkChatCodexContext(
-        await collaborationProviderRuntimeOptionsWithAgentContext(
-          attachment.actorId,
-          attachment.metadata
-        ),
-        attachment.metadata
-      )
-    ),
-    applyToolPlanAtTurnBoundary: async (binding, plan, request) => {
-      const confirmation = confirmOrRestoreCodexToolPlan({
-        runtime: codexRuntime, store, binding, plan, request
-      });
-      return appliedToolMaterializationReceipt({
-        providerBindingId: binding.providerBindingId,
-        providerCapabilityRevision: request.capabilityRevision,
-        requestedVersion: request.requestedVersion,
-        appliedCatalogVersion: request.catalogVersion,
-        appliedDomains: request.appliedDomains,
-        appliedExposurePlanHash: plan.exposurePlanHash,
-        providerDefinitionsHash: confirmation.providerDefinitionsHash,
-        providerContractHash: confirmation.providerContractHash ?? plan.providerContractHash,
-        providerDefinitionsCount: confirmation.providerDefinitionsCount,
-        providerObservationKind: confirmation.providerObservationKind,
-        refreshMode: plan.refreshMode,
-        providerRevision: confirmation.providerRevision,
-        receiptId: `codex-tool-confirmation:${binding.providerBindingId}:${request.requestedVersion}`
-      });
-    },
-    runBackgroundPrompt: (input) => codexRuntime.runEphemeralPrompt({
-      cwd: input.cwd,
-      runtimeWorkspaceRoots: input.allowedRoots,
-      prompt: input.prompt,
-      model: input.model,
-      reasoningEffort: input.reasoningEffort,
-      timeoutMs: input.timeoutMs,
-      signal: input.signal,
-      executionPolicy: input.executionPolicy,
-      outputSchema: input.outputSchema,
-      permissionProfile: input.permissionProfile,
-      developerInstructions: input.developerInstructions,
-      threadSource: input.purpose
-    })
-  },
-  codexMetadata: {
-    backgroundPermissionProfiles: ["read-only", "workspace-write"]
-  },
-  additionalProviders: [openClackyProvider]
+const agentProviderRegistry = createProviderRuntimeRegistryComposition({
+  store, claudeProviderRuntime, codexRuntime, openClackyManager,
+  openClackyToolHostAttachment, applyOpenClackyToolPlanAtTurnBoundary,
+  switchOpenClackyProviderWorkspace, prepareCodexProviderSessionInput,
+  createCodexProviderSession,
+  forkCodexSession: (input, context) => codexSessionCreator.create(input, context.forkSource),
+  resumeCodexProviderSession, probeCodexProviderBinding,
+  prepareCodexProviderExecution, stabilizeCodexRecoverySession,
+  deleteCodexProviderSession, restartCodexProviderSession,
+  renameCodexProviderSession, loadCodexModels, sendCodexProviderMessage,
+  clearCodexAppServerSession, interruptCodexProviderSession,
+  respondCodexProviderApproval, respondCodexProviderUserInput,
+  manageCodexTurnChanges, updateCodexProviderConfiguration,
+  updateCodexProviderPermissions, readCodexProviderAccountUsage,
+  readCodexProviderSessionUsage, switchCodexProviderWorkspace,
+  codexToolHostAttachment, withWorkChatCodexContext,
+  collaborationProviderRuntimeOptionsWithAgentContext
 });
 // Composition root: provider-specific executable ports are confined here.
+const { handleCodexAppServerNotificationSafely } = createCodexNotificationReceiver({
+  store, codexRuntime, sessionStateDiagnostics, requireSessionReference,
+  chatResourceService, agentProviderRegistry, providerEventIngestion, now,
+  scheduleCodexChoiceParseForText, handleCommittedProviderTerminalLifecycle
+});
+
+const claudeNotificationReceiver = createClaudeNotificationReceiver({
+  store, emitEvent, sessionWithLogicalWorkspace, providerEventIngestion,
+  sessionStateDiagnostics, now, workspaceContinuationCoordinator,
+  settleEntityTaskFromSession, collaborationCore, resumeWorkAfterTransition,
+  scheduleAgentWorkDrain,
+  refreshWorkspaceInventoryAfterTurn: (...args) => refreshWorkspaceInventoryAfterTurn(...args),
+  continuePendingWorkspaceTransition: (...args) => continuePendingWorkspaceTransition(...args),
+  continuePendingProviderSwitch: (...args) => continuePendingProviderSwitch(...args)
+});
+
 const firstRunSetup = new FirstRunSetupService({
   path: () => join(store.dataRoot, "first-run-setup.json"),
   hasWorks: () => store.listWorks().length > 0,
@@ -1237,15 +1034,11 @@ sessionCollaborationService = new SessionCollaborationService({
   },
   defaultProviderId: agentProviderRegistry.defaultProviderId
 });
-const providerRuntimeReadiness = new Map(agentProviderRegistry.descriptors().map((provider) => [
-  provider.id,
-  {
-    state: "not_ready",
-    reasonCode: "PROVIDER_INITIALIZING",
-    message: `${provider.displayName} is preparing to accept Session messages.`,
-    retryable: true
-  }
-]));
+const { setProviderRuntimeReadiness, decorateSessionForClient } = createSessionReadinessProjection({
+  store, agentProviderRegistry, scheduleStateSyncPublish,
+  readBindingProbe: () => sessionBindingReadinessProbe,
+  readFallbackBindingReadiness: (logicalSessionId) => emptyCodexBindingPreflight.readiness(logicalSessionId)
+});
 const providerToolMaterializationPort = new RegistryToolMaterializationPort({
   registry: agentProviderRegistry
 });
@@ -1331,6 +1124,10 @@ const sessionBindingRepository = new SessionBindingRepository({
   normalizeLegacySessionId: normalizeSessionId,
   resolveProviderId: (providerId, options = {}) => agentProviderRegistry.resolveId(providerId, options)
 });
+const {
+  getTimelineReadPool, closeTimelineReadPool, getStoredSessionSnapshot,
+  readSessionHistory, readSessionTimelineWindow, readStoredSessionDetail
+} = createSessionTimelineReader({ store, requireSessionReference, decorateSessionForClient });
 const legacySessionHistoryRepairService = new LegacySessionHistoryRepairService({
   store,
   resolveReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
@@ -1341,184 +1138,25 @@ const legacySessionHistoryRepairService = new LegacySessionHistoryRepairService(
     }]
   ])
 });
-const sessionApplicationService = new SessionApplicationService({
-  registry: agentProviderRegistry,
-  observeLifecycle: ({ type, sessionId, ...payload }) => {
-    console.info(`[session-lifecycle] ${JSON.stringify({ type, sessionId, ...payload })}`);
-    emitEvent(type, payload, { sessionId });
-  },
-  toolHostService,
-  toolMaterializationPort,
-  resolveRequiredToolDomains: requiredToolDomainsForSession,
-  resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
-  resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
-  assertMessageDispatchAllowed: (reference) => {
-    sessionForkService.assertCanDispatch(reference.sessionId);
-    return assertSessionRecoveryMessageBoundary(reference);
-  },
-  recoverUnavailableSession: async ({ sessionId, reference, error, context }) => {
-    if (!reference.logicalSessionId || !context.idempotencyKey) {
-      const recoveryError = new Error("Automatic recovery requires a logical Session and stable message idempotency key.");
-      recoveryError.code = "SESSION_RECOVERY_IDEMPOTENCY_REQUIRED";
-      throw recoveryError;
-    }
-    const recoveryKind = context.recoveryKind === "restart" ? "restart" : "message";
-    const attempt = await sessionRecoveryCoordinator.recover({
-      logicalSessionId: reference.logicalSessionId,
-      providerId: reference.providerId,
-      idempotencyKey: `${recoveryKind}-recovery:${context.idempotencyKey}`,
-      triggerDeliveryId: recoveryKind === "message" ? context.idempotencyKey : null,
-      reason: error?.replacementReason ?? error?.code ?? "provider-session-unavailable"
-    });
-    const recoveredReference = requireSessionReference(sessionId);
-    const recoveredSession = store.getSession(sessionId);
-    await sessionApplicationService.resumeSession(sessionId, {
-      purpose: "session-create-finalization",
-      actorId: recoveredSession?.agentId ?? null,
-      sessionId,
-      logicalSessionId: recoveredReference.logicalSessionId,
-      providerBindingId: recoveredReference.bindingId,
-      sessionKind: recoveredSession?.sessionKind ?? "legacy",
-      workId: recoveredSession?.workId ?? null,
-      taskId: recoveredSession?.taskId ?? null,
-      desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
-    });
-    if (recoveryKind === "message") {
-      store.rerouteUnsentMessageDelivery(context.idempotencyKey, recoveredReference);
-    }
-    return { reference: recoveredReference, attempt };
-  },
-  resolveMessageContext: async (reference, messageContext = {}) => {
-    const session = store.getSession(reference.sessionId);
-    const mentionContext = resolveMessageMentionContext(
-      store,
-      reference.sessionId,
-      normalizeConversationMessage(messageContext.message).mentions ?? []
-    );
-    let baseContext = null;
-    if (session?.sessionKind === "workChat" && session.workId) {
-      baseContext = workChatContextService.build(session.workId, session);
-    } else if (session?.sessionKind === "assistantChat") {
-      baseContext = await sessionContextReferenceService.resolve(reference.sessionId);
-      baseContext = {
-        ...baseContext,
-        prompt: [sessionResponsibilityInstructions("assistantChat"), baseContext?.prompt].filter(Boolean).join("\n\n")
-      };
-    } else if (session?.sessionKind === "worker") {
-      const ownership = store.assertLogicalWorkSessionBinding(reference.logicalSessionId);
-      const task = store.getTask(ownership.taskId);
-      const work = task?.work_id ? store.getWork(task.work_id) : null;
-      const startupReceiptRow = store.selectOne(
-        `SELECT receipt.receipt_json, operation.updated_at FROM work_session_startup_receipts receipt
-         JOIN work_session_startup_operations operation
-           ON operation.startup_operation_id=receipt.startup_operation_id
-         WHERE operation.logical_session_id=? AND operation.state='ready'
-         UNION ALL
-         SELECT execution.receipt_json, execution.updated_at FROM execution_spaces execution
-         WHERE execution.logical_session_id=? AND execution.status='ready'
-         ORDER BY updated_at DESC LIMIT 1`,
-        [reference.logicalSessionId, reference.logicalSessionId]
-      );
-      const toolMaterialization = store.getSessionToolCatalogMaterialization(
-        reference.logicalSessionId,
-        reference.bindingId
-      );
-      baseContext = buildWorkSessionContext({
-        session, task, work,
-        artifactIndex: artifactService.indexForSession(session),
-        startupReceipt: startupReceiptRow ? JSON.parse(startupReceiptRow.receipt_json) : null,
-        toolDomains: appliedToolDomainIds(toolMaterialization),
-        toolCatalogVersion: toolMaterialization?.appliedCatalogVersion ?? null
-      });
-    }
-    let memoryContext = null;
-    if (session?.agentId) {
-      const recall = await memoryRecallService.turn(conversationMessageText(messageContext.message), {
-        sessionId: session.id,
-        agentId: session.agentId,
-        workId: session.workId ?? null,
-        taskId: session.taskId ?? null
-      }, { deepRecall: messageContext.deepRecall === true });
-      if (recall.memories.length > 0) {
-        const lines = recall.memories.map((memory) => `- [${memory.kind}] ${memory.content}`);
-        memoryContext = {
-          prompt: `<corptie_memory_recall mode="${recall.mode}" reason="${recall.reason}">\n${lines.join("\n")}\n</corptie_memory_recall>`,
-          memoryRecall: recall
-        };
-      }
-    }
-    // Provider-native thread context remains Provider-owned. Ordinary sends
-    // contain only this turn's Corptie product context and never replay chat
-    // history from either Provider or session_items.
-    const directUserIntentContext = buildDirectUserMessageEvidence(store, reference, messageContext);
-    const skillRoutingContext = skillMcpTurnContext(
-      mcpAssignmentRevisionForAgent(session?.agentId)
-    );
-    const contexts = [baseContext, skillRoutingContext, mentionContext, directUserIntentContext, memoryContext]
-      .filter((item) => item?.prompt);
-    if (contexts.length === 0) return null;
-    if (session?.sessionKind === "worker") {
-      return mergeWorkerSessionContexts({
-        baseContext,
-        directUserIntentContext,
-        memoryContext,
-        mentionContext,
-        requiredContexts: [skillRoutingContext].filter(Boolean)
-      });
-    }
-    if (contexts.length === 1) return contexts[0];
-    return {
-      ...baseContext,
-      prompt: contexts.map((item) => item.prompt).join("\n\n"),
-      memoryRecall: memoryContext?.memoryRecall ?? null
-    };
-  },
-  bindCreatedSession: async ({ providerId, session, input, context }) => {
-    persistProviderSessionProjection(store, session, {
-      providerId,
-      agentId: input.toolHost?.actorId ?? context.actorId ?? null,
-      sessionKind: input.sessionKind,
-      workId: context.workId ?? null,
-      taskId: context.taskId ?? null
-    });
-    ensureCollaborationAgentForSession(session, input.toolHost?.actorId ?? context.actorId);
-    const logical = await ensureLogicalRouteForProviderSession(session, providerId, {
-      instructionSources: input.instructionSources,
-      runtimeWorkspaceRoots: input.runtimeWorkspaceRoots,
-      approvalPolicy: input.approvalPolicy,
-      sandbox: input.sandbox
-    });
-    return logical ? {
-      sessionId: logical.legacySessionId,
-      logicalSessionId: logical.logicalSessionId,
-      bindingId: logical.activeBinding?.bindingId ?? null,
-      routingVersion: logical.routingVersion,
-      providerId,
-      providerSessionId: logical.activeBinding?.providerSessionId ?? null,
-      session: store.getSession(logical.legacySessionId)
-        ?? sessionWithLogicalWorkspace(session, logical)
-    } : null;
-  },
-  persistRenamedSession: async ({ reference, title, providerSession }) => {
-    const stored = store.renameSession(reference.sessionId, title);
-    return stored ? {
-      ...providerSession,
-      ...stored,
-      external: providerSession?.external ?? stored.external
-    } : providerSession;
-  },
-  persistModelSelection: (input) => persistSessionModelSelection(store, input),
-  removeSessionBinding: async ({ reference }) => {
-    collaborationCore.detachSession(reference.sessionId);
-    collaborationCore.detachSession(reference.providerSessionId);
-    store.deleteLogicalSessionByLegacySessionId(reference.sessionId);
-    store.deleteSession(reference.sessionId);
-    emitEvent("SessionDeleted", {
-      sessionId: reference.sessionId,
-      logicalSessionId: reference.logicalSessionId,
-      provider: reference.providerId
-    }, { detachedSession: true });
-  }
+const sessionApplicationService = createSessionApplicationComposition({
+  store, agentProviderRegistry, sessionBindingRepository, toolHostService, toolMaterializationPort,
+  requiredToolDomainsForSession,
+  assertForkDispatchAllowed: (sessionId) => sessionForkService.assertCanDispatch(sessionId),
+  assertSessionRecoveryMessageBoundary,
+  recoverSession: (input) => sessionRecoveryCoordinator.recover(input),
+  requireSessionReference, workChatContextService,
+  resolveContextReferences: (sessionId) => sessionContextReferenceService.resolve(sessionId),
+  artifactService, memoryRecallService, mcpAssignmentRevisionForAgent,
+  ensureCollaborationAgentForSession, ensureLogicalRouteForProviderSession,
+  sessionWithLogicalWorkspace, collaborationCore, emitEvent
+});
+const { interruptUnifiedSession, respondUnifiedSessionApproval, respondUnifiedSessionUserInput } = createSessionInteractionCommands({
+  store, requireSessionReference, sessionApplicationService, providerEventIngestion,
+  handleCommittedProviderTerminalLifecycle, sendUnifiedSessionMessage, emitEvent, now
+});
+const { handleProviderResponseDelayed, handleProviderResponseTimeout } = createProviderResponseHandlers({
+  store, providerEventIngestion, sessionApplicationService,
+  handleCommittedProviderTerminalLifecycle, now
 });
 providerTurnResponseWatchdog = new ProviderTurnResponseWatchdog({
   warningAfterMs: configuredProviderResponseDelay("CORPTIE_PROVIDER_RESPONSE_WARNING_MS", 20_000),
@@ -1530,411 +1168,15 @@ sessionRuntimeReleaseService = new SessionRuntimeReleaseService({
   store,
   sessionService: sessionApplicationService
 });
-sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
-  store,
-  resolveProviderDescriptor: (providerId) => agentProviderRegistry.get(providerId).descriptor,
-  compressHandoff: async ({ attempt, source }) => {
-    const result = await backgroundAgentService.run({
-      purpose: "session-recovery-handoff",
-      cwd: attempt.boundCwd,
-      allowedRoots: [attempt.boundCwd],
-      permissionProfile: "read-only",
-      preferredProviderId: attempt.providerId,
-      timeoutMs: 45_000,
-      developerInstructions: "Summarize only the supplied inert records. Do not inspect the workspace or call tools.",
-      prompt: sessionRecoveryHandoffPrompt(source)
-    });
-    return parseSessionRecoveryHandoff(result.text);
-  },
-  providerPort: new ProviderSessionRecoveryPort({
-    createReplacement: async ({ attempt, manifest }) => {
-      const storedSession = store.getSession(attempt.sessionId);
-      const recoveryToolContext = {
-        purpose: "session-recovery",
-        actorId: storedSession?.agentId ?? null,
-        sessionId: attempt.sessionId,
-        logicalSessionId: attempt.logicalSessionId,
-        sessionKind: storedSession?.sessionKind ?? "legacy",
-        workId: attempt.workId,
-        taskId: attempt.taskId,
-        desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
-      };
-      const preparedToolHost = await toolHostService.prepareSession(attempt.providerId, recoveryToolContext);
-      const recoveryContext = renderReplayManifestForProvider(manifest);
-      const created = await sessionApplicationService.createSessionForRouteTransition(attempt.providerId, {
-        title: storedSession?.title ?? "Recovered Session",
-        cwd: attempt.boundCwd,
-        runtimeWorkspaceRoots: [attempt.boundCwd],
-        sessionKind: storedSession?.sessionKind ?? "legacy",
-        sandbox: attempt.permissionSnapshot?.sandbox,
-        approvalPolicy: attempt.permissionSnapshot?.approvalPolicy,
-        recoveryContext,
-        instructionSources: attempt.instructionSources,
-        metadata: {
-          logicalSessionId: attempt.logicalSessionId,
-          recoveryAttemptId: attempt.attemptId,
-          replayManifestHash: stableRecoveryHash(manifest)
-        }
-      }, {
-        ...recoveryToolContext,
-        deferSessionBinding: true,
-        preparedToolHost
-      });
-      const providerThreadId = created?.external?.threadId ?? created?.external?.sessionId ?? created?.id;
-      const providerSessionId = created?.external?.sessionId ?? created?.external?.threadId ?? created?.id;
-      if (!providerThreadId || !providerSessionId || created?.status === "failed") {
-        const creationError = new Error("Provider did not create a usable replacement Session.");
-        creationError.code = "RECOVERY_REPLACEMENT_INVALID";
-        throw creationError;
-      }
-      let toolConfirmation = null;
-      if (attempt.providerId === "codex-app-server") {
-        const definitions = preparedToolHost?.providerAttachment?.dynamicTools;
-        if (!Array.isArray(definitions)) {
-          const confirmationError = new Error("Replacement Codex Session has no prospective Tool schema.");
-          confirmationError.code = "RECOVERY_TOOL_CONFIRMATION_MISSING";
-          throw confirmationError;
-        }
-        const confirmed = codexRuntime.confirmThreadToolPlan(providerThreadId, definitions);
-        toolConfirmation = {
-          providerRevision: confirmed.providerRevision,
-          providerDefinitionsHash: confirmed.providerDefinitionsHash,
-          providerContractHash: confirmed.providerContractHash,
-          providerDefinitionsCount: confirmed.providerDefinitionsCount,
-          providerObservationKind: confirmed.providerObservationKind
-        };
-      }
-      return {
-        providerThreadId,
-        providerSessionId,
-        bindingId: `binding:${randomUUID()}`,
-        sessionProjection: created,
-        toolConfirmation,
-        recoveryContextHash: stableRecoveryHash(recoveryContext),
-        replayManifestHash: stableRecoveryHash(manifest)
-      };
-    },
-    resumeReplacement: async ({ attempt, replacement, manifest, manifestHash }) => {
-      if (attempt.providerId !== "codex-app-server") return replacement;
-      const storedSession = store.getSession(attempt.sessionId);
-      const recoveryToolContext = {
-        purpose: "session-recovery-resume-empty-target",
-        actorId: storedSession?.agentId ?? null,
-        sessionId: attempt.sessionId,
-        logicalSessionId: attempt.logicalSessionId,
-        sessionKind: storedSession?.sessionKind ?? "legacy",
-        workId: attempt.workId,
-        taskId: attempt.taskId,
-        desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
-      };
-      const preparedToolHost = await toolHostService.prepareSession(attempt.providerId, recoveryToolContext);
-      const expected = replacement.toolConfirmation;
-      if (!expected || !Array.isArray(preparedToolHost?.providerAttachment?.dynamicTools)) {
-        const confirmationError = new Error("Journaled Codex recovery target has no exact Tool schema proof.");
-        confirmationError.code = "RECOVERY_TOOL_CONFIRMATION_MISSING";
-        throw confirmationError;
-      }
-      const providerAttachment = {
-        ...preparedToolHost.providerAttachment,
-        dynamicToolConfirmation: {
-          providerRevision: expected.providerRevision,
-          providerDefinitionsHash: expected.providerDefinitionsHash,
-          providerContractHash: expected.providerContractHash,
-          providerDefinitionsCount: expected.providerDefinitionsCount,
-          providerObservationKind: expected.providerObservationKind
-        }
-      };
-      try {
-        await codexRuntime.inspectEmptyThreadForRouteCommit(replacement.providerThreadId, {
-          cwd: attempt.boundCwd,
-          runtimeWorkspaceRoots: [attempt.boundCwd],
-          ...providerAttachment
-        });
-        return replacement;
-      } catch (error) {
-        if (error?.code !== "PROVIDER_EMPTY_THREAD_UNRECOVERABLE" || error?.safeToRecreate !== true) {
-          throw error;
-        }
-        return sessionRecoveryCoordinator.providerPort.createReplacement({
-          attempt,
-          manifest,
-          manifestHash
-        });
-      }
-    },
-    attachToolHost: async ({ attempt, replacement }) => {
-      const storedSession = store.getSession(attempt.sessionId);
-      const prepared = await toolHostService.prepareSession(attempt.providerId, {
-        purpose: "session-recovery-validation",
-        actorId: storedSession?.agentId ?? null,
-        sessionId: attempt.sessionId,
-        logicalSessionId: attempt.logicalSessionId,
-        sessionKind: storedSession?.sessionKind ?? "legacy",
-        workId: attempt.workId,
-        taskId: attempt.taskId,
-        desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
-      });
-      let confirmed = null;
-      if (attempt.providerId === "codex-app-server") {
-        const definitions = prepared?.providerAttachment?.dynamicTools;
-        const expected = replacement.toolConfirmation;
-        if (Array.isArray(definitions)) {
-          try {
-            confirmed = codexRuntime.confirmThreadToolPlan(replacement.providerThreadId, definitions);
-          } catch (error) {
-            if (error?.code !== "PROVIDER_TOOL_APPLICATION_UNCONFIRMED" || !expected) throw error;
-            confirmed = codexRuntime.restoreThreadToolPlanConfirmation(
-              replacement.providerThreadId,
-              definitions,
-              expected
-            );
-          }
-        }
-        if (!confirmed || !expected
-          || confirmed.providerRevision !== expected.providerRevision
-          || confirmed.providerDefinitionsHash !== expected.providerDefinitionsHash
-          || confirmed.providerDefinitionsCount !== expected.providerDefinitionsCount
-          || confirmed.providerObservationKind !== expected.providerObservationKind) {
-          const confirmationError = new Error("Replacement Codex Tool schema confirmation changed before recovery validation.");
-          confirmationError.code = "RECOVERY_TOOL_CONFIRMATION_MISMATCH";
-          throw confirmationError;
-        }
-      }
-      const prospectiveBinding = prospectiveToolHostBinding({
-        logicalSessionId: attempt.logicalSessionId,
-        binding: {
-          bindingId: replacement.bindingId,
-          providerThreadId: replacement.providerThreadId,
-          providerId: attempt.providerId,
-          providerSessionId: replacement.providerSessionId,
-          worktreeId: attempt.worktreeId,
-          repositoryId: attempt.repositoryId,
-          boundCwd: attempt.boundCwd,
-          routingVersion: attempt.sourceRoutingVersion + 1,
-          bindingGeneration: attempt.targetBindingGeneration
-        },
-        session: storedSession
-      });
-      const replacementInput = {
-        binding: prospectiveBinding,
-        desiredDomains: desiredToolDomainIds(attempt.toolCatalog)
-      };
-      const materialization = attempt.providerId === "codex-app-server"
-        ? await toolHostMaterializationCoordinator.prepareAppliedReplacement({
-            ...replacementInput,
-            providerConfirmation: replacement.toolConfirmation
-          })
-        : await toolHostMaterializationCoordinator.prepareDesiredReplacement(replacementInput);
-      return {
-        catalogHash: stableRecoveryHash(attempt.toolCatalog),
-        catalogGeneration: attempt.toolCatalog?.appliedCatalogVersion ?? null,
-        domains: materialization?.appliedDomains ?? attempt.toolCatalog?.appliedDomains ?? [],
-        providerRevision: replacement.toolConfirmation?.providerRevision ?? null,
-        providerDefinitionsHash: replacement.toolConfirmation?.providerDefinitionsHash ?? null,
-        providerContractHash: replacement.toolConfirmation?.providerContractHash ?? null,
-        providerDefinitionsCount: replacement.toolConfirmation?.providerDefinitionsCount ?? null,
-        providerObservationKind: replacement.toolConfirmation?.providerObservationKind ?? null,
-        materialization
-      };
-    },
-    applyInstructions: async ({ attempt }) => ({
-      sourcesHash: stableRecoveryHash(attempt.instructionSources)
-    }),
-    replayContext: async ({ replacement, manifest, manifestHash }) => ({
-      manifestHash,
-      acknowledged: replacement.replayManifestHash === manifestHash
-        && replacement.recoveryContextHash === stableRecoveryHash(renderReplayManifestForProvider(manifest)),
-      injectedAtCreation: replacement.replayManifestHash === manifestHash
-        && replacement.recoveryContextHash === stableRecoveryHash(renderReplayManifestForProvider(manifest)),
-      sideEffectsObserved: false,
-      mode: "trusted_system_context_injection"
-    }),
-    stabilizeReplacement: async ({ attempt, replacement }) => {
-      const descriptor = agentProviderRegistry.get(attempt.providerId).descriptor;
-      if (!descriptor.capabilities.includes(AGENT_PROVIDER_CAPABILITIES.SESSION_RECOVERY_STABILIZE)) {
-        const error = new Error(`Agent Provider ${attempt.providerId} cannot prove that a recovery Session is durable.`);
-        error.code = "CAPABILITY_UNSUPPORTED";
-        throw error;
-      }
-      const storedSession = store.getSession(attempt.sessionId);
-      const recoveryToolContext = {
-        purpose: "session-recovery-stabilization",
-        actorId: storedSession?.agentId ?? null,
-        sessionId: attempt.sessionId,
-        logicalSessionId: attempt.logicalSessionId,
-        sessionKind: storedSession?.sessionKind ?? "legacy",
-        workId: attempt.workId,
-        taskId: attempt.taskId,
-        desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
-      };
-      const preparedToolHost = await toolHostService.prepareSession(attempt.providerId, recoveryToolContext);
-      const providerAttachment = replacement.toolConfirmation
-        ? {
-            ...(preparedToolHost?.providerAttachment ?? {}),
-            dynamicToolConfirmation: {
-              providerRevision: replacement.toolConfirmation.providerRevision,
-              providerDefinitionsHash: replacement.toolConfirmation.providerDefinitionsHash,
-              providerContractHash: replacement.toolConfirmation.providerContractHash,
-              providerDefinitionsCount: replacement.toolConfirmation.providerDefinitionsCount,
-              providerObservationKind: replacement.toolConfirmation.providerObservationKind
-            }
-          }
-        : preparedToolHost?.providerAttachment;
-      return agentProviderRegistry.invoke(
-        attempt.providerId,
-        AGENT_PROVIDER_CAPABILITIES.SESSION_RECOVERY_STABILIZE,
-        {
-          sessionId: attempt.sessionId,
-          logicalSessionId: attempt.logicalSessionId,
-          bindingId: replacement.bindingId,
-          providerId: attempt.providerId,
-          providerSessionId: replacement.providerSessionId,
-          routingVersion: attempt.sourceRoutingVersion + 1,
-          metadata: { session: replacement.sessionProjection }
-        },
-        {
-          ...recoveryToolContext,
-          boundCwd: attempt.boundCwd,
-          toolHost: preparedToolHost
-            ? { ...preparedToolHost, providerAttachment }
-            : null
-        }
-      );
-    },
-    validateReplacement: async ({ attempt, replacement }) => {
-      const storedSession = store.getSession(attempt.sessionId);
-      const recoveryToolContext = {
-        purpose: "session-recovery-validation",
-        actorId: storedSession?.agentId ?? null,
-        sessionId: attempt.sessionId,
-        logicalSessionId: attempt.logicalSessionId,
-        sessionKind: storedSession?.sessionKind ?? "legacy",
-        workId: attempt.workId,
-        taskId: attempt.taskId,
-        desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
-      };
-      const preparedToolHost = await toolHostService.prepareSession(attempt.providerId, recoveryToolContext);
-      const providerAttachment = replacement.toolConfirmation
-        ? {
-            ...(preparedToolHost?.providerAttachment ?? {}),
-            dynamicToolConfirmation: {
-              providerRevision: replacement.toolConfirmation.providerRevision,
-              providerDefinitionsHash: replacement.toolConfirmation.providerDefinitionsHash,
-              providerContractHash: replacement.toolConfirmation.providerContractHash,
-              providerDefinitionsCount: replacement.toolConfirmation.providerDefinitionsCount,
-              providerObservationKind: replacement.toolConfirmation.providerObservationKind
-            }
-          }
-        : preparedToolHost?.providerAttachment;
-      const reference = {
-        sessionId: attempt.sessionId,
-        logicalSessionId: attempt.logicalSessionId,
-        bindingId: replacement.bindingId,
-        providerId: attempt.providerId,
-        providerSessionId: replacement.providerSessionId,
-        routingVersion: attempt.sourceRoutingVersion + 1,
-        metadata: { session: replacement.sessionProjection }
-      };
-      const resumed = await agentProviderRegistry.invoke(
-        attempt.providerId,
-        AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
-        reference,
-        {
-          ...recoveryToolContext,
-          toolHost: preparedToolHost
-            ? { ...preparedToolHost, providerAttachment }
-            : null
-        }
-      );
-      return {
-        readable: Boolean(resumed),
-        writable: replacement.sessionProjection?.capabilities?.canSend !== false,
-        logicalSessionId: attempt.logicalSessionId,
-        boundCwd: replacement.sessionProjection?.external?.cwd ?? attempt.boundCwd,
-        worktreeId: attempt.worktreeId,
-        permissionSnapshotHash: stableRecoveryHash(attempt.permissionSnapshot),
-        artifactReferencesHash: stableRecoveryHash(attempt.artifactReferences)
-      };
-    },
-    cancelReplacement: async ({ attempt, replacement }) => agentProviderRegistry.invoke(
-      attempt.providerId,
-      AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
-      {
-        sessionId: attempt.sessionId,
-        logicalSessionId: attempt.logicalSessionId,
-        bindingId: replacement.bindingId,
-        providerId: attempt.providerId,
-        providerSessionId: replacement.providerSessionId,
-        routingVersion: attempt.sourceRoutingVersion + 1,
-        metadata: { session: replacement.sessionProjection }
-      },
-      { purpose: "session-recovery-rollback" }
-    )
-  }),
-  observe: ({ type, ...payload }) => {
-    console.info(`[session-recovery] ${JSON.stringify({ type, ...payload })}`);
-    emitEvent(type, payload, { sessionId: payload.attempt?.sessionId ?? null });
-  }
+sessionRecoveryCoordinator = createSessionRecoveryComposition({
+  store, agentProviderRegistry, toolHostService,
+  runBackgroundAgent: (input) => backgroundAgentService.run(input),
+  sessionApplicationService, codexRuntime, prospectiveToolHostBinding,
+  toolHostMaterializationCoordinator, emitEvent
 });
-const toolBootstrapBindingPreflight = new ToolBootstrapBindingPreflight({
-  store,
-  coordinator: toolHostMaterializationCoordinator,
-  isSessionBusy: (session) => sessionHasActiveRun(session),
-  isAppliedProofCurrent: ({ binding, record }) => codexAppliedToolProofIsCurrent(
-    binding,
-    record,
-    CODEX_TOOL_SCHEMA_CAPABILITIES.capabilityRevision
-  ),
-  maxCandidates: 32,
-  concurrency: 4
-});
-const emptyCodexBindingPreflight = new EmptyProviderBindingPreflight({
-  store,
-  providerId: "codex-app-server",
-  concurrency: 4,
-  onChanged: (candidate) => store.touchSessionProjectionDependency(candidate.sessionId),
-  isUnavailable: isUnavailableEmptyBinding,
-  recoverUnavailable: async (candidate, error) => {
-    const attempt = await sessionRecoveryCoordinator.recover({
-      logicalSessionId: candidate.logicalSessionId,
-      providerId: candidate.providerId,
-      idempotencyKey: `startup-empty-binding-recovery:${candidate.bindingId}`,
-      triggerDeliveryId: null,
-      reason: error?.code ?? "provider-empty-binding-unavailable"
-    });
-    const reference = requireSessionReference(candidate.sessionId);
-    return {
-      candidate: {
-        sessionId: reference.sessionId,
-        logicalSessionId: reference.logicalSessionId,
-        bindingId: reference.bindingId,
-        providerId: reference.providerId,
-        providerSessionId: reference.providerSessionId,
-        routingVersion: reference.routingVersion
-      },
-      attemptId: attempt.attemptId ?? null
-    };
-  },
-  ensureUsable: async (candidate) => {
-    const logical = store.getLogicalSession(candidate.logicalSessionId);
-    const binding = logical?.activeBinding ?? null;
-    if (!binding) {
-      const error = new Error("Session has no active Provider binding during startup verification.");
-      error.code = "SESSION_BINDING_NOT_FOUND";
-      throw error;
-    }
-    if (binding.bindingId !== candidate.bindingId) {
-      const error = new Error("Session Provider binding changed before startup verification.");
-      error.code = "SESSION_BINDING_CHANGED";
-      throw error;
-    }
-    await sessionApplicationService.probeBindingReadiness(candidate.sessionId, {
-      purpose: "startup-binding-runtime-verification",
-      logicalSessionId: logical.logicalSessionId,
-      providerBindingId: binding.bindingId
-    });
-    return { bindingId: binding.bindingId };
-  }
+const { toolBootstrapBindingPreflight, emptyCodexBindingPreflight } = createProviderStartupPreflights({
+  store, toolHostMaterializationCoordinator, sessionRecoveryCoordinator,
+  requireSessionReference, sessionApplicationService
 });
 sessionBindingReadinessProbe = new SessionBindingReadinessProbe({
   resolveReference: (sessionId) => sessionApplicationService.referenceFor(sessionId),
@@ -1942,57 +1184,14 @@ sessionBindingReadinessProbe = new SessionBindingReadinessProbe({
   onChanged: (sessionId) => store.touchSessionProjectionDependency(sessionId)
 });
 
-function isUnavailableEmptyBinding(error) {
-  return error?.code === "PROVIDER_SESSION_UNAVAILABLE"
-    || error?.code === "PROVIDER_EMPTY_THREAD_UNRECOVERABLE";
-}
-platformOperationService = new PlatformOperationService({
-  store,
-  workService,
-  sessionService: sessionApplicationService,
-  artifactService,
-  collaborationCore,
-  confirmationService: platformConfirmationService,
-  sessionRuntimeReleaseService,
+platformOperationService = createPlatformOperationComposition({
+  store, workService, sessionApplicationService, artifactService,
+  collaborationCore, platformConfirmationService, sessionRuntimeReleaseService,
   listSessions: (input) => listGatewaySessions(input),
-  createSession: async ({
-    agentId, providerId, taskId, expectedTaskVersion, title, prompt, sourceSessionId, idempotencyKey
-  }) => {
-    if (taskId) {
-      const started = await workSessionStartApplicationService.start({
-        taskId,
-        assigneeAgentId: agentId,
-        expectedTaskVersion,
-        providerId,
-        title,
-        idempotencyKey,
-        sourceSessionId
-      });
-      return started.session;
-    }
-    const agent = store.getAgent(agentId);
-    if (!agent) {
-      const error = new Error(`Agent not found: ${agentId}`);
-      error.code = "AGENT_NOT_FOUND";
-      throw error;
-    }
-    return launchAgentSession({ agent, providerId, title, prompt });
-  },
-  createTask: ({ taskInput, providerId, sourceSessionId, creationContextMessageId, idempotencyKey }) => createTaskAndSession({
-    workService,
-    startWorkSession: (command) => workSessionStartApplicationService.start(command),
-    taskInput,
-    creationOrigin: {
-      originType: "session",
-      creatorSessionId: sourceSessionId,
-      creationContextMessageId,
-      operationId: idempotencyKey
-    },
-    sourceSessionId,
-    providerId: providerId ?? agentProviderRegistry.defaultProviderId,
-    idempotencyKey
-  }),
-  onEntityChanged: (type, payload) => emitEvent(type, payload)
+  startWorkSession: (command) => workSessionStartApplicationService.start(command),
+  launchAgentSession: (input) => launchAgentSession(input),
+  getDefaultProviderId: () => agentProviderRegistry.defaultProviderId,
+  emitEvent
 });
 const sessionContextReferenceService = new SessionContextReferenceService({
   store,
@@ -2018,307 +1217,65 @@ const taskSummaryService = new TaskSummaryService({ store, backgroundAgent: back
 skillRegistryService.setDiscoveryAssistant(createSkillPackageDiscoveryAssistant({
   backgroundAgent: backgroundAgentService
 }));
-projectCodeStartupReceipts = new ProjectCodeStartupReceiptRepository({ store });
-const projectCodeSnapshotBuilder = new RepositorySourceSnapshotBuilder();
-const projectCodeIndexStore = new ProjectCodeIndexStore({
-  dataRoot: join(store.dataRoot, "project-code-index")
+const projectCodeProduction = createProjectCodeProductionComposition({
+  store, runIsolationCoordinator, backgroundAgentService,
+  environmentName, emitEvent
 });
-const projectCodeFreshnessMonitor = new ProjectCodeSourceRevisionMonitor();
-void projectCodeIndexStore.initialize().catch((error) => {
-  console.warn(`[project-code] index store unavailable: ${error?.code ?? "DATA_ROOT_UNAVAILABLE"}`);
-});
-const projectCodeRunIsolationPort = runIsolationCoordinator
-  ? new ProjectCodeRunIsolationPort({
-      coordinator: runIsolationCoordinator,
-      capabilities: {
-        localSemantic: true,
-        networkAccess: false,
-        languages: [
-          "swift", "work-c", "work-cpp", "javascript", "typescript", "python", "rust",
-          "go", "java", "kotlin", "c", "cpp", "json", "markdown", "text"
-        ]
-      }
-    })
-  : null;
-const projectCodeSearchService = new ProjectCodeSearchService({
-  snapshotBuilder: projectCodeSnapshotBuilder,
-  indexStore: projectCodeIndexStore,
-  runIsolationPort: projectCodeRunIsolationPort,
-  nonBlockingIndexWarmup: true
-});
-projectCodeApplicationService = new ProjectCodeSearchApplicationService({
-  store,
-  startupReceipts: projectCodeStartupReceipts,
-  snapshotBuilder: projectCodeSnapshotBuilder,
-  searchService: projectCodeSearchService,
-  freshnessMonitor: projectCodeFreshnessMonitor,
-  toolsetReceipts: {
-    require: ({ receiptId }) => projectToolsetProduction?.resolveToolsetReceipt(receiptId) ?? null
-  }
-});
-if (runIsolationCoordinator) {
-  projectToolsetProduction = createProjectToolsetProductionComposition({
-    store,
-    startupReceipts: projectCodeStartupReceipts,
-    projectCodeApplicationService,
-    runIsolationCoordinator,
-    backgroundAgentService,
-    dataRoot: store.dataRoot,
-    environment: environmentName,
-    onEvent: (type, payload) => emitEvent(type, payload)
-  });
-  projectToolsetInitializer = projectToolsetProduction.initializer;
-  runIsolationAuthorityResolver = projectToolsetProduction.runAuthorityResolver;
-} else {
-  projectToolsetInitializer = disabledProjectToolsetInitializer();
+projectCodeStartupReceipts = projectCodeProduction.projectCodeStartupReceipts;
+const projectCodeIndexStore = projectCodeProduction.projectCodeIndexStore;
+const projectCodeFreshnessMonitor = projectCodeProduction.projectCodeFreshnessMonitor;
+const projectCodeRunIsolationPort = projectCodeProduction.projectCodeRunIsolationPort;
+projectCodeApplicationService = projectCodeProduction.projectCodeApplicationService;
+projectToolsetProduction = projectCodeProduction.projectToolsetProduction;
+projectToolsetInitializer = projectCodeProduction.projectToolsetInitializer;
+if (projectCodeProduction.runAuthorityResolver) {
+  runIsolationAuthorityResolver = projectCodeProduction.runAuthorityResolver;
 }
-const benchmarkArtifactEvidencePort = createArtifactEvidencePort(artifactService);
-const benchmarkCodeTaskExecution = new ProviderNeutralCodeTaskExecutionService({
-  sessionService: sessionApplicationService,
-  store,
-  observabilityService: turnObservability
+const {
+  authenticatedSession: projectToolsetAuthenticatedSession,
+  runIsolationOptions: projectToolsetRunIsolationOptions
+} = createProjectToolsetAuthority({
+  getRunIsolationCoordinator: () => runIsolationCoordinator,
+  getProjectToolsetProduction: () => projectToolsetProduction,
+  startupReceipts: projectCodeStartupReceipts,
+  authorityResolver: { resolve: (...args) => runIsolationAuthorityResolver.resolve(...args) },
+  requireSessionReference,
+  store
 });
-const benchmarkPorts = runIsolationCoordinator && projectToolsetProduction
-  ? createBenchmarkProductionPorts({
-    store,
-    artifactEvidencePort: benchmarkArtifactEvidencePort,
-    startupReceipts: projectCodeStartupReceipts,
-    projectCodeApplicationService,
-    projectToolsetProduction,
-    runIsolationCoordinator,
-    observabilityService: turnObservability,
-    codeTaskExecutionService: benchmarkCodeTaskExecution
-  })
-  : { artifactEvidencePort: benchmarkArtifactEvidencePort };
-benchmarkControlPlane = new BenchmarkControlPlane({ store, ports: benchmarkPorts });
-const sessionWorkspaceCoordinator = new SessionWorkspaceCoordinator({
-  registry: agentProviderRegistry,
-  resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
-  onTransitionEvent: (type, payload) => emitEvent(type, payload, { sessionId: payload.sessionId })
+benchmarkControlPlane = createBenchmarkControlPlaneComposition({
+  store, artifactService, sessionApplicationService, turnObservability,
+  runIsolationCoordinator, projectToolsetProduction,
+  projectCodeStartupReceipts, projectCodeApplicationService
 });
-const sessionProviderSwitchCoordinator = new SessionProviderSwitchCoordinator({
-  store,
-  registry: agentProviderRegistry,
-  resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
-  hasActiveRun: (session) => sessionHasActiveRun(session),
-  resolveTargetContext: async ({ reference, logical, providerId }) => {
-    const session = reference.metadata?.session ?? store.getSession(reference.sessionId);
-    const agent = collaborationCore.getAgentForSession(reference.sessionId)
-      ?? ensureCollaborationAgentForSession(session);
-    const sourceMaterialization = logical?.activeBinding?.bindingId
-      ? store.getSessionToolCatalogMaterialization(
-          logical.logicalSessionId,
-          logical.activeBinding.bindingId
-        )
-      : null;
-    const preservedDomains = desiredToolDomainIds(sourceMaterialization);
-    const desiredToolDomains = preservedDomains.length > 0
-      ? preservedDomains
-      : session?.sessionKind === "worker" ? ["artifacts"] : [];
-    const toolHostContext = {
-      purpose: "provider-switch",
-      actorId: agent?.agentId ?? null,
-      sessionId: reference.sessionId,
-      logicalSessionId: logical.logicalSessionId,
-      sessionKind: session?.sessionKind ?? "legacy",
-      workId: session?.workId ?? null,
-      taskId: session?.taskId ?? null,
-      desiredToolDomains
-    };
-    const preparedToolHost = await toolHostService.prepareSession(providerId, toolHostContext);
-    const providerAttachment = preparedToolHost?.providerAttachment ?? null;
-    return {
-      agentId: agent?.agentId ?? null,
-      sessionKind: session?.sessionKind ?? "legacy",
-      instructionSummary: summarizeProviderInstructionSources(logical),
-      desiredToolDomains,
-      toolHostContext,
-      preparedToolHost,
-      dynamicTools: providerAttachment?.dynamicTools,
-      dynamicToolAgentId: providerAttachment?.dynamicToolAgentId ?? agent?.agentId ?? null,
-      dynamicToolMetadata: providerAttachment?.dynamicToolMetadata ?? null
-    };
-  },
-  createTargetSession: async ({
-    providerId, title, cwd, agentId, instructionSummary, sessionKind,
-    input, preparedToolHost, toolHostContext
-  }) => {
-    const created = await sessionApplicationService.createSessionForRouteTransition(providerId, {
-      ...(input ?? {}),
-      title,
-      cwd,
-      instructionSources: instructionSummary ? [instructionSummary] : [],
-      sessionKind
-    }, {
-      ...(toolHostContext ?? {}),
-      purpose: "provider-switch",
-      actorId: agentId ?? null,
-      sessionKind,
-      preparedToolHost
-    });
-    return {
-      providerThreadId: created?.external?.threadId ?? created?.external?.sessionId ?? created?.id ?? null,
-      providerSessionId: created?.external?.sessionId
-        ?? created?.external?.threadId
-        ?? created?.id
-        ?? null,
-      sessionProjection: created
-    };
-  },
-  resumeTargetSession: async (input) => {
-    const sourceSession = store.getSession(
-      input.sourceLogical?.legacySessionId ?? input.context?.toolHostContext?.sessionId
-    );
-    const targetProjection = {
-      ...(sourceSession ?? {}),
-      status: "complete",
-      summary: "Provider Session recovered for route commit.",
-      external: {
-        ...(sourceSession?.external ?? {}),
-        provider: input.providerId,
-        threadId: input.providerThreadId,
-        sessionId: input.providerSessionId,
-        cwd: input.sourceLogical?.activeBinding?.boundCwd ?? sourceSession?.external?.cwd ?? null
-      }
-    };
-    const preparedToolHost = input.context?.preparedToolHost ?? null;
-    const providerAttachment = input.dynamicToolConfirmation && preparedToolHost?.providerAttachment
-      ? {
-          ...preparedToolHost.providerAttachment,
-          dynamicToolConfirmation: input.dynamicToolConfirmation
-        }
-      : preparedToolHost?.providerAttachment;
-    if (input.providerId === "codex-app-server") {
-      try {
-        await codexRuntime.inspectEmptyThreadForRouteCommit(input.providerThreadId, {
-          cwd: input.sourceLogical?.activeBinding?.boundCwd ?? sourceSession?.external?.cwd ?? undefined,
-          runtimeWorkspaceRoots: input.sourceLogical?.activeBinding?.boundCwd
-            ? [input.sourceLogical.activeBinding.boundCwd]
-            : undefined,
-          ...(providerAttachment ?? {})
-        });
-        return {
-          providerThreadId: input.providerThreadId,
-          providerSessionId: input.providerSessionId,
-          sessionProjection: targetProjection
-        };
-      } catch (error) {
-        if (error?.code !== "PROVIDER_EMPTY_THREAD_UNRECOVERABLE" || error?.safeToRecreate !== true) {
-          throw error;
-        }
-        const recreated = await sessionApplicationService.createSessionForRouteTransition(
-          input.providerId,
-          {
-            title: input.sourceLogical?.title ?? sourceSession?.title ?? "Recovered Provider Session",
-            cwd: input.sourceLogical?.activeBinding?.boundCwd ?? sourceSession?.external?.cwd,
-            instructionSources: input.context?.instructionSummary
-              ? [input.context.instructionSummary]
-              : [],
-            sessionKind: input.context?.sessionKind ?? sourceSession?.sessionKind ?? "legacy"
-          },
-          {
-            ...(input.context?.toolHostContext ?? {}),
-            purpose: "provider-switch-recreate-empty-target",
-            preparedToolHost
-          }
-        );
-        const providerThreadId = recreated?.external?.threadId
-          ?? recreated?.external?.sessionId
-          ?? recreated?.id
-          ?? null;
-        if (!providerThreadId) throw error;
-        return {
-          providerThreadId,
-          providerSessionId: recreated?.external?.sessionId ?? providerThreadId,
-          sessionProjection: recreated,
-          replacedUnrecoverableTarget: true,
-          previousProviderThreadId: input.providerThreadId
-        };
-      }
-    }
-    const resumed = await agentProviderRegistry.invoke(
-      input.providerId,
-      AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
-      {
-        sessionId: sourceSession?.id ?? input.context?.toolHostContext?.sessionId ?? input.logicalSessionId,
-        logicalSessionId: input.logicalSessionId,
-        providerId: input.providerId,
-        providerSessionId: input.providerSessionId,
-        routingVersion: Number(input.transition?.sourceRoutingVersion ?? 0) + 1,
-        metadata: { session: targetProjection }
-      },
-      {
-        ...(input.context?.toolHostContext ?? {}),
-        purpose: "provider-switch-recovery",
-        toolHost: preparedToolHost
-          ? { ...preparedToolHost, providerAttachment }
-          : null
-      }
-    );
-    return {
-      providerThreadId: input.providerThreadId,
-      providerSessionId: input.providerSessionId,
-      sessionProjection: resumed ?? targetProjection
-    };
-  },
-  confirmToolSchema: ({ providerThreadId, dynamicTools }) => (
-    codexRuntime.confirmThreadToolPlan(providerThreadId, dynamicTools)
-  ),
-  prepareToolMaterialization: async (input) => {
-    const session = input.sessionId ? store.getSession(input.sessionId) : null;
-    const source = input.sourceBinding?.bindingId
-      ? store.getSessionToolCatalogMaterialization(input.logicalSessionId, input.sourceBinding.bindingId)
-      : null;
-    const replacement = {
-      binding: prospectiveToolHostBinding({
-        logicalSessionId: input.logicalSessionId,
-        binding: input.binding,
-        session
-      }),
-      desiredDomains: desiredToolDomainIds(source)
-    };
-    return input.requiresApplied === true
-      ? toolHostMaterializationCoordinator.prepareAppliedReplacement({
-          ...replacement,
-          providerConfirmation: input.dynamicToolConfirmation
-        })
-      : toolHostMaterializationCoordinator.prepareDesiredReplacement(replacement);
-  },
-  finalizeCommittedTarget: async (input) => (
-    sessionApplicationService.ensureActiveBindingToolsReady(
-      input.logicalSessionId,
-      {
-        purpose: input.purpose,
-        desiredToolDomains: input.desiredToolDomains,
-        expectedLogicalSessionId: input.logicalSessionId,
-        expectedProviderBindingId: input.providerBindingId,
-        expectedProviderSessionId: input.providerSessionId,
-        expectedRoutingVersion: input.routingVersion,
-        activeTurn: false
-      }
-    )
-  ),
-  onTransitionEvent: (type, payload) => emitEvent(type, payload, { sessionId: payload.sessionId })
+const {
+  sessionWorkspaceCoordinator, sessionProviderSwitchCoordinator,
+  sessionWorktrees, sessionWorkspaceOperations: composedSessionWorkspaceOperations
+} = createSessionWorkspaceComposition({
+  store, agentProviderRegistry, sessionBindingRepository, collaborationCore,
+  ensureCollaborationAgentForSession, toolHostService, sessionApplicationService,
+  codexRuntime, prospectiveToolHostBinding, toolHostMaterializationCoordinator,
+  gitWorkspaces, workspaceInventory, emitEvent
 });
-const sessionWorktrees = new SessionWorktreeService({
-  gitWorkspaces,
-  workspaceCoordinator: sessionWorkspaceCoordinator
+sessionWorkspaceOperations = composedSessionWorkspaceOperations;
+const { generateSessionCommitMessage, generateUnownedWorktreeCommitMessage } = createCommitMessageOperations({
+  store, sessionApplicationService, sessionBindingRepository, backgroundAgentService,
+  assertWorkspaceRouteUsable
 });
-sessionWorkspaceOperations = new SessionWorkspaceOperationService({
-  store,
-  collaborationCore,
-  worktrees: sessionWorktrees,
-  inventory: (logical) => workspaceInventory(logical),
-  onAudit: (record) => {
-    console.log(`[workspace-creation] ${JSON.stringify(record)}`);
-    const sessionId = record.providerSessionId
-      ?? (record.sourceSessionId ? store.getLogicalSession(record.sourceSessionId)?.legacySessionId : null)
-      ?? null;
-    emitEvent("SessionWorkspaceOperationObserved", record, {
-      sessionId,
-      source: { type: "session_workspace_operation", operationId: record.operationId ?? null }
-    });
-  }
+const { projectToolsetStatusForPath } = createProjectToolsetStatusReader({
+  projectToolsets,
+  readInitializationStatus: (...args) => projectToolsetInitializer.status(...args),
+  getProduction: () => projectToolsetProduction,
+  runtimeSourceIdentity
+});
+const projectWorktreeStatusReader = createProjectWorktreeStatusReader({
+  store, requireSessionReference, ensureLogicalRouteForProviderSession,
+  projectToolsetAuthenticatedSession, projectToolsetStatusForPath,
+  projectToolsets, gitWorkspaces, gitHubPushes
+});
+const { resolveProjectContext, performProjectDevelopmentServiceAction, performProjectWorkspaceAction } = createProjectActionHandlers({
+  store, gitWorkspaces, projectToolsets, gitCommitProtection, gitHubPushes,
+  rebuildAndRestartProjectService, generateUnownedWorktreeCommitMessage,
+  resolveProjectCommitProtection: (...args) => resolveProjectCommitProtection(...args)
 });
 const projectApplicationService = new ProjectApplicationService({
   resolveProject: resolveProjectContext,
@@ -2334,6 +1291,18 @@ const projectApplicationService = new ProjectApplicationService({
   performDevelopmentServiceAction: performProjectDevelopmentServiceAction,
   performWorkspaceAction: performProjectWorkspaceAction
 });
+const { controlPlaneSnapshot, readControlPlaneEntity, presentTaskForClient } = createControlPlaneProjection({
+  store, environmentName, decorateSessionForClient
+});
+const { readSessionUsage, getGatewayUsage } = createSessionUsageReader({
+  store, sessionApplicationService,
+  publishTimeline: (sessionId) => clientDeviceGateway?.events.publishTimeline(sessionId),
+  resetForecastForSession: (session) => session.external?.provider === "codex-app-server"
+    ? codexResetForecastMonitor?.snapshot() ?? null : null
+});
+const { sessionDeletionPlan, sessionWorkspaceRecoveryStatus } = createSessionWorkspaceInspection({
+  store, gitWorkspaces, assertWorkspaceRouteUsable, createGitWorkspaceSnapshot
+});
 const taskWorkspaceService = new TaskWorkspaceService({
   store,
   requireProject: (repositoryId) => projectApplicationService.requireProject(repositoryId),
@@ -2341,551 +1310,94 @@ const taskWorkspaceService = new TaskWorkspaceService({
   ensureWorktree: (input) => gitWorkspaces.ensureTaskWorktreeForProject(input),
   restoreMissingWorktree: (input) => gitWorkspaces.restoreMissingWorktree(input)
 });
-const taskDeletionService = new TaskDeletionService({
-  store,
-  inspectWorktree: (taskId) => inspectTaskWorktree(taskId),
-  removeWorktree: (input) => removeTaskDeletionWorktree(input),
-  deleteSession: async (sessionId, context) => {
-    const result = await sessionApplicationService.deleteSessionForTaskDeletion(sessionId, context);
-    if (result.providerDeleted === false) {
-      console.warn(
-        `[task-deletion] retired local Session after Provider cleanup failed session=${sessionId} provider=${result.providerId} code=${result.providerErrorCode ?? "unknown"}`
-      );
-    }
-    return result;
-  },
-  handleArtifacts: ({ task, disposition, actor }) => artifactService.disposeBoundArtifactsForTaskDeletion({
-    kind: "local_user",
-    actorId: actor?.id,
-    workId: task.work_id
-  }, task.id, disposition),
-  // Paired devices act for the same local user; their grant is checked at the device gateway (`tasks.manage`).
-  authorize: ({ actor }) => actor?.type === "user"
-    && (actor.id === "user:local-macos" || /^user:paired-device:[A-Za-z0-9_:-]{1,128}$/.test(String(actor.id ?? ""))),
-  onChanged: (type, payload) => emitEvent(type, payload)
+const { inspectTaskWorktree, removeTaskDeletionWorktree, reclaimTaskWorktree } = createTaskWorktreeOperations({
+  store, gitWorkspaces, projectApplicationService, emitEvent
 });
-/** Shared by the desktop entity routes and the paired-device management commands. */
-function restartTaskForEntityRoutes(taskId, context) {
-  const task = workService.getTask(taskId);
-  if (!task.current_session_id) {
-    const error = new Error(`Task ${taskId} has no active Session to restart.`);
-    error.code = "TASK_SESSION_NOT_FOUND";
-    throw error;
-  }
-  return sessionApplicationService.restartSession(task.current_session_id, context);
-}
-async function setTaskArchivedForEntityRoutes(taskId, archived) {
-  const task = store.setTaskArchived(taskId, archived);
-  for (const session of store.listSessionsByTask(taskId)) {
-    if (archived) {
-      void sessionRuntimeReleaseService.request(session.id, "task-archived");
-    } else {
-      await sessionRuntimeReleaseService.restore(session.id);
-    }
-  }
-  return task;
-}
-taskExecutionOrchestrator = new TaskExecutionOrchestrator({
-  getTask: (taskId) => store.getTask(taskId),
-  getSession: (sessionId) => store.getSession(sessionId),
-  getSessionRoute: (sessionId) => store.getLogicalSessionByLegacySessionId(sessionId),
-  ensureWorkspace: ensureTaskWorkspace,
-  switchWorkspace: (sessionId, worktreeId) => sessionWorktrees.switchWorkspace(
-    sessionId,
-    worktreeId,
-    "Resume the bound Task in its restored Worktree."
-  ),
-  restoreSessionRoute: (sessionId) => {
-    const logical = store.getLogicalSessionByLegacySessionId(sessionId);
-    if (!logical) {
-      const error = new Error("The bound Session has no logical Workspace route.");
-      error.code = "TASK_SESSION_ROUTE_REQUIRED";
-      throw error;
-    }
-    return store.restoreLogicalSessionWorkspace(logical.logicalSessionId);
-  },
-  resumeSession: (sessionId) => sessionApplicationService.resumeSession(sessionId, {
-    source: "task-restore"
-  }),
-  updateTask: (taskId, patch) => store.updateTask(taskId, patch),
-  onChanged: (type, payload) => emitEvent(type, payload)
+const {
+  commitMessageForProjectWorktree, resolveProjectCommitProtection,
+  mergeProjectWorktree, restartProjectWorktree, commitProjectWorktree,
+  prepareProjectWorktreeCommit, generateProjectWorktreeCommitMessage
+} = createProjectWorktreeGitOperations({
+  store, gitWorkspaces, gitCommitProtection, projectToolsets,
+  generateSessionCommitMessage, generateUnownedWorktreeCommitMessage,
+  rebuildAndRestartProjectService, projectWorktreeStatus
 });
-const startupWorktreePreparer = new WorktreeStartupPreparer({
-  store,
-  ensureWorkspace: async (input) => {
-    const source = await sessionForkService.contextForTask(input.task.id);
-    return source ? prepareConversationForkWorkspace(source, input.task.id) : ensureTaskWorkspace(input);
-  }
+const { prepareGitHubPush, generateGitHubPushCommitMessage, confirmGitHubPush } = createSessionGitHubPushOperations({
+  sessionApplicationService, gitHubPushes, projectWorkingDirectoryForSession,
+  generateSessionCommitMessage, emitEvent
 });
-const providerWorkspaceBindingService = new ProviderWorkspaceBindingService({
-  registry: agentProviderRegistry
+const { completeProjectWorktree, operateProjectWorktree } = createProjectWorktreeOperations({
+  store, gitWorkspaces, projectToolsets, collaborationCore,
+  resolveProjectCommitProtection, commitMessageForProjectWorktree,
+  rebuildAndRestartProjectService, emitEvent
 });
-const providerWorkSessionPort = new ProviderWorkSessionPort({
-  workspaceBinding: providerWorkspaceBindingService,
-  createSession: async ({ taskId, assigneeAgentId, providerId, title, model, reasoningLevel, workspace }) => {
-    const task = workService.getTask(taskId);
-    const agent = store.getAgent(assigneeAgentId);
-    return createProviderWorkSession({
-      assigneeAgentId,
-      assigneeName: agent?.name,
-      taskId,
-      taskTitle: task.title,
-      workId: task.work_id,
-      providerId,
-      title,
-      model,
-      reasoningLevel,
-      forkSource: await sessionForkService.contextForTask(taskId),
-      workingDirectory: workspace.canonicalExecutionPath ?? workspace.canonicalWorktreePath,
-      autoUniqueTitle: true,
-      deferInitialPromptUntilBound: true,
-      deferToolHostFinalization: true
-    });
-  },
-  activateSession: async ({ session, taskId, assigneeAgentId, workingDirectory, dispatchInitialTurn }) => {
-    const task = workService.getTask(taskId);
-    try {
-      if (dispatchInitialTurn !== true) {
-        await sessionApplicationService.resumeSession(session.id, {
-          source: "task-start",
-          purpose: "session-create-finalization",
-          actorId: assigneeAgentId,
-          workId: task.work_id,
-          taskId,
-          sessionKind: "worker"
-        });
-        const current = store.getSession(session.id);
-        const logical = store.getLogicalSessionByLegacySessionId(session.id);
-        const activeBinding = logical?.activeBinding;
-        const materialization = activeBinding?.bindingId
-          ? store.getSessionToolCatalogMaterialization(logical.logicalSessionId, activeBinding.bindingId)
-          : null;
-        const toolContractHash = materialization?.status === "applied"
-          ? materialization.providerReceipt?.providerDefinitionsHash
-          : null;
-        const actualCwdValue = current?.external?.cwd ?? activeBinding?.boundCwd;
-        if (typeof actualCwdValue !== "string" || !actualCwdValue.trim()
-          || typeof workingDirectory !== "string" || !workingDirectory.trim()) {
-          const error = new Error("Provider Session activation omitted its working-directory proof.");
-          error.code = "START_PROVIDER_BINDING_FAILED";
-          throw error;
-        }
-        const actualCwd = resolve(actualCwdValue);
-        const expectedCwd = resolve(workingDirectory);
-        if (!toolContractHash || actualCwd !== expectedCwd) {
-          const error = new Error("Provider Session activation did not apply the required Tool contract in the bound ExecutionSpace.");
-          error.code = "START_PROVIDER_BINDING_FAILED";
-          throw error;
-        }
-        const instructionSources = [
-          ...await requiredWorkspaceInstructionSources(expectedCwd),
-          ...await knownGlobalInstructionSources()
-        ].sort();
-        return {
-          providerResourceId: activeBinding.providerSessionId,
-          canonicalWorkingDirectory: actualCwd,
-          toolContractHash,
-          instructionSourcesHash: createHash("sha256").update(JSON.stringify(instructionSources)).digest("hex")
-        };
-      }
-      return await sendUnifiedSessionMessage(session.id, taskExecutionPrompt(task), {
-        type: "session-initialization",
-        origin: "task-start"
-      });
-    } catch (error) {
-      const initialTurn = dispatchInitialTurn === true;
-      error.code = initialTurn ? "START_INITIAL_TURN_FAILED" : "START_PROVIDER_BINDING_FAILED";
-      error.stage = initialTurn ? "initial_turn" : "provider_activation";
-      console.error(`[task-start] ${initialTurn ? "initial prompt enqueue" : "provider activation"} failed session=${session.id}: ${error.message}`);
-      throw error;
-    }
-  },
-  compensateSession: async ({ sessionId, errorCode }) => {
-    try {
-      await sessionApplicationService.deleteSession(sessionId, {
-        source: "work-session-start-compensation",
-        reason: errorCode
-      });
-    } catch (error) {
-      store.db.run(
-        "UPDATE sessions SET status='failed', updated_at=? WHERE id=? AND status NOT IN ('completed','deleted')",
-        [new Date().toISOString(), sessionId]
-      );
-      store.scheduleSave();
-      throw error;
-    }
-  }
+const {
+  taskDeletionService, taskExecutionOrchestrator: composedTaskExecutionOrchestrator,
+  restartTaskForEntityRoutes, setTaskArchivedForEntityRoutes
+} = createTaskExecutionComposition({
+  store, inspectTaskWorktree, removeTaskDeletionWorktree,
+  sessionApplicationService, artifactService, emitEvent,
+  workService, sessionRuntimeReleaseService, sessionWorktrees,
+  ensureTaskWorkspace
 });
-workSessionStartupCoordinator = new WorkSessionStartupCoordinator({
-  store,
-  authorizeStart: (command) => workSessionStartApplicationService.authorize(command),
-  prepareWorktree: (input) => startupWorktreePreparer.prepare(input),
-  inspectWorktree: (input) => startupWorktreePreparer.inspect(input),
-  providerWorkSessionPort,
-  compensateWorktree: async ({ operation, allocation }) => {
-    const inventory = store.getGitWorktree(allocation.worktreeId);
-    if (!inventory || inventory.repositoryId !== allocation.repositoryId
-      || resolve(inventory.canonicalPath || inventory.path) !== resolve(allocation.canonicalWorktreePath)) {
-      return { manualRequired: true, removed: false };
-    }
-    const project = await projectApplicationService.requireProject(allocation.repositoryId);
-    try {
-      await gitWorkspaces.removeWorktreeForProject({
-        repositoryId: allocation.repositoryId,
-        workingDirectory: project.mainPath,
-        sourceWorktreeId: allocation.worktreeId,
-        ignoreLogicalSessionIds: operation.logical_session_id ? [operation.logical_session_id] : [],
-        safeOnly: true,
-        deleteBranch: true
-      });
-      return { removed: true, manualRequired: false };
-    } catch (error) {
-      if (["UNCOMMITTED_CHANGES", "UNMERGED_WORKTREE_CONFIRMATION_REQUIRED"].includes(error?.code)) {
-        return { removed: false, dirty: error.code === "UNCOMMITTED_CHANGES", manualRequired: true };
-      }
-      throw error;
-    }
-  },
-  onChanged: (type, payload) => emitEvent(type, payload),
-  onReady: ({ receipt }) => projectCodeApplicationService.prewarm({ logicalSessionId: receipt.logicalSessionId })
-    .then((result) => {
-      emitEvent("ProjectCodeIndexPrewarmChanged", { status: result.status, worktreeId: result.worktreeId,
-        logicalSessionId: result.logicalSessionId, durationMs: result.durationMs, indexHit: result.indexHit });
-      console.info(`[project-code-prewarm] ${JSON.stringify({ status: result.status, worktreeId: result.worktreeId,
-        durationMs: result.durationMs, snapshotMs: result.snapshotMs, indexMs: result.indexMs, indexHit: result.indexHit })}`);
-    })
-    .catch((error) => {
-      emitEvent("ProjectCodeIndexPrewarmChanged", { status: "failed", worktreeId: receipt.worktreeId,
-        logicalSessionId: receipt.logicalSessionId, errorCode: error?.code ?? "PROJECT_CODE_PREWARM_FAILED" });
-      console.warn(`[project-code-prewarm] ${JSON.stringify({ status: "failed", worktreeId: receipt.worktreeId,
-        errorCode: error?.code ?? "PROJECT_CODE_PREWARM_FAILED" })}`);
-    })
+taskExecutionOrchestrator = composedTaskExecutionOrchestrator;
+({ workSessionStartupCoordinator, workSessionStartApplicationService } = createWorkSessionStartupComposition({
+  store, workService, agentProviderRegistry, sessionApplicationService,
+  forkContextForTask: (taskId) => sessionForkService.contextForTask(taskId),
+  prepareConversationForkWorkspace: (...args) => prepareConversationForkWorkspace(...args),
+  ensureTaskWorkspace,
+  createProviderWorkSession: (input) => createProviderWorkSession(input),
+  requiredWorkspaceInstructionSources, knownGlobalInstructionSources,
+  sendUnifiedSessionMessage, projectApplicationService, gitWorkspaces,
+  projectCodeApplicationService, resolveSessionProviderId, emitEvent
+}));
+const { sessionForkService, prepareConversationForkWorkspace } = createSessionForkOperations({
+  store, agentProviderRegistry, sessionApplicationService, workService,
+  workSessionStartApplicationService, chatResourceService, collaborationCore,
+  createSessionThroughApplication: (...args) => createSessionThroughApplication(...args),
+  emitEvent, createForkWorktree,
+  createGitWorkspaceSnapshot, ensureArtifactCommitHook
 });
-const managedSandboxStartupCoordinator = new ManagedSandboxStartupCoordinator({
-  store,
-  providerWorkSessionPort,
-  root: join(store.dataRoot, "execution-spaces"),
-  onChanged: (type, payload) => emitEvent(type, payload)
+const { projectWorktreeIntegrationService, worktreeIntegrationJobService } = createWorktreeIntegrationServices({
+  store, projectApplicationService, gitWorkspaces, gitHubPushes, gitCommitProtection,
+  workService, agentProviderRegistry, startPreparedWorkSession,
+  sendUnifiedSessionMessage, emitEvent, presentTaskForClient
 });
-workSessionStartApplicationService = new WorkSessionStartApplicationService({
-  store,
-  coordinator: workSessionStartupCoordinator,
-  managedSandboxCoordinator: managedSandboxStartupCoordinator,
-  providerRegistry: agentProviderRegistry,
-  resolveProviderId: resolveSessionProviderId
+const {
+  syncSessionChannelDeliveriesIntoAgentWorkQueue,
+  syncCollaborationDeliveriesIntoAgentWorkQueue,
+  resolveCollaborationDeliveryRoute
+} = createCollaborationDeliveryQueue({
+  store, sessionChannelService, collaborationCore, collaborationDispatcher,
+  collaborationDeliveryRouteResolver, emitEvent, scheduleAgentWorkDrain,
+  registerRuntimeQueuedWork: (...args) => registerRuntimeQueuedWork(...args),
+  moveRuntimeQueuedWork: (...args) => moveRuntimeQueuedWork(...args)
 });
-const sessionForkService = new SessionForkService({
-  store, registry: agentProviderRegistry, sessionService: sessionApplicationService, workService,
-  startWorkSession: (command) => workSessionStartApplicationService.start(command),
-  copyMetadata: (...args) => chatResourceService.copyForkMetadata(...args),
-  createChat: async ({ source, input }) => {
-    const logical = store.getLogicalSessionByLegacySessionId(source.session.id);
-    const workspace = logical?.repositoryId ? await prepareConversationForkWorkspace(source, `chat:${input.requestId}`) : null;
-    const session = await createSessionThroughApplication(source.reference.providerId, {
-      title: input.title, cwd: workspace?.path ?? source.session.external?.cwd,
-      sessionKind: "assistantChat", model: source.session.external?.currentModel,
-      reasoningLevel: source.session.external?.currentReasoningLevel,
-      ...(workspace ? { runtimeWorkspaceRoots: [workspace.path] } : {})
-    }, { source: "conversation-fork", actorId: source.session.agentId,
-      sessionKind: "assistantChat", forkSource: source, forkRequestId: input.requestId });
-    collaborationCore.bindSession({ agentId: source.session.agentId, sessionId: session.id });
-    const agent = store.getAgent(source.session.agentId);
-    if (agent && isPlatformAssistant(agent)) store.grantSessionCapability(session.id, "platform.manage");
-    return session;
-  },
-  onChanged: (type, payload) => emitEvent(type, payload)
+const { resolveCollaborationConfirmation, resolveSessionChannelRequest } = createCollaborationConfirmationCommands({
+  collaborationCore, sessionChannelService, sessionCollaborationService, emitEvent,
+  syncCollaborationDeliveriesIntoAgentWorkQueue, syncSessionChannelDeliveriesIntoAgentWorkQueue
 });
-
-async function prepareConversationForkWorkspace(source, targetId) {
-  const logical = store.getLogicalSessionByLegacySessionId(source.session.id);
-  const sourcePath = logical?.activeBinding?.boundCwd;
-  if (!logical?.repositoryId || !sourcePath || logical.activeBinding.bindingId !== source.reference.bindingId) {
-    throw Object.assign(new Error("源会话没有有效的 Git Worktree 绑定。"), { code: "FORK_WORKSPACE_UNAVAILABLE" });
-  }
-  const suffix = createHash("sha256").update(targetId).digest("hex").slice(0, 24);
-  const targetPath = resolve(store.layout.worktreesDirectory, logical.repositoryId.split(":").at(-1), `fork-${suffix}`);
-  const created = await createForkWorktree({ sourcePath, targetPath, branchName: `fork/${suffix}` });
-  const snapshot = await createGitWorkspaceSnapshot(targetPath);
-  if (snapshot.repository.id !== logical.repositoryId) throw new Error("Fork Repository identity changed.");
-  store.upsertGitWorkspaceSnapshot(snapshot);
-  const worktree = snapshot.worktrees.find(row => resolve(row.canonicalPath || row.path) === targetPath);
-  if (!worktree) throw new Error("Fork Worktree was not inventoried.");
-  await ensureArtifactCommitHook(targetPath, { dbPath: store.dbPath });
-  return { ...created, worktreeId: worktree.worktreeId, reused: false };
-}
-const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService({
-  store,
-  inspectProject: async (projectId, options = {}) => {
-    const project = await projectApplicationService.requireProject(projectId);
-    return gitWorkspaces.projectStatusForPath(project.mainPath, project.id, {
-      inspectionLevel: "integration",
-      reason: "integration_status",
-      ...options
-    });
-  },
-  mergeWorktree: ({ projectId, mainPath, worktreeId }) => gitWorkspaces.mergeWorktreeIntoMainForProject({
-    repositoryId: projectId,
-    workingDirectory: mainPath,
-    sourceWorktreeId: worktreeId,
-    synchronizeSource: false
-  }),
-  createConflictWorkspace: async ({ projectId, runId }) => {
-    const project = await projectApplicationService.requireProject(projectId);
-    return gitWorkspaces.createIntegrationWorktreeForProject({
-      repositoryId: project.id,
-      workingDirectory: project.mainPath,
-      runId
-    });
-  },
-  createAndLaunchConflictTask: async ({
-    work, projectId, agent, workspace, title, description, acceptanceCriteria, prompt,
-    integrationRunId, sourceSessionId
-  }) => {
-    const task = workService.createTask({
-      workId: work.id,
-      title,
-      description,
-      acceptanceCriteria,
-      priority: "high",
-      mainAgentId: agent.agentId
-    });
-    let session;
-    try {
-      session = await startPreparedWorkSession({
-        assigneeAgentId: agent.agentId,
-        taskId: task.id,
-        providerId: agentProviderRegistry.defaultProviderId,
-        title,
-        workspace,
-        idempotencyKey: `integration-conflict:${integrationRunId}:start`,
-        sourceSessionId
-      });
-    } catch (error) {
-      workService.deleteTask(task.id);
-      throw error;
-    }
-    const finalized = store.finalizeConflictResolutionLaunch({
-      sessionId: session.id,
-      taskId: task.id,
-      workId: work.id,
-      agentId: agent.agentId,
-      integrationRunId
-    });
-    emitEvent("TaskChanged", {
-      action: "integration-conflict-resolution-started",
-      entity: store.getTask(task.id)
-    });
-    return {
-      task: presentTaskForClient(finalized.task),
-      session: finalized.session
-    };
-  },
-  isSessionActive: sessionHasActiveRun,
-  presentTask: presentTaskForClient,
-  onEvent: (type, payload) => emitEvent(type, payload)
+const {
+  continuePendingWorkspaceTransition, continuePendingProviderSwitch,
+  enqueueWorkspaceContinuationSafely, refreshWorkspaceInventoryAfterTurn, reconcileMovedWorkspaceRoutes
+} = createPostTurnWorkspaceOperations({
+  store, workspaceTransitionRuntimeForLogicalSession, sessionBindingRepository,
+  sessionProviderSwitchCoordinator, workspaceContinuationCoordinator,
+  createGitWorkspaceSnapshot, emitEvent
 });
-const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
-  store,
-  inspectGitHubPushStatus: (input) => gitHubPushes.branchStatus(input),
-  inspectRepositorySummary: async (repositoryId, options = {}) => {
-    const path = store.resolveWorkspacePath(repositoryId);
-    if (!path) {
-      const error = new Error("The repository main checkout is unavailable.");
-      error.code = "REPOSITORY_MAIN_UNAVAILABLE";
-      throw error;
-    }
-    return gitWorkspaces.managementInspectionForProject(path, repositoryId, options);
-  },
-  inspectRepository: async (repositoryId) => {
-    const path = store.resolveWorkspacePath(repositoryId);
-    if (!path) {
-      const error = new Error("The repository main checkout is unavailable.");
-      error.code = "REPOSITORY_MAIN_UNAVAILABLE";
-      throw error;
-    }
-    return gitWorkspaces.integrationInspectionForProject(path, repositoryId);
-  },
-  inspectCommitProtection: (path) => gitCommitProtection.inspect(path),
-  commitChanges: (input) => gitWorkspaces.commitIntegrationChanges({
-    ...input,
-    prepare: () => gitCommitProtection.resolve(input.path, {
-      decision: input.protectionDecision,
-      neverRemind: input.neverRemindPrivateFiles === true
-    })
-  }),
-  mergeSource: (input) => gitWorkspaces.mergeIntegrationSource(input),
-  abortMerge: (input) => gitWorkspaces.abortIntegrationMerge(input),
-  rebaseSource: (input) => gitWorkspaces.rebaseIntegrationSource(input),
-  fastForwardSource: (input) => gitWorkspaces.fastForwardIntegrationSource(input),
-  prepareConvergence: (input) => gitWorkspaces.createConvergenceWorktreeForProject(input),
-  cleanupConvergence: (input) => gitWorkspaces.removeConvergenceWorktreeForProject(input),
-  prepareConflictResolution: (input) => gitWorkspaces.prepareIntegrationConflictResolutionForProject({
-    repositoryId: input.repositoryId,
-    workingDirectory: input.mainPath,
-    sourceHead: input.sourceHead,
-    expectedMainHead: input.expectedMainHead,
-    jobId: input.jobId
-  }),
-  inspectConflictResolution: (input) => gitWorkspaces.inspectIntegrationConflictResolutionForProject(input),
-  launchConflictResolution: async ({ job, item, workspace, sourceHead, expectedMainHead }) => {
-    const planIdentity = job.id.replace(/^worktree_integration:/, "");
-    const planLabel = planIdentity.slice(0, 8);
-    const planTaskId = `task:integration_conflicts:${planIdentity}`;
-    const existingAutomation = job.conflictAutomation ?? null;
-    const legacyPlanTask = existingAutomation?.taskId ? null : store.listTasks()
-      .filter((candidate) => String(candidate.description ?? "").includes(job.id))
-      .sort((left, right) => String(left.created_at ?? "").localeCompare(String(right.created_at ?? "")))[0] ?? null;
-    const existingTask = existingAutomation?.taskId
-      ? store.getTask(existingAutomation.taskId)
-      : legacyPlanTask;
-    const existingSessionId = existingAutomation?.sessionId ?? existingTask?.current_session_id ?? null;
-    const existingSession = existingSessionId ? store.getSession(existingSessionId) : null;
-    const existingAgent = existingAutomation?.agentId
-      ? store.getAgent(existingAutomation.agentId)
-      : (existingTask?.main_agent_id ? store.getAgent(existingTask.main_agent_id) : null);
-    const hasRecordedPlanSession = Boolean(existingAutomation?.taskId
-      || existingAutomation?.sessionId || legacyPlanTask);
-    const hasExistingPlanSession = Boolean(existingTask && existingSession && existingAgent);
-    if (hasRecordedPlanSession && !hasExistingPlanSession) {
-      const error = new Error(
-        "The integration plan's conflict Task or Session is no longer available. Restore that plan Session or generate a fresh plan; Corptie will not create a duplicate Task."
-      );
-      error.code = "CONFLICT_PLAN_SESSION_UNAVAILABLE";
-      throw error;
-    }
-    const context = hasExistingPlanSession
-      ? null
-      : [item, ...(job.plan.items ?? []).filter((candidate) => candidate.worktreeId !== item.worktreeId)]
-        .map((candidate) => resolveConflictResolutionAgentContext(candidate, store))
-        .find(Boolean);
-    if (!hasExistingPlanSession && !context) {
-      const error = new Error(
-        "No Independent Contributor Agent could be recovered from any Worktree in this integration plan. Bind one Agent-backed Task to the plan, then retry."
-      );
-      error.code = "CONFLICT_AGENT_UNAVAILABLE";
-      throw error;
-    }
-    const sourceTask = existingTask ?? context.sourceTask;
-    const work = hasExistingPlanSession
-      ? store.getWork(existingTask.work_id)
-      : context.work;
-    const agent = existingAgent ?? context.agent;
-    const branchLabel = item.branchName ?? item.worktreeId;
-    const title = `解决 Worktree 合并计划 ${planLabel} 的全部冲突`;
-    const conflictFiles = item.conflictFiles.length > 0 ? item.conflictFiles.join(", ") : "请通过 Git 状态确认";
-    const description = [
-      `持续处理 Worktree Integration Job ${job.id} 计划内的全部合并冲突。`,
-      `Agent 上下文来源 Task：${sourceTask.title}`,
-      `计划级专用 Integration Worktree：${workspace.path}`
-    ].join("\n");
-    const acceptanceCriteria = [
-      "- 合并计划内所有来源分支的有效修改均已完整进入 main",
-      "- 计划内所有冲突均按双方语义逐个解决，且不存在未合并文件或冲突标记",
-      "- 相关测试通过，Development App 与后端重建及健康检查成功",
-      "- 每轮解决结果均已提交，计划级 Integration Worktree 保持干净",
-      "- 未直接修改 main，未推送远端，未删除任何来源分支或 Worktree"
-    ].join("\n");
-    const prompt = [
-      `继续处理合并计划 ${job.id} 的下一个冲突。`,
-      `当前来源 Worktree：${branchLabel}`,
-      `当前来源提交：${sourceHead}`,
-      `当前 main 基线：${expectedMainHead}`,
-      `冲突文件：${conflictFiles}`,
-      `计划级专用 Integration Worktree：${workspace.path}`,
-      "",
-      "固定执行流程：",
-      `1. 确认仍在本计划的专用 Integration Worktree，基线 HEAD 应为 ${expectedMainHead}。`,
-      `2. 在当前 Integration 分支合并来源提交 ${sourceHead}，逐文件分析并解决冲突；不得简单全选 ours 或 theirs。`,
-      "3. 确认没有冲突标记或未合并文件后创建清晰的本地提交。",
-      "4. 运行相关测试，并按 AGENTS.md 重建、启动 Development App 与后端并检查健康状态。",
-      `5. 验证来源提交 ${sourceHead} 已成为当前 Integration HEAD 的祖先，并确认 Integration Worktree 干净。`,
-      "6. 不得切换、提交、清理或合并 main；不得推送远端，不得删除来源分支或 Worktree。",
-      "7. 完成本轮后正常结束当前执行；Corptie 会校验结果并在同一个 Task 和 Session 中投递下一个冲突，直至整个计划完成。"
-    ].join("\n");
-    if (hasExistingPlanSession) {
-      const sessionCwd = existingSession.external?.cwd ?? existingSession.cwd ?? null;
-      if (sessionCwd && resolve(sessionCwd) !== resolve(workspace.path)) {
-        const error = new Error(
-          `The plan Session is bound to ${sessionCwd}, but the Integration Worktree is ${workspace.path}.`
-        );
-        error.code = "CONFLICT_PLAN_SESSION_WORKSPACE_CHANGED";
-        throw error;
-      }
-      workService.updateTask(existingTask.id, {
-        title,
-        description,
-        acceptanceCriteria,
-        lifecycleState: "in_progress",
-        mainAgentId: agent.agentId
-      });
-      await sendUnifiedSessionMessage(
-        existingSession.id,
-        prompt,
-        { type: "worktree-integration", localVisibility: "normal" },
-        { fromAgentWorkQueue: true }
-      );
-      return {
-        taskId: existingTask.id,
-        sessionId: existingSession.id,
-        sessionName: existingSession.title,
-        agentId: agent.agentId,
-        agentName: agent.name,
-        reused: true
-      };
-    }
-    const task = workService.createTask({
-      id: planTaskId,
-      workId: work.id,
-      title,
-      description,
-      acceptanceCriteria,
-      priority: "high",
-      mainAgentId: agent.agentId
-    });
-    let session;
-    try {
-      const sourceLogical = sourceTask.current_session_id
-        ? store.getLogicalSessionByLegacySessionId(sourceTask.current_session_id)
-        : null;
-      session = await startPreparedWorkSession({
-        assigneeAgentId: agent.agentId,
-        taskId: task.id,
-        providerId: agentProviderRegistry.defaultProviderId,
-        title,
-        workspace,
-        idempotencyKey: `integration-plan:${job.id}:start`,
-        sourceSessionId: sourceLogical?.logicalSessionId
-      });
-    } catch (error) {
-      workService.deleteTask(task.id);
-      throw error;
-    }
-    await sendUnifiedSessionMessage(session.id, prompt, {
-      type: "session-initialization",
-      origin: "worktree-integration"
-    });
-    return {
-      taskId: task.id,
-      sessionId: session.id,
-      sessionName: session.title,
-      agentId: agent.agentId,
-      agentName: agent.name,
-      reused: false
-    };
-  },
-  removeWorktree: ({ repositoryId, mainPath, worktreeId, ignoreLogicalSessionIds }) => gitWorkspaces.removeWorktreeForProject({
-    repositoryId,
-    workingDirectory: mainPath,
-    sourceWorktreeId: worktreeId,
-    ignoreLogicalSessionIds,
-    deleteBranch: true,
-    safeOnly: true
-  }),
-  isSessionActive: sessionHasActiveRun,
-  onDeletionFailure: (failure) => {
-    console.error(`[worktree-delete] failed ${JSON.stringify(failure)}`);
-  },
-  onEvent: (type, payload) => emitEvent(type, payload)
+const { createSessionThroughApplication } = createSessionCreationOperation({
+  store, sessionApplicationService, sessionForkService, sessionTitleReservations,
+  desiredToolDomainIds, assertDirectory, emitEvent, sendUnifiedSessionMessage
+});
+const {
+  createProviderWorkSession, launchAgentSession, launchWorkChatSession,
+  ensureWorkChatSession, reconcileWorkChatsAtStartup
+} = createEntitySessionLaunchers({
+  store, workService, collaborationCore, workChatContextService, workDiscussionService,
+  agentProviderRegistry, environmentName, resolveSessionProviderId, createSessionThroughApplication
+});
+const { listGatewaySessions, listGatewaySessionPage, describeGatewaySession, listGatewayWorkspaces } = createGatewayInventoryReader({
+  store, decorateSessionForClient, now
 });
 const feishuGateway = new FeishuGatewayManager({
   store,
@@ -2900,551 +1412,54 @@ const feishuGateway = new FeishuGatewayManager({
   respondToApproval: respondUnifiedSessionApproval,
   respondToCollaborationConfirmation: resolveCollaborationConfirmation
 });
-let codexModelsCache = null;
-let claudeModelsCache = null;
 
-const statuses = new Set(["running", "blocked", "complete", "failed", "cancelled"]);
-const drainingAgentWorkSessionIds = new Set();
-const runtimeQueuedTasksBySession = new Map();
-const preDeliveryRetryCounts = new Map();
-const MAX_PRE_DELIVERY_RETRIES = 3;
-let agentWorkQueueInterval = null;
-let activeCodexThreadCreation = null;
-const codexThreadCreationQueue = new SerializedOperationQueue();
+const {
+  registerRuntimeQueuedWork, forgetRuntimeQueuedWork, moveRuntimeQueuedWork,
+  runtimeQueuePosition, drainAgentWork, tickAgentWorkQueue
+} = createRuntimeAgentWorkQueue({
+  store, collaborationCore, sessionChannelService, collaborationDispatcher,
+  workspaceContinuationCoordinator, inspectCollaborationSession, resolveCollaborationDeliveryRoute,
+  scheduleAgentWorkDrain, dispatchSessionChannelDelivery, sendUnifiedSessionMessage, emitEvent,
+  syncSessionChannelDeliveriesIntoAgentWorkQueue, syncCollaborationDeliveriesIntoAgentWorkQueue
+});
+const codexSessionCreator = createCodexSessionCreator({
+  collaborationCore, codexRuntime, resolvedNewCodexRuntimeConfig,
+  collaborationThreadOptionsWithAgentContext, withPersistedCodexToolConfirmation,
+  codexAppServerSessionCapabilities
+});
 
 function now() {
   return new Date().toISOString();
 }
 
-function registerRuntimeQueuedWork(sessionId, taskId) {
-  if (!sessionId || !taskId) return;
-  const queued = runtimeQueuedTasksBySession.get(sessionId) ?? new Set();
-  queued.add(taskId);
-  runtimeQueuedTasksBySession.set(sessionId, queued);
-}
+const providerSessionRouteBootstrap = createProviderSessionRouteBootstrap({
+  store, createGitWorkspaceSnapshot, inspectGitWorkspace,
+  defaultWorkspacePath, normalizeSessionId, codexPermissionsForSession
+});
+const sessionProviderAttachments = createSessionProviderAttachments({
+  store, collaborationCore, ensureCollaborationAgentForSession,
+  sessionToolMetadata, toolHostService, workChatContextService
+});
 
-function forgetRuntimeQueuedWork(sessionId, taskId) {
-  const queued = runtimeQueuedTasksBySession.get(sessionId);
-  if (!queued) return;
-  queued.delete(taskId);
-  if (queued.size === 0) runtimeQueuedTasksBySession.delete(sessionId);
-}
 
-function moveRuntimeQueuedWork(fromSessionId, toSessionId, taskId) {
-  forgetRuntimeQueuedWork(fromSessionId, taskId);
-  registerRuntimeQueuedWork(toSessionId, taskId);
-}
 
-function nextRuntimeQueuedWork(sessionId) {
-  const queued = runtimeQueuedTasksBySession.get(sessionId);
-  if (!queued?.size) return null;
-  for (const item of store.listQueuedAgentTasksForSession(sessionId, Math.max(queued.size, 1))) {
-    if (queued.has(item.taskId)) return item;
-  }
-  for (const taskId of [...queued]) {
-    const item = store.getAgentTask(taskId);
-    if (!item || item.status !== "queued" || item.sessionId !== sessionId) {
-      forgetRuntimeQueuedWork(sessionId, taskId);
-    }
-  }
-  return null;
-}
 
-function runtimeQueuePosition(sessionId, taskId) {
-  const queued = runtimeQueuedTasksBySession.get(sessionId);
-  if (!queued?.has(taskId)) return 0;
-  return store.listQueuedAgentTasksForSession(sessionId, Math.max(queued.size, 1))
-    .filter((item) => queued.has(item.taskId))
-    .findIndex((item) => item.taskId === taskId) + 1;
-}
 
-function setProviderRuntimeReadiness(providerId, readiness) {
-  const resolved = agentProviderRegistry.resolveId(providerId) ?? providerId;
-  const previous = providerRuntimeReadiness.get(resolved) ?? null;
-  if (JSON.stringify(previous) === JSON.stringify(readiness)) return;
-  if (readiness?.state !== "ready") {
-    sessionBindingReadinessProbe?.invalidateProvider(resolved);
-  }
-  providerRuntimeReadiness.set(resolved, readiness);
 
-  // Runtime readiness is part of the client-visible Session projection even
-  // though it is not stored on the Session row. Merely scheduling State Sync
-  // is insufficient: clients whose durable cursor already equals the Store
-  // revision receive no frame and remain stuck with the startup `not_ready`
-  // projection. Touch every affected Session's projection dependency so the
-  // ordinary revision log publishes provider-neutral Session upserts.
-  const affectedSessionIds = store.listSessions({ archived: false })
-    .filter((session) => {
-      const identity = session.external?.provider ?? session.provider ?? null;
-      return identity && agentProviderRegistry.resolveId(identity) === resolved;
-    })
-    .map((session) => session.id);
-  for (const sessionId of affectedSessionIds) {
-    store.touchSessionProjectionDependency(sessionId);
-  }
-  if (affectedSessionIds.length === 0) scheduleStateSyncPublish();
-}
-
-function decorateSessionForClient(session, options = {}) {
-  if (!session) return session;
-  const decorated = withResolvedSessionActions(session, agentProviderRegistry);
-  const providerIdentity = decorated.external?.provider ?? decorated.provider ?? null;
-  const providerId = providerIdentity ? agentProviderRegistry.resolveId(providerIdentity) : null;
-  const logical = decorated.logicalSessionId
-    ? store.getLogicalSession(decorated.logicalSessionId)
-    : store.getLogicalSessionByLegacySessionId(decorated.id);
-  const binding = logical?.activeBinding ?? null;
-  const toolMaterialization = logical?.logicalSessionId && binding?.bindingId
-    ? store.getSessionToolCatalogMaterialization(logical.logicalSessionId, binding.bindingId)
-    : null;
-  return withSessionReadiness(decorated, {
-    logicalSession: logical,
-    requireActiveBinding: options.requireActiveBinding !== false,
-    providerRuntime: providerId ? providerRuntimeReadiness.get(providerId) : null,
-    bindingRuntime: bindingRuntimeReadiness(logical, binding),
-    toolMaterialization,
-    readOnly: options.readOnly === true
-  });
-}
-
-function bindingRuntimeReadiness(logical, binding) {
-  if (!logical?.logicalSessionId) return null;
-  const probed = sessionBindingReadinessProbe?.readiness(
-    logical.logicalSessionId,
-    binding?.bindingId ?? binding?.providerThreadId ?? null
-  );
-  return probed === undefined
-    ? emptyCodexBindingPreflight.readiness(logical.logicalSessionId)
-    : probed;
-}
-
-function currentChoiceGeneration(sessionId) {
-  return choiceGenerations.get(sessionId) ?? 0;
-}
-
-function sessionIdForProviderThread(threadId) {
-  return store.getLogicalSessionByProviderThreadId(threadId)?.legacySessionId
-    ?? `codex:${threadId}`;
-}
-
-function bumpChoiceGeneration(sessionId) {
-  const next = currentChoiceGeneration(sessionId) + 1;
-  choiceGenerations.set(sessionId, next);
-  return next;
-}
-
-function isExecutable(path) {
-  if (typeof path !== "string" || !path.trim()) {
-    return false;
-  }
-  try {
-    accessSync(path.trim(), constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function pathExists(path) {
-  try {
-    accessSync(path, constants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function sessionTitleForWorkspace(value, cwd) {
-  const title = typeof value === "string" ? value.trim() : "";
-  if (title) {
-    return title;
-  }
-  return defaultSessionTitleForWorkspace(cwd);
-}
-
-function knownSessionsForTitleValidation() {
-  // Title validation needs only two scalar columns. Never deserialize every
-  // archived Session projection (including Provider metadata) for this check.
-  return store.listSessionTitleIdentities();
-}
 
 async function ensureLogicalRouteForProviderSession(session, providerId, options = {}) {
-  if (!session?.id || !providerId) return null;
-  const existing = store.getLogicalSessionByLegacySessionId(session.id);
-  if (existing) return existing;
-  const cwd = await realpath(session.external?.cwd || session.cwd || defaultWorkspacePath());
-  let repositoryId = null;
-  let worktreeId = null;
-  try {
-    const snapshot = await createGitWorkspaceSnapshot(cwd);
-    store.upsertGitWorkspaceSnapshot(snapshot);
-    const identity = await inspectGitWorkspace(cwd);
-    repositoryId = identity.repositoryId;
-    worktreeId = identity.worktreeId;
-  } catch {
-    // Non-Git workspaces keep a generic route with no repository/worktree identity.
-  }
-  const providerThreadId = session.external?.threadId
-    || session.external?.sessionId
-    || normalizeSessionId(session.id);
-  const permissions = providerId === "codex-app-server"
-    ? codexPermissionsForSession(session)
-    : {
-        approvalPolicy: session.external?.approvalPolicy ?? options.approvalPolicy ?? null,
-        sandbox: session.external?.sandbox ?? options.sandbox ?? null
-      };
-  try {
-    return store.createLogicalSessionRoute({
-      logicalSessionId: `logical:${randomUUID()}`,
-      legacySessionId: session.id,
-      providerThreadId,
-      providerId,
-      providerSessionId: providerThreadId,
-      repositoryId,
-      worktreeId,
-      boundCwd: cwd,
-      instructionSources: options.instructionSources ?? [],
-      permissionSnapshot: {
-        cwd,
-        runtimeWorkspaceRoots: options.runtimeWorkspaceRoots ?? [cwd],
-        approvalPolicy: options.approvalPolicy ?? permissions.approvalPolicy,
-        sandboxPolicy: options.sandboxPolicy ?? (permissions.sandbox ? { type: permissions.sandbox } : null)
-      },
-      providerMetadata: options.providerMetadata ?? {},
-      title: session.title,
-      pinned: session.pinned,
-      archived: session.archived
-    });
-  } catch (error) {
-    const raced = store.getLogicalSessionByLegacySessionId(session.id);
-    if (raced) return raced;
-    throw error;
-  }
+  return providerSessionRouteBootstrap.ensureLogicalRouteForProviderSession(session, providerId, options);
 }
 
 async function ensureLogicalRouteForCodexSession(session, appServerResponse = null) {
-  if (!session?.id || !session.id.startsWith("codex:")) return null;
-  return ensureLogicalRouteForProviderSession(session, "codex-app-server", appServerResponse ?? {});
+  return providerSessionRouteBootstrap.ensureLogicalRouteForCodexSession(session, appServerResponse);
 }
-
-function sessionWithLogicalWorkspace(session, logical) {
-  if (!session || !logical) return session;
-  const worktree = logical.activeWorkspaceId
-    ? store.getGitWorktree(logical.activeWorkspaceId)
-    : null;
-  const mainWorktree = logical.repositoryId
-    ? store.listGitWorktrees(logical.repositoryId).find((candidate) => candidate.isMain)
-    : null;
-  const cwd = worktree?.canonicalPath || worktree?.path || logical.activeBinding?.boundCwd || session.external?.cwd;
-  const latestTransition = store.getLatestCommittedWorkspaceTransition(logical.logicalSessionId);
-  const pendingTransition = store.getPendingWorkspaceTransition(logical.logicalSessionId);
-  const providerTransition = pendingTransition?.transitionKind === "provider" ? pendingTransition : null;
-  const presented = applyWorkspaceContinuationPresentation(session, latestTransition);
-  return {
-    ...presented,
-    sessionId: logical.legacySessionId ?? presented.id,
-    logicalSessionId: logical.logicalSessionId,
-    publicSessionId: logical.logicalSessionId,
-    external: {
-      ...(presented.external ?? {}),
-      provider: logical.activeBinding?.providerId ?? presented.external?.provider,
-      threadId: logical.activeThreadId,
-      sessionId: logical.activeBinding?.providerSessionId ?? presented.external?.sessionId,
-      cwd,
-      logicalSessionId: logical.logicalSessionId,
-      workspace: {
-        id: logical.activeWorkspaceId,
-        repositoryId: logical.repositoryId,
-        projectPath: mainWorktree?.canonicalPath || mainWorktree?.path || null,
-        path: cwd,
-        availability: worktree?.availability ?? "available",
-        branchName: worktree?.branchName ?? null,
-        headOid: worktree?.headOid ?? null,
-        transitionStrategy: latestTransition?.strategy ?? null,
-        previousThreadId: latestTransition?.sourceThreadId ?? null,
-        continuationState: latestTransition?.continuationState ?? null
-      },
-      routingVersion: logical.routingVersion,
-      providerSwitchInFlight: Boolean(providerTransition),
-      providerTransition: providerTransition
-        ? {
-            transitionId: providerTransition.transitionId,
-            phase: providerTransition.phase,
-            error: providerTransition.error?.message ?? null
-          }
-        : null
-    }
-  };
-}
-
-function historicalDetailProjection(binding, detail) {
-  if (!binding || binding.state === "active") return detail;
-  const reason = "This is a read-only historical workspace thread.";
-  return {
-    ...detail,
-    cwd: binding.boundCwd || detail.cwd,
-    canSend: false,
-    sendUnavailableReason: reason,
-    readiness: "not_ready",
-    notReadyReason: {
-      code: "HISTORICAL_READ_ONLY",
-      message: reason,
-      retryable: false
-    },
-    capabilities: {
-      ...(detail.capabilities ?? {}),
-      canSend: false,
-      canInterrupt: false
-    },
-    workspaceHistory: {
-      logicalSessionId: binding.logicalSessionId,
-      providerThreadId: binding.providerThreadId,
-      worktreeId: binding.worktreeId,
-      state: binding.state,
-      readOnly: true
-    },
-    items: (detail.items ?? []).map((item) => item.type === "commandExecution"
-      ? {
-          ...item,
-          title: `${item.title} · old workspace`,
-          workspaceBoundary: "historical"
-        }
-      : item)
-  };
-}
-
-async function requiredWorkspaceInstructionSources(cwd) {
-  const candidate = join(cwd, "AGENTS.md");
-  return pathExists(candidate) ? [await realpath(candidate)] : [];
-}
-
-async function knownGlobalInstructionSources() {
-  const candidates = [
-    bundledAgentMemoryPath,
-    join(corptieCodexRuntimePaths.codexHome, "AGENTS.md"),
-    corptieClaudeRuntimePaths.claudeMemoryPath
-  ];
-  const paths = [];
-  for (const candidate of candidates) {
-    if (!pathExists(candidate)) continue;
-    paths.push(await realpath(candidate));
-  }
-  return [...new Set(paths)];
-}
-
 async function commitManagedCodexWorkspaceRoute(event) {
-  const logical = store.getLogicalSession(event.logicalSessionId);
-  const legacySessionId = logical?.legacySessionId;
-  if (!legacySessionId) return;
-  workspaceRoutePreparationCache.invalidate(logical.logicalSessionId);
-  const previous = store.getSession(legacySessionId);
-  if (!previous) return;
-  const session = sessionWithLogicalWorkspace({
-    ...previous,
-    updatedAt: now(),
-    external: {
-      ...(previous.external ?? {}),
-      activeTurnId: null
-    }
-  }, logical);
-  upsertManagedCodexSession(session);
-  emitEvent("SessionWorkspaceSwitched", {
-    session,
-    ...event
-  }, { sessionId: legacySessionId });
+  return managedProviderSessionProjection.commitManagedCodexWorkspaceRoute(event);
 }
 
-function sessionTransitionCheckpoint(sessionId, bindingId = null) {
-  const unsettled = store.listUnsettledSessionTurns(sessionId);
-  const active = [...unsettled].reverse().find((turn) => !bindingId || turn.binding_id === bindingId)
-    ?? unsettled.at(-1)
-    ?? null;
-  const completed = store.latestCompletedSessionTurn(sessionId, bindingId)
-    ?? store.latestCompletedSessionTurn(sessionId);
-  return {
-    activeTurnId: active?.turn_id ?? null,
-    lastCompletedTurnId: completed?.turn_id ?? null
-  };
-}
 
-async function storedTransitionTimelineItems({ sessionId, lastCompletedTurnId }) {
-  if (!sessionId) return [];
-  const items = store.getItems(sessionId, 500);
-  if (!lastCompletedTurnId) return items;
-  const lastIndex = items.findLastIndex((item) => item.turnId === lastCompletedTurnId);
-  return lastIndex >= 0 ? items.slice(0, lastIndex + 1) : items;
-}
 
-function continuePendingWorkspaceTransition(logical, lastCompletedTurnId) {
-  const transition = logical
-    ? store.getPendingWorkspaceTransition(logical.logicalSessionId)
-    : null;
-  if (!transition || transition.phase !== "waitingForTurn") return null;
-  if (transition.transitionKind === "provider") return null;
-  return workspaceTransitionRuntimeForLogicalSession(logical).then(({ manager, options }) => (
-    manager.continueWorkspaceTransition(transition.transitionId, {
-      lastCompletedTurnId,
-      ...options
-    })
-  )).catch((error) => {
-    console.error(`[workspace-transition] failed transition=${transition.transitionId} error=${error.message}`);
-    emitEvent("SessionWorkspaceSwitchFailed", {
-      logicalSessionId: logical.logicalSessionId,
-      sessionId: logical.legacySessionId,
-      transitionId: transition.transitionId,
-      error: error.message
-    }, { sessionId: logical.legacySessionId });
-  });
-}
-
-function continuePendingProviderSwitch(logical) {
-  const transition = logical
-    ? store.getPendingWorkspaceTransition(logical.logicalSessionId)
-    : null;
-  if (!transition || transition.phase !== "waitingForTurn") return null;
-  if (transition.transitionKind !== "provider") return null;
-  const reference = sessionBindingRepository.resolve(logical.legacySessionId ?? logical.logicalSessionId);
-  return sessionProviderSwitchCoordinator.completeProviderSwitch(
-    transition.transitionId,
-    undefined,
-    reference,
-    logical
-  ).catch((error) => {
-    console.error(`[provider-switch] failed transition=${transition.transitionId} error=${error.message}`);
-    emitEvent("ProviderSwitchFailed", {
-      logicalSessionId: logical.logicalSessionId,
-      sessionId: logical.legacySessionId,
-      transitionId: transition.transitionId,
-      error: error.message
-    }, { sessionId: logical.legacySessionId });
-  });
-}
-
-function enqueueWorkspaceContinuationSafely(transitionId) {
-  try {
-    return workspaceContinuationCoordinator.enqueueForTransition(transitionId);
-  } catch (error) {
-    console.error(`[workspace-continuation] deferred transition=${transitionId} error=${error.message}`);
-    emitEvent("WorkspaceContinuationDeferred", {
-      transitionId,
-      error: error.message
-    }, { source: { type: "workspace-continuation" } });
-    return null;
-  }
-}
-
-function refreshWorkspaceInventoryAfterTurn(logical) {
-  if (!logical?.repositoryId || !logical.activeBinding?.boundCwd) return;
-  const previousWorktrees = store.listGitWorktrees(logical.repositoryId);
-  const previousWorktreeIds = new Set(previousWorktrees.map((worktree) => worktree.worktreeId));
-  const previousVersion = logical.activeWorkspaceId
-    ? store.getGitWorktree(logical.activeWorkspaceId)?.inventoryVersion
-    : null;
-  createGitWorkspaceSnapshot(logical.activeBinding.boundCwd)
-    .then(async (snapshot) => {
-      store.upsertGitWorkspaceSnapshot(snapshot);
-      await reconcileMovedWorkspaceRoutes(snapshot.worktrees);
-      if (snapshot.inventoryVersion === previousVersion) return;
-      emitEvent("WorkspaceInventoryChanged", {
-        sessionId: logical.legacySessionId,
-        logicalSessionId: logical.logicalSessionId,
-        repositoryId: logical.repositoryId,
-        inventoryVersion: snapshot.inventoryVersion,
-        workspaces: store.listGitWorktrees(logical.repositoryId),
-        newlyDiscoveredWorkspaces: snapshot.worktrees.filter((worktree) => {
-          return !previousWorktreeIds.has(worktree.worktreeId);
-        })
-      }, { sessionId: logical.legacySessionId });
-    })
-    .catch((error) => {
-      console.warn(`[workspace-inventory] refresh failed logicalSession=${logical.logicalSessionId} error=${error.message}`);
-    });
-}
-
-async function reconcileMovedWorkspaceRoutes(worktrees = [], options = {}) {
-  for (const worktree of worktrees) {
-    if (worktree.availability !== "available") continue;
-    for (const logical of store.listLogicalSessionsByWorkspaceId(worktree.worktreeId)) {
-      const targetCwd = worktree.canonicalPath || worktree.path;
-      if (!targetCwd || logical.activeBinding?.boundCwd === targetCwd) continue;
-      if (reconcilingWorkspacePaths.has(logical.logicalSessionId)) continue;
-      const session = logical.legacySessionId ? store.getSession(logical.legacySessionId) : null;
-      if (sessionHasActiveRun(session)) {
-        emitEvent("SessionWorkspacePathRebindDeferred", {
-          sessionId: logical.legacySessionId,
-          logicalSessionId: logical.logicalSessionId,
-          providerThreadId: logical.activeThreadId,
-          worktreeId: logical.activeWorkspaceId,
-          previousCwd: logical.activeBinding?.boundCwd,
-          cwd: targetCwd,
-          reason: "activeTurn"
-        }, { sessionId: logical.legacySessionId });
-        continue;
-      }
-      if (options.verifyProviderIdle) {
-        const unsettled = logical.legacySessionId
-          ? store.listUnsettledSessionTurns(logical.legacySessionId)
-          : [];
-        if (unsettled.length > 0) continue;
-      }
-      reconcilingWorkspacePaths.add(logical.logicalSessionId);
-      try {
-        const runtime = await workspaceTransitionRuntimeForLogicalSession(logical);
-        await runtime.manager.reconcileActiveWorkspacePath(
-          logical.logicalSessionId,
-          runtime.options
-        );
-      } catch (error) {
-        console.warn(`[workspace-route] path rebind failed logicalSession=${logical.logicalSessionId} error=${error.message}`);
-        emitEvent("SessionWorkspacePathRebindFailed", {
-          sessionId: logical.legacySessionId,
-          logicalSessionId: logical.logicalSessionId,
-          providerThreadId: logical.activeThreadId,
-          worktreeId: logical.activeWorkspaceId,
-          previousCwd: logical.activeBinding?.boundCwd,
-          cwd: targetCwd,
-          error: error.message
-        }, { sessionId: logical.legacySessionId });
-      } finally {
-        reconcilingWorkspacePaths.delete(logical.logicalSessionId);
-      }
-    }
-  }
-}
-
-function reserveSessionTitle(title, excludingSessionId = null) {
-  const knownSessions = knownSessionsForTitleValidation();
-  const logical = excludingSessionId
-    ? (store.getLogicalSession(excludingSessionId) ?? store.getLogicalSessionByLegacySessionId(excludingSessionId))
-    : null;
-  const canonicalExclusion = logical?.legacySessionId ?? excludingSessionId;
-  try {
-    assertSessionTitleAvailable(knownSessions, title, canonicalExclusion);
-  } catch (error) {
-    error.suggestedTitle = suggestAvailableSessionTitle(
-      knownSessions,
-      title,
-      canonicalExclusion,
-      reservedSessionTitleKeys
-    );
-    throw error;
-  }
-  const key = normalizeSessionTitle(title);
-  if (reservedSessionTitleKeys.has(key)) {
-    const error = new Error(`A session named "${String(title).trim()}" is already being created.`);
-    error.code = "SESSION_TITLE_CONFLICT";
-    error.statusCode = 409;
-    error.suggestedTitle = suggestAvailableSessionTitle(
-      knownSessions,
-      title,
-      canonicalExclusion,
-      reservedSessionTitleKeys
-    );
-    throw error;
-  }
-  reservedSessionTitleKeys.add(key);
-  return () => reservedSessionTitleKeys.delete(key);
-}
 
 function errorStatus(error, fallback = 400) {
   return Number.isInteger(error?.statusCode) ? error.statusCode : fallback;
@@ -3459,1195 +1474,52 @@ function sessionTitleErrorPayload(error, extra = {}) {
   };
 }
 
-function safeTurnFileChanges(items, cwd) {
-  const changes = (items ?? [])
-    .filter((item) => item.type === "fileChange")
-    .flatMap((item) => item.fileChanges ?? [])
-    .map((change) => ({
-      path: normalizeRelativeDiffPath(change.path, cwd),
-      kind: typeof change.kind === "string" ? change.kind : (change.kind?.type ?? "update"),
-      diff: typeof change.diff === "string" ? change.diff : ""
-    }));
-  if (changes.length === 0) {
-    throw new Error("This turn has no recorded file changes.");
-  }
-  return changes;
-}
-
-function normalizeRelativeDiffPath(value, cwd) {
-  const rawPath = normalize(String(value ?? "").replaceAll("\\", "/"));
-  const cwdRoot = resolve(cwd);
-  if (isAbsolute(rawPath) && !rawPath.startsWith(`${cwdRoot}${sep}`)) {
-    throw new Error(`Unsafe changed file path: ${value}`);
-  }
-  const path = isAbsolute(rawPath) ? normalize(rawPath.slice(cwdRoot.length + 1)) : rawPath;
-  const absolutePath = resolve(cwdRoot, path);
-  if (!path || path === "." || absolutePath === cwdRoot || !absolutePath.startsWith(`${cwdRoot}${sep}`)) {
-    throw new Error(`Unsafe changed file path: ${value}`);
-  }
-  return path;
-}
-
-function turnDiffFor(items, changes) {
-  const persistedDiff = [...(items ?? [])].reverse().find((item) => {
-    return typeof item?.turnDiff === "string" && item.turnDiff.trim();
-  })?.turnDiff;
-  return persistedDiff || changes.map(unifiedDiffForChange).filter(Boolean).join("\n");
-}
-
-function unifiedDiffForChange(change) {
-  const diff = change.diff ?? "";
-  if (!diff) {
-    return "";
-  }
-  if (diff.startsWith("diff --git ") || diff.startsWith("--- ")) {
-    return diff;
-  }
-  const quotedPath = change.path;
-  if (change.kind === "add" && !diff.startsWith("@@")) {
-    const lines = diff.endsWith("\n") ? diff.slice(0, -1).split("\n") : diff.split("\n");
-    const body = lines.map((line) => `+${line}`).join("\n");
-    return [
-      `diff --git a/${quotedPath} b/${quotedPath}`,
-      "new file mode 100644",
-      "--- /dev/null",
-      `+++ b/${quotedPath}`,
-      `@@ -0,0 +1,${lines.length} @@`,
-      body,
-      ""
-    ].join("\n");
-  }
-  if (change.kind === "delete" && !diff.startsWith("@@")) {
-    const lines = diff.endsWith("\n") ? diff.slice(0, -1).split("\n") : diff.split("\n");
-    const body = lines.map((line) => `-${line}`).join("\n");
-    return [
-      `diff --git a/${quotedPath} b/${quotedPath}`,
-      "deleted file mode 100644",
-      `--- a/${quotedPath}`,
-      "+++ /dev/null",
-      `@@ -1,${lines.length} +0,0 @@`,
-      body,
-      ""
-    ].join("\n");
-  }
-  return [
-    `diff --git a/${quotedPath} b/${quotedPath}`,
-    `--- a/${quotedPath}`,
-    `+++ b/${quotedPath}`,
-    diff,
-    ""
-  ].join("\n");
-}
-
-async function writeTurnPatch(threadId, turnId, diff) {
-  if (!diff.trim()) {
-    throw new Error("The recorded file changes do not include a usable diff.");
-  }
-  const root = await mkdtemp(join(os.tmpdir(), "corptie-diff-"));
-  const patchPath = join(root, `${threadId}-${turnId}.diff`.replaceAll("/", "_"));
-  await writeFile(patchPath, diff, "utf8");
-  return { root, patchPath };
-}
-
-async function prepareExternalDiff(cwd, threadId, turnId, changes, diff) {
-  const { root, patchPath } = await writeTurnPatch(threadId, turnId, diff);
-  const beforeDir = join(root, "Before");
-  const afterDir = join(root, "After");
-  await Promise.all([mkdir(beforeDir), mkdir(afterDir)]);
-
-  for (const change of changes) {
-    const source = resolve(cwd, change.path);
-    if (!source.startsWith(`${resolve(cwd)}${sep}`)) {
-      throw new Error(`Changed file is outside the task directory: ${change.path}`);
-    }
-    try {
-      if (!(await stat(source)).isFile()) {
-        continue;
-      }
-      for (const targetRoot of [beforeDir, afterDir]) {
-        const target = join(targetRoot, change.path);
-        await mkdir(dirname(target), { recursive: true });
-        await copyFile(source, target);
-      }
-    } catch (error) {
-      if (error?.code !== "ENOENT") {
-        throw error;
-      }
-    }
-  }
-
-  try {
-    await execFileAsync("git", ["apply", "--reverse", "--check", "--directory=Before", patchPath], { cwd: root });
-    await execFileAsync("git", ["apply", "--reverse", "--directory=Before", patchPath], { cwd: root });
-  } catch (reverseError) {
-    try {
-      await execFileAsync("git", ["apply", "--check", "--directory=After", patchPath], { cwd: root });
-      await execFileAsync("git", ["apply", "--directory=After", patchPath], { cwd: root });
-    } catch {
-      throw new Error(`Could not reconstruct this turn for review: ${reverseError.stderr || reverseError.message}`);
-    }
-  }
-  return { root, patchPath, beforeDir, afterDir };
-}
-
-async function launchDiffTool(configuredTool, review, changes) {
-  let tool = configuredTool || "automatic";
-  if (tool === "automatic") {
-    tool = isExecutable("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code") ? "vscode" : "filemerge";
-  }
-
-  if (tool === "vscode") {
-    const executable = "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code";
-    if (!isExecutable(executable)) {
-      throw new Error("Visual Studio Code is not installed in /Applications.");
-    }
-    for (const change of changes) {
-      const before = join(review.beforeDir, change.path);
-      const after = join(review.afterDir, change.path);
-      await ensureDiffPlaceholder(before);
-      await ensureDiffPlaceholder(after);
-      launchDetached(executable, ["--reuse-window", "--diff", before, after]);
-    }
-    return tool;
-  }
-
-  if (tool === "git-difftool") {
-    launchDetached("git", ["difftool", "--no-index", "--dir-diff", "--no-prompt", review.beforeDir, review.afterDir]);
-    return tool;
-  }
-
-  const appTools = {
-    filemerge: { command: "/usr/bin/opendiff", args: [review.beforeDir, review.afterDir] },
-    kaleidoscope: { appPath: "/Applications/Kaleidoscope.app", command: "/usr/bin/open", args: ["-a", "Kaleidoscope", "--args", review.beforeDir, review.afterDir] },
-    "beyond-compare": { appPath: "/Applications/Beyond Compare.app", command: "/usr/bin/open", args: ["-a", "Beyond Compare", "--args", review.beforeDir, review.afterDir] },
-    "sublime-merge": { appPath: "/Applications/Sublime Merge.app", command: "/usr/bin/open", args: ["-a", "Sublime Merge", "--args", "mergetool", review.beforeDir, review.afterDir] }
-  };
-  const selected = appTools[tool];
-  if (!selected) {
-    throw new Error(`Unsupported code diff tool: ${tool}`);
-  }
-  if (selected.appPath && !pathExists(selected.appPath)) {
-    throw new Error(`${selected.appPath.split("/").at(-1)} is not installed in /Applications.`);
-  }
-  launchDetached(selected.command, selected.args);
-  return tool;
-}
-
-async function ensureDiffPlaceholder(path) {
-  try {
-    await stat(path);
-  } catch (error) {
-    if (error?.code !== "ENOENT") {
-      throw error;
-    }
-    await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, "", "utf8");
-  }
-}
-
-function launchDetached(command, args) {
-  const child = spawn(command, args, { detached: true, stdio: "ignore" });
-  child.on("error", (error) => {
-    console.error("[code-diff] failed to launch", command, error);
-  });
-  child.unref();
-}
-
-function createSession(input = {}) {
-  const id = randomUUID();
-  const session = {
-    id,
-    title: input.title || "Review sidebar layout",
-    agent: input.agent || "Codex",
-    status: statuses.has(input.status) ? input.status : "running",
-    progress: Number(input.progress ?? 0.08),
-    summary: input.summary || "Reading project files and preparing a change plan.",
-    updatedAt: now(),
-    accent: input.accent || "cyan"
-  };
-
-  sessions.set(id, session);
-  emitEvent("TaskCreated", { session });
-  return session;
-}
-
-function seedSessions() {
-  createSession({
-    title: "Implement floating panel shell",
-    agent: "Codex",
-    progress: 0.42,
-    summary: "Building the macOS panel and task card surface.",
-    accent: "mint"
-  });
-  createSession({
-    title: "Compare Claude Code adapter paths",
-    agent: "Claude Code",
-    progress: 0.64,
-    summary: "Waiting for a decision on CLI versus SDK integration.",
-    status: "blocked",
-    accent: "violet"
-  });
-  createSession({
-    title: "Draft theme token schema",
-    agent: "Research",
-    progress: 0.88,
-    summary: "Theme tokens are ready for review.",
-    accent: "amber"
-  });
-}
 
 function emitEvent(type, payload, options = {}) {
-  if (/^(Worktree|GitRepository|ScheduledSession|Automation|Agent|Skill)/.test(type)) {
-    clientDeviceGateway?.events.invalidate({ control: true });
-    clientDeviceGateway?.events.publishControl();
-  }
-  // Provider terminal notifications may be replayed after reconnect. A stable
-  // event id makes the entire product event idempotent, including global SSE,
-  // the durable timeline, unread cursors, and downstream work orchestration.
-  // Deletion notifications must survive after the Session row is gone. Keep
-  // their identity in the payload without attaching the durable outbox row to
-  // the deleted Session's foreign key.
-  const requestedSessionId = options.detachedSession === true
-    ? null
-    : options.sessionId || sessionIdFromEventPayload(payload);
-  const sessionId = resolveDurableEventSessionId(store, requestedSessionId);
-  const createdAt = now();
-  const durableEventId = options.eventId || randomUUID();
-  if (options.eventId && store.db && store.hasSessionEvent(options.eventId)) return null;
-
-  let sessionEvent = null;
-  let outbox = null;
-  if (store.db) {
-    // Persistence and the broadcast intent are one commit. No client can see
-    // an event that is absent from Corptie's durable authority.
-    store.runInTransaction(() => {
-      if (sessionId && options.recordSessionEvent !== false) {
-        sessionEvent = store.appendSessionEvent({
-          eventId: durableEventId,
-          sessionId,
-          type,
-          source: options.source || payload?.source || null,
-          payload,
-          createdAt
-        });
-        // Supplementary product events are projected once, at write time,
-        // into the same session_items authority as Provider messages. Reads
-        // must never reconstruct them by scanning session_events or querying
-        // automation state for every active Session.
-        for (const item of productTimelineItemsForEvent(type, payload, sessionEvent, sessionId)) {
-          store.upsertTimelineItemProjection(sessionId, {
-            ...item,
-            rawMetadataJSON: JSON.stringify(item)
-          });
-        }
-      }
-      outbox = store.enqueueEventOutbox({
-        outboxId: `product-event:${durableEventId}`,
-        topic: "product-events",
-        sessionId,
-        eventType: type,
-        payload: { type, payload, createdAt },
-        createdAt
-      });
-    });
-  }
-
-  const event = eventLog.append({ type, payload, createdAt });
-  const frame = `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
-  for (const response of sseClients) {
-    try {
-      response.write(frame);
-    } catch (error) {
-      console.warn(`[events] client write failed type=${type}: ${error.message}`);
-    }
-  }
-  if (outbox) store.markEventOutboxPublished(outbox.outbox_id, now());
-  scheduleStateSyncPublish();
-  if (type === "TaskChanged" && payload?.entity?.id) {
-    taskSummaryService.request(payload.entity.id);
-  }
-
-  if (sessionEvent) {
-    notifySessionEventListeners(sessionEvent);
-    for (const dshEvent of dshLiveEvents(sessionEvent)) {
-      broadcastDshMuxFrame({ type: "session/event", sessionId, event: dshEvent });
-    }
-    const running = dshRunningStatusForEvent(type);
-    if (running !== null) {
-      broadcastDshHostFrame({ type: "host/session-status", sessionId, running });
-    }
-  }
-  if (["AgentWorkStarted", "AgentWorkCompleted", "AgentWorkFailed"].includes(type)) {
-    try {
-      scheduledSessionTaskService.handleAgentWorkEvent(type, payload?.task);
-    } catch (error) {
-      console.error(`[scheduled-session] work event reconciliation failed type=${type}: ${error.message}`);
-    }
-  }
-  if (type === "AgentWorkCompleted" && payload?.task?.kind === "collaboration"
-      && payload.task.source?.type !== "session_channel") {
-    try {
-      collaborationCore.reconcileCompletedAgentWork(payload.task);
-    } catch (error) {
-      console.error(
-        `[collaboration] completed work reconciliation failed work=${payload.task.taskId}`
-        + ` delivery=${payload.task.deliveryId ?? "unknown"} code=${error.code ?? "unknown"}`
-        + ` error=${error.message}`
-      );
-    }
-  }
-  if (type === "AgentWorkCompleted" && sessionId) {
-    setImmediate(() => {
-      try {
-        worktreeIntegrationJobService.reconcileConflictResolutionSession(sessionId);
-      } catch (error) {
-        console.error(`[worktree-integration] conflict completion reconciliation failed session=${sessionId}: ${error.message}`);
-      }
-    });
-  }
-  return event;
-}
-
-function productTimelineItemsForEvent(type, payload, sessionEvent, sessionId) {
-  const items = automationTimelineItems([sessionEvent]);
-  if (type === "SessionCommandCompleted" && payload?.item) {
-    items.push(payload.item);
-  }
-  if (["AgentWorkQueued", "AgentWorkStarted", "AgentWorkCompleted", "AgentWorkFailed"].includes(type)) {
-    const item = agentWorkTimelineItem(payload?.task, sessionId, payload?.queuePosition);
-    if (item) items.push(item);
-  }
-  if (["CollaborationConfirmationRequested", "CollaborationConfirmationResolved"].includes(type)) {
-    const item = collaborationConfirmationTimelineItem(payload?.confirmation, sessionId);
-    if (item) items.push(item);
-  }
-  if (["SessionChannelAuthorizationRequested", "SessionChannelRequestResolved"].includes(type)) {
-    const item = sessionChannelAuthorizationTimelineItem(payload?.channelRequest ?? payload?.request, sessionId);
-    if (item) items.push(item);
-  }
-  if (type === "SessionChannelMessageSent") {
-    const item = sessionChannelMessageTimelineItem(payload, sessionId);
-    if (item) items.push(item);
-  }
-  return items;
+  productEventPublisher ??= createProductEventPublisher({
+    store, eventLog, sseClients, now,
+    getClientDeviceGateway: () => clientDeviceGateway,
+    scheduleStateSyncPublish: () => scheduleStateSyncPublish(),
+    requestTaskSummary: (taskId) => taskSummaryService.request(taskId),
+    notifySessionEventListeners: (event) => notifySessionEventListeners(event),
+    publishDshSessionEvent: (event) => dshLivePublisher.publishSessionEvent(event),
+    handleScheduledWorkEvent: (type, task) => scheduledSessionTaskService.handleAgentWorkEvent(type, task),
+    reconcileCompletedCollaborationWork: (task) => collaborationCore.reconcileCompletedAgentWork(task),
+    reconcileConflictResolutionSession: (sessionId) => worktreeIntegrationJobService.reconcileConflictResolutionSession(sessionId),
+    agentWorkTimelineItem: (...args) => agentWorkTimelineItem(...args),
+    collaborationConfirmationTimelineItem: (...args) => collaborationConfirmationTimelineItem(...args),
+    sessionChannelAuthorizationTimelineItem: (...args) => sessionChannelAuthorizationTimelineItem(...args),
+    sessionChannelMessageTimelineItem: (...args) => sessionChannelMessageTimelineItem(...args)
+  });
+  return productEventPublisher.emitEvent(type, payload, options);
 }
 
 function resolveProviderEventBinding(event) {
-  const binding = store.getAgentSessionBinding(event.bindingId);
-  if (!binding) return null;
-  const logical = store.getLogicalSession(binding.logicalSessionId);
-  if (!logical?.legacySessionId) return null;
-  const startup = (() => {
-    try { return projectCodeStartupReceipts?.require(binding.logicalSessionId) ?? null; } catch { return null; }
-  })();
-  const materialization = store.getSessionToolCatalogMaterialization(binding.logicalSessionId, binding.bindingId);
-  const toolHostAppliedReceipt = materialization?.status === "applied" ? materialization.providerReceipt : null;
-  return {
-    ...binding,
-    providerMetadata: {
-      ...(binding.providerMetadata ?? {}),
-      ...(startup ? {
-        startupBindingReceipt: startup,
-        startupProviderBindingMapping: {
-          startupProviderBindingId: startup.providerBindingId,
-          providerBindingId: binding.bindingId,
-          startupBindingGeneration: startup.bindingGeneration,
-          providerBindingGeneration: binding.routingVersion
-        }
-      } : {}),
-      ...(toolHostAppliedReceipt ? { toolHostAppliedReceipt } : {})
-    },
-    sessionId: logical.legacySessionId,
-    isCurrentRoute: logical.activeBinding?.bindingId === binding.bindingId
-  };
+  return managedProviderSessionProjection.resolveProviderEventBinding(event);
 }
 
-function publishProviderEventOutbox(rows = []) {
-  for (const row of rows) {
-    try {
-      const envelope = JSON.parse(row.payload_json);
-      if (row.topic === "timeline") {
-        scheduleTimelineChangePublish(envelope);
-      } else if (row.topic === "state") {
-        scheduleStateSyncPublish();
-      } else if (row.topic === "provider-commands") {
-        if (row.event_type === "MessageDeliveryQueued") {
-          taskSummaryService.onCommittedMessageDelivery(envelope);
-        }
-        scheduleAgentWorkDrain(envelope.sessionId);
-      } else if (row.topic === "provider-events") {
-        publishCommittedProviderWake(envelope?.event ?? null, row.created_at);
-        notifySessionEventListeners(envelope?.sessionEvent ?? null);
-      }
-      store.markEventOutboxPublished(row.outbox_id, now());
-    } catch (error) {
-      console.warn(`[provider-outbox] publish deferred id=${row.outbox_id} error=${error.message}`);
-    }
-  }
-}
 
-function notifySessionEventListeners(sessionEvent) {
-  if (!sessionEvent) return;
-  for (const listener of sessionEventListeners) {
-    try {
-      listener(sessionEvent);
-    } catch (error) {
-      console.warn(`[session-events] listener failed type=${sessionEvent.type ?? "unknown"} session=${sessionEvent.sessionId ?? "unknown"}: ${error.message}`);
-    }
-  }
-}
 
-function publishCommittedProviderWake(providerEvent, createdAt) {
-  if (!providerEvent) return;
-  const event = eventLog.append({
-    type: "ProviderEventCommitted",
-    payload: {
-      sessionId: resolveProviderEventBinding(providerEvent)?.sessionId ?? null,
-      providerId: providerEvent.providerId,
-      bindingId: providerEvent.bindingId,
-      turnId: providerEvent.turnId ?? null,
-      itemId: providerEvent.itemId ?? null,
-      eventType: providerEvent.type
-    },
-    createdAt: createdAt ?? providerEvent.receivedAt ?? now()
-  });
-  const frame = `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
-  for (const response of sseClients) {
-    try {
-      response.write(frame);
-    } catch (error) {
-      console.warn(`[provider-outbox] client write failed event=${providerEvent.type}: ${error.message}`);
-    }
-  }
-  if (providerEvent.type === "usage.updated") {
-    const sessionId = resolveProviderEventBinding(providerEvent)?.sessionId ?? null;
-    if (sessionId) clientDeviceGateway?.events.publishTimeline(sessionId);
-    const usage = sessionId ? store.getSessionUsageSnapshot(sessionId) : null;
-    if (usage?.context) {
-      const usageEvent = eventLog.append({
-        type: "SessionUsageUpdated",
-        payload: { sessionId, context: usage.context },
-        createdAt: createdAt ?? providerEvent.receivedAt ?? now()
-      });
-      const usageFrame = `id: ${usageEvent.id}\nevent: ${usageEvent.type}\ndata: ${JSON.stringify(usageEvent)}\n\n`;
-      for (const response of sseClients) {
-        try { response.write(usageFrame); }
-        catch (error) {
-          console.warn(`[provider-outbox] client write failed event=usage.updated: ${error.message}`);
-        }
-      }
-    }
-  }
-}
 
-function dshLiveEvents(sessionEvent) {
-  const sourceSeq = Number(sessionEvent?.sequence ?? 0);
 
-  if (sessionEvent?.type === "user/message") {
-    if (dshLiveTurns.has(sessionEvent?.sessionId)) return [];
-    const mapped = mapDshEvent(sessionEvent);
-    if (!mapped) return [];
-    return [{ ...mapped, seq: sourceSeq }];
-  }
 
-  if (sessionEvent?.type === "assistant/message") {
-    const mapped = mapDshEvent(sessionEvent);
-    if (!mapped) return [];
-    const live = dshLiveTurns.get(sessionEvent?.sessionId);
-    if (live) {
-      let seq = live.nextSeq;
-      const time = Date.parse(sessionEvent?.createdAt ?? "") || Date.now();
-      const message = mapped.data?.message;
-      const events = [
-        { ...mapped, seq: seq++, time, data: { turn: live.turn, step: 0, message } },
-        { type: "step/end", seq: seq++, time, data: { turn: live.turn, step: 0 } },
-        { type: "turn/end", seq: seq++, time, data: { turn: live.turn, reason: { kind: "completed" } } },
-      ];
-      dshLiveTurns.delete(sessionEvent.sessionId);
-      dshLiveSequenceBySession.set(sessionEvent.sessionId, seq - 1);
-      return events;
-    }
-    return [{ ...mapped, seq: sourceSeq }];
-  }
-
-  return [];
-}
-
-function publishDshPromptStart(sessionId, text) {
-  const storedTail = store.lastSessionEventSequence(sessionId);
-  let seq = Math.max(storedTail, dshLiveSequenceBySession.get(sessionId) ?? storedTail) + 1;
-  const turn = seq;
-  const time = Date.now();
-  const events = [
-    { type: "turn/start", seq: seq++, time, data: { turn } },
-    {
-      type: "user/message",
-      seq: seq++,
-      time,
-      surfaceOp: "append",
-      data: {
-        id: randomUUID(),
-        role: "user",
-        content: [{ type: "text", text }],
-        source: { kind: "user" },
-      },
-    },
-    { type: "step/start", seq: seq++, time, data: { turn, step: 0 } },
-  ];
-  dshLiveTurns.set(sessionId, { turn, nextSeq: seq });
-  dshLiveSequenceBySession.set(sessionId, seq - 1);
-  for (const event of events) {
-    broadcastDshMuxFrame({ type: "session/event", sessionId, event });
-  }
-  broadcastDshHostFrame({ type: "host/session-status", sessionId, running: true });
-}
-
-function publishDshPromptFailure(sessionId, message) {
-  const live = dshLiveTurns.get(sessionId);
-  if (!live) return;
-  let seq = live.nextSeq;
-  const time = Date.now();
-  const events = [
-    { type: "step/end", seq: seq++, time, data: { turn: live.turn, step: 0 } },
-    { type: "turn/end", seq: seq++, time, data: { turn: live.turn, reason: { kind: "error", message } } },
-  ];
-  dshLiveTurns.delete(sessionId);
-  dshLiveSequenceBySession.set(sessionId, seq - 1);
-  for (const event of events) {
-    broadcastDshMuxFrame({ type: "session/event", sessionId, event });
-  }
-  broadcastDshHostFrame({ type: "host/session-status", sessionId, running: false });
-}
-
-function dshRunningStatusForEvent(type) {
-  switch (type) {
-    case "SessionRunStarted":
-    case "AgentWorkStarted":
-      return true;
-    case "SessionRunInterrupted":
-    case "AgentWorkCompleted":
-    case "AgentWorkFailed":
-    case "CodexThreadCompleted":
-    case "CodexThreadCancelled":
-    case "CodexThreadFailed":
-      return false;
-    default:
-      return null;
-  }
-}
-
-function controlPlaneSnapshot() {
-  // Strictly read the durable projection. Provider callbacks own writes before
-  // publishing wake events; a client snapshot/detail read is never a repair
-  // hook. Provider transport caches must not be reachable from this path.
-  // Archived Sessions are deliberately absent from the resident global state
-  // stream. Their durable rows and Timeline remain available through the
-  // explicit archived list/detail endpoints and rejoin this projection when
-  // restored. Keeping them here made every archived row a permanent client
-  // subscription despite the active-only synchronization contract.
-  const persisted = activeStoredSessionProjections(store);
-  const residentSessionIds = persisted.map((session) => session.id);
-  const latestMessageTimes = store.listLatestSessionMessageTimes(residentSessionIds);
-  const messageCursors = store.listSessionMessageCursors(residentSessionIds);
-  const timelineRevisions = store.listSessionTimelineRevisions(residentSessionIds);
-  const residentTasks = store.listTasks({ includeCompleted: false });
-  const pendingScheduledWakeTaskIds = new Set(store.listTaskIdsWithPendingScheduledWake({
-    environment: environmentName
-  }));
-  const pendingWakeSessionIds = new Set(store.listSessionIdsWithPendingScheduledWake({ environment: environmentName }));
-  const sessionsById = new Map(persisted.map((session) => [
-    session.id,
-    presentControlPlaneSession(session, {
-      hasPendingScheduledWake: pendingWakeSessionIds.has(session.id),
-      latestMessageTime: latestMessageTimes.get(session.id),
-      messageCursor: messageCursors.get(session.id),
-      timelineRevision: timelineRevisions.get(session.id)
-    })
-  ]));
-  if (process.env.CORPTIE_DEBUG_STATE_SYNC) {
-    const openclacky = [...sessionsById.values()].filter((s) => s.id.startsWith("openclacky:"));
-    const detail = openclacky.map((s) => `${s.id.slice(10, 18)}:${s.status}`).join(",");
-    console.log(`[snapshot] sessions=${sessionsById.size} tasks=${residentTasks.length} ` +
-      `openclacky=[${detail}]`);
-  }
-  return {
-    sessions: sortSessionsForList([...sessionsById.values()]),
-    // Completed Work Items are cold history. The Work Room loads them through
-    // the explicit 50-row Task cursor API only when the user opens that view.
-    tasks: residentTasks.map((task) => presentTaskForClient(task, pendingScheduledWakeTaskIds)),
-    works: store.listWorks(),
-    agents: store.listAgents().map((agent) => ({
-      ...agent,
-      skillIds: store.listRegistrySkillIdsForAgent(agent.agentId)
-    })),
-    skills: store.listRegistrySkills(),
-    repositories: store.listGitRepositories(),
-    integrationRuns: store.listProjectIntegrationRuns(50).map((run) => (
-      presentProjectIntegrationRun(run, {
-        resolveTask: (taskId) => store.getTask(taskId)
-      })
-    ))
-  };
-}
-
-function presentControlPlaneSession(session, {
-  hasPendingScheduledWake = store.listSessionIdsWithPendingScheduledWake({
-    environment: environmentName, sessionId: session.id
-  }).length > 0,
-  latestMessageTime = null,
-  messageCursor = null,
-  timelineRevision = 0
-} = {}) {
-  return withSessionMessageCursors(
-    withLastMessageTimestamp({ ...decorateSessionForClient(session), hasPendingScheduledWake }, latestMessageTime),
-    messageCursor,
-    timelineRevision
-  );
-}
-
-function readControlPlaneEntity(entityType, entityId) {
-  switch (entityType) {
-    case "session": {
-      const session = store.getSession(entityId);
-      if (!session || session.archived === true) return null;
-      return presentControlPlaneSession(session, {
-        latestMessageTime: store.listLatestSessionMessageTimes([entityId]).get(entityId),
-        messageCursor: store.listSessionMessageCursors([entityId]).get(entityId),
-        timelineRevision: store.sessionTimelineRevision(entityId)
-      });
-    }
-    case "task": {
-      const task = store.getTask(entityId);
-      return task && task.lifecycle_state !== "done" ? presentTaskForClient(task) : null;
-    }
-    case "work": return store.getWork(entityId);
-    case "agent": {
-      const agent = store.getAgent(entityId);
-      return agent ? { ...agent, skillIds: store.listRegistrySkillIdsForAgent(agent.agentId) } : null;
-    }
-    case "skill": return store.getRegistrySkill(entityId);
-    case "repository": return store.getGitRepository(entityId);
-    case "integrationRun": {
-      const run = store.getProjectIntegrationRun(entityId);
-      return run ? presentProjectIntegrationRun(run, {
-        resolveTask: (taskId) => store.getTask(taskId)
-      }) : null;
-    }
-    default: return null;
-  }
-}
-
-function presentTaskForClient(task, pendingScheduledWakeTaskIds = null) {
-  return presentTaskAcceptance(task, {
-    hasPendingScheduledWake: pendingScheduledWakeTaskIds
-      ? pendingScheduledWakeTaskIds.has(task.id)
-      : store.hasPendingScheduledWakeForTask(task.id, { environment: environmentName })
-  });
-}
-
-function writeStateSyncFrame(response, name, data) {
-  response.write(`id: ${data.revision}\nevent: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
-}
-
-function publishStateChangesIfNeeded() {
-  if (!stateSyncService) return;
-  try {
-    const current = store.stateRevision();
-    const deliveryByRevision = new Map();
-    for (const [response, deliveredRevision] of stateSyncClients) {
-      if (deliveredRevision === current) continue;
-      let delivery = deliveryByRevision.get(deliveredRevision);
-      if (!delivery) {
-        const changes = stateSyncService.changesAfter(deliveredRevision);
-        delivery = changes.snapshotRequired
-          ? { name: "state-snapshot", data: stateSyncService.snapshot() }
-          : { name: "state-change-set", data: changes };
-        deliveryByRevision.set(deliveredRevision, delivery);
-      }
-      writeStateSyncFrame(response, delivery.name, delivery.data);
-      stateSyncClients.set(response, delivery.data.revision);
-      for (const session of delivery.data?.upserts?.sessions ?? []) {
-        sessionStateDiagnostics.record(session.id, "statePublished", {
-          revision: delivery.data.revision,
-          status: session.status
-        });
-      }
-    }
-  } catch (error) {
-    // A hot mutation boundary can prevent a stable read for this pass. Keep
-    // every client cursor unchanged and retry; never acknowledge a revision
-    // with an inconsistent payload or crash the backend timer callback.
-    console.warn(`[state-sync] publish deferred code=${error.code ?? "unknown"} error=${error.message}`);
-    scheduleStateSyncPublish();
-  }
-}
-
-function scheduleStateSyncPublish() {
-  clientDeviceGateway?.inspectorEvents.invalidate();
-  clientDeviceGateway?.events.invalidate({ inventory: true, control: true });
-  clientDeviceGateway?.events.publishState();
-  if (stateSyncClients.size === 0 || stateSyncPublishTimer) return;
-  // Collapse a burst of Provider item/progress events into one revision-aware
-  // delivery. This avoids rebuilding the control-plane projection once per
-  // event while keeping terminal propagation effectively immediate.
-  stateSyncPublishTimer = setTimeout(() => {
-    stateSyncPublishTimer = null;
-    publishStateChangesIfNeeded();
-  }, 20);
-  stateSyncPublishTimer.unref?.();
-}
-
-function resolveTimelineChangeSessionAliases(sessionId) {
-  if (!sessionId || typeof sessionId !== "string") return [];
-  const ids = new Set();
-  ids.add(sessionId);
-
-  const stripPrefix = (id) => id.replace(/^(codex|logical|session|pty):/, "");
-  const stripped = stripPrefix(sessionId);
-  if (stripped && stripped !== sessionId) {
-    ids.add(stripped);
-    ids.add(`session:${stripped}`);
-    ids.add(`codex:${stripped}`);
-    ids.add(`logical:${stripped}`);
-  }
-
-  try {
-    const reference = sessionBindingRepository?.resolve(sessionId);
-    if (reference) {
-      if (reference.sessionId) {
-        ids.add(reference.sessionId);
-        const s = stripPrefix(reference.sessionId);
-        ids.add(s);
-        ids.add(`session:${s}`);
-      }
-      if (reference.logicalSessionId) {
-        ids.add(reference.logicalSessionId);
-        const s = stripPrefix(reference.logicalSessionId);
-        ids.add(s);
-        ids.add(`session:${s}`);
-      }
-      if (reference.requestedSessionId) {
-        ids.add(reference.requestedSessionId);
-      }
-      const session = reference.metadata?.session ?? store?.getSession(reference.sessionId);
-      if (session?.taskId) {
-        ids.add(session.taskId);
-        const s = stripPrefix(session.taskId);
-        ids.add(s);
-      }
-    }
-  } catch {}
-
-  try {
-    const logical = store?.getLogicalSession(sessionId) ?? store?.getLogicalSessionByLegacySessionId(sessionId);
-    if (logical) {
-      if (logical.logicalSessionId) ids.add(logical.logicalSessionId);
-      if (logical.legacySessionId) ids.add(logical.legacySessionId);
-    }
-    const session = store?.getSession(sessionId);
-    if (session?.taskId) ids.add(session.taskId);
-  } catch {}
-
-  return [...ids].filter(Boolean);
-}
-
-function scheduleTimelineChangePublish(change = {}) {
-  const sessionIds = resolveTimelineChangeSessionAliases(change.sessionId);
-  clientDeviceGateway?.events.invalidate({ sessionId: change.sessionId, sessionIds });
-  // V2 streams receive every changed Session in the background. Use the
-  // canonical source id once; aliases remain necessary only for legacy
-  // notification matching.
-  clientDeviceGateway?.events.publishTimeline(change.sessionId);
-  timelineChangePublisher?.schedule(change);
-}
-
-function sessionIdFromEventPayload(payload = {}) {
-  return canonicalSessionIdFromEventPayload(payload, {
-    resolveStableSessionId: ({
-      rawSessionId,
-      providerId,
-      providerSessionId,
-      threadId,
-      logicalSessionId
-    }) => {
-      const logical = (logicalSessionId ? store.getLogicalSession(logicalSessionId) : null)
-        ?? (providerId && providerSessionId
-          ? store.getLogicalSessionByProviderSessionId(providerId, providerSessionId)
-          : null)
-        ?? (threadId ? store.getLogicalSessionByProviderThreadId(threadId) : null);
-      if (logical?.legacySessionId) return logical.legacySessionId;
-      return rawSessionId && store.getSession(String(rawSessionId))
-        ? String(rawSessionId)
-        : null;
-    }
-  });
-}
-
-function updateMockProgress() {
-  for (const session of sessions.values()) {
-    if (session.status !== "running") {
-      continue;
-    }
-
-    const nextProgress = Math.min(1, session.progress + Math.random() * 0.08);
-    session.progress = Number(nextProgress.toFixed(2));
-    session.updatedAt = now();
-
-    if (session.progress >= 1) {
-      session.status = "complete";
-      session.summary = "Finished and ready for review.";
-      emitEvent("TaskCompleted", { session });
-    } else if (Math.random() < 0.08) {
-      session.status = "blocked";
-      session.summary = "Needs user confirmation before continuing.";
-      emitEvent("TaskBlocked", { session });
-    } else {
-      session.summary = "Working in the background.";
-      emitEvent("TaskProgressChanged", { session });
-    }
-  }
-}
-
-function scheduleCodexChoiceParse(threadId, text, choiceParser, cacheKey, generation = currentChoiceGeneration(sessionIdForProviderThread(threadId))) {
-  if (developmentPreview) return;
-  const parserBackoffKey = choiceParserBackoffKey(choiceParser);
-  const retryAfter = Math.max(
-    codexChoiceParseRetryAfter.get(cacheKey) ?? 0,
-    codexChoiceParseRetryAfter.get(parserBackoffKey) ?? 0
-  );
-  if (retryAfter > Date.now()) {
-    return;
-  }
-  if (pendingCodexChoiceParses.has(cacheKey)) {
-    return;
-  }
-  pendingCodexChoiceParses.add(cacheKey);
-  const scheduledAt = Date.now();
-  console.log(`[choice-parser] event=codex-app-server-scheduled session=codex:${threadId} ${JSON.stringify({ at: new Date(scheduledAt).toISOString(), chars: String(text).length })}`);
-  parseChoiceStageWithConfiguredParser(text, choiceParser, {
-    id: `codex:${threadId}`,
-    provider: "codex-app-server"
-  })
-    .then((parsed) => {
-      codexChoiceParseRetryAfter.delete(cacheKey);
-      codexChoiceParseRetryAfter.delete(parserBackoffKey);
-      if (!parsed || !Array.isArray(parsed.options) || parsed.options.length < 2 || parsed.confidence < 0.45) {
-        return;
-      }
-      const options = parsed.options.slice(0, 6).map((option, index) => ({
-        id: option.id || `${option.role ?? "option"}-${index}`,
-        label: option.label,
-        role: option.role ?? "message-choice",
-        index,
-        selected: index === parsed.selectedIndex
-      }));
-      codexChoiceOptionsCache.set(cacheKey, options.map((option) => ({ ...option })));
-      if (codexChoiceOptionsCache.size > 200) {
-        codexChoiceOptionsCache.delete(codexChoiceOptionsCache.keys().next().value);
-      }
-      applyCodexChoiceOptionsToManagedSession(threadId, text, options, generation);
-      console.log(`[choice-parser] event=codex-app-server-detail-accepted session=codex:${threadId} ${JSON.stringify({ at: new Date().toISOString(), queuedMs: Date.now() - scheduledAt, options: options.length, confidence: parsed.confidence, source: parsed.source, async: true })}`);
-      emitEvent("CodexThreadChoiceOptionsUpdated", { threadId, optionsCount: options.length });
-    })
-    .catch((error) => {
-      const retryDelayMs = choiceParserRetryDelayMs(error);
-      const retryAt = Date.now() + retryDelayMs;
-      codexChoiceParseRetryAfter.set(cacheKey, retryAt);
-      codexChoiceParseRetryAfter.set(parserBackoffKey, retryAt);
-      console.log(`[choice-parser] event=codex-app-server-detail-error session=codex:${threadId} ${JSON.stringify({ error: error.message, retryDelayMs, retryAt: new Date(retryAt).toISOString(), async: true })}`);
-    })
-    .finally(() => {
-      pendingCodexChoiceParses.delete(cacheKey);
-    });
-}
-
-function choiceOptionsCacheKey(text = "", choiceParser = {}) {
-  const normalized = String(text).replace(/\s+/g, " ").trim();
-  return JSON.stringify({
-    provider: choiceParser.provider ?? "",
-    model: choiceParser.provider === "openai" ? choiceParser.openaiModel : choiceParser.localModel,
-    text: normalized.slice(-4000)
-  });
-}
-
-function scheduleCodexChoiceParseForText(threadId, text) {
-  const cleanText = typeof text === "string" ? text.trim() : "";
-  if (!cleanText) {
-    return;
-  }
-  if (!choiceParserShouldUseModel(cleanText)) {
-    return;
-  }
-  const settings = store.settings();
-  const choiceParser = {
-    ...(settings.choiceParser ?? {}),
-    agentProxy: settings.agentProxy
-  };
-  if (!choiceParser.provider || choiceParser.provider === "disabled") {
-    return;
-  }
-  const cacheKey = choiceOptionsCacheKey(cleanText, choiceParser);
-  const generation = currentChoiceGeneration(sessionIdForProviderThread(threadId));
-  if (codexChoiceOptionsCache.has(cacheKey)) {
-    applyCodexChoiceOptionsToManagedSession(threadId, cleanText, codexChoiceOptionsCache.get(cacheKey), generation);
-    return;
-  }
-  scheduleCodexChoiceParse(threadId, cleanText, choiceParser, cacheKey, generation);
-}
-
-function applyCodexChoiceOptionsToManagedSession(threadId, text, options, generation = currentChoiceGeneration(sessionIdForProviderThread(threadId))) {
-  const sessionId = sessionIdForProviderThread(threadId);
-  const session = store.getSession(sessionId);
-  if (!session) {
-    return null;
-  }
-  if (generation !== currentChoiceGeneration(sessionId) || session.status === "running") {
-    console.log(`[choice-parser] event=codex-app-server-options-stale-generation session=${sessionId} ${JSON.stringify({ at: new Date().toISOString(), generation, currentGeneration: currentChoiceGeneration(sessionId), status: session.status })}`);
-    return null;
-  }
-  const normalizedSessionSummary = String(session.summary ?? "").replace(/\s+/g, " ").trim();
-  const normalizedText = String(text ?? "").replace(/\s+/g, " ").trim();
-  const summaryMatches = !normalizedSessionSummary
-    || normalizedSessionSummary === normalizedText
-    || normalizedSessionSummary.includes(normalizedText.slice(0, 120))
-    || normalizedText.includes(normalizedSessionSummary.slice(0, 120));
-  if (!summaryMatches) {
-    console.log(`[choice-parser] event=codex-app-server-options-stale session=codex:${threadId} ${JSON.stringify({ at: new Date().toISOString(), sessionSummaryChars: normalizedSessionSummary.length, textChars: normalizedText.length })}`);
-    return null;
-  }
-  const nextSession = {
-    ...session,
-    summary: text || session.summary,
-    suggestedOptions: options.map((option) => ({ ...option })),
-    updatedAt: now()
-  };
-  upsertManagedCodexSession(nextSession);
-  store.setActiveChoicePrompt(sessionId, text, nextSession.suggestedOptions);
-  return nextSession;
-}
 
 function upsertManagedCodexSession(session, preferredAgentId = null) {
-  const stored = store.getSession(session.id);
-  // Durable product associations win over a stale Provider callback cache.
-  // Persist before publishing the in-memory projection so a validation
-  // failure cannot leave the cache ahead of SQLite.
-  const managedSession = mergeStoredSessionPresentation(session, stored);
-  const sessionKind = stored?.sessionKind ?? managedSession.sessionKind;
-  if (!isProductSessionKind(sessionKind)) {
-    if (!reportedUnclassifiedProviderSessionIds.has(session.id)) {
-      reportedUnclassifiedProviderSessionIds.add(session.id);
-      console.warn(`[session-classification] skipped unclassified Codex projection session=${session.id}`);
-    }
-    return null;
-  }
-  store.upsertSession({
-    ...managedSession,
-    sessionKind,
-    provider: managedSession.external?.provider ?? "codex-app-server",
-    cwd: managedSession.external?.cwd,
-    command: managedSession.external?.source ?? "codex-app-server"
-  });
-  ensureCollaborationAgentForSession(managedSession, preferredAgentId);
-  return managedSession;
+  return managedProviderSessionProjection.upsertManagedCodexSession(session, preferredAgentId);
 }
 
 function ensureCollaborationAgentForSession(session, preferredAgentId = null) {
-  if (!store.db || !session?.id) return null;
-  // 2026-08-15 决策：Agent 由用户手动创建，Session 必须绑定已有 Agent。
-  // 只做绑定（bindSession 内部要求 agent 已存在），绝不注册/创建/覆盖 agent 信息。
-  const bound = collaborationCore.getAgentForSession(session.id);
-  const agentId = preferredAgentId ?? bound?.agentId;
-  if (!agentId) return null;
-  const agent = collaborationCore.getAgent(agentId);
-  if (!agent) return null;
-  collaborationCore.bindSession({ agentId, sessionId: session.id });
-  return agent;
+  return managedProviderSessionProjection.ensureCollaborationAgentForSession(session, preferredAgentId);
 }
 
-function collaborationThreadOptions(agentId, metadata = null) {
-  if (!agentId) return {};
-  // Tool definitions are attached only through ToolHostService after a
-  // capability probe. This fallback carries runtime instructions but never
-  // recreates an eager, Provider-specific catalog.
-  return collaborationProviderRuntimeOptions(agentId, metadata);
-}
-
-// 会话创建专用：在静态协作协议基础上，追加 Agent 身份 + systemPrompt + per-agent 记忆。
-async function collaborationThreadOptionsWithAgentContext(agentId, metadata = null) {
-  const base = collaborationThreadOptions(agentId, metadata);
-  if (!agentId) return base;
-  const agentContext = await collaborationAgentContextInstructions(agentId, metadata);
-  if (!agentContext) return base;
-  const developerInstructions = [agentContext, base.developerInstructions].filter(Boolean).join("\n\n");
-  return { ...base, developerInstructions };
-}
-
-async function collaborationProviderRuntimeOptionsWithAgentContext(agentId, metadata = null) {
-  const base = collaborationProviderRuntimeOptions(agentId, metadata);
-  if (!agentId) return base;
-  const agentContext = await collaborationAgentContextInstructions(agentId, metadata);
-  if (!agentContext) return base;
-  const developerInstructions = [agentContext, base.developerInstructions].filter(Boolean).join("\n\n");
-  return { ...base, developerInstructions };
-}
-
-// Agent 上下文（systemPrompt + description + per-agent 记忆），异步组装。
-// 仅用于会话创建时注入 Agent 身份；resume / workspace 切换沿用静态协议指令。
-async function collaborationAgentContextInstructions(agentId, metadata = null) {
-  if (!agentId) return "";
-  const context = await agentContextService.buildAgentContext(agentId, {
-    intent: "",
-    scope: {
-      sessionId: metadata?.sessionId ?? null,
-      workId: metadata?.workId ?? null,
-      taskId: metadata?.taskId ?? null
-    }
-  });
-  return context?.instructions ?? "";
-}
-
-function collaborationProviderRuntimeOptions(agentId, metadata = null) {
-  const authenticatedMcpServers = metadata?.sessionId
-    ? {
-        [collaborationMcpServerName(agentId)]: {
-          ...collaborationMcpProcessOptions(agentId, metadata),
-          startup_timeout_sec: 5,
-          required: false
-        }
-      }
-    : {};
-  return {
-    config: {
-      features: {
-        multi_agent: false
-      },
-      mcp_servers: authenticatedMcpServers
-    },
-    developerInstructions: collaborationRuntimeInstructions(agentId, metadata)
-  };
-}
-
-function claudeCollaborationRuntimeOptions(agentId, metadata = null) {
-  const authenticatedMcpServers = metadata?.sessionId
-    ? {
-        [collaborationMcpServerName(agentId)]: {
-          type: "stdio",
-          ...collaborationMcpProcessOptions(agentId, metadata),
-          timeout: 5_000,
-          alwaysLoad: true
-        }
-      }
-    : {};
-  return {
-    mcpServers: authenticatedMcpServers,
-    plugins: [{
-      type: "local",
-      path: corptieClaudeRuntimePaths.pluginPath,
-      skipMcpDiscovery: true
-    }],
-    skills: "all",
-    settingSources: ["user", "project", "local"],
-    systemPrompt: {
-      type: "preset",
-      preset: "claude_code",
-      append: collaborationRuntimeInstructions(agentId, metadata)
-    }
-  };
-}
-
-// 会话创建专用：在静态协作协议基础上，追加 Agent 身份 + systemPrompt + per-agent 记忆。
-async function claudeCollaborationRuntimeOptionsWithAgentContext(agentId, metadata = null) {
-  const base = claudeCollaborationRuntimeOptions(agentId, metadata);
-  if (!agentId) return base;
-  const agentContext = await collaborationAgentContextInstructions(agentId, metadata);
-  if (!agentContext) return base;
-  const append = [agentContext, collaborationRuntimeInstructions(agentId, metadata)].filter(Boolean).join("\n\n");
-  return {
-    ...base,
-    systemPrompt: { ...base.systemPrompt, append }
-  };
-}
-
-function collaborationMcpProcessOptions(agentId, metadata = null) {
-  return {
-    command: process.execPath,
-    args: [collaborationMcpServerPath],
-    env: collaborationMcpEnvironment({
-      agentId,
-      backendUrl: `http://127.0.0.1:${port}`,
-      environmentName,
-      metadata
-    })
-  };
-}
 
 async function claudeRuntimeOptionsForSession(providerSessionId) {
-  const sessionIds = [providerSessionId];
-  let agent = sessionIds
-    .map((sessionId) => collaborationCore.getAgentForSession(sessionId))
-    .find(Boolean);
-  if (!agent) {
-    const session = sessionIds
-      .map((sessionId) => store.getSession(sessionId))
-      .find(Boolean);
-    agent = ensureCollaborationAgentForSession(session);
-  }
-  const session = store.getSession(providerSessionId);
-  const metadata = sessionToolMetadata(session);
-  if (!agent) return {};
-  return (await toolHostService.prepareSession("claude-sdk", {
-    actorId: agent.agentId,
-    ...metadata
-  }))?.providerAttachment ?? {};
+  return sessionProviderAttachments.claudeRuntimeOptionsForSession(providerSessionId);
 }
 
 async function collaborationThreadOptionsForSession(sessionId, options = {}) {
-  if (!sessionId) return {};
-  const session = store.getSession(sessionId);
-  const agent = collaborationCore.getAgentForSession(sessionId)
-    ?? ensureCollaborationAgentForSession(session);
-  if (!agent?.agentId) return {};
-  const metadata = sessionToolMetadata(session);
-  if (options.prospectiveBinding === true) {
-    const logical = metadata.logicalSessionId
-      ? store.getLogicalSession(metadata.logicalSessionId)
-      : null;
-    const current = logical?.activeBinding?.bindingId
-      ? store.getSessionToolCatalogMaterialization(
-          logical.logicalSessionId,
-          logical.activeBinding.bindingId
-        )
-      : null;
-    delete metadata.providerBindingId;
-    metadata.purpose = options.purpose ?? "session-recovery";
-    if (current) {
-      metadata.desiredToolDomains = current.desiredDomains
-        .map((domain) => domain?.domainId)
-        .filter(Boolean);
-    }
-  }
-  const prepared = await toolHostService.prepareSession("codex-app-server", {
-    actorId: agent.agentId,
-    ...metadata
-  });
-  const attachment = prepared?.providerAttachment ?? {};
-  const receipt = prepared?.materialization?.record?.providerReceipt ?? null;
-  if (!receipt?.providerRevision
-    || !receipt?.providerDefinitionsHash
-    || !Number.isSafeInteger(receipt?.providerDefinitionsCount)
-    || !receipt?.providerObservationKind) return attachment;
-  return {
-    ...attachment,
-    dynamicToolConfirmation: {
-      providerRevision: receipt.providerRevision,
-      providerDefinitionsHash: receipt.providerDefinitionsHash,
-      providerContractHash: receipt.providerContractHash,
-      providerDefinitionsCount: receipt.providerDefinitionsCount,
-      providerObservationKind: receipt.providerObservationKind
-    }
-  };
+  return sessionProviderAttachments.collaborationThreadOptionsForSession(sessionId, options);
 }
-
 async function workspaceTransitionRuntimeForLogicalSession(logical) {
   return resolveWorkspaceTransitionRuntime(logical?.activeBinding?.providerId, {
     "codex-app-server": {
@@ -4660,601 +1532,21 @@ async function workspaceTransitionRuntimeForLogicalSession(logical) {
 }
 
 function withPersistedCodexToolConfirmation(reference, attachment = {}) {
-  const logicalSessionId = reference?.logicalSessionId
-    ?? reference?.metadata?.session?.external?.logicalSessionId
-    ?? null;
-  const providerBindingId = reference?.bindingId ?? reference?.providerBindingId ?? null;
-  if (!logicalSessionId || !providerBindingId) return attachment;
-  const record = store.getSessionToolCatalogMaterialization(logicalSessionId, providerBindingId);
-  const receipt = record?.providerReceipt ?? null;
-  if (!receipt?.providerRevision
-    || !receipt?.providerDefinitionsHash
-    || !Number.isSafeInteger(receipt?.providerDefinitionsCount)
-    || !receipt?.providerObservationKind) return attachment;
-  return {
-    ...attachment,
-    dynamicToolConfirmation: {
-      providerRevision: receipt.providerRevision,
-      providerDefinitionsHash: receipt.providerDefinitionsHash,
-      providerContractHash: receipt.providerContractHash,
-      providerDefinitionsCount: receipt.providerDefinitionsCount,
-      providerObservationKind: receipt.providerObservationKind
-    }
-  };
+  return sessionProviderAttachments.withPersistedCodexToolConfirmation(reference, attachment);
 }
-
-function sessionToolMetadata(session) {
-  const logical = session?.id
-    ? store.getLogicalSessionByLegacySessionId(session.id)
-    : null;
-  return {
-    purpose: "session",
-    sessionKind: session?.sessionKind ?? "legacy",
-    workId: session?.workId ?? null,
-    taskId: session?.taskId ?? null,
-    sessionId: session?.id ?? null,
-    logicalSessionId: logical?.logicalSessionId ?? session?.external?.logicalSessionId ?? null,
-    providerBindingId: logical?.activeBinding?.bindingId ?? null,
-    providerId: logical?.activeBinding?.providerId ?? null
-  };
-}
-
-function resolveDynamicToolCallMetadata(params = {}) {
-  const logical = params.threadId
-    ? store.getLogicalSessionByProviderThreadId(params.threadId)
-    : null;
-  const session = logical?.legacySessionId ? store.getSession(logical.legacySessionId) : null;
-  return session ? sessionToolMetadata(session) : (params.metadata ?? null);
-}
-
-function resolveToolHostBinding(logicalSessionId, providerBindingId) {
-  const logical = store.getLogicalSession(logicalSessionId);
-  const active = logical?.activeBinding ?? null;
-  if (!logical || !active || active.bindingId !== providerBindingId) return null;
-  const session = logical.legacySessionId ? store.getSession(logical.legacySessionId) : null;
-  const task = session?.taskId ? store.getTask(session.taskId) : null;
-  const startupAuthorization = session?.sessionKind === "worker" && task?.current_session_id !== session.id
-    ? (store.selectOne(
-      `SELECT startup.startup_operation_id, startup.resource_version
-       FROM work_session_startup_operations startup
-       JOIN work_session_startup_bindings binding
-         ON binding.startup_operation_id=startup.startup_operation_id
-       WHERE startup.task_id=? AND startup.legacy_session_id=? AND startup.logical_session_id=?
-         AND startup.provider_id=? AND startup.state IN ('session_bound','provider_bound')
-         AND binding.provider_resource_id=? AND binding.status='binding'
-      ORDER BY startup.allocated_at DESC LIMIT 1`,
-      [session.taskId, session.id, logical.logicalSessionId, active.providerId, active.providerSessionId]
-    ) ?? store.selectOne(
-      `SELECT execution.execution_space_id AS startup_operation_id, execution.resource_version
-       FROM execution_spaces execution
-       WHERE execution.task_id=? AND execution.session_id=? AND execution.logical_session_id=?
-         AND execution.strategy='managedSandbox' AND execution.status IN ('preparing','binding')
-       ORDER BY execution.updated_at DESC LIMIT 1`,
-      [session.taskId, session.id, logical.logicalSessionId]
-    ))
-    : null;
-  return {
-    logicalSessionId: logical.logicalSessionId,
-    providerBindingId: active.bindingId,
-    providerId: active.providerId,
-    providerSessionId: active.providerSessionId,
-    routingVersion: active.routingVersion,
-    state: active.state,
-    isCurrent: logical.activeThreadId === active.providerThreadId,
-    tombstoned: session?.deletedAt != null,
-    sessionId: session?.id ?? null,
-    sessionKind: session?.sessionKind ?? "legacy",
-    workId: session?.workId ?? null,
-    taskId: session?.taskId ?? null,
-    currentTaskSessionId: task?.current_session_id ?? null,
-    taskSessionAuthorization: task?.current_session_id === session?.id
-      ? "current"
-      : (startupAuthorization ? "startup" : null),
-    startupOperationId: startupAuthorization?.startup_operation_id ?? null,
-    agentId: session?.agentId ?? null,
-    authorizationRevision: Math.max(
-      Number(logical.routingVersion ?? 1),
-      Number(task?.resource_version ?? 1),
-      Number(startupAuthorization?.resource_version ?? 1)
-    )
-  };
-}
-
-function prospectiveToolHostBinding({ logicalSessionId, binding = {}, session = null }) {
-  const task = session?.taskId ? store.getTask(session.taskId) : null;
-  const providerBindingId = binding.bindingId ?? binding.providerBindingId;
-  const providerSessionId = binding.providerSessionId ?? binding.providerThreadId;
-  return {
-    logicalSessionId,
-    providerBindingId,
-    providerId: binding.providerId,
-    providerSessionId,
-    routingVersion: Number(binding.routingVersion ?? 1),
-    bindingGeneration: Number(binding.bindingGeneration ?? 1),
-    state: "active",
-    isCurrent: true,
-    tombstoned: false,
-    sessionId: session?.id ?? null,
-    sessionKind: session?.sessionKind ?? "legacy",
-    workId: session?.workId ?? null,
-    taskId: session?.taskId ?? null,
-    currentTaskSessionId: task?.current_session_id ?? null,
-    agentId: session?.agentId ?? null,
-    worktreeId: binding.worktreeId ?? null,
-    repositoryId: binding.repositoryId ?? null,
-    boundCwd: binding.boundCwd ?? null,
-    authorizationRevision: Math.max(
-      Number(binding.routingVersion ?? 1),
-      Number(task?.resource_version ?? 1)
-    )
-  };
-}
-
-async function prepareDesiredWorkspaceToolMaterialization({
-  logicalSessionId,
-  sessionId,
-  sourceBinding,
-  binding
-}) {
-  const session = sessionId ? store.getSession(sessionId) : null;
-  const source = sourceBinding?.bindingId
-    ? store.getSessionToolCatalogMaterialization(logicalSessionId, sourceBinding.bindingId)
-    : null;
-  return toolHostMaterializationCoordinator.prepareDesiredReplacement({
-    binding: prospectiveToolHostBinding({ logicalSessionId, binding, session }),
-    desiredDomains: desiredToolDomainIds(source)
-  });
-}
-
-function desiredToolDomainIds(materialization = null) {
-  return [...new Set([
-    ...(materialization?.desiredDomains ?? []),
-    ...(materialization?.appliedDomains ?? [])
-  ].map((domain) => typeof domain === "string" ? domain : domain?.domainId)
-    .filter(Boolean)
-    .map((domainId) => domainId === "work-item-acceptance" ? "task-acceptance" : domainId))].sort();
-}
-
-function appliedToolDomainIds(materialization = null) {
-  if (!materialization
-    || materialization.status !== "applied"
-    || materialization.appliedVersion !== materialization.desiredVersion) return [];
-  return [...new Set((materialization.appliedDomains ?? [])
-    .map((domain) => typeof domain === "string" ? domain : domain?.domainId)
-    .filter(Boolean))].sort();
-}
-
 function requiredToolDomainsForSession(context = {}) {
   return resolveSessionToolDomainRequirements(context, {
     projectCodeRecommendationEnabled: PROJECT_CODE_MODEL_RECOMMENDATION_ENABLED
   });
 }
 
-function workChatInstructions(metadata) {
-  return metadata?.sessionKind === "workChat" && metadata?.workId
-    ? workChatContextService.build(metadata.workId, metadata.sessionId ? store.getSession(metadata.sessionId) : null).prompt
-    : "";
-}
-
 function withWorkChatCodexContext(options, metadata) {
-  const context = workChatInstructions(metadata);
-  if (!context) return options;
-  return {
-    ...options,
-    developerInstructions: [options?.developerInstructions, context].filter(Boolean).join("\n\n")
-  };
+  return sessionProviderAttachments.withWorkChatCodexContext(options, metadata);
 }
 
 function withWorkChatClaudeContext(options, metadata) {
-  const context = workChatInstructions(metadata);
-  if (!context) return options;
-  const systemPrompt = options?.systemPrompt ?? { type: "preset", preset: "claude_code", append: "" };
-  return {
-    ...options,
-    systemPrompt: {
-      ...systemPrompt,
-      append: [systemPrompt.append, context].filter(Boolean).join("\n\n")
-    }
-  };
+  return sessionProviderAttachments.withWorkChatClaudeContext(options, metadata);
 }
-
-function workspaceInventory(logical) {
-  return {
-    logicalSessionId: logical.logicalSessionId,
-    activeWorktreeId: logical.activeWorkspaceId,
-    activeRepositoryId: logical.repositoryId,
-    workspaces: store.listAllGitWorktrees().map((worktree) => ({
-      id: worktree.worktreeId,
-      repositoryId: worktree.repositoryId,
-      path: worktree.canonicalPath || worktree.path,
-      availability: worktree.availability,
-      branchName: worktree.branchName,
-      headOid: worktree.headOid,
-      detached: worktree.isDetached,
-      isMain: worktree.isMain
-    }))
-  };
-}
-
-function requireAgentLogicalSession(agentId) {
-  const agent = collaborationCore.getAgent(agentId);
-  const sessionId = agent?.currentSessionId;
-  const logical = sessionId ? store.getLogicalSessionByLegacySessionId(sessionId) : null;
-  if (!sessionId || !logical?.activeBinding) {
-    const error = new Error("The Corptie Agent is not bound to an active logical Session.");
-    error.code = "SESSION_NOT_FOUND";
-    error.statusCode = 404;
-    throw error;
-  }
-  return { agent, sessionId, logical };
-}
-
-function authorizeScheduledSessionTask({ actor, logicalSessionId, environment }) {
-  if (environment !== environmentName) {
-    const error = new Error("计划任务 belongs to another Corptie environment.");
-    error.code = "ENVIRONMENT_MISMATCH";
-    throw error;
-  }
-  const logical = store.getLogicalSession(logicalSessionId);
-  if (!logical) {
-    const error = new Error(`Logical Session ${logicalSessionId} does not exist.`);
-    error.code = "SESSION_NOT_FOUND";
-    throw error;
-  }
-  const session = logical.legacySessionId ? store.getSession(logical.legacySessionId) : null;
-  if (!session) {
-    const error = new Error(`Logical Session ${logicalSessionId} has no current Session projection.`);
-    error.code = "SESSION_NOT_FOUND";
-    throw error;
-  }
-  if (actor.type === "user" && actor.id === "user:local-macos") {
-    return { workId: session.workId ?? null, session };
-  }
-  // A paired client acts for its user, never impersonates a Session or local admin.
-  // Recheck durable device authority on each scheduler operation/delivery.
-  if (actor.type === "user" && actor.id?.startsWith("user:paired-device:")
-      && clientDeviceGateway?.authority.canDeliverScheduledMessage(actor.id.slice("user:paired-device:".length))) {
-    return { workId: session.workId ?? null, session };
-  }
-  const actorAgent = actor.type === "agent" ? store.getAgent(actor.id) : null;
-  const boundAgent = collaborationCore.getAgentForSession(session.id);
-  if (!actorAgent || boundAgent?.agentId !== actorAgent.agentId) {
-    const error = new Error(`Actor ${actor.id} is not authorized for logical Session ${logicalSessionId}.`);
-    error.code = "AUTHORIZATION_REVOKED";
-    throw error;
-  }
-  return { workId: session.workId ?? null, session };
-}
-
-function enqueueScheduledSessionWork(input) {
-  const { task, inserted } = store.enqueueAgentTaskWithResult(input);
-  const deliveryId = input.source?.deliveryId ?? input.taskId;
-  console.info(
-    `[automation-delivery] result=${inserted ? "inserted" : "deduplicated"}`
-    + ` taskId=${input.source?.scheduledTaskId ?? "unknown"}`
-    + ` scheduledFor=${input.source?.scheduledFor ?? "unknown"}`
-    + ` deliveryId=${deliveryId}`
-  );
-  if (!inserted) return { task, inserted };
-  registerRuntimeQueuedWork(input.sessionId, task.taskId);
-  const queuePosition = runtimeQueuePosition(input.sessionId, task.taskId);
-  emitEvent("AgentWorkQueued", {
-    sessionId: input.sessionId,
-    task,
-    queuePosition,
-    source: task.source
-  }, { sessionId: input.sessionId, source: task.source });
-  scheduleAgentWorkDrain(input.sessionId, null, task.taskId);
-  return { task, inserted };
-}
-
-function scheduledSessionHttpActor(request) {
-  const agentId = typeof request.headers["x-corptie-agent-id"] === "string"
-    ? request.headers["x-corptie-agent-id"].trim()
-    : "";
-  if (agentId) return { type: "agent", id: agentId };
-  const address = request.socket?.remoteAddress ?? "";
-  if (["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(address)) {
-    return { type: "user", id: "user:local-macos" };
-  }
-  const error = new Error("计划任务 API requires an authenticated local client or Agent identity.");
-  error.code = "ACTOR_REQUIRED";
-  throw error;
-}
-
-function scheduledSessionHttpLogicalSessionId(request) {
-  const sessionId = typeof request.headers["x-corptie-session-id"] === "string"
-    ? request.headers["x-corptie-session-id"].trim()
-    : "";
-  if (!sessionId) return null;
-  const logical = store.getLogicalSession(sessionId)
-    ?? store.getLogicalSessionByLegacySessionId(sessionId);
-  if (!logical) {
-    const error = new Error(`Logical Session not found for authenticated Session ${sessionId}.`);
-    error.code = "SESSION_NOT_FOUND";
-    throw error;
-  }
-  return logical.logicalSessionId;
-}
-
-async function callWorkspaceDynamicTool(params) {
-  const logical = store.getLogicalSessionByProviderThreadId(params.threadId);
-  if (!logical || logical.activeThreadId !== params.threadId) {
-    const error = new Error("Workspace operations are only available from the active logical Session thread.");
-    error.code = "WORKSPACE_SESSION_ROUTE_STALE";
-    error.stage = "route_validation";
-    throw error;
-  }
-  const metadata = params.metadata ?? {};
-  if (params.tool === "corptie_list_workspaces") {
-    return sessionWorkspaceOperations.listWorkspaces(metadata, params.actorId);
-  }
-  if (params.tool === "corptie_create_worktree") {
-    return sessionWorkspaceOperations.createWorktree(metadata, params.actorId, params.arguments ?? {});
-  }
-  if (params.tool === "corptie_switch_workspace") {
-    return sessionWorkspaceOperations.switchWorkspace(metadata, params.actorId, params.arguments ?? {});
-  }
-  throw new Error(`Unsupported workspace tool: ${params.tool}`);
-}
-
-function validateProjectCodeHostRoute(params) {
-  const logical = store.getLogicalSessionByProviderThreadId(params.threadId);
-  if (!logical || logical.activeThreadId !== params.threadId
-    || logical.logicalSessionId !== params.metadata?.logicalSessionId) {
-    const error = new Error("Project-code search is only available from the active authoritative Worker Session thread.");
-    error.code = "PROJECT_CODE_SESSION_ROUTE_STALE";
-    error.stage = "route_validation";
-    throw error;
-  }
-}
-
-function sortSessionsForList(sessions = []) {
-  return sessions.slice().sort((a, b) => {
-    if (Boolean(a.pinned) !== Boolean(b.pinned)) {
-      return a.pinned ? -1 : 1;
-    }
-    const aOrder = Number.isFinite(Number(a.sortOrder)) ? Number(a.sortOrder) : Number.POSITIVE_INFINITY;
-    const bOrder = Number.isFinite(Number(b.sortOrder)) ? Number(b.sortOrder) : Number.POSITIVE_INFINITY;
-    if (aOrder !== bOrder) {
-      return aOrder - bOrder;
-    }
-    return String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? ""));
-  });
-}
-
-function withLastMessageTimestamp(session, persistedMessageAt = null) {
-  const candidates = [
-    session.lastMessageAt,
-    session.lastInputAt,
-    session.lastOutputAt,
-    session.rawStatus?.lastMessageAt,
-    session.rawStatus?.lastInputAt,
-    session.rawStatus?.lastOutputAt,
-    persistedMessageAt
-  ].filter((value) => typeof value === "string" && value.trim());
-  const lastMessageAt = candidates.sort((a, b) => b.localeCompare(a))[0] ?? null;
-  return { ...session, lastMessageAt };
-}
-
-function withSessionMessageCursors(session, cursors = null, timelineRevision = 0) {
-  return {
-    ...session,
-    lastAgentMessageSequence: Number(cursors?.lastAgentMessageSequence ?? 0),
-    lastReadMessageSequence: Number(cursors?.lastReadMessageSequence ?? 0),
-    timelineRevision: Number(timelineRevision ?? 0)
-  };
-}
-
-function handleCodexAppServerNotificationSafely(message) {
-  const method = message?.method ?? "unknown";
-  const threadId = message?.params?.threadId ?? null;
-  const logical = threadId ? store.getLogicalSessionByProviderThreadId(threadId) : null;
-  const sessionId = logical?.legacySessionId ?? (threadId ? `codex:${threadId}` : null);
-  if (method === "turn/completed" && threadId && sessionId) {
-    const pendingImages = codexRuntime.liveItemsForThread(threadId).filter((item) =>
-      item?.type === "imageView"
-      && typeof item.text === "string"
-      && item.text.trim()
-      && (!Array.isArray(item.images) || item.images.length === 0)
-    );
-    if (pendingImages.length > 0) {
-      void materializeCodexTurnImages({ threadId, sessionId, items: pendingImages })
-        .finally(() => handleCodexAppServerNotificationSafely(message));
-      return;
-    }
-  }
-  if (sessionId) {
-    sessionStateDiagnostics.record(sessionId, "providerReceived", {
-      providerId: "codex-app-server",
-      threadId,
-      turnId: message?.params?.turn?.id ?? message?.params?.turnId ?? null,
-      eventName: method
-    });
-  }
-  try {
-    handleCodexAppServerNotification(message);
-    if (sessionId && ["turn/completed", "error"].includes(method)) {
-      const persisted = store.getSession(sessionId);
-      sessionStateDiagnostics.record(sessionId, "persisted", {
-        status: persisted?.status ?? null,
-        eventName: method
-      });
-    }
-  } catch (error) {
-    console.error(`[provider-notification] isolated failure provider=codex-app-server session=${sessionId ?? "unknown"} thread=${threadId ?? "unknown"} event=${method} code=${error?.code ?? "unknown"} error=${error?.message ?? error}`);
-    if (sessionId) {
-      sessionStateDiagnostics.record(sessionId, "providerError", {
-        eventName: method,
-        code: error?.code ?? null,
-        error: error?.message ?? String(error)
-      });
-      const binding = threadId
-        ? store.getAgentSessionBindingByProviderSession("codex-app-server", threadId)
-        : null;
-      if (binding) store.markProviderBindingCursorDegraded(binding, now());
-    }
-  }
-}
-
-async function materializeCodexTurnImages({ threadId, sessionId, items }) {
-  const reference = requireSessionReference(sessionId);
-  for (const item of items) {
-    try {
-      const imported = await chatResourceService.importImage(reference, {
-        sourcePath: item.text,
-        preserveOriginal: false
-      });
-      codexRuntime.attachManagedImagesToLiveItem(threadId, item.id, [{
-        managedPath: imported.managedPath,
-        originalPath: null
-      }]);
-    } catch (error) {
-      console.warn(`[chat-image] could not materialize Provider image session=${sessionId} path=${item.text} code=${error?.code ?? "unknown"}`);
-      // Mark the attempt so the terminal notification proceeds and the UI can
-      // render a missing-image placeholder instead of retrying forever.
-      codexRuntime.attachManagedImagesToLiveItem(threadId, item.id, [{
-        managedPath: chatResourceService.missingImagePath(reference, item.id),
-        originalPath: null
-      }]);
-    }
-  }
-}
-
-function handleCodexAppServerNotification(message) {
-  const method = message?.method;
-  const params = message?.params ?? {};
-  const threadId = params.threadId;
-  if (!threadId) {
-    return;
-  }
-  const logicalRoute = store.getLogicalSessionByProviderThreadId(threadId);
-  const sessionId = logicalRoute?.legacySessionId ?? `codex:${threadId}`;
-  const managedSession = store.getSession(sessionId);
-  if (method === "thread/name/updated") {
-    // The Provider's native Thread title is execution metadata, not Corptie
-    // product state. User/API rename commands persist the Corptie title and may
-    // mirror it outward; a reverse Provider callback must never overwrite it.
-    return;
-  }
-  // Provider-switch route commits deliberately invalidate the old Provider's
-  // cached projection. The durable stable projection remains a valid base for
-  // the first notification from the new active thread and must not cause that
-  // notification (especially turn/completed) to be dropped.
-  const session = managedSession;
-  if (!session) {
-    return;
-  }
-
-  const providerBinding = store.getAgentSessionBindingByProviderSession("codex-app-server", threadId);
-  // Supported Provider notifications always enter the same Inbox, including
-  // notifications whose Binding cannot be resolved. The synthetic identity is
-  // intentionally unresolvable so Ingestion durably quarantines the event
-  // instead of falling back to a second Timeline/Session projection.
-  const envelopeBinding = providerBinding ?? {
-    bindingId: `unresolved:codex-app-server:${threadId}`,
-    providerId: "codex-app-server",
-    providerSessionId: threadId,
-    logicalSessionId: logicalRoute?.id ?? null,
-    routingVersion: Number(logicalRoute?.routingVersion ?? 1)
-  };
-  const providerEnvelope = mapCodexProviderNotification({
-    message,
-    binding: envelopeBinding,
-    liveItems: codexRuntime.liveItemsForThread(threadId),
-    structuredPlanEvents: agentProviderRegistry.supports("codex-app-server", AGENT_PROVIDER_CAPABILITIES.EXECUTION_PLAN_EVENTS),
-    receivedAt: now()
-  });
-  if (providerEnvelope) {
-    const ingestion = providerEventIngestion.ingest(providerEnvelope);
-    if (ingestion.status === "applied") {
-      handleCommittedCodexProviderEvent({
-        event: ingestion.event,
-        projection: ingestion.projection,
-        logicalRoute,
-        threadId
-      });
-    } else if (ingestion.status === "quarantined") {
-      sessionStateDiagnostics.record(sessionId, "providerEventQuarantined", {
-        eventName: method,
-        code: ingestion.code,
-        bindingId: providerEnvelope.bindingId
-      });
-    }
-  }
-}
-
-function handleCommittedCodexProviderEvent({ event, projection, logicalRoute, threadId }) {
-  const nextSession = projection?.session;
-  if (!nextSession) return;
-
-  const terminal = ["turn.completed", "turn.failed", "turn.cancelled"].includes(event.type);
-  if (!terminal) return;
-  const failed = event.type === "turn.failed";
-  const cancelled = event.type === "turn.cancelled";
-  const latestAgentMessage = [...(event.payload?.items ?? [])].reverse().find((item) =>
-    item?.type === "agentMessage"
-    && item?.presentationRole === "final_answer"
-    && typeof item.text === "string"
-    && item.text.trim()
-  );
-  if (!failed && !cancelled && latestAgentMessage?.text) {
-    scheduleCodexChoiceParseForText(threadId, latestAgentMessage.text);
-  }
-
-  handleCommittedProviderTerminalLifecycle({ event, projection, logicalRoute });
-}
-
-function handleCommittedProviderTerminalLifecycle({ event, projection, logicalRoute }) {
-  const nextSession = projection?.session;
-  if (!nextSession) return;
-  const terminal = ["turn.completed", "turn.failed", "turn.cancelled"].includes(event.type);
-  if (!terminal) return;
-  const terminalStatus = projection?.terminalStatus
-    ?? (event.type === "turn.failed" ? "failed" : (event.type === "turn.cancelled" ? "cancelled" : "completed"));
-  const failed = terminalStatus === "failed";
-  const cancelled = terminalStatus === "cancelled";
-
-  const completedWork = store.getAgentTaskForTurn(nextSession.id, event.turnId)
-    ?? store.getRunningAgentTaskForSession(nextSession.id);
-  if (completedWork?.status === "running") {
-    const updatedWork = store.updateAgentTask(completedWork.taskId, {
-      status: failed ? "failed" : (cancelled ? "cancelled" : "completed"),
-      lastError: projection?.terminalFailure?.message ?? event.payload?.error?.message ?? null
-    });
-    emitEvent("AgentWorkCompleted", { sessionId: nextSession.id, task: updatedWork }, {
-      sessionId: nextSession.id,
-      source: completedWork.source
-    });
-    workspaceContinuationCoordinator.recordWorkSettled(updatedWork);
-  }
-  settleEntityTaskFromSession(nextSession);
-  const agent = collaborationCore.getAgentForSession(nextSession.id);
-  if (!failed && !cancelled) {
-    refreshWorkspaceInventoryAfterTurn(logicalRoute);
-    const continuation = continuePendingWorkspaceTransition(logicalRoute, event.turnId);
-    const providerSwitch = continuePendingProviderSwitch(logicalRoute);
-    resumeWorkAfterTransition(continuation, () => {
-      scheduleAgentWorkDrain(nextSession.id);
-    });
-    if (providerSwitch) providerSwitch.then(() => scheduleAgentWorkDrain(nextSession.id));
-  } else if (agent) {
-    scheduleAgentWorkDrain(nextSession.id);
-  }
-}
-
-function codexAppServerSessionCapabilities(overrides = {}) {
-  return {
-    canSend: true,
-    canSwitchModel: true,
-    canSwitchReasoning: true,
-    canInterrupt: true,
-    canReconnect: false,
-    canPrepareExecution: true,
-    ...overrides
-  };
-}
-
 async function readStoredSessionConversation(sessionId) {
   return store.getItems(sessionId, 500).flatMap((item) => {
     if (item.type === "userMessage") return [{ role: "user", text: item.text }];
@@ -5267,143 +1559,10 @@ async function readStoredSessionTimeline(sessionId) {
   return store.getItems(sessionId, 500);
 }
 
-async function ensureCodexSessionPermissions(session) {
-  if (!session) return session;
-  const needsPermissions = !hasCodexSessionPermissions(session);
-  const needsRuntimeConfig = !hasCodexSessionRuntimeConfig(session);
-  if (!needsPermissions && !needsRuntimeConfig) return session;
-
-  // Missing product configuration is completed from Corptie defaults only.
-  // Normal command dispatch must never inspect Provider-native rollout/history.
-  const defaults = normalizeNewSessionDefaults(store.settings().newSessionDefaults);
-  const withPermissions = needsPermissions
-    ? withCodexSessionPermissions(session, defaults)
-    : session;
-  const next = needsRuntimeConfig
-    ? withCodexSessionRuntimeConfig(withPermissions, {
-        model: defaults.codexModel,
-        reasoningLevel: defaults.codexReasoningLevel
-      })
-    : withPermissions;
-  if (session.id) upsertManagedCodexSession(next);
-  return next;
-}
-
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function loadCodexModels(options = {}) {
-  const nowMs = Date.now();
-  const refresh = options.refresh === true;
-  if (!refresh && codexModelsCache && nowMs - codexModelsCache.loadedAt < 5 * 60 * 1000) {
-    return codexModelsCache.payload;
-  }
-
-  const { stdout } = await execFileAsync(codexAppServerCommand(), ["debug", "models"], {
-    env: { ...environmentForCommand(codexAppServerCommand()), CODEX_HOME: corptieCodexRuntimePaths.codexHome },
-    timeout: 15_000,
-    maxBuffer: 8 * 1024 * 1024
-  });
-  const parsed = JSON.parse(stdout);
-  const models = Array.isArray(parsed?.models) ? parsed.models : [];
-  const currentConfig = await readCodexDefaultConfig();
-  const payload = {
-    currentModel: currentConfig.model,
-    currentReasoningLevel: currentConfig.reasoningLevel,
-    models: models
-      .filter((model) => model?.visibility === "list" && !String(model.slug ?? "").includes("auto-review"))
-      .sort((a, b) => {
-        if (a.slug === currentConfig.model) {
-          return -1;
-        }
-        if (b.slug === currentConfig.model) {
-          return 1;
-        }
-        return Number(b.priority ?? 0) - Number(a.priority ?? 0);
-      })
-      .map((model) => ({
-        id: model.slug,
-        name: model.display_name || model.slug,
-        description: model.description || "",
-        defaultReasoningLevel: model.default_reasoning_level || null,
-        reasoningLevels: Array.isArray(model.supported_reasoning_levels)
-          ? model.supported_reasoning_levels.map((level) => level.effort).filter(Boolean)
-          : [],
-        serviceTiers: Array.isArray(model.service_tiers)
-          ? model.service_tiers.map((tier) => ({ id: tier.id, name: tier.name || tier.id }))
-          : []
-      }))
-      .filter((model) => model.id)
-  };
-  codexModelsCache = { loadedAt: nowMs, payload };
-  return payload;
-}
-
-async function loadClaudeModels(options = {}) {
-  const nowMs = Date.now();
-  const refresh = options.refresh === true;
-  if (!refresh && claudeModelsCache && nowMs - claudeModelsCache.loadedAt < 5 * 60 * 1000) {
-    return claudeModelsCache.payload;
-  }
-
-  const warm = await startup({
-    options: {
-      cwd: defaultWorkspacePath(),
-      pathToClaudeCodeExecutable: firstRunSetup.command("claude-sdk", () => resolveExternalCommand("claude"))
-    },
-    initializeTimeoutMs: 15_000
-  });
-
-  try {
-    const models = await warm.query((async function* () {})()).supportedModels();
-    const activeSession = store.listSessions({ archived: false })
-      .find((session) => session.external?.provider === "claude-sdk" && session.external?.currentModel);
-    const payload = {
-      currentModel: activeSession?.external?.currentModel ?? null,
-      currentReasoningLevel: null,
-      models: (Array.isArray(models) ? models : [])
-        .map((model) => ({
-          id: model.value || model.id,
-          name: model.displayName || model.display_name || model.value || model.id,
-          description: model.description || "",
-          defaultReasoningLevel: null,
-          reasoningLevels: Array.isArray(model.supportedEffortLevels)
-            ? model.supportedEffortLevels.filter(Boolean)
-            : [],
-          serviceTiers: []
-        }))
-        .filter((model) => model.id)
-    };
-    claudeModelsCache = { loadedAt: nowMs, payload };
-    return payload;
-  } finally {
-    warm.close();
-  }
-}
-
-async function readCodexDefaultConfig() {
-  const config = await readFile(join(os.homedir(), ".codex", "config.toml"), "utf8").catch(() => "");
-  const modelMatch = config.match(/^\s*model\s*=\s*["']([^"']+)["']/m);
-  const reasoningMatch = config.match(/^\s*model_reasoning_effort\s*=\s*["']([^"']+)["']/m);
-  return {
-    model: modelMatch?.[1] ?? null,
-    reasoningLevel: reasoningMatch?.[1] ?? null
-  };
-}
-
-async function resolvedNewCodexRuntimeConfig(input = {}) {
-  const [currentConfig, modelPayload] = await Promise.all([
-    readCodexDefaultConfig(),
-    loadCodexModels().catch(() => ({ models: [] }))
-  ]);
-  return resolveNewCodexRuntimeConfig({
-    request: input,
-    defaults: store.settings().newSessionDefaults,
-    currentConfig,
-    models: modelPayload.models
-  });
-}
 
 function normalizeSessionId(id) {
   return id;
@@ -5429,914 +1588,46 @@ function codexApprovalPolicyForCli(approvalPolicy) {
   return approvalPolicy === "ask-risky" ? "on-request" : approvalPolicy;
 }
 
-function proxyEnvForProfile(profile = {}) {
-  if (!profile?.enabled) {
-    return {};
-  }
-  const env = {};
-  setProxyEnvValue(env, "HTTP_PROXY", profile.httpProxy);
-  setProxyEnvValue(env, "HTTPS_PROXY", profile.httpsProxy);
-  setProxyEnvValue(env, "ALL_PROXY", profile.allProxy);
-  setProxyEnvValue(env, "NO_PROXY", profile.noProxy);
-  return env;
-}
-
-function setProxyEnvValue(env, key, value) {
-  if (typeof value !== "string" || !value.trim()) {
-    return;
-  }
-  env[key] = value.trim();
-  env[key.toLowerCase()] = value.trim();
-}
-
-function sendJson(response, statusCode, body) {
-  const json = JSON.stringify(body);
-  response.writeHead(statusCode, {
-    "content-type": "application/json; charset=utf-8",
-    "content-length": Buffer.byteLength(json)
-  });
-  response.end(json);
-}
-
-/**
- * 最小 ZIP 写入器（无第三方依赖），用 node:zlib 的 deflateRawSync 压缩每个条目，
- * 手写 CRC32 与 local/central directory。仅支持 store 或 deflate 的普通文件条目，
- * 足够满足 session.export 返回一个含 JSON 的 ZIP 的需求。
- */
-function buildZip(files) {
-  const parts = [];
-  const central = [];
-  let offset = 0;
-
-  const crc32 = (buf) => {
-    let crc = 0xffffffff;
-    for (let i = 0; i < buf.length; i++) {
-      crc ^= buf[i];
-      for (let k = 0; k < 8; k++) {
-        crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
-      }
-    }
-    return (crc ^ 0xffffffff) >>> 0;
-  };
-
-  const u16 = (n) => {
-    const b = Buffer.alloc(2);
-    b.writeUInt16LE(n & 0xffff, 0);
-    return b;
-  };
-  const u32 = (n) => {
-    const b = Buffer.alloc(4);
-    b.writeUInt32LE(n >>> 0, 0);
-    return b;
-  };
-
-  const dosDateTime = () => {
-    const d = new Date();
-    const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
-    const date = (((d.getFullYear() - 1980) & 0x7f) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
-    return { time, date };
-  };
-
-  for (const file of files) {
-    const nameBuf = Buffer.from(file.name, "utf8");
-    const data = Buffer.from(file.data, "utf8");
-    const compressed = deflateRawSync(data);
-    const crc = crc32(data);
-    const { time, date } = dosDateTime();
-
-    // local file header
-    const local = Buffer.alloc(30);
-    local.writeUInt32LE(0x04034b50, 0);
-    local.writeUInt16LE(20, 4); // version needed
-    local.writeUInt16LE(0x0800, 6); // UTF-8 flag
-    local.writeUInt16LE(8, 8); // deflate
-    local.writeUInt16LE(time, 10);
-    local.writeUInt16LE(date, 12);
-    local.writeUInt32LE(crc, 14);
-    local.writeUInt32LE(compressed.length, 18);
-    local.writeUInt32LE(data.length, 22);
-    local.writeUInt16LE(nameBuf.length, 26);
-    local.writeUInt16LE(0, 28); // extra len
-
-    parts.push(local, nameBuf, compressed);
-    const localSize = 30 + nameBuf.length + compressed.length;
-
-    // central directory entry
-    const cent = Buffer.alloc(46);
-    cent.writeUInt32LE(0x02014b50, 0);
-    cent.writeUInt16LE(20, 4); // version made by
-    cent.writeUInt16LE(20, 6); // version needed
-    cent.writeUInt16LE(0x0800, 8);
-    cent.writeUInt16LE(8, 10);
-    cent.writeUInt16LE(time, 12);
-    cent.writeUInt16LE(date, 14);
-    cent.writeUInt32LE(crc, 16);
-    cent.writeUInt32LE(compressed.length, 20);
-    cent.writeUInt32LE(data.length, 24);
-    cent.writeUInt16LE(nameBuf.length, 28);
-    // extra/comment/disk/attrs zero
-    cent.writeUInt32LE(offset, 42); // local header offset
-
-    central.push(cent, nameBuf);
-    offset += localSize;
-  }
-
-  const centralOffset = offset;
-  const centralBuf = Buffer.concat(central);
-  const centralSize = centralBuf.length;
-
-  const end = Buffer.alloc(22);
-  end.writeUInt32LE(0x06054b50, 0);
-  end.writeUInt16LE(0, 4); // disk
-  end.writeUInt16LE(0, 6); // disk with cd
-  end.writeUInt16LE(files.length, 8);
-  end.writeUInt16LE(files.length, 10);
-  end.writeUInt32LE(centralSize, 12);
-  end.writeUInt32LE(centralOffset, 16);
-  end.writeUInt16LE(0, 20); // comment len
-
-  return Buffer.concat([...parts, centralBuf, end]);
-}
-
-/**
- * 处理 DSH session.export（HEAD/GET），返回包含 session 时间线与会话记录的 ZIP。
- *
- * 前端契约（dsh-session-log-export）：HEAD 必须 200（response.ok），随后 GET 下载
- * ZIP。query 带 sessionId 与 includeDescendants。文件名由前端生成，后端无需设置
- * content-disposition 的文件名，但设置也无害。ZIP 内容为 JSON 导出（对话 + 工具轨迹），
- * 对用户有用的同时满足「可下载的合法 zip」这一前端唯一硬性要求。
- */
-function handleSessionExport({ request, response, url }) {
-  const sessionId = url.searchParams.get("sessionId") ?? "";
-  if (!sessionId) {
-    sendJson(response, 400, { error: "session.export requires sessionId" });
-    return;
-  }
-
-  Promise.all([
-    readStoredSessionConversation(sessionId).catch(() => []),
-    readStoredSessionTimeline(sessionId).catch(() => [])
-  ]).then(([conversation, timeline]) => {
-    const payload = JSON.stringify(
-      {
-        sessionId,
-        exportedAt: now(),
-        conversation: conversation ?? [],
-        timeline: timeline ?? []
-      },
-      null,
-      2
-    );
-
-    const zip = buildZip([
-      { name: "session.json", data: payload }
-    ]);
-
-    // HEAD 只回状态头（无 body），GET 回完整 ZIP。
-    if (request.method === "HEAD") {
-      response.writeHead(200, {
-        "content-type": "application/zip",
-        "content-length": zip.length
-      });
-      response.end();
-      return;
-    }
-
-    response.writeHead(200, {
-      "content-type": "application/zip",
-      "content-length": zip.length,
-      "content-disposition": `attachment; filename="dsh-session-${sessionId.replace(/[^A-Za-z0-9_-]/g, "_")}.zip"`
-    });
-    response.end(zip);
-  }).catch((error) => {
-    console.error("[dsh-adapter] session.export error:", error?.message ?? error);
-    if (!response.headersSent) {
-      sendJson(response, 500, { error: "session.export failed" });
-    }
-  });
-}
-
-async function readJson(request) {
-  const chunks = [];
-  for await (const chunk of request) {
-    chunks.push(chunk);
-  }
-
-  if (chunks.length === 0) {
-    return {};
-  }
-
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-}
-
-async function assertDirectory(path) {
-  const info = await stat(path).catch(() => null);
-  if (!info) {
-    await mkdir(path, { recursive: true });
-    return;
-  }
-  if (!info.isDirectory()) {
-    throw new Error(`Workspace is not a directory: ${path}`);
-  }
-}
-
-function listGatewaySessions(options = {}) {
-  return visibleStoredSessionProjections(
-    store,
-    store.listSessions({ archived: options.archived === true })
-  ).map((session) => decorateSessionForClient({
-    ...session,
-    sessionKind: session.sessionKind ?? "legacy"
-  }));
-}
-
-function listGatewaySessionPage(options = {}) {
-  const page = store.listSessionPage(options);
-  return {
-    ...page,
-    items: page.items.map((session) => decorateSessionForClient({
-      ...session,
-      sessionKind: session.sessionKind ?? "legacy"
-    }))
-  };
-}
-
-function encodeSessionPageCursor(cursor) {
-  return cursor
-    ? Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url")
-    : null;
-}
-
-function decodeSessionPageCursor(value) {
-  if (!value) return null;
-  try {
-    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
-    if (typeof parsed?.updatedAt !== "string" || !parsed.updatedAt
-      || typeof parsed?.id !== "string" || !parsed.id) throw new Error("invalid");
-    return { updatedAt: parsed.updatedAt, id: parsed.id };
-  } catch {
-    const error = new Error("Invalid Session page cursor.");
-    error.code = "INVALID_SESSION_CURSOR";
-    error.statusCode = 400;
-    throw error;
-  }
-}
-
-function describeGatewaySession(session) {
-  const task = session.taskId
-    ? store.getTask(session.taskId)
-    : store.getTaskBySessionId(session.id);
-  const agentId = session.agentId ?? task?.main_agent_id ?? null;
-  const agent = agentId ? store.getAgent(agentId) : null;
-  return {
-    agentName: agent?.name ?? agentId,
-    taskTitle: task?.title ?? null,
-    taskStatus: task?.status ?? null
-  };
-}
-
-function listGatewayWorkspaces() {
-  const candidates = visibleStoredSessionProjections(store, [
-    ...store.listSessions({ archived: false }),
-    ...store.listSessions({ archived: true })
-  ]);
-  const workspaces = new Map();
-  for (const path of store.settings().gateway?.trustedWorkspaces ?? []) {
-    if (!isAbsolute(path)) continue;
-    const canonicalPath = resolve(path);
-    workspaces.set(canonicalPath, {
-      path: canonicalPath,
-      name: basename(canonicalPath) || canonicalPath,
-      updatedAt: now(),
-      favorite: true
-    });
-  }
-  for (const session of candidates) {
-    const cwd = typeof session.external?.cwd === "string" ? session.external.cwd.trim() : "";
-    if (!cwd || !isAbsolute(cwd)) continue;
-    const canonicalPath = resolve(cwd);
-    const previous = workspaces.get(canonicalPath);
-    if (!previous || (!previous.favorite && Date.parse(session.updatedAt ?? 0) > Date.parse(previous.updatedAt ?? 0))) {
-      workspaces.set(canonicalPath, {
-        path: canonicalPath,
-        name: basename(canonicalPath) || canonicalPath,
-        updatedAt: session.updatedAt ?? session.createdAt ?? now()
-      });
-    }
-  }
-  return Array.from(workspaces.values()).sort((left, right) =>
-    Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
-  );
-}
 
 async function createGatewaySession(input = {}) {
   const providerId = input.agent === "claude" ? "claude-sdk" : "codex-app-server";
   return createSessionThroughApplication(providerId, input, { source: "feishu" });
 }
 
-async function createSessionThroughApplication(providerId, input = {}, context = {}) {
-  if (context.forkSource) {
-    const reference = context.forkSource.reference;
-    const materialization = store.getSessionToolCatalogMaterialization(reference.logicalSessionId, reference.bindingId);
-    context = { ...context, desiredToolDomains: desiredToolDomainIds(materialization) };
-  }
-  const cwd = sessionWorkspacePath(input.cwd);
-  await assertDirectory(cwd);
-  const requestedTitle = typeof input.title === "string" ? input.title.trim() : "";
-  const defaultTitle = typeof input.defaultTitle === "string" ? input.defaultTitle.trim() : "";
-  const baseTitle = requestedTitle || defaultTitle || sessionTitleForWorkspace("", cwd);
-  const title = requestedTitle && input.autoUniqueTitle !== true
-    ? baseTitle
-    : resolveAvailableSessionTitle(
-        knownSessionsForTitleValidation(),
-        baseTitle,
-        null,
-        reservedSessionTitleKeys
-      );
-  const {
-    defaultTitle: _defaultTitle,
-    autoUniqueTitle: _autoUniqueTitle,
-    prompt: initialPromptValue,
-    ...providerInput
-  } = input;
-  const prepared = {
-    ...providerInput,
-    cwd,
-    title
-  };
-  const releaseTitle = reserveSessionTitle(title);
-  try {
-    const createdSession = await sessionApplicationService.createSession(providerId, prepared, context);
-    if (context.forkSource) {
-      const operationId = context.forkRequestId ?? sessionForkService.forTask(context.taskId)?.request_id;
-      if (operationId) sessionForkService.recordTarget(operationId, createdSession.id);
-    }
-    const session = input.sessionKind
-      ? (store.setSessionKind(createdSession.id, input.sessionKind, context.actorId) ?? {
-          ...createdSession,
-          sessionKind: input.sessionKind,
-          agentId: context.actorId ?? null
-        })
-      : createdSession;
-    emitEvent("SessionStarted", {
-      session,
-      provider: providerId,
-      source: { type: context.source ?? "application" }
-    });
-    const initialPrompt = typeof initialPromptValue === "string" ? initialPromptValue.trim() : "";
-    if (initialPrompt) {
-      await sendUnifiedSessionMessage(session.id, initialPrompt, {
-        type: "session-initialization",
-        origin: context.source ?? "application"
-      });
-    }
-    return store.getSession(session.id) ?? session;
-  } finally {
-    releaseTitle();
-  }
-}
 
 function prepareCodexProviderSessionInput(input = {}) {
-  const defaults = normalizeNewSessionDefaults(store.settings().newSessionDefaults);
-  return {
-    ...input,
-    sandbox: normalizeCodexSandbox(input.sandbox ?? defaults.sandbox),
-    approvalPolicy: normalizeCodexApprovalPolicy(input.approvalPolicy ?? defaults.approvalPolicy)
-  };
+  return prepareCodexLaunchInput(input, {
+    defaults: normalizeNewSessionDefaults(store.settings().newSessionDefaults),
+    normalizeSandbox: normalizeCodexSandbox,
+    normalizeApprovalPolicy: normalizeCodexApprovalPolicy
+  });
 }
 
 function prepareClaudeProviderSessionInput(input = {}) {
-  const defaults = normalizeNewSessionDefaults(store.settings().newSessionDefaults);
-  return {
-    ...input,
-    sandbox: normalizeCodexSandbox(input.sandbox ?? defaults.sandbox),
-    approvalPolicy: normalizeCodexApprovalPolicy(input.approvalPolicy ?? defaults.approvalPolicy),
-    model: typeof input.model === "string" && input.model.trim()
-      ? input.model.trim()
-      : defaults.claudeModel,
-    reasoningLevel: typeof input.reasoningLevel === "string" && input.reasoningLevel.trim()
-      ? input.reasoningLevel.trim().toLowerCase()
-      : null,
-    prompt: typeof input.prompt === "string" ? input.prompt.trim() : ""
-  };
+  return prepareClaudeLaunchInput(input, {
+    defaults: normalizeNewSessionDefaults(store.settings().newSessionDefaults),
+    normalizeSandbox: normalizeCodexSandbox,
+    normalizeApprovalPolicy: normalizeCodexApprovalPolicy
+  });
 }
 
-// provider-neutral 的 provider id 规范化：把展示 tag / 历史别名 / registry id
-// 统一映射为 registry id（codex-app-server / claude-sdk），未知值返回 null。
-// 所有 Session 创建与后台运行入口都复用此函数，避免映射散落、不一致。
+// Normalize display tags, historical aliases and registry IDs at the composition boundary.
 function resolveSessionProviderId(provider) {
   const normalized = typeof provider === "string" ? provider.trim().toLowerCase() : "";
   return agentProviderRegistry.resolveId(normalized, { useDefault: normalized === "" });
 }
 
-// Startup coordinator 专用的低层 Session 构造端口。调用方必须提供已验证的
-// ExecutionSpace 目录；此函数不发现、创建或切换 Workspace。
-async function createProviderWorkSession({
-  assigneeAgentId,
-  assigneeName,
-  taskId,
-  taskTitle,
-  workId,
-  providerId: requestedProviderId,
-  title,
-  model,
-  reasoningLevel,
-  prompt: requestedPrompt,
-  workingDirectory = null,
-  autoUniqueTitle = false,
-  sandbox = null,
-  approvalPolicy = null,
-  runtimeWorkspaceRoots = null,
-  deferInitialPromptUntilBound = false,
-  deferToolHostFinalization = false,
-  forkSource = null,
-  observePerformance = () => {}
-}) {
-  const providerId = resolveSessionProviderId(requestedProviderId);
-  if (!providerId) {
-    const error = new Error(`Session Provider（${requestedProviderId ?? "未设置"}）暂不支持执行。`);
-    error.code = "PROVIDER_UNSUPPORTED";
-    throw error;
-  }
-  const cwd = typeof workingDirectory === "string" && workingDirectory.trim()
-    ? resolve(workingDirectory.trim())
-    : null;
-  if (!cwd) {
-    const error = new Error("Worker Session creation requires an authoritative prepared ExecutionSpace binding.");
-    error.code = "START_EXECUTION_SPACE_BINDING_REQUIRED";
-    throw error;
-  }
-  const task = workService.getTask(taskId);
-  const prompt = typeof requestedPrompt === "string" && requestedPrompt.trim()
-    ? requestedPrompt.trim()
-    : taskExecutionPrompt(task);
-
-  const phaseStartedAt = performance.now();
-  const session = await createSessionThroughApplication(
-    providerId,
-    {
-      cwd,
-      title,
-      defaultTitle: defaultSessionTitleForTask(taskTitle, assigneeName),
-      prompt: deferInitialPromptUntilBound ? "" : prompt,
-      agent: assigneeName,
-      sessionKind: "worker",
-      autoUniqueTitle,
-      ...(model ? { model } : {}),
-      ...(reasoningLevel ? { reasoningLevel } : {}),
-      ...(sandbox ? { sandbox } : {}),
-      ...(approvalPolicy ? { approvalPolicy } : {}),
-      ...(Array.isArray(runtimeWorkspaceRoots) ? { runtimeWorkspaceRoots } : {})
-    },
-    {
-      source: "entity",
-      actorId: assigneeAgentId,
-      workId,
-      taskId,
-      sessionKind: "worker",
-      deferToolHostFinalization,
-      forkSource
-    }
-  );
-  observePerformance("providerSessionCreateMs", performance.now() - phaseStartedAt);
-  return session;
-}
-
-// 实体层自由对话入口：任意 Agent 均可创建，不绑定具体 Work 或 Task。
-// 与 startup coordinator 的低层 Session 构造端口复用 createSessionThroughApplication。
-// cwd 不再由客户端提供，而是取自该 Agent 独占的 work_dir；Task Worker 仍走权威
-// Work Session startup coordinator，并使用 Task ExecutionSpace。
-async function launchAgentSession({ agent, providerId: requestedProviderId, title, prompt, model }) {
-  const providerId = resolveSessionProviderId(requestedProviderId);
-  if (!providerId) {
-    const error = new Error(`Session Provider（${requestedProviderId ?? "未设置"}）暂不支持执行。`);
-    error.code = "PROVIDER_UNSUPPORTED";
-    throw error;
-  }
-  const cwd = await ensureAgentWorkDir(agent, { environmentName });
-  const session = await createSessionThroughApplication(
-    providerId,
-    {
-      cwd,
-      title,
-      defaultTitle: defaultSessionTitleForAgent(agent.name),
-      prompt,
-      model,
-      agent: agent.name,
-      sessionKind: "assistantChat"
-    },
-    { source: "agent", actorId: agent.agentId }
-  );
-  // 把自由会话归属到该 Agent，使 GET /agents/:id/sessions 与前端按 Agent 分组能定位到它。
-  collaborationCore.bindSession({ agentId: agent.agentId, sessionId: session.id });
-  if (isPlatformAssistant(agent)) {
-    store.grantSessionCapability(session.id, "platform.manage");
-  }
-  return store.getSession(session.id) ?? session;
-}
-
-async function launchWorkChatSession({ agent, work, providerId: requestedProviderId, title, prompt: requestedPrompt }) {
-  if (!work.contributorAgentIds.includes(agent.agentId)) {
-    const error = new Error("只有挂载在当前 Work 下的 Agent 才能创建 Work Chat Session。");
-    error.code = "AGENT_OUTSIDE_WORK";
-    throw error;
-  }
-  const providerId = resolveSessionProviderId(requestedProviderId);
-  if (!providerId) {
-    const error = new Error(`Session Provider（${requestedProviderId ?? "未设置"}）暂不支持执行。`);
-    error.code = "PROVIDER_UNSUPPORTED";
-    throw error;
-  }
-  const workspacePath = store.resolveWorkspaceRoot(work.workspaceId);
-  const workspacePaths = workspacePath ? [workspacePath] : [];
-  const cwd = workspacePath ?? await ensureAgentWorkDir(agent, { environmentName });
-  const openingPrompt = typeof requestedPrompt === "string" ? requestedPrompt.trim() : "";
-  const prompt = openingPrompt
-    ? (agentProviderRegistry.supports(providerId, AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH)
-        ? openingPrompt
-        : `${workChatContextService.build(work.id).prompt}\n\nUser opening message:\n${openingPrompt}`)
-    : undefined;
-  const session = await createSessionThroughApplication(
-    providerId,
-    {
-      cwd,
-      title,
-      defaultTitle: `${work.name}_Chat`,
-      prompt,
-      agent: agent.name,
-      sessionKind: "workChat",
-      runtimeWorkspaceRoots: workspacePaths.length > 0 ? workspacePaths : [cwd]
-    },
-    { source: "work", actorId: agent.agentId, workId: work.id, sessionKind: "workChat" }
-  );
-  collaborationCore.bindSession({ agentId: agent.agentId, sessionId: session.id });
-  return store.bindSessionToWork(session.id, work.id);
-}
-
-async function ensureWorkChatSession(work) {
-  return workDiscussionService.ensure(work.id, agentProviderRegistry.defaultProviderId);
-}
-
-async function reconcileWorkChatsAtStartup() {
-  for (const work of workService.listWorks()) {
-    if (store.getWorkChatSession(work.id)) continue;
-    try {
-      const session = await ensureWorkChatSession(work);
-      console.log(`[work-chat] backfilled work=${work.id} session=${session.id}`);
-    } catch (error) {
-      console.warn(`[work-chat] backfill skipped work=${work.id} code=${error.code ?? "WORK_CHAT_CREATE_FAILED"} error=${error.message}`);
-    }
-  }
-}
-
-async function startPreparedWorkSession({
-  taskId, assigneeAgentId, providerId, title, workspace, idempotencyKey, sourceSessionId
-}) {
-  const task = workService.getTask(taskId);
-  const taskRepositoryId = store.getTaskWorkspaceContext(task)?.repository?.id;
-  const inventory = workspace?.worktreeId ? store.getGitWorktree(workspace.worktreeId) : null;
-  const canonicalPath = resolve(workspace?.path ?? "");
-  if (!inventory || inventory.repositoryId !== taskRepositoryId
-    || inventory.isMain === true || inventory.availability !== "available"
-    || resolve(inventory.canonicalPath || inventory.path) !== canonicalPath) {
-    const error = new Error("Prepared Integration Worktree does not match the Task Repository inventory.");
-    error.code = "START_WORKTREE_INVENTORY_MISMATCH";
-    error.statusCode = 409;
-    throw error;
-  }
-  const startupOperationId = `startup:${createHash("sha256")
-    .update(`${task.id}\0${idempotencyKey}`)
-    .digest("hex")
-    .slice(0, 32)}`;
-  store.db.run(
-    `UPDATE git_worktrees SET dedicated=1, created_by_startup_operation_id=?
-     WHERE worktree_id=? AND repository_id=?
-       AND (created_by_startup_operation_id IS NULL OR created_by_startup_operation_id=?)`,
-    [startupOperationId, inventory.worktreeId, taskRepositoryId, startupOperationId]
-  );
-  if (store.db.getRowsModified() !== 1
-    || store.getGitWorktree(inventory.worktreeId)?.createdByStartupOperationId !== startupOperationId) {
-    const error = new Error("Prepared Integration Worktree is already owned by another startup operation.");
-    error.code = "START_WORKTREE_COLLISION";
-    error.statusCode = 409;
-    throw error;
-  }
-  store.scheduleSave();
-  const started = await workSessionStartApplicationService.start({
-    taskId: task.id,
-    assigneeAgentId,
-    expectedTaskVersion: Number(task.resource_version ?? 1),
-    providerId,
-    title,
-    idempotencyKey,
-    sourceSessionId
+async function startPreparedWorkSession(input) {
+  return startPreparedWorkSessionWithAuthority(input, {
+    store, workService, workSessionStartApplicationService
   });
-  return started.session;
-}
-
-// Session 生命周期只投影到 Task.execution_status。Task.lifecycle_state
-// 必须由独立验收评估产生，绝不能从一次 turn/session 落定推断。
-function settleEntityTaskFromSession(session) {
-  if (!session?.id) return null;
-  const task = store.getTaskBySessionId(session.id);
-  if (!task) return null;
-  // Replaced Worker Sessions remain queryable for audit, but only the current
-  // binding may project lifecycle state back onto the Task.
-  if (task.current_session_id !== session.id) return task;
-  scheduleTaskMemoryExtraction(session, task);
-  const patch = taskExecutionPatch(task, session.status);
-  if (!patch) return task;
-  const executionChanged = patch.executionStatus !== (task.execution_status ?? "idle");
-  if (!executionChanged) return task;
-  if (process.env.CORPTIE_DEBUG_STATE_SYNC) {
-    console.log(`[settle] task=${task.id} session=${session.id} session.status=${session.status} ` +
-      `task.lifecycle=${task.lifecycle_state} ` +
-      `task.exec=${task.execution_status}->${patch.executionStatus}`);
-  }
-  store.updateTask(task.id, patch);
-  const updated = store.getTask(task.id);
-  emitEvent("TaskChanged", { action: "execution-status-updated", entity: updated });
-  return updated;
-}
-
-function scheduleTaskMemoryExtraction(session, task) {
-  const previous = taskMemoryExtractions.get(session.id) ?? Promise.resolve();
-  const operation = previous.catch(() => {}).then(() => memoryExtractor.extractFromSession(session.id)).then((memories) => {
-    if (memories.length === 0) return;
-    const updated = store.updateTask(task.id, {});
-    emitEvent("TaskChanged", {
-      action: "memory-updated",
-      entity: updated,
-      memoryIds: memories.map((memory) => memory.id)
-    });
-  }).catch((error) => {
-    console.error(`[task-memory] extraction failed for ${task.id}: ${error?.message ?? error}`);
-  }).finally(() => {
-    if (taskMemoryExtractions.get(session.id) === operation) {
-      taskMemoryExtractions.delete(session.id);
-    }
-  });
-  taskMemoryExtractions.set(session.id, operation);
-}
-
-function settleTaskForWorkspaceContinuation(transitionId) {
-  const transition = store.getWorkspaceTransition(transitionId);
-  const logical = transition ? store.getLogicalSession(transition.logicalSessionId) : null;
-  const session = logical?.legacySessionId ? store.getSession(logical.legacySessionId) : null;
-  if (!session) return null;
-  return settleEntityTaskFromSession(sessionWithLogicalWorkspace(session, logical));
-}
-
-function reportTaskAcceptanceForAgent(agentId, input = {}, metadata = {}) {
-  const { sessionId, task } = resolveBoundTaskForAgent(agentId, metadata, "Task acceptance");
-  return presentTaskForClient(workService.recordAcceptanceAssessment(task.id, {
-    sourceSessionId: sessionId,
-    results: input.results
-  }));
-}
-
-function getBoundTaskForAgent(agentId, _input = {}, metadata = {}) {
-  return presentTaskForClient(resolveBoundTaskForAgent(agentId, metadata, "Bound Task read").task);
-}
-
-function resolveBoundTaskForAgent(agentId, metadata = {}, operation = "Task operation") {
-  const requestedSessionId = String(metadata.sessionId ?? "").trim();
-  if (!requestedSessionId) {
-    const error = new Error(`${operation} requires the authenticated Session scope.`);
-    error.code = "SESSION_SCOPE_REQUIRED";
-    throw error;
-  }
-  const logical = store.getLogicalSession(requestedSessionId)
-    ?? store.getLogicalSessionByLegacySessionId(requestedSessionId);
-  const sessionId = logical?.legacySessionId ?? requestedSessionId;
-  const boundAgent = collaborationCore.getAgentForSession(sessionId);
-  if (boundAgent?.agentId !== agentId) {
-    const error = new Error("The authenticated Agent is not bound to the scoped Session.");
-    error.code = "SESSION_ACTOR_MISMATCH";
-    throw error;
-  }
-  const session = store.getSession(sessionId);
-  const taskId = session?.taskId;
-  if (!taskId) {
-    const error = new Error("The active Agent Session is not bound to a Task.");
-    error.code = "TASK_REQUIRED";
-    throw error;
-  }
-  if (metadata.taskId && metadata.taskId !== taskId) {
-    const error = new Error("The authenticated Task scope does not match the Session binding.");
-    error.code = "TASK_SESSION_MISMATCH";
-    throw error;
-  }
-  const task = store.getTask(taskId);
-  if (!task) {
-    const error = new Error("The bound Task no longer exists.");
-    error.code = "TASK_NOT_FOUND";
-    throw error;
-  }
-  return { sessionId, task };
-}
-
-function reviseTaskForSession(agentId, input = {}, metadata = {}) {
-  if (typeof input.sourceMessageId !== "string" || !input.sourceMessageId.trim()) {
-    const error = new Error("Model-initiated Task revision requires the originating direct user message id.");
-    error.code = "TASK_REVISION_SOURCE_REQUIRED";
-    throw error;
-  }
-  const requestedSessionId = String(metadata.sessionId ?? "").trim();
-  if (!requestedSessionId) {
-    const error = new Error("Task revision requires the authenticated Session scope.");
-    error.code = "SESSION_SCOPE_REQUIRED";
-    throw error;
-  }
-  const logical = store.getLogicalSession(requestedSessionId)
-    ?? store.getLogicalSessionByLegacySessionId(requestedSessionId);
-  const sessionId = logical?.legacySessionId ?? requestedSessionId;
-  const session = store.getSession(sessionId);
-  const boundAgent = session ? collaborationCore.getAgentForSession(sessionId) : null;
-  if (!session || (session.agentId !== agentId && boundAgent?.agentId !== agentId)) {
-    const error = new Error("The authenticated Agent is not bound to the scoped Session.");
-    error.code = "SESSION_ACTOR_MISMATCH";
-    throw error;
-  }
-  if (!session.taskId || (metadata.taskId && metadata.taskId !== session.taskId)) {
-    const error = new Error("The authenticated Task scope does not match the Session binding.");
-    error.code = "TASK_SESSION_MISMATCH";
-    throw error;
-  }
-  const result = workService.reviseTask(session.taskId, {
-    ...input,
-    createdBySessionId: session.id
-  });
-  return {
-    task: presentTaskForClient(result.task),
-    snapshot: result.snapshot
-  };
-}
-
-function completeTaskForSession(agentId, input = {}, metadata = {}) {
-  const requestedSessionId = String(metadata.sessionId ?? "").trim();
-  const logicalSessionId = String(metadata.logicalSessionId ?? "").trim();
-  if (!requestedSessionId || !logicalSessionId) {
-    const error = new Error("Task completion requires an authenticated logical Session scope.");
-    error.code = "SESSION_SCOPE_REQUIRED";
-    throw error;
-  }
-  const session = store.getSession(requestedSessionId);
-  const boundAgent = session ? collaborationCore.getAgentForSession(session.id) : null;
-  if (!session || (session.agentId !== agentId && boundAgent?.agentId !== agentId)) {
-    const error = new Error("The authenticated Session actor does not match this Tool Host call.");
-    error.code = "SESSION_ACTOR_MISMATCH";
-    throw error;
-  }
-  const result = taskCompletionService.completeFromSession(input, {
-    ...metadata,
-    sessionId: requestedSessionId,
-    logicalSessionId
-  });
-  return {
-    task: presentTaskForClient(result.task),
-    operation: result.operation,
-    idempotentReplay: result.idempotentReplay
-  };
-}
-
-// 启动对账：历史落定（修复上线前就已完成的会话）不会重新触发事件，
-// 此处把每个已绑定当前活跃 session 的 Task 状态对齐到 session 状态。
-function reconcileEntityTasksAtStartup() {
-  let aligned = 0;
-  for (const task of store.listTasks({ includeCompleted: false })) {
-    if (!task.current_session_id) continue;
-    const session = store.getSession(task.current_session_id);
-    if (!session) continue;
-    const updated = settleEntityTaskFromSession(session);
-    if (updated && updated.execution_status !== task.execution_status) aligned += 1;
-  }
-  if (aligned > 0) {
-    console.log(`[entity-task] startup reconcile aligned ${aligned} Task(s)`);
-  }
 }
 
 async function createCodexProviderSession(input = {}) {
-  return codexThreadCreationQueue.run(() => createCodexProviderSessionNow(input));
+  return codexSessionCreator.create(input);
 }
 
-async function createCodexProviderSessionNow(input = {}, forkSource = null) {
-  const creationId = randomUUID();
-  activeCodexThreadCreation = { creationId, title: input.title, startedAt: Date.now() };
-  try {
-    // Session 必须绑定已有 Agent（用户手动创建）；不静默创建、不注册/覆盖 agent。
-    const collaborationAgentId = input.toolHost?.actorId;
-    if (!collaborationAgentId) {
-      const error = new Error("A session must be bound to an existing Agent; toolHost.actorId is required.");
-      error.code = "AGENT_REQUIRED";
-      throw error;
-    }
-    if (!collaborationCore.getAgent(collaborationAgentId)) {
-      const error = new Error(`Agent not found: ${collaborationAgentId}`);
-      error.code = "AGENT_NOT_FOUND";
-      throw error;
-    }
-    const runtime = await resolvedNewCodexRuntimeConfig(input);
-    const permissions = {
-      sandbox: normalizeCodexSandbox(input.sandbox),
-      approvalPolicy: normalizeCodexApprovalPolicy(input.approvalPolicy)
-    };
-    const providerThreadOptions = input.toolHost?.providerAttachment ?? await collaborationThreadOptionsWithAgentContext(
-      collaborationAgentId,
-      input.toolHost?.metadata
-    );
-    const threadOptions = {
-      cwd: input.cwd,
-      ...permissions,
-      runtimeWorkspaceRoots: input.runtimeWorkspaceRoots,
-      model: runtime.model,
-      modelProvider: input.modelProvider,
-      ...providerThreadOptions,
-      developerInstructions: [providerThreadOptions.developerInstructions, input.recoveryContext]
-        .filter(Boolean).join("\n\n") || undefined
-    };
-    const started = forkSource
-      ? await codexRuntime.forkThread(forkSource.reference.providerSessionId, {
-          ...withPersistedCodexToolConfirmation(forkSource.reference, threadOptions),
-          lastTurnId: forkSource.point.turnId, deferGoalContinuation: true
-        })
-      : await codexRuntime.startThread(threadOptions);
-    if (forkSource) {
-      try {
-        const actualCwd = started.cwd ?? started.thread?.cwd;
-        if (!actualCwd || resolve(actualCwd) !== resolve(input.cwd)) {
-          throw Object.assign(new Error("Codex 分支未绑定到新工作区。"), { code: "FORK_CWD_MISMATCH" });
-        }
-        const lastTurn = started.thread?.turns?.at(-1);
-        if (lastTurn && lastTurn.id !== forkSource.point.turnId) {
-          throw Object.assign(new Error("Codex 分支历史未截止到选中的轮次。"), { code: "FORK_HISTORY_MISMATCH" });
-        }
-        await codexRuntime.clearThreadGoal(started.thread.id);
-      }
-      catch (error) {
-        await codexRuntime.archiveThread(started.thread.id).catch(() => {});
-        throw error;
-      }
-    }
-    const session = withCodexSessionPermissions({
-      ...mapCodexThreadToSession({
-        ...started.thread,
-        preview: input.title,
-        name: input.title,
-        cwd: input.cwd,
-        updatedAt: Date.now() / 1000,
-        status: "complete",
-        source: "corptie",
-        currentModel: runtime.model ?? started.model ?? null,
-        currentReasoningLevel: runtime.reasoningLevel ?? started.reasoningEffort ?? null,
-        activeTurnId: null
-      }),
-      title: input.title,
-      status: "complete",
-      progress: 1,
-      summary: "Codex is ready.",
-      activityStatus: null,
-      capabilities: {
-        ...codexAppServerSessionCapabilities(),
-        canInterrupt: false
-      }
-    }, permissions);
-    return session;
-  } finally {
-    if (activeCodexThreadCreation?.creationId === creationId) activeCodexThreadCreation = null;
-  }
-}
 
-async function resumeCodexProviderSession(reference, context = {}) {
-  const previous = reference.metadata?.session
-    ?? store.getSession(reference.sessionId);
-  if (!previous) throw new Error("Session not found.");
-  const runtimeOptions = withPersistedCodexToolConfirmation(
-    reference,
-    context.toolHost?.providerAttachment
-      ?? await collaborationThreadOptionsForSession(reference.sessionId)
-  );
-  if (context.purpose === "session-unarchive") {
-    await codexRuntime.unarchiveThread(reference.providerSessionId);
-  }
-  if (context.purpose === "session-create-finalization") {
-    // A newly started empty Codex thread has no rollout and cannot be resumed.
-    // Its dynamic contracts were installed during thread/start; only their
-    // trusted Session scope must be rebound after Corptie persists the route.
-    codexRuntime.bindThreadToolContext(reference.providerSessionId, runtimeOptions);
-  } else if (["session-recovery-validation", "provider-switch-recovery"].includes(context.purpose)) {
-    // A replacement Codex thread is intentionally empty until the recovered
-    // Delivery is dispatched. Fresh empty threads have no rollout file yet, so
-    // thread/resume would falsely report them missing. ensureThreadResumed
-    // validates the live app-server identity without creating a Turn.
-    await codexRuntime.ensureThreadResumed(reference.providerSessionId, runtimeOptions);
-  } else {
-    await codexRuntime.resumeThread(reference.providerSessionId, runtimeOptions);
-  }
-  // Resume is a transport command. It must not project a Provider snapshot
-  // back into Corptie's product Session or repair list state as a side effect.
-  return previous;
-}
 
 // Recovery stabilization is Provider-neutral orchestration. The Codex-specific
 // proof requirement lives in the adapter; see ProviderSessionLifecycle.
@@ -6350,32 +1641,6 @@ function prepareCodexProviderExecution(reference, context = {}) {
   return providerSessionLifecycle.prepareExecution(reference, context);
 }
 
-async function probeCodexProviderBinding(reference, context = {}) {
-  const logical = reference.logicalSessionId
-    ? store.getLogicalSession(reference.logicalSessionId)
-    : store.getLogicalSessionByLegacySessionId(reference.sessionId);
-  const binding = logical?.activeBinding ?? null;
-  if (!binding || binding.bindingId !== reference.bindingId) {
-    const error = new Error("The Provider binding changed before its readiness probe.");
-    error.code = "SESSION_BINDING_CHANGED";
-    throw error;
-  }
-  const cwd = binding.boundCwd
-    ?? reference.metadata?.session?.external?.cwd
-    ?? null;
-  const startedAt = Date.now();
-  const result = await codexRuntime.ensureThreadResumed(reference.providerSessionId, {
-    cwd: cwd ?? undefined,
-    runtimeWorkspaceRoots: cwd ? [cwd] : undefined
-  });
-  return {
-    ready: true,
-    sessionId: reference.logicalSessionId ?? reference.sessionId,
-    providerSessionId: reference.providerSessionId,
-    threadAlreadyLoaded: result?.alreadyLoaded === true,
-    durationMs: Date.now() - startedAt
-  };
-}
 
 function resolvePreparedWorkspaceRoute(logicalRoute, threadId) {
   return workspaceRoutePreparationCache.resolve({
@@ -6390,25 +1655,7 @@ function resolvePreparedWorkspaceRoute(logicalRoute, threadId) {
   });
 }
 
-async function deleteCodexProviderSession(reference) {
-  await codexRuntime.deleteThread(reference.providerSessionId);
-  workspaceRoutePreparationCache.invalidate(reference.logicalSessionId);
-  // Product Session deletion belongs to SessionApplicationService's common
-  // removeSessionBinding hook. Keeping it out of the concrete Adapter is also
-  // essential for recovery rollback, whose unbound replacement reference uses
-  // the stable legacy Session id and must never delete that Corptie projection.
-  return true;
-}
 
-async function renameCodexProviderSession(reference, title) {
-  const previous = reference.metadata?.session
-    ?? store.getSession(reference.sessionId);
-  if (!previous) throw new Error("Session not found.");
-  await codexRuntime.setThreadName(reference.providerSessionId, title);
-  const session = { ...previous, title, updatedAt: new Date().toISOString() };
-  upsertManagedCodexSession(session);
-  return session;
-}
 
 async function getUnifiedSessionSnapshot(sessionId) {
   // Snapshot reads are strictly local and read-only. Provider callbacks
@@ -6416,141 +1663,6 @@ async function getUnifiedSessionSnapshot(sessionId) {
   return getStoredSessionSnapshot(sessionId);
 }
 
-function getTimelineReadPool() {
-  if (timelineReadPool) return timelineReadPool;
-  timelineReadPool = new TimelineReadPool({
-    dbPath: store.dbPath,
-    configPath: store.configPath,
-    dataRoot: store.dataRoot,
-    size: Number(process.env.CORPTIE_TIMELINE_READ_CONCURRENCY) || 4
-  });
-  return timelineReadPool;
-}
-
-async function closeTimelineReadPool() {
-  const closing = timelineReadPool;
-  timelineReadPool = null;
-  await closing?.close();
-}
-
-async function getStoredSessionSnapshot(sessionId) {
-  const reference = requireSessionReference(sessionId);
-  const summary = reference.metadata.session;
-  const stored = store.getDetail(reference.sessionId, { includeItems: false }) ?? {};
-  const provider = summary.external?.provider ?? stored.source ?? "";
-  const timelineRead = await getTimelineReadPool().readStoredTimelineSnapshot({
-    sessionId: reference.sessionId,
-    limit: DEFAULT_SESSION_HISTORY_WINDOW,
-    provider
-  });
-  const timelineWindow = timelineRead.window;
-  const detail = decorateSessionForClient({
-    ...stored,
-    ...summary,
-    id: reference.sessionId,
-    title: preferredSessionTitle(summary, stored),
-    status: summary.status,
-    activityStatus: summary.activityStatus ?? null,
-    cwd: preferredSessionCwd(summary, stored),
-    source: summary.external?.provider ?? stored.source ?? null,
-    connectionStatus: summary.external?.connectionStatus ?? stored.connectionStatus ?? null,
-    canSend: summary.capabilities?.canSend ?? stored.canSend ?? false,
-    capabilities: summary.capabilities ?? stored.capabilities,
-    items: timelineWindow.items
-  });
-  // session_items is the materialized product Timeline. Snapshot reads never
-  // scan queues, collaboration state, automation events, or Provider state to
-  // repair it. Those domains project into session_items when they mutate.
-  return {
-    ...detail,
-    sessionId: reference.sessionId,
-    logicalSessionId: reference.logicalSessionId,
-    publicSessionId: reference.logicalSessionId ?? reference.sessionId,
-    hasMoreHistory: timelineWindow.hasEarlier,
-    historyItemsCount: timelineWindow.historyItemsCount,
-    lastEventSequence: timelineRead.lastEventSequence,
-    lastAgentMessageSequence: timelineRead.lastAgentMessageSequence,
-    timelineRevision: timelineRead.timelineRevision
-  };
-}
-
-// Timeline history is a pure keyset read over Corptie's materialized
-// session_items authority. It never scans Provider history or reconstructs
-// supplementary cards during a GET.
-async function readSessionHistory(sessionId, beforeId, limit) {
-  const reference = requireSessionReference(sessionId);
-  const provider = reference.metadata?.session?.external?.provider ?? "";
-  const page = await getTimelineReadPool().readTimelineHistoryPage({
-    sessionId: reference.sessionId,
-    beforeId,
-    limit,
-    provider
-  });
-  return {
-    sessionId: reference.sessionId,
-    logicalSessionId: reference.logicalSessionId,
-    ...page
-  };
-}
-
-async function readSessionTimelineWindow(sessionId, options) {
-  const reference = requireSessionReference(sessionId);
-  const provider = reference.metadata?.session?.external?.provider ?? "";
-  const timelineRead = await getTimelineReadPool().readTimelineWindow({
-    sessionId: reference.sessionId,
-    ...options,
-    provider
-  });
-  const storedWindow = timelineRead.window;
-  if (storedWindow) {
-    return {
-      protocolVersion: 2,
-      revision: timelineRead.timelineRevision,
-      sessionId: reference.sessionId,
-      logicalSessionId: reference.logicalSessionId,
-      ...storedWindow,
-      anchor: options.anchorId
-        ? {
-          kind: options.anchorKind,
-          requestedId: options.anchorId,
-          resolvedId: options.anchorId,
-          status: "found"
-        }
-        : { kind: "latest", requestedId: null, resolvedId: storedWindow.items.at(-1)?.id ?? null, status: "latest" }
-    };
-  }
-  const window = {
-    items: [],
-    hasEarlier: false,
-    hasLater: false,
-    anchor: {
-      kind: options.anchorKind === "turn" ? "turn" : "item",
-      requestedId: options.anchorId ?? null,
-      resolvedId: null,
-      status: "missing"
-    }
-  };
-  return {
-    protocolVersion: 2,
-    revision: timelineRead.timelineRevision,
-    sessionId: reference.sessionId,
-    logicalSessionId: reference.logicalSessionId,
-    ...window
-  };
-}
-
-async function readStoredSessionDetail(reference) {
-  const summary = reference.metadata?.session ?? store.getSession(reference.sessionId);
-  if (!summary) {
-    const error = new Error("Session not found.");
-    error.code = "SESSION_NOT_FOUND";
-    throw error;
-  }
-  return storedSessionDetail({
-    summary,
-    storedDetail: store.getDetail(reference.sessionId)
-  });
-}
 
 function requireSessionReference(sessionId) {
   const reference = sessionBindingRepository.resolve(sessionId);
@@ -6561,96 +1673,6 @@ function requireSessionReference(sessionId) {
 }
 
 
-async function interruptCodexProviderSession(reference, context = {}) {
-  const summary = context.summary ?? reference.metadata?.session;
-  const activeTurnId = summary?.external?.activeTurnId ?? summary?.rawStatus?.activeTurnId ?? null;
-  if (!activeTurnId) {
-    const error = new Error("Session does not have an active turn to interrupt.");
-    error.code = "NO_ACTIVE_RUN";
-    throw error;
-  }
-  await codexRuntime.interruptTurn(reference.providerSessionId, activeTurnId);
-  // Command acknowledgement is not an execution-state event. The persisted
-  // turn.cancelled Provider event owns the terminal Session projection.
-  return store.getSession(reference.sessionId) ?? summary;
-}
-
-function updateCodexProviderConfiguration(reference, updates) {
-  const sessionId = reference.sessionId;
-  const threadId = reference.providerSessionId;
-  const previous = store.getSession(sessionId);
-  const timestamp = now();
-  const session = previous ?? {
-    id: sessionId,
-    title: `Codex ${threadId.slice(0, 8)}`,
-    agent: "Codex",
-    status: "complete",
-    progress: 1,
-    summary: "Corptie-managed Codex task",
-    capabilities: codexAppServerSessionCapabilities({ canInterrupt: false }),
-    updatedAt: timestamp,
-    accent: "cyan",
-    external: { provider: "codex-app-server", threadId, source: "corptie" }
-  };
-  const nextSession = {
-    ...session,
-    updatedAt: timestamp,
-    capabilities: {
-      ...(session.capabilities ?? {}),
-      canSwitchModel: true,
-      canSwitchReasoning: true
-    },
-    external: {
-      ...session.external,
-      provider: "codex-app-server",
-      threadId,
-      ...updates
-    }
-  };
-  upsertManagedCodexSession(nextSession);
-  return nextSession;
-}
-
-function updateCodexProviderPermissions(reference, permissions) {
-  const previous = reference.metadata?.session
-    ?? store.getSession(reference.sessionId);
-  if (!previous) {
-    const error = new Error("Session not found.");
-    error.code = "SESSION_NOT_FOUND";
-    throw error;
-  }
-  const session = withCodexSessionPermissions({
-    ...previous,
-    updatedAt: now()
-  }, permissions);
-  upsertManagedCodexSession(session);
-  return session;
-}
-
-async function respondCodexProviderApproval(reference, input = {}, context = {}) {
-  const summary = context.summary ?? reference.metadata?.session;
-  const approved = input.approved === true;
-  await codexRuntime.respondToApproval(reference.providerSessionId, {
-    approved,
-    optionId: input.optionId,
-    itemId: input.itemId ?? input.choiceId
-  });
-  store.clearActiveChoicePrompt(reference.sessionId);
-  // Do not guess that the Provider resumed. approval.resolved and subsequent
-  // turn events own execution state; the command response is transport-only.
-  return store.getSession(reference.sessionId) ?? summary;
-}
-
-async function respondCodexProviderUserInput(reference, input = {}, context = {}) {
-  const summary = context.summary ?? reference.metadata?.session;
-  await codexRuntime.respondToUserInput(reference.providerSessionId, {
-    itemId: input.itemId,
-    action: input.action,
-    answers: input.answers
-  });
-  // The transport acknowledgement is not evidence that the Provider resumed.
-  return store.getSession(reference.sessionId) ?? summary;
-}
 
 // Turn-change review/undo is Provider-neutral orchestration. Only the stored
 // item normalisation knows the Provider id; see ProviderSessionLifecycle.
@@ -6658,279 +1680,6 @@ function manageCodexTurnChanges(reference, turnId, action) {
   return providerSessionLifecycle.manageTurnChanges(reference, turnId, action);
 }
 
-async function sendCodexProviderMessage(reference, value, context = {}) {
-  const before = context.before ?? reference.metadata?.session;
-  const options = context.options ?? context;
-  const sessionId = reference.sessionId;
-  const latencyTrace = normalizeSessionMessageLatencyTrace(context.latencyTrace ?? {}, {
-    sessionId: reference.logicalSessionId ?? sessionId
-  });
-  const logicalRoute = store.getLogicalSessionByLegacySessionId(sessionId);
-  if (workspaceTransitionBlocksWork(logicalRoute)) {
-    const error = new Error("The Session is switching workspaces; queued work will resume after the route commits.");
-    error.code = "SESSION_BUSY";
-    throw error;
-  }
-  const threadId = logicalRoute?.activeThreadId ?? reference.providerSessionId;
-  const routeResolution = logicalRoute
-    ? await resolvePreparedWorkspaceRoute(logicalRoute, threadId)
-    : null;
-  const activeRoute = routeResolution?.route ?? null;
-  logSessionMessageLatency(latencyTrace, "workspace_route_resolved", {
-    cacheHit: routeResolution?.cacheHit === true
-  });
-  bumpChoiceGeneration(sessionId);
-  store.clearActiveChoicePrompt(sessionId);
-  const permissionsStartedAt = Date.now();
-  const managed = await ensureCodexSessionPermissions(sessionWithLogicalWorkspace(
-    store.getSession(sessionId) ?? before,
-    logicalRoute
-  ));
-  logSessionMessageLatency(latencyTrace, "permissions_resolved", {
-    durationMs: Date.now() - permissionsStartedAt
-  });
-  const activeCwd = activeRoute?.cwd ?? logicalRoute?.activeBinding?.boundCwd ?? managed.external?.cwd;
-  const runtimeWorkspaceRoots = codexRuntimeWorkspaceRoots(logicalRoute, activeCwd);
-  const conflictResolutionSession = await isConflictResolutionWorkspace({
-    path: activeCwd,
-    worktreeId: logicalRoute?.worktreeId
-  });
-  const toolContextStartedAt = Date.now();
-  logSessionMessageLatency(latencyTrace, "tool_context_started");
-  const threadOptions = await collaborationThreadOptionsForSession(sessionId);
-  logSessionMessageLatency(latencyTrace, "tool_context_completed", {
-    durationMs: Date.now() - toolContextStartedAt
-  });
-  const resumeStartedAt = Date.now();
-  logSessionMessageLatency(latencyTrace, "thread_resume_started");
-  let resumeResult;
-  try {
-    resumeResult = await codexRuntime.ensureThreadResumed(threadId, {
-      cwd: activeCwd,
-      runtimeWorkspaceRoots,
-      ...(conflictResolutionSession ? {
-        sandbox: "danger-full-access",
-        approvalPolicy: "never"
-      } : {}),
-      ...threadOptions
-    });
-  } catch (error) {
-    throw codexPreDispatchRecoveryError(error);
-  }
-  logSessionMessageLatency(latencyTrace, "thread_resume_completed", {
-    durationMs: Date.now() - resumeStartedAt,
-    skipped: resumeResult?.alreadyLoaded === true
-  });
-  const turnStartedAt = Date.now();
-  logSessionMessageLatency(latencyTrace, "turn_start_requested");
-  const turnRuntime = codexTurnRuntimeConfig(managed, options);
-  const result = await codexRuntime.startTurn(threadId, value, {
-    cwd: activeCwd,
-    model: turnRuntime.model,
-    reasoningEffort: turnRuntime.reasoningEffort,
-    additionalContext: context.sessionContext?.prompt ? {
-      ...(options.additionalContext ?? {}),
-      "corptie-session-context": {
-        kind: "application",
-        value: context.sessionContext.prompt
-      }
-    } : options.additionalContext,
-    ...codexTurnPermissionOptions(managed, {
-      runtimeWorkspaceRoots,
-      forceFullAccess: conflictResolutionSession
-    })
-  });
-  logSessionMessageLatency(latencyTrace, "turn_start_accepted", {
-    durationMs: Date.now() - turnStartedAt,
-    turnId: result.turn?.id ?? null
-  });
-  return result;
-}
-
-function agentWorkTimelineItem(task, sessionId, queuePosition = null) {
-  if (!task?.taskId) return null;
-  const presentation = collaborationPresentationForTask(task, sessionId);
-  const userMessageStatus = userMessageStatusForAgentWork(task.status);
-  const canonicalId = task.kind === "user"
-    ? (task.source?.messageId ?? task.taskId)
-    : `work:${task.taskId}`;
-  return {
-    id: canonicalId,
-    turnId: task.targetTurnId ?? `work:${task.taskId}`,
-    turnStatus: userMessageStatus,
-    type: "userMessage",
-    title: presentation.presentationRole === "collaboration"
-      ? "Agent Collaboration"
-      : presentation.presentationRole === "system_event"
-        ? "System Event"
-        : (task.source?.type === "feishu" ? "IMgateway" : "User"),
-    text: task.text,
-    images: task.source?.messageContent?.images ?? [],
-    status: task.status,
-    userMessageStatus,
-    queuePosition: Number(queuePosition) > 0 ? Number(queuePosition) : null,
-    processingError: task.lastError ?? null,
-    createdAt: task.createdAt,
-    sourceType: presentation.presentationRole === "system_event" ? "system" : task.kind,
-    sourceChannel: task.source?.type ?? null,
-    localVisibility: task.localVisibility,
-    feishuVisibility: task.source?.type === "feishu" ? "hidden" : null,
-    taskId: task.taskId,
-    collaborationRequestId: task.source?.taskId ?? null,
-    ...presentation
-  };
-}
-
-function collaborationConfirmationTimelineItem(confirmation, sessionId) {
-  if (!confirmation?.confirmationId) return null;
-  const request = confirmation.request ?? {};
-  const recipientLogical = confirmation.recipientSessionId
-    ? (store.getLogicalSession(confirmation.recipientSessionId)
-      ?? store.getLogicalSessionByLegacySessionId(confirmation.recipientSessionId))
-    : null;
-  const recipientProviderSessionId = recipientLogical?.legacySessionId ?? null;
-  const recipientSession = recipientProviderSessionId
-    ? store.getSession(recipientProviderSessionId)
-    : null;
-  const initiatorLogical = confirmation.initiatorSessionId
-    ? (store.getLogicalSession(confirmation.initiatorSessionId)
-      ?? store.getLogicalSessionByLegacySessionId(confirmation.initiatorSessionId))
-    : null;
-  const confirmationTask = request.taskId ? store.getTask(request.taskId) : null;
-  return {
-    id: `collaboration-confirmation:${confirmation.confirmationId}`,
-    turnId: confirmation.sourceTurnId ?? `collaboration-confirmation:${confirmation.confirmationId}`,
-    turnStatus: confirmation.status === "pending" ? "waiting_approval" : "completed",
-    type: "collaborationConfirmation",
-    title: "Confirm Agent Collaboration",
-    text: "",
-    status: confirmation.status,
-    createdAt: confirmation.createdAt,
-    sourceType: "collaboration_confirmation",
-    presentationRole: "collaboration_confirmation",
-    presentationText: request.summary,
-    collaborationConfirmationId: confirmation.confirmationId,
-    collaborationSenderAgentId: confirmation.initiatorAgentId,
-    collaborationSenderName: confirmation.initiatorAgentName,
-    collaborationRecipientAgentId: confirmation.recipientAgentId,
-    collaborationRecipientName: confirmation.recipientAgentName,
-    collaborationInitiatorSessionId: confirmation.initiatorSessionId,
-    collaborationInitiatorSessionTitle: confirmation.initiatorSessionTitle ?? initiatorLogical?.sessionName ?? null,
-    collaborationInitiatorSessionKind: confirmation.initiatorSessionKind,
-    collaborationRecipientSessionId: confirmation.recipientSessionId,
-    collaborationRecipientSessionTitle: confirmation.recipientSessionTitle ?? recipientSession?.title ?? null,
-    collaborationRecipientSessionKind: confirmation.recipientSessionKind,
-    collaborationSourceWorkId: confirmation.sourceWorkId,
-    collaborationSourceWorkName: confirmation.sourceWorkName,
-    collaborationTargetWorkId: confirmation.targetWorkId,
-    collaborationTargetWorkName: confirmation.targetWorkName,
-    collaborationSourceTaskId: confirmation.initiatorTaskId ?? request.sourceTaskId ?? null,
-    collaborationTargetTaskId: confirmation.recipientTaskId ?? request.taskId ?? null,
-    collaborationRelation: confirmationTask?.collaboration_relation ?? null,
-    collaborationRouteStatus: request.routeStatus ?? "pending",
-    collaborationRoutingVersion: request.routingVersion ?? null,
-    collaborationRequestTitle: request.title,
-    collaborationMessageKind: request.type,
-    collaborationAcceptanceCriteria: request.acceptanceCriteria ?? [],
-    collaborationConfirmationStatus: confirmation.status,
-    collaborationRequestId: confirmation.taskId,
-    productSessionId: sessionId
-  };
-}
-
-function sessionChannelAuthorizationTimelineItem(channelRequest, sessionId) {
-  if (!channelRequest?.requestId) return null;
-  const request = channelRequest.request ?? {};
-  const sourceLogical = store.getLogicalSession(channelRequest.requestingSessionId);
-  const recipientLogical = channelRequest.requestedRecipientSessionId
-    ? store.getLogicalSession(channelRequest.requestedRecipientSessionId)
-    : null;
-  const sourceSession = sourceLogical?.legacySessionId ? store.getSession(sourceLogical.legacySessionId) : null;
-  const recipientSession = recipientLogical?.legacySessionId ? store.getSession(recipientLogical.legacySessionId) : null;
-  const sourceWorkId = sourceSession?.workId ?? request.sourceContext?.workId ?? null;
-  const targetWorkId = recipientSession?.workId ?? request.targetWorkId ?? null;
-  const workPresentation = collaborationWorkPresentation(store, { sourceWorkId, targetWorkId });
-  const status = channelRequest.status ?? "pending";
-  return {
-    id: `session-channel-authorization:${channelRequest.requestId}`,
-    turnId: `session-channel-authorization:${channelRequest.requestId}`,
-    turnStatus: status === "pending" ? "waiting_approval" : "completed",
-    type: "collaborationConfirmation",
-    title: "Authorize Session Channel",
-    text: "",
-    status,
-    createdAt: channelRequest.createdAt,
-    sourceType: "session_channel_authorization",
-    presentationRole: "collaboration_confirmation",
-    presentationText: request.summary ?? request.body ?? "",
-    collaborationConfirmationId: channelRequest.requestId,
-    collaborationAuthorizationKind: "session_channel",
-    collaborationInitiatorSessionId: channelRequest.requestingSessionId,
-    collaborationInitiatorSessionTitle: sourceLogical?.sessionName ?? sourceSession?.title ?? null,
-    collaborationInitiatorSessionKind: sourceSession?.sessionKind ?? null,
-    collaborationRecipientSessionId: channelRequest.requestedRecipientSessionId,
-    collaborationRecipientSessionTitle: recipientLogical?.sessionName ?? recipientSession?.title ?? request.title ?? null,
-    collaborationRecipientSessionKind: recipientSession?.sessionKind ?? null,
-    ...workPresentation,
-    collaborationSourceTaskId: sourceSession?.taskId ?? request.sourceContext?.taskId ?? null,
-    collaborationTargetTaskId: recipientSession?.taskId ?? request.taskId ?? null,
-    collaborationMessageKind: request.messageKind ?? "message",
-    collaborationConfirmationStatus: status,
-    collaborationChannelId: channelRequest.channelId ?? null,
-    productSessionId: sessionId
-  };
-}
-
-function sessionChannelMessageTimelineItem(payload, sessionId) {
-  const message = payload?.message;
-  const channel = payload?.channel;
-  if (!message?.messageId || !channel?.channelId || !message.senderSessionId || !message.recipientSessionId) {
-    return null;
-  }
-  const senderLogical = store.getLogicalSession(message.senderSessionId);
-  const recipientLogical = store.getLogicalSession(message.recipientSessionId);
-  const senderSession = senderLogical?.legacySessionId ? store.getSession(senderLogical.legacySessionId) : null;
-  const recipientSession = recipientLogical?.legacySessionId ? store.getSession(recipientLogical.legacySessionId) : null;
-  const senderAgent = senderSession?.agentId ? store.getAgent(senderSession.agentId) : null;
-  const recipientAgent = recipientSession?.agentId ? store.getAgent(recipientSession.agentId) : null;
-  const resources = message.resourceContext ?? {};
-  const sourceWorkId = resources.sender?.workId ?? senderSession?.workId ?? null;
-  const targetWorkId = resources.recipient?.workId ?? recipientSession?.workId ?? null;
-  const workPresentation = collaborationWorkPresentation(store, { sourceWorkId, targetWorkId });
-  return {
-    id: `session-channel-message:${message.messageId}:outbound`,
-    turnId: `session-channel-message:${message.messageId}`,
-    turnStatus: "completed",
-    type: "userMessage",
-    title: "Session Channel Message",
-    text: message.body,
-    status: "sent",
-    userMessageStatus: "consumed",
-    createdAt: message.createdAt,
-    sourceType: "session_channel",
-    sourceChannel: "session_channel",
-    presentationRole: "collaboration",
-    presentationText: message.body,
-    collaborationDirection: "outbound",
-    collaborationSenderAgentId: senderSession?.agentId ?? resources.sender?.agentId ?? null,
-    collaborationSenderName: senderAgent?.name ?? null,
-    collaborationRecipientAgentId: recipientSession?.agentId ?? resources.recipient?.agentId ?? null,
-    collaborationRecipientName: recipientAgent?.name ?? null,
-    collaborationInitiatorSessionId: message.senderSessionId,
-    collaborationInitiatorSessionTitle: senderLogical?.sessionName ?? senderSession?.title ?? null,
-    collaborationInitiatorSessionKind: senderSession?.sessionKind ?? null,
-    collaborationRecipientSessionId: message.recipientSessionId,
-    collaborationRecipientSessionTitle: recipientLogical?.sessionName ?? recipientSession?.title ?? null,
-    collaborationRecipientSessionKind: recipientSession?.sessionKind ?? null,
-    ...workPresentation,
-    collaborationSourceTaskId: resources.sender?.taskId ?? senderSession?.taskId ?? null,
-    collaborationTargetTaskId: resources.recipient?.taskId ?? recipientSession?.taskId ?? null,
-    collaborationMessageKind: message.messageKind ?? "message",
-    collaborationProcessingStatus: "sent",
-    collaborationChannelId: channel.channelId,
-    productSessionId: sessionId
-  };
-}
 
 function projectSessionChannelMessageForSender(result) {
   const message = result?.message;
@@ -6951,607 +1700,26 @@ function projectSessionChannelMessageForSender(result) {
   });
 }
 
-function collaborationPresentationForTask(task, sessionId = task.sessionId) {
-  if (task.kind !== "collaboration") return {};
-  if (task.source?.type === "session_channel") {
-    const envelope = task.deliveryId
-      ? sessionChannelService.getDeliveryEnvelope(task.deliveryId)
-      : null;
-    if (!envelope) {
-      return {
-        presentationRole: "system_event",
-        presentationText: "A Session Channel message could not be verified.",
-        systemEventKind: "invalid_session_channel_envelope",
-        systemEventReason: "CHANNEL_DELIVERY_ENVELOPE_MISSING",
-        systemEventSource: "session_channel"
-      };
-    }
-    const senderSession = collaborationSessionPresentation(envelope.message.senderSessionId);
-    const recipientSession = collaborationSessionPresentation(envelope.message.recipientSessionId);
-    const resources = envelope.message.resourceContext ?? {};
-    const workPresentation = collaborationWorkPresentation(store, {
-      sourceWorkId: resources.sender?.workId ?? null,
-      targetWorkId: resources.recipient?.workId ?? null
-    });
-    return {
-      presentationRole: "collaboration",
-      presentationText: envelope.message.body,
-      collaborationDirection: "inbound",
-      collaborationSenderAgentId: envelope.message.senderAgentId,
-      collaborationSenderName: envelope.message.senderAgentName,
-      collaborationRecipientAgentId: envelope.message.recipientAgentId,
-      collaborationRecipientName: envelope.message.recipientAgentName,
-      collaborationInitiatorSessionId: envelope.message.senderSessionId,
-      collaborationInitiatorSessionTitle: senderSession?.title ?? null,
-      collaborationInitiatorSessionKind: senderSession?.sessionKind ?? null,
-      collaborationRecipientSessionId: envelope.message.recipientSessionId,
-      collaborationRecipientSessionTitle: recipientSession?.title ?? null,
-      collaborationRecipientSessionKind: recipientSession?.sessionKind ?? null,
-      ...workPresentation,
-      collaborationSourceTaskId: resources.sender?.taskId ?? null,
-      collaborationTargetTaskId: resources.recipient?.taskId ?? null,
-      collaborationMessageKind: envelope.message.messageKind,
-      collaborationProcessingStatus: task.status,
-      collaborationChannelId: envelope.channel.channelId
-    };
-  }
-  const taskId = task.source?.taskId ?? null;
-  const collaborationTask = taskId && collaborationCore.hasTask(taskId) ? { taskId } : null;
-  const envelope = task.deliveryId
-    ? collaborationCore.getDeliveryEnvelope(task.deliveryId)
-    : null;
-  const failure = collaborationEnvelopeFailure({ task, collaborationTask, envelope });
-  if (failure) {
-    return {
-      presentationRole: "system_event",
-      presentationText: "A collaboration-shaped event could not be verified and is not executable.",
-      systemEventKind: "invalid_collaboration_envelope",
-      systemEventReason: failure,
-      systemEventSource: task.source?.type ?? "unknown",
-      rawEventEnvelope: JSON.stringify({
-        eventType: "AgentTask",
-        timestamp: task.createdAt ?? null,
-        source: task.source ?? null,
-        envelope: envelope ?? null
-      })
-    };
-  }
-  const route = collaborationMessagePresentationRoute(envelope);
-  const sender = route.senderAgentId ? collaborationCore.getAgent(route.senderAgentId) : null;
-  const recipient = route.recipientAgentId ? collaborationCore.getAgent(route.recipientAgentId) : null;
-  const sourceSession = collaborationSessionPresentation(route.sourceSessionId);
-  const targetSession = collaborationSessionPresentation(route.targetSessionId);
-  const targetTaskId = envelope?.task.taskId ?? task.source?.targetTaskId ?? null;
-  const targetTask = targetTaskId ? store.getTask(targetTaskId) : null;
-  const sourceWorkId = route.sourceWorkId ?? task.source?.sourceWorkId ?? null;
-  const targetWorkId = route.targetWorkId ?? task.source?.targetWorkId ?? null;
-  const workPresentation = collaborationWorkPresentation(store, { sourceWorkId, targetWorkId });
-  return {
-    presentationRole: "collaboration",
-    presentationText: envelope.message.body,
-    collaborationDirection: "inbound",
-    collaborationSenderAgentId: route.senderAgentId ?? task.source?.senderAgentId ?? null,
-    collaborationSenderName: sender?.name ?? envelope?.message.senderAgentName ?? task.source?.senderAgentName ?? route.senderAgentId,
-    collaborationRecipientAgentId: route.recipientAgentId ?? task.agentId,
-    collaborationRecipientName: recipient?.name ?? route.recipientAgentId,
-    collaborationInitiatorSessionId: route.sourceSessionId ?? task.source?.initiatorSessionId ?? null,
-    collaborationInitiatorSessionTitle: route.sourceSessionTitle ?? sourceSession?.title ?? null,
-    collaborationInitiatorSessionKind: sourceSession?.sessionKind ?? null,
-    collaborationRecipientSessionId: route.targetSessionId ?? task.source?.recipientSessionId ?? sessionId ?? null,
-    collaborationRecipientSessionTitle: route.targetSessionTitle ?? targetSession?.title ?? null,
-    collaborationRecipientSessionKind: targetSession?.sessionKind ?? null,
-    ...workPresentation,
-    collaborationRequestTitle: envelope?.task.title ?? task.source?.taskTitle ?? null,
-    collaborationSourceTaskId: envelope?.task.sourceTaskId ?? task.source?.sourceTaskId ?? null,
-    collaborationTargetTaskId: targetTaskId,
-    collaborationRelation: targetTask?.collaboration_relation ?? task.source?.relationship ?? null,
-    collaborationRouteStatus: envelope?.task.routeStatus ?? task.source?.routeStatus ?? null,
-    collaborationRoutingVersion: envelope?.task.routingVersion ?? task.source?.routingVersion ?? null,
-    collaborationMessageKind: envelope?.message.messageType ?? task.source?.messageKind ?? "message",
-    collaborationProcessingStatus: task.status
-  };
-}
 
-function collaborationSessionPresentation(sessionId) {
-  if (!sessionId) return null;
-  const logical = store.getLogicalSession(sessionId) ?? store.getLogicalSessionByLegacySessionId(sessionId);
-  const providerSessionId = logical?.legacySessionId ?? sessionId;
-  const session = store.getSession(providerSessionId);
-  if (!logical && !session) return null;
-  return {
-    title: logical?.sessionName ?? session?.title ?? null,
-    sessionKind: session?.sessionKind ?? null
-  };
-}
 
-/** Account quota + context usage of one Session; shared by the desktop route and the paired-device gateway. */
-function readSessionUsage(sessionId, session = store.getSession(sessionId)) {
-  if (!session) return Promise.reject(new Error("Session not found."));
-  const provider = session.external?.provider === "codex-app-server"
-    ? "codex"
-    : session.external?.provider ?? "unknown";
-  const storedUsage = store.getSessionUsageSnapshot(sessionId);
-  return loadSessionUsageSnapshot({
-    loadAccount: () => sessionApplicationService.readAccountUsage(sessionId),
-    loadContext: async () => storedUsage?.context ?? null,
-    fallbackAccount: storedUsage?.account ?? {
-      available: false,
-      provider,
-      model: storedUsage?.model ?? session.external?.currentModel ?? null
-    },
-    persistAccount: (account) => {
-      const result = store.upsertSessionUsageSnapshot({
-        sessionId,
-        providerId: session.external?.provider ?? provider,
-        model: account.model ?? storedUsage?.model ?? session.external?.currentModel ?? null,
-        account
-      });
-      if (JSON.stringify(storedUsage?.account) !== JSON.stringify(account)) {
-        clientDeviceGateway?.events.publishTimeline(sessionId);
-      }
-      return result;
-    },
-    resetForecast: session.external?.provider === "codex-app-server"
-      ? codexResetForecastMonitor?.snapshot() ?? null
-      : null
-  });
-}
 
-async function getGatewayUsage(sessionId = null) {
-  if (!sessionId) return { available: false, provider: "codex", model: null };
-  const session = store.getSession(sessionId);
-  if (!session) return { available: false, provider: "unknown", model: null };
-  const usage = store.getSessionUsageSnapshot(sessionId);
-  return usage?.account ?? {
-    available: false,
-    provider: session.external?.provider ?? "unknown",
-    model: usage?.model ?? session.external?.currentModel ?? null
-  };
-}
-
-async function readCodexProviderAccountUsage(reference = null) {
-  const usage = await codexRuntime.readAccountRateLimits();
-  return {
-    available: true,
-    provider: "codex",
-    model: reference?.metadata?.session?.external?.currentModel ?? null,
-    ...usage
-  };
-}
-
-async function readCodexProviderSessionUsage(reference) {
-  const threadId = reference?.providerSessionId;
-  if (!threadId) return null;
-  const live = codexRuntime.tokenUsageForThread(threadId);
-  return live ?? null;
-}
+const sessionMessageOperation = createSessionMessageOperation({
+  store, requireSessionReference, agentProviderRegistry, sessionChannelService,
+  resolveSessionChannelRequest, collaborationCore, resolveCollaborationConfirmation,
+  sessionBindingReadinessProbe, sessionApplicationService, emitEvent, now,
+  decorateSessionForClient, chatResourceService, providerTurnResponseWatchdog,
+  ensureCollaborationAgentForSession, registerRuntimeQueuedWork,
+  runtimeQueuePosition, publishProviderEventOutbox, scheduleAgentWorkDrain
+});
 
 async function sendUnifiedSessionMessage(sessionId, input, source = { type: "desktop" }, options = {}) {
-  const message = normalizeConversationMessage(input);
-  const value = message.text;
-  const reference = requireSessionReference(sessionId);
-  assertSessionRecoveryMessageBoundary(reference);
-  if (message.images.length > 0 && !agentProviderRegistry.supports(
-    reference.providerId,
-    AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND_IMAGE
-  )) {
-    const error = new Error("This Agent Provider does not support image messages.");
-    error.code = "PROVIDER_CAPABILITY_UNSUPPORTED";
-    error.statusCode = 409;
-    throw error;
-  }
-  if (options.agentTask) assertAgentWorkSessionReference(options.agentTask, reference);
-  const routedSessionId = reference.sessionId;
-  const publicSessionId = reference.logicalSessionId ?? routedSessionId;
-  const before = reference.metadata.session;
-  const latencyTrace = normalizeSessionMessageLatencyTrace(
-    options.latencyTrace ?? source.latencyTrace ?? {},
-    { sessionId: publicSessionId }
-  );
-
-  const confirmationReply = message.images.length === 0 ? collaborationConfirmationReply(value) : null;
-  const pendingChannelRequest = confirmationReply
-    ? sessionChannelService.pendingRequestForSession(publicSessionId)
-    : null;
-  if (pendingChannelRequest) {
-    const request = await resolveSessionChannelRequest(
-      pendingChannelRequest.requestId,
-      confirmationReply === "confirm",
-      source
-    );
-    return { accepted: true, mode: "session-channel-authorization", sessionId: publicSessionId, channelRequest: request };
-  }
-  const pendingConfirmation = confirmationReply
-    ? collaborationCore.pendingTaskConfirmationForSession(routedSessionId)
-    : null;
-  if (pendingConfirmation) {
-    const confirmation = await resolveCollaborationConfirmation(
-      pendingConfirmation.confirmationId,
-      confirmationReply === "confirm",
-      source
-    );
-    return { accepted: true, mode: "collaboration-confirmation", sessionId: publicSessionId, collaborationConfirmation: confirmation };
-  }
-
-  // A successful probe is scoped to the exact logical Session + Binding
-  // generation. Reuse that proof until Provider restart, route replacement,
-  // or a failed dispatch invalidates it; ordinary messages must not resume the
-  // same Provider thread merely to rediscover that it is still present.
-  const bindingVerification = await sessionBindingReadinessProbe.verify(
-    routedSessionId,
-    { reuseReady: true }
-  );
-  if (bindingVerification.ready !== true) {
-    const error = new Error(
-      bindingVerification.readiness?.message ?? "The Provider Session is unavailable."
-    );
-    error.code = "SESSION_NOT_READY";
-    error.reason = bindingVerification.readiness?.reasonCode ?? "PROVIDER_SESSION_UNAVAILABLE";
-    throw error;
-  }
-
-  const slashCommand = parseSlashCommand(value);
-  if (slashCommand && !(isClearCommand(value) && message.images.length === 0) && options.fromAgentWorkQueue !== true && !options.agentTask
-      && ["desktop", "feishu", "remote-client"].includes(source.type)) {
-    if (message.images.length > 0) {
-      throw Object.assign(new Error("斜杠命令不支持附带图片，请单独发送命令。"), {
-        code: "INVALID_COMMAND_ARGUMENTS", statusCode: 400
-      });
-    }
-    if (workspaceTransitionBlocksWork(store.getLogicalSessionByLegacySessionId(routedSessionId))) {
-      throw Object.assign(new Error("会话正在切换工作目录，请完成后再执行命令。"), {
-        code: "SESSION_BUSY", statusCode: 409
-      });
-    }
-    if (["compact", "review", "model", "reasoning", "rename"].includes(slashCommand.name)
-        && (sessionHasActiveRun(before) || store.listUnsettledSessionTurns(routedSessionId).length > 0)) {
-      throw Object.assign(new Error(`/${slashCommand.name} 请在当前执行结束后使用。`), {
-        code: "SESSION_BUSY", statusCode: 409
-      });
-    }
-    const result = await sessionApplicationService.executeCommand(sessionId, slashCommand, { before, source });
-    const id = `command:${randomUUID()}`;
-    const item = {
-      id, turnId: id, turnStatus: "completed", type: "commandExecution",
-      title: `/${slashCommand.name}`, text: result.text, status: "completed", createdAt: now(),
-      sourceType: "session_command"
-    };
-    emitEvent("SessionCommandCompleted", { item }, { sessionId: routedSessionId, source });
-    return { accepted: true, mode: "session-command", sessionId: publicSessionId, warning: result.text, commandMessageId: id };
-  }
-
-  if (options.fromAgentWorkQueue !== true) {
-    const presented = decorateSessionForClient(before);
-    if (presented.readiness !== "ready") {
-      const error = new Error(
-        presented.notReadyReason?.message ?? "This Session is not ready to accept messages."
-      );
-      error.code = "SESSION_NOT_READY";
-      error.reason = presented.notReadyReason?.code ?? "SESSION_NOT_READY";
-      throw error;
-    }
-  }
-
-  if (message.images.length === 0 && isClearCommand(value)) {
-    const result = await sessionApplicationService.clearConversation(sessionId, { before, source });
-    if (result?.cleared === true) return result;
-    store.clearItems(routedSessionId);
-    const session = {
-      ...result,
-      id: routedSessionId
-    };
-    emitEvent("SessionCleared", {
-      previousSessionId: routedSessionId,
-      session,
-      source
-    }, { sessionId: routedSessionId, source });
-    return {
-      accepted: true,
-      cleared: true,
-      previousSessionId: routedSessionId,
-      sessionId: publicSessionId,
-      legacySessionId: routedSessionId,
-      session
-    };
-  }
-
-  if (options.fromAgentWorkQueue !== true) {
-    return enqueueUserAgentWork(before, message, source, latencyTrace, reference);
-  }
-  if (sessionHasActiveRun(before) || store.listUnsettledSessionTurns(routedSessionId).length > 0) {
-    const error = new Error("Target Session became busy before queued work started.");
-    error.code = "SESSION_BUSY";
-    throw error;
-  }
-
-  const deliveryId = source.deliveryId ?? options.agentTask?.source?.deliveryId ?? null;
-  const delivery = deliveryId ? store.getMessageDelivery(deliveryId) : null;
-  if (delivery) {
-    store.updateMessageDelivery(deliveryId, {
-      status: "dispatching",
-      attemptCount: delivery.attemptCount + 1,
-      lastAttemptAt: now(),
-      lastError: null
-    });
-  }
-  logSessionMessageLatency(latencyTrace, "provider_dispatch_started", {
-    providerId: reference.providerId
-  });
-  let result;
-  try {
-    result = await sessionApplicationService.sendMessage(
-      sessionId,
-      await resolvedConversationMessage(reference, message),
-      {
-      before,
-      latencyTrace,
-      options,
-      source,
-      submit: options.submit,
-      idempotencyKey: deliveryId
-      }
-    );
-  } catch (error) {
-    // A failed Provider dispatch makes the last-known-ready proof suspect. The
-    // next dispatch performs one real probe before retrying this Binding.
-    sessionBindingReadinessProbe.invalidateBinding(reference);
-    if (delivery) {
-      const status = providerDeliveryFailureStatus(error);
-      store.updateMessageDelivery(deliveryId, {
-        status,
-        lastError: error.message
-      });
-      error.deliveryStatus = status;
-    }
-    throw error;
-  }
-  const providerTurnId = result?.turn?.id ?? result?.turnId ?? null;
-  const routedDelivery = delivery ? store.getMessageDelivery(deliveryId) ?? delivery : null;
-  const dispatchBindingId = routedDelivery?.bindingId ?? reference.bindingId;
-  const dispatchBinding = dispatchBindingId ? store.getAgentSessionBinding(dispatchBindingId) : null;
-  // Command acceptance is a durable Provider-neutral execution fact. Persist a
-  // running Turn before returning so orphan reconciliation cannot cancel work
-  // merely because a Provider's first realtime lifecycle event is delayed.
-  // Native events may already have won the race; never overwrite a settled Turn.
-  // Recovery may have atomically rebound the durable Delivery while sendMessage
-  // was in flight, so prefer that post-CAS binding over the pre-dispatch reference.
-  if (providerTurnId && dispatchBindingId
-    && !store.getSessionTurn(routedSessionId, dispatchBindingId, providerTurnId)) {
-    const timestamp = now();
-    store.upsertSessionTurn({
-      sessionId: routedSessionId,
-      bindingId: dispatchBindingId,
-      routingVersion: dispatchBinding?.routingVersion ?? reference.routingVersion,
-      turnId: providerTurnId,
-      executionStatus: "running",
-      startedAt: timestamp,
-      updatedAt: timestamp
-    });
-  }
-  if (providerTurnId && dispatchBinding) {
-    providerTurnResponseWatchdog.watch({
-      sessionId: routedSessionId,
-      logicalSessionId: dispatchBinding.logicalSessionId ?? reference.logicalSessionId,
-      providerId: dispatchBinding.providerId ?? reference.providerId,
-      providerSessionId: dispatchBinding.providerSessionId ?? reference.providerSessionId,
-      bindingId: dispatchBinding.bindingId,
-      routingVersion: dispatchBinding.routingVersion ?? reference.routingVersion,
-      turnId: providerTurnId,
-      startedAt: now()
-    });
-  }
-  if (delivery) {
-    const alreadySettledTurn = providerTurnId
-      ? store.getSessionTurn(routedSessionId, routedDelivery.bindingId, providerTurnId)
-      : null;
-    const acknowledgedStatus = alreadySettledTurn
-      ? ({ completed: "completed", failed: "failed", cancelled: "cancelled" }[alreadySettledTurn.execution_status]
-        ?? "accepted")
-      : "accepted";
-    store.updateMessageDelivery(deliveryId, {
-      status: acknowledgedStatus,
-      providerTurnId,
-      providerAcknowledgedAt: now(),
-      lastError: null
-    });
-  }
-  logSessionMessageLatency(latencyTrace, "provider_dispatch_completed", {
-    providerId: reference.providerId,
-    turnId: result?.turn?.id ?? result?.turnId ?? null
-  });
-  logSessionMessageLatency(latencyTrace, "session_execution_started", {
-    providerId: reference.providerId,
-    turnId: result?.turn?.id ?? result?.turnId ?? null
-  });
-
-  emitEvent("SessionRunStarted", {
-    sessionId: routedSessionId,
-    logicalSessionId: reference.logicalSessionId,
-    source
-  }, { sessionId: routedSessionId, source });
-  return {
-    accepted: true,
-    cleared: false,
-    sessionId: publicSessionId,
-    legacySessionId: routedSessionId,
-    result
-  };
+  return sessionMessageOperation.sendUnifiedSessionMessage(sessionId, input, source, options);
 }
 
 function assertSessionRecoveryMessageBoundary(reference) {
-  const logicalSessionId = reference?.logicalSessionId ?? null;
-  const legacySessionId = reference?.sessionId ?? null;
-  const logical = logicalSessionId
-    ? store.getLogicalSession(logicalSessionId)
-    : legacySessionId
-      ? store.getLogicalSessionByLegacySessionId(legacySessionId)
-      : null;
-  if (logical?.transitionState !== "sessionRecovery") return;
-  const error = new Error("The Session is recovering. Sending messages is temporarily unavailable.");
-  error.code = "SESSION_BUSY";
-  error.reason = "sessionRecovery";
-  throw error;
+  return sessionMessageOperation.assertSessionRecoveryMessageBoundary(reference);
 }
 
-function collaborationConfirmationReply(value) {
-  const normalized = String(value ?? "").trim().toLowerCase();
-  if (["确认", "确认发送", "发送", "同意", "yes", "y", "confirm", "approve"].includes(normalized)) return "confirm";
-  if (["取消", "拒绝", "不发送", "否", "no", "n", "reject", "cancel"].includes(normalized)) return "reject";
-  return null;
-}
-
-async function clearCodexAppServerSession(sessionId, session, source = { type: "desktop" }) {
-  if (sessionHasActiveRun(session)) {
-    const error = new Error("The current task is still running. Stop it before using /clear.");
-    error.code = "SESSION_BUSY";
-    throw error;
-  }
-
-  session = await ensureCodexSessionPermissions(session);
-  const permissions = codexPermissionsForSession(session);
-  const previousAgent = collaborationCore.getAgentForSession(sessionId);
-  const cwd = session.external?.cwd || defaultWorkspacePath();
-  const model = session.external?.currentModel ?? undefined;
-  const reasoningLevel = session.external?.currentReasoningLevel ?? null;
-  const title = session.title || "Codex";
-  const releaseTitle = reserveSessionTitle(title, sessionId);
-  try {
-  const started = await codexRuntime.startThread({
-    cwd,
-    ...permissions,
-    model,
-    ...await collaborationThreadOptionsForSession(sessionId)
-  });
-  await codexRuntime.setThreadName(started.thread.id, title).catch((error) => {
-    console.log(`[codex] clear created thread=${started.thread.id} but could not preserve title: ${error.message}`);
-  });
-
-  let replacement = withCodexSessionPermissions({
-    ...mapCodexThreadToSession({
-      ...started.thread,
-      preview: title,
-      name: title,
-      cwd,
-      updatedAt: Date.now() / 1000,
-      status: "idle",
-      source: "corptie",
-      currentModel: model ?? started.model ?? null,
-      currentReasoningLevel: reasoningLevel ?? started.reasoningEffort ?? null
-    }),
-    title,
-    pinned: session.pinned,
-    accent: session.accent ?? "cyan",
-    status: "complete",
-    progress: 1,
-    summary: "Conversation cleared. Ready for a new instruction.",
-    activityStatus: null,
-    capabilities: codexAppServerSessionCapabilities({ canInterrupt: false }),
-    external: {
-      ...mapCodexThreadToSession({
-        ...started.thread,
-        cwd,
-        currentModel: model ?? started.model ?? null,
-        currentReasoningLevel: reasoningLevel ?? started.reasoningEffort ?? null
-      }).external,
-      activeTurnId: null
-    }
-  }, permissions);
-  store.deleteSession(sessionId);
-  const logicalRoute = await ensureLogicalRouteForCodexSession(replacement, started);
-  replacement = sessionWithLogicalWorkspace(replacement, logicalRoute);
-  upsertManagedCodexSession(replacement, previousAgent?.agentId ?? null);
-  emitEvent("SessionCleared", {
-    previousSessionId: sessionId,
-    session: replacement,
-    source
-  }, { sessionId: replacement.id, source });
-  return {
-    accepted: true,
-    cleared: true,
-    previousSessionId: sessionId,
-    sessionId: replacement.id,
-    session: replacement
-  };
-  } finally {
-    releaseTitle();
-  }
-}
-
-async function resolvedConversationMessage(reference, input) {
-  const message = normalizeConversationMessage(input);
-  const images = [];
-  for (const image of message.images) {
-    const stored = await chatResourceService.readImage(reference, image.managedPath);
-    images.push({
-      ...image,
-      absolutePath: stored.path,
-      mimeType: stored.mimeType,
-      byteLength: stored.byteLength
-    });
-  }
-  return { text: message.text, images, ...(message.mentions ? { mentions: message.mentions } : {}) };
-}
-
-function enqueueUserAgentWork(session, input, source, latencyTrace = null, reference = null) {
-  const message = normalizeConversationMessage(input);
-  const agent = collaborationCore.getAgentForSession(session.id) ?? ensureCollaborationAgentForSession(session);
-  if (!agent) {
-    const error = new Error("Session does not have an Agent identity.");
-    error.code = "AGENT_NOT_FOUND";
-    throw error;
-  }
-  const activeRun = sessionHasActiveRun(session);
-  const hasRunningTask = Boolean(store.getRunningAgentTaskForSession(session.id));
-  const logical = reference?.logicalSessionId
-    ? store.getLogicalSession(reference.logicalSessionId)
-    : store.getLogicalSessionByLegacySessionId(session.id);
-  const binding = logical?.activeBinding;
-  if (!binding) {
-    const error = new Error("Session does not have an active Provider Binding.");
-    error.code = "SESSION_BINDING_NOT_FOUND";
-    throw error;
-  }
-  const messageId = source.messageId || randomUUID();
-  const deliveryId = source.deliveryId || `delivery:${messageId}`;
-  const persistedSource = {
-    ...source,
-    messageId,
-    deliveryId,
-    messageContent: message,
-    ...(latencyTrace ? { latencyTrace } : {})
-  };
-  const created = store.createUserMessageDelivery({
-    deliveryId,
-    messageId,
-    sessionId: session.id,
-    binding,
-    agentId: agent.agentId,
-    text: message.text,
-    content: message,
-    title: source.type === "feishu" ? "IMgateway" : "User",
-    source: persistedSource,
-    createdAt: now()
-  });
-  const task = created.task;
-  registerRuntimeQueuedWork(session.id, task.taskId);
-  const queuePosition = runtimeQueuePosition(session.id, task.taskId);
-  const reportAsQueued = shouldReportAgentWorkQueued({
-    sessionHasActiveRun: activeRun,
-    hasRunningTask,
-    queuedTasksAhead: Math.max(0, queuePosition - 1)
-  });
-  logSessionMessageLatency(latencyTrace, "task_enqueued", { queuePosition });
-  if (created.outbox) publishProviderEventOutbox([created.outbox]);
-  emitEvent("AgentWorkQueued", { sessionId: session.id, task, queuePosition, source: persistedSource }, { sessionId: session.id, source: persistedSource });
-  scheduleAgentWorkDrain(session.id, latencyTrace, task.taskId);
-  return {
-    accepted: true,
-    queued: reportAsQueued,
-    queuePosition: reportAsQueued ? queuePosition : 0,
-    sessionId: session.id,
-    task
-  };
-}
 
 function scheduleAgentWorkDrain(sessionId, latencyTrace = null, taskId = null) {
   if (taskId) registerRuntimeQueuedWork(sessionId, taskId);
@@ -7563,774 +1731,17 @@ function scheduleAgentWorkDrain(sessionId, latencyTrace = null, taskId = null) {
   });
 }
 
-async function syncSessionChannelDeliveriesIntoAgentWorkQueue() {
-  const deliveries = [
-    ...sessionChannelService.listPendingDeliveries(100, collaborationDispatcher.maxAttempts),
-    ...sessionChannelService.listQueuedDeliveries(100)
-  ];
-  for (const delivery of deliveries) {
-    const envelope = sessionChannelService.getDeliveryEnvelope(delivery.deliveryId);
-    if (!envelope) {
-      sessionChannelService.updateDelivery(delivery.deliveryId, {
-        status: "failed", incrementAttempt: true, nextAttemptAt: null,
-        lastError: "Channel delivery envelope is unavailable."
-      });
-      continue;
-    }
-    let route;
-    try {
-      route = sessionChannelService.resolveDeliveryRoute(delivery.deliveryId);
-    } catch (error) {
-      sessionChannelService.updateDelivery(delivery.deliveryId, {
-        status: "failed", incrementAttempt: true, nextAttemptAt: null, lastError: error.message
-      });
-      continue;
-    }
-    const existingWork = store.getAgentTaskForDelivery(delivery.deliveryId);
-    if (existingWork) {
-      if (["failed", "cancelled"].includes(existingWork.status)) {
-        store.updateAgentTask(existingWork.taskId, {
-          status: "queued", sessionId: route.providerSessionId, startedAt: null,
-          completedAt: null, targetTurnId: null, lastError: null
-        });
-        registerRuntimeQueuedWork(route.providerSessionId, existingWork.taskId);
-        scheduleAgentWorkDrain(route.providerSessionId, null, existingWork.taskId);
-      }
-      continue;
-    }
-    const recipientAgent = collaborationCore.getAgentForSession(route.providerSessionId);
-    if (!recipientAgent) continue;
-    const task = store.enqueueAgentTask({
-      taskId: `delivery:${delivery.deliveryId}`,
-      agentId: recipientAgent.agentId,
-      sessionId: route.providerSessionId,
-      kind: "collaboration",
-      priority: 50,
-      text: formatTrustedChannelMessage(envelope),
-      source: {
-        type: "session_channel",
-        channelId: envelope.channel.channelId,
-        deliveryId: delivery.deliveryId,
-        messageId: envelope.message.messageId,
-        senderSessionId: envelope.message.senderSessionId,
-        recipientSessionId: envelope.message.recipientSessionId,
-        messageKind: envelope.message.messageKind,
-        presentationText: envelope.message.body,
-        resourceContext: envelope.message.resourceContext
-      },
-      localVisibility: "status_only",
-      channelDeliveryId: delivery.deliveryId,
-      createdAt: delivery.createdAt
-    });
-    registerRuntimeQueuedWork(route.providerSessionId, task.taskId);
-    sessionChannelService.updateDelivery(delivery.deliveryId, {
-      status: "queued", nextAttemptAt: null, lastError: null
-    });
-    emitEvent("AgentWorkQueued", {
-      sessionId: route.providerSessionId, task, queuePosition: null, source: task.source
-    }, { sessionId: route.providerSessionId, source: task.source });
-    scheduleAgentWorkDrain(route.providerSessionId, null, task.taskId);
-  }
-}
 
-async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
-  const deliveries = [
-    ...collaborationCore.listPendingDeliveries(100, collaborationDispatcher.maxAttempts),
-    ...collaborationCore.listQueuedDeliveries(100)
-  ];
-  for (const delivery of deliveries) {
-    let envelope = collaborationCore.getDeliveryEnvelope(delivery.deliveryId);
-    if (!envelope) {
-      console.warn(`[collaboration-routing] event=delivery_envelope_missing deliveryId=${delivery.deliveryId}`);
-      const error = Object.assign(
-        new Error(`Collaboration delivery ${delivery.deliveryId} has no recoverable envelope.`),
-        { code: "COLLABORATION_ENVELOPE_MISSING" }
-      );
-      collaborationDispatcher.failRoute(delivery.deliveryId, error, {
-        eventType: "delivery_envelope_missing"
-      });
-      continue;
-    }
-    let route;
-    try {
-      route = await resolveCollaborationDeliveryRoute(envelope, "agent_work_enqueue_preflight");
-      envelope = collaborationCore.getDeliveryEnvelope(delivery.deliveryId) ?? envelope;
-    } catch (error) {
-      console.error(`[collaboration-routing] event=enqueue_route_failed taskId=${envelope.task.taskId} deliveryId=${delivery.deliveryId} code=${error.code ?? "RECIPIENT_ROUTE_FAILED"} error=${JSON.stringify(error.message)}`);
-      collaborationDispatcher.failRoute(delivery.deliveryId, error, {
-        envelope,
-        eventType: "enqueue_route_failed"
-      });
-      continue;
-    }
-    const existingWork = store.getAgentTaskForDelivery(delivery.deliveryId);
-    if (existingWork) {
-      if (["queued", "failed", "cancelled"].includes(existingWork.status)
-          && route.providerSessionId && existingWork.sessionId !== route.providerSessionId) {
-        const source = { ...existingWork.source, recipientSessionId: route.sessionId };
-        store.updateAgentTask(existingWork.taskId, {
-          sessionId: route.providerSessionId,
-          status: "queued",
-          startedAt: null,
-          completedAt: null,
-          targetTurnId: null,
-          lastError: null,
-          source
-        });
-        moveRuntimeQueuedWork(existingWork.sessionId, route.providerSessionId, existingWork.taskId);
-        console.info(`[collaboration-routing] event=queued_work_rerouted taskId=${envelope.task.taskId} deliveryId=${delivery.deliveryId} fromSessionId=${existingWork.sessionId} toSessionId=${route.providerSessionId}`);
-        scheduleAgentWorkDrain(route.providerSessionId, null, existingWork.taskId);
-        continue;
-      }
-      if (["failed", "cancelled"].includes(existingWork.status)) {
-        store.updateAgentTask(existingWork.taskId, {
-          status: "queued",
-          startedAt: null,
-          completedAt: null,
-          targetTurnId: null,
-          lastError: null
-        });
-        registerRuntimeQueuedWork(existingWork.sessionId, existingWork.taskId);
-        scheduleAgentWorkDrain(existingWork.sessionId, null, existingWork.taskId);
-      }
-      continue;
-    }
-    const agent = collaborationCore.getAgent(delivery.recipientAgentId);
-    const sessionId = route.providerSessionId;
-    if (!envelope || !agent || !sessionId) continue;
-    const task = store.enqueueAgentTask({
-      taskId: `delivery:${delivery.deliveryId}`,
-      agentId: agent.agentId,
-      sessionId,
-      kind: "collaboration",
-      priority: 50,
-      text: formatTrustedCollaborationEvent(envelope),
-      source: {
-        type: "collaboration",
-        deliveryId: delivery.deliveryId,
-        messageId: envelope.message.messageId,
-        taskId: envelope.task.taskId,
-        senderAgentId: envelope.message.senderAgentId,
-        senderAgentName: envelope.message.senderAgentName,
-        recipientAgentName: agent.name,
-        initiatorSessionId: envelope.task.initiatorSessionId,
-        recipientSessionId: envelope.task.recipientSessionId,
-        sourceTaskId: envelope.task.sourceTaskId,
-        targetTaskId: envelope.task.taskId,
-        routeStatus: envelope.task.routeStatus,
-        routingVersion: envelope.task.routingVersion,
-        taskTitle: envelope.task.title,
-        messageKind: envelope.message.messageType,
-        presentationText: envelope.message.body
-      },
-      localVisibility: "status_only",
-      deliveryId: delivery.deliveryId,
-      createdAt: delivery.createdAt
-    });
-    registerRuntimeQueuedWork(sessionId, task.taskId);
-    if (delivery.status !== "queued") {
-      collaborationCore.updateDelivery(delivery.deliveryId, { status: "queued", nextAttemptAt: null, lastError: null });
-      collaborationCore.recordDeliveryEvent(delivery.deliveryId, "delivery_queued", { sessionId, reason: "agent_work_queue" });
-    }
-    console.info(`[collaboration-routing] event=delivery_enqueued taskId=${envelope.task.taskId} deliveryId=${delivery.deliveryId} channelId=${route.channelId ?? "none"} routeMode=${route.mode ?? "task_route"} logicalSessionId=${route.sessionId} providerSessionId=${sessionId}`);
-    emitEvent("AgentWorkQueued", { sessionId, task, queuePosition: null, source: task.source }, { sessionId, source: task.source });
-    scheduleAgentWorkDrain(sessionId, null, task.taskId);
-  }
-}
 
-async function resolveCollaborationDeliveryRoute(envelope, reason) {
-  const route = await collaborationDeliveryRouteResolver.resolve(envelope, { reason });
-  console.info(`[collaboration-routing] event=route_resolved taskId=${envelope.task.taskId} deliveryId=${envelope.delivery.deliveryId} channelId=${route.channelId ?? "none"} routeMode=${route.mode} logicalSessionId=${route.sessionId} providerSessionId=${route.providerSessionId}`);
-  return route;
-}
 
-async function drainAgentWork(sessionId) {
-  if (drainingAgentWorkSessionIds.has(sessionId)) return;
-  drainingAgentWorkSessionIds.add(sessionId);
-  try {
-    await drainAgentWorkSession(sessionId);
-  } finally {
-    drainingAgentWorkSessionIds.delete(sessionId);
-  }
-}
-
-async function deleteHistoricalUnusableTaskSessionsAtStartup() {
-  let deleted = 0;
-  for (const sessionId of store.listUnusableReplacedTaskSessionIds()) {
-    const result = await sessionApplicationService.deleteUnusableSession(sessionId, {
-      source: "task-self-repair-startup-cleanup"
-    });
-    if (result.deleted) deleted += 1;
-    if (!result.providerDeleted) {
-      console.warn(`[task-self-repair] startup removed unusable local Session after Provider deletion failed previousSession=${sessionId} code=${result.providerErrorCode ?? "unknown"}`);
-    }
-  }
-  return deleted;
-}
-
-async function drainAgentWorkSession(sessionId) {
-  const boundAgent = collaborationCore.getAgentForSession(sessionId);
-  if (!boundAgent) return;
-
-  const runningWork = store.getRunningAgentTaskForSession(sessionId);
-  if (runningWork) {
-    const liveState = await inspectCollaborationSession(sessionId);
-    if (liveState === "running" || liveState === "missing") return;
-    const patch = interruptedAgentWorkRecoveryPatch(runningWork);
-    const recoveredWork = patch ? store.updateAgentTask(runningWork.taskId, patch) : null;
-    if (recoveredWork?.status === "cancelled") {
-      emitEvent("AgentWorkCompleted", { sessionId: runningWork.sessionId, task: recoveredWork }, {
-        sessionId: runningWork.sessionId,
-        source: runningWork.source
-      });
-      workspaceContinuationCoordinator.recordWorkSettled(recoveredWork);
-    } else if (recoveredWork?.status === "queued") {
-      emitEvent("AgentWorkQueued", { sessionId: runningWork.sessionId, task: recoveredWork, queuePosition: null, source: runningWork.source }, {
-        sessionId: runningWork.sessionId,
-        source: runningWork.source
-      });
-      workspaceContinuationCoordinator.recordWorkRequeued(recoveredWork);
-    }
-    console.log(`[agent-work] recovered orphaned work agent=${boundAgent.agentId} session=${sessionId} work=${runningWork.taskId} status=${recoveredWork?.status ?? "unchanged"} liveState=${liveState}`);
-    return;
-  }
-
-  const next = nextRuntimeQueuedWork(sessionId);
-  if (!next) return;
-  let collaborationRoute = null;
-  if (next.kind === "collaboration") {
-    if (next.source?.type === "session_channel") {
-      const envelope = sessionChannelService.getDeliveryEnvelope(next.deliveryId);
-      if (!envelope) {
-        const failedWork = store.updateAgentTask(next.taskId, {
-          status: "failed", lastError: `Channel delivery ${next.deliveryId} no longer has an envelope.`
-        });
-        forgetRuntimeQueuedWork(sessionId, next.taskId);
-        emitEvent("AgentWorkFailed", { sessionId, task: failedWork }, { sessionId, source: next.source });
-        return;
-      }
-      try {
-        collaborationRoute = sessionChannelService.resolveDeliveryRoute(next.deliveryId);
-        if (collaborationRoute.providerSessionId !== sessionId) {
-          store.updateAgentTask(next.taskId, {
-            sessionId: collaborationRoute.providerSessionId,
-            source: { ...next.source, recipientSessionId: collaborationRoute.sessionId }
-          });
-          moveRuntimeQueuedWork(sessionId, collaborationRoute.providerSessionId, next.taskId);
-          scheduleAgentWorkDrain(collaborationRoute.providerSessionId, null, next.taskId);
-          return;
-        }
-      } catch (error) {
-        sessionChannelService.updateDelivery(next.deliveryId, {
-          status: "failed", incrementAttempt: true, nextAttemptAt: null, lastError: error.message
-        });
-        const failedWork = store.updateAgentTask(next.taskId, { status: "failed", lastError: error.message });
-        forgetRuntimeQueuedWork(sessionId, next.taskId);
-        emitEvent("AgentWorkFailed", { sessionId, task: failedWork }, { sessionId, source: next.source });
-        return;
-      }
-    } else {
-    const envelope = collaborationCore.getDeliveryEnvelope(next.deliveryId);
-    if (!envelope) {
-      const failedWork = store.updateAgentTask(next.taskId, {
-        status: "failed",
-        lastError: `Collaboration delivery ${next.deliveryId} no longer has an envelope.`
-      });
-      forgetRuntimeQueuedWork(sessionId, next.taskId);
-      emitEvent("AgentWorkFailed", { sessionId, task: failedWork }, { sessionId, source: next.source });
-      return;
-    }
-    try {
-      collaborationRoute = await resolveCollaborationDeliveryRoute(envelope, "agent_work_dequeue_preflight");
-      if (collaborationRoute.providerSessionId !== sessionId) {
-        const source = { ...next.source, recipientSessionId: collaborationRoute.sessionId };
-        store.updateAgentTask(next.taskId, { sessionId: collaborationRoute.providerSessionId, source });
-        moveRuntimeQueuedWork(sessionId, collaborationRoute.providerSessionId, next.taskId);
-        console.info(`[collaboration-routing] event=dequeue_route_changed taskId=${envelope.task.taskId} deliveryId=${next.deliveryId} fromSessionId=${sessionId} toSessionId=${collaborationRoute.providerSessionId}`);
-        scheduleAgentWorkDrain(collaborationRoute.providerSessionId, null, next.taskId);
-        return;
-      }
-    } catch (error) {
-      console.error(`[collaboration-routing] event=dequeue_route_failed taskId=${envelope.task.taskId} deliveryId=${next.deliveryId} code=${error.code ?? "RECIPIENT_ROUTE_FAILED"} error=${JSON.stringify(error.message)}`);
-      const delivery = collaborationDispatcher.failRoute(next.deliveryId, error, {
-        envelope,
-        eventType: "dequeue_route_failed"
-      });
-      const failedWork = store.updateAgentTask(next.taskId, {
-        status: "failed",
-        lastError: delivery?.lastError ?? error.message
-      });
-      forgetRuntimeQueuedWork(sessionId, next.taskId);
-      emitEvent("AgentWorkFailed", { sessionId, task: failedWork }, {
-        sessionId,
-        source: next.source
-      });
-      return;
-    }
-    }
-  }
-  const latencyTrace = normalizeSessionMessageLatencyTrace(next.source?.latencyTrace ?? {}, { sessionId });
-  logSessionMessageLatency(latencyTrace, "task_dequeued");
-
-  if (boundAgent.agentId !== next.agentId) {
-    const failedWork = store.updateAgentTask(next.taskId, {
-      status: "failed",
-      lastError: `Queued work target Session ${sessionId} is no longer bound to Agent ${next.agentId}.`
-    });
-    forgetRuntimeQueuedWork(sessionId, next.taskId);
-    emitEvent("AgentWorkFailed", { sessionId, task: failedWork }, {
-      sessionId,
-      source: next.source
-    });
-    workspaceContinuationCoordinator.recordWorkSettled(failedWork);
-    return;
-  }
-  const session = store.getSession(sessionId);
-  if (!session) return;
-  if (sessionHasActiveRun(session)) {
-    // Persisted activeTurnId values can outlive an interrupted turn when the
-    // completion notification was missed. Reconcile it before leaving queued
-    // work blocked indefinitely.
-    const liveState = await inspectCollaborationSession(sessionId);
-    if (liveState === "running" || liveState === "missing") return;
-    console.log(`[agent-work] reconciled stale run state agent=${boundAgent.agentId} session=${sessionId} previousStatus=${session.status} liveState=${liveState}`);
-  }
-  if (workspaceTransitionBlocksWork(store.getLogicalSessionByLegacySessionId(sessionId))) return;
-
-  const claimed = store.claimAgentTask(next.taskId);
-  if (!claimed) return;
-  forgetRuntimeQueuedWork(sessionId, next.taskId);
-  logSessionMessageLatency(latencyTrace, "task_claimed");
-  try {
-    let turnId = null;
-    if (claimed.kind === "collaboration") {
-      const delivered = claimed.source?.type === "session_channel"
-        ? await dispatchSessionChannelDelivery(claimed.deliveryId, collaborationRoute)
-        : await collaborationDispatcher.dispatch(claimed.deliveryId, { resolvedRoute: collaborationRoute });
-      if (delivered?.status !== "delivered") {
-        const status = delivered?.status === "failed" ? "failed" : "queued";
-        store.updateAgentTask(claimed.taskId, {
-          status,
-          startedAt: null,
-          lastError: delivered?.lastError ?? null
-        });
-        if (status === "queued") registerRuntimeQueuedWork(claimed.sessionId, claimed.taskId);
-        return;
-      }
-      turnId = delivered.targetTurnId;
-    } else {
-      workspaceContinuationCoordinator.assertWorkTarget(claimed);
-      const response = await sendUnifiedSessionMessage(
-        claimed.sessionId,
-        claimed.source?.messageContent ?? claimed.text,
-        claimed.source,
-        {
-          fromAgentWorkQueue: true,
-          agentTask: claimed,
-          latencyTrace
-        }
-      );
-      turnId = response.result?.turn?.id ?? response.result?.turnId ?? null;
-    }
-    if (store.getAgentTask(claimed.taskId)?.status === "running") {
-      store.updateAgentTask(claimed.taskId, { status: "running", targetTurnId: turnId, lastError: null });
-      const startedWork = store.getAgentTask(claimed.taskId);
-      emitEvent("AgentWorkStarted", { sessionId: claimed.sessionId, task: startedWork }, {
-        sessionId: claimed.sessionId,
-        source: claimed.source
-      });
-      workspaceContinuationCoordinator.recordWorkStarted(startedWork);
-    }
-    preDeliveryRetryCounts.delete(claimed.taskId);
-  } catch (error) {
-    const { retryCount, shouldRetry } = agentWorkPreDeliveryRetryDecision({
-      errorCode: error.code,
-      targetTurnId: claimed.targetTurnId,
-      previousRetryCount: preDeliveryRetryCounts.get(claimed.taskId) ?? 0,
-      maxRetries: MAX_PRE_DELIVERY_RETRIES
-    });
-    if (shouldRetry) preDeliveryRetryCounts.set(claimed.taskId, retryCount);
-    const failedWork = store.updateAgentTask(claimed.taskId, {
-      status: shouldRetry ? "queued" : "failed",
-      startedAt: shouldRetry ? null : claimed.startedAt,
-      lastError: error.message
-    });
-    if (shouldRetry) {
-      registerRuntimeQueuedWork(claimed.sessionId, claimed.taskId);
-    } else {
-      preDeliveryRetryCounts.delete(claimed.taskId);
-      emitEvent("AgentWorkFailed", { sessionId: claimed.sessionId, task: failedWork }, {
-        sessionId: claimed.sessionId,
-        source: claimed.source
-      });
-      workspaceContinuationCoordinator.recordWorkSettled(failedWork);
-    }
-    if (!shouldRetry) throw error;
-  }
-}
-
-async function tickAgentWorkQueue() {
-  await syncSessionChannelDeliveriesIntoAgentWorkQueue();
-  await syncCollaborationDeliveriesIntoAgentWorkQueue();
-  await Promise.all(
-    [...runtimeQueuedTasksBySession.keys()].map((sessionId) => drainAgentWork(sessionId))
-  );
-}
-
-async function dispatchSessionChannelDelivery(deliveryId, resolvedRoute = null) {
-  const envelope = sessionChannelService.getDeliveryEnvelope(deliveryId);
-  if (!envelope) return null;
-  const route = resolvedRoute ?? sessionChannelService.resolveDeliveryRoute(deliveryId);
-  const state = await inspectCollaborationSession(route.providerSessionId);
-  if (state === "running") {
-    return sessionChannelService.updateDelivery(deliveryId, {
-      status: "queued", nextAttemptAt: null, lastError: null
-    });
-  }
-  if (state === "missing") {
-    return sessionChannelService.updateDelivery(deliveryId, {
-      status: "failed", incrementAttempt: true, nextAttemptAt: null,
-      lastError: `Target Session ${route.sessionId} is unavailable.`
-    });
-  }
-  if (!sessionChannelService.claimDelivery(deliveryId)) return sessionChannelService.getDelivery(deliveryId);
-  try {
-    if (state === "stopped") await resumeCollaborationSession(route.providerSessionId);
-    const result = await startCollaborationTurn(
-      route.providerSessionId,
-      formatTrustedChannelMessage(envelope),
-      { deliveryId, messageId: envelope.message.messageId, channelId: envelope.channel.channelId }
-    );
-    return sessionChannelService.updateDelivery(deliveryId, {
-      status: "delivered", deliveredAt: now(),
-      targetTurnId: result?.turnId ?? null, nextAttemptAt: null, lastError: null
-    });
-  } catch (error) {
-    if (error.code === "SESSION_BUSY") {
-      return sessionChannelService.updateDelivery(deliveryId, {
-        status: "queued", nextAttemptAt: null, lastError: null
-      });
-    }
-    return sessionChannelService.updateDelivery(deliveryId, {
-      status: "failed", incrementAttempt: true, nextAttemptAt: null, lastError: error.message
-    });
-  }
-}
-
-async function inspectCollaborationSession(sessionId) {
-  const session = store.getSession(sessionId);
-  if (!session) return "missing";
-  if (store.listUnsettledSessionTurns(sessionId).length > 0) return "running";
-  return ["failed", "cancelled"].includes(session.status) ? "stopped" : "idle";
-}
-
-async function resumeCollaborationSession(sessionId) {
-  await sessionApplicationService.resumeSession(sessionId, { source: "collaboration" });
-}
-
-async function startCollaborationTurn(sessionId, text, metadata = {}) {
-  const response = await sendUnifiedSessionMessage(sessionId, text, {
-    type: metadata.channelId ? "session_channel" : "collaboration",
-    messageId: metadata.messageId,
-    taskId: metadata.taskId,
-    channelId: metadata.channelId,
-    deliveryId: metadata.deliveryId
-  }, { fromAgentWorkQueue: true });
-  if (response.queued) {
-    if (response.message?.id) store.removeItem(sessionId, response.message.id);
-    const error = new Error("Target Session became busy before collaboration delivery started.");
-    error.code = "SESSION_BUSY";
-    throw error;
-  }
-  return { turnId: response.result?.turn?.id ?? response.result?.turnId ?? null };
-}
 
 function configuredProviderResponseDelay(name, fallback) {
   const value = Number(process.env[name]);
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-function providerResponseWatchdogEnvelope(entry, { type, error, items = undefined, willRetry = undefined }) {
-  const timestamp = now();
-  return {
-    schemaVersion: 1,
-    providerId: entry.providerId,
-    providerSessionId: entry.providerSessionId,
-    bindingId: entry.bindingId,
-    logicalSessionId: entry.logicalSessionId,
-    routingVersion: entry.routingVersion,
-    providerEventId: `corptie:provider-response-watchdog:${type}:${entry.turnId}`,
-    providerSequence: null,
-    turnId: entry.turnId,
-    type,
-    occurredAt: timestamp,
-    receivedAt: timestamp,
-    payload: {
-      nativeType: `corptie.provider_response_watchdog.${type}`,
-      error,
-      failureScope: "turn",
-      ...(willRetry == null ? {} : { willRetry }),
-      ...(items ? { items } : {})
-    },
-    rawPayload: { source: "provider_response_watchdog" }
-  };
-}
 
-function handleProviderResponseDelayed(entry) {
-  const turn = store.getSessionTurn(entry.sessionId, entry.bindingId, entry.turnId);
-  if (!turn || !["running", "blocked"].includes(turn.execution_status)) return;
-  providerEventIngestion.ingest(providerResponseWatchdogEnvelope(entry, {
-    type: "provider.error",
-    error: {
-      code: "PROVIDER_RESPONSE_DELAYED",
-      message: "模型服务暂未返回任何执行信息，仍在等待；如果持续无响应，本次执行会自动结束。",
-      retryable: true
-    },
-    willRetry: true
-  }));
-}
 
-async function handleProviderResponseTimeout(entry) {
-  const turn = store.getSessionTurn(entry.sessionId, entry.bindingId, entry.turnId);
-  if (!turn || !["running", "blocked"].includes(turn.execution_status)) return;
-  const timestamp = now();
-  const message = "模型服务长时间未返回任何执行信息。本次执行已自动结束；您可以重试或切换模型。";
-  const ingestion = providerEventIngestion.ingest(providerResponseWatchdogEnvelope(entry, {
-    type: "turn.failed",
-    error: { code: "PROVIDER_RESPONSE_TIMEOUT", message, retryable: true },
-    items: [{
-      id: `provider-response-timeout:${entry.bindingId}:${entry.turnId}`,
-      turnId: entry.turnId,
-      turnStatus: "failed",
-      type: "system",
-      title: "模型响应超时",
-      text: message,
-      status: "failed",
-      createdAt: timestamp
-    }]
-  }));
-  if (ingestion.status !== "applied") return;
-
-  const logicalRoute = entry.logicalSessionId
-    ? store.getLogicalSession(entry.logicalSessionId)
-    : null;
-  handleCommittedProviderTerminalLifecycle({
-    event: ingestion.event,
-    projection: ingestion.projection,
-    logicalRoute
-  });
-
-  try {
-    await sessionApplicationService.interrupt(entry.sessionId, {
-      summary: {
-        ...store.getSession(entry.sessionId),
-        external: {
-          ...(store.getSession(entry.sessionId)?.external ?? {}),
-          activeTurnId: entry.turnId
-        }
-      },
-      source: { type: "system", reason: "provider_response_timeout" }
-    });
-  } catch (error) {
-    console.warn(`[provider-response-watchdog] Provider interrupt failed session=${entry.sessionId} turn=${entry.turnId} code=${error?.code ?? "UNKNOWN"}`);
-  }
-}
-
-async function interruptUnifiedSession(sessionId, source = { type: "desktop" }) {
-  const reference = requireSessionReference(sessionId);
-  const summary = reference.metadata.session;
-  const activeTurnId = summary?.external?.activeTurnId
-    ?? summary?.rawStatus?.activeTurnId
-    ?? store.listUnsettledSessionTurns(reference.sessionId).at(-1)?.turn_id
-    ?? null;
-  let session;
-  try {
-    session = await sessionApplicationService.interrupt(sessionId, { summary, source });
-  } catch (error) {
-    if (error?.code !== "PROVIDER_SESSION_UNAVAILABLE" || !activeTurnId) throw error;
-    session = settleUnavailableProviderSessionInterrupt(reference, activeTurnId, source);
-  }
-  emitEvent("SessionRunInterrupted", {
-    sessionId: reference.sessionId,
-    logicalSessionId: reference.logicalSessionId,
-    session,
-    source
-  }, { sessionId: reference.sessionId, source });
-  return session;
-}
-
-function settleUnavailableProviderSessionInterrupt(reference, activeTurnId, source) {
-  const timestamp = now();
-  const ingestion = providerEventIngestion.ingest({
-    schemaVersion: 1,
-    providerId: reference.providerId,
-    providerSessionId: reference.providerSessionId,
-    bindingId: reference.bindingId,
-    logicalSessionId: reference.logicalSessionId,
-    routingVersion: reference.routingVersion,
-    providerEventId: `corptie:interrupt-unavailable:${activeTurnId}`,
-    providerSequence: null,
-    turnId: activeTurnId,
-    type: "turn.cancelled",
-    occurredAt: timestamp,
-    receivedAt: timestamp,
-    payload: {
-      nativeType: "corptie.interrupt.provider_session_unavailable",
-      status: "cancelled",
-      error: {
-        code: "PROVIDER_SESSION_UNAVAILABLE",
-        message: "The Provider Session no longer exists; Corptie settled its persisted run as interrupted."
-      },
-      source
-    },
-    rawPayload: { source }
-  });
-  if (ingestion.status === "applied") {
-    const logicalRoute = reference.logicalSessionId
-      ? store.getLogicalSession(reference.logicalSessionId)
-      : null;
-    handleCommittedProviderTerminalLifecycle({
-      event: ingestion.event,
-      projection: ingestion.projection,
-      logicalRoute
-    });
-    console.warn(`[session-interrupt] settled unavailable Provider Session locally session=${reference.sessionId} turn=${activeTurnId}`);
-    return ingestion.projection?.session ?? store.getSession(reference.sessionId);
-  }
-  if (ingestion.status === "duplicate") return store.getSession(reference.sessionId);
-  const error = new Error("The unavailable Provider Session could not be settled locally.");
-  error.code = ingestion.code ?? "SESSION_INTERRUPT_RECONCILIATION_FAILED";
-  throw error;
-}
-
-async function respondUnifiedSessionApproval(sessionId, input = {}, source = { type: "desktop" }) {
-  const reference = requireSessionReference(sessionId);
-  const summary = reference.metadata.session;
-  if (typeof input.itemId === "string" && input.itemId) {
-    const item = store.getSessionItem(reference.sessionId, input.itemId);
-    if (!approvalRequestIsCurrent(item, reference.bindingId, input, source)) {
-      const error = new Error("Approval request is no longer current.");
-      error.code = "APPROVAL_NOT_PENDING";
-      throw error;
-    }
-  }
-
-  const approved = input.approved === true;
-  const session = await sessionApplicationService.respondToApproval(sessionId, input, { summary, source });
-
-  emitEvent("SessionApprovalResponded", {
-    sessionId: reference.sessionId,
-    logicalSessionId: reference.logicalSessionId,
-    approved,
-    session,
-    source
-  }, { sessionId: reference.sessionId, source });
-  return session;
-}
-
-const userInputDispatches = new Set();
-async function respondUnifiedSessionUserInput(sessionId, input = {}, source = { type: "desktop" }) {
-  const reference = requireSessionReference(sessionId);
-  const item = store.getSessionItem(reference.sessionId, input.itemId);
-  const expectedStatus = source?.type === "remote-client" ? "dispatching" : "pending";
-  if (!item || item.type !== "userInput" || item.status !== expectedStatus
-    || (item.bindingId && item.bindingId !== reference.bindingId)) {
-    const error = new Error("User-input request is no longer current.");
-    error.code = "USER_INPUT_NOT_PENDING";
-    throw error;
-  }
-  const cancelling = input.action === "cancel" && item.userInput?.canCancel === true;
-  if ((input.action != null && !["submit", "cancel"].includes(input.action))
-    || (input.action === "cancel" && !cancelling)
-    || (!cancelling && !validateInteractionAnswers(item.userInput, input.answers))) {
-    const error = new Error("Every question requires a valid answer.");
-    error.code = "INVALID_USER_INPUT_ANSWER";
-    throw error;
-  }
-  const key = `${reference.sessionId}:${item.id}`;
-  if (userInputDispatches.has(key)) throw Object.assign(new Error("回答正在提交。"), { code: "USER_INPUT_IN_PROGRESS" });
-  userInputDispatches.add(key);
-  store.upsertTimelineItemProjection(reference.sessionId, { ...item, status: "dispatching" });
-  try {
-    let result;
-    if (item.userInput?.responseMode === "message") {
-      if (!cancelling) {
-        const text = [`回答消息 ${item.id} 中的问题：`, ...item.userInput.questions.map(q => `${q.question}\n${input.answers[q.id].join("；")}`)].join("\n\n");
-        await sendUnifiedSessionMessage(sessionId, text, source);
-      }
-      result = store.getSession(reference.sessionId);
-    } else {
-      result = await sessionApplicationService.respondToUserInput(sessionId, input, { summary: reference.metadata.session, source });
-    }
-    const current = store.getSessionItem(reference.sessionId, item.id);
-    if (current && ["pending", "dispatching", "submitted"].includes(current.status)) {
-      store.upsertTimelineItemProjection(reference.sessionId, { ...current, status: cancelling ? "cancelled" : "submitted" });
-    }
-    emitEvent("SessionUserInputResponded", { sessionId: reference.sessionId, itemId: item.id,
-      status: cancelling ? "cancelled" : "submitted" }, { sessionId: reference.sessionId, source });
-    return result;
-  } catch (error) {
-    const current = store.getSessionItem(reference.sessionId, item.id);
-    if (current?.status === "dispatching") store.upsertTimelineItemProjection(reference.sessionId, { ...current,
-      status: error?.code === "INVALID_USER_INPUT_ANSWER" ? "pending" : error?.code === "USER_INPUT_NOT_PENDING" ? "expired" : "unknown" });
-    throw error;
-  } finally { userInputDispatches.delete(key); }
-}
-
-async function resolveCollaborationConfirmation(confirmationId, approved, source = { type: "desktop" }) {
-  const before = collaborationCore.getTaskConfirmation(confirmationId);
-  const preparedTarget = approved
-    ? await sessionCollaborationService.prepareTaskConfirmationTarget(before)
-    : null;
-  const confirmation = approved
-    ? collaborationCore.confirmTaskConfirmation(confirmationId, preparedTarget)
-    : collaborationCore.rejectTaskConfirmation(confirmationId);
-  const sessionId = confirmation.sourceSessionId ?? before?.sourceSessionId ?? null;
-  emitEvent("CollaborationConfirmationResolved", { sessionId, confirmation }, { sessionId, source });
-  if (approved) {
-    await syncCollaborationDeliveriesIntoAgentWorkQueue().catch((error) => {
-      console.error(`[collaboration] confirmation delivery sync failed: ${error.message}`);
-    });
-  }
-  return confirmation;
-}
-
-async function resolveSessionChannelRequest(requestId, approved, source = { type: "desktop" }) {
-  const before = sessionChannelService.getRequest(requestId);
-  if (!before) {
-    const error = new Error(`Channel request ${requestId} was not found.`);
-    error.code = "CHANNEL_REQUEST_NOT_FOUND";
-    throw error;
-  }
-  if (!approved) {
-    const rejected = sessionChannelService.rejectRequest(requestId, source);
-    emitEvent("SessionChannelRequestResolved", {
-      sessionId: rejected.requestingSessionId, request: rejected
-    }, { sessionId: rejected.requestingSessionId, source });
-    return rejected;
-  }
-  if (before.status === "confirmed") {
-    await syncSessionChannelDeliveriesIntoAgentWorkQueue().catch((error) => {
-      console.error(`[session-channel] confirmation replay delivery sync failed request=${requestId}: ${error.message}`);
-    });
-    return before;
-  }
-  let confirmed;
-  try {
-    const target = await sessionCollaborationService.prepareChannelRequestTarget(before);
-    confirmed = sessionChannelService.confirmRequest(requestId, target, source);
-  } catch (error) {
-    sessionChannelService.failRequest(requestId, error);
-    throw error;
-  }
-  emitEvent("SessionChannelRequestResolved", {
-    sessionId: confirmed.requestingSessionId, request: confirmed
-  }, { sessionId: confirmed.requestingSessionId, source });
-  await syncSessionChannelDeliveriesIntoAgentWorkQueue().catch((error) => {
-    console.error(`[session-channel] confirmation delivery sync failed request=${requestId}: ${error.message}`);
-  });
-  return confirmed;
-}
 
 function unifiedErrorStatus(error) {
   if (["SESSION_NOT_FOUND", "PROJECT_NOT_FOUND", "WORKSPACE_NOT_FOUND", "AGENT_PROVIDER_NOT_FOUND"].includes(error.code)) return 404;
@@ -8340,408 +1751,30 @@ function unifiedErrorStatus(error) {
   return 502;
 }
 
-function resolveProjectContext(projectId) {
-  const repository = store.getGitRepository(projectId);
-  if (!repository) return null;
-  const worktrees = store.listGitWorktrees(projectId);
-  const main = worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
-  if (!main?.path) return null;
-  return {
-    id: repository.id,
-    mainPath: main.canonicalPath || main.path,
-    mainWorkspaceId: main.worktreeId
-  };
-}
 
-async function performProjectDevelopmentServiceAction(project, action, input = {}) {
-  if (!["initialize", "update", "profile", "start", "restart", "stop"].includes(action)) {
-    const error = new Error(`Unsupported development service action: ${action}`);
-    error.code = "INVALID_PROJECT_ACTION";
-    throw error;
-  }
-  if (action === "initialize" || action === "update") {
-    const error = new Error("Project Toolset initialization requires an authenticated Work Session.");
-    error.code = "TOOLSET_PERMISSION_DENIED";
-    error.statusCode = 403;
-    throw error;
-  }
-  if (action === "profile") {
-    const profileId = String(input.profileId ?? "").trim();
-    if (!profileId) throw new Error("A Corptie service profile is required.");
-    return projectToolsets.selectProfile(project.mainPath, profileId);
-  }
-  if (action === "start" || action === "restart") {
-    return rebuildAndRestartProjectService(project.mainPath);
-  }
-  return projectToolsets.run(project.mainPath, "stop");
-}
-
-async function performProjectWorkspaceAction(project, workspaceId, action, input = {}) {
-  if (!["commit-prepare", "commit-message", "commit", "merge", "synchronize", "delete", "restart", "push"].includes(action)) {
-    const error = new Error(`Unsupported workspace action: ${action}`);
-    error.code = "INVALID_PROJECT_ACTION";
-    throw error;
-  }
-  const status = await gitWorkspaces.projectStatusForPath(project.mainPath, project.id, {
-    inspectionLevel: "management",
-    forceFresh: true,
-    reason: `workspace_action_${action}_preflight`
-  });
-  const workspace = status.worktrees.find((candidate) => candidate.worktreeId === workspaceId);
-  if (!workspace || workspace.availability !== "available") {
-    const error = new Error("The selected workspace is unavailable or does not belong to this Project.");
-    error.code = "WORKSPACE_NOT_FOUND";
-    throw error;
-  }
-  if (action === "commit-prepare") {
-    if (workspace.dirty !== true) throw new Error("The selected workspace has no uncommitted changes.");
-    return gitCommitProtection.inspect(workspace.path);
-  }
-  if (action === "commit-message") {
-    if (workspace.dirty !== true) throw new Error("The selected workspace has no uncommitted changes.");
-    const commitMessage = await generateUnownedWorktreeCommitMessage(null, workspace.path, workspace);
-    return { commitMessage };
-  }
-  if (action === "restart") {
-    const toolset = await projectToolsets.inspect(workspace.path);
-    if (!toolset.configured) {
-      throw new Error("Configure the Corptie Scripts Tools Set before restarting from this workspace.");
-    }
-    return rebuildAndRestartProjectService(workspace.path, workspace.path);
-  }
-  if (action === "synchronize") {
-    return gitWorkspaces.synchronizeWorktreeWithMainForProject({
-      repositoryId: project.id,
-      workingDirectory: project.mainPath,
-      sourceWorktreeId: workspaceId
-    });
-  }
-  if (action === "delete") {
-    return gitWorkspaces.removeWorktreeForProject({
-      repositoryId: project.id,
-      workingDirectory: project.mainPath,
-      sourceWorktreeId: workspaceId,
-      deleteBranch: input.deleteBranch !== false,
-      forceDeleteUnmerged: input.forceDeleteUnmerged === true,
-      acknowledgeIrrecoverable: input.acknowledgeIrrecoverable === true,
-      confirmedBranchName: input.confirmedBranchName
-    });
-  }
-  if (action === "push") {
-    return gitHubPushes.pushBranch({ workingDirectory: workspace.path });
-  }
-  await resolveProjectCommitProtection(workspace, input);
-  if (action === "commit") {
-    return gitWorkspaces.commitWorktreeChangesForProject({
-      repositoryId: project.id,
-      workingDirectory: project.mainPath,
-      sourceWorktreeId: workspaceId,
-      commitMessage: input.commitMessage
-    });
-  }
-  return gitWorkspaces.mergeWorktreeIntoMainForProject({
-    repositoryId: project.id,
-    workingDirectory: project.mainPath,
-    sourceWorktreeId: workspaceId,
-    commitMessage: input.commitMessage,
-    synchronizeSource: input.synchronizeSource === true
-  });
-}
-
-async function sessionDeletionPlan(sessionId) {
-  if (!String(sessionId).startsWith("codex:")) return { requiresWorktreeMerge: false };
-  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
-  if (!logical?.activeBinding) return { requiresWorktreeMerge: false };
-  try {
-    await assertWorkspaceRouteUsable({
-      store,
-      logicalSession: logical,
-      providerThreadId: logical.activeThreadId
-    });
-  } catch (error) {
-    if (["WORKSPACE_UNAVAILABLE", "WORKSPACE_IDENTITY_CHANGED"].includes(error?.code)) {
-      const worktree = logical.activeWorkspaceId
-        ? store.getGitWorktree(logical.activeWorkspaceId)
-        : null;
-      return {
-        requiresWorktreeMerge: false,
-        workspaceUnavailable: true,
-        sourcePath: logical.activeBinding.boundCwd,
-        sourceBranch: worktree?.branchName ?? null,
-        unavailableReason: error.message
-      };
-    }
-    throw error;
-  }
-  return gitWorkspaces.sessionDeletionPlan(logical.logicalSessionId);
-}
-
-async function sessionWorkspaceRecoveryStatus(sessionId) {
-  const session = store.getSession(sessionId);
-  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
-  if (!session || !logical?.activeBinding) {
-    const error = new Error("Session workspace route not found.");
-    error.statusCode = 404;
-    throw error;
-  }
-  let workspaceError = null;
-  try {
-    await assertWorkspaceRouteUsable({
-      store,
-      logicalSession: logical,
-      providerThreadId: logical.activeThreadId
-    });
-    return { orphaned: false, worktrees: [] };
-  } catch (error) {
-    if (!["WORKSPACE_UNAVAILABLE", "WORKSPACE_IDENTITY_CHANGED"].includes(error?.code)) throw error;
-    workspaceError = error;
-  }
-  if (!logical.repositoryId) {
-    const agent = store.getAgent(session.agentId);
-    const recoveryTarget = workspaceError?.code === "WORKSPACE_UNAVAILABLE"
-      ? recoverableAgentWorkDir(agent, logical.activeBinding.boundCwd)
-      : null;
-    return {
-      orphaned: true,
-      recoveryKind: recoveryTarget ? "agentWorkspace" : "unavailable",
-      originalPath: logical.activeBinding.boundCwd,
-      originalBranchName: null,
-      canRebuild: Boolean(recoveryTarget),
-      worktrees: []
-    };
-  }
-  const original = logical.activeWorkspaceId ? store.getGitWorktree(logical.activeWorkspaceId) : null;
-  const knownMain = store.listGitWorktrees(logical.repositoryId).find((worktree) => {
-    return worktree.isMain && worktree.availability === "available";
-  });
-  let available = store.listGitWorktrees(logical.repositoryId).filter((worktree) => {
-    return worktree.availability === "available" && worktree.worktreeId !== logical.activeWorkspaceId;
-  });
-  if (knownMain?.path) {
-    try {
-      const snapshot = await createGitWorkspaceSnapshot(knownMain.path);
-      store.upsertGitWorkspaceSnapshot(snapshot);
-      available = snapshot.worktrees.filter((worktree) => {
-        return worktree.availability === "available" && worktree.worktreeId !== logical.activeWorkspaceId;
-      });
-    } catch {
-      // Preserve the last known inventory; route validation still prevents unsafe use.
-    }
-  }
-  return {
-    orphaned: true,
-    recoveryKind: "gitWorktree",
-    originalPath: logical.activeBinding.boundCwd,
-    originalBranchName: original?.branchName ?? null,
-    canRebuild: Boolean(original?.branchName && !original?.isMain),
-    worktrees: available.map((worktree) => ({
-      worktreeId: worktree.worktreeId,
-      path: worktree.canonicalPath || worktree.path,
-      branchName: worktree.branchName,
-      isMain: worktree.isMain,
-      availability: worktree.availability
-    }))
-  };
-}
 
 async function switchCodexProviderWorkspace(reference, input = {}) {
-  const sessionId = reference.sessionId;
-  const session = reference.metadata?.session
-    ?? store.getSession(sessionId);
-  if (!session) throw new Error("Session not found.");
-  const logical = (reference.logicalSessionId
-    ? store.getLogicalSession(reference.logicalSessionId)
-    : null) ?? await ensureLogicalRouteForCodexSession(session);
-  const checkpoint = sessionTransitionCheckpoint(sessionId, logical.activeBinding?.bindingId);
-  const result = await workspaceTransitionManager.switchWorkspace({
-    transitionId: input.transitionId,
-    logicalSessionId: logical.logicalSessionId,
-    targetWorktreeId: input.targetWorkspaceId,
-    activeTurnId: checkpoint.activeTurnId,
-    lastCompletedTurnId: checkpoint.lastCompletedTurnId,
-    continuationPrompt: input.continuationPrompt,
-    ...await collaborationThreadOptionsForSession(sessionId)
-  });
-  emitEvent(
-    result.status === "waitingForTurn"
-      ? "SessionWorkspaceSwitchWaiting"
-      : "SessionWorkspaceSwitchCompleted",
-    { sessionId, logicalSessionId: logical.logicalSessionId, transition: result.transition },
-    { sessionId }
-  );
-  return result;
+  return providerWorkspaceSwitches.switchCodexProviderWorkspace(reference, input);
 }
 
 async function switchClaudeProviderWorkspace(reference, input = {}) {
-  const logical = (reference.logicalSessionId
-    ? store.getLogicalSession(reference.logicalSessionId)
-    : null) ?? store.getLogicalSessionByLegacySessionId(reference.sessionId);
-  if (!logical?.activeBinding) throw new Error("Claude Session has no active workspace route.");
-  const checkpoint = sessionTransitionCheckpoint(reference.sessionId, logical.activeBinding.bindingId);
-  const result = await claudeWorkspaceTransitionManager.switchWorkspace({
-    transitionId: input.transitionId,
-    logicalSessionId: logical.logicalSessionId,
-    targetWorktreeId: input.targetWorkspaceId,
-    activeTurnId: checkpoint.activeTurnId,
-    lastCompletedTurnId: checkpoint.lastCompletedTurnId,
-    continuationPrompt: input.continuationPrompt
-  });
-  emitEvent(
-    result.status === "waitingForTurn"
-      ? "SessionWorkspaceSwitchWaiting"
-      : "SessionWorkspaceSwitchCompleted",
-    { sessionId: reference.sessionId, logicalSessionId: logical.logicalSessionId, transition: result.transition },
-    { sessionId: reference.sessionId }
-  );
-  return result;
+  return providerWorkspaceSwitches.switchClaudeProviderWorkspace(reference, input);
 }
 
 async function switchOpenClackyProviderWorkspace(reference, input = {}) {
-  const logical = (reference.logicalSessionId
-    ? store.getLogicalSession(reference.logicalSessionId)
-    : null) ?? store.getLogicalSessionByLegacySessionId(reference.sessionId);
-  if (!logical?.activeBinding) throw new Error("OpenClacky Session has no active workspace route.");
-  const checkpoint = sessionTransitionCheckpoint(reference.sessionId, logical.activeBinding.bindingId);
-  const result = await openClackyWorkspaceTransitionManager.switchWorkspace({
-    transitionId: input.transitionId,
-    logicalSessionId: logical.logicalSessionId,
-    targetWorktreeId: input.targetWorkspaceId,
-    activeTurnId: checkpoint.activeTurnId,
-    lastCompletedTurnId: checkpoint.lastCompletedTurnId,
-    continuationPrompt: input.continuationPrompt
-  });
-  emitEvent(
-    result.status === "waitingForTurn"
-      ? "SessionWorkspaceSwitchWaiting"
-      : "SessionWorkspaceSwitchCompleted",
-    { sessionId: reference.sessionId, logicalSessionId: logical.logicalSessionId, transition: result.transition },
-    { sessionId: reference.sessionId }
-  );
-  return result;
+  return providerWorkspaceSwitches.switchOpenClackyProviderWorkspace(reference, input);
 }
 
 async function commitManagedClaudeWorkspaceRoute(event) {
-  const logical = store.getLogicalSession(event.logicalSessionId);
-  const session = logical?.legacySessionId
-    ? store.getSession(logical.legacySessionId)
-    : null;
-  if (!session) return;
-  emitEvent("SessionWorkspaceSwitched", {
-    session: sessionWithLogicalWorkspace(session, logical),
-    ...event
-  }, { sessionId: logical.legacySessionId });
+  return claudeNotificationReceiver.commitManagedClaudeWorkspaceRoute(event);
 }
 
 function handleClaudeProviderEventSafely(event) {
-  const logical = store.getLogicalSessionByProviderSessionId("claude-sdk", event.providerSessionId);
-  const sessionId = logical?.legacySessionId ?? null;
-  try {
-    const binding = store.getAgentSessionBindingByProviderSession("claude-sdk", event.providerSessionId);
-    const envelopeBinding = binding ?? {
-      bindingId: `unresolved:claude-sdk:${event.providerSessionId}`,
-      providerId: "claude-sdk",
-      providerSessionId: event.providerSessionId,
-      logicalSessionId: logical?.logicalSessionId ?? null,
-      routingVersion: Number(logical?.routingVersion ?? 1)
-    };
-    const envelope = mapClaudeProviderEvent({ event, binding: envelopeBinding, receivedAt: now() });
-    if (!envelope) return;
-    const ingestion = providerEventIngestion.ingest(envelope);
-    if (ingestion.status === "quarantined" && sessionId) {
-      sessionStateDiagnostics.record(sessionId, "providerEventQuarantined", {
-        eventName: event.type,
-        code: ingestion.code,
-        bindingId: envelope.bindingId
-      });
-    }
-  } catch (error) {
-    console.error(`[provider-notification] isolated failure provider=claude-sdk session=${sessionId ?? "unknown"} event=${event?.type ?? "unknown"} code=${error?.code ?? "unknown"} error=${error?.message ?? error}`);
-    if (sessionId) {
-      sessionStateDiagnostics.record(sessionId, "providerError", {
-        eventName: event?.type ?? "unknown",
-        code: error?.code ?? null,
-        error: error?.message ?? String(error)
-      });
-      const binding = store.getAgentSessionBindingByProviderSession("claude-sdk", event.providerSessionId);
-      if (binding) store.markProviderBindingCursorDegraded(binding, now());
-    }
-  }
+  return claudeNotificationReceiver.handleClaudeProviderEventSafely(event);
 }
 
 async function handleClaudeTurnSettledSafely(event) {
-  const logical = store.getLogicalSessionByProviderSessionId("claude-sdk", event.providerSessionId);
-  const sessionId = logical?.legacySessionId ?? null;
-  if (sessionId) {
-    sessionStateDiagnostics.record(sessionId, "providerReceived", {
-      providerId: "claude-sdk",
-      turnId: event.turnId ?? null,
-      eventName: `turn/${event.status ?? "settled"}`
-    });
-  }
-  try {
-    await handleClaudeTurnSettled(event);
-    if (sessionId) {
-      sessionStateDiagnostics.record(sessionId, "persisted", {
-        status: store.getSession(sessionId)?.status ?? null,
-        eventName: `turn/${event.status ?? "settled"}`
-      });
-    }
-  } catch (error) {
-    console.error(`[provider-notification] isolated failure provider=claude-sdk session=${sessionId ?? "unknown"} event=turn/${event.status ?? "settled"} code=${error?.code ?? "unknown"} error=${error?.message ?? error}`);
-    if (sessionId) {
-      sessionStateDiagnostics.record(sessionId, "providerError", {
-        eventName: `turn/${event.status ?? "settled"}`,
-        code: error?.code ?? null,
-        error: error?.message ?? String(error)
-      });
-      const binding = store.getAgentSessionBindingByProviderSession("claude-sdk", event.providerSessionId);
-      if (binding) store.markProviderBindingCursorDegraded(binding, now());
-    }
-  }
-}
-
-async function handleClaudeTurnSettled(event) {
-  const logical = store.getLogicalSessionByProviderSessionId("claude-sdk", event.providerSessionId);
-  const sessionId = logical?.legacySessionId ?? null;
-  const binding = store.getAgentSessionBindingByProviderSession("claude-sdk", event.providerSessionId);
-  const envelopeBinding = binding ?? {
-    bindingId: `unresolved:claude-sdk:${event.providerSessionId}`,
-    providerId: "claude-sdk",
-    providerSessionId: event.providerSessionId,
-    logicalSessionId: logical?.logicalSessionId ?? null,
-    routingVersion: Number(logical?.routingVersion ?? 1)
-  };
-  const envelope = mapClaudeTurnSettled({ event, binding: envelopeBinding, receivedAt: now() });
-  const ingestion = providerEventIngestion.ingest(envelope);
-  if (ingestion.status !== "applied") return;
-  const runningWork = store.getRunningAgentTaskForSession(sessionId);
-  if (runningWork) {
-    const updatedWork = store.updateAgentTask(runningWork.taskId, {
-      status: event.status === "completed" ? "completed" : (event.status === "cancelled" ? "cancelled" : "failed"),
-      targetTurnId: event.turnId,
-      lastError: agentWorkFailureMessage(event.error)
-    });
-    emitEvent("AgentWorkCompleted", { sessionId, task: updatedWork }, {
-      sessionId,
-      source: runningWork.source
-    });
-    workspaceContinuationCoordinator.recordWorkSettled(updatedWork);
-  }
-  settleEntityTaskFromSession(store.getSession(sessionId));
-  const agent = collaborationCore.getAgentForSession(sessionId);
-  if (event.status === "completed") {
-    refreshWorkspaceInventoryAfterTurn(logical);
-    const continuation = continuePendingWorkspaceTransition(logical, event.turnId);
-    const providerSwitch = continuePendingProviderSwitch(logical);
-    resumeWorkAfterTransition(continuation, () => {
-      scheduleAgentWorkDrain(sessionId);
-    });
-    if (providerSwitch) {
-      providerSwitch.then(() => scheduleAgentWorkDrain(sessionId));
-    }
-  } else if (agent) {
-    scheduleAgentWorkDrain(sessionId);
-  }
+  return claudeNotificationReceiver.handleClaudeTurnSettledSafely(event);
 }
 
 // Session restart is Provider-neutral orchestration: it re-binds the workspace
@@ -8758,21 +1791,6 @@ async function switchSessionWorkspace(sessionId, targetWorktreeId, transitionId 
   });
 }
 
-function summarizeProviderInstructionSources(logical) {
-  const sources = logical?.activeBinding?.instructionSources ?? [];
-  if (!sources.length) return null;
-  const text = sources
-    .map((source) => {
-      if (typeof source === "string") return source;
-      if (source?.title) return source.title;
-      if (source?.summary) return source.summary;
-      if (source?.path) return source.path;
-      return null;
-    })
-    .filter(Boolean)
-    .join("\n");
-  return text || null;
-}
 
 async function switchSessionProvider(sessionId, providerId, transitionId = undefined, expectedRoutingVersion = undefined) {
   return sessionProviderSwitchCoordinator.switchProvider(sessionId, {
@@ -8782,61 +1800,6 @@ async function switchSessionProvider(sessionId, providerId, transitionId = undef
   });
 }
 
-async function generateSessionCommitMessage(sessionId, plan) {
-  const reference = await sessionApplicationService.referenceFor(sessionId);
-  const session = store.getSession(reference.sessionId);
-  const logical = (reference.logicalSessionId
-    ? store.getLogicalSession(reference.logicalSessionId)
-    : null) ?? store.getLogicalSessionByLegacySessionId(reference.sessionId);
-  if (!logical?.activeBinding) throw new Error("The Session no longer has an active workspace route.");
-  if (sessionHasActiveRun(session)) {
-    const error = new Error("The Session is busy. Wait for its current turn before merging its worktree.");
-    error.code = "SESSION_BUSY";
-    throw error;
-  }
-  if (workspaceTransitionBlocksWork(logical)) {
-    const error = new Error("The Session is switching workspaces. Wait for the switch to finish before deleting it.");
-    error.code = "SESSION_BUSY";
-    throw error;
-  }
-  const activeRoute = await assertWorkspaceRouteUsable({
-    store,
-    logicalSession: logical,
-    providerThreadId: reference.providerSessionId
-  });
-  const cwd = activeRoute.cwd;
-  const result = await backgroundAgentService.run({
-    purpose: "commit-message",
-    cwd,
-    allowedRoots: [cwd],
-    prompt: sessionCommitMessagePrompt(plan),
-    preferredProviderId: reference.providerId,
-    preferredModel: session.external?.currentModel ?? undefined,
-    preferredReasoning: session.external?.currentReasoningLevel ?? undefined,
-    timeoutMs: 120_000
-  });
-  const message = sanitizeSessionCommitMessage(result.text);
-  if (!message) throw new Error("The background operation returned an empty commit message.");
-  return message;
-}
-
-async function generateUnownedWorktreeCommitMessage(requestingSessionId, cwd, plan) {
-  const reference = requestingSessionId ? sessionBindingRepository.resolve(requestingSessionId) : null;
-  const session = reference?.metadata?.session ?? null;
-  const result = await backgroundAgentService.run({
-    purpose: "commit-message",
-    cwd,
-    allowedRoots: [cwd],
-    prompt: sessionCommitMessagePrompt(plan),
-    preferredProviderId: reference?.providerId,
-    preferredModel: session?.external?.currentModel ?? undefined,
-    preferredReasoning: session?.external?.currentReasoningLevel ?? undefined,
-    timeoutMs: 120_000
-  });
-  const message = sanitizeSessionCommitMessage(result.text);
-  if (!message) throw new Error("The background operation returned an empty commit message.");
-  return message;
-}
 
 async function mergeSessionWorktreeBeforeDeletion(sessionId, plan) {
   const logical = store.getLogicalSessionByLegacySessionId(sessionId);
@@ -8851,3126 +1814,224 @@ async function mergeSessionWorktreeBeforeDeletion(sessionId, plan) {
 }
 
 function projectWorkingDirectoryForSession(sessionId) {
-  const reference = requireSessionReference(sessionId);
-  const session = reference.metadata.session;
-  const logical = reference.logicalSessionId
-    ? store.getLogicalSession(reference.logicalSessionId)
-    : store.getLogicalSessionByLegacySessionId(reference.sessionId);
-  const cwd = logical?.activeBinding?.boundCwd ?? session?.external?.cwd ?? session?.cwd;
-  if (!cwd) {
-    const error = new Error("The Session is not attached to a local project directory.");
-    error.statusCode = 404;
-    throw error;
-  }
-  return cwd;
+  return projectWorktreeStatusReader.projectWorkingDirectoryForSession(sessionId);
 }
 
 async function projectToolsetStatus(sessionId) {
-  const cwd = projectWorkingDirectoryForSession(sessionId);
-  const authenticatedSession = projectToolsetAuthenticatedSession(sessionId);
-  return projectToolsetStatusForPath(cwd, { logicalSessionId: authenticatedSession.logicalSessionId });
+  return projectWorktreeStatusReader.projectToolsetStatus(sessionId);
 }
 
-async function projectToolsetStatusForPath(cwd, options = {}) {
-  const toolset = await projectToolsets.inspect(cwd);
-  if (toolset.configurationError) {
-    return {
-      toolset,
-      service: {
-        state: "configurationFailed",
-        configurationError: toolset.configurationError,
-        freshness: "unknown",
-        running: null,
-        mainHeadOid: toolset.mainHeadOid,
-        desiredProfile: toolset.selectedProfile,
-        verified: false
-      }
-    };
-  }
-  if (toolset.requiresUpdate && toolset.manifestConfigured) {
-    const legacySource = await projectToolsets.sourceIdentity(toolset.mainPath, toolset.runtimePath);
-    const [status, health, version] = await Promise.all([
-      projectToolsets.run(cwd, "status", { timeoutMs: 5_000, allowIncompatible: true, sourceIdentity: legacySource }),
-      projectToolsets.run(cwd, "health", { timeoutMs: 5_000, allowIncompatible: true, sourceIdentity: legacySource }),
-      projectToolsets.run(cwd, "version", { timeoutMs: 5_000, allowIncompatible: true, sourceIdentity: legacySource })
-    ]);
-    const running = status.payload?.running === true;
-    return {
-      toolset,
-      service: {
-        state: running ? "running" : "stopped",
-        configurationError: null,
-        freshness: running ? "toolsetUpdateRequired" : "stopped",
-        running,
-        healthy: health.payload?.healthy === true,
-        mainHeadOid: toolset.mainHeadOid,
-        runningRevision: version.payload?.revision ?? null,
-        dirty: version.payload?.dirty === true,
-        startedAt: version.payload?.startedAt ?? null,
-        worktreePath: version.payload?.worktreePath ?? null,
-        desiredProfile: toolset.selectedProfile,
-        runningProfile: null,
-        artifactId: null,
-        sourceFingerprint: null,
-        verified: false,
-        verificationDetail: "Update the Corptie Scripts Tools Set to verify build artifacts and service profiles.",
-        status,
-        health,
-        version
-      }
-    };
-  }
-  if (!toolset.configured) {
-    const initialization = await projectToolsetInitializer.status(toolset.repositoryId, options.logicalSessionId ?? null);
-    return {
-      toolset,
-      service: {
-        state: initialization.state,
-        configurationError: initialization.error,
-        freshness: "unknown",
-        running: null,
-        mainHeadOid: toolset.mainHeadOid,
-        desiredProfile: toolset.selectedProfile,
-        verified: false
-      }
-    };
-  }
-  const desiredSource = options.logicalSessionId && projectToolsetProduction
-    ? runtimeSourceIdentity((await projectToolsetProduction.runtimeAuthority(options.logicalSessionId)).snapshot)
-    : await projectToolsets.sourceIdentity(toolset.mainPath, toolset.runtimePath);
-  const [status, health, version] = await Promise.all([
-    projectToolsets.run(cwd, "status", { timeoutMs: 5_000, sourceIdentity: desiredSource }),
-    projectToolsets.run(cwd, "health", { timeoutMs: 5_000, sourceIdentity: desiredSource }),
-    projectToolsets.run(cwd, "version", { timeoutMs: 5_000, sourceIdentity: desiredSource })
-  ]);
-  const verify = { ok: false, action: "verify", payload: null, code: "DEPENDENCY_CONTRACT_UNRESOLVED", detail: "Verification requires an explicit authenticated RunIsolation action." };
-  const running = status.payload?.running === true;
-  const runningRevision = version.payload?.revision ?? null;
-  const dirty = version.payload?.dirty === true;
-  const verified = false;
-  let revisionDetails = null;
-  if (runningRevision) {
-    try {
-      revisionDetails = await projectToolsets.revisionDetails(
-        cwd,
-        runningRevision,
-        version.payload?.worktreePath
-      );
-    } catch {
-      revisionDetails = null;
-    }
-  }
-  let freshness = "unknown";
-  if (!running) {
-    freshness = "stopped";
-  } else if (!verified || !runningRevision) {
-    freshness = "unverifiedBuild";
-  } else if (version.payload?.profile !== toolset.selectedProfile
-    || verify.payload?.profile !== toolset.selectedProfile) {
-    freshness = "configurationMismatch";
-  } else if (runningRevision !== desiredSource.revision
-    || version.payload?.sourceFingerprint !== desiredSource.fingerprint) {
-    freshness = "stale";
-  } else if (health.payload?.healthy !== true) {
-    freshness = "unhealthy";
-  } else {
-    freshness = "current";
-  }
-  return {
-    toolset,
-    service: {
-      state: running ? "running" : "stopped",
-      freshness,
-      running,
-      healthy: health.payload?.healthy === true,
-      mainHeadOid: toolset.mainHeadOid,
-      runningRevision,
-      runningBranch: revisionDetails?.branch ?? null,
-      runningCommitTime: revisionDetails?.commitTime ?? null,
-      dirty,
-      startedAt: version.payload?.startedAt ?? null,
-      worktreePath: version.payload?.worktreePath ?? null,
-      desiredProfile: toolset.selectedProfile,
-      runningProfile: version.payload?.profile ?? null,
-      artifactId: version.payload?.artifactId ?? null,
-      sourceFingerprint: version.payload?.sourceFingerprint ?? null,
-      verified,
-      verificationDetail: verify.payload?.detail ?? null,
-      status,
-      health,
-      verify,
-      version
-    }
-  };
-}
 
 async function rebuildAndRestartProjectService(workingDirectory, executionRoot = undefined) {
-  const result = await projectToolsets.activateLatest(workingDirectory, { executionRoot });
-  if (!result.ok) {
-    const stageResult = result[result.stage];
-    const detail = result.error
-      || stageResult?.payload?.error
-      || stageResult?.stderr
-      || `Project service ${result.stage || "activation"} failed.`;
-    const error = new Error(detail);
-    error.code = "PROJECT_SERVICE_ACTIVATION_FAILED";
-    error.activation = result;
-    throw error;
-  }
-  return result;
+  return projectWorktreeStatusReader.rebuildAndRestartProjectService(workingDirectory, executionRoot);
 }
 
 async function projectWorktreeStatus(sessionId) {
-  const reference = requireSessionReference(sessionId);
-  const session = reference.metadata.session;
-  const logical = (reference.logicalSessionId ? store.getLogicalSession(reference.logicalSessionId) : null)
-    ?? store.getLogicalSessionByLegacySessionId(reference.sessionId)
-    ?? await ensureLogicalRouteForProviderSession(session, reference.providerId);
-  const [project, runtime, gitHubPush] = await Promise.all([
-    gitWorkspaces.projectStatus(logical.logicalSessionId),
-    projectToolsetStatus(sessionId),
-    gitHubPushes.status({ workingDirectory: projectWorkingDirectoryForSession(sessionId) })
-  ]);
-  const activeWorkspacePath = resolve(projectWorkingDirectoryForSession(sessionId));
-  project.worktrees = await Promise.all(project.worktrees.map(async (worktree) => {
-    const isActiveWorkspace = worktree.availability === "available"
-      && resolve(worktree.path) === activeWorkspacePath;
-    const workspaceWithPushStatus = isActiveWorkspace
-      ? { ...worktree, gitHubPush }
-      : worktree;
-    if (worktree.availability !== "available"
-      || runtime.service.running !== true
-      || runtime.service.verified !== true) {
-      return { ...workspaceWithPushStatus, serviceContainsChanges: false };
-    }
-    const containsCommittedChanges = await gitWorkspaces.revisionContains(
-      worktree.path,
-      worktree.headOid,
-      runtime.service.runningRevision
-    );
-    const sameWorktree = runtime.service.worktreePath
-      && resolve(runtime.service.worktreePath) === resolve(worktree.path);
-    const containsWorkingChanges = worktree.dirty !== true
-      || (sameWorktree && runtime.service.dirty === true);
-    return {
-      ...workspaceWithPushStatus,
-      serviceContainsChanges: containsCommittedChanges && containsWorkingChanges
-    };
-  }));
-  return { project, ...runtime, gitHubPush };
-}
-
-function completedTaskStatus(status) {
-  return ["done", "complete", "completed"].includes(String(status ?? ""));
+  return projectWorktreeStatusReader.projectWorktreeStatus(sessionId);
 }
 
 async function ensureTaskWorkspace({ task, session = null }) {
   return taskWorkspaceService.ensure({ task, session });
 }
 
-async function inspectTaskWorktree(taskId) {
-  const task = store.getTask(taskId);
-  if (!task) {
-    const error = new Error(`Task not found: ${taskId}`);
-    error.code = "TASK_NOT_FOUND";
-    error.statusCode = 404;
-    throw error;
-  }
-  const sessions = store.listSessionsByTask(taskId);
-  const session = sessions.find((candidate) => candidate.id === task.current_session_id)
-    ?? sessions.at(-1)
-    ?? null;
-  if (!session) {
-    const repositoryId = store.getTaskWorkspaceContext(task)?.repository?.id;
-    if (!repositoryId) {
-      return { status: "none", sessionId: null, worktree: null, canReclaim: false, blocker: null };
-    }
-    try {
-      const project = await projectApplicationService.requireProject(repositoryId);
-      const startup = store.selectOne(
-        `SELECT worktree_id FROM work_session_startup_operations
-         WHERE task_id=? AND worktree_id IS NOT NULL
-         ORDER BY allocated_at DESC LIMIT 1`,
-        [task.id]
-      );
-      const expectedBranch = `task/${String(task.id).includes(":") ? String(task.id).split(":").at(-1) : task.id}`;
-      const knownWorktree = (startup?.worktree_id ? store.getGitWorktree(startup.worktree_id) : null)
-        ?? store.listGitWorktrees(project.id).find((candidate) =>
-          candidate.isMain !== true && candidate.branchName === expectedBranch
-        )
-        ?? null;
-      if (!knownWorktree) return { status: "none", sessionId: null, repositoryId: project.id, worktree: null, canReclaim: false, blocker: null };
-      const status = await gitWorkspaces.taskDeletionStatusForWorktree(project.id, knownWorktree.worktreeId);
-      const worktree = status.worktrees[0] ?? null;
-      if (!worktree) return { status: "none", sessionId: null, repositoryId: status.repositoryId, worktree: null, canReclaim: false, blocker: null };
-      return {
-        status: worktree.availability === "available" ? "available" : "unavailable",
-        sessionId: null,
-        repositoryId: status.repositoryId,
-        worktree,
-        canReclaim: false,
-        blocker: worktree.availability === "available"
-          ? (worktree.isMain ? "MAIN_WORKTREE" : (worktree.dirty ? "UNCOMMITTED_CHANGES" : (worktree.mergedIntoMain === true ? null : "NOT_MERGED_INTO_MAIN")))
-          : "WORKTREE_UNAVAILABLE"
-      };
-    } catch (error) {
-      return { status: "unavailable", sessionId: null, worktree: null, canReclaim: false, blocker: "WORKTREE_UNAVAILABLE", detail: error.message };
-    }
-  }
-  const logical = store.getLogicalSessionByLegacySessionId(session.id);
-  if (!logical?.activeBinding) {
-    return inspectFailedStartupDeletion({ task, session, store, gitWorkspaces, isBusy: sessionHasActiveRun });
-  }
-  if (!logical.activeWorkspaceId) {
-    return {
-      status: session.rawStatus?.workspaceRetired ? "retired" : "none",
-      sessionId: session.id,
-      worktree: null,
-      canReclaim: false,
-      blocker: null,
-      retiredWorkspace: session.rawStatus?.workspaceRetired ?? null
-    };
-  }
-  let project;
-  try {
-    project = await gitWorkspaces.taskDeletionStatus(logical.logicalSessionId);
-  } catch (error) {
-    return {
-      status: "unavailable",
-      sessionId: session.id,
-      worktree: null,
-      canReclaim: false,
-      blocker: "WORKTREE_UNAVAILABLE",
-      detail: error.message
-    };
-  }
-  const worktree = project.worktrees.find((candidate) => candidate.worktreeId === logical.activeWorkspaceId) ?? null;
-  if (!worktree || worktree.availability !== "available") {
-    return { status: "unavailable", sessionId: session.id, worktree, canReclaim: false, blocker: "WORKTREE_UNAVAILABLE" };
-  }
-  const boundSessions = worktree.sessions
-    .map((binding) => binding.sessionId ? store.getSession(binding.sessionId) : null)
-    .filter(Boolean);
-  const hasBusySession = boundSessions.some((candidate) => sessionHasActiveRun(candidate));
-  const hasIncompleteTask = boundSessions.some((candidate) => {
-    const boundTask = candidate.taskId ? store.getTask(candidate.taskId) : null;
-    return boundTask && !completedTaskStatus(boundTask.lifecycle_state);
-  });
-  let blocker = null;
-  if (!completedTaskStatus(task.lifecycle_state)) blocker = "TASK_NOT_COMPLETED";
-  else if (worktree.isMain) blocker = "MAIN_WORKTREE";
-  else if (hasBusySession) blocker = "SESSION_BUSY";
-  else if (hasIncompleteTask) blocker = "SHARED_WITH_ACTIVE_TASK";
-  else if (worktree.dirty) blocker = "UNCOMMITTED_CHANGES";
-  else if (worktree.mergedIntoMain !== true) blocker = "NOT_MERGED_INTO_MAIN";
-  else if (worktree.pendingIntegration) blocker = "INTEGRATION_PENDING";
-  return {
-    status: "available",
-    sessionId: session.id,
-    repositoryId: project.repositoryId,
-    worktree,
-    canReclaim: blocker == null,
-    blocker
-  };
-}
 
-async function removeTaskDeletionWorktree({ inspection, force, confirmedBranchName }) {
-  const worktree = inspection.worktree;
-  const project = await projectApplicationService.requireProject(inspection.repositoryId);
-  const logicalSessionIds = (worktree.sessions ?? []).map((item) => item.logicalSessionId);
-  const cleanup = await gitWorkspaces.removeWorktreeForProject({
-    repositoryId: inspection.repositoryId,
-    workingDirectory: project.mainPath,
-    sourceWorktreeId: worktree.worktreeId,
-    ignoreLogicalSessionIds: logicalSessionIds,
-    deleteBranch: true,
-    forceDeleteUnmerged: force,
-    acknowledgeIrrecoverable: force,
-    confirmedBranchName
-  });
-  for (const logicalSessionId of logicalSessionIds) {
-    const route = store.getLogicalSession(logicalSessionId);
-    if (route?.activeWorkspaceId === worktree.worktreeId) {
-      store.retireLogicalSessionWorkspace(logicalSessionId, worktree.worktreeId);
-    }
-  }
-  return cleanup;
-}
 
-async function reclaimTaskWorktree(taskId) {
-  const inspection = await inspectTaskWorktree(taskId);
-  if (!inspection.canReclaim || !inspection.worktree || !inspection.sessionId) {
-    const error = new Error("This Worktree is not safe to reclaim yet.");
-    error.code = inspection.blocker ?? "WORKTREE_NOT_RECLAIMABLE";
-    error.statusCode = 409;
-    throw error;
-  }
-  const logical = store.getLogicalSessionByLegacySessionId(inspection.sessionId);
-  const logicalSessionIds = inspection.worktree.sessions.map((item) => item.logicalSessionId);
-  const cleanup = await gitWorkspaces.removeMergedWorktree({
-    logicalSessionId: logical.logicalSessionId,
-    sourceWorktreeId: inspection.worktree.worktreeId,
-    ignoreLogicalSessionIds: logicalSessionIds,
-    deleteBranch: true
-  });
-  for (const logicalSessionId of logicalSessionIds) {
-    store.retireLogicalSessionWorkspace(logicalSessionId, inspection.worktree.worktreeId);
-  }
-  emitEvent("TaskWorktreeReclaimed", {
-    taskId,
-    sourceWorktreeId: inspection.worktree.worktreeId,
-    logicalSessionIds,
-    cleanup
-  });
-  return {
-    ...(await inspectTaskWorktree(taskId)),
-    cleanup
-  };
-}
-
-async function commitMessageForProjectWorktree(worktree, requestedMessage, requestingSessionId) {
-  return resolveProjectWorktreeCommitMessage({
-    worktree,
-    requestedMessage,
-    requestingSessionId,
-    generateForSession: generateSessionCommitMessage,
-    generateForUnownedWorktree: generateUnownedWorktreeCommitMessage
-  });
-}
-
-async function resolveProjectCommitProtection(worktree, input = {}) {
-  if (!worktree.dirty) return null;
-  return gitCommitProtection.resolve(worktree.path, {
-    decision: input.privateFilesDecision,
-    neverRemind: input.neverRemindPrivateFiles === true
-  });
-}
-
-async function mergeProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
-  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
-  if (!logical) throw new Error("The Session no longer has an active workspace route.");
-  const before = await gitWorkspaces.projectStatus(logical.logicalSessionId);
-  const source = before.worktrees.find((worktree) => worktree.worktreeId === sourceWorktreeId);
-  if (!source || source.isMain) throw new Error("The selected project worktree is not mergeable.");
-  if (input.restartService === true) {
-    const toolset = await projectToolsets.inspect(logical.activeBinding.boundCwd);
-    if (!toolset.configured) {
-      throw new Error("Configure the Corptie Scripts Tools Set before requesting merge and restart.");
-    }
-  }
-  await resolveProjectCommitProtection(source, input);
-  const commitMessage = await commitMessageForProjectWorktree(source, input.commitMessage, sessionId);
-  const merge = await gitWorkspaces.mergeWorktreeIntoMain({
-    logicalSessionId: logical.logicalSessionId,
-    sourceWorktreeId,
-    commitMessage,
-    synchronizeSource: true
-  });
-  let restart = null;
-  if (input.restartService === true) {
-    restart = await rebuildAndRestartProjectService(logical.activeBinding.boundCwd);
-  }
-  const current = await projectWorktreeStatus(sessionId);
-  return { merge, restart, ...current };
-}
-
-async function restartProjectWorktree(sessionId, sourceWorktreeId) {
-  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
-  if (!logical) throw new Error("The Session no longer has an active workspace route.");
-  const before = await gitWorkspaces.projectStatus(logical.logicalSessionId);
-  const source = before.worktrees.find((worktree) => worktree.worktreeId === sourceWorktreeId);
-  if (!source || source.availability !== "available") {
-    throw new Error("The selected project worktree is unavailable.");
-  }
-  const toolset = await projectToolsets.inspect(source.path);
-  if (!toolset.configured) {
-    throw new Error("Configure the Corptie Scripts Tools Set before restarting from this worktree.");
-  }
-  const restart = await rebuildAndRestartProjectService(source.path, source.path);
-  const current = await projectWorktreeStatus(sessionId);
-  return { restart, ...current };
-}
-
-async function commitProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
-  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
-  if (!logical) throw new Error("The Session no longer has an active workspace route.");
-  const before = await gitWorkspaces.projectStatus(logical.logicalSessionId);
-  const source = before.worktrees.find((worktree) => worktree.worktreeId === sourceWorktreeId);
-  if (!source || source.availability !== "available") {
-    throw new Error("The selected project worktree is unavailable.");
-  }
-  if (!source.dirty) throw new Error("The selected worktree has no uncommitted changes.");
-  await resolveProjectCommitProtection(source, input);
-  const commitMessage = await commitMessageForProjectWorktree(source, input.commitMessage, sessionId);
-  const commit = await gitWorkspaces.commitWorktreeChanges({
-    logicalSessionId: logical.logicalSessionId,
-    sourceWorktreeId,
-    commitMessage
-  });
-  const current = await projectWorktreeStatus(sessionId);
-  return { commit, ...current };
-}
-
-async function prepareProjectWorktreeCommit(sessionId, sourceWorktreeId) {
-  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
-  if (!logical) throw new Error("The Session no longer has an active workspace route.");
-  const before = await gitWorkspaces.projectStatus(logical.logicalSessionId);
-  const source = before.worktrees.find((worktree) => worktree.worktreeId === sourceWorktreeId);
-  if (!source || source.availability !== "available") {
-    throw new Error("The selected project worktree is unavailable.");
-  }
-  if (!source.dirty) throw new Error("The selected worktree has no uncommitted changes.");
-  return gitCommitProtection.inspect(source.path);
-}
-
-async function generateProjectWorktreeCommitMessage(sessionId, sourceWorktreeId) {
-  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
-  if (!logical) throw new Error("The Session no longer has an active workspace route.");
-  const before = await gitWorkspaces.projectStatus(logical.logicalSessionId);
-  const source = before.worktrees.find((worktree) => worktree.worktreeId === sourceWorktreeId);
-  if (!source || source.availability !== "available") {
-    throw new Error("The selected project worktree is unavailable.");
-  }
-  if (!source.dirty) throw new Error("The selected worktree has no uncommitted changes.");
-  return {
-    commitMessage: await commitMessageForProjectWorktree(source, null, sessionId)
-  };
-}
-
-async function prepareGitHubPush(sessionId) {
-  await sessionApplicationService.referenceFor(sessionId);
-  return gitHubPushes.prepare({
-    sessionId,
-    workingDirectory: projectWorkingDirectoryForSession(sessionId)
-  });
-}
-
-async function generateGitHubPushCommitMessage(sessionId, input = {}) {
-  const confirmationToken = String(input.confirmationToken ?? "").trim();
-  if (!confirmationToken) throw new Error("A GitHub push confirmation token is required.");
-  const commitMessage = await gitHubPushes.generateCommitMessage({
-    sessionId,
-    confirmationToken,
-    generateCommitMessage: (plan) => generateSessionCommitMessage(sessionId, plan)
-  });
-  return { commitMessage };
-}
-
-async function confirmGitHubPush(sessionId, input = {}) {
-  const confirmationToken = String(input.confirmationToken ?? "").trim();
-  if (!confirmationToken) throw new Error("A GitHub push confirmation token is required.");
-  const result = await gitHubPushes.confirm({
-    sessionId,
-    confirmationToken,
-    privateFilesDecision: input.privateFilesDecision,
-    neverRemindPrivateFiles: input.neverRemindPrivateFiles === true,
-    commitMessage: input.commitMessage,
-    generateCommitMessage: (plan) => generateSessionCommitMessage(sessionId, plan)
-  });
-  emitEvent("GitHubPushCompleted", {
-    sessionId,
-    branch: result.branch,
-    destinationUrl: result.destinationUrl,
-    headOid: result.headOid,
-    committed: result.committed
-  }, { sessionId });
-  return result;
-}
-
-async function completeProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
-  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
-  if (!logical) throw new Error("The Session no longer has an active workspace route.");
-  const before = await gitWorkspaces.projectStatus(logical.logicalSessionId);
-  const source = before.worktrees.find((worktree) => worktree.worktreeId === sourceWorktreeId);
-  if (!source || source.isMain) throw new Error("The selected project worktree cannot be completed.");
-  if (input.deleteSessions !== true && source.sessions.length > 0) {
-    throw new Error("Completing this worktree requires confirmation to delete its associated Sessions.");
-  }
-  for (const binding of source.sessions) {
-    const session = binding.sessionId
-      ? store.getSession(binding.sessionId)
-      : null;
-    if (sessionHasActiveRun(session)) {
-      const error = new Error(`Session ${session.title || binding.sessionId} is busy. Wait for it before completing the worktree.`);
-      error.code = "SESSION_BUSY";
-      throw error;
-    }
-  }
-  const toolset = await projectToolsets.inspect(logical.activeBinding.boundCwd);
-  if (input.restartService !== false && !toolset.configured) {
-    throw new Error("Configure the Corptie Scripts Tools Set before completing and restarting this worktree.");
-  }
-  await resolveProjectCommitProtection(source, input);
-  const commitMessage = await commitMessageForProjectWorktree(source, input.commitMessage, sessionId);
-  const merge = await gitWorkspaces.mergeWorktreeIntoMain({
-    logicalSessionId: logical.logicalSessionId,
-    sourceWorktreeId,
-    commitMessage,
-    synchronizeSource: false
-  });
-  const logicalSessionIds = source.sessions.map((item) => item.logicalSessionId);
-  const cleanup = await gitWorkspaces.removeMergedWorktree({
-    logicalSessionId: logical.logicalSessionId,
-    sourceWorktreeId,
-    ignoreLogicalSessionIds: logicalSessionIds,
-    deleteBranch: input.deleteBranch !== false
-  });
-  const deletedSessionIds = [];
-  for (const binding of source.sessions) {
-    if (!binding.sessionId) continue;
-    collaborationCore.detachSession(binding.sessionId);
-    store.deleteLogicalSessionByLegacySessionId(binding.sessionId);
-    store.deleteSession(binding.sessionId);
-    deletedSessionIds.push(binding.sessionId);
-    emitEvent("SessionDeleted", {
-      sessionId: binding.sessionId,
-      provider: "codex-app-server",
-      reason: "worktreeCompleted"
-    }, { detachedSession: true });
-  }
-  let restart = null;
-  if (input.restartService !== false) {
-    restart = await rebuildAndRestartProjectService(before.mainPath);
-  }
-  emitEvent("ProjectWorktreeCompleted", {
-    repositoryId: before.repositoryId,
-    sourceWorktreeId,
-    merge,
-    cleanup,
-    deletedSessionIds,
-    restart
-  });
-  return { merge, cleanup, deletedSessionIds, restart };
-}
-
-async function operateProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
-  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
-  if (!logical) throw new Error("The Session no longer has an active workspace route.");
-  const operations = {
-    mergeIntoMain: input.mergeIntoMain === true,
-    synchronizeWithMain: input.synchronizeWithMain === true,
-    deleteWorktree: input.deleteWorktree === true,
-    deleteSessions: input.deleteSessions === true,
-    restartService: input.restartService === true
-  };
-  if (!Object.values(operations).some(Boolean)) {
-    throw new Error("Select at least one worktree operation.");
-  }
-  if (operations.deleteWorktree && (operations.mergeIntoMain || operations.synchronizeWithMain)) {
-    throw new Error("Deleting a worktree cannot be combined with merging or synchronizing it.");
-  }
-
-  const before = await gitWorkspaces.projectStatus(logical.logicalSessionId);
-  const source = before.worktrees.find((worktree) => worktree.worktreeId === sourceWorktreeId);
-  if (!source || source.isMain || source.availability !== "available") {
-    throw new Error("The selected project worktree is unavailable.");
-  }
-  if (operations.deleteWorktree && source.sessions.length > 0 && !operations.deleteSessions) {
-    throw new Error("Delete the associated Sessions before deleting this worktree.");
-  }
-  if (operations.deleteSessions) {
-    for (const binding of source.sessions) {
-      const session = binding.sessionId
-        ? store.getSession(binding.sessionId)
-        : null;
-      if (sessionHasActiveRun(session)) {
-        const error = new Error(`Session ${session?.title || binding.sessionId} is busy. Wait for it before deleting associated Sessions.`);
-        error.code = "SESSION_BUSY";
-        throw error;
-      }
-    }
-  }
-  if (operations.restartService) {
-    const toolset = await projectToolsets.inspect(before.mainPath);
-    if (!toolset.configured) {
-      throw new Error("Configure the Corptie Scripts Tools Set before restarting the service.");
-    }
-  }
-
-  let merge = null;
-  if (operations.mergeIntoMain) {
-    await resolveProjectCommitProtection(source, input);
-    const commitMessage = await commitMessageForProjectWorktree(source, input.commitMessage, sessionId);
-    merge = await gitWorkspaces.mergeWorktreeIntoMain({
-      logicalSessionId: logical.logicalSessionId,
-      sourceWorktreeId,
-      commitMessage,
-      synchronizeSource: false
-    });
-  }
-
-  let synchronization = null;
-  if (operations.synchronizeWithMain) {
-    synchronization = await gitWorkspaces.synchronizeWorktreeWithMain({
-      logicalSessionId: logical.logicalSessionId,
-      sourceWorktreeId
-    });
-  }
-
-  const logicalSessionIds = source.sessions.map((item) => item.logicalSessionId);
-  let cleanup = null;
-  if (operations.deleteWorktree) {
-    cleanup = await gitWorkspaces.removeMergedWorktree({
-      logicalSessionId: logical.logicalSessionId,
-      sourceWorktreeId,
-      ignoreLogicalSessionIds: operations.deleteSessions ? logicalSessionIds : [],
-      deleteBranch: true,
-      forceDeleteUnmerged: input.forceDeleteUnmerged === true,
-      acknowledgeIrrecoverable: input.acknowledgeIrrecoverable === true,
-      confirmedBranchName: input.confirmedBranchName
-    });
-  }
-
-  const deletedSessionIds = [];
-  if (operations.deleteSessions) {
-    for (const binding of source.sessions) {
-      if (!binding.sessionId) continue;
-      collaborationCore.detachSession(binding.sessionId);
-      store.deleteLogicalSessionByLegacySessionId(binding.sessionId);
-      store.deleteSession(binding.sessionId);
-      deletedSessionIds.push(binding.sessionId);
-      emitEvent("SessionDeleted", {
-        sessionId: binding.sessionId,
-        provider: "codex-app-server",
-        reason: "worktreeOperation"
-      }, { detachedSession: true });
-    }
-  }
-
-  let restart = null;
-  if (operations.restartService) {
-    restart = await rebuildAndRestartProjectService(before.mainPath);
-  }
-  emitEvent("ProjectWorktreeOperated", {
-    repositoryId: before.repositoryId,
-    sourceWorktreeId,
-    operations,
-    merge,
-    synchronization,
-    cleanup,
-    deletedSessionIds,
-    restart
-  });
-  return { operations, merge, synchronization, cleanup, deletedSessionIds, restart };
-}
+const persistentRuntimeLifecycle = createPersistentRuntimeLifecycle({
+  store, dshLivePublisher, taskSessionProjection, codexChoiceProjection,
+  turnObservability, runtimeActivity, stateSyncPublisher, scheduledSessionTaskService,
+  getResetForecastMonitor: () => codexResetForecastMonitor,
+  openClackyManager, feishuGateway, codexRuntime,
+  claudeManager: claudeProviderRuntime.manager,
+  closeTimelineReadPool, activateStoredBackendLogging
+});
 
 function inspectDataRootMigrationBlockers() {
-  const blockers = [];
-  const checks = [
-    ["active_session_turns", "SELECT COUNT(*) AS count FROM session_turns WHERE execution_status IN ('running', 'blocked')"],
-    ["agent_work_queue", "SELECT COUNT(*) AS count FROM agent_operations WHERE status IN ('queued', 'running')"],
-    ["scheduled_tasks", "SELECT COUNT(*) AS count FROM scheduled_session_runs WHERE status IN ('claimed', 'queued', 'running', 'retry_wait')"],
-    ["worktree_integrations", "SELECT COUNT(*) AS count FROM worktree_integration_jobs WHERE status IN ('queued', 'running', 'cancellation_requested', 'replanning')"],
-    ["artifact_writes", "SELECT COUNT(*) AS count FROM artifact_content_operations WHERE status IN ('prepared', 'file_committed')"]
-  ];
-  for (const [kind, sql] of checks) {
-    const count = Number(store.selectOne(sql)?.count ?? 0);
-    if (count > 0) blockers.push({ kind, count });
-  }
-  if (dshLiveTurns.size > 0) blockers.push({ kind: "live_provider_turns", count: dshLiveTurns.size });
-  if (taskMemoryExtractions.size > 0) blockers.push({ kind: "background_memory_tasks", count: taskMemoryExtractions.size });
-  if (pendingCodexChoiceParses.size > 0) blockers.push({ kind: "background_choice_tasks", count: pendingCodexChoiceParses.size });
-  return blockers;
+  return persistentRuntimeLifecycle.inspectDataRootMigrationBlockers();
 }
 
 async function quiescePersistentRuntime() {
-  turnObservability.flush();
-  if (agentWorkQueueInterval) {
-    clearInterval(agentWorkQueueInterval);
-    agentWorkQueueInterval = null;
-  }
-  if (mockProgressTimer) {
-    clearInterval(mockProgressTimer);
-    mockProgressTimer = null;
-  }
-  if (stateSyncPublishTimer) {
-    clearTimeout(stateSyncPublishTimer);
-    stateSyncPublishTimer = null;
-  }
-  timelineChangePublisher?.close();
-  scheduledSessionTaskService.stop();
-  await codexResetForecastMonitor?.stop();
-  openClackyManager.stop();
-  await Promise.all([
-    feishuGateway.close(),
-    codexRuntime.close(),
-    claudeProviderRuntime.manager.close()
-  ]);
-  await Promise.allSettled([...startupMaintenanceTasks]);
-  await closeTimelineReadPool();
-  await suspendBackendLogging();
+  return persistentRuntimeLifecycle.quiescePersistentRuntime();
 }
 
 async function resumePersistentRuntime() {
-  activateStoredBackendLogging();
-  timelineChangePublisher = new SessionTimelineChangePublisher({
-    emit: ({ sessionId, timelineRevision }) => emitEvent("SessionTimelineChanged", {
-      sessionId,
-      timelineRevision
-    }, { sessionId, recordSessionEvent: false })
-  });
-  scheduledSessionTaskService.start();
-  codexResetForecastMonitor?.start();
-  openClackyManager.start();
-  if (!agentWorkQueueInterval) {
-    agentWorkQueueInterval = setInterval(() => {
-      tickAgentWorkQueue().catch((error) => emitEvent("AgentWorkQueueError", { error: error.message }));
-    }, 2000);
-    agentWorkQueueInterval.unref?.();
-  }
-  trackStartupMaintenance(feishuGateway.initialize().catch((error) => {
-    console.warn(`[feishu] gateway resume failed error=${error?.message ?? error}`);
-  }));
+  return persistentRuntimeLifecycle.resumePersistentRuntime();
 }
 
 function trackStartupMaintenance(promise) {
-  startupMaintenanceTasks.add(promise);
-  // An ignored finally() would mirror a rejection into a second, unhandled
-  // Promise even when the tracked operation has its own containment boundary.
-  promise.then(
-    () => startupMaintenanceTasks.delete(promise),
-    () => startupMaintenanceTasks.delete(promise)
-  );
-  return promise;
+  return runtimeActivity.trackMaintenance(promise);
 }
+
+const handleCollaborationRoutes = createCollaborationHttpRoutes({
+  collaborationCore, sessionCollaborationV2Enabled, sessionCollaborationService,
+  sessionChannelService, emitEvent, resolveCollaborationConfirmation, resolveSessionChannelRequest,
+  projectSessionChannelMessageForSender, syncSessionChannelDeliveriesIntoAgentWorkQueue,
+  sessionWorkspaceOperations, memoryOperationService, skillRegistryService, reportTaskAcceptanceForAgent,
+  sessionContextReferenceService, scheduledSessionTaskService,
+  scheduledSessionHttpActor, scheduledSessionHttpLogicalSessionId
+});
+
+const handleEntityRoutes = createEntityHttpRoutes({
+  workService, hubService, collaborationRouter, memoryExtractor, memoryRecallService,
+  memoryLifecycleService, assistantService, workSessionStartApplicationService,
+  agentProviderRegistry, launchAgentSession, workDiscussionService, ensureWorkChatSession,
+  requestedProviderId, createSessionThroughApplication, backgroundAgentService,
+  skillRegistryService, inspectTaskWorktree, reclaimTaskWorktree, taskDeletionService,
+  restartTaskForEntityRoutes, setTaskArchivedForEntityRoutes, taskExecutionOrchestrator,
+  taskCompletionService, sessionTitleReservations, emitEvent
+});
+
+const backendHttpPorts = Object.freeze({
+  get clientDeviceGateway() { return clientDeviceGateway; },
+  get sendJson() { return sendJson; },
+  get developmentPreview() { return developmentPreview; },
+  get clientCapabilities() { return clientCapabilities; },
+  get backendStoreReady() { return backendStoreReady; },
+  get store() { return store; },
+  get taskCollaborationEdges() { return taskCollaborationEdges; },
+  get foundationModelSettings() { return foundationModelSettings; },
+  get rejectDevelopmentPreviewWrite() { return rejectDevelopmentPreviewWrite; },
+  get handleFoundationModelUpdateHttpRequest() { return handleFoundationModelUpdateHttpRequest; },
+  get agentProviderRegistry() { return agentProviderRegistry; },
+  get backgroundAgentService() { return backgroundAgentService; },
+  get taskSummaryService() { return taskSummaryService; },
+  get readJson() { return readJson; },
+  get rejectUnavailableStoreRequest() { return rejectUnavailableStoreRequest; },
+  get dataRootMigrationCoordinator() { return dataRootMigrationCoordinator; },
+  get handleSceneHttpRequest() { return handleSceneHttpRequest; },
+  get sceneService() { return sceneService; },
+  get handleBackendRestartHttpRequest() { return handleBackendRestartHttpRequest; },
+  get shutdown() { return shutdown; },
+  get handlePlatformConfirmationHttpRequest() { return handlePlatformConfirmationHttpRequest; },
+  get platformConfirmationService() { return platformConfirmationService; },
+  get errorStatus() { return errorStatus; },
+  get handleSessionToolHttpRequest() { return handleSessionToolHttpRequest; },
+  get collaborationCore() { return collaborationCore; },
+  get toolHostService() { return toolHostService; },
+  get sessionToolMetadata() { return sessionToolMetadata; },
+  get handleCollaborationRoutes() { return handleCollaborationRoutes; },
+  get handleArtifactHttpRequest() { return handleArtifactHttpRequest; },
+  get artifactService() { return artifactService; },
+  get handleBenchmarkHttpRequest() { return handleBenchmarkHttpRequest; },
+  get benchmarkControlPlane() { return benchmarkControlPlane; },
+  get handleCodeTaskObservabilityHttpRequest() { return handleCodeTaskObservabilityHttpRequest; },
+  get turnObservability() { return turnObservability; },
+  get handleSshWorkspaceHttpRequest() { return handleSshWorkspaceHttpRequest; },
+  get getSshWorkspaceServices() { return getSshWorkspaceServices; },
+  get handleMcpRegistryHttpRequest() { return handleMcpRegistryHttpRequest; },
+  get mcpRegistryService() { return mcpRegistryService; },
+  get mcpSessionAvailabilityService() { return mcpSessionAvailabilityService; },
+  get emitEvent() { return emitEvent; },
+  get handleEntityRoutes() { return handleEntityRoutes; },
+  get handleDshHttpRequest() { return handleDshHttpRequest; },
+  get sessionApplicationService() { return sessionApplicationService; },
+  get listGatewaySessions() { return listGatewaySessions; },
+  get readStoredSessionConversation() { return readStoredSessionConversation; },
+  get readStoredSessionTimeline() { return readStoredSessionTimeline; },
+  get now() { return now; },
+  get createSessionThroughApplication() { return createSessionThroughApplication; },
+  get publishDshPromptStart() { return publishDshPromptStart; },
+  get sendUnifiedSessionMessage() { return sendUnifiedSessionMessage; },
+  get publishDshPromptFailure() { return publishDshPromptFailure; },
+  get handleBackendHealthHttpRequest() { return handleBackendHealthHttpRequest; },
+  get projectCodeIndexStore() { return projectCodeIndexStore; },
+  get projectCodeRunIsolationPort() { return projectCodeRunIsolationPort; },
+  get projectCodeApplicationService() { return projectCodeApplicationService; },
+  get projectCodeFreshnessMonitor() { return projectCodeFreshnessMonitor; },
+  get handleSettingsReadHttpRequest() { return handleSettingsReadHttpRequest; },
+  get handleProviderModelsHttpRequest() { return handleProviderModelsHttpRequest; },
+  get unifiedErrorStatus() { return unifiedErrorStatus; },
+  get handleSettingsUpdateHttpRequest() { return handleSettingsUpdateHttpRequest; },
+  get configureChoiceParserRuntime() { return configureChoiceParserRuntime; },
+  get codexRuntime() { return codexRuntime; },
+  get handleFeishuHttpRequest() { return handleFeishuHttpRequest; },
+  get feishuGateway() { return feishuGateway; },
+  get handleSessionTimelineHttpRequest() { return handleSessionTimelineHttpRequest; },
+  get getStoredSessionSnapshot() { return getStoredSessionSnapshot; },
+  get getTimelineReadPool() { return getTimelineReadPool; },
+  get readSessionUsage() { return readSessionUsage; },
+  get readSessionHistory() { return readSessionHistory; },
+  get readSessionTimelineWindow() { return readSessionTimelineWindow; },
+  get publishStateChangesIfNeeded() { return publishStateChangesIfNeeded; },
+  get handleSessionInteractionHttpRequest() { return handleSessionInteractionHttpRequest; },
+  get userMessageCommandSource() { return userMessageCommandSource; },
+  get chatResourceService() { return chatResourceService; },
+  get requireSessionReference() { return requireSessionReference; },
+  get interruptUnifiedSession() { return interruptUnifiedSession; },
+  get respondUnifiedSessionApproval() { return respondUnifiedSessionApproval; },
+  get respondUnifiedSessionUserInput() { return respondUnifiedSessionUserInput; },
+  get handleSessionConfigurationHttpRequest() { return handleSessionConfigurationHttpRequest; },
+  get normalizeCodexSandbox() { return normalizeCodexSandbox; },
+  get normalizeCodexApprovalPolicy() { return normalizeCodexApprovalPolicy; },
+  get handleChoiceParserTestHttpRequest() { return handleChoiceParserTestHttpRequest; },
+  get parseChoiceStageWithConfiguredParser() { return parseChoiceStageWithConfiguredParser; },
+  get handleProviderSetupHttpRequest() { return handleProviderSetupHttpRequest; },
+  get firstRunSetup() { return firstRunSetup; },
+  get handleProjectWorkspaceHttpRequest() { return handleProjectWorkspaceHttpRequest; },
+  get projectApplicationService() { return projectApplicationService; },
+  get projectWorktreeIntegrationService() { return projectWorktreeIntegrationService; },
+  get worktreeIntegrationJobService() { return worktreeIntegrationJobService; },
+  get handleSessionCollectionHttpRequest() { return handleSessionCollectionHttpRequest; },
+  get sessions() { return sessions; },
+  get listGatewaySessionPage() { return listGatewaySessionPage; },
+  get requestedProviderId() { return requestedProviderId; },
+  get sessionForkService() { return sessionForkService; },
+  get sessionTitleErrorPayload() { return sessionTitleErrorPayload; },
+  get handleSessionOrganizationHttpRequest() { return handleSessionOrganizationHttpRequest; },
+  get normalizeSessionId() { return normalizeSessionId; },
+  get archiveStoredSession() { return archiveStoredSession; },
+  get sessionRuntimeReleaseService() { return sessionRuntimeReleaseService; },
+  get upsertManagedCodexSession() { return upsertManagedCodexSession; },
+  get handleSessionRecoveryHttpRequest() { return handleSessionRecoveryHttpRequest; },
+  get sessionRecoveryCoordinator() { return sessionRecoveryCoordinator; },
+  get handleSessionGitHttpRequest() { return handleSessionGitHttpRequest; },
+  get prepareGitHubPush() { return prepareGitHubPush; },
+  get generateGitHubPushCommitMessage() { return generateGitHubPushCommitMessage; },
+  get confirmGitHubPush() { return confirmGitHubPush; },
+  get projectWorktreeStatus() { return projectWorktreeStatus; },
+  get mergeProjectWorktree() { return mergeProjectWorktree; },
+  get prepareProjectWorktreeCommit() { return prepareProjectWorktreeCommit; },
+  get generateProjectWorktreeCommitMessage() { return generateProjectWorktreeCommitMessage; },
+  get commitProjectWorktree() { return commitProjectWorktree; },
+  get completeProjectWorktree() { return completeProjectWorktree; },
+  get operateProjectWorktree() { return operateProjectWorktree; },
+  get restartProjectWorktree() { return restartProjectWorktree; },
+  get handleSessionToolsetHttpRequest() { return handleSessionToolsetHttpRequest; },
+  get projectToolsetStatus() { return projectToolsetStatus; },
+  get projectWorkingDirectoryForSession() { return projectWorkingDirectoryForSession; },
+  get projectToolsetAuthenticatedSession() { return projectToolsetAuthenticatedSession; },
+  get projectToolsetInitializer() { return projectToolsetInitializer; },
+  get projectToolsets() { return projectToolsets; },
+  get projectToolsetRunIsolationOptions() { return projectToolsetRunIsolationOptions; },
+  get handleSessionMutationHttpRequest() { return handleSessionMutationHttpRequest; },
+  get sessionDeletionPlan() { return sessionDeletionPlan; },
+  get reserveSessionTitle() { return reserveSessionTitle; },
+  get deleteSessionWithOptionalMerge() { return deleteSessionWithOptionalMerge; },
+  get mergeSessionWorktreeBeforeDeletion() { return mergeSessionWorktreeBeforeDeletion; },
+  get gitWorkspaces() { return gitWorkspaces; },
+  get handleSessionExecutionHttpRequest() { return handleSessionExecutionHttpRequest; },
+  get sessionBindingReadinessProbe() { return sessionBindingReadinessProbe; },
+  get handleSessionWorkspaceHttpRequest() { return handleSessionWorkspaceHttpRequest; },
+  get ensureLogicalRouteForProviderSession() { return ensureLogicalRouteForProviderSession; },
+  get createGitWorkspaceSnapshot() { return createGitWorkspaceSnapshot; },
+  get reconcileMovedWorkspaceRoutes() { return reconcileMovedWorkspaceRoutes; },
+  get sessionWorkspaceRecoveryStatus() { return sessionWorkspaceRecoveryStatus; },
+  get switchSessionWorkspace() { return switchSessionWorkspace; },
+  get recoverableAgentWorkDir() { return recoverableAgentWorkDir; },
+  get ensureAgentWorkDir() { return ensureAgentWorkDir; },
+  get switchSessionProvider() { return switchSessionProvider; },
+  get decorateSessionForClient() { return decorateSessionForClient; },
+  get handleSessionTurnHttpRequest() { return handleSessionTurnHttpRequest; },
+  get handleStateSyncHttpRequest() { return handleStateSyncHttpRequest; },
+  get eventLog() { return eventLog; },
+  get sseClients() { return sseClients; },
+  get stateSyncService() { return stateSyncService; },
+  get stateSyncClients() { return stateSyncClients; },
+  get sessionStateDiagnostics() { return sessionStateDiagnostics; },
+  get writeStateSyncFrame() { return writeStateSyncFrame; },
+});
 
 function route(request, response) {
-  const url = new URL(request.url, `http://${request.headers.host}`);
-  if (url.pathname.startsWith("/internal/client-devices")) {
-    if (!clientDeviceGateway && request.method === "GET" && url.pathname === "/internal/client-devices"
-        && !request.headers.origin) sendJson(response, 200, {
-      state: developmentPreview ? "preview" : "initializing", devices: [], pending: []
-    });
-    else if (!clientDeviceGateway) sendJson(response, 503, { code: "REMOTE_ACCESS_DISABLED" });
-    else void clientDeviceGateway.handleAdmin(request, response);
-    return;
-  }
-  if (request.method === "GET" && url.pathname === "/client-capabilities") {
-    sendJson(response, 200, clientCapabilities());
-    return;
-  }
-  if (request.method === "GET" && url.pathname === "/collaboration/task-edges") {
-    if (!backendStoreReady || store.migrationInProgress) {
-      sendJson(response, 503, { error: "Store unavailable" });
-    } else {
-      sendJson(response, 200, { edges: taskCollaborationEdges(store) });
-    }
-    return;
-  }
-  if (request.method === "GET" && url.pathname === "/settings/foundation-model") {
-    sendJson(response, 200, foundationModelSettings.publicValue());
-    return;
-  }
-  if (developmentPreview) {
-    // Fail closed: GET alone is insufficient (some inventory APIs probe tools).
-    const readable = ["/health", "/settings", "/first-run", "/events", "/sessions",
-      "/state/snapshot", "/state/changes", "/state/events", "/session-timelines/revisions",
-      "/works", "/tasks", "/agents", "/workspaces", "/repositories", "/artifacts", "/memories",
-      "/automations", "/scheduled-tasks", "/scheduled-session-tasks"].includes(url.pathname)
-      || /^\/sessions\/[^/]+\/(stored-snapshot|history|timeline\/window|timeline\/changes|events|usage|context-references|images|fork)$/.test(url.pathname)
-      || /^\/works\/[^/]+(?:\/(tasks|artifacts))?$/.test(url.pathname)
-      || /^\/tasks\/[^/]+(?:\/(sessions|snapshots|artifacts))?$/.test(url.pathname)
-      || /^\/artifacts\/[^/]+$/.test(url.pathname)
-      || url.pathname === "/scene-templates"
-      || url.pathname === "/scenes"
-      || /^\/scenes\/[^/]+(?:\/(views\/[^/]+|changes))?$/.test(url.pathname);
-    if (request.method !== "GET" || !readable) {
-      sendJson(response, 403, { code: "DEVELOPMENT_PREVIEW_READ_ONLY",
-        error: "开发版数据预览：只浏览、不执行；此操作已禁用。" });
-      return;
-    }
-  }
-
-  if (request.method === "PUT" && url.pathname === "/settings/foundation-model") {
-    if (!backendStoreReady || store.migrationInProgress) {
-      sendJson(response, 503, { error: "Backend is initializing or in maintenance mode.", retryable: true });
-      return;
-    }
-    readJson(request).then((input) => {
-      if (input.mode === "provider") agentProviderRegistry.get(input.providerId);
-      const value = foundationModelSettings.save(input);
-      backgroundAgentService.cancelCapabilityOperations();
-      for (const taskID of taskSummaryService.running.keys()) taskSummaryService.request(taskID);
-      taskSummaryService.onProviderChanged();
-      sendJson(response, 200, value);
-    }).catch(() => sendJson(response, 400, { error: "模型设置无效，请检查 Provider、模型和 API 地址。" }));
-    return;
-  }
-  if (!backendStoreReady && !(
-    request.method === "GET"
-    && ["/health", "/events", "/settings"].includes(url.pathname)
-  )) {
-    sendJson(response, 503, {
-      error: "The Backend transport is connected and the local Store is initializing.",
-      code: "BACKEND_STORE_INITIALIZING",
-      retryable: true
-    });
-    return;
-  }
-
-  if (store.migrationInProgress
-    && !((request.method === "GET" && (
-      url.pathname === "/health"
-      || url.pathname === "/settings"
-      || url.pathname === "/data-root-migrations/current"
-    )) || (request.method === "POST" && url.pathname === "/internal/backend/data-root-restart"))) {
-    sendJson(response, 503, {
-      error: "The Backend is in maintenance mode for a Data Root migration.",
-      code: "DATA_ROOT_MAINTENANCE_MODE",
-      operation: dataRootMigrationCoordinator.status()
-    });
-    return;
-  }
-
-  if (handleSceneHttpRequest({ request, response, url, service: sceneService })) return;
-
-  const taskSummaryRefreshMatch = url.pathname.match(/^\/tasks\/([^/]+)\/summary-refresh$/);
-  if (taskSummaryRefreshMatch && request.method === "POST") {
-    const accepted = taskSummaryService.request(decodeURIComponent(taskSummaryRefreshMatch[1]));
-    sendJson(response, accepted ? 202 : 409, { accepted,
-      ...(accepted ? {} : { code: "TASK_SUMMARY_UNAVAILABLE", error: "此 Task 当前无法生成摘要。" }) });
-    return;
-  }
-
-  if (request.method === "POST" && url.pathname === "/internal/backend/data-root-restart") {
-    const operation = dataRootMigrationCoordinator.status();
-    if (operation?.phase !== "restartRequired") {
-      sendJson(response, 409, {
-        error: "Backend restart is only available after a verified Data Root migration.",
-        code: "DATA_ROOT_RESTART_NOT_READY"
-      });
-      return;
-    }
-    dataRootMigrationCoordinator.transition("reconnecting", { restartRequired: false })
-      .then(() => {
-        sendJson(response, 202, { operationId: operation.operationId, accepted: true });
-        setTimeout(() => void shutdown(), 500).unref?.();
-      })
-      .catch((error) => sendJson(response, 500, {
-        error: "Could not persist the Backend restart handoff.",
-        code: error.code ?? "DATA_ROOT_RESTART_HANDOFF_FAILED"
-      }));
-    return;
-  }
-
-  if (request.method === "POST" && url.pathname === "/platform/confirmations") {
-    readJson(request).then((input) => sendJson(response, 201, {
-      confirmation: platformConfirmationService.issue({
-        actorId: input.actorId, sessionId: input.sessionId, tool: input.tool, arguments: input.arguments ?? {}
-      })
-    })).catch((error) => sendJson(response, errorStatus(error, 403), { error: error.message, code: error.code ?? "PLATFORM_CONFIRMATION_FAILED" }));
-    return;
-  }
-  const platformConfirmationMatch = url.pathname.match(/^\/platform\/confirmations\/([^/]+)\/(confirm|reject)$/);
-  if (request.method === "POST" && platformConfirmationMatch) {
-    try {
-      const confirmation = platformConfirmationService.resolve(
-        decodeURIComponent(platformConfirmationMatch[1]),
-        platformConfirmationMatch[2] === "confirm"
-      );
-      sendJson(response, 200, { confirmation });
-    } catch (error) {
-      sendJson(response, errorStatus(error, 409), { error: error.message, code: error.code ?? "PLATFORM_CONFIRMATION_FAILED" });
-    }
-    return;
-  }
-
-  if (request.method === "POST" && url.pathname === "/internal/session/tool") {
-    readJson(request)
-      .then(async (input) => {
-        const actorId = typeof request.headers["x-corptie-agent-id"] === "string"
-          ? request.headers["x-corptie-agent-id"].trim()
-          : "";
-        const sessionId = typeof request.headers["x-corptie-session-id"] === "string"
-          ? request.headers["x-corptie-session-id"].trim()
-          : "";
-        const providerBindingId = typeof request.headers["x-corptie-provider-binding-id"] === "string"
-          ? request.headers["x-corptie-provider-binding-id"].trim()
-          : "";
-        const session = sessionId ? store.getSession(sessionId) : null;
-        const metadata = sessionToolMetadata(session);
-        const boundAgent = session ? collaborationCore.getAgentForSession(session.id) : null;
-        assertSessionToolScope({ actorId, providerBindingId, session, metadata, boundAgent });
-        const result = await toolHostService.execute({
-          actorId, tool: input.tool, arguments: input.arguments ?? {},
-          metadata
-        });
-        sendJson(response, 200, result);
-      })
-      .catch((error) => sendJson(response, errorStatus(error, 403), {
-        error: error.message, code: error.code ?? "SESSION_TOOL_FAILED"
-      }));
-    return;
-  }
-
-  if (request.method === "GET" && [
-    "/internal/session/tool/catalog",
-    "/internal/session/tool/catalog/revision"
-  ].includes(url.pathname)) {
-    const isToolsList = url.pathname === "/internal/session/tool/catalog";
-    const observation = {
-      // Untrusted request correlation is length-bounded and JSON-escaped.
-      observationId: (url.searchParams.get("observationId") ?? "").slice(0, 128)
-    };
-    const recordObservation = (status, errorCode = null) => {
-      if (isToolsList) console.info("[tool-host-catalog]", JSON.stringify({
-        stage: "catalog-http", status, ...observation, errorCode
-      }));
-    };
-    recordObservation("received");
-    try {
-      const actorId = typeof request.headers["x-corptie-agent-id"] === "string"
-        ? request.headers["x-corptie-agent-id"].trim() : "";
-      const sessionId = typeof request.headers["x-corptie-session-id"] === "string"
-        ? request.headers["x-corptie-session-id"].trim() : "";
-      const providerBindingId = typeof request.headers["x-corptie-provider-binding-id"] === "string"
-        ? request.headers["x-corptie-provider-binding-id"].trim() : "";
-      const session = sessionId ? store.getSession(sessionId) : null;
-      const boundAgent = session ? collaborationCore.getAgentForSession(session.id) : null;
-      const metadata = sessionToolMetadata(session);
-      assertSessionToolScope({ actorId, providerBindingId, session, metadata, boundAgent });
-      Object.assign(observation, {
-        logicalSessionId: metadata.logicalSessionId,
-        providerBindingId: metadata.providerBindingId
-      });
-      recordObservation("authorized");
-      if (url.pathname.endsWith("/revision")) {
-        sendJson(response, 200, { revision: toolHostService.catalogRevision({ actorId, metadata }) });
-        return;
-      }
-      toolHostService.observeGeneratedMcpToolsList({
-        actorId,
-        metadata,
-        desiredVersion: url.searchParams.get("desiredVersion") ?? undefined,
-        observationId: url.searchParams.get("observationId") ?? ""
-      }).then((result) => {
-        recordObservation("catalog-returned");
-        sendJson(response, 200, result);
-      }).catch((error) => {
-        recordObservation("observation-rejected", error.code ?? "SESSION_TOOL_CATALOG_FAILED");
-        sendJson(response, errorStatus(error, 403), {
-          error: error.message, code: error.code ?? "SESSION_TOOL_CATALOG_FAILED"
-        });
-      });
-    } catch (error) {
-      recordObservation("authorization-rejected", error.code ?? "SESSION_TOOL_CATALOG_FAILED");
-      sendJson(response, errorStatus(error, 403), { error: error.message, code: error.code ?? "SESSION_TOOL_CATALOG_FAILED" });
-    }
-    return;
-  }
-
-  if (request.method === "POST" && url.pathname === "/internal/work-chat/tool") {
-    readJson(request)
-      .then(async (input) => {
-        const actorId = typeof request.headers["x-corptie-agent-id"] === "string"
-          ? request.headers["x-corptie-agent-id"].trim()
-          : "";
-        const requestedSessionId = typeof input.sessionId === "string" ? input.sessionId.trim() : "";
-        const session = (requestedSessionId ? store.getSession(requestedSessionId) : null)
-          ?? store.listSessionsByAgent(actorId).find((candidate) =>
-            candidate.sessionKind === "workChat" && candidate.workId === input.workId
-          );
-        const boundAgent = session ? collaborationCore.getAgentForSession(session.id) : null;
-        if (!actorId || !session || session.sessionKind !== "workChat"
-          || session.workId !== input.workId
-          || (session.agentId !== actorId && boundAgent?.agentId !== actorId)) {
-          const error = new Error("Work Chat tool scope is invalid or no longer active.");
-          error.code = "WORK_CHAT_SCOPE_REQUIRED";
-          throw error;
-        }
-        const result = await toolHostService.execute({
-          actorId,
-          tool: input.tool,
-          arguments: input.arguments ?? {},
-          metadata: sessionToolMetadata(session)
-        });
-        sendJson(response, 200, result);
-      })
-      .catch((error) => sendJson(response, errorStatus(error, 403), {
-        error: error.message,
-        code: error.code ?? "WORK_CHAT_TOOL_FAILED"
-      }));
-    return;
-  }
-
-  if (handleCollaborationHttpRequest({
-    request,
-    response,
-    url,
-    core: collaborationCore,
-    sessionCollaborationService: sessionCollaborationV2Enabled ? sessionCollaborationService : null,
-    sessionChannelService,
-    onConfirmationStaged: async (confirmation) => {
-      emitEvent("CollaborationConfirmationRequested", {
-        sessionId: confirmation.sourceSessionId,
-        confirmation
-      }, { sessionId: confirmation.sourceSessionId });
-    },
-    onConfirmationResolved: resolveCollaborationConfirmation,
-    onChannelRequestStaged: async (channelRequest) => {
-      emitEvent("SessionChannelAuthorizationRequested", {
-        sessionId: channelRequest.requestingSessionId,
-        channelRequest
-      }, { sessionId: channelRequest.requestingSessionId });
-    },
-    onChannelRequestResolved: resolveSessionChannelRequest,
-    onChannelMessageCreated: async (result) => {
-      projectSessionChannelMessageForSender(result);
-      await syncSessionChannelDeliveriesIntoAgentWorkQueue();
-    },
-    onListWorkspaces: (agentId, metadata) => sessionWorkspaceOperations.listWorkspaces(metadata, agentId),
-    onCreateWorktree: (agentId, input, metadata) => sessionWorkspaceOperations.createWorktree(metadata, agentId, input),
-    onSwitchWorkspace: (agentId, input, metadata) => sessionWorkspaceOperations.switchWorkspace(metadata, agentId, input),
-    onMemoryOperation: (agentId, tool, args, metadata) => memoryOperationService.execute({
-      actorId: agentId,
-      tool,
-      arguments: args,
-      metadata
-    }),
-    onSearchSkills: (agentId, intent) => skillRegistryService.searchForAgent(agentId, intent),
-    onLoadSkill: (agentId, skillId) => skillRegistryService.loadForAgent(agentId, skillId),
-    onReportTaskAcceptance: reportTaskAcceptanceForAgent
-  })) {
-    return;
-  }
-
-  if (handleSessionContextReferenceHttpRequest({
-    request,
-    response,
-    url,
-    service: sessionContextReferenceService
-  })) {
-    return;
-  }
-
-  if (handleScheduledSessionTaskHttpRequest({
-    request,
-    response,
-    url,
-    service: scheduledSessionTaskService,
-    resolveActor: scheduledSessionHttpActor,
-    resolveCurrentLogicalSessionId: scheduledSessionHttpLogicalSessionId,
-    observePerformance: (measurement) => {
-      console.info(`[scheduled-task-performance] ${JSON.stringify({ stage: "http", ...measurement })}`);
-    }
-  })) {
-    return;
-  }
-
-  if (handleArtifactHttpRequest({ request, response, url, service: artifactService })) {
-    return;
-  }
-  if (handleBenchmarkHttpRequest({ request, response, url, controlPlane: benchmarkControlPlane })) {
-    return;
-  }
-
-  if (handleCodeTaskObservabilityHttpRequest({ request, response, url, service: turnObservability })) {
-    return;
-  }
-
-  if (url.pathname.startsWith("/ssh/")) {
-    handleSshWorkspaceHttpRequest({
-      request, response, url,
-      repository: store.sshWorkspaces,
-      ...getSshWorkspaceServices()
-    }).catch(() => {
-      if (!response.headersSent) sendJson(response, 500, { error: "SSH configuration operation failed." });
-    });
-    return;
-  }
-
-  if (url.pathname === "/mcp-servers" || url.pathname.startsWith("/mcp-servers/")
-    || url.pathname === "/mcp-availability"
-    || /^\/agents\/[^/]+\/mcp-servers(?:\/[^/]+)?$/.test(url.pathname)
-    || /^\/sessions\/[^/]+\/mcp-availability$/.test(url.pathname)) {
-    handleMcpRegistryHttpRequest({ request, response, url, service: mcpRegistryService,
-      availabilityService: mcpSessionAvailabilityService,
-      onChanged: (type, payload) => emitEvent(type, payload) }).catch((error) => {
-      if (!response.headersSent) sendJson(response, 500, { code: "MCP_MANAGEMENT_FAILED", error: error.message });
-    });
-    return;
-  }
-
-  if (handleEntityHttpRequest({
-    request,
-    response,
-    url,
-    workService,
-    hubService,
-    router: collaborationRouter,
-    memoryExtractor,
-    memoryRecallService,
-    memoryLifecycleService,
-    assistantService,
-    startWorkSession: (input) => workSessionStartApplicationService.start(input),
-    defaultSessionProviderId: agentProviderRegistry.defaultProviderId,
-    getTaskStartup: (input) => workSessionStartApplicationService.getReceipt(input),
-    getSessionStartupBinding: (logicalSessionId) => workSessionStartApplicationService.getSessionBinding(logicalSessionId),
-    launchAgentSession,
-    workDiscussionService,
-    ensureWorkChatSession,
-    createSession: (input) => {
-      const providerId = requestedProviderId(input.providerId ?? input.agent);
-      return createSessionThroughApplication(providerId, input, { source: "http" });
-    },
-    backgroundAgentService,
-    skillRegistryService,
-    inspectTaskWorktree,
-    reclaimTaskWorktree,
-    inspectTaskDeletion: (taskId, actor) => taskDeletionService.inspect(taskId, actor),
-    deleteTaskSafely: (taskId, input, actor) => taskDeletionService.request(taskId, input, actor),
-    getTaskDeletionOperation: (operationId) => taskDeletionService.getOperation(operationId),
-    restartTask: restartTaskForEntityRoutes,
-    setTaskArchived: setTaskArchivedForEntityRoutes,
-    restoreTaskExecution: (taskId) => taskExecutionOrchestrator.restore(taskId),
-    taskCompletionService,
-    resolveAgentAvailability: (agent) => {
-      return { status: "available", reason: null };
-    },
-    suggestAgentSessionTitle: (agent) => resolveAvailableAgentSessionTitle(
-      knownSessionsForTitleValidation(),
-      agent.name,
-      null,
-      reservedSessionTitleKeys
-    ),
-    observeTaskPerformance: (measurement) => {
-      console.info(`[task-performance] ${JSON.stringify(measurement)}`);
-    },
-    observeFormAssistPerformance: (measurement) => {
-      console.info(`[form-assist-performance] ${JSON.stringify(measurement)}`);
-    },
-    onEntityChanged: (type, payload) => emitEvent(type, payload)
-  })) {
-    return;
-  }
-
-  // DSH Session log 下载（路径 A 第 1 层）：/api/session.export 是 HTTP 端点而非 JSON-RPC，
-  // 前端先 HEAD 探活（要求 response.ok），再以 GET 触发浏览器下载 ZIP。
-  // 必须在 /api/session.* 的 JSON-RPC 分发之前拦截，否则会落到 session.export 的
-  // dispatch switch（未实现）而 404。文件名约定由前端 sessionLogZipFilename 决定，
-  // 后端只负责返回有效 ZIP 字节。
-  if (url.pathname === "/api/session.export") {
-    handleSessionExport({ request, response, url });
-    return;
-  }
-
-  // DSH Session RPC 适配层（路径 A 第 1 层）：让 DSH web 前端渲染并驱动 Corptie 会话。
-  // 接管 /api/session.*、/api/subagent.*，以及 boot 握手宿主级端点
-  // host.describe / settings.describe / workspace.list，映射到 SessionApplicationService + store。
-  // handleDshRpcRequest 是 async（需 readJson），用 then 链；route 本身保持同步。
-  if (
-    url.pathname.startsWith("/api/session.")
-    || url.pathname.startsWith("/api/subagent.")
-    || url.pathname === "/api/host.describe"
-    || url.pathname === "/api/settings.describe"
-    || url.pathname === "/api/settings.mutate"
-    || url.pathname === "/api/workspace.list"
-  ) {
-    handleDshRpcRequest({
-      request,
-      response,
-      url,
-      sessionApplicationService,
-      store,
-      listStoredSessions: listGatewaySessions,
-      sendJson,
-      readJson,
-      createSession: (input, dshContext = {}) => createSessionThroughApplication(
-        "codex-app-server",
-        input,
-        { source: "dsh", ...dshContext }
-      ),
-      sendSessionMessage: async (sessionId, text) => {
-        publishDshPromptStart(sessionId, text);
-        try {
-          return await sendUnifiedSessionMessage(sessionId, text, { type: "dsh" });
-        } catch (error) {
-          publishDshPromptFailure(sessionId, error?.message ?? "Send failed");
-          throw error;
-        }
-      }
-    }).then((handled) => {
-      if (!handled) {
-        sendJson(response, 404, { error: "dsh rpc not handled" });
-      }
-    }).catch((error) => {
-      console.error("[dsh-adapter] unhandled error:", error?.message ?? error);
-      if (!response.headersSent) {
-        sendJson(response, 500, { error: "internal error" });
-      }
-    });
-    return;
-  }
-
-  // DSH web 前端静态快照（路径 B2）：服务 DSH 的 React + Cordis 前端（脱离 DSH host），
-  // 让 WKWebView 加载 Corptie backend 直接提供的 index.html + 插件 bundle + assets，
-  // 而 /api/session.* 由上方 dshRpcAdapter 响应（同源，无需桥接）。
-  // 只接管 GET/HEAD 的 /、/assets/*、/plugins/*、/manifest.webmanifest、/favicon.svg。
-  if (isDshWebStaticPath(request, url.pathname)) {
-    handleDshWebStatic({ request, response, url }).catch((error) => {
-      console.error("[dsh-web-static] unhandled error:", error?.message ?? error);
-      if (!response.headersSent) {
-        sendJson(response, 500, { error: "internal error" });
-      }
-    });
-    return;
-  }
-
-  if (request.method === "GET" && url.pathname === "/health") {
-    sendJson(response, 200, {
-      ok: true,
-      service: "corptie-backend",
-      developmentPreview,
-      version: "0.5.4",
-      time: now(),
-      storeReady: backendStoreReady,
-      maintenance: store.migrationInProgress,
-      dataRootMigration: dataRootMigrationCoordinator.status(),
-      projectCode: (() => {
-        const readiness = projectCodeIndexStore.getReadiness();
-        return {
-          l0Exact: "ready",
-          l1Catalog: readiness.status === "ready" ? "ready" : "degraded",
-          l2Symbols: readiness.status === "ready" ? "ready" : "degraded",
-          semantic: projectCodeRunIsolationPort ? "ready" : "unsupported",
-          reasonCode: readiness.status === "unavailable" ? readiness.code : null,
-          prewarm: projectCodeApplicationService.prewarmSummary(),
-          freshness: projectCodeFreshnessMonitor.summary()
-        };
-      })()
-    });
-    return;
-  }
-
-  if (request.method === "GET" && url.pathname === "/settings") {
-    sendJson(response, 200, {
-      ...store.settings(),
-      developmentPreview,
-      dataRootMigration: dataRootMigrationCoordinator.status()
-    });
-    return;
-  }
-
-  if (request.method === "GET" && url.pathname === "/data-root-migrations/current") {
-    sendJson(response, 200, { operation: dataRootMigrationCoordinator.status() });
-    return;
-  }
-
-  const providerModelsMatch = url.pathname.match(/^\/providers\/([^/]+)\/models$/);
-  if (request.method === "GET" && providerModelsMatch) {
-    const providerId = decodeURIComponent(providerModelsMatch[1]);
-    // listModels 在 provider 不存在时会同步抛 AgentProviderNotFoundError；
-    // 用 Promise.resolve().then() 包裹，把同步异常转为 rejection，交给 .catch 统一处理，
-    // 避免未捕获异常导致进程崩溃（例如前端仍引用已删除的 codex-pty provider）。
-    Promise.resolve()
-      .then(() => sessionApplicationService.listModels(providerId, {
-        refresh: url.searchParams.get("refresh") === "true"
-      }))
-      .then((models) => sendJson(response, 200, models))
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
-        error: error.message,
-        code: error.code ?? null
-      }));
-    return;
-  }
-
-  if (request.method === "PATCH" && url.pathname === "/settings") {
-    readJson(request)
-      .then(async (input) => {
-        const before = store.settings();
-        if (Object.hasOwn(input, "dataRoot")
-          && (typeof input.dataRoot !== "string" || !input.dataRoot.trim())) {
-          const error = new TypeError("Data Root must be a non-empty absolute path.");
-          error.code = "DATA_ROOT_INVALID";
-          throw error;
-        }
-        const requestedDataRoot = typeof input.dataRoot === "string" ? input.dataRoot.trim() : null;
-        if (Object.hasOwn(input, "expectedSourceDataRoot")
-          && (typeof input.expectedSourceDataRoot !== "string" || !input.expectedSourceDataRoot.trim())) {
-          const error = new TypeError("Expected source Data Root must be a non-empty absolute path.");
-          error.code = "DATA_ROOT_INVALID";
-          throw error;
-        }
-        const expectedSourceDataRoot = typeof input.expectedSourceDataRoot === "string"
-          ? input.expectedSourceDataRoot.trim()
-          : null;
-        const activeDataRoot = store.settings().dataRoot;
-        const dataRootChangeRequested = requestedDataRoot
-          && resolve(requestedDataRoot) !== resolve(activeDataRoot);
-        if (dataRootChangeRequested && expectedSourceDataRoot
-          && resolve(expectedSourceDataRoot) !== resolve(activeDataRoot)) {
-          const error = new Error("The active Data Root changed after the settings form was loaded. Reload settings before migrating.");
-          error.code = "DATA_ROOT_SOURCE_CHANGED";
-          error.statusCode = 409;
-          error.details = { activeDataRoot };
-          throw error;
-        }
-        const { expectedSourceDataRoot: _expectedSourceDataRoot, ...settingsInput } = input;
-        const settingsPatch = { ...settingsInput, dataRoot: activeDataRoot };
-        const settings = await store.updateSettings(settingsPatch);
-        const codexBackendChanged = JSON.stringify(before.codexBackend) !== JSON.stringify(settings.codexBackend);
-        const codexProxyChanged = JSON.stringify(before.agentProxy?.codex) !== JSON.stringify(settings.agentProxy?.codex);
-        if (codexBackendChanged || codexProxyChanged) {
-          await codexRuntime.close();
-        }
-        const operation = dataRootChangeRequested
-          ? await dataRootMigrationCoordinator.migrate(requestedDataRoot)
-          : null;
-        return {
-          ...settings,
-          dataRootMigration: operation ?? dataRootMigrationCoordinator.status()
-        };
-      })
-      .then((settings) => {
-        configureChoiceParserRuntime({
-          ...(settings.choiceParser ?? {}),
-          agentProxy: settings.agentProxy
-        });
-        sendJson(response, 200, settings);
-      })
-      .catch((error) => {
-        sendJson(response, errorStatus(error, 400), {
-          error: error.message,
-          code: error.code ?? "SETTINGS_UPDATE_FAILED",
-          details: error.details ?? null,
-          operation: dataRootMigrationCoordinator.status()
-        });
-      });
-    return;
-  }
-
-  if (request.method === "GET" && url.pathname === "/feishu/status") {
-    sendJson(response, 200, feishuGateway.status());
-    return;
-  }
-
-  if (request.method === "GET" && url.pathname === "/feishu/profiles") {
-    feishuGateway.listProfiles()
-      .then((profiles) => sendJson(response, 200, { profiles }))
-      .catch((error) => sendJson(response, 502, { error: error.message }));
-    return;
-  }
-
-  if (request.method === "GET" && url.pathname === "/feishu/bots") {
-    sendJson(response, 200, { bots: feishuGateway.listBots() });
-    return;
-  }
-
-  if (request.method === "POST" && url.pathname === "/feishu/bots") {
-    readJson(request)
-      .then(async (input) => {
-        try {
-          return await feishuGateway.createBot(input);
-        } catch (error) {
-          const mode = typeof input.profile === "string" && input.profile.trim() ? "profile" : "credentials";
-          const stage = typeof error.feishuStage === "string" ? error.feishuStage : "validation";
-          console.error(
-            `[feishu] create bot failed mode=${mode} stage=${stage} error=${formatFeishuFailureForLog(error, [input.appSecret])}`
-          );
-          throw error;
-        }
-      })
-      .then((bot) => {
-        emitEvent("FeishuBotCreated", { bot });
-        sendJson(response, 201, { bot });
-      })
-      .catch((error) => sendJson(response, 400, { error: error.message }));
-    return;
-  }
-
-  const feishuBotMatch = url.pathname.match(/^\/feishu\/bots\/([^/]+)$/);
-  if (request.method === "PATCH" && feishuBotMatch) {
-    const botId = decodeURIComponent(feishuBotMatch[1]);
-    readJson(request)
-      .then((input) => feishuGateway.updateBot(botId, input))
-      .then((bot) => {
-        if (!bot) {
-          sendJson(response, 404, { error: "Feishu bot not found." });
-          return;
-        }
-        emitEvent("FeishuBotUpdated", { bot });
-        sendJson(response, 200, { bot });
-      })
-      .catch((error) => sendJson(response, 400, { error: error.message }));
-    return;
-  }
-
-  if (request.method === "DELETE" && feishuBotMatch) {
-    const botId = decodeURIComponent(feishuBotMatch[1]);
-    feishuGateway.deleteBot(botId)
-      .then((deleted) => {
-        if (!deleted) {
-          sendJson(response, 404, { error: "Feishu bot not found." });
-          return;
-        }
-        emitEvent("FeishuBotDeleted", { botId });
-        sendJson(response, 200, { deleted: true });
-      })
-      .catch((error) => sendJson(response, 500, { error: error.message }));
-    return;
-  }
-
-  const feishuPairingMatch = url.pathname.match(/^\/feishu\/bots\/([^/]+)\/pairing-code$/);
-  if (request.method === "POST" && feishuPairingMatch) {
-    const botId = decodeURIComponent(feishuPairingMatch[1]);
-    readJson(request)
-      .catch(() => ({}))
-      .then((input) => feishuGateway.createPairingCode(botId, Number(input.ttlMs) || undefined))
-      .then((pairing) => {
-        if (!pairing) {
-          sendJson(response, 404, { error: "Feishu bot not found." });
-          return;
-        }
-        sendJson(response, 201, pairing);
-      })
-      .catch((error) => sendJson(response, 400, { error: error.message }));
-    return;
-  }
-
-  const feishuAssignmentMatch = url.pathname.match(/^\/feishu\/bots\/([^/]+)\/assignment$/);
-  if (request.method === "POST" && feishuAssignmentMatch) {
-    const botId = decodeURIComponent(feishuAssignmentMatch[1]);
-    readJson(request)
-      .then(async (input) => {
-        const binding = input.bindingId
-          ? feishuGateway.getBot(botId)?.bindings.find((item) => item.id === input.bindingId)
-          : feishuGateway.getBot(botId)?.bindings[0];
-        if (!binding) {
-          const error = new Error("This bot does not have a verified Feishu user.");
-          error.code = "FEISHU_NOT_BOUND";
-          throw error;
-        }
-        return feishuGateway.assignSession(botId, binding.id, String(input.sessionId || ""));
-      })
-      .then((assignment) => {
-        emitEvent("FeishuSessionAssigned", { assignment }, { sessionId: assignment.sessionId });
-        sendJson(response, 200, { assignment });
-      })
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
-        error: error.message,
-        code: error.code,
-        assignment: error.assignment
-      }));
-    return;
-  }
-
-  if (request.method === "DELETE" && feishuAssignmentMatch) {
-    const botId = decodeURIComponent(feishuAssignmentMatch[1]);
-    const previous = store.getFeishuAssignmentForBot(botId);
-    feishuGateway.releaseSession(botId);
-    if (previous) {
-      emitEvent("FeishuSessionReleased", { botId, sessionId: previous.sessionId }, { sessionId: previous.sessionId });
-    }
-    sendJson(response, 200, { released: Boolean(previous) });
-    return;
-  }
-
-  const feishuBindingMatch = url.pathname.match(/^\/feishu\/bindings\/([^/]+)$/);
-  if (request.method === "DELETE" && feishuBindingMatch) {
-    const bindingId = decodeURIComponent(feishuBindingMatch[1]);
-    const binding = feishuGateway.listBots()
-      .flatMap((bot) => bot.bindings)
-      .find((item) => item.id === bindingId);
-    if (!binding) {
-      sendJson(response, 404, { error: "Feishu binding not found." });
-      return;
-    }
-    store.revokeFeishuBinding(bindingId);
-    emitEvent("FeishuBindingRevoked", { bindingId, botId: binding.botId });
-    sendJson(response, 200, { revoked: true });
-    return;
-  }
-
-  if (request.method === "GET" && url.pathname === "/session-timelines/revisions") {
-    const activeSessionIds = activeStoredSessionProjections(store).map((session) => session.id);
-    sendJson(response, 200, {
-      sessions: [...store.listSessionTimelineRevisions(activeSessionIds)].map(([sessionId, revision]) => ({
-        sessionId,
-        timelineRevision: revision
-      }))
-    });
-    return;
-  }
-
-  const storedSessionSnapshotMatch = url.pathname.match(/^\/sessions\/([^/]+)\/stored-snapshot$/);
-  if (request.method === "GET" && storedSessionSnapshotMatch) {
-    const sessionId = decodeURIComponent(storedSessionSnapshotMatch[1]);
-    getStoredSessionSnapshot(sessionId)
-      .then((snapshot) => sendJson(response, 200, {
-        timelineRevision: snapshot.timelineRevision,
-        session: snapshot
-      }))
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
-        error: error.message,
-        code: error.code ?? null
-      }));
-    return;
-  }
-
-  const sessionTimelineChangesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/timeline\/changes$/);
-  if (request.method === "GET" && sessionTimelineChangesMatch) {
-    const sessionId = decodeURIComponent(sessionTimelineChangesMatch[1]);
-    sessionApplicationService.referenceFor(sessionId)
-      .then((reference) => getTimelineReadPool().readTimelineChanges({
-        sessionId: reference.sessionId,
-        after: Number(url.searchParams.get("after") ?? 0),
-        limit: Number(url.searchParams.get("limit") ?? 200)
-      }))
-      .then((result) => sendJson(response, result.snapshotRequired ? 410 : 200, result))
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
-        error: error.message,
-        code: error.code ?? null
-      }));
-    return;
-  }
-
-  const sessionUsageMatch = url.pathname.match(/^\/sessions\/([^/]+)\/usage$/);
-  if (request.method === "GET" && sessionUsageMatch) {
-    const sessionId = decodeURIComponent(sessionUsageMatch[1]);
-    const session = store.getSession(sessionId);
-    if (!session) {
-      sendJson(response, 404, { error: "Session not found." });
-      return;
-    }
-    readSessionUsage(sessionId, session)
-      .then((usage) => sendJson(response, 200, usage))
-      .catch((error) => sendJson(response, 503, { error: error.message }));
-    return;
-  }
-
-  const sessionEventsMatch = url.pathname.match(/^\/sessions\/([^/]+)\/events$/);
-  if (request.method === "GET" && sessionEventsMatch) {
-    const sessionId = decodeURIComponent(sessionEventsMatch[1]);
-    sessionApplicationService.referenceFor(sessionId)
-      .then((reference) => {
-        const hasAfter = url.searchParams.has("after");
-        const after = Number(url.searchParams.get("after") || 0);
-        const beforeSequence = url.searchParams.get("beforeSequence");
-        const limit = Number(url.searchParams.get("limit") || 200);
-        const events = beforeSequence != null || !hasAfter
-          ? store.listSessionEventPage(reference.sessionId, { beforeSequence, limit })
-          : store.listSessionEvents(reference.sessionId, after, limit);
-        sendJson(response, 200, {
-          sessionId: reference.logicalSessionId ?? reference.sessionId,
-          legacySessionId: reference.sessionId,
-          events,
-          lastEventSequence: store.lastSessionEventSequence(reference.sessionId),
-          beforeSequence: events[0]?.sequence ?? null,
-          hasMoreHistory: !hasAfter && events.length >= Math.max(1, Math.min(500, limit || 200))
-            && Number(events[0]?.sequence ?? 0) > 1
-        });
-      })
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
-        error: error.message,
-        code: error.code ?? null
-      }));
-    return;
-  }
-
-  const sessionReadReceiptMatch = url.pathname.match(/^\/sessions\/([^/]+)\/read-receipt$/);
-  if (request.method === "POST" && sessionReadReceiptMatch) {
-    const publicSessionId = decodeURIComponent(sessionReadReceiptMatch[1]);
-    readJson(request)
-      .then(async (input) => {
-        const reference = await sessionApplicationService.referenceFor(publicSessionId);
-        const receipt = store.markSessionMessagesRead(
-          reference.sessionId,
-          input?.throughSequence
-        );
-        setImmediate(publishStateChangesIfNeeded);
-        sendJson(response, 200, {
-          sessionId: reference.logicalSessionId ?? reference.sessionId,
-          legacySessionId: reference.sessionId,
-          ...receipt
-        });
-      })
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
-        error: error.message,
-        code: error.code ?? null
-      }));
-    return;
-  }
-
-  const sessionHistoryMatch = url.pathname.match(/^\/sessions\/([^/]+)\/history$/);
-  if (request.method === "GET" && sessionHistoryMatch) {
-    const sessionId = decodeURIComponent(sessionHistoryMatch[1]);
-    const before = url.searchParams.get("before") || null;
-    const limit = normalizeSessionHistoryLimit(
-      url.searchParams.get("limit"),
-      MAX_SESSION_HISTORY_PAGE
-    );
-    readSessionHistory(sessionId, before, limit)
-      .then((result) => sendJson(response, 200, result))
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
-    return;
-  }
-
-  const sessionTimelineWindowMatch = url.pathname.match(/^\/sessions\/([^/]+)\/timeline\/window$/);
-  if (request.method === "GET" && sessionTimelineWindowMatch) {
-    const sessionId = decodeURIComponent(sessionTimelineWindowMatch[1]);
-    const anchorKind = url.searchParams.get("anchorKind") === "turn" ? "turn" : "item";
-    const anchorId = url.searchParams.get("anchor") || null;
-    const before = normalizeSessionHistoryLimit(
-      url.searchParams.get("before") ?? 40,
-      MAX_SESSION_HISTORY_PAGE
-    );
-    const after = normalizeSessionHistoryLimit(
-      url.searchParams.get("after") ?? 40,
-      MAX_SESSION_HISTORY_PAGE
-    );
-    const limit = normalizeSessionHistoryLimit(
-      url.searchParams.get("limit") ?? DEFAULT_SESSION_HISTORY_WINDOW,
-      DEFAULT_SESSION_HISTORY_WINDOW
-    );
-    readSessionTimelineWindow(sessionId, { anchorKind, anchorId, before, after, limit })
-      .then((result) => sendJson(response, 200, result))
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
-    return;
-  }
-
-  const sessionMessagesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/messages$/);
-  if (request.method === "POST" && sessionMessagesMatch) {
-    const sessionId = decodeURIComponent(sessionMessagesMatch[1]);
-    const latencyTrace = sessionMessageLatencyTraceFromHeaders(request.headers, {
-      traceId: `message:${randomUUID()}`,
-      sessionId,
-      serverReceivedAtMs: Date.now()
-    });
-    logSessionMessageLatency(latencyTrace, "server_request_received");
-    let failureStage = "request_parse";
-    readJson(request)
-      .then((input) => {
-        failureStage = "message_dispatch";
-        logSessionMessageLatency(latencyTrace, "server_request_parsed");
-        return sendUnifiedSessionMessage(
-          sessionId,
-          input,
-          userMessageCommandSource(input),
-          { ...input, latencyTrace }
-        );
-      })
-      .then((result) => sendJson(response, 202, result))
-      .catch((error) => {
-        const status = unifiedErrorStatus(error);
-        logSessionMessageFailure(latencyTrace, error, status, failureStage);
-        sendJson(response, status, {
-          error: error.message,
-          code: error.code,
-          traceId: latencyTrace?.traceId,
-          ...(error.details && typeof error.details === "object" ? { details: error.details } : {})
-        });
-      });
-    return;
-  }
-
-  const sessionImagesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/images$/);
-  if (sessionImagesMatch) {
-    const sessionId = decodeURIComponent(sessionImagesMatch[1]);
-    if (request.method === "POST") {
-      readJson(request)
-        .then((input) => chatResourceService.importImage(requireSessionReference(sessionId), input))
-        .then((image) => sendJson(response, 201, { image }))
-        .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
-      return;
-    }
-    if (request.method === "GET") {
-      Promise.resolve()
-        .then(() => chatResourceService.readImage(
-          requireSessionReference(sessionId),
-          url.searchParams.get("path")
-        ))
-        .then((image) => {
-          response.writeHead(200, {
-            "content-type": image.mimeType,
-            "content-length": image.byteLength,
-            "cache-control": "private, max-age=31536000, immutable"
-          });
-          response.end(image.data);
-        })
-        .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
-      return;
-    }
-    if (request.method === "DELETE") {
-      readJson(request)
-        .then((input) => chatResourceService.removeUnsentImage(
-          requireSessionReference(sessionId),
-          input.managedPath
-        ))
-        .then((result) => sendJson(response, 200, result))
-        .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
-      return;
-    }
-  }
-
-  const sessionInterruptMatch = url.pathname.match(/^\/sessions\/([^/]+)\/interrupt$/);
-  if (request.method === "POST" && sessionInterruptMatch) {
-    const sessionId = decodeURIComponent(sessionInterruptMatch[1]);
-    readJson(request)
-      .catch(() => ({}))
-      .then((input) => interruptUnifiedSession(
-        sessionId,
-        input.source && typeof input.source === "object" ? input.source : { type: "desktop" }
-      ))
-      .then((session) => sendJson(response, 200, { session }))
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
-    return;
-  }
-
-  const sessionApprovalMatch = url.pathname.match(/^\/sessions\/([^/]+)\/actions\/approve$/);
-  if (request.method === "POST" && sessionApprovalMatch) {
-    const sessionId = decodeURIComponent(sessionApprovalMatch[1]);
-    readJson(request)
-      .then((input) => respondUnifiedSessionApproval(
-        sessionId,
-        input,
-        input.source && typeof input.source === "object" ? input.source : { type: "desktop" }
-      ))
-      .then((session) => sendJson(response, 200, { session }))
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
-        error: error.message,
-        code: error.code ?? null
-      }));
-    return;
-  }
-
-  const sessionUserInputMatch = url.pathname.match(/^\/sessions\/([^/]+)\/actions\/user-input$/);
-  if (request.method === "POST" && sessionUserInputMatch) {
-    const sessionId = decodeURIComponent(sessionUserInputMatch[1]);
-    readJson(request)
-      .then((input) => respondUnifiedSessionUserInput(sessionId, input, { type: "desktop" }))
-      .then((session) => sendJson(response, 200, { session }))
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
-        error: error.message, code: error.code ?? null
-      }));
-    return;
-  }
-
-  const sessionModelMatch = url.pathname.match(/^\/sessions\/([^/]+)\/model$/);
-  if (request.method === "POST" && sessionModelMatch) {
-    const sessionId = decodeURIComponent(sessionModelMatch[1]);
-    readJson(request)
-      .then(async (input) => {
-        const model = typeof input.model === "string" ? input.model.trim() : "";
-        if (!model) {
-          sendJson(response, 400, { error: "Model is required" });
-          return;
-        }
-        const reference = requireSessionReference(sessionId);
-        const session = await sessionApplicationService.switchModel(sessionId, model);
-        emitEvent("SessionModelChanged", {
-          sessionId: reference.sessionId,
-          logicalSessionId: reference.logicalSessionId,
-          model
-        }, { sessionId: reference.sessionId });
-        sendJson(response, 202, { session, model });
-      })
-      .catch((error) => {
-        sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code });
-      });
-    return;
-  }
-
-  const sessionReasoningMatch = url.pathname.match(/^\/sessions\/([^/]+)\/reasoning$/);
-  if (request.method === "POST" && sessionReasoningMatch) {
-    const sessionId = decodeURIComponent(sessionReasoningMatch[1]);
-    readJson(request)
-      .then(async (input) => {
-        const reasoningLevel = typeof input.reasoningLevel === "string" ? input.reasoningLevel.trim() : "";
-        if (!reasoningLevel) {
-          sendJson(response, 400, { error: "Reasoning level is required" });
-          return;
-        }
-
-        const reference = requireSessionReference(sessionId);
-        const session = await sessionApplicationService.switchReasoning(sessionId, reasoningLevel);
-        emitEvent("SessionReasoningChanged", {
-          sessionId: reference.sessionId,
-          logicalSessionId: reference.logicalSessionId,
-          reasoningLevel
-        }, { sessionId: reference.sessionId });
-        sendJson(response, 202, { session, reasoningLevel });
-      })
-      .catch((error) => {
-        sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code });
-      });
-    return;
-  }
-
-  const sessionPermissionsMatch = url.pathname.match(/^\/sessions\/([^/]+)\/permissions$/);
-  if (request.method === "POST" && sessionPermissionsMatch) {
-    const sessionId = decodeURIComponent(sessionPermissionsMatch[1]);
-    readJson(request)
-      .then(async (input) => {
-        const sandbox = normalizeCodexSandbox(input.sandbox, "");
-        const approvalPolicy = normalizeCodexApprovalPolicy(input.approvalPolicy, "");
-        if (!["workspace-write", "danger-full-access", "read-only"].includes(input.sandbox)) {
-          sendJson(response, 400, { error: "Unsupported sandbox mode" });
-          return;
-        }
-        if (!["on-request", "ask-risky", "never", "on-failure"].includes(input.approvalPolicy)) {
-          sendJson(response, 400, { error: "Unsupported approval policy" });
-          return;
-        }
-
-        const reference = await sessionApplicationService.referenceFor(sessionId);
-        const session = await sessionApplicationService.updatePermissions(
-          sessionId,
-          { sandbox, approvalPolicy },
-          { source: { type: "desktop" } }
-        );
-        emitEvent("SessionPermissionsChanged", {
-          sessionId: reference.sessionId,
-          logicalSessionId: reference.logicalSessionId,
-          sandbox,
-          approvalPolicy
-        }, { sessionId: reference.sessionId });
-        sendJson(response, 202, { session, sandbox, approvalPolicy });
-      })
-      .catch((error) => {
-        sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code ?? null });
-      });
-    return;
-  }
-
-  if (request.method === "POST" && url.pathname === "/settings/choice-parser/test") {
-    readJson(request)
-      .then(async (input) => {
-        const choiceParser = {
-          ...(store.settings().choiceParser ?? {}),
-          ...(input?.choiceParser ?? {}),
-          agentProxy: input?.agentProxy ?? store.settings().agentProxy
-        };
-        configureChoiceParserRuntime(choiceParser);
-        const sample = [
-          "The agent is waiting for your choice:",
-          "",
-          "1. Open the README and summarize it",
-          "2. Run the test suite",
-          "3. Cancel and wait for more instructions",
-          "",
-          "Please choose one option."
-        ].join("\n");
-        const startedAt = Date.now();
-        const parsed = await parseChoiceStageWithConfiguredParser(sample, choiceParser, {
-          id: "settings-test",
-          provider: "settings"
-        });
-        const durationMs = Date.now() - startedAt;
-        if (!parsed || !Array.isArray(parsed.options) || parsed.options.length < 2) {
-          return {
-            ok: false,
-            error: "Parser did not return enough options for the sample choice prompt.",
-            options: parsed?.options ?? [],
-            durationMs
-          };
-        }
-        return {
-          ok: true,
-          options: parsed.options,
-          confidence: parsed.confidence ?? 0,
-          source: parsed.source ?? choiceParser?.provider ?? "",
-          durationMs
-        };
-      })
-      .then((result) => {
-        sendJson(response, result.ok ? 200 : 422, result);
-      })
-      .catch((error) => {
-        sendJson(response, 400, { ok: false, error: error.message });
-      });
-    return;
-  }
-
-  const providerConfigurationActionMatch = url.pathname.match(
-    /^\/providers\/([^/]+)\/(configuration\/validate|connection-test)$/
-  );
-  if (request.method === "POST" && providerConfigurationActionMatch) {
-    const providerId = decodeURIComponent(providerConfigurationActionMatch[1]);
-    const action = providerConfigurationActionMatch[2];
-    readJson(request)
-      .then((input) => agentProviderRegistry.invoke(
-        providerId,
-        action === "configuration/validate"
-          ? AGENT_PROVIDER_CAPABILITIES.CONFIGURATION_VALIDATE
-          : AGENT_PROVIDER_CAPABILITIES.CONNECTION_TEST,
-        input
-      ))
-      .then((result) => sendJson(response, 200, result))
-      .catch((error) => sendJson(response, errorStatus(error, error.statusCode ?? 400), {
-        ok: false,
-        error: error.message,
-        code: error.code ?? "PROVIDER_CONFIGURATION_FAILED",
-        retryable: error.retryable === true,
-        ...(Array.isArray(error.details) ? { details: error.details } : {})
-      }));
-    return;
-  }
-
-  if (url.pathname === "/first-run" && request.method === "GET") {
-    firstRunSetup.status().then((result) => sendJson(response, 200, result))
-      .catch((error) => sendJson(response, 400, { error: error.message }));
-    return;
-  }
-  if (request.method === "POST" && ["/first-run/provider", "/first-run/check", "/first-run/assistant", "/first-run/complete"].includes(url.pathname)) {
-    readJson(request).then(async (input) => {
-      if (url.pathname === "/first-run/check") return firstRunSetup.check(input);
-      if (url.pathname === "/first-run/provider") return firstRunSetup.setEnabled(input);
-      return url.pathname === "/first-run/assistant" ? firstRunSetup.prepareAssistant() : firstRunSetup.complete();
-    }).then((result) => sendJson(response, 200, result))
-      .catch((error) => sendJson(response, 400, { error: error.message }));
-    return;
-  }
-
-  if (request.method === "GET" && url.pathname === "/providers") {
-    sendJson(response, 200, {
-      defaultProviderId: agentProviderRegistry.defaultProviderId,
-      providers: agentProviderRegistry.descriptors()
-    });
-    return;
-  }
-
-  const projectWorkspacesMatch = url.pathname.match(/^\/projects\/([^/]+)\/workspaces$/);
-  const worktreeManagementRepositoryMatch = url.pathname.match(
-    /^\/worktree-management\/repositories\/([^/]+)$/
-  );
-  const worktreeManagementGitHubPushStatusMatch = url.pathname.match(
-    /^\/worktree-management\/repositories\/([^/]+)\/worktrees\/([^/]+)\/github-push-status$/
-  );
-  const worktreeManagementPreflightMatch = url.pathname.match(
-    /^\/worktree-management\/repositories\/([^/]+)\/integration-plans$/
-  );
-  const worktreeManagementCleanupMatch = url.pathname.match(
-    /^\/worktree-management\/repositories\/([^/]+)\/cleanup$/
-  );
-  const worktreeManagementDeleteMatch = url.pathname.match(
-    /^\/worktree-management\/repositories\/([^/]+)\/worktrees\/([^/]+)\/delete$/
-  );
-  const worktreeManagementJobMatch = url.pathname.match(
-    /^\/worktree-management\/jobs\/([^/]+)$/
-  );
-  const worktreeManagementJobActionMatch = url.pathname.match(
-    /^\/worktree-management\/jobs\/([^/]+)\/(confirm|retry|cancel|resolve-conflict)$/
-  );
-  const projectWorkspaceActionMatch = url.pathname.match(
-    /^\/projects\/([^/]+)\/workspaces\/([^/]+)\/actions\/([^/]+)$/
-  );
-  const projectDevelopmentServiceMatch = url.pathname.match(/^\/projects\/([^/]+)\/development-service$/);
-  const projectDevelopmentServiceActionMatch = url.pathname.match(
-    /^\/projects\/([^/]+)\/development-service\/actions\/([^/]+)$/
-  );
-  const projectWorkIntegrationsMatch = url.pathname.match(
-    /^\/projects\/([^/]+)\/works\/([^/]+)\/integrations$/
-  );
-  const projectWorkIntegrationConflictMatch = url.pathname.match(
-    /^\/projects\/([^/]+)\/works\/([^/]+)\/integrations\/([^/]+)\/conflict-task$/
-  );
-  const projectMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
-  if (request.method === "GET" && url.pathname === "/worktree-management/repositories") {
-    sendJson(response, 200, { repositories: worktreeIntegrationJobService.repositories() });
-    return;
-  }
-  if (request.method === "GET" && worktreeManagementRepositoryMatch) {
-    const repositoryId = decodeURIComponent(worktreeManagementRepositoryMatch[1]);
-    worktreeIntegrationJobService.repository(repositoryId, {
-      forceFresh: url.searchParams.get("forceFresh") === "true"
-    })
-      .then((result) => sendJson(response, 200, result))
-      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
-        error: error.message, code: error.code
-      }));
-    return;
-  }
-  if (request.method === "GET" && worktreeManagementGitHubPushStatusMatch) {
-    const repositoryId = decodeURIComponent(worktreeManagementGitHubPushStatusMatch[1]);
-    const worktreeId = decodeURIComponent(worktreeManagementGitHubPushStatusMatch[2]);
-    worktreeIntegrationJobService.worktreeGitHubPushStatus(repositoryId, worktreeId)
-      .then((result) => sendJson(response, 200, result))
-      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
-        error: error.message, code: error.code
-      }));
-    return;
-  }
-  if (request.method === "POST" && worktreeManagementPreflightMatch) {
-    const repositoryId = decodeURIComponent(worktreeManagementPreflightMatch[1]);
-    readJson(request)
-      .then((input) => worktreeIntegrationJobService.preflight(repositoryId, input))
-      .then((result) => sendJson(response, 201, { job: result }))
-      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
-        error: error.message, code: error.code
-      }));
-    return;
-  }
-  if (request.method === "POST" && worktreeManagementCleanupMatch) {
-    const repositoryId = decodeURIComponent(worktreeManagementCleanupMatch[1]);
-    readJson(request)
-      .then((input) => worktreeIntegrationJobService.cleanupMergedWorktrees(repositoryId, input))
-      .then((result) => {
-        emitEvent("WorktreeCleanupCompleted", { repositoryId, result });
-        sendJson(response, 200, { result });
-      })
-      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
-        error: error.message, code: error.code
-      }));
-    return;
-  }
-  if (request.method === "POST" && worktreeManagementDeleteMatch) {
-    const repositoryId = decodeURIComponent(worktreeManagementDeleteMatch[1]);
-    const worktreeId = decodeURIComponent(worktreeManagementDeleteMatch[2]);
-    readJson(request)
-      .then(() => worktreeIntegrationJobService.deleteWorktree(repositoryId, worktreeId))
-      .then((result) => {
-        emitEvent("WorktreeDeleted", { repositoryId, worktreeId, result });
-        sendJson(response, 200, { result });
-      })
-      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
-        error: error.message, code: error.code
-      }));
-    return;
-  }
-  if (request.method === "GET" && worktreeManagementJobMatch) {
-    try {
-      sendJson(response, 200, { job: worktreeIntegrationJobService.get(
-        decodeURIComponent(worktreeManagementJobMatch[1])
-      ) });
-    } catch (error) {
-      sendJson(response, error.statusCode ?? unifiedErrorStatus(error), { error: error.message, code: error.code });
-    }
-    return;
-  }
-  if (request.method === "POST" && worktreeManagementJobActionMatch) {
-    const jobId = decodeURIComponent(worktreeManagementJobActionMatch[1]);
-    const action = worktreeManagementJobActionMatch[2];
-    readJson(request)
-      .then((input) => action === "confirm"
-        ? worktreeIntegrationJobService.confirm(jobId, input)
-        : action === "cancel"
-          ? worktreeIntegrationJobService.cancel(jobId, input)
-          : action === "resolve-conflict"
-            ? worktreeIntegrationJobService.resolveConflictWithAgent(jobId)
-            : worktreeIntegrationJobService.retry(jobId))
-      .then((result) => sendJson(response, 202, { job: result }))
-      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
-        error: error.message, code: error.code
-      }));
-    return;
-  }
-  if (request.method === "GET" && projectWorkIntegrationsMatch) {
-    const projectId = decodeURIComponent(projectWorkIntegrationsMatch[1]);
-    const workId = decodeURIComponent(projectWorkIntegrationsMatch[2]);
-    projectWorktreeIntegrationService.status(projectId, workId)
-      .then((result) => sendJson(response, 200, result))
-      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
-        error: error.message,
-        code: error.code
-      }));
-    return;
-  }
-  if (request.method === "POST" && projectWorkIntegrationsMatch) {
-    const projectId = decodeURIComponent(projectWorkIntegrationsMatch[1]);
-    const workId = decodeURIComponent(projectWorkIntegrationsMatch[2]);
-    projectWorktreeIntegrationService.integrateCompleted(projectId, workId)
-      .then((result) => sendJson(response, 200, result))
-      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
-        error: error.message,
-        code: error.code
-      }));
-    return;
-  }
-  if (request.method === "POST" && projectWorkIntegrationConflictMatch) {
-    const projectId = decodeURIComponent(projectWorkIntegrationConflictMatch[1]);
-    const workId = decodeURIComponent(projectWorkIntegrationConflictMatch[2]);
-    const runId = decodeURIComponent(projectWorkIntegrationConflictMatch[3]);
-    readJson(request)
-      .then((input) => projectWorktreeIntegrationService.createConflictTask(
-        projectId,
-        workId,
-        runId,
-        input
-      ))
-      .then((result) => sendJson(response, result.reused ? 200 : 201, result))
-      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
-        error: error.message,
-        code: error.code
-      }));
-    return;
-  }
-  if (request.method === "GET" && projectWorkspacesMatch) {
-    const projectId = decodeURIComponent(projectWorkspacesMatch[1]);
-    projectApplicationService.listWorkspaces(projectId, {
-      activeWorkspaceId: url.searchParams.get("activeWorkspaceId")
-    })
-      .then((result) => sendJson(response, 200, result))
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
-    return;
-  }
-  if (request.method === "POST" && projectWorkspaceActionMatch) {
-    const projectId = decodeURIComponent(projectWorkspaceActionMatch[1]);
-    const workspaceId = decodeURIComponent(projectWorkspaceActionMatch[2]);
-    const action = decodeURIComponent(projectWorkspaceActionMatch[3]);
-    readJson(request)
-      .then((input) => projectApplicationService.runWorkspaceAction(projectId, workspaceId, action, input))
-      .then((result) => {
-        emitEvent("ProjectWorkspaceChanged", { projectId, workspaceId, action, result });
-        sendJson(response, 200, result);
-      })
-      .catch((error) => sendJson(response, errorStatus(error, unifiedErrorStatus(error)), {
-        error: error.message,
-        code: error.code,
-        unmergedCommitCount: error.unmergedCommitCount,
-        branchName: error.branchName
-      }));
-    return;
-  }
-  if (request.method === "GET" && projectDevelopmentServiceMatch) {
-    const projectId = decodeURIComponent(projectDevelopmentServiceMatch[1]);
-    projectApplicationService.readDevelopmentService(projectId)
-      .then((result) => sendJson(response, 200, result))
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
-    return;
-  }
-  if (request.method === "POST" && projectDevelopmentServiceActionMatch) {
-    const projectId = decodeURIComponent(projectDevelopmentServiceActionMatch[1]);
-    const action = decodeURIComponent(projectDevelopmentServiceActionMatch[2]);
-    readJson(request)
-      .then((input) => projectApplicationService.runDevelopmentServiceAction(projectId, action, input))
-      .then((result) => {
-        emitEvent("ProjectDevelopmentServiceChanged", { projectId, action, result });
-        sendJson(response, action === "initialize" || action === "update" ? 202 : 200, result);
-      })
-      .catch((error) => sendJson(response, errorStatus(error, unifiedErrorStatus(error)), {
-        error: error.message,
-        code: error.code
-      }));
-    return;
-  }
-  if (request.method === "GET" && projectMatch) {
-    const projectId = decodeURIComponent(projectMatch[1]);
-    projectApplicationService.readProject(projectId)
-      .then((result) => sendJson(response, 200, result))
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
-    return;
-  }
-
-  if (request.method === "GET" && url.pathname === "/sessions") {
-    const includeMock = url.searchParams.get("includeMock") === "true";
-    const archived = url.searchParams.get("archived") === "true";
-    let cursor;
-    try {
-      cursor = decodeSessionPageCursor(url.searchParams.get("cursor"));
-    } catch (error) {
-      sendJson(response, 400, { error: error.message, code: error.code });
-      return;
-    }
-    const requestedLimit = Number(url.searchParams.get("limit") ?? 50);
-    const limit = Number.isSafeInteger(requestedLimit) && requestedLimit > 0
-      ? Math.min(requestedLimit, 100)
-      : 50;
-    const requestedSessionKind = url.searchParams.get("sessionKind");
-    const sessionKind = requestedSessionKind && ["assistantChat", "workChat", "worker"].includes(requestedSessionKind)
-      ? requestedSessionKind
-      : null;
-    if (requestedSessionKind && !sessionKind) {
-      sendJson(response, 400, {
-        error: "Invalid Session kind filter.",
-        code: "INVALID_SESSION_KIND"
-      });
-      return;
-    }
-    const sessionId = url.searchParams.get("sessionId")?.trim() || null;
-    const mockSessions = includeMock ? Array.from(sessions.values()) : [];
-    const providerPage = listGatewaySessionPage({ archived, cursor, limit, sessionKind, sessionId });
-    const pageSessionIds = providerPage.items.map((session) => session.id);
-    const latestMessageTimes = store.listLatestSessionMessageTimes(pageSessionIds);
-    const messageCursors = store.listSessionMessageCursors(pageSessionIds);
-    const timelineRevisions = store.listSessionTimelineRevisions(pageSessionIds);
-    const providerSessions = providerPage.items.map((session) =>
-      withSessionMessageCursors(
-        withLastMessageTimestamp(session, latestMessageTimes.get(session.id)),
-        messageCursors.get(session.id),
-        timelineRevisions.get(session.id)
-      )
-    );
-    const providerCounts = providerSessions.reduce((counts, session) => {
-      const providerId = session.external?.provider ?? "unknown";
-      counts[providerId] = (counts[providerId] ?? 0) + 1;
-      return counts;
-    }, {});
-    sendJson(response, 200, {
-      sessions: sortSessionsForList([
-        ...providerSessions,
-        ...(archived ? [] : mockSessions)
-      ]),
-      sources: Object.fromEntries(agentProviderRegistry.descriptors().map((provider) => [
-        provider.id,
-        { ok: true, count: providerCounts[provider.id] ?? 0 }
-      ])),
-      mock: {
-        ok: true,
-        count: archived ? 0 : mockSessions.length,
-        included: includeMock && !archived
-      },
-      page: {
-        limit,
-        hasMore: providerPage.hasMore,
-        nextCursor: encodeSessionPageCursor(providerPage.nextCursor)
-      }
-    });
-    return;
-  }
-
-  if (request.method === "POST" && url.pathname === "/sessions") {
-    readJson(request)
-      .then(async (input) => {
-        const providerId = requestedProviderId(input.providerId ?? input.agent);
-        const session = await createSessionThroughApplication(providerId, input, { source: "http" });
-        sendJson(response, 201, { session });
-      })
-      .catch((error) => {
-        sendJson(response, errorStatus(error, unifiedErrorStatus(error)), sessionTitleErrorPayload(error));
-      });
-    return;
-  }
-
-  const sessionForkMatch = url.pathname.match(/^\/sessions\/([^/]+)\/fork$/);
-  if (sessionForkMatch && ["GET", "POST"].includes(request.method)) {
-    const sessionId = decodeURIComponent(sessionForkMatch[1]);
-    const operation = request.method === "GET"
-      ? sessionForkService.preview(sessionId, url.searchParams.get("itemId"))
-      : readJson(request).then(input => sessionForkService.create(sessionId, input));
-    operation.then(result => sendJson(response, request.method === "POST" ? 201 : 200, result))
-      .catch(error => sendJson(response, errorStatus(error, 409), { error: error.message, code: error.code ?? "FORK_FAILED" }));
-    return;
-  }
-
-  const sessionArchiveMatch = url.pathname.match(/^\/sessions\/([^/]+)\/archive$/);
-  if (request.method === "POST" && sessionArchiveMatch) {
-    readJson(request)
-      .catch(() => ({}))
-      .then(async (input) => {
-        const rawId = decodeURIComponent(sessionArchiveMatch[1]);
-        const archived = input.archived !== false;
-        const storedSession = store.getSession(rawId);
-        if (!storedSession) {
-          sendJson(response, 404, { error: "Session not found" });
-          return;
-        }
-        assertManualSessionArchiveAllowed(storedSession);
-        if (rawId.startsWith("codex:")) {
-          const session = storedSession;
-          const nextSession = {
-            ...session,
-            archived,
-            updatedAt: new Date().toISOString()
-          };
-          if (archived) {
-            store.archiveSession(rawId, true);
-            void sessionRuntimeReleaseService.request(rawId, "manual-archive");
-          } else {
-            sessionRuntimeReleaseService.cancelPending(rawId);
-            upsertManagedCodexSession(nextSession);
-            await sessionRuntimeReleaseService.restore(rawId);
-          }
-          emitEvent(archived ? "SessionArchived" : "SessionUnarchived", { session: nextSession });
-          sendJson(response, 200, { session: nextSession });
-          return;
-        }
-
-        const id = normalizeSessionId(rawId);
-        const session = store.archiveSession(id, archived);
-        if (!session) {
-          sendJson(response, 404, { error: "Session not found" });
-          return;
-        }
-        if (archived) void sessionRuntimeReleaseService.request(session.id, "manual-archive");
-        else await sessionRuntimeReleaseService.restore(session.id);
-        emitEvent(archived ? "SessionArchived" : "SessionUnarchived", { session });
-        sendJson(response, 200, { session });
-      })
-      .catch((error) => {
-        sendJson(response, errorStatus(error, unifiedErrorStatus(error)), {
-          error: error.message,
-          code: error.code ?? "SESSION_ARCHIVE_FAILED"
-        });
-      });
-    return;
-  }
-
-  const sessionPinMatch = url.pathname.match(/^\/sessions\/([^/]+)\/pin$/);
-  if (request.method === "POST" && sessionPinMatch) {
-    readJson(request)
-      .catch(() => ({}))
-      .then((input) => {
-        const id = normalizeSessionId(decodeURIComponent(sessionPinMatch[1]));
-        const pinned = input.pinned !== false;
-        const session = store.pinSession(id, pinned);
-        if (!session) {
-          sendJson(response, 404, { error: "Session not found" });
-          return;
-        }
-        emitEvent(pinned ? "SessionPinned" : "SessionUnpinned", { session });
-        sendJson(response, 200, { session });
-      });
-    return;
-  }
-
-  if (request.method === "POST" && url.pathname === "/sessions/reorder") {
-    readJson(request)
-      .then((input) => {
-        const sessionIds = Array.isArray(input.sessionIds) ? input.sessionIds.map((id) => String(id)) : [];
-        const storedSessionIds = sessionIds.map(storedSessionIdForListSession);
-        store.reorderSessions(storedSessionIds);
-        emitEvent("SessionsReordered", { sessionIds });
-        sendJson(response, 200, {
-          sessions: sortSessionsForList(listGatewaySessions({ archived: false }))
-        });
-      })
-      .catch((error) => {
-        sendJson(response, 400, { error: error.message });
-      });
-    return;
-  }
-
-  const sessionRecoveryMatch = url.pathname.match(/^\/sessions\/([^/]+)\/recovery$/);
-  const sessionRecoveryCancelMatch = url.pathname.match(/^\/session-recovery\/([^/]+)\/cancel$/);
-  if (request.method === "GET" && sessionRecoveryMatch) {
-    try {
-      const reference = requireSessionReference(decodeURIComponent(sessionRecoveryMatch[1]));
-      if (!reference.logicalSessionId) throw Object.assign(new Error("Logical Session recovery is unavailable."), { code: "LOGICAL_SESSION_REQUIRED" });
-      sendJson(response, 200, {
-        attempts: store.listSessionRecoveryAttempts(reference.logicalSessionId),
-        limitations: [
-          "Provider hidden reasoning and KV cache are not recoverable.",
-          "Provider-private compression and undisclosed state are not recoverable.",
-          "Unpersisted events and uncertain in-flight operations are not recoverable.",
-          "Provider-only attachments without a Corptie-local copy are not recoverable."
-        ]
-      });
-    } catch (error) {
-      sendJson(response, errorStatus(error, 409), { error: error.message, code: error.code ?? "SESSION_RECOVERY_READ_FAILED" });
-    }
-    return;
-  }
-  if (request.method === "POST" && sessionRecoveryMatch) {
-    readJson(request).then(async (input) => {
-      const unknown = Object.keys(input).filter((field) => !["idempotencyKey", "reason"].includes(field));
-      if (unknown.length > 0) throw Object.assign(new Error("Recovery request contains unknown fields."), { code: "RECOVERY_UNKNOWN_FIELD" });
-      const reference = requireSessionReference(decodeURIComponent(sessionRecoveryMatch[1]));
-      if (!reference.logicalSessionId) throw Object.assign(new Error("Logical Session recovery is unavailable."), { code: "LOGICAL_SESSION_REQUIRED" });
-      return sessionRecoveryCoordinator.recover({
-        logicalSessionId: reference.logicalSessionId,
-        providerId: reference.providerId,
-        idempotencyKey: String(input.idempotencyKey ?? "").trim(),
-        reason: String(input.reason ?? "manual-provider-session-recovery").trim()
-      });
-    }).then((attempt) => sendJson(response, attempt.state === "committed" ? 200 : 409, { attempt }))
-      .catch((error) => sendJson(response, errorStatus(error, 409), { error: error.message, code: error.code ?? "SESSION_RECOVERY_FAILED" }));
-    return;
-  }
-  if (request.method === "POST" && sessionRecoveryCancelMatch) {
-    sessionRecoveryCoordinator.cancel(decodeURIComponent(sessionRecoveryCancelMatch[1]))
-      .then((attempt) => sendJson(response, attempt ? 200 : 404, { attempt }))
-      .catch((error) => sendJson(response, errorStatus(error, 409), { error: error.message, code: error.code ?? "SESSION_RECOVERY_CANCEL_FAILED" }));
-    return;
-  }
-
-  const sessionDeleteMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
-  const sessionDeletionPlanMatch = url.pathname.match(/^\/sessions\/([^/]+)\/deletion-plan$/);
-  const sessionProjectToolsetMatch = url.pathname.match(
-    /^\/sessions\/([^/]+)\/project-toolset(?:\/(initialize|update|cancel|profile|start|restart|stop))?$/
-  );
-  const sessionGitHubPushMatch = url.pathname.match(
-    /^\/sessions\/([^/]+)\/github-push\/(prepare|commit-message|confirm)$/
-  );
-  const sessionProjectWorktreesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/project-worktrees$/);
-  const sessionProjectWorktreeActionMatch = url.pathname.match(
-    /^\/sessions\/([^/]+)\/project-worktrees\/([^/]+)\/(merge|complete|restart|operate|commit|commit-prepare|commit-message)$/
-  );
-  if (request.method === "POST" && sessionGitHubPushMatch) {
-    const sessionId = decodeURIComponent(sessionGitHubPushMatch[1]);
-    const action = sessionGitHubPushMatch[2];
-    readJson(request)
-      .then((input) => action === "prepare"
-        ? prepareGitHubPush(sessionId)
-        : action === "commit-message"
-          ? generateGitHubPushCommitMessage(sessionId, input)
-          : confirmGitHubPush(sessionId, input))
-      .then((result) => sendJson(response, 200, result))
-      .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
-    return;
-  }
-  if (request.method === "GET" && sessionProjectWorktreesMatch) {
-    const sessionId = decodeURIComponent(sessionProjectWorktreesMatch[1]);
-    projectWorktreeStatus(sessionId)
-      .then((result) => sendJson(response, 200, result))
-      .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
-    return;
-  }
-  if (request.method === "POST" && sessionProjectWorktreeActionMatch) {
-    const sessionId = decodeURIComponent(sessionProjectWorktreeActionMatch[1]);
-    const sourceWorktreeId = decodeURIComponent(sessionProjectWorktreeActionMatch[2]);
-    const action = sessionProjectWorktreeActionMatch[3];
-    readJson(request)
-      .then((input) => action === "merge"
-        ? mergeProjectWorktree(sessionId, sourceWorktreeId, input)
-        : action === "commit-prepare"
-          ? prepareProjectWorktreeCommit(sessionId, sourceWorktreeId)
-        : action === "commit-message"
-          ? generateProjectWorktreeCommitMessage(sessionId, sourceWorktreeId)
-        : action === "commit"
-          ? commitProjectWorktree(sessionId, sourceWorktreeId, input)
-        : action === "complete"
-          ? completeProjectWorktree(sessionId, sourceWorktreeId, input)
-          : action === "operate"
-            ? operateProjectWorktree(sessionId, sourceWorktreeId, input)
-            : restartProjectWorktree(sessionId, sourceWorktreeId))
-      .then((result) => sendJson(response, 200, result))
-      .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
-    return;
-  }
-  if (request.method === "GET" && sessionProjectToolsetMatch && !sessionProjectToolsetMatch[2]) {
-    const sessionId = decodeURIComponent(sessionProjectToolsetMatch[1]);
-    projectToolsetStatus(sessionId)
-      .then((result) => sendJson(response, 200, result))
-      .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
-    return;
-  }
-  if (request.method === "POST" && sessionProjectToolsetMatch) {
-    const sessionId = decodeURIComponent(sessionProjectToolsetMatch[1]);
-    const action = sessionProjectToolsetMatch[2];
-    Promise.resolve()
-      .then(async () => {
-        const cwd = projectWorkingDirectoryForSession(sessionId);
-        const input = await readJson(request);
-        if (action === "initialize" || action === "update") {
-          const authenticatedSession = projectToolsetAuthenticatedSession(sessionId);
-          void projectToolsetInitializer.schedule(cwd, {
-            force: action === "update",
-            authenticatedSession,
-            idempotencyKey: input.idempotencyKey
-          }).catch(() => {});
-          sendJson(response, 202, { scheduled: true, action });
-          return;
-        }
-        if (action === "cancel") {
-          const operationId = String(input.operationId ?? "").trim();
-          if (!operationId) throw Object.assign(new Error("operationId is required."), { code: "TOOLSET_CANCEL_REQUIRED", statusCode: 400 });
-          const operation = await projectToolsetInitializer.cancel(operationId);
-          sendJson(response, 200, { operation });
-          return;
-        }
-        if (action === "profile") {
-          const profileId = String(input.profileId ?? "").trim();
-          if (!profileId) throw new Error("A Corptie service profile is required.");
-          const toolset = await projectToolsets.selectProfile(cwd, profileId);
-          const status = await projectToolsetStatus(sessionId);
-          emitEvent("ProjectServiceProfileChanged", { sessionId, profileId, toolset, ...status }, { sessionId });
-          sendJson(response, 200, status);
-          return;
-        }
-        const isolatedAction = PROJECT_TOOLSET_ISOLATED_ACTIONS.includes(action);
-        const runIsolation = isolatedAction ? await projectToolsetRunIsolationOptions(sessionId, cwd, action) : null;
-        const result = await projectToolsets.run(cwd, action, { ...(runIsolation ? { runIsolation, sourceIdentity: runIsolation.sourceIdentity } : {}), ...(action === "start" || action === "restart" ? { timeoutMs: 60_000 } : {}) });
-        const status = await projectToolsetStatus(sessionId);
-        emitEvent("ProjectServiceChanged", { sessionId, action, result, ...status }, { sessionId });
-        sendJson(response, result.ok ? 200 : 409, { action: result, ...status });
-      })
-      .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
-    return;
-  }
-  if (request.method === "GET" && sessionDeletionPlanMatch) {
-    const rawId = decodeURIComponent(sessionDeletionPlanMatch[1]);
-    sessionDeletionPlan(rawId)
-      .then((plan) => sendJson(response, 200, plan))
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message }));
-    return;
-  }
-  if (request.method === "PATCH" && sessionDeleteMatch) {
-    readJson(request)
-      .then(async (input) => {
-        const rawId = decodeURIComponent(sessionDeleteMatch[1]);
-        if (Object.prototype.hasOwnProperty.call(input, "avatarPath")) {
-          sendJson(response, 400, {
-            error: "Session avatars are not supported; sessions inherit their Agent avatar.",
-            code: "SESSION_AVATAR_UNSUPPORTED"
-          });
-          return;
-        }
-        const title = typeof input.title === "string" ? input.title.trim() : "";
-        if (!title) {
-          sendJson(response, 400, { error: "Title is required" });
-          return;
-        }
-        const releaseTitle = reserveSessionTitle(title, rawId);
-        try {
-          const session = await sessionApplicationService.renameSession(rawId, title, { source: "http" });
-          emitEvent("SessionRenamed", { session });
-          sendJson(response, 200, { session });
-        } finally {
-          releaseTitle();
-        }
-      })
-      .catch((error) => {
-        sendJson(response, errorStatus(error), sessionTitleErrorPayload(error));
-      });
-    return;
-  }
-
-  if (request.method === "DELETE" && sessionDeleteMatch) {
-    const rawId = decodeURIComponent(sessionDeleteMatch[1]);
-    Promise.resolve()
-      .then(async () => {
-        const reference = await sessionApplicationService.referenceFor(rawId);
-        let merge = null;
-        if (url.searchParams.get("mergeWorktree") === "true") {
-          if (reference.providerId !== "codex-app-server") {
-            const error = new Error("Worktree merge before deletion is unavailable for this Agent Provider.");
-            error.code = "CAPABILITY_UNSUPPORTED";
-            throw error;
-          }
-          const plan = await sessionDeletionPlan(reference.sessionId);
-          if (!plan.requiresWorktreeMerge) {
-            throw new Error("The Session is no longer bound to a mergeable worktree.");
-          }
-          merge = await mergeSessionWorktreeBeforeDeletion(reference.sessionId, plan);
-          const logical = store.getLogicalSessionByLegacySessionId(reference.sessionId);
-          if (logical && merge?.sourceWorktreeId) {
-            const otherBindings = store.listLogicalSessionsByWorkspaceId(merge.sourceWorktreeId)
-              .filter((item) => item.logicalSessionId !== logical.logicalSessionId);
-            merge.cleanup = otherBindings.length > 0
-              ? { removed: false, reason: "sharedWorktree", remainingSessionCount: otherBindings.length }
-              : await gitWorkspaces.removeMergedWorktree({
-                  logicalSessionId: logical.logicalSessionId,
-                  sourceWorktreeId: merge.sourceWorktreeId,
-                  ignoreLogicalSessionIds: [logical.logicalSessionId],
-                  deleteBranch: true
-                });
-          }
-        }
-        const result = await sessionApplicationService.deleteSession(rawId, { source: "http" });
-        sendJson(response, 200, { ...result, merge });
-      })
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code ?? null }));
-    return;
-  }
-
-  const sessionExecutionPreparationMatch = url.pathname.match(/^\/sessions\/([^/]+)\/actions\/prepare-execution$/);
-  if (request.method === "POST" && sessionExecutionPreparationMatch) {
-    const rawId = decodeURIComponent(sessionExecutionPreparationMatch[1]);
-    sessionApplicationService.prepareExecution(rawId, { source: "http-session-selection" })
-      .then((preparation) => sendJson(response, 200, { preparation }))
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
-        error: error.message,
-        code: error.code ?? null
-      }));
-    return;
-  }
-
-  const sessionBindingProbeMatch = url.pathname.match(/^\/sessions\/([^/]+)\/actions\/probe-binding$/);
-  if (request.method === "POST" && sessionBindingProbeMatch) {
-    const rawId = decodeURIComponent(sessionBindingProbeMatch[1]);
-    sessionBindingReadinessProbe.verify(rawId)
-      .then((verification) => sendJson(response, 200, { verification }))
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
-        error: error.message,
-        code: error.code ?? null
-      }));
-    return;
-  }
-
-  const sessionResumeMatch = url.pathname.match(/^\/sessions\/([^/]+)\/actions\/resume$/);
-  if (request.method === "POST" && sessionResumeMatch) {
-    const rawId = decodeURIComponent(sessionResumeMatch[1]);
-    sessionApplicationService.resumeSession(rawId, { source: "http" })
-      .then((session) => sendJson(response, 200, { session }))
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code ?? null }));
-    return;
-  }
-
-  const ptyDisconnectMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/disconnect$/);
-  if (request.method === "POST" && ptyDisconnectMatch) {
-    const sessionId = decodeURIComponent(ptyDisconnectMatch[1]);
-    sessionApplicationService.disconnectSession(sessionId, { source: "legacy-http" })
-      .then((session) => sendJson(response, 200, { session }))
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
-        error: error.message,
-        code: error.code ?? null
-      }));
-    return;
-  }
-
-  const ptyReconnectMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/reconnect$/);
-  if (request.method === "POST" && ptyReconnectMatch) {
-    const sessionId = decodeURIComponent(ptyReconnectMatch[1]);
-    sessionApplicationService.resumeSession(sessionId, { source: "legacy-http" })
-      .then((session) => sendJson(response, 200, { session }))
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
-        error: error.message,
-        code: error.code ?? null
-      }));
-    return;
-  }
-
-  const sessionWorkspacesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/workspaces$/);
-  if (request.method === "GET" && sessionWorkspacesMatch) {
-    const sessionId = decodeURIComponent(sessionWorkspacesMatch[1]);
-    Promise.resolve()
-      .then(async () => {
-        const reference = await sessionApplicationService.referenceFor(sessionId);
-        const session = reference.metadata.session;
-        let logical = reference.logicalSessionId
-          ? store.getLogicalSession(reference.logicalSessionId)
-          : await ensureLogicalRouteForProviderSession(session, reference.providerId);
-        if (!logical) {
-          const error = new Error("Session workspace route not found.");
-          error.code = "SESSION_NOT_FOUND";
-          throw error;
-        }
-        if (logical.activeBinding?.boundCwd) {
-          try {
-            const snapshot = await createGitWorkspaceSnapshot(logical.activeBinding.boundCwd);
-            store.upsertGitWorkspaceSnapshot(snapshot);
-            await reconcileMovedWorkspaceRoutes(snapshot.worktrees);
-            logical = store.getLogicalSession(logical.logicalSessionId);
-          } catch (error) {
-            console.warn(`[workspace-inventory] session workspace refresh failed session=${sessionId} error=${error.message}`);
-          }
-        }
-        sendJson(response, 200, {
-          logicalSession: logical,
-          workspaces: logical.repositoryId
-            ? store.listGitWorktrees(logical.repositoryId)
-            : [],
-          history: store.listProviderThreadBindings(logical.logicalSessionId).map((binding) => {
-            const worktree = binding.worktreeId
-              ? store.getGitWorktree(binding.worktreeId)
-              : null;
-            return {
-              bindingId: binding.bindingId,
-              providerId: binding.providerId,
-              providerThreadId: binding.providerThreadId,
-              state: binding.state,
-              readOnly: binding.state !== "active",
-              boundCwd: binding.boundCwd,
-              worktreeId: binding.worktreeId,
-              repositoryId: worktree?.repositoryId ?? null,
-              branchName: worktree?.branchName ?? null,
-              headOid: worktree?.headOid ?? null,
-              availability: worktree?.availability ?? null,
-              createdAt: binding.createdAt,
-              updatedAt: binding.updatedAt
-            };
-          })
-        });
-      })
-      .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
-    return;
-  }
-
-  const sessionBindingSnapshotMatch = url.pathname.match(/^\/sessions\/([^/]+)\/bindings\/([^/]+)\/snapshot$/);
-  if (request.method === "GET" && sessionBindingSnapshotMatch) {
-    const sessionId = decodeURIComponent(sessionBindingSnapshotMatch[1]);
-    const bindingId = decodeURIComponent(sessionBindingSnapshotMatch[2]);
-    try {
-      const reference = requireSessionReference(sessionId);
-      const binding = store.getAgentSessionBinding(bindingId);
-      if (!binding || binding.logicalSessionId !== reference.logicalSessionId) {
-        const error = new Error("Session Binding not found.");
-        error.code = "SESSION_BINDING_NOT_FOUND";
-        throw error;
-      }
-      const summary = store.getSession(reference.sessionId);
-      const session = storedSessionDetail({
-        summary,
-        storedDetail: { items: store.getItemsForBinding(reference.sessionId, bindingId) }
-      });
-      sendJson(response, 200, { session });
-    } catch (error) {
-      sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code ?? null });
-    }
-    return;
-  }
-
-  const sessionWorkspaceSwitchMatch = url.pathname.match(/^\/sessions\/([^/]+)\/workspace\/switch$/);
-  const unifiedSessionWorkspaceSwitchMatch = url.pathname.match(
-    /^\/sessions\/([^/]+)\/actions\/switch-workspace$/
-  );
-  const sessionWorkspaceRecoveryMatch = url.pathname.match(/^\/sessions\/([^/]+)\/workspace\/recovery$/);
-  if (sessionWorkspaceRecoveryMatch && request.method === "GET") {
-    const sessionId = decodeURIComponent(sessionWorkspaceRecoveryMatch[1]);
-    sessionWorkspaceRecoveryStatus(sessionId)
-      .then((result) => sendJson(response, 200, result))
-      .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
-    return;
-  }
-  if (sessionWorkspaceRecoveryMatch && request.method === "POST") {
-    const sessionId = decodeURIComponent(sessionWorkspaceRecoveryMatch[1]);
-    readJson(request)
-      .then(async (input) => {
-        const status = await sessionWorkspaceRecoveryStatus(sessionId);
-        if (!status.orphaned) throw new Error("The session workspace is available and does not need recovery.");
-        if (input.action === "switch") {
-          if (!status.worktrees.some((item) => item.worktreeId === input.targetWorktreeId)) {
-            throw new Error("Select an available Worktree from this repository.");
-          }
-          return switchSessionWorkspace(sessionId, input.targetWorktreeId);
-        }
-        if (input.action === "rebuild") {
-          const logical = store.getLogicalSessionByLegacySessionId(sessionId);
-          if (!logical.repositoryId) {
-            if (status.recoveryKind !== "agentWorkspace" || status.canRebuild !== true) {
-              throw new Error("This Session workspace cannot be rebuilt safely.");
-            }
-            const session = store.getSession(sessionId);
-            const agent = session ? store.getAgent(session.agentId) : null;
-            const recoveryTarget = recoverableAgentWorkDir(agent, logical.activeBinding?.boundCwd);
-            if (!recoveryTarget) {
-              throw new Error("This Session workspace cannot be rebuilt safely.");
-            }
-            const path = await ensureAgentWorkDir(agent);
-            const rebuilt = { restored: { kind: "agent-workspace", path } };
-            emitEvent("SessionWorkspaceRebuilt", { sessionId, rebuilt }, { sessionId });
-            return rebuilt;
-          }
-          const rebuilt = await gitWorkspaces.restoreMissingWorktree({
-            logicalSessionId: logical.logicalSessionId
-          });
-          if (rebuilt.restored.worktreeId !== logical.activeWorkspaceId) {
-            rebuilt.transition = await switchSessionWorkspace(sessionId, rebuilt.restored.worktreeId);
-          }
-          emitEvent("SessionWorkspaceRebuilt", { sessionId, rebuilt }, { sessionId });
-          return rebuilt;
-        }
-        throw new Error("Unsupported workspace recovery action.");
-      })
-      .then((result) => sendJson(response, 200, result))
-      .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
-    return;
-  }
-  if (request.method === "POST" && (sessionWorkspaceSwitchMatch || unifiedSessionWorkspaceSwitchMatch)) {
-    const sessionId = decodeURIComponent((sessionWorkspaceSwitchMatch || unifiedSessionWorkspaceSwitchMatch)[1]);
-    readJson(request)
-      .then(async (input) => {
-        const targetWorkspaceId = input.targetWorkspaceId ?? input.targetWorktreeId;
-        const result = await switchSessionWorkspace(
-          sessionId,
-          targetWorkspaceId,
-          input.transitionId,
-          input.continuationPrompt
-        );
-        sendJson(response, result.status === "waitingForTurn" ? 202 : 200, result);
-      })
-      .catch((error) => {
-        sendJson(response, errorStatus(error, unifiedErrorStatus(error)), {
-          error: error.message,
-          code: error.code
-        });
-      });
-    return;
-  }
-
-  const sessionProviderSwitchMatch = url.pathname.match(/^\/sessions\/([^/]+)\/switch-provider$/);
-  const unifiedSessionProviderSwitchMatch = url.pathname.match(
-    /^\/sessions\/([^/]+)\/actions\/switch-provider$/
-  );
-  if (request.method === "POST" && (sessionProviderSwitchMatch || unifiedSessionProviderSwitchMatch)) {
-    const sessionId = decodeURIComponent((sessionProviderSwitchMatch || unifiedSessionProviderSwitchMatch)[1]);
-    readJson(request)
-      .then(async (input) => {
-        const result = await switchSessionProvider(
-          sessionId,
-          input.providerId,
-          input.transitionId,
-          input.expectedRoutingVersion
-        );
-        sendJson(response, result.status === "waitingForTurn" ? 202 : 200, result);
-      })
-      .catch((error) => {
-        const current = error.code === "STALE_SESSION_ROUTE"
-          ? store.getSession(sessionId)
-          : null;
-        sendJson(response, errorStatus(error, unifiedErrorStatus(error)), {
-          error: error.message,
-          code: error.code,
-          ...(error.code === "STALE_SESSION_ROUTE" ? {
-            expectedRoutingVersion: error.expectedRoutingVersion ?? null,
-            currentRoutingVersion: error.currentRoutingVersion ?? null,
-            session: current ? decorateSessionForClient(current) : null
-          } : {})
-        });
-      });
-    return;
-  }
-
-  const sessionRestartMatch = url.pathname.match(/^\/sessions\/([^/]+)\/restart$/);
-  if (request.method === "POST" && sessionRestartMatch) {
-    const sessionId = decodeURIComponent(sessionRestartMatch[1]);
-    readJson(request)
-      .then(async (input) => {
-        const unknown = Object.keys(input).filter((field) => field !== "idempotencyKey");
-        if (unknown.length > 0) {
-          const error = new Error("Session restart request contains unknown fields.");
-          error.code = "SESSION_RESTART_UNKNOWN_FIELD";
-          throw error;
-        }
-        const result = await sessionApplicationService.restartSession(sessionId, {
-          source: "compatibility-route",
-          idempotencyKey: String(input.idempotencyKey ?? `restart:${randomUUID()}`).trim()
-        });
-        sendJson(response, result.status === "waitingForTurn" ? 202 : 200, result);
-      })
-      .catch((error) => {
-        sendJson(response, errorStatus(error, 400), {
-          error: error.message,
-          code: error.code
-        });
-      });
-    return;
-  }
-
-  const sessionTurnChangesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/turns\/([^/]+)\/changes\/(review|undo)$/);
-  if (request.method === "POST" && sessionTurnChangesMatch) {
-    const sessionId = decodeURIComponent(sessionTurnChangesMatch[1]);
-    const turnId = decodeURIComponent(sessionTurnChangesMatch[2]);
-    const action = sessionTurnChangesMatch[3];
-    sessionApplicationService.manageTurnChanges(sessionId, turnId, action, { source: "http" })
-      .then((payload) => sendJson(response, 200, payload))
-      .catch((error) => {
-        sendJson(response, unifiedErrorStatus(error), { error: error.stderr || error.message, code: error.code ?? null });
-      });
-    return;
-  }
-
-  if (request.method === "GET" && url.pathname === "/events") {
-    response.writeHead(200, {
-      "content-type": "text/event-stream; charset=utf-8",
-      "cache-control": "no-cache, no-transform",
-      connection: "keep-alive"
-    });
-
-    const cursor = Number(url.searchParams.get("cursor") ?? 0);
-    const replay = eventLog.replayAfter(cursor);
-    if (replay.gap) {
-      response.write(`event: EventReplayRequired\ndata: ${JSON.stringify({
-        requestedCursor: cursor,
-        oldestAvailableCursor: replay.oldestId,
-        latestCursor: replay.latestId
-      })}\n\n`);
-    }
-    // A gap means this connection cannot reconstruct a causally complete event
-    // sequence. Do not mix an explicit repair request with a partial tail: some
-    // product events are side effects and replaying only the suffix could apply
-    // them out of context. The client repairs from the durable state/timeline
-    // authorities and resumes from latestCursor on its next connection.
-    for (const event of replay.gap ? [] : replay.entries) {
-      response.write(`id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
-    }
-
-    sseClients.add(response);
-    const heartbeat = setInterval(() => response.write(": keepalive\n\n"), 15_000);
-    heartbeat.unref?.();
-    request.on("close", () => {
-      clearInterval(heartbeat);
-      sseClients.delete(response);
-    });
-    return;
-  }
-
-  if (request.method === "GET" && url.pathname === "/state/snapshot") {
-    try {
-      sendJson(response, 200, stateSyncService.snapshot());
-    } catch (error) {
-      sendJson(response, 503, { error: error.message, code: error.code ?? "STATE_SNAPSHOT_FAILED" });
-    }
-    return;
-  }
-
-  if (request.method === "GET" && url.pathname === "/state/diagnostics") {
-    const revision = store.stateRevision();
-    const oldestRevision = store.oldestStateChangeRevision();
-    const consistencyIssues = store.stateConsistencyIssues();
-    const requestedTimelineSessionId = url.searchParams.get("sessionId");
-    const includeTimelines = requestedTimelineSessionId
-      || url.searchParams.get("includeTimelines") === "1";
-    sendJson(response, 200, {
-      revision,
-      oldestRevision,
-      replayDepth: Math.max(0, revision - oldestRevision + 1),
-      connectedClients: stateSyncClients.size,
-      sync: stateSyncService.diagnostics(),
-      activeReconciliationRunning: false,
-      ...(includeTimelines ? {
-        terminalTimelines: requestedTimelineSessionId
-          ? [sessionStateDiagnostics.get(requestedTimelineSessionId)].filter(Boolean)
-          : sessionStateDiagnostics.list()
-      } : {}),
-      healthy: consistencyIssues.length === 0,
-      consistencyIssues
-    });
-    return;
-  }
-
-
-  if (request.method === "GET" && url.pathname === "/diagnostics/sqlite-queries") {
-    sendJson(response, 200, store.queryMetrics({ limit: url.searchParams.get("limit") }));
-    return;
-  }
-
-  if (request.method === "GET" && url.pathname === "/state/changes") {
-    try {
-      const changes = stateSyncService.changesAfter(Number(url.searchParams.get("after")));
-      sendJson(response, changes.snapshotRequired ? 410 : 200, changes);
-    } catch (error) {
-      sendJson(response, 503, { error: error.message, code: error.code ?? "STATE_SNAPSHOT_FAILED" });
-    }
-    return;
-  }
-
-  if (request.method === "GET" && url.pathname === "/state/events") {
-    const requestedRevision = Number(url.searchParams.get("after"));
-    let changes;
-    let snapshot = null;
-    try {
-      changes = stateSyncService.changesAfter(requestedRevision);
-      if (changes.snapshotRequired) snapshot = stateSyncService.snapshot();
-    } catch (error) {
-      sendJson(response, 503, { error: error.message, code: error.code ?? "STATE_SNAPSHOT_FAILED" });
-      return;
-    }
-    response.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive"
-    });
-    response.flushHeaders?.();
-    if (changes.snapshotRequired) {
-      writeStateSyncFrame(response, "state-snapshot", snapshot);
-    } else if (changes.revision > changes.baseRevision) {
-      writeStateSyncFrame(response, "state-change-set", changes);
-    }
-    stateSyncClients.set(response, deliveredStateRevision(changes, snapshot));
-    const heartbeat = setInterval(() => response.write(": keepalive\n\n"), 15_000);
-    heartbeat.unref?.();
-    request.on("close", () => {
-      clearInterval(heartbeat);
-      stateSyncClients.delete(response);
-    });
-    return;
-  }
-
-  const cancelMatch = url.pathname.match(/^\/tasks\/([^/]+)\/cancel$/);
-  if (request.method === "POST" && cancelMatch) {
-    const taskId = decodeURIComponent(cancelMatch[1]);
-    if (taskId.startsWith("codex:")) {
-      interruptUnifiedSession(taskId, { type: "legacy-task-api" })
-        .then((session) => sendJson(response, 200, { session }))
-        .catch((error) => sendJson(response, unifiedErrorStatus(error), {
-          error: error.message,
-          code: error.code ?? null
-        }));
-      return;
-    }
-
-    const session = sessions.get(taskId);
-    if (!session) {
-      sendJson(response, 404, { error: "Task not found" });
-      return;
-    }
-
-    session.status = "cancelled";
-    session.summary = "Cancelled by user.";
-    session.updatedAt = now();
-    emitEvent("TaskCancelled", { session });
-    sendJson(response, 200, { session });
-    return;
-  }
-
-  sendJson(response, 404, { error: "Not found" });
-}
-
-async function projectToolsetRunIsolationOptions(sessionId, cwd, action) {
-  if (!runIsolationCoordinator) throw Object.assign(new Error("RunIsolation production execution is disabled."), { code: "DEPENDENCY_CONTRACT_UNRESOLVED", statusCode: 409 });
-  if (!projectToolsetProduction) throw Object.assign(new Error("Project Toolset production composition is unavailable."), { code: "DEPENDENCY_CONTRACT_UNRESOLVED", statusCode: 409 });
-  const authenticated = projectToolsetAuthenticatedSession(sessionId);
-  const runtime = await projectToolsetProduction.runtimeAuthority(authenticated.logicalSessionId);
-  const startup = projectCodeStartupReceipts.require(authenticated.logicalSessionId);
-  if (resolve(cwd) !== resolve(startup.canonicalWorktreePath)) throw Object.assign(new Error("Toolset action Worktree differs from authoritative Startup."), { code: "RUN_UNAUTHORIZED", statusCode: 403 });
-  const authority = await runIsolationAuthorityResolver.resolve({
-    logicalSessionId: runtime.logicalSessionId,
-    taskId: runtime.taskId,
-    repositoryId: runtime.repositoryId,
-    worktreeId: runtime.worktreeId,
-    action,
-    bindingId: runtime.bindingId,
-    bindingGeneration: runtime.bindingGeneration
-  });
-  return {
-    prepare: { mode: "development", sourceAware: true, toolsetRequired: true, startupBindingReceiptRef: authority.startupBindingReceiptRef, repositorySourceSnapshotReceiptRef: authority.repositorySourceSnapshotReceiptRef, toolsetValidationReceiptPointer: authority.toolsetValidationReceiptPointer, idempotencyKey: `toolset:${action}:${runtime.logicalSessionId}:${randomUUID()}` },
-    session: { logicalSessionId: runtime.logicalSessionId, taskId: runtime.taskId, repositoryId: runtime.repositoryId, worktreeId: runtime.worktreeId },
-    sourceIdentity: runtimeSourceIdentity(runtime.snapshot)
-  };
-}
-
-function projectToolsetAuthenticatedSession(sessionId) {
-  const reference = requireSessionReference(sessionId);
-  const logical = reference.logicalSessionId
-    ? store.getLogicalSession(reference.logicalSessionId)
-    : store.getLogicalSessionByLegacySessionId(reference.sessionId);
-  if (!logical?.logicalSessionId) throw Object.assign(new Error("Project Toolset requires an authenticated logical Session."), { code: "TOOLSET_PERMISSION_DENIED", statusCode: 403 });
-  const ownership = store.assertLogicalWorkSessionBinding(logical.logicalSessionId);
-  if (!ownership?.taskId) throw Object.assign(new Error("Project Toolset requires a Task-bound Session."), { code: "TOOLSET_PERMISSION_DENIED", statusCode: 403 });
-  return Object.freeze({ logicalSessionId: logical.logicalSessionId, taskId: ownership.taskId });
-}
-
-function runtimeSourceIdentity(snapshot) {
-  if (!snapshot?.sourceCommitOid || !snapshot?.sourceFingerprint) throw Object.assign(new Error("Authoritative Snapshot source identity is unavailable."), { code: "SOURCE_SNAPSHOT_REQUIRED", statusCode: 409 });
-  return Object.freeze({
-    revision: snapshot.sourceCommitOid,
-    fingerprint: snapshot.sourceFingerprint,
-    dirty: Number(snapshot.dirtyOverlayRef?.entryCount ?? 0) > 0,
-    worktreePath: null
-  });
-}
-
-function disabledProjectToolsetInitializer() {
-  const unavailable = () => { throw Object.assign(new Error("Project Toolset production composition is disabled."), { code: "DEPENDENCY_CONTRACT_UNRESOLVED", statusCode: 409 }); };
-  return Object.freeze({ schedule: unavailable, cancel: unavailable, recoverAll: async () => [], status: async () => ({ state: "failed", outcome: "unknown", operationId: null, error: "DEPENDENCY_CONTRACT_UNRESOLVED" }) });
-}
-
-function userMessageCommandSource(input = {}) {
-  const source = input.source && typeof input.source === "object" && !Array.isArray(input.source)
-    ? { ...input.source }
-    : { type: "desktop" };
-  const messageId = validatedOptionalMessageCommandId(input.messageId, "messageId");
-  const deliveryId = validatedOptionalMessageCommandId(input.deliveryId, "deliveryId");
-  if (messageId && source.messageId && source.messageId !== messageId) {
-    const error = new Error("messageId conflicts with source.messageId.");
-    error.code = "MESSAGE_ID_CONFLICT";
-    throw error;
-  }
-  if (deliveryId && source.deliveryId && source.deliveryId !== deliveryId) {
-    const error = new Error("deliveryId conflicts with source.deliveryId.");
-    error.code = "DELIVERY_ID_CONFLICT";
-    throw error;
-  }
-  if (messageId) source.messageId = messageId;
-  if (deliveryId) source.deliveryId = deliveryId;
-  return source;
-}
-
-function validatedOptionalMessageCommandId(value, field) {
-  if (value == null) return null;
-  if (typeof value !== "string") {
-    const error = new Error(`${field} must be a string.`);
-    error.code = "INVALID_MESSAGE_IDENTITY";
-    throw error;
-  }
-  const normalized = value.trim();
-  if (!normalized || normalized.length > 200) {
-    const error = new Error(`${field} must contain 1 to 200 characters.`);
-    error.code = "INVALID_MESSAGE_IDENTITY";
-    throw error;
-  }
-  return normalized;
+  return routeBackendHttpRequest(request, response, backendHttpPorts);
 }
 
 const server = http.createServer(route);
@@ -12005,44 +2066,6 @@ await new Promise((resolve, reject) => {
 });
 console.log(`Corptie backend (${environmentName}) transport listening on http://127.0.0.1:${port}`);
 
-async function resumeSessionRecoveryAttemptsAtStartup() {
-  const resumable = store.listResumableSessionRecoveryAttempts();
-  const legacyAutomatic = resumable.filter((attempt) =>
-    attempt.idempotencyKey.startsWith("startup-empty-binding-recovery:")
-  );
-  for (const attempt of legacyAutomatic) {
-    store.failSessionRecoveryAttempt(
-      attempt.attemptId,
-      "LEGACY_AUTOMATIC_RECOVERY_DISABLED",
-      "Legacy automatic empty-binding Recovery was disabled; explicit user Recovery is required."
-    );
-  }
-  const attempts = resumable.filter((attempt) =>
-    !attempt.idempotencyKey.startsWith("startup-empty-binding-recovery:")
-  );
-  let cursor = 0;
-  const worker = async () => {
-    while (cursor < attempts.length) {
-      const attempt = attempts[cursor];
-      cursor += 1;
-      try {
-        await sessionRecoveryCoordinator.recover({
-          logicalSessionId: attempt.logicalSessionId,
-          providerId: attempt.providerId,
-          idempotencyKey: attempt.idempotencyKey,
-          attemptId: attempt.attemptId,
-          compressHandoff: true
-        });
-      } catch (error) {
-        console.warn(`[session-recovery] startup resume failed attempt=${attempt.attemptId} code=${error.code ?? "SESSION_RECOVERY_FAILED"}`);
-      }
-    }
-  };
-  await Promise.all(Array.from(
-    { length: Math.min(2, attempts.length) },
-    () => worker()
-  ));
-}
 
 // SQLite schema work is synchronous inside a connection. Run it in a Worker so
 // a large production database cannot starve the already-open health/SSE
@@ -12072,155 +2095,31 @@ if (firstRunSetup.state.defaultProviderId) {
   workChatOperationService.defaultProviderId = firstRunSetup.state.defaultProviderId;
   sessionCollaborationService.defaultProviderId = firstRunSetup.state.defaultProviderId;
 }
-if (shouldSeedDevelopmentFixtures) {
-  const designAgent = store.getAgent("agent:development-design") ?? store.createAgent({
-    id: "agent:development-design",
-    name: "产品设计",
-    description: "用于验证 Agent Profile、长文本与 Memory 的开发样例。",
-    systemPrompt: "梳理用户目标，输出清晰、可验证的产品方案。",
-    capabilities: ["product", "ux", "research"]
-  });
-  const engineeringAgent = store.getAgent("agent:development-engineering") ?? store.createAgent({
-    id: "agent:development-engineering",
-    name: "开发验证",
-    description: "用于验证聊天 Session 与 Task Worker 共用同一 Agent 的开发样例。",
-    systemPrompt: "实现变更，运行相关测试，并给出可复现证据。",
-    capabilities: ["swiftui", "backend", "testing"]
-  });
-  const bundledSkillSource = dirname(bundledCollaborationSkillPath);
-  const bundledSkill = store.listRegistrySkills().find((skill) => (
-    skill.sourceType === "local" && resolve(skill.source) === resolve(bundledSkillSource)
-  )) ?? await skillRegistryService.register({
-      name: "Corptie Collaboration",
-      description: "用于验证 Agent 已安装 Skill 列表与选择流程。",
-      sourceType: "local",
-      source: bundledSkillSource,
-      assist: false
-    });
-  store.setAgentRegistrySkills(designAgent.agentId, [bundledSkill.skillId]);
-  store.setAgentRegistrySkills(engineeringAgent.agentId, []);
-  await writeFile(developmentFixtureMarker, `${JSON.stringify({ schemaVersion: 1, seededAt: now() })}\n`, {
-    encoding: "utf8",
-    mode: 0o600
-  });
-  console.log(`[development-fixtures] seeded agents=2 skills=1 database=${store.dbPath}`);
-}
-benchmarkControlPlane.initialize();
-if (runIsolationCoordinator) {
-  await mkdir(runIsolationDataRoot, { recursive: true, mode: 0o700 });
-  await runIsolationCoordinator.initialize();
-  console.log(`[run-isolation] production coordinator ready dataRootHash=${runIsolationCoordinator.service.binding.canonicalPathHash}`);
-}
-if (!developmentPreview) await dataRootMigrationCoordinator.initialize();
-const telemetryConfiguration = turnObservability.initialize();
-console.log(`[turn-observability] ${JSON.stringify(telemetryConfiguration)}`);
-// Only establish the local Artifact directories before the readiness boundary.
-// File traversal, orphan audits, FTS rebuilds, and usage reconciliation are
-// maintenance and must never delay the loopback listener.
-await artifactService.initialize({ performMaintenance: false });
-void Promise.allSettled(store.listGitRepositories().flatMap((repository) => {
-  const paths = new Set([repository.path, ...(store.listGitWorktrees(repository.id) ?? []).flatMap(item => [item.path, item.canonicalPath])].filter(Boolean));
-  return [...paths].map(async (path) => {
-    try { await ensureArtifactCommitHook(path, { dbPath: store.dbPath }); }
-    catch (error) { console.error(`[artifact-commit-gate] installation failed repository=${repository.id} path=${path} code=${error.code ?? "ERROR"} message=${error.message}`); }
-  });
-}));
-await chatResourceService.initialize();
-const collaborationMigration = collaborationCore.initialize();
-if (collaborationMigration.status === "applied") {
-  console.log(`[collaboration-migration] id=${collaborationMigration.migrationId} migratedTasks=${collaborationMigration.migratedTaskCount}`);
-}
-stateSyncService = new StateSyncService({
-  store,
-  snapshot: controlPlaneSnapshot,
-  readEntity: readControlPlaneEntity
+await seedDevelopmentFixtures({
+  store, skillRegistryService,
+  bundledCollaborationSkillPath, now, marker: developmentFixtureMarker,
+  enabled: shouldSeedDevelopmentFixtures
 });
-timelineChangePublisher = new SessionTimelineChangePublisher({
-  emit: ({ sessionId, timelineRevision }) => emitEvent("SessionTimelineChanged", {
-    sessionId,
-    timelineRevision
-  }, {
-    sessionId,
-    recordSessionEvent: false
-  })
+await initializeBackendStoreReadiness({
+  store, benchmarkControlPlane, runIsolationCoordinator, runIsolationDataRoot,
+  developmentPreview, dataRootMigrationCoordinator, turnObservability,
+  artifactService, ensureArtifactCommitHook, chatResourceService,
+  collaborationCore, controlPlaneSnapshot, readControlPlaneEntity,
+  runtimeActivity, scheduleStateSyncPublish, scheduleTimelineChangePublish,
+  activateStoredBackendLogging,
+  onStateSyncReady: (service) => { stateSyncService = service; },
+  onResetForecastMonitorReady: (monitor) => { codexResetForecastMonitor = monitor; }
 });
-store.setStateDirtyListener(scheduleStateSyncPublish);
-store.setTimelineDirtyListener(scheduleTimelineChangePublish);
-const codexResetProxy = store.settings().agentProxy?.codex;
-codexResetForecastMonitor = new CodexResetForecastMonitor({
-  store,
-  proxyUrl: codexResetProxy?.enabled
-    ? codexResetProxy.httpsProxy || codexResetProxy.httpProxy || codexResetProxy.allProxy
-    : null
+const { storedSessions: storedSessionsAtStartup, knownActiveWorktrees } = loadStartupSessionInventory(store, normalizeSessionId);
+await activateStartupSessions({
+  store, storedSessionsAtStartup, developmentPreview, environmentName,
+  corptieCodexRuntimePaths, corptieClaudeRuntimePaths,
+  ensureAgentWorkDir, ensureCollaborationAgentForSession,
+  publishProviderEventOutbox, workspaceContinuationCoordinator,
+  providerEventPublisher, feishuGateway, taskSummaryService,
+  configureChoiceParserRuntime, seedSessions, runtimeActivity,
+  enableMockSessions: process.env.CORPTIE_ENABLE_MOCK_SESSIONS === "1"
 });
-const detachedOrphanedAgents = collaborationCore.detachMissingSessionBindings();
-if (detachedOrphanedAgents.length > 0) {
-  console.log(`[collaboration] detached deleted Session bindings from ${detachedOrphanedAgents.length} Agent(s)`);
-}
-activateStoredBackendLogging();
-console.log(`[store] SQLite ready at ${store.dbPath}`);
-const initiallyStoredSessions = store.listSessions({ archived: false });
-// Stable product Sessions are already authoritative. Physical Provider rows
-// may remain for route audit but never repair product state at startup.
-const allStoredSessionsAtStartup = initiallyStoredSessions;
-let storedSessionsAtStartup = visibleStoredSessionProjections(store, allStoredSessionsAtStartup);
-const hiddenPhysicalSessionCount = allStoredSessionsAtStartup.length - storedSessionsAtStartup.length;
-if (hiddenPhysicalSessionCount > 0) {
-  console.log(`[session-projection] hid ${hiddenPhysicalSessionCount} bound physical Provider session(s) at startup`);
-}
-const uniqueStoredSessionsAtStartup = deduplicateSessionTitles(storedSessionsAtStartup);
-for (let index = 0; index < storedSessionsAtStartup.length; index += 1) {
-  const previous = storedSessionsAtStartup[index];
-  const unique = uniqueStoredSessionsAtStartup[index];
-  if (previous.title === unique.title) continue;
-  store.renameSession(normalizeSessionId(previous.id), unique.title);
-  console.log(`[session-title] renamed historical duplicate session=${previous.id} from=${JSON.stringify(previous.title)} to=${JSON.stringify(unique.title)}`);
-}
-storedSessionsAtStartup = uniqueStoredSessionsAtStartup;
-// Scope the dedicated Codex home to Corptie's process tree. A Codex process
-// launched independently from Terminal continues to use the user's native
-// ~/.codex home.
-process.env.CODEX_HOME = corptieCodexRuntimePaths.codexHome;
-// Claude's SDK helpers and subprocesses use this directory for native
-// CLAUDE.md discovery and credentials. Product history remains in Corptie.
-process.env.CLAUDE_CONFIG_DIR = corptieClaudeRuntimePaths.configDir;
-// 确保每个 Agent 的工作目录（assistant workspace / contributor 持久化目录）物理存在。
-// 路径元数据已在 store 迁移期写入 agents.work_dir，这里只做幂等的 mkdir 兜底。
-for (const agent of developmentPreview ? [] : store.listAgents()) {
-  try {
-    await ensureAgentWorkDir(agent, { environmentName });
-  } catch (error) {
-    console.warn(`[agent-workdir] failed to ensure work dir for ${agent.agentId}: ${error?.message ?? error}`);
-  }
-}
-for (const storedSession of developmentPreview ? [] : storedSessionsAtStartup) {
-  ensureCollaborationAgentForSession(storedSession);
-}
-// Re-delivery consumes only Corptie's committed Outbox. Startup never repairs
-// product state by reading Provider history or a Provider Session snapshot.
-if (!developmentPreview) {
-  publishProviderEventOutbox(store.listPendingEventOutbox(500));
-  workspaceContinuationCoordinator.recover();
-}
-const knownActiveWorktrees = new Map();
-for (const storedSession of storedSessionsAtStartup) {
-  const logical = store.getLogicalSessionByLegacySessionId(storedSession.id);
-  const worktree = logical?.activeWorkspaceId
-    ? store.getGitWorktree(logical.activeWorkspaceId)
-    : null;
-  if (worktree) knownActiveWorktrees.set(worktree.worktreeId, worktree);
-}
-sessionEventListeners.add((event) => feishuGateway.handleSessionEvent(event));
-sessionEventListeners.add((event) => taskSummaryService.onSessionEvent(event));
-if (!developmentPreview) configureChoiceParserRuntime({
-  ...(store.settings().choiceParser ?? {}),
-  agentProxy: store.settings().agentProxy
-});
-if (!developmentPreview && process.env.CORPTIE_ENABLE_MOCK_SESSIONS === "1") {
-  seedSessions();
-  mockProgressTimer = setInterval(updateMockProgress, 2500);
-  mockProgressTimer.unref?.();
-}
 
 function startBackendRuntime() {
   console.log(`Corptie backend (${environmentName}) Store ready on http://127.0.0.1:${port}`);
@@ -12229,445 +2128,67 @@ function startBackendRuntime() {
     return;
   }
   taskSummaryService.start();
-  const startDeviceAccess = process.env.CORPTIE_REMOTE_ACCESS === "1" ? startConfiguredDeviceGateway : createDeviceSetup;
-  void startDeviceAccess({ directory: join(store.dataRoot, "client-devices"), preview: developmentPreview,
-    readAPI: new ClientReadAPI(store, { environmentName }),
-    controlAPI: new ClientControlReadAPI({ lists: {
-      automations: () => store.listScheduledSessionTasks({ environment: environmentName }),
-      agents: () => store.listAgents(), skills: () => store.listRegistrySkills(),
-      repositories: () => worktreeIntegrationJobService.repositories()
-    }, repository: id => worktreeIntegrationJobService.repository(id),
-    resolveSession: id => store.getLogicalSession(id)?.legacySessionId ?? null }),
-    worktreeAPI: new ClientWorktreeManagementAPI({
-      worktrees: worktreeIntegrationJobService,
-      projects: projectApplicationService,
-      emit: emitEvent
-    }),
-    sessionAPIFactory: () => new ClientSessionAPI({ store, readWindow: readSessionTimelineWindow,
-      inspector: new ClientInspectorAPI({ store, resolveSession: requireSessionReference,
-        references: sessionContextReferenceService, artifacts: artifactService,
-        schedules: scheduledSessionTaskService, observability: turnObservability,
-        providers: () => agentProviderRegistry.descriptors().map(descriptor => ({ id: descriptor.id, name: descriptor.displayName,
-          available: [AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE, AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
-            AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND].every(capability => agentProviderRegistry.supports(descriptor.id, capability)) })),
-        switchProvider: switchSessionProvider, updateTask: (id, fields) => workService.updateTask(id, fields),
-        inspectTaskWorktree, reclaimTaskWorktree,
-        importFile: inspectorFileImporter({ store, references: sessionContextReferenceService, artifacts: artifactService }) }),
-      send: sendUnifiedSessionMessage, stop: interruptUnifiedSession,
-      respondToApproval: respondUnifiedSessionApproval,
-      respondToUserInput: respondUnifiedSessionUserInput,
-      onReceiptChanged: (deviceId, receipt) => clientDeviceGateway?.events.publishReceipt(deviceId, receipt),
-      markRead: (sessionId, throughSequence) => {
-        const receipt = store.markSessionMessagesRead(sessionId, throughSequence);
-        setImmediate(publishStateChangesIfNeeded);
-        clientDeviceGateway?.events.invalidate({ inventory: true });
-        return receipt;
-      },
-      workDiscussion: {
-        options: () => ({ defaultProviderId: agentProviderRegistry.defaultProviderId,
-          providers: agentProviderRegistry.descriptors().map(descriptor => ({ id: descriptor.id, name: descriptor.displayName,
-            available: [AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE, AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND]
-              .every(capability => agentProviderRegistry.supports(descriptor.id, capability)) })) }),
-        open: input => workDiscussionService.open(input)
-      },
-      taskCreation: {
-        options: async (_id, selectedProviderId) => {
-          const required = [AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE, AGENT_PROVIDER_CAPABILITIES.WORKSPACE_BIND,
-            AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME, AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND];
-          const providers = agentProviderRegistry.descriptors().map(descriptor => ({
-            id: descriptor.id, name: descriptor.displayName,
-            available: required.every(capability => agentProviderRegistry.supports(descriptor.id, capability)),
-            supportsModels: agentProviderRegistry.supports(descriptor.id, AGENT_PROVIDER_CAPABILITIES.MODEL_LIST)
-          }));
-          const defaultProviderId = agentProviderRegistry.defaultProviderId;
-          if (!selectedProviderId) return { providers, models: [], defaultProviderId };
-          const selected = providers.find(provider => provider.id === selectedProviderId);
-          if (!selected?.available) {
-            throw Object.assign(new Error("Provider does not support Work Sessions"), { code: "PROVIDER_CAPABILITY_UNAVAILABLE", status: 409 });
-          }
-          const catalog = selected.supportsModels ? await sessionApplicationService.listModels(selected.id) : {};
-          return { providers, defaultProviderId, models: catalog.models ?? [], currentModel: catalog.currentModel ?? null,
-            currentReasoningLevel: catalog.currentReasoningLevel ?? null };
-        },
-        validate: (id, input) => {
-          const reference = requireSessionReference(id);
-          const logical = store.getLogicalSession(reference.logicalSessionId);
-          if (!logical || logical.archived || logical.activeBinding?.state !== "active") {
-            throw Object.assign(new Error("Source Session is not active"), { code: "SOURCE_SESSION_NOT_FOUND", status: 409 });
-          }
-          const providerId = agentProviderRegistry.resolveId(input.providerId);
-          if (!providerId || [AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE, AGENT_PROVIDER_CAPABILITIES.WORKSPACE_BIND,
-            AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME, AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND]
-            .some(capability => !agentProviderRegistry.supports(providerId, capability))) {
-            throw Object.assign(new Error("Provider does not support Work Sessions"), { code: "PROVIDER_CAPABILITY_UNAVAILABLE", status: 409 });
-          }
-        },
-        create: (id, { taskInput, providerId, model, reasoningLevel, operationID }) => {
-          const sourceSessionId = requireSessionReference(id).logicalSessionId;
-          return createTaskAndSession({ workService,
-            startWorkSession: input => workSessionStartApplicationService.start(input),
-            taskInput, sourceSessionId, providerId, model, reasoningLevel, idempotencyKey: operationID,
-            creationOrigin: { originType: "session", creatorSessionId: sourceSessionId, operationId: operationID } });
-        }
-      },
-      conversationCommands: {
-        list: id => sessionApplicationService.listConversationCommands(id),
-        validate: (id, command) => sessionApplicationService.validateConversationCommand(id, command),
-        execute: async (id, command, source) => {
-          const result = await sendUnifiedSessionMessage(id,
-            { text: `/${command.name}${command.arguments ? ` ${command.arguments}` : ""}` }, source);
-          return { text: result.warning ?? (result.cleared ? "会话上下文已清空。" : "命令已执行。"),
-            messageId: result.commandMessageId, conversationCleared: result.cleared === true };
-        }
-      },
-      schedule: (id, text, schedule, identity) => scheduledSessionTaskService.create({
-        logicalSessionId: requireSessionReference(id).logicalSessionId,
-        name: text.slice(0, 80), message: { text },
-        scheduleType: schedule.intervalSeconds ? "interval" : "at",
-        runAt: schedule.runAt, expiresAt: schedule.expiresAt,
-        ...(schedule.intervalSeconds ? { intervalSeconds: schedule.intervalSeconds } : {})
-      }, { type: "user", id: `user:paired-device:${identity.deviceId}` }),
-      images: {
-        available: session => decorateSessionForClient(session).capabilities?.canSendImages === true,
-        import: (id, image) => chatResourceService.importImageData(requireSessionReference(id),
-          Buffer.from(image.dataBase64, "base64"), image.fileName),
-        read: (id, managedPath) => chatResourceService.readImage(requireSessionReference(id), managedPath)
-      },
-      composer: {
-        read: id => sessionApplicationService.listModelsForSession(id),
-        update: async (id, key, value) => {
-          const reference = requireSessionReference(id);
-          if (key === "model") await sessionApplicationService.switchModel(id, value);
-          else await sessionApplicationService.switchReasoning(id, value);
-          emitEvent(key === "model" ? "SessionModelChanged" : "SessionReasoningChanged", {
-            sessionId: reference.sessionId, logicalSessionId: reference.logicalSessionId, [key]: value
-          }, { sessionId: reference.sessionId });
-        }
-      },
-      actions: session => decorateSessionForClient(session).actions ?? {},
-      readiness: session => {
-        const presented = decorateSessionForClient(session);
-        return { readiness: presented.readiness ?? null, notReadyReason: presented.notReadyReason ?? null };
-      },
-      usage: sessionId => readSessionUsage(sessionId),
-      // Same services the desktop entity routes call; the device layer adds permission, DTO and receipt boundaries.
-      entityCommands: {
-        createWork: input => workService.createWork(input),
-        updateTask: (taskId, patch) => workService.updateTask(taskId, patch),
-        setTaskArchived: async (taskId, archived) => {
-          const task = await setTaskArchivedForEntityRoutes(taskId, archived);
-          workService.emit("TaskChanged", task, archived ? "archived" : "unarchived");
-          return task;
-        },
-        restartTask: (taskId, context) => restartTaskForEntityRoutes(taskId, context),
-        inspectTaskDeletion: (taskId, actor) => taskDeletionService.inspect(taskId, actor),
-        deleteTask: (taskId, input, actor) => taskDeletionService.request(taskId, input, actor),
-        updateWork: (workId, patch) => workService.updateWork(workId, patch),
-        deleteWork: async workId => {
-          await clearWorkAvatarFile(workId, { environmentName });
-          return workService.deleteWork(workId);
-        }
-      },
-      resolveSession: id => sessionBindingRepository.resolve(id)?.sessionId
-        ?? (store.getSession(id) ? id : null) }) })
-    .then(gateway => { clientDeviceGateway = gateway; })
-    .catch(() => console.error("[client-devices] remote gateway unavailable; check explicit TLS configuration"));
-  // Store-backed APIs and state streams are the Backend readiness boundary.
-  // Provider runtimes, recovery, and route verification are optional
-  // capabilities: start them only after the frontend can connect, and contain
-  // every failure inside the affected background capability.
-  setImmediate(() => {
-    const reconciled = store.reconcileInterruptedSessionExecutionAtStartup();
-    if (Object.values(reconciled).some((count) => count > 0)) {
-      console.warn(`[startup-interruption-reconcile] ${JSON.stringify(reconciled)}`);
-    }
-    const recoveredTaskDeletions = taskDeletionService.recoverInterruptedDeletions();
-    if (recoveredTaskDeletions > 0) {
-      console.warn(`[task-deletion-recovery] ${JSON.stringify({ recoveredTaskDeletions })}`);
-    }
-    trackStartupMaintenance(runProviderStartupMaintenance([...knownActiveWorktrees.values()]));
-    trackStartupMaintenance(worktreeIntegrationJobService.recover()
-      .then((recoveredWorktreeIntegrationJobs) => {
-        if (recoveredWorktreeIntegrationJobs > 0) {
-          console.log(`[worktree-integration] queued ${recoveredWorktreeIntegrationJobs} persisted task(s) for recovery`);
-        }
-      })
-      .catch((error) => {
-        console.warn(`[worktree-integration] startup recovery failed error=${error?.message ?? error}`);
-      }));
-    reconcileEntityTasksAtStartup();
-    trackStartupMaintenance(reconcileWorkChatsAtStartup());
-    scheduledSessionTaskService.start();
-    agentWorkQueueInterval = setInterval(() => {
-      tickAgentWorkQueue().catch((error) => emitEvent("AgentWorkQueueError", { error: error.message }));
-    }, 2000);
-    agentWorkQueueInterval.unref?.();
-    tickAgentWorkQueue().catch((error) => emitEvent("AgentWorkQueueError", { error: error.message }));
+  startClientDeviceGateway({
+    store, environmentName, developmentPreview, worktreeIntegrationJobService, projectApplicationService,
+    emitEvent, readSessionTimelineWindow, requireSessionReference,
+    sessionContextReferenceService, artifactService, scheduledSessionTaskService,
+    turnObservability, agentProviderRegistry, switchSessionProvider, workService,
+    inspectTaskWorktree, reclaimTaskWorktree, sendUnifiedSessionMessage,
+    interruptUnifiedSession, respondUnifiedSessionApproval, respondUnifiedSessionUserInput,
+    publishStateChangesIfNeeded, workDiscussionService, sessionApplicationService,
+    workSessionStartApplicationService, chatResourceService, decorateSessionForClient,
+    readSessionUsage, setTaskArchivedForEntityRoutes, restartTaskForEntityRoutes,
+    taskDeletionService, clearWorkAvatarFile, sessionBindingRepository, createTaskAndSession,
+    getClientDeviceGateway: () => clientDeviceGateway,
+    onReady: gateway => { clientDeviceGateway = gateway; }
   });
-  setImmediate(() => {
-    trackStartupMaintenance(artifactService.runStartupMaintenance()
-      .then((recoveredArtifactContentOperations) => {
-        if (recoveredArtifactContentOperations.length > 0) {
-          console.warn(`[artifact-recovery] ${JSON.stringify(recoveredArtifactContentOperations)}`);
-        }
-      })
-      .catch((error) => {
-        console.warn(`[artifact-recovery] startup maintenance failed code=${error?.code ?? "unknown"} error=${error?.message ?? error}`);
-      }));
-  });
-  // Provider callbacks converge truth into SQLite before wake publication.
-  // There is intentionally no periodic read/repair loop here.
-  // Feishu reconciliation may stop daemons and call remote identity/model
-  // services for every configured bot. It is maintenance, not an API
-  // readiness dependency, so never hold the loopback server closed for it.
-  setImmediate(() => {
-    trackStartupMaintenance(feishuGateway.initialize()
-      .then(() => {
-        const status = feishuGateway.status();
-        console.log(`[feishu] gateway ready cli=${status.cliAvailable ? status.cliPath : "unavailable"}`);
-      })
-      .catch((error) => {
-        console.warn(`[feishu] gateway initialization failed error=${error?.message ?? error}`);
-      }));
-  });
-  // Legacy Skill repair is maintenance, not a readiness dependency. Run it
-  // only after the API is healthy so an invalid external package cannot block
-  // every App launch. Persistent failure fingerprints suppress unchanged,
-  // deterministic failures on later starts.
-  setImmediate(() => {
-    trackStartupMaintenance(skillRegistryService.repairLegacyRegistrations()
-      .then((result) => {
-        if (result.repaired.length > 0) {
-          console.log(`[skills] repaired ${result.repaired.length} legacy Skill registration(s)`);
-        }
-        for (const skipped of result.skipped) {
-          console.warn(`[skills] legacy Skill repair skipped skill=${skipped.skillId} reason=${skipped.reason}`);
-        }
-      })
-      .catch((error) => {
-        console.warn(`[skills] legacy Skill repair failed error=${error?.message ?? error}`);
-      }));
-  });
-  // The 2026-08-26 Store-authority cutover deliberately removed Provider
-  // history reads from GET. Repair pre-cutover Sessions once, after readiness,
-  // and retain an audit row for every import, empty history, limitation or
-  // failure. Timeline revisions wake connected clients after each commit.
-  setImmediate(() => {
-    trackStartupMaintenance(legacySessionHistoryRepairService.run()
-      .then((result) => {
-        console.log(`[legacy-history-repair] ${JSON.stringify({
-          scanned: result.scanned,
-          imported: result.imported,
-          importedItems: result.importedItems,
-          noHistory: result.noHistory,
-          skipped: result.skipped,
-          unsupported: result.unsupported,
-          unavailable: result.unavailable,
-          failed: result.failed
-        })}`);
-      })
-      .catch((error) => {
-        console.warn(`[legacy-history-repair] run failed code=${error?.code ?? "unknown"} error=${error?.message ?? error}`);
-      }));
+  scheduleBackendStartupMaintenance({
+    store, taskDeletionService, trackStartupMaintenance, runProviderStartupMaintenance,
+    knownActiveWorktrees, worktreeIntegrationJobService, reconcileEntityTasksAtStartup,
+    reconcileWorkChatsAtStartup, scheduledSessionTaskService, runtimeActivity,
+    tickAgentWorkQueue, emitEvent, artifactService, feishuGateway,
+    skillRegistryService, legacySessionHistoryRepairService
   });
 }
+
+const {
+  resumeSessionRecoveryAttemptsAtStartup, deleteHistoricalUnusableTaskSessionsAtStartup,
+  recoverPendingWorkspaceTransitions
+} = createStartupRecoveryOperations({
+  store, sessionApplicationService, sessionRecoveryCoordinator,
+  sessionBindingRepository, sessionProviderSwitchCoordinator,
+  workspaceTransitionRuntimeForLogicalSession
+});
+const { runProviderStartupMaintenance } = createProviderStartupMaintenance({
+  workSessionStartupCoordinator, projectToolsetInitializer,
+  environmentName, bundledAgentMemoryPath, bundledCollaborationSkillPath,
+  bundledProjectToolsetReferencePath, collaborationMcpServerPath,
+  codexRuntime, openClackyManager, emptyCodexBindingPreflight,
+  toolBootstrapBindingPreflight, setProviderRuntimeReadiness,
+  collaborationCore, store, codexResetForecastMonitor,
+  resumeSessionRecoveryAttemptsAtStartup, deleteHistoricalUnusableTaskSessionsAtStartup,
+  recoverPendingWorkspaceTransitions, reconcileMovedWorkspaceRoutes, sessionRuntimeReleaseService
+});
 
 backendStoreReady = true;
 emitEvent("BackendStoreReady", { ready: true, time: now() }, { recordSessionEvent: false });
 startBackendRuntime();
 
-async function runProviderStartupMaintenance(knownWorktrees) {
-  const recoveredInterruptedTaskStarts = workSessionStartupCoordinator.recoverInterruptedStarts();
-  if (recoveredInterruptedTaskStarts > 0) {
-    console.warn(`[task-start-recovery] ${JSON.stringify({ recoveredInterruptedTaskStarts })}`);
-  }
-  const recoveredProjectToolsets = await runContainedStartupOperation(
-    "project-toolset-recovery",
-    () => projectToolsetInitializer.recoverAll()
-  );
-  if (recoveredProjectToolsets?.length > 0) {
-    console.warn(`[project-toolset-recovery] ${JSON.stringify({ recoveredOperations: recoveredProjectToolsets.length })}`);
-  }
-  const [corptieCodexRuntime] = await Promise.all([
-    runContainedStartupOperation("codex-runtime", async () => {
-      const runtime = await ensureCorptieCodexRuntime({
-        environmentName,
-        bundledMemoryPath: bundledAgentMemoryPath,
-        bundledSkillPath: bundledCollaborationSkillPath,
-        bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath,
-        collaborationMcpServerPath
-      });
-      await codexRuntime.initialize();
-      console.log(`[agent-memory] ready shared=${runtime.sharedMemoryPath}`);
-      if (runtime.rolloutPathRepair.repairedCount > 0) {
-        console.warn(`[codex-runtime] repaired migrated rollout paths count=${runtime.rolloutPathRepair.repairedCount} backups=${runtime.rolloutPathRepair.backups.length}`);
-      }
-      console.log(`[codex-runtime] ready home=${runtime.codexHome} auth=${runtime.authAvailable ? "available" : "missing"} agents=${runtime.agentsAvailable ? "ready" : "missing"} skill=${runtime.skillAvailable ? "ready" : "missing"} mcp=${runtime.mcpAvailable ? "ready" : "missing"}`);
-      // Candidate discovery is deliberately post-listen and happens while the
-      // Provider is still globally Not Ready. This preserves immediate App ↔
-      // Backend connection without exposing zero-Turn bindings as sendable.
-      const preparation = emptyCodexBindingPreflight.prepare();
-      if (preparation.candidates > 0) {
-        console.info(`[empty-binding-preflight] pending=${preparation.candidates}`);
-      }
-      setProviderRuntimeReadiness("codex-app-server", { state: "ready" });
-      return runtime;
-    }, "codex-app-server"),
-    runContainedStartupOperation("claude-runtime", async () => {
-      const runtime = await ensureCorptieClaudeRuntime({
-        environmentName,
-        bundledMemoryPath: bundledAgentMemoryPath,
-        bundledSkillPath: bundledCollaborationSkillPath,
-        bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath
-      });
-      console.log(`[claude-runtime] ready home=${runtime.configDir} auth=${runtime.credentialsAvailable ? "available" : "missing"} memory=${runtime.memoryAvailable ? "ready" : "missing"} plugin=${runtime.pluginPath} skill=${runtime.skillAvailable ? "ready" : "missing"} mcp=ready`);
-      setProviderRuntimeReadiness("claude-sdk", { state: "ready" });
-      return runtime;
-    }, "claude-sdk"),
-    runContainedStartupOperation("openclacky-runtime", async () => {
-      await ensureCorptieOpenClackyRuntime({ environmentName });
-      openClackyManager.start();
-      setProviderRuntimeReadiness("openclacky", { state: "ready" });
-    }, "openclacky")
-  ]);
-  if (corptieCodexRuntime) {
-    const recovered = recoverCollaborationDeliveriesAfterCodexRolloutRepair({
-      core: collaborationCore,
-      store,
-      rolloutPathRepair: corptieCodexRuntime.rolloutPathRepair
-    });
-    if (recovered.length > 0) {
-      console.warn(`[collaboration-recovery] requeued ${recovered.length} exhausted Delivery item(s) after Codex rollout relocation repair`);
-    }
-  }
-  const operations = [
-    runContainedStartupOperation("active-session-binding-preflight", async () => {
-      // Active empty bindings are proactively warmed after Backend readiness.
-      // Complete this pass before the broader Tool bootstrap scan so both
-      // verification passes never race the same Provider binding. Neither
-      // pass may replace a route; replacement requires explicit Recovery.
-      const emptyBindingSummary = await emptyCodexBindingPreflight.run();
-      if (emptyBindingSummary?.scanned > 0) {
-        console.info(`[empty-binding-preflight] ${JSON.stringify({
-          scanned: emptyBindingSummary.scanned,
-          ready: emptyBindingSummary.ready,
-          failed: emptyBindingSummary.failed
-        })}`);
-      }
-      const toolBootstrapSummary = await toolBootstrapBindingPreflight.run();
-      if (toolBootstrapSummary?.scanned > 0) {
-        console.info(`[tool-bootstrap-preflight] ${JSON.stringify(toolBootstrapSummary)}`);
-      }
-    }),
-    runContainedStartupOperation("codex-reset-monitor", async () => {
-      codexResetForecastMonitor.start();
-    }),
-    runContainedStartupOperation("session-recovery", resumeSessionRecoveryAttemptsAtStartup),
-    runContainedStartupOperation("replaced-session-cleanup", async () => {
-      const deleted = await deleteHistoricalUnusableTaskSessionsAtStartup();
-      if (deleted > 0) {
-        console.warn(`[task-self-repair] startup deleted ${deleted} replaced unusable Session(s)`);
-      }
-    }),
-    runContainedStartupOperation("workspace-transition-recovery", recoverPendingWorkspaceTransitions),
-    runContainedStartupOperation("workspace-route-reconciliation", () => reconcileMovedWorkspaceRoutes(
-      knownWorktrees,
-      { verifyProviderIdle: true }
-    ))
-  ];
-  await Promise.all(operations);
-  // Historical runtime cleanup uses the same Provider transport as active
-  // binding verification. Start it only after active Sessions are ready, and
-  // let the release service enforce a small concurrency window.
-  await runContainedStartupOperation("archived-session-runtime-release", async () => {
-    const scheduled = sessionRuntimeReleaseService.reconcileArchivedSessions();
-    if (scheduled > 0) console.info(`[session-runtime-release] scheduled archived=${scheduled}`);
-  });
-}
 
-async function runContainedStartupOperation(name, operation, providerId = null) {
-  try {
-    return await operation();
-  } catch (error) {
-    if (providerId) {
-      setProviderRuntimeReadiness(providerId, {
-        state: "not_ready",
-        reasonCode: "PROVIDER_INITIALIZATION_FAILED",
-        message: error?.message ?? "Provider initialization failed.",
-        retryable: true
-      });
-    }
-    console.warn(`[startup-maintenance] operation=${name} failed code=${error?.code ?? "unknown"} error=${error?.message ?? error}`);
-    return undefined;
-  }
-}
 
-async function recoverPendingWorkspaceTransitions() {
-  for (const transition of store.listPendingWorkspaceTransitions()) {
-    const logical = store.getLogicalSession(transition.logicalSessionId);
-    try {
-      if (transition.transitionKind === "provider") {
-        const sessionId = logical?.legacySessionId;
-        const unsettled = sessionId ? store.listUnsettledSessionTurns(sessionId) : [];
-        if (unsettled.length > 0) {
-          console.log(`[provider-switch] recovery waiting transition=${transition.transitionId} unsettled=${unsettled.length}`);
-          continue;
-        }
-        const reference = sessionBindingRepository.resolve(
-          logical?.legacySessionId ?? logical?.logicalSessionId
-        );
-        const recovered = await sessionProviderSwitchCoordinator.completeProviderSwitch(
-          transition.transitionId,
-          undefined,
-          reference,
-          logical
-        );
-        console.log(`[provider-switch] recovered transition=${transition.transitionId} status=${recovered.status}`);
-        continue;
-      }
-      const runtime = await workspaceTransitionRuntimeForLogicalSession(logical);
-      const recovered = await runtime.manager.recoverWorkspaceTransition(
-        transition.transitionId,
-        runtime.options
-      );
-      console.log(`[workspace-transition] recovered transition=${transition.transitionId} status=${recovered.status}`);
-    } catch (error) {
-      console.warn(`[workspace-transition] recovery failed transition=${transition.transitionId} error=${error.message}`);
-    }
-  }
-}
-
-let shutdownPromise = null;
+const shutdownBackend = createBackendShutdown({
+  backgroundAgentService, getClientDeviceGateway: () => clientDeviceGateway,
+  taskSummaryService, turnObservability, runtimeActivity, mcpCleanupInterval,
+  stateSyncPublisher, scheduledSessionTaskService,
+  getResetForecastMonitor: () => codexResetForecastMonitor,
+  openClackyManager, feishuGateway, codexRuntime, skillMcpGateway,
+  runIsolationCoordinator, projectCodeFreshnessMonitor,
+  closeTimelineReadPool, store, dataRootMigrationCoordinator,
+  backendDataRootOwnership
+});
 
 function shutdown() {
-  if (shutdownPromise) return shutdownPromise;
-  shutdownPromise = (async () => {
-    backgroundAgentService.close();
-    await clientDeviceGateway?.close();
-    taskSummaryService.close();
-    turnObservability.flush();
-    if (agentWorkQueueInterval) clearInterval(agentWorkQueueInterval);
-    clearInterval(mcpCleanupInterval);
-    if (mockProgressTimer) clearInterval(mockProgressTimer);
-    if (stateSyncPublishTimer) clearTimeout(stateSyncPublishTimer);
-    timelineChangePublisher?.close();
-    scheduledSessionTaskService.stop();
-    await codexResetForecastMonitor?.stop();
-    openClackyManager.stop();
-    await feishuGateway.close();
-    await codexRuntime.close();
-    await skillMcpGateway.close();
-    await runIsolationCoordinator?.close();
-    projectCodeFreshnessMonitor.close();
-    await closeTimelineReadPool();
-    turnObservability.flush();
-    await store.close({
-      checkpoint: dataRootMigrationCoordinator.status()?.phase !== "restartRequired"
-    });
-    await backendDataRootOwnership.release();
-    process.exit(0);
-  })();
-  return shutdownPromise;
+  return shutdownBackend();
 }
 
 process.on("SIGINT", () => void shutdown());

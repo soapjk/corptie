@@ -510,7 +510,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             }
             .store(in: &cancellables)
 
-        client.$pendingCollaborationConfirmationsBySessionID
+        client.collaborationConfirmationController.$pendingBySessionID
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 guard let self else { return }

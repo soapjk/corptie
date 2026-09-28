@@ -9,7 +9,7 @@ struct CollaborationConfirmationRequestTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appending(path: "Sources/CopetsMac/BackendClient.swift")
+            .appending(path: "Sources/CopetsMac/Backend/CollaborationConfirmationController.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         let actionStart = try #require(source.range(
             of: "func respondToCollaborationConfirmation(confirmationId: String, approve: Bool"
@@ -20,11 +20,11 @@ struct CollaborationConfirmationRequestTests {
         let action = String(source[actionStart.lowerBound..<requestHelperStart.lowerBound])
 
         #expect(!action.contains("guard session != nil || selectedSession != nil else { return }"))
-        #expect(action.contains("pendingCollaborationConfirmationsBySessionID.first"))
+        #expect(action.contains("pendingBySessionID.first"))
         #expect(action.contains("requestCollaborationConfirmationResolution("))
         #expect(action.contains("resolvedItem.collaborationConfirmationStatus = resolutionStatus"))
         #expect(!action.contains("Collaboration request sent"))
-        #expect(action.contains("await loadSessionMessages(sourceSession)"))
+        #expect(action.contains("await loadMessages(sourceSession)"))
         #expect(action.contains("Confirmation failed: %@"))
     }
 
@@ -77,8 +77,10 @@ struct CollaborationConfirmationRequestTests {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
             .appending(path: "Sources/CopetsMac")
-        let swiftUI = try String(contentsOf: root.appending(path: "FloatingRootView.swift"), encoding: .utf8)
-        let appKit = try String(contentsOf: root.appending(path: "AppKitChatTimelineView.swift"), encoding: .utf8)
+        let swiftUI = try String(contentsOf: root.appending(path: "Conversation/Presentation/ConversationDisplayProjection.swift"), encoding: .utf8)
+            + String(contentsOf: root.appending(path: "Conversation/Timeline/ThreadItemView.swift"), encoding: .utf8)
+            + String(contentsOf: root.appending(path: "Conversation/Presentation/ConversationNativeRowBuilder.swift"), encoding: .utf8)
+        let appKit = try String(contentsOf: root.appending(path: "Conversation/Timeline/AppKitChatNativeTextCell.swift"), encoding: .utf8)
         #expect(!swiftUI.contains("case \"confirmed\": isConfirmation ? L10n(\"已发送\")"))
         #expect(!swiftUI.contains("isSessionChannelAuthorization ? \"已授权\" : \"已发送\""))
         #expect(!swiftUI.contains("collaboration.confirmation.sent"))

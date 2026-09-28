@@ -52,6 +52,7 @@ enum WorkerSessionBackgroundRetryDecision: Equatable {
 /// 统一 Session 创建入口。
 /// 任意 Agent 均可创建聊天；Work Chat 绑定 Work；Worker Session 同时绑定 Task。
 struct NewSessionCreationSheet: View {
+    @ObservedObject private var modelCatalog = BackendClient.shared.modelCatalog
     @ObservedObject private var client = EntityAPIClient.shared
     @ObservedObject private var backendClient = BackendClient.shared
     @Environment(\.dismiss) private var dismiss
@@ -172,7 +173,7 @@ struct NewSessionCreationSheet: View {
         .task {
             async let agents: Void = client.refreshAgents()
             async let works: Void = client.refreshWorks()
-            if backendClient.agentProviders.isEmpty { await backendClient.loadProviders() }
+            if modelCatalog.agentProviders.isEmpty { await backendClient.loadProviders() }
             _ = await (agents, works)
             reconcileProviderSelection()
             normalizeAgentSelection()
@@ -197,7 +198,7 @@ struct NewSessionCreationSheet: View {
         .onChange(of: selectedWorkId) { _, _ in
             if kind == .workChat { normalizeAgentSelection() }
         }
-        .onChange(of: backendClient.agentProviders) { _, _ in reconcileProviderSelection() }
+        .onChange(of: modelCatalog.agentProviders) { _, _ in reconcileProviderSelection() }
     }
 
     private var sessionIdentitySection: some View {
@@ -391,12 +392,12 @@ struct NewSessionCreationSheet: View {
     }
 
     private var creatableProviders: [AgentProviderDescriptor] {
-        backendClient.agentProviders.filter { $0.supports("session.create") }
+        modelCatalog.agentProviders.filter { $0.supports("session.create") }
     }
 
     private func reconcileProviderSelection() {
         guard !creatableProviders.contains(where: { $0.id == selectedProviderId }) else { return }
-        if let preferred = backendClient.defaultSessionProviderId,
+        if let preferred = modelCatalog.defaultSessionProviderId,
            creatableProviders.contains(where: { $0.id == preferred }) {
             selectedProviderId = preferred
         } else {

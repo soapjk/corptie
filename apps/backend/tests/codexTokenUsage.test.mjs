@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeCodexTokenUsage } from "../src/adapters/codexAppServer.mjs";
+import { normalizeCodexTokenUsage } from "../src/adapters/codexThreadProjection.mjs";
 
 test("normalizes Codex token usage and computes context balance", () => {
   assert.deepEqual(normalizeCodexTokenUsage({

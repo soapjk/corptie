@@ -28,6 +28,50 @@ const binding = {
   routingVersion: 4
 };
 
+test("queue insertion failure rolls back Delivery, Timeline, events, Outbox and notifications", async () => {
+  const { directory, store } = await fixture();
+  try {
+    const revision = store.stateRevision();
+    const timelineRevision = store.sessionTimelineRevision("session:one");
+    const notifications = [];
+    store.setStateDirtyListener(() => notifications.push("state"));
+    store.setTimelineDirtyListener(() => notifications.push("timeline"));
+    const input = { deliveryId: "delivery:rollback", messageId: "message:rollback",
+      sessionId: "session:one", binding, agentId: "agent:one", text: "atomic creation" };
+    const original = store.enqueueAgentTaskWithResult;
+    const failure = new Error("injected queue insertion failure");
+    store.enqueueAgentTaskWithResult = () => { throw failure; };
+    try {
+      assert.throws(() => store.createUserMessageDelivery(input), error => error === failure);
+    } finally {
+      store.enqueueAgentTaskWithResult = original;
+    }
+    assert.equal(store.getMessageDelivery(input.deliveryId), null);
+    assert.equal(store.getSessionItem(input.sessionId, input.messageId), null);
+    assert.deepEqual(store.listSessionEvents(input.sessionId), []);
+    assert.deepEqual(store.listPendingEventOutbox(), []);
+    assert.equal(store.stateRevision(), revision);
+    assert.equal(store.sessionTimelineRevision(input.sessionId), timelineRevision);
+    assert.deepEqual(notifications, []);
+    assert.equal(store.createUserMessageDelivery(input).inserted, true);
+    const delivery = store.getMessageDelivery(input.deliveryId);
+    notifications.length = 0;
+    const committedTimelineRevision = store.sessionTimelineRevision(input.sessionId);
+    assert.throws(() => store.runInTransaction(() => {
+      store.updateMessageDelivery(input.deliveryId, { status: "processing", providerTurnId: "turn:test" });
+      assert.deepEqual(notifications, []);
+      throw failure;
+    }), error => error === failure);
+    assert.deepEqual(store.getMessageDelivery(input.deliveryId), delivery);
+    assert.equal(store.getSessionItem(input.sessionId, input.messageId).status, "queued");
+    assert.equal(store.sessionTimelineRevision(input.sessionId), committedTimelineRevision);
+    assert.deepEqual(notifications, []);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("user message, Delivery, queue work, domain event, and Outbox commit together before dispatch", async () => {
   const { directory, store } = await fixture();
   try {

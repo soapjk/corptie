@@ -87,11 +87,6 @@ final class SessionCommandController: ObservableObject {
     @Published var isCleaningMergedProjectWorktrees = false
     @Published var isIntegratingCompletedWorktrees = false
     @Published var isCreatingIntegrationConflictCorptieTask = false
-    @Published var gitHubPushPreparation: GitHubPushPreparation?
-    @Published var gitHubPushError: String?
-    @Published var isPreparingGitHubPush = false
-    @Published var isGeneratingGitHubCommitMessage = false
-    @Published var gitHubPushingSessionId: String?
     @Published var isRecoveringWorkspace = false
     @Published var isGeneratingWorktreeCommitMessage = false
 

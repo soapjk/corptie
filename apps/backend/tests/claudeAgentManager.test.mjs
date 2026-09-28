@@ -15,7 +15,7 @@ test("Claude forks through the SDK at the native message and waits for new input
   assert.equal(manager.get("child").agentSessionId, "sdk-child");
   assert.equal(manager.get("source").agentSessionId, "sdk-source");
   assert.equal(result.external.cwd, "/repo/child");
-  assert.equal(manager.get("child").inputQueue.length, 0);
+  assert.equal(manager.get("child").queryInput.pendingCount, 0);
 });
 
 test("Claude persists the native UUID on the final streamed assistant item", () => {
@@ -719,7 +719,7 @@ for (const agentSessionId of [null, "sdk-restored"]) {
       assert.deepEqual(queries[0].options.mcpServers, runtimeOptions.mcpServers);
       assert.equal(session.currentTurnId, null);
       assert.equal(session.turnState, "idle");
-      assert.deepEqual(session.inputQueue, []);
+      assert.equal(session.queryInput.pendingCount, 0);
     } finally {
       releaseStartup();
       await reconnectTask;
