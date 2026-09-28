@@ -3,6 +3,20 @@ import Testing
 @testable import CorptieClientCore
 
 struct ConversationUserInputTests {
+    @Test func completedInputRetainsOnlyDeclaredSelectionProjection() throws {
+        let json = """
+        {"schemaVersion":1,"isBlocking":true,"selectedOptions":{"route":["B"]},
+         "submittedAnswers":{"route":["B"]},"questions":[
+          {"id":"route","header":"Route","question":"Choose route","isOther":false,
+           "isSecret":false,"selectionMode":"single","options":[{"label":"A","description":"Fast"},{"label":"B","description":"Safe"}]}
+        ]}
+        """
+        let input = try JSONDecoder().decode(ConversationUserInput.self, from: Data(json.utf8))
+        #expect(input.selectedOptions == ["route": ["B"]])
+        #expect(input.submittedAnswers == ["route": ["B"]])
+        #expect(input.questions[0].options?.map(\.label) == ["A", "B"])
+    }
+
     @Test func singleMultipleOptionalAndCustomAnswersUseTheSameRules() throws {
         let json = """
         {"schemaVersion":1,"kind":"question","responseMode":"message","isBlocking":false,"canCancel":true,"questions":[
