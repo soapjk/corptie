@@ -12,24 +12,19 @@ struct ScenesView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $sidebarState.visibility) {
-            List(client.scenes, selection: $selectedSceneID) { scene in
-                Label(scene.name, systemImage: scene.templateId == "daily-checklist" ? "checklist" : "figure.run")
-                    .tag(scene.id)
-            }
-            .navigationTitle(L10n("Scenes"))
-            .overlay {
-                if client.scenes.isEmpty && !client.isLoading {
-                    ContentUnavailableView(L10n("No Scenes"), systemImage: "square.grid.2x2",
-                        description: Text(L10n("Create a scene from a template to get started.")))
+            VStack(spacing: 0) {
+                sidebarHeader
+                Divider()
+                List(client.scenes, selection: $selectedSceneID) { scene in
+                    Label(scene.name, systemImage: scene.templateId == "daily-checklist" ? "checklist" : "figure.run")
+                        .tag(scene.id)
                 }
-            }
-            .toolbar {
-                Button {
-                    let templateID = client.templates.first?.templateId ?? "daily-checklist"
-                    createDraft = CreateSceneDraft(templateId: templateID, name: "")
-                } label: { Image(systemName: "plus") }
-                .help(L10n("Create Scene"))
-                .accessibilityIdentifier("scenes.create")
+                .overlay {
+                    if client.scenes.isEmpty && !client.isLoading {
+                        ContentUnavailableView(L10n("No Scenes"), systemImage: "square.grid.2x2",
+                            description: Text(L10n("Create a scene from a template to get started.")))
+                    }
+                }
             }
         } detail: {
             if let selectedScene {
@@ -62,6 +57,25 @@ struct ScenesView: View {
         )) { Button(L10n("OK"), role: .cancel) { client.clearError() } } message: {
             Text(client.errorMessage ?? "")
         }
+    }
+
+    private var sidebarHeader: some View {
+        HStack(spacing: 8) {
+            Text(L10n("Scenes")).font(.headline)
+            Spacer()
+            Button {
+                let templateID = client.templates.first?.templateId ?? "daily-checklist"
+                createDraft = CreateSceneDraft(templateId: templateID, name: "")
+            } label: {
+                Image(systemName: "plus")
+            }
+            .buttonStyle(.borderless)
+            .help(L10n("Create Scene"))
+            .accessibilityLabel(L10n("Create Scene"))
+            .accessibilityIdentifier("scenes.create")
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 38)
     }
 
     private func selectFirstSceneIfNeeded() {
