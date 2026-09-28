@@ -121,7 +121,7 @@ final class MainWindowLeadingChromeAccessoryController: NSTitlebarAccessoryViewC
 
         layoutAttribute = .left
         hostingView.sizingOptions = []
-        hostingView.frame = NSRect(x: 0, y: 0, width: 56, height: 22)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 24, height: 22)
         hostingView.autoresizingMask = []
         hostingView.layerContentsRedrawPolicy = .onSetNeedsDisplay
         view = hostingView
@@ -133,20 +133,16 @@ final class MainWindowLeadingChromeAccessoryController: NSTitlebarAccessoryViewC
     }
 }
 
-/// A native top title-bar accessory keeps the compact tab switcher on the same
-/// vertical center line as the traffic-light buttons. The accessory's view is
-/// stretched by AppKit; its two small hosting surfaces retain fixed geometry and
-/// are positioned without involving the heavyweight page hierarchy.
+/// Only background task status remains in the native title bar. Navigation is
+/// a full-height leading column beside the resident page host.
 @MainActor
 final class MainWindowTitlebarAccessoryController: NSTitlebarAccessoryViewController {
     let surfaceView: MainWindowTitlebarSurfaceView
 
     init(
-        centerSurface: NSView = NSHostingView(rootView: MainWindowTabBarSurfaceView()),
         trailingSurface: NSView = NSHostingView(rootView: MainWindowTaskSurfaceView())
     ) {
         surfaceView = MainWindowTitlebarSurfaceView(
-            centerSurface: centerSurface,
             trailingSurface: trailingSurface
         )
         super.init(nibName: nil, bundle: nil)
@@ -162,20 +158,18 @@ final class MainWindowTitlebarAccessoryController: NSTitlebarAccessoryViewContro
 
 @MainActor
 final class MainWindowTitlebarSurfaceView: NSView {
-    let centerSurface: NSView
     let trailingSurface: NSView
 
-    init(centerSurface: NSView, trailingSurface: NSView) {
-        self.centerSurface = centerSurface
+    init(trailingSurface: NSView) {
         self.trailingSurface = trailingSurface
         super.init(frame: NSRect(
             x: 0,
             y: 0,
-            width: MainWindowLayoutMetrics.tabBarWidth,
+            width: MainWindowLayoutMetrics.taskSurfaceWidth,
             height: MainWindowLayoutMetrics.titlebarHeight
         ))
 
-        for surface in [centerSurface, trailingSurface] {
+        for surface in [trailingSurface] {
             surface.autoresizingMask = []
             surface.layerContentsRedrawPolicy = .onSetNeedsDisplay
             addSubview(surface)
@@ -191,13 +185,6 @@ final class MainWindowTitlebarSurfaceView: NSView {
     override func layout() {
         super.layout()
         let verticalCenter = bounds.midY
-        let windowCenter = resolvedWindowCenterX()
-        centerSurface.frame = NSRect(
-            x: windowCenter - MainWindowLayoutMetrics.tabBarWidth / 2,
-            y: verticalCenter - MainWindowLayoutMetrics.tabBarHeight / 2,
-            width: MainWindowLayoutMetrics.tabBarWidth,
-            height: MainWindowLayoutMetrics.tabBarHeight
-        )
         trailingSurface.frame = NSRect(
             x: bounds.maxX
                 - MainWindowLayoutMetrics.titlebarTrailingInset
@@ -206,14 +193,6 @@ final class MainWindowTitlebarSurfaceView: NSView {
             width: MainWindowLayoutMetrics.taskSurfaceWidth,
             height: 22
         )
-    }
-
-    private func resolvedWindowCenterX() -> CGFloat {
-        guard let contentView = window?.contentView else { return bounds.midX }
-        return convert(
-            NSPoint(x: contentView.bounds.midX, y: contentView.bounds.midY),
-            from: contentView
-        ).x
     }
 
     @available(*, unavailable)
