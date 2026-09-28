@@ -15,6 +15,20 @@ struct MainTabContentLayoutTests {
     }
 
     @Test
+    func sceneCreationActionIsRenderedInsideTheSidebar() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac/ScenesView.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        #expect(contents.contains("sidebarHeader\n                Divider()\n                List(client.scenes"))
+        #expect(contents.contains("private var sidebarHeader: some View"))
+        #expect(contents.contains(".accessibilityIdentifier(\"scenes.create\")"))
+    }
+
+    @Test
     func consoleDirectlyHostsTheUnifiedConversationSurface() throws {
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
