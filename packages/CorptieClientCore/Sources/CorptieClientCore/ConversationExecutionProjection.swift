@@ -74,8 +74,8 @@ public struct ConversationChangeSet: Decodable, Sendable, Hashable {
     public let changes: [Change]
 }
 
-/// Provider-neutral pending questions. Answers are intentionally never part of
-/// the timeline model; they exist only in the submission request.
+/// Provider-neutral questions and their accepted answers, shown in the
+/// original conversation card just like other user-visible conversation data.
 public struct ConversationUserInput: Decodable, Sendable, Hashable {
     public struct Option: Decodable, Sendable, Hashable {
         public let label: String
@@ -100,6 +100,8 @@ public struct ConversationUserInput: Decodable, Sendable, Hashable {
     public let responseMode: String?
     public let canCancel: Bool?
     public let url: String?
+    public let selectedOptions: [String: [String]]?
+    public let submittedAnswers: [String: [String]]?
 
     public func answers(selected: [String: Set<String>], typed: [String: String]) -> [String: [String]]? {
         var result: [String: [String]] = [:]

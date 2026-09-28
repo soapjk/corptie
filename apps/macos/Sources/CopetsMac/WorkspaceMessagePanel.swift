@@ -1,3 +1,4 @@
+import CorptieConversation
 import SwiftUI
 
 /// A workspace message panel is a separate surface, not a scaled detail page.
@@ -34,7 +35,7 @@ struct WorkspaceMessagePanel: View {
         }
         .padding(8)
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-        .modifier(DetailRailSurfaceModifier(enabled: true))
+        .modifier(ConversationDetailCardSurface(enabled: true))
     }
 }
 

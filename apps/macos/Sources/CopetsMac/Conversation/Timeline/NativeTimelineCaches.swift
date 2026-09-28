@@ -342,6 +342,8 @@ final class NativeTimelineLayoutCache {
         let widthBucket: Int
         let isWorkspaceCard: Bool
         let imagePaths: [String]
+        let userInput: ConversationUserInput?
+        let userInputStatus: String?
 
         var estimatedTextLength: Int {
             text.utf16.count + rawStatusText.utf16.count + processSteps.reduce(into: 0) { total, step in
@@ -395,11 +397,25 @@ final class NativeTimelineLayoutCache {
             showsCollaborationSentStatus: row.showsCollaborationSentStatus,
             widthBucket: Int((normalizedWidth * 2).rounded()),
             isWorkspaceCard: row.isWorkspaceCard,
-            imagePaths: row.images.map { $0.managedPath }
+            imagePaths: row.images.map { $0.managedPath },
+            userInput: row.userInput,
+            userInputStatus: row.userInputStatus
         )
         if let cached = values[key] {
             touch(key)
             return cached
+        }
+
+        if let request = row.userInput {
+            let cardWidth = min(560, max(120, normalizedWidth - 8))
+            let layout = Layout(attributedText: NSAttributedString(string: ""), richBlocks: [],
+                processBlocks: [], cardWidth: cardWidth, textHeight: 0, rawStatusHeight: 0,
+                rowHeight: userInputHeight(request, status: row.userInputStatus, cardWidth: cardWidth))
+            values[key] = layout
+            touch(key)
+            estimatedBytes += 512 + request.questions.reduce(0) { $0 + $1.question.utf16.count * 8 }
+            evictIfNeeded()
+            return layout
         }
 
         let chartCandidates = row.nativeStyle == .agent && MacSharedMessageTextCard.supports(row)
@@ -523,6 +539,49 @@ final class NativeTimelineLayoutCache {
             + processBlocks.reduce(0) { $0 + $1.attributedText.length * 8 } + 192
         evictIfNeeded()
         return layout
+    }
+
+    private func userInputHeight(_ request: ConversationUserInput, status: String?, cardWidth: CGFloat) -> CGFloat {
+        let contentWidth = max(80, cardWidth - 28)
+        func textHeight(_ text: String, size: CGFloat, width: CGFloat) -> CGFloat {
+            let font = NSFont.systemFont(ofSize: size)
+            return max(ceil(font.boundingRectForFont.height), ceil((text as NSString).boundingRect(
+                with: NSSize(width: max(40, width), height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: [.font: font]
+            ).height))
+        }
+        var height: CGFloat = 28 + 26 + 12
+        if request.url != nil { height += 28 }
+        for question in request.questions {
+            if !question.header.isEmpty { height += 18 + 8 }
+            height += textHeight(question.question, size: 13, width: contentWidth) + 8
+            if question.required == false { height += 18 + 8 }
+            for option in question.options ?? [] {
+                let label = textHeight(option.label, size: 13, width: contentWidth - 42)
+                let description = option.description.isEmpty ? 0
+                    : textHeight(option.description, size: 11, width: contentWidth - 42) + 2
+                height += max(38, label + description + 16) + 8
+            }
+            if question.options == nil || question.isOther {
+                let entered = status == "submitted"
+                    ? ConversationInputAnswerPresentation.textAnswers(
+                        for: question, submittedAnswers: request.submittedAnswers)
+                    : []
+                height += max(42, entered.reduce(0) {
+                    $0 + textHeight($1, size: 13, width: contentWidth) + 8
+                })
+            }
+            height += 16
+        }
+        if status == "pending" {
+            let direct = ConversationUserInputInteractionPolicy.directSelectionQuestionID(request) != nil
+            if !direct { height += 38 }
+            if request.canCancel == true { height += 32 }
+        } else {
+            height += 30
+        }
+        return max(100, height + 28) // room for progress or a short inline error
     }
 
     private func chartHeight(_ spec: ConversationChartSpec, width: CGFloat) -> CGFloat {

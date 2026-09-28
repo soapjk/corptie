@@ -8,7 +8,7 @@ struct UnifiedConsoleControlSurfaceTests {
         let source = try source(named: "UnifiedConsoleView.swift")
         #expect(!source.contains("showsCardTaskDetails"))
         #expect(!source.contains("显示或隐藏 Task Info"))
-        #expect(source.contains("SessionDetailPanel(session: session, railWidth: 280)"))
+        #expect(source.contains("SessionDetailPanel(session: session, railWidth: 320)"))
         #expect(source.contains("SessionCorptieTaskDetailCard(taskId: task.id)"))
         #expect(source.contains("ConsoleWindowSplitView(mode: navigationMode"))
     }
@@ -283,11 +283,12 @@ struct UnifiedConsoleControlSurfaceTests {
     @Test
     func combinedSessionAndTaskDetailUsesOneOuterScrollContainer() throws {
         let source = try source(named: "Console/SessionDetailPanel.swift")
-        let cardStart = try #require(source.range(of: "private func sessionCard("))
+        let cardStart = try #require(source.range(of: "private var sessionCard: some View"))
         let detailStart = try #require(source.range(of: "private var sessionDetailContent:", range: cardStart.upperBound..<source.endIndex))
         let combined = source[cardStart.lowerBound..<detailStart.lowerBound]
 
-        #expect(combined.components(separatedBy: "ScrollView {").count - 1 == 1)
+        #expect(combined.contains("ConversationDetailDashboard(actions:"))
+        #expect(!combined.contains("ScrollView {"))
         #expect(source.contains("embedsInParentScroll: true"))
         #expect(source.contains("if detailKind == .taskDetail, let taskId = session.taskId"))
         #expect(!source.contains("会话恢复边界"))
@@ -310,10 +311,12 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(!source.contains("private var workspaceName: String?"))
 
         let definitionPosition = try #require(detail.range(of: "taskDefinitionSection"))
-        let resourcesPosition = try #require(detail.range(of: "taskResourcesSection"))
+        let resourcesPosition = try #require(detail.range(of: "ArtifactSectionView(workId: task.workId, taskId: task.id)"))
         #expect(definitionPosition.lowerBound < resourcesPosition.lowerBound)
-        #expect(detail.contains("if isCompleted {\n                Divider()\n                worktreeSection"))
-        #expect(detail.components(separatedBy: "Divider()").count - 1 == 2)
+        #expect(detail.contains("worktreeSection.modifier(ConversationDetailModuleSurface())"))
+        #expect(detail.contains("memorySection.modifier(ConversationDetailModuleSurface())"))
+        #expect(!detail.contains("Divider()"))
+        #expect(detail.contains("ConversationDetailModuleCard(title: L10n(\"Task 定义\")"))
         #expect(source.contains("private var taskDefinitionSection: some View"))
         #expect(source.contains("private var executionAndWorkspaceSection: some View"))
         #expect(source.contains("private var taskResourcesSection: some View"))
@@ -429,7 +432,7 @@ struct UnifiedConsoleControlSurfaceTests {
 
         let source = try source(named: "UnifiedConsoleView.swift")
         let surface = try self.source(named: "../../../../packages/CorptieConversation/Sources/CorptieConversation/WorkDiscussionButton.swift")
-        #expect(surface.contains("Color.black.opacity(0.065)"))
+        #expect(surface.contains("Color.primary.opacity(0.065)"))
         #expect(source.contains(".padding(.leading, ConsoleWorkOutlineMetrics.childIndent)"))
         #expect(source.contains("outlineGroupEmptyRow"))
         #expect(source.contains("outlineChildSelectionBackground"))

@@ -25,6 +25,53 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         )
     }
 
+    func testUserInputOptionsRenderInlineWithoutAnswerSheetAction() throws {
+        let input: [String: Any] = [
+            "schemaVersion": 1, "isBlocking": true,
+            "questions": [["id": "route", "header": "Route", "question": "Choose route",
+                "isOther": false, "isSecret": false,
+                "options": [["label": "A", "description": "Fast"],
+                    ["label": "B", "description": "Safe"]]]]
+        ]
+        let pending = ChatDisplayEntry(kind: .message(try item([
+            "type": "userInput", "status": "pending", "userInput": input
+        ])))
+        let row = builder().nativeAppKitRow(pending, expandedTurnIds: [])
+        XCTAssertTrue(row.actions.isEmpty)
+        XCTAssertNotNil(row.userInput)
+        XCTAssertTrue(MacSharedMessageTextCard.supports(row))
+        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 600)
+        XCTAssertGreaterThan(layout.rowHeight, 180)
+
+        let submitted = ChatDisplayEntry(kind: .message(try item([
+            "type": "userInput", "status": "submitted", "userInput": input.merging(
+                ["selectedOptions": ["route": ["B"]]]) { _, new in new }
+        ])))
+        let completedRow = builder().nativeAppKitRow(submitted, expandedTurnIds: [])
+        XCTAssertEqual(completedRow.userInput?.selectedOptions?["route"], ["B"])
+        XCTAssertNotEqual(row.contentRevision, completedRow.contentRevision)
+    }
+
+    func testSubmittedTextAnswerExpandsCardInsteadOfBeingClipped() throws {
+        let longAnswer = String(repeating: "This is a complete answer. ", count: 35)
+        let question: [String: Any] = [
+            "id": "answer", "header": "", "question": "Explain your choice",
+            "isOther": false, "isSecret": true, "options": NSNull()
+        ]
+        let base: [String: Any] = ["schemaVersion": 1, "isBlocking": true, "questions": [question]]
+        let short = builder().nativeAppKitRow(ChatDisplayEntry(kind: .message(try item([
+            "type": "userInput", "status": "submitted", "userInput": base.merging(
+                ["submittedAnswers": ["answer": ["Short"]]]) { _, new in new }
+        ]))), expandedTurnIds: [])
+        let long = builder().nativeAppKitRow(ChatDisplayEntry(kind: .message(try item([
+            "type": "userInput", "status": "submitted", "userInput": base.merging(
+                ["submittedAnswers": ["answer": [longAnswer]]]) { _, new in new }
+        ]))), expandedTurnIds: [])
+        XCTAssertNotEqual(short.contentRevision, long.contentRevision)
+        XCTAssertGreaterThan(NativeTimelineLayoutCache.shared.layout(for: long, columnWidth: 500).rowHeight,
+                             NativeTimelineLayoutCache.shared.layout(for: short, columnWidth: 500).rowHeight)
+    }
+
     func testFinalAnswerForkAvailabilityChangesRevisionWithoutChangingIdentity() throws {
         let entry = ChatDisplayEntry(kind: .message(try item()))
         let enabled = builder()

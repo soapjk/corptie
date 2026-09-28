@@ -18,7 +18,7 @@ struct MacSharedMessageTextCard: View {
     }
 
     static func supports(_ row: AppKitChatTimelineRow) -> Bool {
-        supportsProcess(row) || (row.nativeStyle != .process && !row.showsHeader && !row.isCollaboration
+        row.userInput != nil || supportsProcess(row) || (row.nativeStyle != .process && !row.showsHeader && !row.isCollaboration
             && row.collaborationRoute == nil && row.processCount == nil && row.expandableTurnId == nil
             && (row.actions.isEmpty || (row.nativeStyle == .agent
                 && row.nativeText.contains("```corptie-chart")))
@@ -36,13 +36,32 @@ struct MacSharedMessageTextCard: View {
 
     var body: some View {
         Group {
-            if row.nativeStyle == .process { processCard }
+            if let input = row.userInput { userInputCard(input) }
+            else if row.nativeStyle == .process { processCard }
             else { messageCard }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity,
             alignment: row.nativeStyle == .user ? .topTrailing : .topLeading)
         .padding(.horizontal, 2)
         .padding(.top, 1)
+    }
+
+    private func userInputCard(_ request: ConversationUserInput) -> some View {
+        ConversationInlineUserInput(request: request, status: row.userInputStatus) { answers, action in
+            guard let sessionID = row.sessionID else {
+                throw BackendError.message("会话不可用，无法提交答案。")
+            }
+            try await BackendClient.shared.respondToUserInput(
+                sessionID: sessionID, itemID: row.id, answers: answers, action: action)
+        }
+        .padding(14)
+        .frame(width: layout.cardWidth, height: layout.rowHeight - 2, alignment: .topLeading)
+        .background(Color.orange.opacity(row.userInputStatus == "pending" ? 0.06 : 0.025),
+                    in: RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(Color.orange.opacity(row.userInputStatus == "pending" ? 0.38 : 0.16), lineWidth: 1)
+        }
     }
 
     private var processCard: some View {
