@@ -59,10 +59,12 @@ struct PadWorkOutline: View {
             }
             .padding(.horizontal, ConsoleWorkOutlineMetrics.groupHorizontalInset)
             .padding(.vertical, 4)
+            .environment(\.layoutDirection, .leftToRight)
         }
+        .environment(\.layoutDirection, .rightToLeft)
         .scrollIndicators(.automatic)
         .safeAreaInset(edge: .top, spacing: 0) { outlineToolbar }
-        .background(Color(uiColor: .secondarySystemBackground))
+        .background(WorkbenchCanvasSurface.color)
         .onChange(of: workspace.works, initial: true) { _, _ in rebuildOrder() }
         .onChange(of: workspace.tasks) { _, _ in rebuildOrder() }
         .onChange(of: sortRaw) { _, _ in rebuildOrder() }

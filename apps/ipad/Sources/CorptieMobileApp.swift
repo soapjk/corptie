@@ -262,7 +262,6 @@ struct ConversationView: View {
     let sessionID: String
     let messageImages: PadMessageImageStore
     @State private var confirmForget = false
-    @AppStorage("conversation.showsDetailInspector") private var showsDetailInspector = false
     @State private var viewportState = ConversationViewportState()
     @State private var historyViewport = TimelineHistoryViewportState()
     @State private var historyAutoLoadGate = PadHistoryAutoLoadGate()
@@ -503,7 +502,7 @@ struct ConversationView: View {
         .safeAreaInset(edge: .top, spacing: 0) { conversationHeader }
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
         .coordinateSpace(name: "conversation-viewport")
-        .background(Color(uiColor: .systemGroupedBackground))
+        .background(WorkbenchCanvasSurface.color)
         .toolbar(.hidden, for: .navigationBar)
         .confirmationDialog("已核对消息与执行状态？清除记录不会取消后台执行。", isPresented: $confirmForget, titleVisibility: .visible) {
             Button("已核对，清除本机待核对记录", role: .destructive) { workspace.forgetPending() }
@@ -517,9 +516,8 @@ struct ConversationView: View {
         .sheet(item: $attachmentPreview) { preview in
             PadAttachmentViewer(connection: connection, preview: preview)
         }
-        .inspector(isPresented: $showsDetailInspector) {
-            PadConversationInspector(workspace: workspace, connection: connection, sessionID: sessionID,
-                close: { showsDetailInspector = false })
+        .inspector(isPresented: .constant(true)) {
+            PadConversationInspector(workspace: workspace, connection: connection, sessionID: sessionID)
                 .id(sessionID)
                 .inspectorColumnWidth(min: 280, ideal: 320, max: 400)
         }
@@ -622,17 +620,9 @@ struct ConversationView: View {
                 .accessibilityIdentifier("conversation-task-title")
         }
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, 56)
+        .padding(.horizontal, 16)
         .padding(.top, 4)
         .padding(.bottom, 8)
-        .overlay(alignment: .trailing) {
-            Button { showsDetailInspector.toggle() } label: {
-                Image(systemName: "sidebar.right").frame(width: 44, height: 44)
-            }
-            .accessibilityLabel(showsDetailInspector ? "关闭详情" : "显示详情")
-            .accessibilityIdentifier("conversation-detail-toggle")
-            .padding(.trailing, 8)
-        }
     }
 
     private var conversationStatusRow: some View {
@@ -741,7 +731,7 @@ struct ConversationView: View {
 private struct ConversationChromeBackdrop: View {
     let isBottom: Bool
     private let depth: CGFloat = 18
-    private var surface: Color { Color(uiColor: .systemGroupedBackground) }
+    private var surface: Color { WorkbenchCanvasSurface.color }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1247,70 +1237,33 @@ private struct PadUserInputCard: View {
     let connection: PadConnection
     let sessionID: String
     let onSubmitted: () async -> Void
-    @State private var selected: [String: Set<String>] = [:]
-    @State private var typed: [String: String] = [:]
-    @State private var submitting = false
-    @State private var submitted = false
-    @State private var errorText: String?
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("需要你的输入").font(.headline)
+        Group {
             if let request = message.userInput, request.schemaVersion == 1 {
-                if message.status == "pending" && !submitted {
-                    ConversationInputFields(request: request, selected: $selected, typed: $typed)
-                        .disabled(submitting)
-                    Button("提交答案") { Task { await submit(request) } }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(submitting || answers(for: request) == nil)
-                        .accessibilityIdentifier("user-input-submit")
-                    if request.canCancel == true {
-                        Button("取消请求") { Task { await submit(request, cancelling: true) } }.disabled(submitting)
-                    }
-                } else {
-                    Text(statusText).font(.caption).foregroundStyle(.secondary)
-                }
+                ConversationInlineUserInput(request: request, status: message.status,
+                    respond: { answers, action in
+                        let api = ClientSessionAPI(transport: try await connection.transport())
+                        let response = try await api.respondToUserInput(
+                            sessionId: sessionID, itemId: message.id, answers: answers, action: action)
+                        guard ["submitted", "cancelled"].contains(response.status) else {
+                            throw NSError(domain: "CorptieUserInput", code: 1,
+                                userInfo: [NSLocalizedDescriptionKey: "提交尚未确认，请等待同步。"])
+                        }
+                    }, afterSubmit: onSubmitted)
             } else {
+                VStack(alignment: .leading, spacing: 8) {
                 Text(ConversationMessageDisplayText.resolve(text: message.text,
                     presentationText: message.presentationText, title: message.title, type: message.type))
                     .font(.subheadline)
                 Text("当前客户端无法处理这种问题，请更新客户端。")
                     .font(.caption).foregroundStyle(.secondary)
+                }
             }
-            if let errorText { Text(errorText).font(.caption).foregroundStyle(.red) }
         }
         .frame(maxWidth: 560, alignment: .leading)
         .padding(14)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
         .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("conversation-user-input")
-    }
-
-    private var statusText: String {
-        padUserInputStatusText(message.status, submittedLocally: submitted)
-    }
-
-    private func answers(for request: ConversationUserInput) -> [String: [String]]? {
-        request.answers(selected: selected, typed: typed)
-    }
-
-    private func submit(_ request: ConversationUserInput, cancelling: Bool = false) async {
-        guard !submitting, !submitted, let answers = cancelling ? [:] : answers(for: request) else { return }
-        submitting = true
-        errorText = nil
-        defer { submitting = false }
-        do {
-            let api = ClientSessionAPI(transport: try await connection.transport())
-            let response = try await api.respondToUserInput(sessionId: sessionID, itemId: message.id, answers: answers, action: cancelling ? "cancel" : "submit")
-            guard ["submitted", "cancelled"].contains(response.status) else { return }
-            submitted = true
-            typed.removeAll()
-            selected.removeAll()
-            await onSubmitted()
-        } catch {
-            errorText = PadConnection.explain(error)
-        }
     }
 }
 

@@ -7,7 +7,7 @@ import { clientDiscussionOptions, openClientDiscussion } from "./clientWorkDiscu
 import { clientTaskManagement, clientTaskDeletionPlan, clientWorkManagement, clientTaskCommand, clientWorkCommand, clientWorkCreationOptions, createClientWork } from "./clientEntityCommands.mjs";
 import { publicToolExecution } from "../utils/toolExecutionProjection.mjs";
 import { publicChangeSet } from "../utils/changeSetProjection.mjs";
-import { publicUserInput, validateInteractionAnswers } from "./interactionInput.mjs";
+import { publicUserInput, validateInteractionAnswers, withSubmittedUserInputAnswers } from "./interactionInput.mjs";
 
 function approvalMetadata(item) {
   try {
@@ -293,7 +293,10 @@ export class ClientSessionAPI {
       }, { type: "remote-client", deviceId: identity.deviceId });
       const current = this.store.getSessionItem(sessionId, item.id);
       if (current?.status === "dispatching") {
-        this.store.upsertTimelineItemProjection(sessionId, { ...current, status: input.action === "cancel" ? "cancelled" : "submitted" });
+        this.store.upsertTimelineItemProjection(sessionId, {
+          ...(input.action === "cancel" ? current : withSubmittedUserInputAnswers(current, input.answers)),
+          status: input.action === "cancel" ? "cancelled" : "submitted"
+        });
       }
     } catch (error) {
       const current = this.store.getSessionItem(sessionId, item.id);

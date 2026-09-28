@@ -25,8 +25,6 @@ struct SessionDetailPanel: View {
         ConversationDetailKind.resolve(session.resolvedSessionKind)
     }
 
-    /// 详情竖列固定宽度（对应 Rudder IssueDetail rail 280px）。
-
     private static let iso8601Formatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -47,7 +45,7 @@ struct SessionDetailPanel: View {
     }()
 
     var body: some View {
-        sessionCard(decoratesSurface: true)
+        sessionCard
         .frame(width: railWidth)
         .task(id: session.id) {
             showsAllContextReferences = false
@@ -73,49 +71,43 @@ struct SessionDetailPanel: View {
         }
     }
 
-    private func sessionCard(decoratesSurface: Bool, scrollsContent: Bool = true) -> some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Text(verbatim: "Detail")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Menu {
-                    Button("本地文件…") { chooseLocalFile() }
-                    Button("网页链接…") { contextReferenceAddMode = .webURL }
-                    Button("Work…") { contextReferenceAddMode = .work }
-                    Button("Task…") { contextReferenceAddMode = .task }
-                    Button("Agent…") { contextReferenceAddMode = .agent }
-                    Button("其他会话…") { contextReferenceAddMode = .session }
-                } label: {
-                    Image(systemName: "link.badge.plus")
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("添加引用")
+    private var sessionCard: some View {
+        ConversationDetailDashboard(actions: {
+            Menu {
+                Button("本地文件…") { chooseLocalFile() }
+                Button("网页链接…") { contextReferenceAddMode = .webURL }
+                Button("Work…") { contextReferenceAddMode = .work }
+                Button("Task…") { contextReferenceAddMode = .task }
+                Button("Agent…") { contextReferenceAddMode = .agent }
+                Button("其他会话…") { contextReferenceAddMode = .session }
+            } label: {
+                Image(systemName: "link.badge.plus")
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-
-            Divider()
-                .opacity(0.5)
-
-            if scrollsContent {
-                ScrollView {
-                    sessionDetailContent
-                        .background(ConsoleOverlayScroller())
-                }
-            } else {
-                sessionDetailContent
-            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("添加引用")
+        }) {
+            sessionDetailContent.background(ConsoleOverlayScroller())
         }
-        .frame(maxHeight: scrollsContent ? .infinity : nil)
-        .modifier(DetailRailSurfaceModifier(enabled: decoratesSurface))
     }
 
     private var sessionDetailContent: some View {
         VStack(alignment: .leading, spacing: 12) {
+            Text(session.title)
+                .font(.system(size: 15, weight: .semibold))
+                .lineLimit(2)
+                .textSelection(.enabled)
+                .padding(.horizontal, 4)
+            ConversationDetailCompactPair {
+                detailSection(title: "执行状态", systemImage: "waveform.path.ecg") {
+                    Text(session.executionTaskStatus.label)
+                }
+            } trailing: {
+                detailSection(title: "会话信息", systemImage: "info.circle") {
+                    Text(session.id).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                }
+            }
             if detailKind == .taskDetail, let taskId = session.taskId, !taskId.isEmpty {
                 SessionCorptieTaskDetailCard(
                     taskId: taskId,
@@ -135,10 +127,15 @@ struct SessionDetailPanel: View {
             if detailKind == .workDetail { workDetailContent }
 
             if !contextReferences.isEmpty || isLoadingContextReferences {
-                contextReferencesSection
+                contextReferencesSection.modifier(ConversationDetailModuleSurface())
             }
 
-            ScheduledSessionStrip(session: session)
+            if backendClient.supplementaryDataController.isLoadingScheduledTasks
+                || !backendClient.supplementaryDataController.selectedScheduledTasks.isEmpty
+                || backendClient.scheduledTaskError != nil {
+                ScheduledSessionStrip(session: session)
+                    .modifier(ConversationDetailModuleSurface())
+            }
 
             if detailKind == .workDetail,
                let work = entityClient.works.first(where: { $0.id == session.workId }) {
@@ -152,7 +149,9 @@ struct SessionDetailPanel: View {
             }
 
             SessionMemoryDiagnosticsView(session: session)
+                .modifier(ConversationDetailModuleSurface())
             SessionTurnObservabilityView(sessionId: session.id)
+                .modifier(ConversationDetailModuleSurface())
 
             detailSection(title: "运行环境", systemImage: "cpu") {
                 compactProviderPicker
@@ -162,8 +161,6 @@ struct SessionDetailPanel: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 12)
     }
 
     private var statusCard: some View {
@@ -223,6 +220,7 @@ struct SessionDetailPanel: View {
             }
             ArtifactSectionView(workId: work.id, taskId: nil)
                 .id(work.id)
+                .modifier(ConversationDetailModuleSurface())
         }
     }
 
@@ -353,7 +351,7 @@ struct SessionDetailPanel: View {
         systemImage: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        ConversationInspectorSection(title: title, systemImage: systemImage, content: content)
+        ConversationDetailModuleCard(title: title, systemImage: systemImage, content: content)
     }
 
     private func detailFields(_ fields: [(String, String)]) -> some View {
