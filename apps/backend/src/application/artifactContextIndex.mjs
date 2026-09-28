@@ -9,6 +9,13 @@ const RELATION_ORDER = new Map([
   "implementation_spec", "security_requirement", "test_plan", "research_evidence",
   "handoff", "acceptance_evidence"
 ].map((value, index) => [value, index]));
+const CONTEXT_RELATION_ORDER = Object.freeze({
+  task_reference: 0,
+  session_reference: 1,
+  task_owned_unreferenced: 2,
+  session_owned_unreferenced: 3,
+  work_unreferenced: 4
+});
 
 export function buildArtifactContextIndex({ store, session, policy = new ArtifactContextBudgetPolicy(), limits = null } = {}) {
   const workId = session?.workId ?? session?.work_id ?? null;
@@ -36,6 +43,8 @@ export function buildArtifactContextIndex({ store, session, policy = new Artifac
     if (artifact.scope === "task" && artifact.boundTaskId !== taskId) continue;
     const activeReferences = byArtifact.get(artifactId) ?? [];
     if (!artifact || artifact.workId !== workId || artifact.status === "revoked") continue;
+    // Work access is not evidence that a document belongs in this Task's prompt.
+    if (sessionKind === "worker" && artifact.scope === "work" && activeReferences.length === 0) continue;
     const pin = activeReferences.length > 0
       ? canonicalPin(activeReferences)
       : { pinnedVersion: artifact.approvedVersion ?? artifact.currentVersion, pinnedHash: null };
@@ -58,6 +67,11 @@ export function buildArtifactContextIndex({ store, session, policy = new Artifac
       byteLength: version.byteLength,
       mimeType: version.mimeType,
       required: activeReferences.some((reference) => reference.required),
+      contextRelation: taskId && activeReferences.some((reference) => reference.taskId === taskId)
+        ? "task_reference"
+        : activeReferences.length > 0 ? "session_reference"
+          : artifact.scope === "task" ? "task_owned_unreferenced"
+            : artifact.scope === "session" ? "session_owned_unreferenced" : "work_unreferenced",
       relations: [...new Set(activeReferences.map((reference) => reference.relation))]
         .sort((left, right) => relationRank(left) - relationRank(right) || left.localeCompare(right)),
       referenceIds: activeReferences.map((reference) => reference.referenceId).sort(),
@@ -98,6 +112,9 @@ export function buildArtifactContextIndex({ store, session, policy = new Artifac
 
 export function artifactIndexOrder(left, right) {
   if (left.required !== right.required) return left.required ? -1 : 1;
+  const leftPriority = CONTEXT_RELATION_ORDER[left.contextRelation] ?? 4;
+  const rightPriority = CONTEXT_RELATION_ORDER[right.contextRelation] ?? 4;
+  if (leftPriority !== rightPriority) return leftPriority - rightPriority;
   if (Boolean(left.pendingUpdate) !== Boolean(right.pendingUpdate)) return left.pendingUpdate ? -1 : 1;
   const leftRelation = Math.min(...left.relations.map(relationRank));
   const rightRelation = Math.min(...right.relations.map(relationRank));

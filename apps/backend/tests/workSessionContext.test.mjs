@@ -230,6 +230,34 @@ test("Turn-level merging keeps Task and direct-user evidence complete and drops 
   assert.ok(Buffer.byteLength(merged.prompt) <= WORKER_SESSION_CONTEXT_LIMITS.turnMaxUtf8Bytes);
 });
 
+test("Turn-level merging sheds optional Artifacts before direct evidence and mentions", () => {
+  const task = {
+    id: "task:fork", work_id: "work:quality", title: "消息轮次分叉功能开发",
+    description: "Implement exact turn forks.", acceptance_criteria: "Preserve the selected turn.",
+    verification_criteria: "Run provider-neutral tests.", revision: 4, resource_version: 6
+  };
+  const baseContext = buildWorkSessionContext({
+    session: { id: "session:fork", sessionKind: "worker", taskId: task.id, workId: task.work_id },
+    task,
+    artifactIndex: { items: Array.from({ length: 12 }, (_, index) => ({
+      artifactId: `artifact:${index}`, title: `Optional ${index}`, summary: "x".repeat(950),
+      required: index === 0, pinnedVersion: 1, contentHash: "a".repeat(64)
+    })) }
+  });
+  const directUserIntentContext = { prompt: `<direct>${"e".repeat(4500)}</direct>` };
+  const mentionContext = { prompt: `<mentions>${"m".repeat(900)}</mentions>` };
+  const merged = mergeWorkerSessionContexts({ baseContext, directUserIntentContext, mentionContext });
+
+  assert.match(merged.prompt, /消息轮次分叉功能开发/);
+  assert.match(merged.prompt, /Preserve the selected turn/);
+  assert.ok(merged.prompt.includes(directUserIntentContext.prompt));
+  assert.ok(merged.prompt.includes(mentionContext.prompt));
+  assert.match(merged.prompt, /"artifactId":"artifact:0"/);
+  assert.ok(merged.contextBudget.omittedOptionalArtifacts > baseContext.contextBudget.omittedOptionalArtifacts);
+  assert.ok(Buffer.byteLength(merged.prompt) <= WORKER_SESSION_CONTEXT_LIMITS.turnMaxUtf8Bytes);
+  assert.match(merged.contextIntegrity.finalPromptSha256, /^[a-f0-9]{64}$/);
+});
+
 test("Turn-level merging preserves required Skill MCP routing context", () => {
   const baseContext = workerContext();
   const skillContext = { prompt: "<skill-routing>search before failure</skill-routing>" };
