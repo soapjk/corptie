@@ -1,16 +1,26 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { publicUserInput, validateInteractionAnswers } from "../application/interactionInput.mjs";
 import { question, elicitationInput, elicitationResponse, interactionError } from "../application/structuredInteraction.mjs";
-import { readFile } from "node:fs/promises";
+import { makeClaudeUserMessage } from "./claudeMessageInput.mjs";
 import { forkSession, query } from "@anthropic-ai/claude-agent-sdk";
 import { createdAtFromOrNow } from "../utils/timestamps.mjs";
-import { providerRawMetadataJSON, providerSafeToolText } from "../utils/providerRawMetadata.mjs";
-import { toolExecutionForItem, withToolExecutionMetadata } from "../utils/toolExecutionProjection.mjs";
-import { changeSetForClaudeTool, withChangeSetMetadata } from "../utils/changeSetProjection.mjs";
 import { defaultWorkspacePath } from "../utils/workspacePaths.mjs";
 import { providerMessageWithSessionContext } from "../utils/sessionContextMessage.mjs";
 import { recoverClaudeSessionIdentity } from "./claudeSessionIdentity.mjs";
-import { captureClaudePlanCalls, isClaudePlanTool, settledClaudePlanUpdates } from "./claudePlanTools.mjs";
+import { createClaudeSdkMessageHandler } from "./claudeSdkMessageHandler.mjs";
+import { ClaudeQueryInput } from "./claudeQueryInput.mjs";
+import { runClaudeBackgroundPrompt } from "./claudeBackgroundOperation.mjs";
+import { createClaudeTimelineWriter } from "./claudeTimelineWriter.mjs";
+import { claudeSessionDetail, claudeSessionSummary, hasPendingChoices } from "./claudeSessionProjection.mjs";
+import {
+  normalizeClaudeAccountUsage,
+  unavailableClaudeAccountUsage,
+  finiteNumber,
+  shortTitle
+} from "./claudeMessageProjection.mjs";
+import { claudePermissionMode, claudePermissionOptions, normalizeClaudeEffortLevel, normalizeClaudeRuntimeOptions } from "./claudeRuntimeOptions.mjs";
+export { normalizeClaudeEffortLevel, normalizeClaudeRuntimeOptions } from "./claudeRuntimeOptions.mjs";
+import { buildToolChoice, optionResolution, advanceAskUserChoice } from "./claudeChoiceProtocol.mjs";
 import {
   claudeConnectionTestOptions,
   claudeRuntimeEnvironment,
@@ -31,6 +41,22 @@ export class ClaudeAgentManager {
     this.forkSessionFactory = options.forkSession ?? forkSession;
     this.environment = options.environment ?? (() => process.env);
     this.structuredPlanEvents = options.structuredPlanEvents !== false;
+    this.timelineWriter = createClaudeTimelineWriter({
+      maxItems: () => this.maxItems,
+      emitProviderEvent: (...args) => this.emitProviderEvent(...args)
+    });
+    this.sdkMessageHandler = createClaudeSdkMessageHandler({
+      emitProviderEvent: (...args) => this.emitProviderEvent(...args),
+      appendItem: (...args) => this.appendItem(...args),
+      persistSessionIdentity: (session) => this.persistSessionIdentity(session),
+      settleToolResults: (...args) => this.settleToolResults(...args),
+      structuredPlanEvents: () => this.structuredPlanEvents,
+      appendPlanToolFallback: (...args) => this.appendPlanToolFallback(...args),
+      expireInteractions: (session) => this.expireInteractions(session),
+      environment: () => this.environment(),
+      upsertTaskProgressItem: (...args) => this.upsertTaskProgressItem(...args),
+      notifyTurnSettled: (...args) => this.notifyTurnSettled(...args)
+    });
   }
 
   start(input = {}) {
@@ -80,8 +106,7 @@ export class ClaudeAgentManager {
       deferredResult: null,
       lastResult: null,
       turnState: "idle",
-      inputQueue: [],
-      inputResolvers: [],
+      queryInput: new ClaudeQueryInput(),
       streamingAssistant: null
     };
     session.runtimeOptions = normalizeClaudeRuntimeOptions({
@@ -310,7 +335,7 @@ export class ClaudeAgentManager {
     });
     console.log(`[claude-sdk] send queued id=${id} chars=${value.length}`);
     const providerValue = providerMessageWithSessionContext(value, options.contextPrompt);
-    this.enqueueInput(session, await makeUserMessage(providerValue, images));
+    this.enqueueInput(session, await makeClaudeUserMessage(providerValue, images));
     return this.toSessionSummary(session);
   }
 
@@ -439,8 +464,7 @@ export class ClaudeAgentManager {
       // Interrupting only the foreground turn can leave those agents alive, so
       // close the entire stream and resume it lazily on the next user message.
       session.queryClosed = true;
-      session.inputQueue = [];
-      for (const resolve of session.inputResolvers.splice(0)) resolve(null);
+      session.queryInput.reset();
       try {
         // Claude Agent SDK's Query.close() currently returns void, while some
         // test doubles and older versions return a Promise. `await` supports
@@ -533,8 +557,7 @@ export class ClaudeAgentManager {
 
   async closeIdleQuery(session) {
     session.queryClosed = true;
-    session.inputQueue = [];
-    for (const resolve of session.inputResolvers.splice(0)) resolve(null);
+    session.queryInput.reset();
     const query = session.query;
     const queryTask = session.queryTask;
     if (query) await query.close();
@@ -718,8 +741,7 @@ export class ClaudeAgentManager {
       deferredResult: null,
       lastResult: null,
       turnState: "idle",
-      inputQueue: [],
-      inputResolvers: [],
+      queryInput: new ClaudeQueryInput(),
       streamingAssistant: null
     };
     session.runtimeOptions = options.runtimeOptions
@@ -779,7 +801,10 @@ export class ClaudeAgentManager {
       throw new Error("No active Claude choice prompt");
     }
 
-    if (pendingDecision.choice.kind === "ask-user" && advanceAskUserChoice(session, pendingDecision, option, this)) {
+    if (pendingDecision.choice.kind === "ask-user" && advanceAskUserChoice(session, pendingDecision, option, {
+      markPendingChoiceItemsSelected: (...args) => this.markPendingChoiceItemsSelected(...args),
+      appendItem: (...args) => this.appendItem(...args)
+    })) {
       return this.toSessionSummary(session);
     }
 
@@ -905,65 +930,10 @@ export class ClaudeAgentManager {
   }
 
   async runBackgroundPrompt(input = {}) {
-    const executionPolicy = input.executionPolicy ?? "legacy";
-    if (!["legacy", "no-tools"].includes(executionPolicy)
-      || (executionPolicy === "no-tools" && (input.permissionProfile ?? "read-only") !== "read-only")) {
-      throw Object.assign(new Error("Unsupported background execution policy."), { code: "CAPABILITY_UNSUPPORTED" });
-    }
-    // SDK-level isolation, not a prompt-based restriction. Empty built-in tools
-    // and strict empty MCP configuration must travel together.
-    const isolation = executionPolicy === "no-tools" ? {
-      tools: [], mcpServers: {}, strictMcpConfig: true,
-      settingSources: [], plugins: [], agents: {}, hooks: {},
-      systemPrompt: input.developerInstructions || "Return only the requested text from the supplied input.",
-      canUseTool: async () => ({ behavior: "deny", message: "Tools are disabled for this background operation." })
-    } : {};
-    const abortController = new AbortController();
-    const forwardAbort = () => abortController.abort(input.signal.reason);
-    input.signal?.throwIfAborted();
-    input.signal?.addEventListener("abort", forwardAbort, { once: true });
-    const timeout = setTimeout(() => abortController.abort(), input.timeoutMs ?? 120_000);
-    let latestText = "";
-    let operation;
-    try {
-      operation = this.queryFactory({
-        prompt: input.prompt,
-        options: {
-          cwd: input.cwd,
-          persistSession: false,
-          model: input.model || undefined,
-          env: claudeRuntimeEnvironment(this.environment()),
-          permissionMode: "plan",
-          maxTurns: 1,
-          abortController,
-          ...isolation
-        }
-      });
-      for await (const message of operation) {
-        abortController.signal.throwIfAborted();
-        if (message?.type === "assistant") {
-          latestText = assistantText(message.message) || latestText;
-        }
-        if (message?.type === "result") {
-          const failure = claudeSdkResultError(message, {
-            secretValues: [this.environment()?.ANTHROPIC_API_KEY].filter(Boolean)
-          });
-          if (failure) throw failure;
-          latestText = (typeof message.result === "string" ? message.result.trim() : "") || latestText;
-        }
-      }
-      abortController.signal.throwIfAborted();
-      return { text: latestText };
-    } catch (error) {
-      throw normalizeClaudeProviderError(error, {
-        secretValues: [this.environment()?.ANTHROPIC_API_KEY].filter(Boolean)
-      });
-    } finally {
-      clearTimeout(timeout);
-      input.signal?.removeEventListener("abort", forwardAbort);
-      // Release the subprocess even when iteration fails or is cancelled.
-      await operation?.close?.();
-    }
+    return runClaudeBackgroundPrompt(input, {
+      queryFactory: (options) => this.queryFactory(options),
+      environment: () => this.environment()
+    });
   }
 
   async handleToolRequest(session, toolName, input, options = {}) {
@@ -1010,575 +980,55 @@ export class ClaudeAgentManager {
   }
 
   handleSdkMessage(session, message) {
-    session.updatedAt = new Date().toISOString();
-    if (message?.type === "tool_progress") {
-      const id = session.pendingToolCalls?.get(message.tool_use_id);
-      const item = id ? session.items.find(item => item.id === id) : null;
-      const seconds = Math.floor(Number(message.elapsed_time_seconds));
-      if (item && Number.isFinite(seconds) && seconds >= 0 && item.elapsedSeconds !== seconds
-        && !["completed", "failed", "cancelled"].includes(item.status)) {
-        item.elapsedSeconds = seconds;
-        item.presentationText = `${item.text ?? ""}\n已执行 ${seconds} 秒`;
-        this.emitProviderEvent(session, { type: "execution.notice", turnId: item.turnId,
-          itemId: item.id, item, occurredAt: session.updatedAt });
-      }
-      return;
-    }
-    if (message?.type === "tool_use_summary" || message?.type === "auth_status"
-      || (message?.type === "system" && message.subtype === "compact_boundary")) {
-      const id = `${session.id}:notice:${message.uuid ?? `${session.currentTurnId}:${message.type}:${message.subtype ?? ""}`}`;
-      if (session.items.some(item => item.id === id)) return;
-      const compact = message.subtype === "compact_boundary";
-      const auth = message.type === "auth_status";
-      // Authentication output can contain credentials. Never persist it.
-      const text = compact ? "上下文已压缩"
-        : auth ? (message.error ? "认证失败，请检查 Provider 登录状态。" : message.isAuthenticating ? "正在认证" : "认证流程已结束")
-          : providerSafeToolText(String(message.summary ?? "")).slice(0, 4000);
-      this.appendItem(session, { id, type: compact ? "contextCompaction" : "system",
-        title: compact ? "上下文压缩" : auth ? "认证状态" : "执行摘要",
-        text, status: message.error ? "failed" : "completed", neutralNotice: true });
-      return;
-    }
-    console.log(`[claude-sdk] message id=${session.id} type=${message?.type ?? "unknown"} subtype=${message?.subtype ?? ""}`);
-    if (message?.session_id && !session.agentSessionId) {
-      session.agentSessionId = message.session_id;
-      this.persistSessionIdentity(session);
-    }
-
-    if (message?.type === "system" && message?.subtype === "init") {
-      session.agentSessionId = message.session_id ?? session.agentSessionId;
-      this.persistSessionIdentity(session);
-      session.currentModel = message.model ?? session.currentModel;
-      session.phase = "ready";
-      return;
-    }
-
-    if (message?.type === "stream_event") {
-      this.handleStreamEvent(session, message);
-      return;
-    }
-
-    if (message?.type === "user") {
-      this.settleToolResults(session, message);
-      if (this.structuredPlanEvents) {
-        for (const update of settledClaudePlanUpdates(message, session.pendingPlanCalls ?? new Map(), (call, reason) => {
-          this.appendPlanToolFallback(session, call, reason);
-        })) {
-          this.emitProviderEvent(session, {
-            type: "plan.updated",
-            providerEventId: `claude-plan:${message.uuid ?? update.sourceCallId}:${update.sourceCallId}`,
-            turnId: update.turnId,
-            plan: update.plan,
-            occurredAt: message.timestamp ?? session.updatedAt
-          });
-        }
-      }
-      return;
-    }
-
-    if (message?.type === "assistant") {
-      if (this.structuredPlanEvents) {
-        session.pendingPlanCalls ??= new Map();
-        captureClaudePlanCalls(message, session.pendingPlanCalls, session.currentTurnId,
-          (call) => this.appendPlanToolFallback(session, call, "unavailable"));
-      }
-      if (session.lastResult && session.turnState !== "running") {
-        // A foreground result is not necessarily the end of the Query. Claude
-        // can continue streaming assistant/tool events from a background Agent.
-        session.deferredResult = session.lastResult;
-        session.turnState = "running";
-        session.status = "running";
-        session.phase = "working";
-      }
-      const items = claudeAssistantContentItems(message.message, this.structuredPlanEvents);
-      if (items.length > 0) {
-        session.lastOutputAt = session.updatedAt;
-        const finalText = items.filter((item) => item.type === "agentMessage")
-          .map((item) => item.text)
-          .join("\n\n")
-          .trim();
-        if (session.streamingAssistant && finalText) {
-          this.updateStreamingAssistant(session, finalText, { completed: true, providerMessageId: message.uuid });
-        } else {
-          for (const item of items.filter((item) => item.type === "agentMessage")) {
-            this.appendItem(session, { ...item, presentationRole: "commentary",
-              rawMetadataJSON: JSON.stringify({ forkPoint: { messageId: message.uuid } }) });
-          }
-        }
-        for (const item of items.filter((item) => item.type !== "agentMessage")) {
-          const appended = this.appendItem(session, item);
-          if (item.toolUseId) {
-            session.pendingToolCalls ??= new Map();
-            if (session.pendingToolCalls.size >= 256) session.pendingToolCalls.delete(session.pendingToolCalls.keys().next().value);
-            session.pendingToolCalls.set(item.toolUseId, appended.id);
-          }
-        }
-        if (finalText && message.message?.stop_reason === "tool_use") {
-          const lastText = session.items.findLast(item => item.turnId === session.currentTurnId && item.type === "agentMessage");
-          if (lastText) lastText.presentationRole = "commentary";
-          session.toolContinuationItemIds ??= new Set();
-          if (lastText) session.toolContinuationItemIds.add(lastText.id);
-        }
-      }
-      return;
-    }
-
-    if (message?.type === "result") {
-      this.expireInteractions(session);
-      const failure = claudeSdkResultError(message, {
-        secretValues: [this.environment()?.ANTHROPIC_API_KEY].filter(Boolean)
-      });
-      const text = failure?.message
-        ?? (typeof message.result === "string" ? message.result.trim() : "");
-      session.pendingChoice = null;
-      session.pendingDecision = null;
-      session.pendingChoices?.clear();
-      const wasInterrupted = session.interruptRequested === true;
-      session.interruptRequested = false;
-      const result = {
-        turnId: session.currentTurnId,
-        succeeded: !failure || wasInterrupted,
-        text,
-        failure,
-        notified: false
-      };
-      session.lastResult = result;
-      finalizeClaudeTurnItems(
-        session,
-        session.currentTurnId,
-        result.succeeded ? "complete" : "failed"
-      );
-      if (text && !result.succeeded) {
-        session.lastOutputAt = session.updatedAt;
-        this.appendItem(session, {
-          type: "system",
-          title: "Claude Code",
-          text,
-          status: message.subtype || "result"
-        });
-      }
-      if (session.activeTaskIds.size > 0) {
-        session.deferredResult = result;
-        session.turnState = "running";
-        session.status = "running";
-        session.phase = "working";
-      } else {
-        this.settleClaudeResult(session, result);
-      }
-      return;
-    }
-
-    if (message?.type === "status") {
-      session.phase = message.status || session.phase;
-      if (message.status === "requesting" || message.status === "compacting") {
-        session.turnState = "running";
-      }
-      return;
-    }
-
-    if (message?.type === "session_state_changed") {
-      session.turnState = message.state || session.turnState;
-      session.phase = message.state || session.phase;
-      return;
-    }
-
-    const taskSubtype = claudeTaskSubtype(message);
-    if (taskSubtype) {
-      const taskId = String(message?.task_id ?? message?.tool_use_id ?? "").trim();
-      const terminal = isTerminalClaudeTaskMessage(message, taskSubtype);
-      const blocksTurnSettlement = claudeTaskBlocksTurnSettlement(message);
-      if (taskId) {
-        if (terminal) session.activeTaskIds.delete(taskId);
-        else if (blocksTurnSettlement) session.activeTaskIds.add(taskId);
-      }
-      if (!terminal && (!session.lastResult || blocksTurnSettlement)) {
-        if (session.lastResult && !session.deferredResult) {
-          session.deferredResult = session.lastResult;
-        }
-        session.turnState = "running";
-        session.status = "running";
-        session.phase = "working";
-      }
-      if (taskId && message?.skip_transcript === true) session.hiddenTaskIds.add(taskId);
-      if (taskId && !session.hiddenTaskIds.has(taskId)) {
-        this.upsertTaskProgressItem(session, message, taskId, terminal);
-      }
-      if (terminal) session.hiddenTaskIds.delete(taskId);
-      if (terminal && session.activeTaskIds.size === 0 && session.deferredResult) {
-        this.settleClaudeResult(session, session.deferredResult);
-      } else {
-      }
-      return;
-    }
-
-    if (message?.type === "informational" || message?.type === "permission_denied") {
-      const text = message.message || message.content || message.permission_denial_reason || "";
-      if (text) {
-        this.appendItem(session, {
-          type: message?.type === "permission_denied" ? "warning" : "mcpToolCall",
-          title: "Claude Code",
-          text: String(text)
-        });
-      }
-      return;
-    }
+    return this.sdkMessageHandler.handleSdkMessage(session, message);
   }
 
   settleClaudeResult(session, result) {
-    for (const call of session.pendingPlanCalls?.values() ?? []) {
-      if (call.turnId === result.turnId) this.appendPlanToolFallback(session, call, "unavailable");
-    }
-    session.pendingPlanCalls?.clear();
-    session.pendingToolCalls?.clear();
-    session.deferredResult = null;
-    session.turnState = "idle";
-    session.phase = result.succeeded ? "ready" : "failed";
-    session.status = result.succeeded ? "complete" : "failed";
-    finalizeClaudeTurnItems(
-      session,
-      result.turnId,
-      result.succeeded ? "complete" : "failed"
-    );
-    if (!result.notified) {
-      result.notified = true;
-      this.notifyTurnSettled(session, {
-        turnId: result.turnId,
-        status: result.succeeded ? "completed" : "failed",
-        error: result.succeeded ? null : {
-          code: result.failure?.code ?? "CLAUDE_REQUEST_FAILED",
-          message: result.text,
-          retryable: result.failure?.retryable === true
-        }
-      });
-    }
+    return this.sdkMessageHandler.settleClaudeResult(session, result);
   }
 
   handleStreamEvent(session, message) {
-    const event = message?.event;
-    if (event?.type === "content_block_delta" && event?.delta?.type === "text_delta") {
-      const delta = typeof event.delta.text === "string" ? event.delta.text : "";
-      if (!delta) return;
-      const nextText = `${session.streamingAssistant?.text ?? ""}${delta}`;
-      this.updateStreamingAssistant(session, nextText);
-    }
+    return this.sdkMessageHandler.handleStreamEvent(session, message);
   }
 
   updateStreamingAssistant(session, text, options = {}) {
-    const value = String(text ?? "");
-    if (!value) return null;
-    const existing = session.streamingAssistant;
-    if (!existing) {
-      const item = this.appendItem(session, {
-        // A Turn can contain many assistant messages separated by tool calls.
-        // Only deltas of this message share an id, never the entire Turn.
-        id: `${session.id}:stream:${session.currentTurnId ?? session.nextTurnSeq}:${session.nextItemSeq}`,
-        type: "agentMessage",
-        title: "Claude Code",
-        text: value,
-        ...(options.providerMessageId ? { rawMetadataJSON: JSON.stringify({ forkPoint: { messageId: options.providerMessageId } }) } : {}),
-        presentationRole: "commentary"
-      });
-      session.streamingAssistant = options.completed === true ? null : { itemId: item.id, text: value };
-      return item;
-    }
-    const index = session.items.findIndex((item) => item.id === existing.itemId);
-    if (index < 0) {
-      session.streamingAssistant = null;
-      return this.updateStreamingAssistant(session, value, options);
-    }
-    const item = {
-      ...session.items[index],
-      text: value,
-      ...(options.providerMessageId ? { rawMetadataJSON: JSON.stringify({
-        ...JSON.parse(session.items[index].rawMetadataJSON ?? "{}"),
-        forkPoint: { messageId: options.providerMessageId }
-      }) } : {}),
-      // SDK assistant completion closes a message, not the product Turn.
-      // Formal-answer promotion happens only when the Turn settles.
-      presentationRole: "commentary"
-    };
-    session.items[index] = item;
-    session.streamingAssistant = options.completed === true
-      ? null
-      : { itemId: item.id, text: value };
-    this.emitProviderEvent(session, {
-      type: options.completed === true ? "assistant.message.completed" : "assistant.message.delta",
-      turnId: item.turnId,
-      itemId: item.id,
-      item,
-      occurredAt: session.updatedAt
-    });
-    return item;
+    return this.sdkMessageHandler.updateStreamingAssistant(session, text, options);
   }
 
   inputStream(session) {
-    const manager = this;
-    return {
-      async *[Symbol.asyncIterator]() {
-        while (!session.queryClosed) {
-          const next = await manager.dequeueInput(session);
-          if (next == null) {
-            break;
-          }
-          yield next;
-        }
-      }
-    };
+    return session.queryInput.stream(() => session.queryClosed);
   }
 
   enqueueInput(session, message) {
-    if (session.inputResolvers.length > 0) {
-      const resolve = session.inputResolvers.shift();
-      resolve(message);
-      return;
-    }
-    session.inputQueue.push(message);
+    session.queryInput.enqueue(message);
   }
 
   dequeueInput(session) {
-    if (session.inputQueue.length > 0) {
-      return Promise.resolve(session.inputQueue.shift());
-    }
-    if (session.queryClosed) {
-      return Promise.resolve(null);
-    }
-    return new Promise((resolve) => {
-      session.inputResolvers.push(resolve);
-    });
+    return session.queryInput.dequeue(session.queryClosed);
   }
 
   toDetail(session) {
-    // A cancelled status settles the previous Turn; it does not close the
-    // Corptie Session or invalidate its persisted Claude session id. A later
-    // send lazily starts a new Query and resumes that same Provider Session.
-    const canSend = session.turnState !== "running" && !hasPendingChoices(session);
-    return {
-      id: session.id,
-      title: session.title,
-      status: hasPendingChoices(session) ? "blocked" : session.status,
-      source: "claude-sdk",
-      connectionStatus: "connected",
-      currentModel: session.currentModel ?? null,
-      currentReasoningLevel: session.currentReasoningLevel ?? null,
-      activityStatus: activityStatusForSession(session),
-      cwd: session.cwd,
-      createdAt: session.createdAt,
-      updatedAt: session.updatedAt,
-      archived: session.archived === true,
-      rawStatus: {
-        provider: session.provider,
-        command: session.command,
-        args: session.args,
-        agentSessionId: session.agentSessionId,
-        phase: session.phase,
-        cwd: session.cwd,
-        sandbox: session.sandbox,
-        approvalPolicy: session.approvalPolicy,
-        permissionMode: session.permissionMode,
-        nextItemSeq: session.nextItemSeq,
-        nextTurnSeq: session.nextTurnSeq,
-        lastInputAt: session.lastInputAt,
-        lastOutputAt: session.lastOutputAt,
-        turnState: session.turnState,
-        currentTurnId: session.currentTurnId,
-        accent: session.accent
-      },
-      canSend,
-      sendUnavailableReason: canSend ? null : (hasPendingChoices(session) ? "Claude is waiting for your approval choice." : unavailableReasonForSession(session)),
-      capabilities: {
-        canSend,
-        canSwitchModel: true,
-        canSwitchReasoning: true,
-        canInterrupt: Boolean(session.query) && session.turnState === "running",
-        canReconnect: false
-      },
-      turnCount: 1,
-      items: visibleClaudeItems(session.items).slice(-this.maxItems)
-    };
+    return claudeSessionDetail(session, this.maxItems);
   }
 
   toSessionSummary(session) {
-    const storedSession = this.store?.getSession(session.id);
-    const detail = this.toDetail(session);
-    const latest = lastMeaningfulText(detail.items);
-    return {
-      id: `pty:${session.id}`,
-      title: session.title,
-      agent: session.agentName,
-      sessionKind: storedSession?.sessionKind ?? session.sessionKind ?? null,
-      status: detail.status,
-      progress: detail.status === "running" || detail.status === "blocked" ? 0.5 : 1,
-      summary: latest || "Claude Code is ready.",
-      suggestedOptions: latestSuggestedOptions(session.items),
-      activityStatus: detail.activityStatus,
-      capabilities: detail.capabilities,
-      updatedAt: session.updatedAt,
-      accent: session.accent,
-      archived: session.archived === true,
-      pinned: session.pinned === true || storedSession?.pinned === true,
-      sortOrder: Number.isFinite(session.sortOrder) ? session.sortOrder : (storedSession?.sortOrder ?? 0),
-      external: {
-        provider: session.provider,
-        threadId: session.id,
-        sessionId: session.id,
-        agentSessionId: session.agentSessionId,
-        connectionStatus: detail.connectionStatus,
-        currentModel: session.currentModel ?? null,
-        currentReasoningLevel: session.currentReasoningLevel ?? null,
-        cwd: session.cwd,
-        sandbox: session.sandbox,
-        approvalPolicy: session.approvalPolicy,
-        permissionMode: session.permissionMode,
-        source: "claude-sdk"
-      }
-    };
+    return claudeSessionSummary(session, this.store?.getSession(session.id), this.toDetail(session));
   }
 
   appendItem(session, item) {
-    const createdAt = createdAtFromOrNow(item);
-    const appendedItem = {
-      id: item.id ?? `${session.id}:${session.nextItemSeq}`,
-      turnId: item.turnId ?? session.currentTurnId ?? session.id,
-      turnStatus: session.status,
-      type: item.type,
-      title: item.title,
-      text: item.text,
-      options: item.options ?? null,
-      ...(item.userInput ? { userInput: item.userInput } : {}),
-      ...(item.neutralNotice ? { neutralNotice: true } : {}),
-      status: item.status ?? null,
-      toolUseId: item.toolUseId ?? null,
-      changeSet: item.changeSet ?? null,
-      createdAt,
-      presentationRole: item.presentationRole ?? null,
-      presentationText: item.presentationText ?? null,
-      rawMetadataJSON: item.rawMetadataJSON ?? providerRawMetadataJSON(
-        "claude-sdk",
-        item.rawPayload ?? item,
-        { source: item.rawPayload ? "provider_event" : "normalized_item" }
-      )
-    };
-    if (appendedItem.toolUseId) {
-      appendedItem.rawMetadataJSON = withToolExecutionMetadata(
-        appendedItem.rawMetadataJSON,
-        toolExecutionForItem(appendedItem, { input: appendedItem.text })
-      );
-    }
-    appendedItem.rawMetadataJSON = withChangeSetMetadata(
-      appendedItem.rawMetadataJSON, appendedItem.changeSet
-    );
-    session.items.push(appendedItem);
-    session.nextItemSeq += 1;
-    if (session.items.length > this.maxItems) {
-      session.items = session.items.slice(-this.maxItems);
-    }
-    this.emitProviderEvent(session, {
-      type: claudeItemProviderEventType(appendedItem),
-      turnId: appendedItem.turnId,
-      itemId: appendedItem.id,
-      item: appendedItem,
-      occurredAt: appendedItem.createdAt
-    });
-    return appendedItem;
+    return this.timelineWriter.appendItem(session, item);
   }
 
   appendPlanToolFallback(session, call, reason) {
-    const id = `${session.id}:plan-tool:${call.sourceCallId}`;
-    if (session.items.some((item) => item.id === id)) return;
-    this.appendItem(session, {
-      id,
-      turnId: call.turnId,
-      type: "mcpToolCall",
-      title: call.name,
-      text: reason === "failed" ? "Plan tool failed"
-        : reason === "completed" ? "Task updated without a checklist change" : "Plan tool result unavailable",
-      status: reason === "failed" ? "failed" : reason === "completed" ? "completed" : "unknown",
-      toolUseId: call.sourceCallId
-    });
+    return this.timelineWriter.appendPlanToolFallback(session, call, reason);
   }
 
   upsertTaskProgressItem(session, message, taskId, terminal) {
-    const id = `${session.id}:background-task:${createHash("sha256").update(taskId).digest("hex").slice(0, 24)}`;
-    const index = session.items.findIndex((item) => item.id === id);
-    const previous = index >= 0 ? session.items[index] : null;
-    const text = taskMessageText(message).slice(0, 2_000) || previous?.text || "Background task";
-    const nativeStatus = message?.patch?.status ?? message?.status;
-    const status = terminal
-      ? (["failed"].includes(nativeStatus) ? "failed"
-        : ["killed", "stopped"].includes(nativeStatus) ? "cancelled" : "completed")
-      : "running";
-    // A late progress packet cannot reopen a task already settled by the SDK.
-    if (previous && ["completed", "failed", "cancelled"].includes(previous.status) && !terminal) return;
-    const title = previous?.title ?? String(message?.label || message?.subagent_type || "Claude task").slice(0, 160);
-    if (previous?.text === text && previous?.status === status) return;
-    let originalInput = message?.description ?? null;
-    try { originalInput = JSON.parse(previous?.rawMetadataJSON)?.toolExecution?.input ?? originalInput; }
-    catch { /* The first update can have no previous structured metadata. */ }
-    const rawMetadataJSON = withToolExecutionMetadata(
-      previous?.rawMetadataJSON ?? providerRawMetadataJSON("claude-sdk", { taskId }, { source: "normalized_item" }),
-      toolExecutionForItem({ id, type: "mcpToolCall", title, status }, {
-        input: originalInput,
-        result: terminal ? message?.summary ?? message?.patch?.error ?? text : null
-      })
-    );
-    if (!previous) {
-      this.appendItem(session, { id, type: "mcpToolCall", title, text, status, rawMetadataJSON });
-      return;
-    }
-    const updated = { ...previous, text, status, rawMetadataJSON };
-    session.items[index] = updated;
-    this.emitProviderEvent(session, {
-      type: terminal ? (status === "completed" ? "tool.completed" : "tool.failed") : "tool.progress",
-      providerEventId: message?.uuid ? `claude-task:${message.uuid}` : null,
-      turnId: updated.turnId,
-      itemId: updated.id,
-      item: updated,
-      occurredAt: session.updatedAt
-    });
+    return this.timelineWriter.upsertTaskProgressItem(session, message, taskId, terminal);
   }
 
   settleToolResults(session, message) {
-    const blocks = Array.isArray(message?.message?.content) ? message.message.content : [];
-    for (const block of blocks) {
-      if (block?.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
-      const itemId = session.pendingToolCalls?.get(block.tool_use_id);
-      if (!itemId) continue;
-      session.pendingToolCalls.delete(block.tool_use_id);
-      const index = session.items.findIndex((item) => item.id === itemId);
-      if (index < 0) continue;
-      const previous = session.items[index];
-      const preview = claudeToolResultPreview(block.content);
-      const updated = {
-        ...previous,
-        status: block.is_error === true ? "failed" : "completed",
-        text: [previous.text, preview].filter(Boolean).join("\n\n"),
-        rawMetadataJSON: providerRawMetadataJSON("claude-sdk", {
-          toolUseId: block.tool_use_id,
-          inputPreview: previous.text,
-          resultPreview: preview,
-          isError: block.is_error === true
-        }, { source: "tool_result" })
-      };
-      updated.rawMetadataJSON = withToolExecutionMetadata(
-        updated.rawMetadataJSON,
-        toolExecutionForItem(updated, { input: previous.text, result: preview })
-      );
-      const sourcePath = previous.changeSet?.changes?.[0]?.path;
-      updated.changeSet = sourcePath && block.is_error !== true
-        ? changeSetForClaudeTool(previous.title, { file_path: sourcePath },
-          claudeStructuredToolResult(message, block, blocks.length))
-        : null;
-      updated.rawMetadataJSON = withChangeSetMetadata(updated.rawMetadataJSON, updated.changeSet);
-      session.items[index] = updated;
-      this.emitProviderEvent(session, {
-        type: block.is_error === true ? "tool.failed" : "tool.completed",
-        providerEventId: `claude-tool:${message.uuid ?? block.tool_use_id}:${block.tool_use_id}`,
-        turnId: updated.turnId,
-        itemId: updated.id,
-        item: updated,
-        occurredAt: message.timestamp ?? session.updatedAt
-      });
-    }
+    return this.timelineWriter.settleToolResults(session, message);
   }
 
   markPendingChoiceItemsSelected(session, optionId, choiceId = null) {
@@ -1722,21 +1172,7 @@ export class ClaudeAgentManager {
   }
 }
 
-function claudeItemProviderEventType(item) {
-  if (item?.neutralNotice) return "execution.notice";
-  if (item?.type === "userInput") return "interaction.requested";
-  if (item?.type === "agentMessage" || item?.type === "reasoning") {
-    return "assistant.message.delta";
-  }
-  if (item?.type === "choice") return "approval.requested";
-  if (item?.status === "failed") return "tool.failed";
-  if (item?.status === "completed") return "tool.completed";
-  return "tool.started";
-}
 
-function hasPendingChoices(session) {
-  return (session.pendingChoices?.size ?? 0) > 0 || (session.pendingInteractions?.size ?? 0) > 0;
-}
 
 function latestPendingDecision(session) {
   const values = Array.from(session.pendingChoices?.values?.() ?? []);
@@ -1751,165 +1187,7 @@ function isChoiceItemAlreadyHandled(session, choiceId) {
   return session.items.some((item) => item.id === choiceId && item.type === "choice" && item.status === "selected");
 }
 
-async function makeUserMessage(text, images = []) {
-  const content = [];
-  for (const image of images) {
-    const mediaType = claudeImageMediaType(image?.mimeType);
-    const path = typeof image?.absolutePath === "string" ? image.absolutePath : "";
-    if (!path) {
-      const error = new Error("Claude image input requires a resolved local path.");
-      error.code = "CHAT_IMAGE_MISSING";
-      throw error;
-    }
-    content.push({
-      type: "image",
-      source: {
-        type: "base64",
-        media_type: mediaType,
-        data: (await readFile(path)).toString("base64")
-      }
-    });
-  }
-  if (text) content.push({ type: "text", text });
-  return {
-    type: "user",
-    message: {
-      role: "user",
-      content
-    },
-    parent_tool_use_id: null
-  };
-}
 
-function claudeImageMediaType(value) {
-  const type = String(value ?? "").toLowerCase();
-  if (["image/jpeg", "image/png", "image/gif", "image/webp"].includes(type)) return type;
-  const error = new Error(`Claude does not support image format ${type || "unknown"}.`);
-  error.code = "CHAT_IMAGE_FORMAT_UNSUPPORTED";
-  throw error;
-}
-
-function claudeAssistantContentItems(message, structuredPlanEvents = true) {
-  const blocks = Array.isArray(message?.content) ? message.content : [];
-  const items = [];
-  for (const block of blocks) {
-    if (block?.type === "text" && typeof block.text === "string" && block.text.trim()) {
-      items.push({
-        type: "agentMessage",
-        title: "Claude Code",
-        text: block.text.trim(),
-        presentationRole: "commentary"
-      });
-      continue;
-    }
-    if (block?.type === "thinking" && typeof block.thinking === "string" && block.thinking.trim()) {
-      items.push({
-        type: "reasoning",
-        title: "Thinking",
-        text: block.thinking.trim()
-      });
-      continue;
-    }
-    if (block?.type === "tool_use") {
-      const toolName = String(block.name ?? "Claude tool").trim() || "Claude tool";
-      // Only a call captured for result correlation can be replaced by the
-      // structured checklist. Malformed calls must remain visible as tools.
-      if (structuredPlanEvents && isClaudePlanTool(toolName) && typeof block.id === "string" && block.id
-        && block.input != null && typeof block.input === "object" && !Array.isArray(block.input)) continue;
-      items.push({
-        type: claudeToolItemType(toolName),
-        title: toolName,
-        text: claudeToolInputText(toolName, block.input),
-        status: "running",
-        toolUseId: typeof block.id === "string" ? block.id : null,
-        changeSet: changeSetForClaudeTool(toolName, block.input)
-      });
-    }
-  }
-  return items;
-}
-
-function claudeToolItemType(toolName) {
-  const normalized = toolName.toLowerCase();
-  if (normalized === "bash" || normalized.includes("shell") || normalized.includes("command")) {
-    return "commandExecution";
-  }
-  if (["write", "edit", "multiedit", "notebookedit"].some((name) => normalized.includes(name))) {
-    return "fileChange";
-  }
-  if (normalized.includes("websearch") || normalized.includes("webfetch") || normalized.includes("browser")) {
-    return "webSearch";
-  }
-  return "mcpToolCall";
-}
-
-function claudeToolInputText(toolName, input) {
-  const normalized = toolName.toLowerCase();
-  if (normalized === "bash" && typeof input?.command === "string") return providerSafeToolText(input.command.trim());
-  if (normalized.includes("websearch") && typeof input?.query === "string") return providerSafeToolText(input.query.trim());
-  if (normalized.includes("webfetch") && typeof input?.url === "string") return providerSafeToolText(input.url.trim());
-  if (typeof input?.file_path === "string") return providerSafeToolText(input.file_path.trim());
-  if (!input || typeof input !== "object") return "";
-  const serialized = providerSafeToolText(input, { pretty: true });
-  return serialized.length > 800 ? `${serialized.slice(0, 797)}...` : serialized;
-}
-
-function claudeToolResultPreview(content) {
-  const text = typeof content === "string"
-    ? content
-    : Array.isArray(content)
-      ? content.filter((part) => part?.type === "text" && typeof part.text === "string")
-        .map((part) => part.text).join("\n")
-      : "";
-  const safe = providerSafeToolText(text.trim());
-  return safe.length > 800 ? `${safe.slice(0, 797)}...` : safe;
-}
-
-function claudeStructuredToolResult(message, block, resultCount) {
-  if (resultCount === 1 && message.tool_use_result
-    && typeof message.tool_use_result === "object" && !Array.isArray(message.tool_use_result)) {
-    return message.tool_use_result;
-  }
-  const text = typeof block.content === "string" ? block.content
-    : Array.isArray(block.content) ? block.content.find((part) => part?.type === "text")?.text : null;
-  if (typeof text !== "string" || text.length > 100_000) return null;
-  try {
-    const parsed = JSON.parse(text);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
-  } catch { return null; }
-}
-
-function finalizeClaudeTurnItems(session, turnId, turnStatus) {
-  if (!turnId || !Array.isArray(session?.items)) return;
-  const agentIndexes = [];
-  let lastContentIndex = null;
-  session.items = session.items.map((item, index) => {
-    if (item.turnId !== turnId) return item;
-    if (item.type === "agentMessage") agentIndexes.push(index);
-    if (!["userMessage", "reasoning", "system"].includes(item.type)) lastContentIndex = index;
-    return { ...item, turnStatus };
-  });
-  const lastAgentIndex = agentIndexes.at(-1);
-  const finalAgentIndex = lastAgentIndex === lastContentIndex
-    && !session.toolContinuationItemIds?.has(session.items[lastAgentIndex]?.id) ? lastAgentIndex : null;
-  session.items = session.items.map((item, index) => {
-    if (item.turnId !== turnId || item.type !== "agentMessage") return item;
-    return {
-      ...item,
-      presentationRole: index === finalAgentIndex ? "final_answer" : "commentary"
-    };
-  });
-}
-
-function assistantText(message) {
-  const blocks = Array.isArray(message?.content) ? message.content : [];
-  return blocks
-    .filter((block) => block?.type === "text" && typeof block.text === "string")
-    .map((block) => block.text.trim())
-    .filter(Boolean)
-    .join("\n\n")
-    .trim();
-}
 
 function nextSeqFromItems(items = []) {
   return items.length + 1;
@@ -1929,420 +1207,4 @@ function nextTurnSeqFromItems(sessionId, items = []) {
 
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function buildToolChoice(toolName, input, context = {}) {
-  if (toolName === "AskUserQuestion") {
-    const questions = normalizeAskUserQuestions(input);
-    if (questions.length > 0 && questions[0].options.length > 0) {
-      const firstQuestion = questions[0];
-      return {
-        kind: "ask-user",
-        title: "Claude needs input",
-        text: askUserQuestionText(firstQuestion, 0, questions.length),
-        questions,
-        originalQuestions: Array.isArray(input?.questions) ? input.questions : null,
-        questionIndex: 0,
-        answers: {},
-        options: askUserQuestionOptions(firstQuestion, 0)
-      };
-    }
-    const question = typeof input?.question === "string" ? input.question.trim() : "Claude needs your input.";
-    return {
-      kind: "ask-user-unsupported",
-      title: "Claude needs input",
-      text: `${question}\n\nCurrent Corptie build only supports option-style AskUserQuestion prompts.`,
-      options: [
-        { id: "deny", label: "Cancel", role: "deny", index: 0, selected: false }
-      ]
-    };
-  }
-
-  const decisionReason = typeof context?.decisionReason === "string" && context.decisionReason.trim()
-    ? context.decisionReason.trim()
-    : (typeof input?.decisionReason === "string" && input.decisionReason.trim() ? input.decisionReason.trim() : null);
-  const blockedPath = typeof context?.blockedPath === "string" && context.blockedPath.trim()
-    ? context.blockedPath.trim()
-    : (typeof input?.blockedPath === "string" && input.blockedPath.trim() ? input.blockedPath.trim() : null);
-  const title = typeof context?.title === "string" && context.title.trim()
-    ? context.title.trim()
-    : `Allow Claude Code to use tool \`${toolName}\`?`;
-  const description = typeof context?.description === "string" && context.description.trim()
-    ? context.description.trim()
-    : null;
-  const details = [
-    title,
-    description,
-    decisionReason,
-    blockedPath ? `Path: ${blockedPath}` : null
-  ].filter(Boolean).join("\n\n");
-
-  return {
-    kind: "tool-approval",
-    title: "Claude tool approval",
-    text: details,
-    toolName,
-    toolUseID: context?.toolUseID ?? null,
-    suggestions: Array.isArray(context?.suggestions) ? context.suggestions : undefined,
-    options: [
-      { id: "allow", label: "Allow Once", role: "approve", index: 0, selected: false },
-      { id: "allow-always", label: "Always Allow", role: "approve_always", index: 1, selected: false },
-      { id: "deny", label: "Deny", role: "deny", index: 2, selected: false }
-    ]
-  };
-}
-
-function optionResolution(choice, option) {
-  if (choice.kind === "tool-approval") {
-    if (option.id === "allow") {
-      return {
-        behavior: "allow",
-        updatedInput: {},
-        toolUseID: choice.toolUseID ?? undefined
-      };
-    }
-    if (option.id === "allow-always") {
-      return {
-        behavior: "allow",
-        updatedInput: {},
-        toolUseID: choice.toolUseID ?? undefined,
-        updatedPermissions: permissionUpdatesForAlwaysAllow(choice)
-      };
-    }
-    return {
-      behavior: "deny",
-      message: "User denied this tool request in Corptie.",
-      toolUseID: choice.toolUseID ?? undefined
-    };
-  }
-
-  if (choice.kind === "ask-user") {
-    const question = choice.questions?.[choice.questionIndex ?? 0];
-    const key = question?.question ?? "answer";
-    return {
-      behavior: "allow",
-      updatedInput: {
-        questions: choice.originalQuestions ?? choice.questions,
-        answers: {
-          ...(choice.answers ?? {}),
-          [key]: option.value ?? option.label
-        }
-      }
-    };
-  }
-
-  return { behavior: "deny", message: "This Claude prompt type is not supported in Corptie yet." };
-}
-
-function normalizeAskUserQuestions(input = {}) {
-  const nested = Array.isArray(input?.questions) ? input.questions : [];
-  const source = nested.length > 0
-    ? nested
-    : (typeof input?.question === "string" ? [{ question: input.question, options: input.options }] : []);
-  return source
-    .map((question, questionIndex) => ({
-      question: String(question?.question ?? "").trim(),
-      header: String(question?.header ?? "").trim(),
-      multiSelect: question?.multiSelect === true,
-      options: (Array.isArray(question?.options) ? question.options : []).map((option, optionIndex) => ({
-        label: String(option?.label ?? option?.title ?? option?.value ?? `Option ${optionIndex + 1}`),
-        description: String(option?.description ?? "").trim(),
-        value: option?.value ?? option?.id ?? option?.label ?? optionIndex
-      })),
-      sourceIndex: questionIndex
-    }))
-    .filter((question) => question.question && question.options.length > 0);
-}
-
-function askUserQuestionText(question, index, total) {
-  const progress = total > 1 ? `Question ${index + 1} of ${total}\n\n` : "";
-  const header = question.header ? `${question.header}\n\n` : "";
-  const descriptions = question.options
-    .filter((option) => option.description)
-    .map((option) => `${option.label}: ${option.description}`)
-    .join("\n");
-  return `${progress}${header}${question.question}${descriptions ? `\n\n${descriptions}` : ""}`;
-}
-
-function askUserQuestionOptions(question, questionIndex) {
-  return question.options.map((option, optionIndex) => ({
-    id: `question-${questionIndex}-option-${optionIndex}`,
-    label: option.label,
-    role: "message-choice",
-    index: optionIndex,
-    selected: false,
-    value: option.value
-  }));
-}
-
-function advanceAskUserChoice(session, pendingDecision, option, manager) {
-  const choice = pendingDecision.choice;
-  const questionIndex = choice.questionIndex ?? 0;
-  const question = choice.questions?.[questionIndex];
-  const nextQuestion = choice.questions?.[questionIndex + 1];
-  if (!question || !nextQuestion) {
-    return false;
-  }
-
-  choice.answers = {
-    ...(choice.answers ?? {}),
-    [question.question]: String(option.value ?? option.label)
-  };
-  manager.markPendingChoiceItemsSelected(session, option.id, choice.id);
-  session.pendingChoices.delete(choice.id);
-  choice.questionIndex = questionIndex + 1;
-  choice.id = `${session.id}:choice:${session.nextItemSeq}`;
-  choice.text = askUserQuestionText(nextQuestion, choice.questionIndex, choice.questions.length);
-  choice.options = askUserQuestionOptions(nextQuestion, choice.questionIndex);
-  session.pendingChoices.set(choice.id, pendingDecision);
-  session.pendingChoice = choice;
-  session.pendingDecision = pendingDecision;
-  session.turnState = "requires_action";
-  session.phase = "waiting_approval";
-  session.updatedAt = new Date().toISOString();
-  manager.appendItem(session, {
-    id: choice.id,
-    type: "choice",
-    title: choice.title,
-    text: choice.text,
-    status: "pending",
-    options: choice.options
-  });
-  return true;
-}
-
-function permissionUpdatesForAlwaysAllow(choice) {
-  const updates = Array.isArray(choice.suggestions) ? choice.suggestions.slice() : [];
-  const toolName = String(choice.toolName ?? "").trim();
-  if (toolName && !updates.some((update) => update?.type === "addRules" && update?.behavior === "allow" && Array.isArray(update.rules) && update.rules.some((rule) => rule?.toolName === toolName))) {
-    updates.push({
-      type: "addRules",
-      rules: [{ toolName }],
-      behavior: "allow",
-      destination: "session"
-    });
-  }
-  return updates.length > 0 ? updates : undefined;
-}
-
-function taskMessageText(message) {
-  const segments = [
-    message?.label,
-    message?.status,
-    message?.patch?.status,
-    message?.description,
-    message?.patch?.description,
-    message?.summary,
-    message?.patch?.error,
-    message?.message,
-    message?.content
-  ].filter((value) => typeof value === "string" && value.trim());
-  return segments.join(": ").trim();
-}
-
-function claudeTaskSubtype(message) {
-  const subtype = message?.type === "system" ? message?.subtype : message?.type;
-  return [
-    "task_started",
-    "task_progress",
-    "task_updated",
-    "task_complete",
-    "task_notification"
-  ].includes(subtype) ? subtype : null;
-}
-
-function isTerminalClaudeTaskMessage(message, subtype) {
-  if (subtype === "task_complete" || subtype === "task_notification") return true;
-  if (subtype !== "task_updated") return false;
-  return ["completed", "failed", "killed"].includes(message?.patch?.status);
-}
-
-function claudeTaskBlocksTurnSettlement(message) {
-  if (typeof message?.subagent_type === "string" && message.subagent_type.trim()) {
-    return true;
-  }
-  return ["agent", "subagent", "local_workflow"].includes(
-    String(message?.task_type ?? "").trim().toLowerCase()
-  );
-}
-
-function activityStatusForSession(session) {
-  if (hasPendingChoices(session)) {
-    return "Waiting for your choice";
-  }
-  if (session.turnState === "running") {
-    return "Claude is working";
-  }
-  if (session.status === "failed") {
-    return "Claude request failed";
-  }
-  return "Ready";
-}
-
-function unavailableReasonForSession(session) {
-  return "Claude is still processing the previous request.";
-}
-
-function claudePermissionMode(sandbox = "workspace-write", approvalPolicy = "on-request") {
-  if (approvalPolicy === "never" && sandbox === "danger-full-access") {
-    return "bypassPermissions";
-  }
-  if (approvalPolicy === "never") {
-    return "dontAsk";
-  }
-  return "default";
-}
-
-function claudePermissionOptions(session) {
-  const permissionMode = session.permissionMode ?? claudePermissionMode(session.sandbox, session.approvalPolicy);
-  return {
-    permissionMode,
-    // This flag only permits a later explicit switch to bypass mode; the
-    // active permissionMode remains authoritative and is not widened by it.
-    allowDangerouslySkipPermissions: true
-  };
-}
-
-// Claude effort levels mirror the Agent SDK's EffortLevel union. "off" is not
-// part of the SDK surface; callers map a disabled level to undefined before it
-// reaches this helper.
-export function normalizeClaudeEffortLevel(value) {
-  const level = typeof value === "string" ? value.trim().toLowerCase() : "";
-  return ["low", "medium", "high", "xhigh", "max"].includes(level) ? level : null;
-}
-
-export function normalizeClaudeRuntimeOptions(input = {}) {
-  if (!input || typeof input !== "object") return {};
-  const result = {};
-  if (Object.hasOwn(input, "tools")) {
-    // Empty is meaningful: the SDK disables every builtin. Never discard a
-    // restrictive list or normalize invalid input into the SDK's default set.
-    if (!Array.isArray(input.tools) || input.tools.some((tool) => typeof tool !== "string" || !tool.trim())) {
-      throw new TypeError("Claude runtime tools must be an explicit array of tool names.");
-    }
-    result.tools = [...new Set(input.tools.map((tool) => tool.trim()))];
-  }
-  if (input.mcpServers && typeof input.mcpServers === "object") {
-    result.mcpServers = { ...input.mcpServers };
-  }
-  if (Array.isArray(input.plugins)) {
-    result.plugins = input.plugins.map((plugin) => ({ ...plugin }));
-  }
-  if (input.skills === "all" || Array.isArray(input.skills)) {
-    result.skills = Array.isArray(input.skills) ? [...input.skills] : input.skills;
-  }
-  if (Array.isArray(input.settingSources)) {
-    result.settingSources = [...input.settingSources];
-  }
-  if (Array.isArray(input.additionalDirectories)) {
-    result.additionalDirectories = [...new Set(input.additionalDirectories.filter((path) => (
-      typeof path === "string" && path.trim()
-    )).map((path) => path.trim()))];
-  }
-  if (Array.isArray(input.disallowedTools)) {
-    result.disallowedTools = [...new Set(input.disallowedTools.filter((tool) => {
-      return typeof tool === "string" && tool.trim();
-    }).map((tool) => tool.trim()))];
-  }
-  if (typeof input.systemPrompt === "string" || Array.isArray(input.systemPrompt) || input.systemPrompt?.type === "preset") {
-    result.systemPrompt = input.systemPrompt;
-  }
-  return result;
-}
-
-function lastMeaningfulText(items = []) {
-  for (const item of items.slice().reverse()) {
-    if (item.text && item.type !== "userMessage") {
-      return item.text;
-    }
-  }
-  return "";
-}
-
-function latestSuggestedOptions(items = []) {
-  for (const item of items.slice().reverse()) {
-    if (item.type === "userMessage") {
-      return null;
-    }
-    if ((item.type === "choice" || item.type === "agentMessage") && item.status !== "selected" && Array.isArray(item.options) && item.options.length >= 1) {
-      return item.options;
-    }
-  }
-  return null;
-}
-
-function visibleClaudeItems(items = []) {
-  const visible = [];
-  for (const item of items) {
-    const previous = visible.at(-1);
-    const isDuplicateSuccessResult = item.type === "system"
-      && item.title === "Claude Code"
-      && item.status === "success"
-      && previous?.type === "agentMessage"
-      && previous?.text === item.text;
-    if (!isDuplicateSuccessResult) {
-      visible.push(item);
-    }
-  }
-  return visible;
-}
-
-function normalizeClaudeAccountUsage(usage, model = null) {
-  const windows = [];
-  const addWindow = (id, label, raw, durationMinutes) => {
-    const usedPercent = finiteNumber(raw?.utilization);
-    if (usedPercent === null) return;
-    windows.push([id, {
-      limitId: id,
-      limitName: label,
-      primary: {
-        usedPercent,
-        windowDurationMins: durationMinutes,
-        resetsAt: epochSeconds(raw?.resets_at)
-      },
-      secondary: null
-    }]);
-  };
-  addWindow("five_hour", "5 hour", usage?.rate_limits?.five_hour, 300);
-  addWindow("seven_day", "7 day", usage?.rate_limits?.seven_day, 10_080);
-  addWindow("seven_day_oauth_apps", "7 day OAuth apps", usage?.rate_limits?.seven_day_oauth_apps, 10_080);
-  addWindow("seven_day_opus", "7 day Opus", usage?.rate_limits?.seven_day_opus, 10_080);
-  addWindow("seven_day_sonnet", "7 day Sonnet", usage?.rate_limits?.seven_day_sonnet, 10_080);
-  for (const [index, raw] of (usage?.rate_limits?.model_scoped ?? []).entries()) {
-    addWindow(`model_scoped_${index}`, raw?.display_name || "Model", raw, 10_080);
-  }
-  return {
-    available: usage?.rate_limits_available === true && windows.length > 0,
-    provider: "claude",
-    model,
-    subscriptionType: usage?.subscription_type ?? null,
-    rateLimits: windows[0]?.[1] ?? null,
-    rateLimitsByLimitId: Object.fromEntries(windows)
-  };
-}
-
-function unavailableClaudeAccountUsage(model = null) {
-  return {
-    available: false,
-    provider: "claude",
-    model,
-    rateLimits: null,
-    rateLimitsByLimitId: {}
-  };
-}
-
-function finiteNumber(value) {
-  if (value === null || value === undefined || value === "") return null;
-  const number = Number(value);
-  return Number.isFinite(number) ? number : null;
-}
-
-function epochSeconds(value) {
-  const timestamp = Date.parse(String(value ?? ""));
-  return Number.isFinite(timestamp) ? timestamp / 1_000 : null;
-}
-
-function shortTitle(value) {
-  const text = String(value ?? "").trim();
-  return text.length > 80 ? `${text.slice(0, 77)}...` : (text || "Claude Code");
 }

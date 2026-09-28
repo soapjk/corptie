@@ -7,7 +7,7 @@ struct ConsoleChatCanvasTests {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Sources/CopetsMac")
         let canvas = try String(contentsOf: root.appendingPathComponent("ConsoleCardWorkspace.swift"), encoding: .utf8)
-        let outline = try String(contentsOf: root.appendingPathComponent("UnifiedConsoleView.swift"), encoding: .utf8)
+        let outline = try String(contentsOf: root.appendingPathComponent("Console/UnifiedConsoleOutline.swift"), encoding: .utf8)
         let border = try String(contentsOf: root.appendingPathComponent("../../../../packages/CorptieConversation/Sources/CorptieConversation/WorkActivity.swift"), encoding: .utf8)
         #expect(outline.contains("isChatRunning: workChat?.executionTaskStatus == .running"))
         #expect(canvas.contains("session.archived != true && session.resolvedSessionKind == .workChat"))

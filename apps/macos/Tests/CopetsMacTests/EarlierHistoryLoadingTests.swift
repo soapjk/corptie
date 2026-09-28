@@ -72,11 +72,15 @@ struct EarlierHistoryLoadingTests {
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/CopetsMac")
         let view = try String(
-            contentsOf: sourceRoot.appendingPathComponent("FloatingRootView.swift"),
+            contentsOf: sourceRoot.appendingPathComponent("Conversation/SessionConversationContent.swift"),
             encoding: .utf8
         )
-        let backend = try String(
-            contentsOf: sourceRoot.appendingPathComponent("BackendClient.swift"),
+        let historyController = try String(
+            contentsOf: sourceRoot.appendingPathComponent("Backend/SessionTimelineHistoryController.swift"),
+            encoding: .utf8
+        )
+        let readAPI = try String(
+            contentsOf: sourceRoot.appendingPathComponent("Backend/SessionTimelineReadAPI.swift"),
             encoding: .utf8
         )
 
@@ -88,10 +92,10 @@ struct EarlierHistoryLoadingTests {
         #expect(view.contains("loadEarlierMessages(preservingLatestFollow: true)"))
         #expect(!view.contains("EarlierHistoryStatusView"))
         #expect(!view.contains("Load earlier messages"))
-        #expect(backend.contains("earlierHistoryLoadSessionIDs.insert(session.id).inserted"))
-        #expect(backend.contains("setEarlierHistoryLoadState(.loading"))
-        #expect(backend.contains("EarlierHistoryLoadState.failed"))
-        #expect(backend.contains("request.timeoutInterval = timeoutInterval"))
+        #expect(historyController.contains("earlierHistoryLoadSessionIDs.insert(session.id).inserted"))
+        #expect(historyController.contains("setEarlierHistoryLoadState(.loading"))
+        #expect(historyController.contains("EarlierHistoryLoadState.failed"))
+        #expect(readAPI.contains("request.timeoutInterval = timeoutInterval"))
     }
 
     private func makeSession() -> URLSession {

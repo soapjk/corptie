@@ -8,7 +8,12 @@ struct WorkCanvasCameraTests {
         let state = WorkCanvasViewportState()
         state.zoom(by: 2, at: .zero)
         #expect(state.renderScaleMultiplier == 1)
-        try await Task.sleep(for: .milliseconds(180))
+        // The 120 ms debounce runs on the main actor; loaded test runs may
+        // resume this assertion later than a fixed 180 ms sleep.
+        for _ in 0..<40 {
+            if state.renderScaleMultiplier == 2 { break }
+            try await Task.sleep(for: .milliseconds(25))
+        }
         #expect(state.renderScaleMultiplier == 2)
 
         state.zoom(by: 0.25, at: .zero)

@@ -115,11 +115,13 @@ struct CorptieTaskCardStatusTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Sources/CopetsMac/UnifiedConsoleView.swift")
-        let contents = try String(contentsOf: source, encoding: .utf8)
+            .appendingPathComponent("Sources/CopetsMac/Console")
+        let contents = try ["UnifiedConsoleWorkTaskList.swift", "ConsoleSessionRows.swift"]
+            .map { try String(contentsOf: source.appendingPathComponent($0), encoding: .utf8) }
+            .joined(separator: "\n")
 
         #expect(contents.contains("CorptieTaskBoundSessionActivity.resolve("))
-        #expect(contents.contains("TaskActivityIndicator(activity: sessionActivity, lifecycleState: task.lifecycleState"))
+        #expect(contents.contains("TaskActivityIndicator(\n                    activity: sessionActivity,\n                    lifecycleState: task.lifecycleState"))
         #expect(!contents.contains(".fill(taskStatusColor(task.lifecycleState))"))
     }
 }

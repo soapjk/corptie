@@ -10,6 +10,7 @@ private struct FoundationModelConfiguration: Codable, Equatable {
 }
 
 struct FoundationModelSettingsView: View {
+    @ObservedObject var modelCatalog: ProviderCatalogStore
     @EnvironmentObject private var backendClient: BackendClient
     @State private var value = FoundationModelConfiguration()
     @State private var apiKey = ""
@@ -34,7 +35,7 @@ struct FoundationModelSettingsView: View {
                     value.providerId = $0; value.model = ""; value.reasoning = ""; models = []
                 })) {
                     Text("请选择").tag("")
-                    ForEach(backendClient.agentProviders.filter { $0.supports("background.prompt") }) {
+                    ForEach(modelCatalog.agentProviders.filter { $0.supports("background.prompt") }) {
                         Text($0.displayName).tag($0.id)
                     }
                 }

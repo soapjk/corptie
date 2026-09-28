@@ -5,16 +5,18 @@ import test from "node:test";
 test("remote Feishu reconciliation stays outside the backend readiness path", async () => {
   const source = await readFile(new URL("../src/server.mjs", import.meta.url), "utf8");
   const listenIndex = source.indexOf('server.listen(port, "127.0.0.1"');
-  const initializeIndex = source.indexOf("feishuGateway.initialize()", listenIndex);
+  const scheduleIndex = source.indexOf("scheduleBackendStartupMaintenance({", listenIndex);
+  const startup = await readFile(new URL("../src/application/backendStartupMaintenance.mjs", import.meta.url), "utf8");
 
   assert.notEqual(listenIndex, -1, "production server must declare its loopback listener");
-  assert.notEqual(initializeIndex, -1, "Feishu gateway must still initialize after startup");
+  assert.notEqual(scheduleIndex, -1, "Feishu gateway must still initialize after startup");
   assert.equal(
     source.slice(0, listenIndex).includes("await feishuGateway.initialize()"),
     false,
     "remote Feishu initialization must never block server.listen"
   );
-  assert.ok(initializeIndex > listenIndex, "Feishu initialization must be scheduled after the listener opens");
+  assert.match(startup, /setImmediate\(\(\) => \{[\s\S]*feishuGateway\.initialize\(\)/);
+  assert.ok(scheduleIndex > listenIndex, "Feishu initialization must be scheduled after the listener opens");
 });
 
 test("Provider initialization and recovery stay outside the backend readiness path", async () => {
@@ -49,9 +51,12 @@ test("Provider initialization and recovery stay outside the backend readiness pa
     );
   }
 
-  const maintenanceIndex = source.indexOf("async function runProviderStartupMaintenance", listenIndex);
-  assert.ok(maintenanceIndex > listenIndex, "Provider maintenance must be defined after the listener boundary");
-  const maintenance = source.slice(maintenanceIndex);
+  const maintenanceIndex = source.indexOf("scheduleBackendStartupMaintenance({", listenIndex);
+  assert.ok(maintenanceIndex > listenIndex, "Provider maintenance must be scheduled after the listener boundary");
+  assert.match(source, /const \{ runProviderStartupMaintenance \} = createProviderStartupMaintenance\(/);
+  const maintenance = await readFile(new URL("../src/agent-provider/bootstrap/providerStartupMaintenance.mjs", import.meta.url), "utf8");
+  const startup = await readFile(new URL("../src/application/backendStartupMaintenance.mjs", import.meta.url), "utf8");
+  assert.match(startup, /trackStartupMaintenance\(runProviderStartupMaintenance/);
   for (const operation of [
     "ensureCorptieCodexRuntime",
     "ensureCorptieClaudeRuntime",
@@ -70,13 +75,16 @@ test("Provider initialization and recovery stay outside the backend readiness pa
     /repairBrokenTaskSessionsAtStartup|selfRepairTaskSession/,
     "startup and message delivery must never replace a Session binding implicitly"
   );
+  const activity = await readFile(new URL("../src/application/backendRuntimeActivity.mjs", import.meta.url), "utf8");
+  assert.match(source, /runtimeActivity\.trackMaintenance\(promise\)/);
   assert.doesNotMatch(
-    source,
-    /promise\.finally\(\(\) => startupMaintenanceTasks\.delete/,
+    activity,
+    /promise\.finally\(/,
     "startup task tracking must not create an unhandled rejected finally Promise"
   );
+  const preflights = await readFile(new URL("../src/agent-provider/bootstrap/providerStartupPreflightComposition.mjs", import.meta.url), "utf8");
   assert.match(
-    source,
+    preflights,
     /idempotencyKey: `startup-empty-binding-recovery:\$\{candidate\.bindingId\}`/,
     "a proven unavailable zero-Turn binding must use an idempotent recovery attempt"
   );
@@ -85,8 +93,9 @@ test("Provider initialization and recovery stay outside the backend readiness pa
     /PROVIDER_BINDING_RECOVERY_REQUIRED/,
     "a proven unavailable zero-Turn binding must not require manual recovery"
   );
+  const bindingProjection = await readFile(new URL("../src/application/sessionToolBindingProjection.mjs", import.meta.url), "utf8");
   assert.match(
-    source,
+    bindingProjection,
     /domainId === "work-item-acceptance" \? "task-acceptance" : domainId/,
     "legacy Tool Domain ids must normalize before active binding recovery"
   );
@@ -133,13 +142,18 @@ test("full-database query planner optimization is absent from application startu
 test("startup settles durable nonterminal work before runtime queue draining", async () => {
   const source = await readFile(new URL("../src/server.mjs", import.meta.url), "utf8");
   const listenIndex = source.indexOf('server.listen(port, "127.0.0.1"');
-  const reconcileIndex = source.indexOf("store.reconcileInterruptedSessionExecutionAtStartup()", listenIndex);
-  const providerMaintenanceIndex = source.indexOf("trackStartupMaintenance(runProviderStartupMaintenance", listenIndex);
-  const firstQueueTickIndex = source.indexOf("tickAgentWorkQueue().catch", listenIndex);
-  const tickDefinitionIndex = source.indexOf("async function tickAgentWorkQueue()");
-  const tickDefinition = source.slice(tickDefinitionIndex, source.indexOf("async function dispatchSessionChannelDelivery", tickDefinitionIndex));
+  const scheduleIndex = source.indexOf("scheduleBackendStartupMaintenance({", listenIndex);
+  const startup = await readFile(new URL("../src/application/backendStartupMaintenance.mjs", import.meta.url), "utf8");
+  const reconcileIndex = startup.indexOf("store.reconcileInterruptedSessionExecutionAtStartup()");
+  const providerMaintenanceIndex = startup.indexOf("trackStartupMaintenance(runProviderStartupMaintenance");
+  const firstQueueTickIndex = startup.indexOf("tickAgentWorkQueue().catch");
+  const queueSource = await readFile(new URL("../src/runtime/runtimeAgentWorkQueue.mjs", import.meta.url), "utf8");
+  const tickDefinitionIndex = queueSource.indexOf("async function tickAgentWorkQueue()");
+  assert.ok(tickDefinitionIndex >= 0);
+  assert.match(source, /createRuntimeAgentWorkQueue\(\{/);
+  const tickDefinition = queueSource.slice(tickDefinitionIndex);
 
-  assert.ok(reconcileIndex > listenIndex, "restart reconciliation must not delay the listener");
+  assert.ok(scheduleIndex > listenIndex && reconcileIndex >= 0, "restart reconciliation must not delay the listener");
   assert.ok(providerMaintenanceIndex > reconcileIndex, "reconciliation must settle old work before Provider recovery starts");
   assert.ok(firstQueueTickIndex > reconcileIndex, "the runtime queue must not drain before restart reconciliation");
   assert.ok(tickDefinition.includes("runtimeQueuedTasksBySession.keys()"));
@@ -156,25 +170,40 @@ test("startup settles durable nonterminal work before runtime queue draining", a
 });
 
 test("Session collection reads are bounded and publish an explicit continuation contract", async () => {
-  const [server, store] = await Promise.all([
+  const [server, store, sessionReads, collection, router] = await Promise.all([
     readFile(new URL("../src/server.mjs", import.meta.url), "utf8"),
-    readFile(new URL("../src/store/corptieStore.mjs", import.meta.url), "utf8")
+    readFile(new URL("../src/store/corptieStore.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../src/store/repositories/sessionReadRepository.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../src/application/sessionCollectionHttpApi.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../src/application/backendHttpRouter.mjs", import.meta.url), "utf8")
   ]);
-  const sessionsRoute = server.slice(
-    server.indexOf('if (request.method === "GET" && url.pathname === "/sessions")'),
-    server.indexOf('if (request.method === "POST" && url.pathname === "/sessions")')
+  assert.match(server, /routeBackendHttpRequest\(/);
+  assert.match(router, /if \(handleSessionCollectionHttpRequest\(/);
+  const sessionsRoute = collection.slice(
+    collection.indexOf('if (request.method === "GET" && url.pathname === "/sessions")'),
+    collection.indexOf('if (request.method === "POST" && url.pathname === "/sessions")')
   );
-  const snapshot = server.slice(
-    server.indexOf("function controlPlaneSnapshot()"),
-    server.indexOf("function sessionChangeAffects", server.indexOf("function controlPlaneSnapshot()"))
+  const projection = await readFile(new URL("../src/application/controlPlaneProjection.mjs", import.meta.url), "utf8");
+  const snapshot = projection.slice(
+    projection.indexOf("function controlPlaneSnapshot()"),
+    projection.indexOf("function presentControlPlaneSession(")
   );
+  const readiness = await readFile(new URL("../src/application/backendStoreReadiness.mjs", import.meta.url), "utf8");
+  assert.match(server, /initializeBackendStoreReadiness\(/);
+  assert.match(readiness, /snapshot: controlPlaneSnapshot/);
 
   assert.match(sessionsRoute, /limit/);
   assert.match(sessionsRoute, /nextCursor/);
   assert.match(sessionsRoute, /hasMore/);
   assert.match(sessionsRoute, /sessionId/);
   assert.match(store, /listSessionPage\(options = \{\}\)/);
-  assert.match(store, /LIMIT \?/);
+  assert.match(store, /return this\.sessionReadRepository\.listSessionPage\(options\)/);
+  const page = sessionReads.slice(
+    sessionReads.indexOf("  listSessionPage("),
+    sessionReads.indexOf("\n  getSession(")
+  );
+  assert.match(page, /LIMIT \?/);
+  assert.match(page, /limit \+ 1/);
   assert.match(snapshot, /listLatestSessionMessageTimes\(residentSessionIds\)/);
   assert.match(snapshot, /listSessionMessageCursors\(residentSessionIds\)/);
   assert.match(snapshot, /listSessionTimelineRevisions\(residentSessionIds\)/);
@@ -184,7 +213,7 @@ test("startup migrations run in place without creating full database backups", a
   const store = await readFile(new URL("../src/store/corptieStore.mjs", import.meta.url), "utf8");
   const initialize = store.slice(
     store.indexOf("async initialize(options = {})"),
-    store.indexOf("reconcileInterruptedSessionExecutionAtStartup")
+    store.indexOf("\n  reconcileInterruptedSessionExecutionAtStartup(")
   );
 
   assert.match(initialize, /performMigrations !== false\) this\.migrate\(\)/);

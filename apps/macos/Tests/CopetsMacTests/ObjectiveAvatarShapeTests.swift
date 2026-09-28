@@ -27,7 +27,7 @@ struct ObjectiveAvatarShapeTests {
             .appendingPathComponent("Sources/CopetsMac")
 
         for fileName in [
-            "UnifiedConsoleView.swift",
+            "Console/ConsoleWorkRail.swift",
             "WarRoomView.swift",
             "WorkDetailView.swift",
             "WorkCreateView.swift"

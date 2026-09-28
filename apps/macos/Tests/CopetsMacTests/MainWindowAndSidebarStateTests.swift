@@ -198,7 +198,7 @@ struct MainWindowAndSidebarStateTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Sources/CopetsMac/CopetsMacApp.swift")
+            .appendingPathComponent("Sources/CopetsMac/Application/AppDelegate.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
 
         #expect(contents.contains("NSApp.setActivationPolicy(.regular)"))

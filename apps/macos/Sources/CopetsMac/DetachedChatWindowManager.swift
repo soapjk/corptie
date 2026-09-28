@@ -296,6 +296,7 @@ private final class DetachedChatHostingView<Content: View>: NSHostingView<Conten
 
 private struct DetachedChatWindowView: View {
     @ObservedObject private var backendClient = BackendClient.shared
+    @ObservedObject private var archivedSessionState = BackendClient.shared.archivedSessionController
     @StateObject private var layoutState = PanelLayoutState()
     @State private var draftRepository = ComposerDraftRepository()
     @State private var showsWindowPresets = false

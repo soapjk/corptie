@@ -3,397 +3,76 @@ import CorptieConversation
 import AppKit
 import SwiftUI
 
-enum ConsoleNavigationCardWidthPolicy {
-    static let minimumTaskColumnWidth = 220.0
-    static let defaultTaskColumnWidth = 300.0
-    static let maximumTaskColumnWidth = 520.0
-
-    static func clamped(_ width: Double) -> Double {
-        min(max(width, minimumTaskColumnWidth), maximumTaskColumnWidth)
-    }
-
-    static func resizedWidth(from startWidth: Double, translation: Double) -> Double {
-        clamped(startWidth + translation)
-    }
-}
-
-enum ConsoleNavigationMode: String, CaseIterable {
-    case workRail
-    case workOutline
-    case taskCards
-
-    static func resolved(_ rawValue: String) -> Self {
-        Self(rawValue: rawValue) ?? .workRail
-    }
-
-    @MainActor
-    var accessibilityValue: String {
-        switch self {
-        case .workRail: L10n("Work icons and Task list")
-        case .workOutline: L10n("Expanded Work list")
-        case .taskCards: "卡片 · 实验"
-        }
-    }
-}
-
-typealias ConsoleWorkOutlineMetrics = CorptieConversation.ConsoleWorkOutlineMetrics
-
-typealias ConsoleWorkFlowingGradientPolicy = CorptieConversation.ConsoleWorkFlowingGradientPolicy
-
-enum ConsoleWorkActivityPolicy {
-    static func processingWorkIDs(
-        tasks: [CorptieTask],
-        sessions: [TaskSession]
-    ) -> Set<String> {
-        Set(tasks.lazy.compactMap { task in
-            CorptieTaskBoundSessionActivity.resolve(task: task, sessions: sessions) == .processing
-                ? task.workId
-                : nil
-        })
-    }
-}
-
-/// Local disclosure preference for the grouped console outline.
-@MainActor
-final class ConsoleOutlineExpansionPreferences: ObservableObject {
-    static let collapsedWorkIDsKey = "console.workOutline.collapsedWorkIDs.v1"
-    static let assistantCollapsedKey = "console.workOutline.assistantCollapsed.v1"
-
-    @Published private(set) var collapsedWorkIDs: Set<String>
-    @Published private(set) var isAssistantCollapsed: Bool
-    private let defaults: UserDefaults
-
-    init(defaults: UserDefaults = CorptieAppEnvironment.userDefaults) {
-        self.defaults = defaults
-        collapsedWorkIDs = Set(defaults.stringArray(forKey: Self.collapsedWorkIDsKey) ?? [])
-        isAssistantCollapsed = defaults.bool(forKey: Self.assistantCollapsedKey)
-    }
-
-    func setWorkExpanded(_ isExpanded: Bool, workID: String) {
-        guard collapsedWorkIDs.contains(workID) == isExpanded else { return }
-        if isExpanded {
-            collapsedWorkIDs.remove(workID)
-        } else {
-            collapsedWorkIDs.insert(workID)
-        }
-        defaults.set(collapsedWorkIDs.sorted(), forKey: Self.collapsedWorkIDsKey)
-    }
-
-    func toggleWork(workID: String) {
-        setWorkExpanded(collapsedWorkIDs.contains(workID), workID: workID)
-    }
-
-    func setAssistantExpanded(_ isExpanded: Bool) {
-        let isCollapsed = !isExpanded
-        guard isAssistantCollapsed != isCollapsed else { return }
-        isAssistantCollapsed = isCollapsed
-        defaults.set(isCollapsed, forKey: Self.assistantCollapsedKey)
-    }
-
-    func toggleAssistant() {
-        setAssistantExpanded(isAssistantCollapsed)
-    }
-
-    func removeWork(_ workID: String) {
-        guard collapsedWorkIDs.remove(workID) != nil else { return }
-        defaults.set(collapsedWorkIDs.sorted(), forKey: Self.collapsedWorkIDsKey)
-    }
-}
-
-typealias ConsoleWorkTitle = CorptieConversation.ConsoleWorkTitle
-
-/// Shared by list rows and experimental Task cards; body lives in CorptieConversation.
-struct ConsoleScheduledWakeIcon: View {
-    var isActive = true
-
-    var body: some View {
-        ScheduledWakeIcon(isActive: isActive, label: L10n("存在等待执行的计划任务"))
-            .help(L10n("存在等待执行的计划任务"))
-    }
-}
-
-private struct ConsoleWorkOutlineDisclosureStyle: DisclosureGroupStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 0) {
-                Button {
-                    withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation) {
-                        configuration.isExpanded.toggle()
-                    }
-                } label: {
-                    Image(systemName: configuration.isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 18, height: 24)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(L10n(
-                    configuration.isExpanded ? "Collapse group" : "Expand group"
-                ))
-
-                configuration.label
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            if configuration.isExpanded {
-                configuration.content
-                    .transition(.opacity.combined(with: .offset(y: -4)))
-            }
-        }
-        .animation(
-            ConsoleWorkOutlineMetrics.disclosureAnimation,
-            value: configuration.isExpanded
-        )
-    }
-}
-
-private typealias ConsoleWorkOutlineGroupCardModifier = WorkGroupCardSurface
-
-private extension View {
-    func consoleWorkOutlineGroupCard() -> some View {
-        modifier(ConsoleWorkOutlineGroupCardModifier())
-    }
-}
-
-private struct HoverRevealHeaderAction<Header: View>: View {
-    let accessibilityLabel: String
-    let header: Header
-    let action: () -> Void
-
-    @State private var isHovering = false
-    @FocusState private var isFocused: Bool
-
-    init(
-        accessibilityLabel: String,
-        action: @escaping () -> Void,
-        @ViewBuilder header: () -> Header
-    ) {
-        self.accessibilityLabel = accessibilityLabel
-        self.action = action
-        self.header = header()
-    }
-
-    var body: some View {
-        HStack(spacing: 0) {
-            header
-            Button(action: action) {
-                Image(systemName: "plus")
-                    .font(.system(size: 10, weight: .semibold))
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .focused($isFocused)
-            .opacity(isHovering || isFocused ? 1 : 0)
-            .accessibilityLabel(accessibilityLabel)
-            .help(accessibilityLabel)
-        }
-        .onHover { isHovering = $0 }
-    }
-}
-
-private struct ConsoleWorkOutlineHeader: View {
-    let work: Work
-    let isExpanded: Bool
-    let isSelected: Bool
-    let isWorking: Bool
-    let hasUnread: Bool
-    let isChatSelected: Bool
-    let isChatRunning: Bool
-    let hasUnreadChat: Bool
-    let toggleExpanded: () -> Void
-    let openChat: () -> Void
-    let createTask: () -> Void
-
-    @State private var isHovering = false
-    @FocusState private var isCreateTaskFocused: Bool
-
-    var body: some View {
-        HStack(spacing: 0) {
-            Button(action: toggleExpanded) {
-                HStack(spacing: 7) {
-                    ObjectiveAvatarView(
-                        objectiveID: work.id,
-                        name: work.name,
-                        avatarPath: work.avatarPath,
-                        size: 22
-                    )
-                    ConsoleWorkTitle(title: work.name, isWorking: isWorking)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(isSelected ? Color.primary : Color.secondary)
-                        .lineLimit(1)
-                }
-                .padding(.vertical, 3)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(work.name)
-            .accessibilityValue(accessibilityValue)
-            .help(isExpanded ? L10n("Collapse Work") : L10n("Expand Work"))
-
-            WorkDiscussionButton(isSelected: isChatSelected, isRunning: isChatRunning,
-                hasUnread: hasUnreadChat, title: L10n("讨论"),
-                accessibilityTitle: L10n("Open Work Chat"),
-                accessibilityState: hasUnreadChat ? L10n("Unread Session") : "",
-                action: openChat)
-                .padding(.leading, 6)
-
-            Spacer(minLength: 4)
-
-            if hasUnread && !isExpanded {
-                Circle()
-                    .fill(Color.red)
-                    .frame(width: 8, height: 8)
-                    .accessibilityLabel(L10n("Unread Session"))
-            }
-
-            Button(action: createTask) {
-                Image(systemName: "plus")
-                    .font(.system(size: 10, weight: .semibold))
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .focused($isCreateTaskFocused)
-            .opacity(isHovering || isCreateTaskFocused ? 1 : 0)
-            .accessibilityLabel(L10nFormat("Create Task in %@", work.name))
-            .help(L10nFormat("Create Task in %@", work.name))
-        }
-        .onHover { isHovering = $0 }
-    }
-
-    private var accessibilityValue: String {
-        let expandedValue = isExpanded ? L10n("Expanded group") : L10n("Collapsed group")
-        return isWorking ? "\(expandedValue), \(L10n("Processing"))" : expandedValue
-    }
-}
-
-enum ConsoleTaskSelectionPolicy {
-    static func isValidSelection(
-        task: CorptieTask,
-        selectedWorkID: String?
-    ) -> Bool {
-        task.workId == selectedWorkID
-            && task.lifecycleState != "done"
-            && task.archived != true
-            && task.deletionStatus != "deleting"
-    }
-
-    static func session(
-        for task: CorptieTask,
-        in sessions: [TaskSession]
-    ) -> TaskSession? {
-        if let currentSessionID = task.currentSessionId,
-           let current = sessions.first(where: {
-               $0.id == currentSessionID
-                   && $0.taskId == task.id
-                   && $0.archived != true
-           }) {
-            return current
-        }
-        return sessions.first { $0.taskId == task.id && $0.archived != true }
-    }
-}
-
-enum ConsoleTaskOpenDecision: Equatable {
-    case selectSession(id: String)
-    case showWithoutSession
-
-    static func resolve(task: CorptieTask, session: TaskSession?) -> Self {
-        if let session { return .selectSession(id: session.id) }
-        return .showWithoutSession
-    }
-}
-
-enum ConsoleSelectionRefreshPolicy {
-    static func permitsAutomaticDefaultSelection(
-        selectedTaskID: String?,
-        selectedSessionID: String?,
-        explicitlyCleared: Bool = false
-    ) -> Bool {
-        !explicitlyCleared && selectedTaskID == nil && selectedSessionID == nil
-    }
-}
-
-// 统一控制台：Work/Assistant 导航、Task 列、消息列和详情列。
-//   左 sidebar  — 会话列表（CompactSessionRow，固定窄列，窗口级连续侧栏）
-//   中 content  — 对话（复用旧版 DetailView，吃满剩余宽度，纸面卡片质感）
-//   详情信息   — 右侧竖列常驻 side panel（固定宽度，无收起按钮，模仿 Rudder IssueDetail 的 rail）
-//
-// Rudder 设计契约要点（IssueDetail.tsx + index.css）：
-//   - 详情页是 CSS Grid 三区域布局，右侧「Properties rail」固定 280px，sticky 常驻，
-//     没有收起/折叠按钮——只有 <48rem 移动端才 display:none（靠顶部 SlidersHorizontal 打开 Sheet）。
-//   - 字段区标题用 11px uppercase + tracking 的小字「Properties」标签，下面竖向排列字段。
-//   - 窄列固定像素宽度，主工作区吃掉剩余空间。
 struct UnifiedConsoleView: View {
-    private let backendClient = BackendClient.shared
-    @ObservedObject private var sessionIndexStore = BackendClient.shared.sessionIndexStore
+    @ObservedObject var modelCatalog = BackendClient.shared.modelCatalog
+    let backendClient = BackendClient.shared
+    @ObservedObject var sessionIndexStore = BackendClient.shared.sessionIndexStore
+    @ObservedObject var archivedSessionState = BackendClient.shared.archivedSessionController
     /// Archived rows are loaded only after the archive surface is opened and
     /// never enter the resident active State Sync index.
-    @StateObject private var archivedSessionIndexStore = SessionIndexStore()
-    private let entityClient = EntityAPIClient.shared
-    @StateObject private var layoutState = PanelLayoutState()
-    @ObservedObject private var presentationCache = SessionPresentationCache.shared
-    @ObservedObject private var viewportController = SessionViewportController.shared
-    @ObservedObject private var selectionController = BackendClient.shared.sessionSelectionController
-    @StateObject private var sessionGroupProjectionStore = SessionGroupProjectionStore()
-    @State private var composerDraftRepository = ComposerDraftRepository()
-    @State private var detailRenderTask: Task<Void, Never>?
-    @State private var pendingSelectionTask: Task<Void, Never>?
-    @State private var selectedCategory: SessionCategory = .worker
+    @StateObject var archivedSessionIndexStore = SessionIndexStore()
+    let entityClient = EntityAPIClient.shared
+    @StateObject var layoutState = PanelLayoutState()
+    @ObservedObject var presentationCache = SessionPresentationCache.shared
+    @ObservedObject var viewportController = SessionViewportController.shared
+    @ObservedObject var selectionController = BackendClient.shared.sessionSelectionController
+    @StateObject var sessionGroupProjectionStore = SessionGroupProjectionStore()
+    @State var composerDraftRepository = ComposerDraftRepository()
+    @State var detailRenderTask: Task<Void, Never>?
+    @State var pendingSelectionTask: Task<Void, Never>?
+    @State var selectedCategory: SessionCategory = .worker
     /// nil 表示 Assistant 空间；非 nil 表示对应 Work 的 Task 空间。
-    @State private var selectedWorkId: String?
-    @State private var selectedTaskId: String?
-    @State private var workPendingEdit: Work?
-    @State private var workPendingDeletion: Work?
-    @State private var workDeletionError: String?
-    @State private var taskArchiveError: String?
-    @State private var taskPendingEdit: CorptieTask?
-    @State private var taskPendingRename: CorptieTask?
-    @State private var sessionPendingRename: TaskSession?
-    @State private var taskDeletionPresentation: CorptieTaskDeletionPresentation?
-    @State private var taskDeletionError: String?
-    @State private var taskRestartError: String?
-    @State private var pendingTaskDeletionIds = Set<String>()
-    @State private var pendingTaskRestartIds = Set<String>()
-    @State private var pendingTaskChatIds = Set<String>()
-    @State private var isShowingWorkerArchive = false
-    @State private var submittedReadSequencesBySessionID: [String: Int] = [:]
+    @State var selectedWorkId: String?
+    @State var selectedTaskId: String?
+    @State var workPendingEdit: Work?
+    @State var workPendingDeletion: Work?
+    @State var workDeletionError: String?
+    @State var taskArchiveError: String?
+    @State var taskPendingEdit: CorptieTask?
+    @State var taskPendingRename: CorptieTask?
+    @State var sessionPendingRename: TaskSession?
+    @State var taskDeletionPresentation: CorptieTaskDeletionPresentation?
+    @State var taskDeletionError: String?
+    @State var taskRestartError: String?
+    @State var pendingTaskDeletionIds = Set<String>()
+    @State var pendingTaskRestartIds = Set<String>()
+    @State var pendingTaskChatIds = Set<String>()
+    @State var isShowingWorkerArchive = false
+    @State var submittedReadSequencesBySessionID: [String: Int] = [:]
     @AppStorage(
         "sessions.workerGroupingMode",
         store: CorptieAppEnvironment.userDefaults
-    ) private var workerGroupingModeRawValue = WorkerSessionGroupingMode.work.rawValue
-    @EnvironmentObject private var router: AppTabRouter
-    @EnvironmentObject private var sidebarState: TabSidebarState
+    ) var workerGroupingModeRawValue = WorkerSessionGroupingMode.work.rawValue
+    @EnvironmentObject var router: AppTabRouter
+    @EnvironmentObject var sidebarState: TabSidebarState
     /// Chat「+」只创建 Assistant Chat；Work Chat 与 Task Session 由系统伴生创建。
-    @State private var showNewSessionCreation = false
-    @State private var isCreatingWork = false
-    private struct TaskCreationTarget: Identifiable {
+    @State var showNewSessionCreation = false
+    @State var isCreatingWork = false
+    struct TaskCreationTarget: Identifiable {
         let id = UUID()
         let workID: String?
     }
-    @State private var taskCreationTarget: TaskCreationTarget?
+    @State var taskCreationTarget: TaskCreationTarget?
     /// 已收起的子分类分组 key 集合（仅内存态，跟随当前页面生命周期）。
-    @State private var collapsedGroupKeys: Set<String> = []
-    @State private var entityGroupingRevision: UInt64 = 0
+    @State var collapsedGroupKeys: Set<String> = []
+    @State var entityGroupingRevision: UInt64 = 0
     /// 搜索交互状态。
-    @State private var isSearching = false
-    @State private var searchText = ""
-    @FocusState private var isSearchFieldFocused: Bool
+    @State var isSearching = false
+    @State var searchText = ""
+    @FocusState var isSearchFieldFocused: Bool
     @AppStorage(
         "console.navigationCard.navigationMode",
         store: CorptieAppEnvironment.userDefaults
-    ) private var navigationModeRawValue = ConsoleNavigationMode.workRail.rawValue
-    @StateObject private var outlineExpansionPreferences = ConsoleOutlineExpansionPreferences()
-    @State private var cardAttentionCount = 0
-    @State private var cardSelectionExplicitlyCleared = false
-    @State private var cardRefreshRevision = 0
+    ) var navigationModeRawValue = ConsoleNavigationMode.workRail.rawValue
+    @StateObject var outlineExpansionPreferences = ConsoleOutlineExpansionPreferences()
+    @State var cardAttentionCount = 0
+    @State var cardSelectionExplicitlyCleared = false
+    @State var cardRefreshRevision = 0
     /// 每个 Tab（SessionCategory）独立记录其上一次选中的 Session，跨窗口/重启恢复，
     /// 避免不同 Tab 的选择相互覆盖。key 形如 `sessions.lastSelectedSessionId.<category>`。
-    private static let recentSessionIdsKey = "sessions.recentSessionIds"
+    static let recentSessionIdsKey = "sessions.recentSessionIds"
 
-    private static func lastSelectedSessionKey(for category: SessionCategory) -> String {
+    static func lastSelectedSessionKey(for category: SessionCategory) -> String {
         "sessions.lastSelectedSessionId.\(category.rawValue)"
     }
 
@@ -448,7 +127,7 @@ struct UnifiedConsoleView: View {
                 markOpenedSessionRead(sessions.first(where: { $0.id == selectedSessionID }))
             }
         }
-        .onReceive(backendClient.$archivedSessions) { sessions in
+        .onReceive(archivedSessionState.$sessions) { sessions in
             archivedSessionIndexStore.replaceAll(with: sessions)
             guard sidebarState.isSelected, router.pendingSessionId == nil,
                   isShowingWorkerArchive else { return }
@@ -584,7 +263,7 @@ struct UnifiedConsoleView: View {
     }
 
 
-    private var consoleNavigationContent: some View {
+    var consoleNavigationContent: some View {
         HStack(spacing: 0) {
             if navigationMode == .workRail {
                 workRail
@@ -606,11 +285,11 @@ struct UnifiedConsoleView: View {
         .frame(maxHeight: .infinity)
     }
 
-    private var navigationMode: ConsoleNavigationMode {
+    var navigationMode: ConsoleNavigationMode {
         ConsoleNavigationMode.resolved(navigationModeRawValue)
     }
 
-    private var usesWorkOutlineBinding: Binding<Bool> {
+    var usesWorkOutlineBinding: Binding<Bool> {
         Binding(
             get: { navigationMode == .workOutline },
             set: { navigationModeRawValue = $0
@@ -619,7 +298,7 @@ struct UnifiedConsoleView: View {
         )
     }
 
-    private var navigationModeToggle: some View {
+    var navigationModeToggle: some View {
         Picker("视图", selection: $navigationModeRawValue) {
             Text("经典").tag(ConsoleNavigationMode.workRail.rawValue)
             Text("分组").tag(ConsoleNavigationMode.workOutline.rawValue)
@@ -629,7 +308,7 @@ struct UnifiedConsoleView: View {
         .accessibilityValue(navigationMode.accessibilityValue)
     }
 
-    private var cardWorkspaceSidebar: some View {
+    var cardWorkspaceSidebar: some View {
         VStack(spacing: 8) {
             HStack {
                 if cardAttentionCount > 0 {
@@ -681,873 +360,22 @@ struct UnifiedConsoleView: View {
     }
 
 
-    private var workRail: some View {
-        let unreadSummary = WorkRailUnreadSummary(
-            sessions: sessionIndexStore.rows.map(\.session)
-        )
-        return VStack(spacing: 8) {
-            Button {
-                selectAssistantSpace()
-            } label: {
-                consoleRailIcon(
-                    systemImage: "sparkles",
-                    label: L10n("Assistant"),
-                    isSelected: selectedWorkId == nil,
-                    hasUnread: unreadSummary.hasUnreadAssistantSessions
-                )
-            }
-            .buttonStyle(.plain)
-
-            Divider()
-                .padding(.horizontal, 10)
-
-            ScrollViewReader { scrollProxy in
-                ScrollView(.vertical) {
-                    LazyVStack(spacing: 8) {
-                        ForEach(entityClient.works) { work in
-                            Button {
-                                selectWorkSpace(work.id)
-                            } label: {
-                                consoleRailIcon(
-                                    text: workInitials(work.name),
-                                    avatarPath: work.avatarPath,
-                                    objectiveID: work.id,
-                                    label: work.name,
-                                    isSelected: selectedWorkId == work.id,
-                                    hasUnread: unreadSummary.workIDs.contains(work.id)
-                                )
-                                .contextMenu {
-                                    Button(L10n("编辑"), systemImage: "square.and.pencil") {
-                                        workPendingEdit = work
-                                    }
-                                    Divider()
-                                    Button(L10n("删除"), systemImage: "trash", role: .destructive) {
-                                        workPendingDeletion = work
-                                    }
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .id(work.id)
-                        }
-                    }
-                    .padding(.vertical, 10)
-                    .background(ConsoleOverlayScroller())
-                }
-                .mask(workRailScrollMask)
-                .onAppear {
-                    scrollSelectedWorkIntoView(using: scrollProxy, animated: false)
-                }
-                .onChange(of: selectedWorkId) { _, _ in
-                    scrollSelectedWorkIntoView(using: scrollProxy, animated: true)
-                }
-            }
-
-        }
-        .padding(.vertical, 10)
-    }
-
-    private var workRailScrollMask: some View {
-        VStack(spacing: 0) {
-            LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
-                .frame(height: 10)
-            Rectangle().fill(.black)
-            LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
-                .frame(height: 10)
-        }
-    }
-
-    private func scrollSelectedWorkIntoView(
-        using proxy: ScrollViewProxy,
-        animated: Bool
-    ) {
-        guard let selectedWorkId else { return }
-        let action = { proxy.scrollTo(selectedWorkId, anchor: .center) }
-        if animated {
-            withAnimation(.easeInOut(duration: 0.18), action)
-        } else {
-            action()
-        }
-    }
-
-    @ViewBuilder
-    private func consoleRailIcon(
-        systemImage: String? = nil,
-        text: String? = nil,
-        avatarPath: String? = nil,
-        objectiveID: String? = nil,
-        label: String,
-        isSelected: Bool,
-        hasUnread: Bool
-    ) -> some View {
-        Group {
-            if let objectiveID {
-                ObjectiveAvatarView(
-                    objectiveID: objectiveID,
-                    name: label,
-                    avatarPath: avatarPath,
-                    size: 42
-                )
-            } else {
-                ZStack {
-                    Circle()
-                        .fill(Color(nsColor: .controlBackgroundColor))
-                        .frame(width: 42, height: 42)
-                    if let systemImage {
-                        Image(systemName: systemImage)
-                            .font(.system(size: 16, weight: .semibold))
-                    } else {
-                        Text(text ?? "?")
-                            .font(.system(size: 12, weight: .bold, design: .rounded))
-                            .lineLimit(1)
-                    }
-                }
-            }
-        }
-        .foregroundStyle(Color.primary)
-        .frame(width: 64, height: 50)
-        .overlay(alignment: .leading) {
-            if isSelected || hasUnread {
-                Capsule()
-                    .fill(isSelected ? Color.accentColor.opacity(0.78) : Color.red)
-                    .frame(
-                        width: isSelected ? 4 : 8,
-                        height: isSelected ? 24 : 8
-                    )
-                    .padding(.leading, 2)
-                    .transition(.scale(scale: 0.72).combined(with: .opacity))
-            }
-        }
-        .contentShape(Rectangle())
-        .help(label)
-        .accessibilityLabel(label)
-        .accessibilityValue(
-            isSelected ? L10n("Selected") : (hasUnread ? L10n("Unread Session") : "")
-        )
-        .animation(.easeInOut(duration: 0.15), value: isSelected)
-        .animation(.easeInOut(duration: 0.15), value: hasUnread)
-    }
-
-    private func workInitials(_ name: String) -> String {
-        let compact = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return compact.isEmpty ? "?" : String(compact.prefix(2)).uppercased()
-    }
-
-    private var unifiedTaskSidebar: some View {
-        VStack(spacing: 0) {
-            if isSearching {
-                sessionSearchBar
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 6)
-            }
-
-            if let work = selectedWork {
-                workTaskList(work)
-            } else {
-                assistantSessionList
-            }
-
-            if isShowingWorkerArchive,
-               backendClient.archivedSessionsHasMore
-                || backendClient.isLoadingMoreArchivedSessions
-                || backendClient.archivedSessionsLoadError != nil {
-                archivedWorkerPaginationBar
-            }
-        }
-        .overlay(alignment: .bottomTrailing) {
-            floatingCreationMenu
-                .padding(12)
-        }
-        .sheet(isPresented: $showNewSessionCreation) {
-            NewSessionCreationSheet(fixedKind: .assistantChat)
-        }
-    }
-
-    private var unifiedWorkOutlineSidebar: some View {
-        VStack(spacing: 0) {
-            if isSearching {
-                sessionSearchBar
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 6)
-            }
-
-            workOutlineList
-
-            if isShowingWorkerArchive,
-               backendClient.archivedSessionsHasMore
-                || backendClient.isLoadingMoreArchivedSessions
-                || backendClient.archivedSessionsLoadError != nil {
-                archivedWorkerPaginationBar
-            }
-        }
-        .overlay(alignment: .bottomTrailing) {
-            floatingCreationMenu
-                .padding(12)
-        }
-        .sheet(isPresented: $showNewSessionCreation) {
-            NewSessionCreationSheet(fixedKind: .assistantChat)
-        }
-    }
-
-    private var workOutlineList: some View {
-        let unreadSummary = WorkRailUnreadSummary(
-            sessions: sessionIndexStore.rows.map(\.session)
-        )
-        let tasksByWorkID = outlineTasksByWorkID
-        let archivedRowsByWorkID = outlineArchivedRowsByWorkID
-        let processingWorkIDs = ConsoleWorkActivityPolicy.processingWorkIDs(
-            tasks: entityClient.tasks,
-            sessions: backendClient.sessions
-        )
-
-        return ScrollView {
-            LazyVStack(alignment: .leading, spacing: 8) {
-                DisclosureGroup(isExpanded: outlineAssistantExpandedBinding) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        if assistantSessionRows.isEmpty {
-                            outlineGroupEmptyRow(L10n("No Assistant Sessions"))
-                        } else {
-                            ForEach(assistantSessionRows) { row in
-                                sessionRow(row)
-                                    .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                                    .background(outlineChildSelectionBackground(
-                                        selectionController.selectedSessionID == row.session.id
-                                    ))
-                            }
-                        }
-                    }
-                } label: {
-                    outlineChatHeader(
-                        hasUnread: unreadSummary.hasUnreadAssistantSessions
-                    )
-                }
-                .disclosureGroupStyle(ConsoleWorkOutlineDisclosureStyle())
-                .consoleWorkOutlineGroupCard()
-
-                ForEach(entityClient.works) { work in
-                    let tasks = tasksByWorkID[work.id] ?? []
-
-                    DisclosureGroup(isExpanded: outlineWorkExpandedBinding(work.id)) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            if isShowingWorkerArchive {
-                                let archivedTasks = archivedTasks(for: work.id)
-                                let taskIDs = Set(archivedTasks.map(\.id))
-                                let rows = (archivedRowsByWorkID[work.id] ?? []).filter {
-                                    !taskIDs.contains($0.session.taskId ?? "")
-                                }
-                                ForEach(archivedTasks) { task in
-                                    taskRow(task)
-                                        .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                                        .background(outlineChildSelectionBackground(selectedTaskId == task.id))
-                                }
-                                if rows.isEmpty && archivedTasks.isEmpty {
-                                    outlineGroupEmptyRow(L10n("No Archived Sessions"))
-                                } else {
-                                    ForEach(rows) { row in
-                                        sessionRow(row)
-                                            .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                                            .background(outlineChildSelectionBackground(
-                                                selectionController.selectedSessionID == row.session.id
-                                            ))
-                                    }
-                                }
-                            } else {
-                                ForEach(tasks) { task in
-                                    taskRow(task)
-                                        .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                                        .background(outlineChildSelectionBackground(
-                                            selectedTaskId == task.id
-                                        ))
-                                }
-                            }
-                        }
-                    } label: {
-                        outlineWorkHeader(
-                            work,
-                            hasUnread: unreadSummary.workIDs.contains(work.id),
-                            isWorking: processingWorkIDs.contains(work.id)
-                        )
-                            .contextMenu {
-                                workContextMenuContent(for: work)
-                            }
-                    }
-                    .disclosureGroupStyle(ConsoleWorkOutlineDisclosureStyle())
-                    .consoleWorkOutlineGroupCard()
-                }
-            }
-            .padding(.horizontal, ConsoleWorkOutlineMetrics.groupHorizontalInset)
-            .padding(.vertical, 4)
-            .background(ConsoleOverlayScroller())
-        }
-        .scrollIndicators(.automatic)
-    }
-
-    private func outlineChatHeader(hasUnread: Bool) -> some View {
-        let isExpanded = !outlineExpansionPreferences.isAssistantCollapsed || !searchText.isEmpty
-        return HoverRevealHeaderAction(
-            accessibilityLabel: L10n("New Assistant Session"),
-            action: { showNewSessionCreation = true }
-        ) {
-            Button {
-                if searchText.isEmpty {
-                    withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation) {
-                        outlineExpansionPreferences.toggleAssistant()
-                    }
-                }
-            } label: {
-                HStack(spacing: 7) {
-                    ChatGroupIcon()
-                    Text(L10n("Chat"))
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(selectedWorkId == nil ? Color.primary : Color.secondary)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                    if hasUnread {
-                        Circle()
-                            .fill(Color.red)
-                            .frame(width: 8, height: 8)
-                            .accessibilityLabel(L10n("Unread Session"))
-                    }
-                }
-                .padding(.vertical, 3)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(L10n("Chat"))
-            .accessibilityValue(isExpanded ? L10n("Expanded group") : L10n("Collapsed group"))
-        }
-    }
-
-    private func outlineGroupEmptyRow(_ title: String) -> some View {
-        Text(title)
-            .font(.system(size: 11))
-            .foregroundStyle(.secondary)
-            .padding(.leading, ConsoleWorkOutlineMetrics.childIndent + 24)
-            .padding(.vertical, 4)
-    }
-
-    private func outlineChildSelectionBackground(_ isSelected: Bool) -> some View {
-        RoundedRectangle(cornerRadius: 5, style: .continuous)
-            .fill(isSelected ? Color.accentColor.opacity(0.09) : Color.clear)
-            .padding(.horizontal, 8)
-    }
-
-    private func outlineWorkIsExpanded(_ workID: String) -> Bool {
-        !outlineExpansionPreferences.collapsedWorkIDs.contains(workID)
-            || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private var outlineAssistantExpandedBinding: Binding<Bool> {
-        Binding(
-            get: { !outlineExpansionPreferences.isAssistantCollapsed || !searchText.isEmpty },
-            set: { isExpanded in
-                guard searchText.isEmpty else { return }
-                outlineExpansionPreferences.setAssistantExpanded(isExpanded)
-            }
+    var workRail: some View {
+        ConsoleWorkRail(
+            works: entityClient.works,
+            sessions: sessionIndexStore.rows.map(\.session),
+            selectedWorkId: selectedWorkId,
+            selectAssistantSpace: selectAssistantSpace,
+            selectWorkSpace: selectWorkSpace,
+            editWork: { workPendingEdit = $0 },
+            deleteWork: { workPendingDeletion = $0 }
         )
     }
 
-    private func outlineWorkExpandedBinding(_ workID: String) -> Binding<Bool> {
-        Binding(
-            get: { outlineWorkIsExpanded(workID) },
-            set: { isExpanded in
-                guard searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                    return
-                }
-                outlineExpansionPreferences.setWorkExpanded(isExpanded, workID: workID)
-            }
-        )
-    }
 
-    private func outlineWorkHeader(
-        _ work: Work,
-        hasUnread: Bool,
-        isWorking: Bool
-    ) -> some View {
-        let isExpanded = outlineWorkIsExpanded(work.id)
-        let workChat = workChatSession(for: work.id)
-        return ConsoleWorkOutlineHeader(
-            work: work,
-            isExpanded: isExpanded,
-            isSelected: selectedWorkId == work.id,
-            isWorking: isWorking,
-            hasUnread: hasUnread,
-            isChatSelected: selectionController.selectedSessionID == workChat?.id,
-            isChatRunning: workChat?.executionTaskStatus == .running,
-            hasUnreadChat: workChat.map(isSessionUnread) ?? false,
-            toggleExpanded: {
-                withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation) {
-                    outlineExpansionPreferences.toggleWork(workID: work.id)
-                }
-            },
-            openChat: {
-                guard let workChat else { return }
-                openWorkChat(for: work, session: workChat)
-            },
-            createTask: { presentTaskCreation(for: work.id) }
-        )
-    }
 
-    @ViewBuilder
-    private func workContextMenuContent(for work: Work) -> some View {
-        Button(L10n("编辑"), systemImage: "square.and.pencil") {
-            workPendingEdit = work
-        }
-        Divider()
-        Button(L10n("删除"), systemImage: "trash", role: .destructive) {
-            workPendingDeletion = work
-        }
-    }
 
-    private var outlineTasksByWorkID: [String: [CorptieTask]] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let activeTasks = entityClient.tasks.filter { $0.lifecycleState != "done" && $0.archived != true }
-        let grouped = Dictionary(grouping: activeTasks, by: \.workId)
-        return grouped.mapValues { tasks in
-            tasks
-                .filter { task in
-                    query.isEmpty
-                        || task.title.localizedCaseInsensitiveContains(query)
-                        || task.description.localizedCaseInsensitiveContains(query)
-                }
-                .sorted { lhs, rhs in
-                    if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
-                    return lhs.id < rhs.id
-                }
-        }
-    }
-
-    private var outlineArchivedRowsByWorkID: [String: [SessionRowModel]] {
-        let taskWorkIDs = Dictionary(uniqueKeysWithValues: entityClient.tasks.map { ($0.id, $0.workId) })
-        return Dictionary(
-            grouping: searchFilteredRows.filter { $0.session.resolvedSessionKind == .worker },
-            by: { row in
-                row.session.workId
-                    ?? row.session.taskId.flatMap { taskWorkIDs[$0] }
-                    ?? ""
-            }
-        )
-    }
-
-    private var archivedWorkerPaginationBar: some View {
-        HStack(spacing: 7) {
-            if backendClient.isLoadingMoreArchivedSessions {
-                ProgressView().controlSize(.small)
-                Text(L10n("Loading more…"))
-            } else if backendClient.archivedSessionsLoadError != nil {
-                Text(L10n("More sessions could not be loaded."))
-                Spacer()
-                Button(L10n("Retry")) {
-                    Task {
-                        if backendClient.archivedSessionsHasMore {
-                            await backendClient.loadMoreArchivedSessions()
-                        } else {
-                            await backendClient.refreshArchivedSessions(sessionKind: .worker)
-                        }
-                    }
-                }
-            } else {
-                Text(L10n("More archived sessions"))
-                Spacer()
-                Button(L10n("Load More")) {
-                    Task { await backendClient.loadMoreArchivedSessions() }
-                }
-            }
-        }
-        .font(.system(size: 10, weight: .medium))
-        .foregroundStyle(.secondary)
-        .padding(8)
-    }
-
-    private var selectedWork: Work? {
-        guard let selectedWorkId else { return nil }
-        return entityClient.works.first { $0.id == selectedWorkId }
-    }
-
-    private var selectedTask: CorptieTask? {
-        guard let selectedTaskId else { return nil }
-        return entityClient.tasks.first { $0.id == selectedTaskId }
-    }
-
-    private var assistantSessionRows: [SessionRowModel] {
-        let rows = searchFilteredRows.filter { $0.session.resolvedSessionKind == .assistantChat }
-        // Stable partition: keep the built-in product help Chat easy to find.
-        return rows.filter { $0.session.agentId == "assistant" }
-            + rows.filter { $0.session.agentId != "assistant" }
-    }
-
-    private var workChatRows: [SessionRowModel] {
-        guard let selectedWorkId else { return [] }
-        return searchFilteredRows.filter {
-            $0.session.resolvedSessionKind == .workChat
-                && $0.session.workId == selectedWorkId
-        }
-    }
-
-    private var visibleWorkTasks: [CorptieTask] {
-        guard let selectedWorkId else { return [] }
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return entityClient.tasks
-            .filter { $0.workId == selectedWorkId && $0.lifecycleState != "done" && $0.archived != true }
-            .filter { task in
-                query.isEmpty
-                    || task.title.localizedCaseInsensitiveContains(query)
-                    || task.description.localizedCaseInsensitiveContains(query)
-            }
-            .sorted { lhs, rhs in
-                if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
-                return lhs.id < rhs.id
-            }
-    }
-
-    private var assistantSessionList: some View {
-        List {
-            if assistantSessionRows.isEmpty {
-                Text(L10n("No Assistant Sessions"))
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(assistantSessionRows) { row in
-                    sessionRow(row)
-                        .background(ConsoleOverlayScroller())
-                }
-            }
-        }
-        .listStyle(.sidebar)
-        .scrollContentBackground(.hidden)
-    }
-
-    @ViewBuilder
-    private func workTaskList(_ work: Work) -> some View {
-        if isShowingWorkerArchive {
-            archivedWorkerSessionList(work)
-        } else {
-            activeWorkTaskList(work)
-        }
-    }
-
-    private func archivedTasks(for workID: String) -> [CorptieTask] {
-        entityClient.tasks.filter {
-            $0.workId == workID && $0.archived == true
-                && (searchText.isEmpty || $0.title.localizedCaseInsensitiveContains(searchText))
-        }
-    }
-
-    private func archivedWorkerSessionList(_ work: Work) -> some View {
-        let archivedTasks = archivedTasks(for: work.id)
-        let taskIDs = Set(archivedTasks.map(\.id))
-        let rows = searchFilteredRows.filter { row in
-            guard row.session.resolvedSessionKind == .worker else { return false }
-            guard !taskIDs.contains(row.session.taskId ?? "") else { return false }
-            if row.session.workId == work.id { return true }
-            guard let taskId = row.session.taskId else { return false }
-            return entityClient.tasks.first(where: { $0.id == taskId })?.workId == work.id
-        }
-        return List {
-            ForEach(archivedTasks) { task in
-                taskRow(task)
-                    .background(ConsoleOverlayScroller())
-            }
-            if rows.isEmpty && archivedTasks.isEmpty {
-                Text(L10n("No Archived Sessions"))
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(rows) { row in
-                    sessionRow(row)
-                        .background(ConsoleOverlayScroller())
-                }
-            }
-        }
-        .listStyle(.sidebar)
-        .scrollContentBackground(.hidden)
-    }
-
-    private func activeWorkTaskList(_ work: Work) -> some View {
-        List {
-            Section {
-                if let row = workChatRows.first {
-                    workChatRow(row)
-                } else {
-                    Label(L10n("Start Work Chat"), systemImage: "scope")
-                        .foregroundStyle(.secondary)
-                }
-            } header: {
-                Text(L10n("Work Chat"))
-                    .background(ConsoleOverlayScroller())
-            }
-
-            Section {
-                ForEach(visibleWorkTasks) { task in
-                    taskRow(task)
-                }
-            } header: {
-                Text(L10n("Tasks"))
-            }
-        }
-        .listStyle(.sidebar)
-        .scrollContentBackground(.hidden)
-    }
-
-    @ViewBuilder
-    private func workChatRow(_ row: SessionRowModel, ownsContextMenu: Bool = true) -> some View {
-        let session = row.session
-        let isSelected = selectionController.selectedSessionID == session.id
-        let rowView = Button {
-            selectedTaskId = nil
-            selectSessionAfterHighlight(session)
-        } label: {
-            HStack(spacing: 9) {
-                Circle()
-                    .fill(session.executionTaskStatus.color)
-                    .frame(width: 7, height: 7)
-                    .accessibilityLabel(session.executionTaskStatus.label)
-                Text(row.listTitle)
-                    .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                if isSessionUnread(session) {
-                    Circle()
-                        .fill(Color.red)
-                        .frame(width: 8, height: 8)
-                        .accessibilityLabel(L10n("Unread Session"))
-                        .help(L10n("Unread Session"))
-                }
-            }
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .listRowBackground(
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .fill(isSelected ? Color.accentColor.opacity(0.09) : Color.clear)
-                .padding(.horizontal, 8)
-        )
-
-        if ownsContextMenu {
-            rowView.contextMenu {
-                SessionContextMenuContent(
-                    session: session,
-                    isRenaming: Binding(
-                        get: { sessionPendingRename?.id == session.id },
-                        set: { sessionPendingRename = $0 ? session : nil }
-                    )
-                )
-            }
-        } else {
-            rowView
-        }
-    }
-
-    @ViewBuilder
-    private func taskRow(_ task: CorptieTask, ownsContextMenu: Bool = true) -> some View {
-        let session = workerSession(for: task)
-            ?? backendClient.archivedSessions.first { $0.taskId == task.id }
-        let sessionActivity = CorptieTaskBoundSessionActivity.resolve(
-            task: task,
-            sessions: backendClient.sessions
-        )
-        let rowView = Button {
-            openTask(task, session: session)
-        } label: {
-            HStack(spacing: 9) {
-                TaskActivityIndicator(activity: sessionActivity, lifecycleState: task.lifecycleState,
-                    label: L10nFormat("Session: %@", sessionActivity.label))
-                Text(task.title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(1)
-                if task.hasPendingScheduledWake == true {
-                    ConsoleScheduledWakeIcon()
-                }
-                Spacer(minLength: 0)
-                if task.deletionStatus == "deleting" {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .accessibilityLabel(L10n("后台处理中"))
-                }
-                if let session, isSessionUnread(session) {
-                    Circle()
-                        .fill(Color.red)
-                        .frame(width: 8, height: 8)
-                        .accessibilityLabel(L10n("Unread Session"))
-                        .help(L10n("Unread Session"))
-                }
-            }
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(task.deletionStatus == "deleting")
-        .listRowBackground(
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .fill(selectedTaskId == task.id ? Color.accentColor.opacity(0.09) : Color.clear)
-                .padding(.horizontal, 8)
-        )
-
-        if ownsContextMenu {
-            rowView.contextMenu {
-                taskContextMenuContent(for: task, session: session)
-            }
-        } else {
-            rowView
-        }
-    }
-
-    @ViewBuilder
-    private func taskContextMenuContent(
-        for task: CorptieTask,
-        session: TaskSession?
-    ) -> some View {
-        TaskFixedDisplayMenuItem(task: task)
-        Divider()
-        Button(L10n("Rename"), systemImage: "pencil") {
-            taskPendingRename = task
-        }
-        .disabled(task.deletionStatus == "deleting")
-        Button(L10n("编辑"), systemImage: "square.and.pencil") {
-            taskPendingEdit = task
-        }
-        .disabled(task.deletionStatus == "deleting")
-        Button(L10n("Restart Task"), systemImage: "arrow.clockwise") {
-            restartTask(task)
-        }
-        .disabled(session?.actions?.restart?.available != true
-            || pendingTaskRestartIds.contains(task.id)
-            || task.deletionStatus == "deleting")
-        Button(task.archived == true ? L10n("恢复 Task") : L10n("归档 Task"), systemImage: "archivebox") {
-            Task { await setTaskArchived(task.archived != true, task: task) }
-        }
-        .disabled(task.deletionStatus == "deleting")
-        Divider()
-        Button(L10n("删除"), systemImage: "trash", role: .destructive) {
-            Task { await prepareTaskDeletion(task) }
-        }
-        .disabled(pendingTaskDeletionIds.contains(task.id) || task.deletionStatus == "deleting")
-    }
-
-    private func setTaskArchived(_ archived: Bool, task: CorptieTask) async {
-        guard await entityClient.setTaskArchived(archived, taskId: task.id) != nil else {
-            taskArchiveError = entityClient.errorMessage ?? L10n("归档失败")
-            return
-        }
-        if selectedTaskId == task.id {
-            selectedTaskId = nil
-            backendClient.closeDetail()
-        }
-        await backendClient.refreshArchivedSessions(sessionKind: .worker)
-    }
-
-    private func restartTask(_ task: CorptieTask) {
-        guard !pendingTaskRestartIds.contains(task.id) else { return }
-        pendingTaskRestartIds.insert(task.id)
-        Task {
-            defer { pendingTaskRestartIds.remove(task.id) }
-            guard await entityClient.restartCorptieTask(taskId: task.id) else {
-                taskRestartError = entityClient.errorMessage ?? L10n("Could not restart Task.")
-                return
-            }
-        }
-    }
-
-    private func prepareTaskChat(_ task: CorptieTask) {
-        guard !pendingTaskChatIds.contains(task.id) else { return }
-        guard let agentId = task.mainAgentId,
-              let providerId = backendClient.defaultSessionProviderId else {
-            taskRestartError = L10n("无法准备聊天：请检查 Task 的 Agent 和默认 Provider 配置。")
-            return
-        }
-        pendingTaskChatIds.insert(task.id)
-        Task {
-            defer { pendingTaskChatIds.remove(task.id) }
-            let result = await entityClient.createSession(
-                taskId: task.id, agentId: agentId, providerId: providerId,
-                title: task.title, dispatchInitialTurn: false
-            )
-            guard let session = result.session else {
-                taskRestartError = result.error?.message ?? L10n("无法准备聊天，请重试。")
-                return
-            }
-            backendClient.acceptCreatedSession(session, selectImmediately: false)
-            // A slow recovery must not steal selection after the user moves on.
-            guard selectedTaskId == task.id, selectedCategory == .worker else { return }
-            selectSessionAfterHighlight(session, focusComposer: true)
-        }
-    }
-
-    private func openTask(_ task: CorptieTask, session: TaskSession?) {
-        cardSelectionExplicitlyCleared = false
-        selectedWorkId = task.workId
-        selectedCategory = .worker
-        selectedTaskId = task.id
-        switch ConsoleTaskOpenDecision.resolve(task: task, session: session) {
-        case .selectSession:
-            guard let session else { return }
-            selectedCategory = .worker
-            selectSessionAfterHighlight(session, focusComposer: true)
-        case .showWithoutSession:
-            backendClient.closeDetail()
-        }
-    }
-
-    private func deleteWork(_ work: Work) async {
-        guard await entityClient.deleteWork(workId: work.id) else {
-            workDeletionError = entityClient.errorMessage ?? L10n("Unable to delete Work.")
-            return
-        }
-        outlineExpansionPreferences.removeWork(work.id)
-        if selectedWorkId == work.id {
-            selectedWorkId = entityClient.works.first?.id
-            selectedTaskId = nil
-            selectDefaultContentForCurrentSpace()
-        }
-    }
-
-    private func prepareTaskDeletion(_ task: CorptieTask) async {
-        guard !pendingTaskDeletionIds.contains(task.id) else { return }
-        pendingTaskDeletionIds.insert(task.id)
-        defer { pendingTaskDeletionIds.remove(task.id) }
-        guard let plan = await entityClient.inspectCorptieTaskDeletion(taskId: task.id) else {
-            taskDeletionError = entityClient.errorMessage ?? L10n("无法检查 CorptieTask 的关联资源。")
-            return
-        }
-        taskDeletionPresentation = CorptieTaskDeletionPresentation(task: task, plan: plan)
-    }
-
-    private func deleteTask(
-        _ task: CorptieTask,
-        force: Bool,
-        confirmedBranchName: String?,
-        deleteWorktree: Bool,
-        artifactDisposition: CorptieTaskArtifactDisposition
-    ) {
-        guard !pendingTaskDeletionIds.contains(task.id) else { return }
-        taskDeletionPresentation = nil
-        BackgroundTaskCenter.shared.start(
-            id: "task.deletion.\(task.id)",
-            title: L10nFormat("删除 CorptieTask：%@", task.title)
-        ) {
-            pendingTaskDeletionIds.insert(task.id)
-            let deleted = await entityClient.deleteCorptieTask(
-                taskId: task.id,
-                force: force,
-                confirmedBranchName: confirmedBranchName,
-                deleteWorktree: deleteWorktree,
-                artifactDisposition: artifactDisposition
-            )
-            pendingTaskDeletionIds.remove(task.id)
-            if deleted {
-                if selectedTaskId == task.id {
-                    selectedTaskId = nil
-                    selectDefaultContentForCurrentSpace()
-                }
-                return .success(L10nFormat("CorptieTask“%@”已删除。", task.title))
-            }
-            return .failure(entityClient.errorMessage ?? L10n("删除失败；资源状态已保留，可修复后安全重试。"))
-        }
-    }
-
-    private func workerSession(for task: CorptieTask) -> TaskSession? {
-        ConsoleTaskSelectionPolicy.session(for: task, in: backendClient.sessions)
-    }
-
-    private func restoreConsoleSpaceIfNeeded() {
+    func restoreConsoleSpaceIfNeeded() {
         guard sidebarState.isSelected, router.pendingSessionId == nil else { return }
         if let session = backendClient.selectedSession {
             synchronizeConsoleSelection(with: session)
@@ -1563,14 +391,14 @@ struct UnifiedConsoleView: View {
         selectDefaultContentForCurrentSpace()
     }
 
-    private func selectAssistantSpace() {
+    func selectAssistantSpace() {
         selectedWorkId = nil
         selectedTaskId = nil
         selectedCategory = .assistant
         selectDefaultContentForCurrentSpace()
     }
 
-    private func selectWorkSpace(_ workId: String) {
+    func selectWorkSpace(_ workId: String) {
         guard selectedWorkId != workId else { return }
         selectedWorkId = workId
         selectedTaskId = nil
@@ -1578,7 +406,7 @@ struct UnifiedConsoleView: View {
         selectDefaultContentForCurrentSpace()
     }
 
-    private func workChatSession(for workId: String) -> TaskSession? {
+    func workChatSession(for workId: String) -> TaskSession? {
         let indexedSession = sessionIndexStore.rows.lazy
             .map(\.session)
             .first {
@@ -1593,14 +421,14 @@ struct UnifiedConsoleView: View {
         }
     }
 
-    private func openWorkChat(for work: Work, session: TaskSession) {
+    func openWorkChat(for work: Work, session: TaskSession) {
         selectedWorkId = work.id
         selectedTaskId = nil
         selectedCategory = .work
         selectSessionAfterHighlight(session)
     }
 
-    private func selectDefaultContentForCurrentSpace() {
+    func selectDefaultContentForCurrentSpace() {
         if selectedWorkId == nil {
             if let session = assistantSessionRows.first?.session {
                 selectSessionAfterHighlight(session)
@@ -1624,7 +452,7 @@ struct UnifiedConsoleView: View {
         }
     }
 
-    private func restoreConsoleContentIfNeeded() {
+    func restoreConsoleContentIfNeeded() {
         guard sidebarState.isSelected, router.pendingSessionId == nil else { return }
         // A committed Session selection wins over stale page-local Task state.
         // Only attach a newly created Session when no Session is selected.
@@ -1657,14 +485,14 @@ struct UnifiedConsoleView: View {
         selectDefaultContentForCurrentSpace()
     }
 
-    private func synchronizeConsoleSelection(with session: TaskSession) {
+    func synchronizeConsoleSelection(with session: TaskSession) {
         selectedCategory = SessionCategory(session: session)
         selectedWorkId = session.resolvedSessionKind == .assistantChat ? nil : session.workId
         selectedTaskId = session.resolvedSessionKind == .worker ? session.taskId : nil
         isShowingWorkerArchive = selectedCategory == .worker && isArchivedWorkerSession(session)
     }
 
-    private func activateSessions() {
+    func activateSessions() {
         // 常驻子树后 onAppear 会在启动时（selectedTab 仍为 console）就触发，
         // 只有真正处于 Console Tab 时才执行激活逻辑。
         guard sidebarState.isSelected else { return }
@@ -1681,7 +509,7 @@ struct UnifiedConsoleView: View {
         Task { await entityClient.refreshAgents() }
     }
 
-    private func deactivateSessions() {
+    func deactivateSessions() {
         detailRenderTask?.cancel()
         detailRenderTask = nil
         pendingSelectionTask?.cancel()
@@ -1691,7 +519,7 @@ struct UnifiedConsoleView: View {
         backendClient.suppressBackgroundPolling = false
     }
 
-    private func scheduleDetailRendering() {
+    func scheduleDetailRendering() {
         detailRenderTask?.cancel()
         layoutState.canRenderDetailMessages = false
         PerfStopwatch.event("会话切换.scheduleDetailRendering=false", value: 1)
@@ -1708,7 +536,7 @@ struct UnifiedConsoleView: View {
     }
 
     // 控制台「打开对话」→ 切到本 Tab 后，选中目标会话（sessions 加载完成后）。
-    private func attemptPendingSelection(_ sessions: [TaskSession]) {
+    func attemptPendingSelection(_ sessions: [TaskSession]) {
         guard let pendingId = router.pendingSessionId else { return }
         let pendingTaskId = router.pendingTaskId
         if let session = sessionMatchingPendingSelection(pendingId, in: sessions) {
@@ -1736,7 +564,7 @@ struct UnifiedConsoleView: View {
         }
     }
 
-    private func selectPendingRoute(
+    func selectPendingRoute(
         _ session: TaskSession,
         requestedSessionId: String,
         taskId: String?
@@ -1756,12 +584,12 @@ struct UnifiedConsoleView: View {
     }
 
     // 未选中时恢复上次选中的会话（跨窗口/重启记忆）。
-    private func restoreLastSelectedSession(_ sessions: [TaskSession]) {
+    func restoreLastSelectedSession(_ sessions: [TaskSession]) {
         guard backendClient.selectedSession == nil, !sessions.isEmpty else { return }
         restoreSelection(for: selectedCategory)
     }
 
-    private static func recordSessionId(_ id: String, category: SessionCategory) {
+    static func recordSessionId(_ id: String, category: SessionCategory) {
         CorptieAppEnvironment.userDefaults.set(id, forKey: lastSelectedSessionKey(for: category))
         let recentIds = SessionSelectionRecoveryPolicy.recording(
             id,
@@ -1770,17 +598,17 @@ struct UnifiedConsoleView: View {
         CorptieAppEnvironment.userDefaults.set(recentIds, forKey: recentSessionIdsKey)
     }
 
-    private static func restoredSessionId(for category: SessionCategory) -> String? {
+    static func restoredSessionId(for category: SessionCategory) -> String? {
         CorptieAppEnvironment.userDefaults.string(forKey: lastSelectedSessionKey(for: category))
     }
 
-    private static func restoredRecentSessionIds() -> [String] {
+    static func restoredRecentSessionIds() -> [String] {
         CorptieAppEnvironment.userDefaults.stringArray(forKey: recentSessionIdsKey) ?? []
     }
 
     // 恢复某个 Tab（SessionCategory）下的选择：优先保留仍有效的当前选择，
     // 否则恢复该 Tab 上次选中的会话；若已删除/不属于该 Tab，则回退到第一个。
-    private func restoreSelection(for category: SessionCategory) {
+    func restoreSelection(for category: SessionCategory) {
         let index = visibleSessionIndexStore
         let targetId = resolvedSessionSelection(
             category: category,
@@ -1802,7 +630,7 @@ struct UnifiedConsoleView: View {
         }
     }
 
-    private func selectSessionAfterHighlight(_ session: TaskSession, focusComposer: Bool = false) {
+    func selectSessionAfterHighlight(_ session: TaskSession, focusComposer: Bool = false) {
         cardSelectionExplicitlyCleared = false
         pendingSelectionTask?.cancel()
         pendingSelectionTask = nil
@@ -1822,7 +650,7 @@ struct UnifiedConsoleView: View {
         backendClient.select(session: session, focusComposer: focusComposer)
     }
 
-    private var searchToggleButton: some View {
+    var searchToggleButton: some View {
         Button {
             withAnimation(.easeInOut(duration: 0.15)) {
                 isSearching = true
@@ -1838,7 +666,7 @@ struct UnifiedConsoleView: View {
         .help(L10n("Search sessions"))
     }
 
-    private var sessionSearchBar: some View {
+    var sessionSearchBar: some View {
         HStack(spacing: 7) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 12, weight: .medium))
@@ -1867,7 +695,7 @@ struct UnifiedConsoleView: View {
         }
     }
 
-    private var sessionCategoryPicker: some View {
+    var sessionCategoryPicker: some View {
         let unreadCounts = unreadSessionCounts(in: sessionIndexStore.rows.map(\.session))
         return HStack(spacing: 2) {
             ForEach(SessionCategory.allCases) { category in
@@ -1906,7 +734,7 @@ struct UnifiedConsoleView: View {
         .help(selectedCategory.title)
     }
 
-    private func switchSessionCategory(to category: SessionCategory) {
+    func switchSessionCategory(to category: SessionCategory) {
         guard category != selectedCategory else { return }
         if category != .worker {
             isShowingWorkerArchive = false
@@ -1934,7 +762,7 @@ struct UnifiedConsoleView: View {
         backendClient.select(session: session)
     }
 
-    private var floatingCreationMenu: some View {
+    var floatingCreationMenu: some View {
         Menu {
             if selectedWork == nil {
                 Button(L10n("New Assistant Session"), systemImage: "bubble.left.and.bubble.right") {
@@ -1964,11 +792,11 @@ struct UnifiedConsoleView: View {
         .help(L10n("Create"))
     }
 
-    private func presentTaskCreation(for workID: String?) {
+    func presentTaskCreation(for workID: String?) {
         taskCreationTarget = TaskCreationTarget(workID: workID)
     }
 
-    private var taskArchiveToggle: some View {
+    var taskArchiveToggle: some View {
         Button {
             setWorkerArchiveVisible(!isShowingWorkerArchive)
         } label: {
@@ -1981,7 +809,7 @@ struct UnifiedConsoleView: View {
         .accessibilityLabel(isShowingWorkerArchive ? L10n("返回活动 Task") : L10n("查看归档 Task"))
     }
 
-    private var workerSessionFunctionBar: some View {
+    var workerSessionFunctionBar: some View {
         HStack(spacing: 7) {
             Menu {
                 ForEach(WorkerSessionGroupingMode.allCases) { mode in
@@ -2039,7 +867,7 @@ struct UnifiedConsoleView: View {
         .modifier(SessionSidebarFunctionBarGlassModifier())
     }
 
-    private func sessionRow(_ row: SessionRowModel) -> some View {
+    func sessionRow(_ row: SessionRowModel) -> some View {
         let isSelected = selectionController.selectedSessionID == row.session.id
         return ConsoleSessionRow(
             row: row,
@@ -2053,7 +881,7 @@ struct UnifiedConsoleView: View {
     }
 
     @ViewBuilder
-    private func sessionGroupHeader(_ group: SessionGroup) -> some View {
+    func sessionGroupHeader(_ group: SessionGroup) -> some View {
         let isCollapsed = collapsedGroupKeys.contains(group.key)
         Button {
             withAnimation(.easeInOut(duration: 0.15)) {
@@ -2091,16 +919,16 @@ struct UnifiedConsoleView: View {
 
     // MARK: - 会话分组
 
-    private var workerSessionScope: WorkerSessionScope {
+    var workerSessionScope: WorkerSessionScope {
         isShowingWorkerArchive ? .archived : .active
     }
 
-    private var workerGroupingMode: WorkerSessionGroupingMode {
+    var workerGroupingMode: WorkerSessionGroupingMode {
         WorkerSessionGroupingMode(rawValue: workerGroupingModeRawValue) ?? .work
     }
 
     /// 一级分类依据 provider-neutral sessionKind；Worker 会话按 Work 分组。
-    private var groupedSessions: [SessionGroup] {
+    var groupedSessions: [SessionGroup] {
         let index = visibleSessionIndexStore
         let key = SessionGroupProjectionKey(
             groupingRevision: index.groupingRevision,
@@ -2124,7 +952,7 @@ struct UnifiedConsoleView: View {
         }
     }
 
-    private func setWorkerArchiveVisible(_ isVisible: Bool) {
+    func setWorkerArchiveVisible(_ isVisible: Bool) {
         guard isShowingWorkerArchive != isVisible else { return }
         isShowingWorkerArchive = isVisible
         searchText = ""
@@ -2142,7 +970,7 @@ struct UnifiedConsoleView: View {
         }
     }
 
-    private func markOpenedSessionRead(_ session: TaskSession?) {
+    func markOpenedSessionRead(_ session: TaskSession?) {
         guard sidebarState.isSelected,
               NSApp.isActive,
               let session,
@@ -2164,18 +992,18 @@ struct UnifiedConsoleView: View {
     }
 
     // 按搜索词筛选当前 Tab 下的会话（匹配标题/摘要/Agent/工作目录）。
-    private var searchFilteredRows: [SessionRowModel] {
+    var searchFilteredRows: [SessionRowModel] {
         filteredSessionRows(visibleSessionIndexStore.rows, query: searchText)
     }
 
-    private var visibleSessionIndexStore: SessionIndexStore {
+    var visibleSessionIndexStore: SessionIndexStore {
         isShowingWorkerArchive ? archivedSessionIndexStore : sessionIndexStore
     }
 
     // MARK: - 中：对话（纸面卡片 + 常驻详情 side panel）
 
     @ViewBuilder
-    private var sessionConversation: some View {
+    var sessionConversation: some View {
         if let session = backendClient.selectedSession,
            session.hasValidProductClassification,
            SessionCategory(session: session) == selectedCategory,
@@ -2240,1358 +1068,4 @@ struct UnifiedConsoleView: View {
         }
     }
 
-}
-
-struct WorkRailUnreadSummary: Equatable {
-    let hasUnreadAssistantSessions: Bool
-    let workIDs: Set<String>
-
-    init(sessions: [TaskSession]) {
-        var hasUnreadAssistantSessions = false
-        var workIDs = Set<String>()
-
-        for session in sessions where isSessionUnread(session)
-            && session.hasValidProductClassification
-            && session.archived != true {
-            if session.resolvedSessionKind == .assistantChat {
-                hasUnreadAssistantSessions = true
-            } else if let workID = session.workId, !workID.isEmpty {
-                workIDs.insert(workID)
-            }
-        }
-
-        self.hasUnreadAssistantSessions = hasUnreadAssistantSessions
-        self.workIDs = workIDs
-    }
-}
-
-private struct FloatingCreationButtonGlassModifier: ViewModifier {
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
-            content
-                .glassEffect(.regular.interactive(), in: .circle)
-        } else {
-            content
-                .background(.ultraThinMaterial, in: Circle())
-                .overlay {
-                    Circle()
-                        .stroke(Color(nsColor: .separatorColor).opacity(0.38), lineWidth: 1)
-                }
-                .shadow(color: Color.black.opacity(0.12), radius: 7, x: 0, y: 3)
-        }
-    }
-}
-
-enum SessionReadAcknowledgementPolicy {
-    static func sequenceForOpenedSession(
-        _ session: TaskSession,
-        alreadySubmittedSequence: Int?
-    ) -> Int? {
-        guard let sequence = session.lastAgentMessageSequence,
-              sequence > (session.lastReadMessageSequence ?? 0),
-              sequence > (alreadySubmittedSequence ?? 0) else { return nil }
-        return sequence
-    }
-}
-
-private struct SessionSidebarFunctionBarGlassModifier: ViewModifier {
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
-            content
-                .glassEffect(.clear.interactive(), in: .capsule)
-        } else {
-            content
-                .background(.ultraThinMaterial, in: Capsule())
-        }
-    }
-}
-
-/// Chat Session rows intentionally share the same visual metrics as Task rows
-/// so switching between the two groups does not change navigation density. It
-/// observes the stable row model directly so content-only patches stay local.
-private struct ConsoleSessionRow: View {
-    @ObservedObject var row: SessionRowModel
-    @EnvironmentObject private var backendClient: BackendClient
-    @State private var isRenaming = false
-    let selectionRequested: (TaskSession) -> Void
-
-    var body: some View {
-        let session = row.session
-        Button {
-            selectionRequested(session)
-        } label: {
-            HStack(spacing: 9) {
-                Circle()
-                    .fill(session.executionTaskStatus.color)
-                    .frame(width: 7, height: 7)
-                    .accessibilityLabel(session.executionTaskStatus.label)
-                Text(row.listTitle)
-                    .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                if isSessionUnread(session) {
-                    Circle()
-                        .fill(Color.red)
-                        .frame(width: 8, height: 8)
-                        .accessibilityLabel(L10n("Unread Session"))
-                        .help(L10n("Unread Session"))
-                }
-            }
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .contextMenu {
-            SessionContextMenuContent(session: session, isRenaming: $isRenaming)
-        }
-        .sheet(isPresented: $isRenaming) {
-            RenameSessionSheet(session: session) { isRenaming = false }
-                .environmentObject(backendClient)
-                .presentationBackground(.clear)
-        }
-    }
-}
-
-func sessionMatchingPendingSelection(_ pendingSessionId: String?, in sessions: [TaskSession]) -> TaskSession? {
-    guard let pendingSessionId = normalizedSessionRouteIdentifier(pendingSessionId) else { return nil }
-    // Preserve the canonical Session id as the highest-priority match. Logical
-    // and Provider ids are accepted only as route aliases so a CorptieTask created
-    // before/after a workspace or Provider transition still opens the same
-    // product Session instead of failing hydration or selecting another row.
-    if let exact = sessions.first(where: { $0.id == pendingSessionId }) {
-        return exact
-    }
-    return sessions.first { session in
-        [
-            session.external?.logicalSessionId,
-            session.external?.threadId,
-            session.external?.sessionId
-        ]
-        .compactMap(normalizedSessionRouteIdentifier)
-        .contains(pendingSessionId)
-    }
-}
-
-private func normalizedSessionRouteIdentifier(_ value: String?) -> String? {
-    guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
-          !value.isEmpty else { return nil }
-    return value
-}
-
-struct SessionGroup: Identifiable {
-    let key: String
-    let title: String
-    let rows: [SessionRowModel]
-    let showsHeader: Bool
-    let rowSubtitles: [String: String]
-
-    var id: String { key }
-
-    init(
-        key: String,
-        title: String,
-        rows: [SessionRowModel],
-        showsHeader: Bool = true,
-        rowSubtitles: [String: String] = [:]
-    ) {
-        self.key = key
-        self.title = title
-        self.rows = rows
-        self.showsHeader = showsHeader
-        self.rowSubtitles = rowSubtitles
-    }
-}
-
-struct SessionCountBadge: View {
-    let count: Int
-    let fill: Color
-    let diameter: CGFloat
-
-    var body: some View {
-        Text("\(count)")
-            .font(.system(size: diameter <= 15 ? 8 : 9, weight: .bold, design: .rounded))
-            .foregroundStyle(.white)
-            .minimumScaleFactor(0.65)
-            .lineLimit(1)
-            .frame(width: diameter, height: diameter)
-            .background(fill, in: Circle())
-            .accessibilityLabel(L10nFormat("%@ Sessions", "\(count)"))
-    }
-}
-
-func isSessionUnread(_ session: TaskSession) -> Bool {
-    sessionNeedsUserAttention(
-        status: session.executionTaskStatus,
-        lastAgentMessageSequence: session.lastAgentMessageSequence ?? 0,
-        lastReadMessageSequence: session.lastReadMessageSequence ?? 0
-    )
-}
-
-func countUnreadSessions(
-    in sessions: [TaskSession],
-    category: SessionCategory
-) -> Int {
-    unreadSessionCounts(in: sessions)[category, default: 0]
-}
-
-func unreadSessionCounts(in sessions: [TaskSession]) -> [SessionCategory: Int] {
-    var counts: [SessionCategory: Int] = [:]
-    for session in sessions where isSessionUnread(session)
-        && session.hasValidProductClassification
-        && session.archived != true {
-        let category = SessionCategory(session: session)
-        counts[category, default: 0] += 1
-    }
-    return counts
-}
-
-enum WorkerSessionScope: Equatable {
-    case active
-    case archived
-}
-
-enum WorkerSessionGroupingMode: String, CaseIterable, Identifiable {
-    case work
-    case none
-
-    var id: String { rawValue }
-
-    @MainActor var title: String {
-        switch self {
-        case .work: L10n("Group by Work")
-        case .none: L10n("All")
-        }
-    }
-}
-
-enum SessionCategory: String, CaseIterable, Identifiable {
-    case worker
-    case work
-    case assistant
-
-    var id: String { rawValue }
-
-    init(session: TaskSession) {
-        switch session.resolvedSessionKind {
-        case .worker: self = .worker
-        case .workChat: self = .work
-        case .assistantChat, .legacy: self = .assistant
-        }
-    }
-
-    @MainActor var title: String {
-        switch self {
-        case .worker: L10n("Worker")
-        case .work: L10n("Work")
-        case .assistant: L10n("Assistant")
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .worker: "hammer"
-        case .work: "scope"
-        case .assistant: "sparkles"
-        }
-    }
-}
-
-/// The sidebar projection is expensive for large Session collections, but a
-/// selection change does not alter any of its inputs. Keep the immutable
-/// result behind an explicit revision key so SwiftUI may reevaluate
-/// `UnifiedConsoleView.body` without repeating filtering, sorting, and grouping.
-struct SessionGroupProjectionKey: Equatable {
-    let groupingRevision: UInt64
-    let filterRevision: UInt64
-    let entityRevision: UInt64
-    let category: SessionCategory
-    let workerScope: WorkerSessionScope
-    let workerGroupingMode: WorkerSessionGroupingMode
-    let searchText: String
-}
-
-@MainActor
-final class SessionGroupProjectionStore: ObservableObject {
-    private var cachedKey: SessionGroupProjectionKey?
-    private var cachedGroups: [SessionGroup] = []
-    private(set) var computationCount = 0
-
-    func groups(
-        for key: SessionGroupProjectionKey,
-        make: () -> [SessionGroup]
-    ) -> [SessionGroup] {
-        if cachedKey == key {
-            return cachedGroups
-        }
-        let groups = make()
-        cachedKey = key
-        cachedGroups = groups
-        computationCount += 1
-        return groups
-    }
-}
-
-@MainActor
-func makeSessionGroups(
-    rows: [SessionRowModel],
-    agents: [Agent],
-    tasks: [CorptieTask],
-    works: [Work],
-    category: SessionCategory,
-    workerScope: WorkerSessionScope = .active,
-    workerGroupingMode: WorkerSessionGroupingMode = .work
-) -> [SessionGroup] {
-    // Read each observable row exactly once. Repeated @Published property
-    // access inside lazy filter + sort comparators dominated the 2,000-row
-    // path even though the actual sort is cheap.
-    var candidates: [(row: SessionRowModel, session: TaskSession, timestamp: String)] = []
-    candidates.reserveCapacity(rows.count)
-    for row in rows {
-        let session = row.session
-        guard session.hasValidProductClassification,
-              SessionCategory(session: session) == category else { continue }
-        candidates.append((row, session, session.lastMessageAt ?? session.updatedAt))
-    }
-    candidates.sort { left, right in
-        if left.timestamp != right.timestamp { return left.timestamp > right.timestamp }
-        return left.row.id < right.row.id
-    }
-    let agentsByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.agentId, $0) })
-    let tasksByID = Dictionary(uniqueKeysWithValues: tasks.map { ($0.id, $0) })
-    let worksByID = Dictionary(uniqueKeysWithValues: works.map { ($0.id, $0) })
-    var assistantOrder: [String] = []
-    var assistantRows: [String: [SessionRowModel]] = [:]
-    var workOrder: [String] = []
-    var workTitles: [String: String] = [:]
-    var visibleWorkerRows: [SessionRowModel] = []
-    var workerRows: [String: [SessionRowModel]] = [:]
-    var workerWorkKeysByRowID: [String: String] = [:]
-    var workRows: [String: [SessionRowModel]] = [:]
-
-    func registerWork(_ workID: String?) -> String {
-        let trimmedID = workID?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedID = trimmedID.flatMap { $0.isEmpty ? nil : $0 }
-        let key = normalizedID ?? "__no_work__"
-        if workTitles[key] == nil {
-            workOrder.append(key)
-            workTitles[key] = normalizedID.flatMap { worksByID[$0]?.name }
-                ?? (normalizedID == nil ? L10n("No Work") : L10n("Unknown Work"))
-        }
-        return key
-    }
-
-    for candidate in candidates {
-        let row = candidate.row
-        let session = candidate.session
-        switch session.resolvedSessionKind {
-        case .assistantChat:
-            let key = session.agentId ?? "__assistant_unbound__"
-            if assistantRows[key] == nil { assistantOrder.append(key) }
-            assistantRows[key, default: []].append(row)
-        case .workChat:
-            let workKey = registerWork(session.workId)
-            workRows[workKey, default: []].append(row)
-        case .worker:
-            let task = session.taskId.flatMap { tasksByID[$0] }
-            let isArchived = session.archived == true
-            guard (workerScope == .archived) == isArchived else { continue }
-            visibleWorkerRows.append(row)
-            let workKey = registerWork(task?.workId ?? session.workId)
-            workerWorkKeysByRowID[row.id] = workKey
-            workerRows[workKey, default: []].append(row)
-        case .legacy:
-            continue
-        }
-    }
-
-    var groups = assistantOrder.map { key in
-        SessionGroup(
-            key: "assistant:\(key)",
-            title: agentsByID[key]?.name ?? L10n("Assistant Session"),
-            rows: assistantRows[key] ?? []
-        )
-    }
-    if category == .worker,
-       workerScope == .active,
-       workerGroupingMode == .none,
-       !visibleWorkerRows.isEmpty {
-        let rowSubtitles: [String: String] = Dictionary(
-            uniqueKeysWithValues: visibleWorkerRows.compactMap { row -> (String, String)? in
-                guard let workKey = workerWorkKeysByRowID[row.id],
-                      let workTitle = workTitles[workKey] else { return nil }
-                return (row.id, workTitle)
-            }
-        )
-        groups.append(SessionGroup(
-            key: "worker-ungrouped",
-            title: "",
-            rows: visibleWorkerRows,
-            showsHeader: false,
-            rowSubtitles: rowSubtitles
-        ))
-        return groups
-    }
-    for workKey in workOrder {
-        if category == .worker,
-           let rows = workerRows[workKey],
-           !rows.isEmpty {
-            groups.append(SessionGroup(
-                key: "worker-work:\(workKey)",
-                title: workTitles[workKey] ?? L10n("Unknown Work"),
-                rows: rows
-            ))
-        } else if category == .work,
-                  let rows = workRows[workKey],
-                  !rows.isEmpty {
-            groups.append(SessionGroup(
-                key: "work:\(workKey)",
-                title: workTitles[workKey] ?? L10n("Unknown Work"),
-                rows: rows
-            ))
-        }
-    }
-    return groups
-}
-
-// 按搜索词筛选会话（匹配标题/摘要/Agent/工作目录，大小写不敏感）。
-@MainActor
-func filteredSessionRows(_ rows: [SessionRowModel], query: String) -> [SessionRowModel] {
-    let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return rows }
-    return rows.filter { row in
-        let session = row.session
-        return [session.title, session.summary, session.agent, session.external?.cwd ?? ""]
-            .contains { $0.localizedCaseInsensitiveContains(trimmed) }
-    }
-}
-
-// 解析某个 Tab（SessionCategory）下应选中的会话 id：
-//  - 当前选择仍属于该 Tab 且存在 → 保留；
-//  - 否则若该 Tab 记住的上次选择仍存在 → 恢复；
-//  - 否则回退到该 Tab 的第一个会话；
-//  - 该 Tab 无会话时返回 nil。
-@MainActor
-func resolvedSessionSelection(
-    category: SessionCategory,
-    rows: [SessionRowModel],
-    selectedSessionId: String?,
-    lastSelectedId: String?,
-    workerScope: WorkerSessionScope = .active
-) -> String? {
-    let visibleRows = rows.filter { row in
-        guard row.session.hasValidProductClassification else { return false }
-        guard SessionCategory(session: row.session) == category else { return false }
-        guard category == .worker else { return true }
-        return (workerScope == .archived) == isArchivedWorkerSession(row.session)
-    }
-    if let selectedSessionId,
-       visibleRows.contains(where: { $0.id == selectedSessionId }) {
-        return selectedSessionId
-    }
-    guard let first = visibleRows.first else { return nil }
-    if let lastSelectedId, visibleRows.contains(where: { $0.id == lastSelectedId }) {
-        return lastSelectedId
-    }
-    return first.id
-}
-
-func isArchivedWorkerSession(_ session: TaskSession) -> Bool {
-    session.resolvedSessionKind == .worker && session.archived == true
-}
-
-enum SessionSelectionRecoveryPolicy {
-    private static let historyLimit = 50
-
-    static func recording(_ sessionID: String, in recentSessionIDs: [String]) -> [String] {
-        var result = recentSessionIDs.filter { $0 != sessionID }
-        result.insert(sessionID, at: 0)
-        return Array(result.prefix(historyLimit))
-    }
-
-}
-
-// 会话详细信息面板：对话区右侧一条固定竖列（参考 Rudder 的 IssueDetail rail）。
-//   固定在右侧，常驻展示，无收起/展开按钮；竖向排列详情字段。
-//   Rudder 契约：rail 固定 280px，sticky 顶部，仅 <48rem 移动端才隐藏。
-struct SessionDetailPanel: View {
-    @ObservedObject private var entityClient = EntityAPIClient.shared
-    private let backendClient = BackendClient.shared
-    let session: TaskSession
-    var railWidth: CGFloat = 280
-    @State private var contextReferenceAddMode: ContextReferenceAddMode?
-    @State private var contextReferences: [SessionContextReference] = []
-    @State private var isLoadingContextReferences = false
-    @State private var providerCatalogRevision = 0
-    @State private var pendingProviderId: String?
-    @State private var showProviderSwitchConfirmation = false
-    @State private var isSwitchingProvider = false
-    @State private var providerSwitchError: String?
-    @State private var isLoadingProviderCatalog = false
-    @State private var providerCatalogLoadFailed = false
-    @State private var showsAllContextReferences = false
-
-    private var detailKind: ConversationDetailKind? {
-        ConversationDetailKind.resolve(session.resolvedSessionKind)
-    }
-
-    /// 详情竖列固定宽度（对应 Rudder IssueDetail rail 280px）。
-
-    private static let iso8601Formatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
-
-    private static let iso8601NoFractionFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter
-    }()
-
-    private static let relativeFormatter: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.unitsStyle = .short
-        return formatter
-    }()
-
-    var body: some View {
-        sessionCard(decoratesSurface: true)
-        .frame(width: railWidth)
-        .task(id: session.id) {
-            showsAllContextReferences = false
-            await loadProviderCatalogIfNeeded()
-        }
-        .onReceive(backendClient.supplementaryDataController.$selectedContextReferences) { references in
-            contextReferences = references
-        }
-        .onReceive(backendClient.supplementaryDataController.$isLoadingContextReferences) { isLoading in
-            isLoadingContextReferences = isLoading
-        }
-        .onReceive(backendClient.$agentProviders) { _ in
-            providerCatalogRevision &+= 1
-        }
-        .sheet(item: $contextReferenceAddMode) { mode in
-            ContextReferenceAddSheet(session: session, mode: mode)
-        }
-        .alert(L10n("切换 Provider？"), isPresented: $showProviderSwitchConfirmation) {
-            Button(L10n("切换")) { performProviderSwitch() }
-            Button(L10n("取消"), role: .cancel) { pendingProviderId = nil }
-        } message: {
-            Text(providerSwitchConfirmationMessage)
-        }
-    }
-
-    private func sessionCard(decoratesSurface: Bool, scrollsContent: Bool = true) -> some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Text(verbatim: "Detail")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Menu {
-                    Button("本地文件…") { chooseLocalFile() }
-                    Button("网页链接…") { contextReferenceAddMode = .webURL }
-                    Button("Work…") { contextReferenceAddMode = .work }
-                    Button("Task…") { contextReferenceAddMode = .task }
-                    Button("Agent…") { contextReferenceAddMode = .agent }
-                    Button("其他会话…") { contextReferenceAddMode = .session }
-                } label: {
-                    Image(systemName: "link.badge.plus")
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("添加引用")
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-
-            Divider()
-                .opacity(0.5)
-
-            if scrollsContent {
-                ScrollView {
-                    sessionDetailContent
-                        .background(ConsoleOverlayScroller())
-                }
-            } else {
-                sessionDetailContent
-            }
-        }
-        .frame(maxHeight: scrollsContent ? .infinity : nil)
-        .modifier(DetailRailSurfaceModifier(enabled: decoratesSurface))
-    }
-
-    private var sessionDetailContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if detailKind == .taskDetail, let taskId = session.taskId, !taskId.isEmpty {
-                SessionCorptieTaskDetailCard(
-                    taskId: taskId,
-                    decoratesSurface: false,
-                    showsHeader: false,
-                    embedsInParentScroll: true
-                )
-            }
-
-            if detailKind == .chatDetail,
-               let summary = ConversationDetailKind.nonempty(session.summary) {
-                detailSection(title: "会话摘要", systemImage: "text.alignleft") {
-                    CollapsibleDetailText(text: summary, color: .secondary)
-                }
-            }
-
-            if detailKind == .workDetail { workDetailContent }
-
-            if !contextReferences.isEmpty || isLoadingContextReferences {
-                contextReferencesSection
-            }
-
-            ScheduledSessionStrip(session: session)
-
-            if detailKind == .workDetail,
-               let work = entityClient.works.first(where: { $0.id == session.workId }) {
-                Button {
-                    TaskMemoryWindowManager.shared.show(workID: work.id, title: work.name)
-                } label: {
-                    Label("Work 记忆", systemImage: "brain")
-                        .font(.system(size: 11))
-                }
-                .buttonStyle(.plain)
-            }
-
-            SessionMemoryDiagnosticsView(session: session)
-            SessionTurnObservabilityView(sessionId: session.id)
-
-            detailSection(title: "运行环境", systemImage: "cpu") {
-                compactProviderPicker
-                if let cwd = session.external?.cwd, !cwd.isEmpty {
-                    detailFields([("工作空间", compactPath(cwd))])
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 12)
-    }
-
-    private var statusCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Label(session.executionTaskStatus.label, systemImage: "circle.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(session.executionTaskStatus.color)
-                Spacer()
-                Text(friendlyUpdatedAt)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 9)
-        .background(Color.accentColor.opacity(0.055), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    @ViewBuilder
-    private var workDetailContent: some View {
-        if let work = entityClient.works.first(where: { $0.id == session.workId }) {
-            if let description = ConversationDetailKind.nonempty(work.description) {
-                detailSection(title: "Work 概述", systemImage: "scope") {
-                    CollapsibleDetailText(text: description, color: .secondary)
-                }
-            }
-            let relevantTasks = entityClient.tasks.filter {
-                $0.workId == work.id && $0.archived != true && $0.deletionStatus == nil
-                    && $0.lifecycleState != "done"
-            }.sorted {
-                if $0.summaryNeedsIntervention != $1.summaryNeedsIntervention {
-                    return $0.summaryNeedsIntervention
-                }
-                return $0.updatedAt > $1.updatedAt
-            }
-            if !relevantTasks.isEmpty {
-                detailSection(title: "重点 Task", systemImage: "checklist") {
-                    ForEach(Array(relevantTasks.prefix(3))) { task in
-                        VStack(alignment: .leading, spacing: 4) {
-                            if let sessionID = task.currentSessionId {
-                                Button {
-                                    AppTabRouter.shared.openTaskSession(taskId: task.id, sessionId: sessionID, source: .userSelection)
-                                } label: {
-                                    Text(task.title).font(.system(size: 11, weight: .medium))
-                                }.buttonStyle(.plain)
-                            } else {
-                                Text(task.title).font(.system(size: 11, weight: .medium))
-                            }
-                            if task.userSummary?.content != nil {
-                                TaskSummaryView(task: task, compact: true)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-            }
-            ArtifactSectionView(workId: work.id, taskId: nil)
-                .id(work.id)
-        }
-    }
-
-    private var assistantSection: some View {
-        detailSection(title: "Assistant", systemImage: "person.crop.circle") {
-            HStack(alignment: .top, spacing: 9) {
-                SessionAvatarView(session: session, avatarSize: 32)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(agentDisplayName)
-                        .font(.system(size: 12, weight: .semibold))
-                    if let description = assistantAgent?.description, !description.isEmpty {
-                        CollapsibleDetailText(
-                            text: description,
-                            font: .system(size: 11),
-                            lineSpacing: 1
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    private var contextReferencesSection: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                Label(L10n("引用内容"), systemImage: "link")
-                    .detailRailSectionLabelStyle()
-                Spacer()
-                Menu {
-                    Button("本地文件…", systemImage: "doc") { chooseLocalFile() }
-                    Button("网页链接…", systemImage: "globe") { contextReferenceAddMode = .webURL }
-                    Divider()
-                    Button("Work…", systemImage: "scope") { contextReferenceAddMode = .work }
-                    Button("CorptieTask…", systemImage: "checklist") { contextReferenceAddMode = .task }
-                    Button("Agent…", systemImage: "person.2") { contextReferenceAddMode = .agent }
-                    Button("其他会话…", systemImage: "bubble.left.and.bubble.right") { contextReferenceAddMode = .session }
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 10, weight: .semibold))
-                        .frame(width: 20, height: 18)
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .help("添加上下文引用")
-            }
-
-            if isLoadingContextReferences && contextReferences.isEmpty {
-                ProgressView().controlSize(.small)
-            } else if !contextReferences.isEmpty {
-                LazyVStack(spacing: 6) {
-                    ForEach(showsAllContextReferences ? contextReferences : Array(contextReferences.prefix(2))) { reference in
-                        contextReferenceRow(reference)
-                    }
-                }
-                if contextReferences.count > 2 {
-                    Button(showsAllContextReferences ? "收起" : "展开全部（\(contextReferences.count)）") {
-                        showsAllContextReferences.toggle()
-                    }.buttonStyle(.borderless).font(.caption)
-                }
-            }
-        }
-    }
-
-    private func contextReferenceRow(_ reference: SessionContextReference) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: reference.targetType.systemImage)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(reference.enabled ? Color.accentColor : Color.secondary)
-                .frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(reference.displayName)
-                    .font(.system(size: 11, weight: .medium))
-                    .lineLimit(1)
-                Text(reference.status.contextReferenceStatusLabel)
-                    .font(.system(size: 9))
-                    .foregroundStyle(reference.status == "available" ? Color.secondary.opacity(0.65) : Color.orange)
-            }
-            Spacer(minLength: 2)
-            Toggle("", isOn: Binding(
-                get: { reference.enabled },
-                set: { enabled in Task { await backendClient.setContextReferenceEnabled(reference, enabled: enabled) } }
-            ))
-            .labelsHidden()
-            .toggleStyle(.switch)
-            .controlSize(.mini)
-            Menu {
-                if reference.targetType == .webURL {
-                    Button("刷新快照", systemImage: "arrow.clockwise") {
-                        Task { await backendClient.refreshContextReference(reference) }
-                    }
-                }
-                if reference.targetType == .localFile, let path = reference.locator {
-                    Button("在 Finder 中显示", systemImage: "folder") {
-                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
-                    }
-                } else if reference.targetType == .webURL, let locator = reference.locator, let url = URL(string: locator) {
-                    Button("打开网页", systemImage: "safari") { NSWorkspace.shared.open(url) }
-                }
-                Divider()
-                Button("移除引用", systemImage: "trash", role: .destructive) {
-                    Task { await backendClient.deleteContextReference(reference) }
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 10, weight: .semibold))
-                    .frame(width: 16, height: 18)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-        }
-        .detailRailReferenceRowStyle()
-        .opacity(reference.enabled ? 1 : 0.55)
-    }
-
-    private func chooseLocalFile() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task {
-            _ = await backendClient.addContextReference(to: session, type: .localFile, locator: url.path)
-        }
-    }
-
-    private func detailSection<Content: View>(
-        title: String,
-        systemImage: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        ConversationInspectorSection(title: title, systemImage: systemImage, content: content)
-    }
-
-    private func detailFields(_ fields: [(String, String)]) -> some View {
-        LazyVGrid(
-            columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)],
-            alignment: .leading,
-            spacing: 9
-        ) {
-            ForEach(fields, id: \.0) { label, value in
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(label)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                    Text(value)
-                        .font(.system(size: 12, weight: .medium))
-                        .textSelection(.enabled)
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-    }
-
-    private var compactProviderPicker: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 4) {
-                Menu {
-                    providerMenuItems
-                    if alternativeProviders.isEmpty {
-                        Text(isLoadingProviderCatalog ? L10n("正在加载 Provider…") : L10n("没有其他可用 Provider"))
-                        Button(L10n("重新加载 Provider")) {
-                            Task { await reloadProviderCatalog() }
-                        }
-                    }
-                } label: {
-                    Text("Provider: \(currentProviderDisplayName)")
-                        .lineLimit(1)
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .disabled(isSwitchingProvider || session.external?.providerSwitchInFlight == true)
-                .accessibilityLabel(L10n("切换 Provider"))
-                Text("· Agent: \(agentDisplayName)").lineLimit(1)
-            }
-            .font(.system(size: 10))
-            .foregroundStyle(.secondary)
-            if isSwitchingProvider || session.external?.providerSwitchInFlight == true {
-                Text(L10n("正在切换 Provider…")).font(.caption2)
-            }
-            if providerCatalogLoadFailed {
-                Text(L10n("Provider 列表加载失败，请点击菜单重试")).font(.caption2).foregroundStyle(.secondary)
-            }
-            if let providerSwitchError {
-                Text(providerSwitchError).font(.caption2).foregroundStyle(.red)
-            }
-        }
-    }
-
-    private var providerMenuItems: some View {
-        ForEach(creatableProviders) { provider in
-            Button {
-                guard !provider.matches(session.external?.provider) else { return }
-                pendingProviderId = provider.id
-                showProviderSwitchConfirmation = true
-            } label: {
-                if provider.matches(session.external?.provider) {
-                    Label(provider.displayName, systemImage: "checkmark")
-                } else {
-                    Text(provider.displayName)
-                }
-            }
-            .disabled(provider.matches(session.external?.provider))
-        }
-    }
-
-    private var providerPicker: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Provider")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.tertiary)
-            if session.external?.providerSwitchInFlight == true || isSwitchingProvider {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text(L10n("正在切换 Provider…"))
-                        .font(.system(size: 11, weight: .medium))
-                }
-            } else if isLoadingProviderCatalog && creatableProviders.isEmpty {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text(L10n("正在加载 Provider…"))
-                        .font(.system(size: 11, weight: .medium))
-                }
-            } else if alternativeProviders.isEmpty {
-                providerValueRow
-                if providerCatalogLoadFailed {
-                    Button(L10n("重新加载 Provider")) {
-                        Task { await reloadProviderCatalog() }
-                    }
-                    .buttonStyle(.link)
-                    .font(.system(size: 10))
-                } else {
-                    Text(L10n("没有其他可用 Provider"))
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                Menu {
-                    providerMenuItems
-                } label: {
-                    HStack {
-                        Text(currentProviderDisplayName)
-                            .font(.system(size: 12, weight: .medium))
-                        Spacer()
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, 8)
-                    .frame(height: 28)
-                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 7))
-                }
-                .menuStyle(.borderlessButton)
-            }
-            if let providerSwitchError {
-                Text(providerSwitchError)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.red)
-            }
-        }
-        .padding(.bottom, 4)
-    }
-
-    private var creatableProviders: [AgentProviderDescriptor] {
-        _ = providerCatalogRevision
-        return backendClient.agentProviders.filter { $0.supports("session.create") }
-    }
-
-    private var alternativeProviders: [AgentProviderDescriptor] {
-        _ = providerCatalogRevision
-        return backendClient.agentProviders.sessionProviderAlternatives(to: session.external?.provider)
-    }
-
-    private var providerValueRow: some View {
-        HStack {
-            Text(currentProviderDisplayName)
-                .font(.system(size: 12, weight: .medium))
-            Spacer()
-        }
-        .padding(.horizontal, 8)
-        .frame(height: 28)
-        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 7))
-    }
-
-    private var currentProviderDisplayName: String {
-        guard let provider = session.external?.provider, !provider.isEmpty else { return L10n("未知") }
-        return backendClient.providerDisplayName(for: provider) ?? provider
-    }
-
-    private var pendingProviderDisplayName: String {
-        guard let pendingProviderId else { return L10n("未知") }
-        return backendClient.providerDisplayName(for: pendingProviderId) ?? pendingProviderId
-    }
-
-    private var providerSwitchConfirmationMessage: String {
-        L10nFormat("系统会为当前会话创建新的 Provider 线程。现有聊天记录和工作空间会保留，后续消息将从 %@ 切换到 %@。", currentProviderDisplayName, pendingProviderDisplayName)
-    }
-
-    private func performProviderSwitch() {
-        guard let target = pendingProviderId else { return }
-        pendingProviderId = nil
-        providerSwitchError = nil
-        isSwitchingProvider = true
-        Task {
-            let success = await backendClient.switchProvider(session: session, to: target)
-            isSwitchingProvider = false
-            if !success {
-                providerSwitchError = backendClient.lastError ?? L10n("Provider 切换失败")
-            }
-        }
-    }
-
-    private func loadProviderCatalogIfNeeded() async {
-        guard backendClient.agentProviders.isEmpty else {
-            providerCatalogLoadFailed = false
-            return
-        }
-        await reloadProviderCatalog()
-    }
-
-    private func reloadProviderCatalog() async {
-        guard !isLoadingProviderCatalog else { return }
-        isLoadingProviderCatalog = true
-        providerCatalogLoadFailed = false
-        await backendClient.loadProviders()
-        isLoadingProviderCatalog = false
-        providerCatalogLoadFailed = backendClient.agentProviders.isEmpty
-    }
-
-    private var runtimeFields: [(String, String)] {
-        _ = providerCatalogRevision
-        var fields = [("Agent", agentDisplayName)]
-        if let cwd = session.external?.cwd, !cwd.isEmpty {
-            fields.append(("工作空间", compactPath(cwd)))
-        }
-        return fields
-    }
-
-    private var agentDisplayName: String {
-        sessionAgentDisplayName(session: session, agents: entityClient.agents)
-    }
-
-    private var assistantAgent: Agent? {
-        guard let agentId = session.agentId else { return nil }
-        return entityClient.agents.first { $0.agentId == agentId }
-    }
-
-    private var friendlyUpdatedAt: String {
-        let date = Self.iso8601Formatter.date(from: session.updatedAt)
-            ?? Self.iso8601NoFractionFormatter.date(from: session.updatedAt)
-        guard let date else {
-            return session.updatedAt
-        }
-        return Self.relativeFormatter.localizedString(for: date, relativeTo: Date())
-    }
-
-    private func compactPath(_ path: String) -> String {
-        let url = URL(fileURLWithPath: path).standardizedFileURL
-        let components = url.pathComponents.filter { $0 != "/" }
-        guard components.count > 3 else { return url.path }
-        return "…/" + components.suffix(3).joined(separator: "/")
-    }
-
-}
-
-private enum ContextReferenceAddMode: String, Identifiable {
-    case webURL
-    case work
-    case task
-    case agent
-    case session
-
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .webURL: "添加网页链接"
-        case .work: "引用 Work"
-        case .task: "引用 CorptieTask"
-        case .agent: "引用 Agent"
-        case .session: "引用其他会话"
-        }
-    }
-    var referenceType: SessionContextReferenceType {
-        switch self {
-        case .webURL: .webURL
-        case .work: .work
-        case .task: .task
-        case .agent: .agent
-        case .session: .session
-        }
-    }
-}
-
-private struct ContextReferenceCandidate: Identifiable {
-    let id: String
-    let title: String
-    let subtitle: String
-    let systemImage: String
-}
-
-private struct ContextReferenceAddSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @ObservedObject private var backendClient = BackendClient.shared
-    @ObservedObject private var entityClient = EntityAPIClient.shared
-    let session: TaskSession
-    let mode: ContextReferenceAddMode
-    @State private var urlText = ""
-    @State private var searchText = ""
-    @State private var tasks: [CorptieTask] = []
-    @State private var isSubmitting = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text(mode.title).font(.system(size: 16, weight: .semibold))
-                Spacer()
-                Button("取消") { dismiss() }.buttonStyle(.plain)
-            }
-
-            if mode == .webURL {
-                Text("网页会在添加时保存正文快照；之后可以从引用菜单手动刷新。")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                TextField("https://example.com/document", text: $urlText)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { addWebURL() }
-                Spacer()
-                HStack {
-                    Spacer()
-                    Button("添加") { addWebURL() }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSubmitting)
-                }
-            } else {
-                TextField("搜索", text: $searchText)
-                    .textFieldStyle(.roundedBorder)
-                if candidates.isEmpty {
-                    ContentUnavailableView("没有可引用的对象", systemImage: mode.referenceType.systemImage)
-                } else {
-                    List(filteredCandidates) { candidate in
-                        Button {
-                            add(candidate)
-                        } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: candidate.systemImage)
-                                    .frame(width: 20)
-                                    .foregroundStyle(Color.accentColor)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(candidate.title).font(.system(size: 12, weight: .medium))
-                                    if !candidate.subtitle.isEmpty {
-                                        Text(candidate.subtitle)
-                                            .font(.system(size: 10))
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-                                    }
-                                }
-                                Spacer()
-                                Image(systemName: "plus.circle")
-                                    .foregroundStyle(.secondary)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(isSubmitting)
-                    }
-                    .listStyle(.inset)
-                }
-            }
-
-            if let error = backendClient.lastError, !error.isEmpty {
-                Text(error).font(.system(size: 10)).foregroundStyle(.red).lineLimit(2)
-            }
-            if mode == .task, let error = entityClient.tasksLoadError {
-                Text(error).font(.system(size: 10)).foregroundStyle(.red).lineLimit(3)
-            }
-        }
-        .padding(18)
-        .frame(width: 430, height: mode == .webURL ? 230 : 460)
-        .task {
-            switch mode {
-            case .work: await entityClient.refreshWorks()
-            case .task:
-                if let loaded = await entityClient.allCorptieTasks() {
-                    tasks = loaded
-                }
-            case .agent: await entityClient.refreshAgents()
-            case .session, .webURL: break
-            }
-        }
-    }
-
-    private var candidates: [ContextReferenceCandidate] {
-        switch mode {
-        case .work:
-            entityClient.works.map { .init(id: $0.id, title: $0.name, subtitle: $0.status, systemImage: "scope") }
-        case .task:
-            tasks.map { .init(id: $0.id, title: $0.title, subtitle: $0.lifecycleState, systemImage: "checklist") }
-        case .agent:
-            entityClient.agents
-                .filter { $0.agentId != session.agentId }
-                .map { .init(id: $0.agentId, title: $0.name, subtitle: $0.description, systemImage: "person.2") }
-        case .session:
-            backendClient.sessions
-                .filter { $0.id != session.id }
-                .map { .init(id: $0.id, title: $0.title, subtitle: $0.agent, systemImage: "bubble.left.and.bubble.right") }
-        case .webURL:
-            []
-        }
-    }
-
-    private var filteredCandidates: [ContextReferenceCandidate] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return candidates }
-        return candidates.filter { $0.title.localizedCaseInsensitiveContains(query) || $0.subtitle.localizedCaseInsensitiveContains(query) }
-    }
-
-    private func addWebURL() {
-        let locator = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !locator.isEmpty else { return }
-        isSubmitting = true
-        Task {
-            let added = await backendClient.addContextReference(to: session, type: .webURL, locator: locator)
-            isSubmitting = false
-            if added { dismiss() }
-        }
-    }
-
-    private func add(_ candidate: ContextReferenceCandidate) {
-        isSubmitting = true
-        Task {
-            let added = await backendClient.addContextReference(
-                to: session,
-                type: mode.referenceType,
-                targetId: candidate.id,
-                displayName: candidate.title
-            )
-            isSubmitting = false
-            if added { dismiss() }
-        }
-    }
-}
-
-private extension SessionContextReferenceType {
-    var systemImage: String {
-        switch self {
-        case .localFile: "doc"
-        case .webURL: "globe"
-        case .work: "scope"
-        case .task: "checklist"
-        case .agent: "person.2"
-        case .session: "bubble.left.and.bubble.right"
-        }
-    }
-}
-
-private extension String {
-    var contextReferenceStatusLabel: String {
-        switch self {
-        case "available": "可用"
-        case "changed": "内容已变更"
-        case "missing": "文件不存在"
-        case "unavailable": "暂不可用"
-        default: self
-        }
-    }
-}
-
-func sessionAgentDisplayName(session: TaskSession, agents: [Agent]) -> String {
-    guard let agentId = session.agentId?.trimmingCharacters(in: .whitespacesAndNewlines),
-          !agentId.isEmpty else {
-        return "未挂载"
-    }
-    return agents.first(where: { $0.agentId == agentId })?.name ?? agentId
-}
-
-private struct SessionCorptieTaskDetailCard: View {
-    @ObservedObject private var entityClient = EntityAPIClient.shared
-    let taskId: String
-    var decoratesSurface = true
-    var showsHeader = true
-    var embedsInParentScroll = false
-    @State private var task: CorptieTask?
-    @State private var isLoading = true
-
-    var body: some View {
-        Group {
-            if let task {
-                let work = entityClient.works.first { $0.id == task.workId }
-                CorptieTaskDetailView(
-                    task: task,
-                    contributorAgentIds: work?.contributorAgentIds ?? [],
-                    onRequestReload: {
-                        Task { await entityClient.refreshWorks() }
-                    },
-                    showsHeader: showsHeader,
-                    embedsInParentScroll: embedsInParentScroll
-                )
-            } else if isLoading {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ContentUnavailableView(
-                    L10n("Unable to Load CorptieTask"),
-                    systemImage: "exclamationmark.triangle",
-                    description: Text(L10n("绑定记录可能已不存在"))
-                )
-            }
-        }
-        .frame(maxHeight: embedsInParentScroll ? nil : .infinity)
-        .modifier(DetailRailSurfaceModifier(enabled: decoratesSurface))
-        .task(id: taskId) {
-            isLoading = true
-            if entityClient.works.isEmpty {
-                await entityClient.refreshWorks()
-            }
-            if entityClient.repositories.isEmpty {
-                await entityClient.refreshRepositories()
-            }
-            if let cached = entityClient.tasks.first(where: { $0.id == taskId }) {
-                task = cached
-            } else {
-                task = await entityClient.task(id: taskId)
-            }
-            isLoading = false
-        }
-        .onChange(of: entityClient.tasksRevision) { _, _ in
-            if let refreshed = entityClient.tasks.first(where: { $0.id == taskId }) {
-                task = refreshed
-            }
-        }
-    }
-}
-
-struct DetailRailSurfaceModifier: ViewModifier {
-    let enabled: Bool
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        // Decorate the same content identity when switching workspace modes.
-        content
-            // A surface is also a containment boundary: a fixed frame alone
-            // does not prevent native children or overlays drawing outside it.
-            // Keep one content identity across modes; disabled surfaces have
-            // no rounded corners, as before.
-            .clipShape(RoundedRectangle(cornerRadius: enabled ? 12 : 0, style: .continuous))
-            .background {
-                if enabled {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.regularMaterial)
-                }
-            }
-            .overlay {
-                if enabled {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(Color(nsColor: .separatorColor).opacity(0.42), lineWidth: 1)
-                }
-            }
-            .shadow(color: Color.black.opacity(enabled ? 0.055 : 0), radius: enabled ? 9 : 0, x: 0, y: enabled ? 3 : 0)
-    }
 }

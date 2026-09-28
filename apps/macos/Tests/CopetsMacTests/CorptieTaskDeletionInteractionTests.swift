@@ -5,7 +5,7 @@ import Testing
 struct CorptieTaskDeletionInteractionTests {
     @Test
     func taskCardsExposeTheSafeDeletionFlowFromAContextMenu() throws {
-        let contents = try warRoomSource()
+        let contents = try warRoomSource("WorkTasks/TaskBoardViews.swift")
 
         #expect(contents.contains(".contextMenu {"))
         #expect(!contents.contains("Button(L10n(\"Open Details\"), systemImage: \"sidebar.right\")"))
@@ -34,10 +34,10 @@ struct CorptieTaskDeletionInteractionTests {
     func productionConsoleWorkAvatarsAndTaskRowsExposeContextActions() throws {
         let source = try unifiedConsoleSource()
 
-        #expect(source.contains("private var workRail: some View"))
+        #expect(source.contains("var workRail: some View"))
         #expect(source.contains("workPendingEdit = work"))
         #expect(source.contains("workPendingDeletion = work"))
-        #expect(source.contains("private func taskRow(_ task: CorptieTask, ownsContextMenu: Bool = true) -> some View"))
+        #expect(source.contains("func taskRow(_ task: CorptieTask, ownsContextMenu: Bool = true) -> some View"))
         #expect(!source.contains("Button(L10n(\"Open Details\"), systemImage: \"sidebar.right\")"))
         #expect(source.contains("taskPendingEdit = task"))
         #expect(source.contains("Task { await prepareTaskDeletion(task) }"))
@@ -77,7 +77,7 @@ struct CorptieTaskDeletionInteractionTests {
 
     @Test
     func deletionConfirmationWarnsThatSessionsAndConversationHistoryArePermanent() throws {
-        let contents = try warRoomSource()
+        let contents = try warRoomSource("WorkTasks/TaskDeletionConfirmation.swift")
 
         #expect(contents.contains("plan.associatedSessionCount"))
         #expect(contents.contains("关联会话及完整会话历史"))
@@ -91,6 +91,7 @@ struct CorptieTaskDeletionInteractionTests {
     @Test
     func selectingASessionReusesReadyBindingStateAndProbesOnlyWhenNotReady() throws {
         let source = try backendClientSource()
+            + warRoomSource("Backend/BackendClientSelection.swift")
 
         #expect(source.contains("actions/probe-binding"))
         #expect(source.contains("selectionRequiresProviderBindingVerification"))
@@ -100,12 +101,12 @@ struct CorptieTaskDeletionInteractionTests {
         #expect(source.contains("await AppStateSyncController.shared.refreshSnapshot()"))
     }
 
-    private func warRoomSource() throws -> String {
+    private func warRoomSource(_ fileName: String = "WarRoomView.swift") throws -> String {
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Sources/CopetsMac/WarRoomView.swift")
+            .appendingPathComponent("Sources/CopetsMac/\(fileName)")
         return try String(contentsOf: source, encoding: .utf8)
     }
 
@@ -115,10 +116,9 @@ struct CorptieTaskDeletionInteractionTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        return try String(
-            contentsOf: packageRoot.appendingPathComponent("Sources/CopetsMac/UnifiedConsoleView.swift"),
-            encoding: .utf8
-        )
+        return try ["UnifiedConsoleView.swift", "Console/UnifiedConsoleOutline.swift", "Console/UnifiedConsoleWorkTaskList.swift"]
+            .map { try String(contentsOf: packageRoot.appendingPathComponent("Sources/CopetsMac/\($0)"), encoding: .utf8) }
+            .joined(separator: "\n")
     }
 
     private func entityAPIClientSource() throws -> String {
