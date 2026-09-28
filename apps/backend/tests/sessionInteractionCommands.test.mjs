@@ -32,7 +32,7 @@ function fixture() {
     emitEvent: (...args) => calls.push(["event", ...args]),
     now: () => "2026-01-01T00:00:00Z"
   });
-  return { commands, calls, service, session, setItem: (next) => { item = next; } };
+  return { commands, calls, service, session, setItem: (next) => { item = next; }, getItem: () => item };
 }
 
 test("unavailable provider runs are durably cancelled before publishing interruption", async () => {
@@ -57,6 +57,24 @@ test("cancellable user input transitions through dispatching to cancelled", asyn
   await f.commands.respondUnifiedSessionUserInput("public", { itemId: "question", action: "cancel" });
   assert.deepEqual(f.calls.filter(([name]) => name === "item"), [["item", "dispatching"], ["item", "cancelled"]]);
   assert.equal(f.calls.at(-1)[1], "SessionUserInputResponded");
+});
+
+test("desktop input retains selected options and typed answers on the original card", async () => {
+  const f = fixture();
+  const userInput = { schemaVersion: 1, isBlocking: true, questions: [
+    { id: "route", question: "Choose route", isSecret: false, isOther: false,
+      options: [{ label: "A", description: "Fast" }] },
+    { id: "token", question: "Token", isSecret: true, isOther: false, options: null }
+  ] };
+  f.setItem({ id: "question", type: "userInput", status: "pending", bindingId: "binding",
+    userInput, rawMetadataJSON: JSON.stringify({ userInput }) });
+  await f.commands.respondUnifiedSessionUserInput("public", {
+    itemId: "question", answers: { route: ["A"], token: ["secret-value"] }
+  });
+  assert.equal(f.getItem().status, "submitted");
+  assert.deepEqual(JSON.parse(f.getItem().rawMetadataJSON).userInput.selectedOptions, { route: ["A"] });
+  assert.deepEqual(JSON.parse(f.getItem().rawMetadataJSON).userInput.submittedAnswers,
+    { route: ["A"], token: ["secret-value"] });
 });
 
 test("invalid-answer failures restore pending status and release the dispatch guard", async () => {

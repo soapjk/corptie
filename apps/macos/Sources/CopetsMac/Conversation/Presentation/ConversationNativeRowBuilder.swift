@@ -184,6 +184,11 @@ struct ConversationNativeRowBuilder {
             images: images
         )
         row.forkItemID = forkItemID(for: entry)
+        if case .message(let item) = entry.kind, item.type == "userInput",
+           item.userInput?.schemaVersion == 1 {
+            row.userInput = item.userInput
+            row.userInputStatus = item.status
+        }
         return row
     }
 
@@ -256,12 +261,6 @@ struct ConversationNativeRowBuilder {
                     kind: .collaborationConfirmation(id: confirmationID, approve: false)
                 )
             ]
-        }
-
-        if item.type == "userInput", item.status == "pending",
-           item.userInput?.schemaVersion == 1 {
-            return [.init(id: "\(item.id):answer", label: "回答", isDestructive: false,
-                kind: .userInput(itemID: item.id))]
         }
 
         if nativeTimelineAllowsChoiceActions(type: item.type, status: item.status) {
@@ -367,6 +366,7 @@ struct ConversationNativeRowBuilder {
             item.executionPlan.map { "plan:\($0.revision)" } ?? "",
             item.toolExecution.map { "tool:\($0.hashValue)" } ?? "",
             item.changeSet.map { "changes:\($0.hashValue)" } ?? "",
+            item.userInput.map { "input:\($0.hashValue)" } ?? "",
             item.presentationRole ?? "",
             collaborationSignature,
             "\(text.count)",

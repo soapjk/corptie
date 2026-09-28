@@ -175,25 +175,26 @@ struct CorptieTaskDetailView: View {
     }
 
     private var detailContent: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
             if task.userSummary?.content != nil {
                 TaskSummaryView(task: task)
+                    .modifier(ConversationDetailModuleSurface())
             }
             if hasTaskDefinitionContent {
-                taskDefinitionSection
+                ConversationDetailModuleCard(title: L10n("Task 定义"), systemImage: "checklist") {
+                    taskDefinitionSection
+                }
             }
 
             if isCompleted {
-                Divider()
-                worktreeSection
+                worktreeSection.modifier(ConversationDetailModuleSurface())
             }
 
-            Divider()
-
-            taskResourcesSection
+            ArtifactSectionView(workId: task.workId, taskId: task.id)
+                .modifier(ConversationDetailModuleSurface())
+            memorySection.modifier(ConversationDetailModuleSurface())
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
     }
 
     private var detailHeader: some View {

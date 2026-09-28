@@ -344,7 +344,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
 
 
     private func usesSharedCard(_ row: AppKitChatTimelineRow) -> Bool {
-        (row.nativeStyle == .process ? useSharedProcessCards : useSharedTextCards)
+        (row.userInput != nil || (row.nativeStyle == .process ? useSharedProcessCards : useSharedTextCards))
             && MacSharedMessageTextCard.supports(row)
     }
 

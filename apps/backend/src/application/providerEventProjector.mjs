@@ -271,10 +271,30 @@ export class ProviderEventProjector {
   persistItem(sessionId, item, bindingId, delivery = null, task = null) {
     if (!item?.id) return false;
     let canonicalItem = item;
-    if (item.type === "userInput" && item.status === "pending") {
+    if (item.type === "userInput") {
       const existing = this.store.getSessionItem?.(sessionId, item.id);
-      if (existing?.bindingId === bindingId && ["dispatching", "submitted", "cancelled", "expired", "unknown"].includes(existing.status)) {
-        canonicalItem = { ...item, status: existing.status };
+      if (existing?.bindingId === bindingId) {
+        let previousAnswers;
+        let previousOptions;
+        try {
+          const previousInput = JSON.parse(existing.rawMetadataJSON)?.userInput;
+          previousAnswers = previousInput?.submittedAnswers;
+          previousOptions = previousInput?.selectedOptions;
+        }
+        catch { /* Legacy item. */ }
+        if ((previousAnswers && typeof previousAnswers === "object")
+          || (previousOptions && typeof previousOptions === "object")) {
+          let incoming = {};
+          try { incoming = JSON.parse(item.rawMetadataJSON) ?? {}; } catch { /* Native item. */ }
+          canonicalItem = { ...canonicalItem, rawMetadataJSON: JSON.stringify({ ...incoming,
+            userInput: { ...(incoming.userInput ?? existing.userInput),
+              ...(previousAnswers ? { submittedAnswers: previousAnswers } : {}),
+              ...(previousOptions ? { selectedOptions: previousOptions } : {}) } }) };
+        }
+        if (item.status === "pending"
+          && ["dispatching", "submitted", "cancelled", "expired", "unknown"].includes(existing.status)) {
+          canonicalItem = { ...canonicalItem, status: existing.status };
+        }
       }
     }
     if (item.type === "userMessage" && delivery) {

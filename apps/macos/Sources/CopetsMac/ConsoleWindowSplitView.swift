@@ -1,5 +1,21 @@
 import AppKit
+import CorptieConversation
 import SwiftUI
+
+/// A single opaque canvas replaces the sidebar-only material without adding a blur layer.
+private final class ConsoleWorkbenchCanvasView: NSView {
+    override var isOpaque: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        WorkbenchCanvasSurface.nativeColor.setFill()
+        dirtyRect.fill()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+}
 
 @MainActor
 final class ConsoleNativeSplitView: NSSplitView {
@@ -91,15 +107,7 @@ final class ConsolePaneController<Content: View>: NSViewController {
     required init?(coder: NSCoder) { fatalError() }
 
     override func loadView() {
-        if isSidebar {
-            let material = NSVisualEffectView()
-            material.material = .sidebar
-            material.blendingMode = .behindWindow
-            material.state = .followsWindowActiveState
-            view = material
-        } else {
-            view = NSView()
-        }
+        view = ConsoleWorkbenchCanvasView()
         addChild(host)
         host.view.identifier = NSUserInterfaceItemIdentifier(isSidebar ? "console.sidebar.content" : "console.detail.content")
         host.view.translatesAutoresizingMaskIntoConstraints = false
