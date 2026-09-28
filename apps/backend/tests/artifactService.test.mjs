@@ -1187,6 +1187,33 @@ test("Session context is metadata-only and provider-neutral tools expose identic
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
+test("Worker context excludes unreferenced Work artifacts without revoking Work access", async () => {
+  const f = await fixture();
+  try {
+    const unrelated = await f.service.create(managerContext(f), {
+      title: "Agent 页面与 Agent–Session 权限模型统一设计",
+      summary: "Finished design for another Task", content: "reference body"
+    });
+    const workerSession = f.store.getSession("session:worker");
+    const workChatSession = f.store.getSession("session:manager");
+    assert.ok(!f.service.indexForSession(workerSession).items.some((item) => item.artifactId === unrelated.artifactId));
+    assert.ok(f.service.indexForSession(workChatSession).items.some((item) => item.artifactId === unrelated.artifactId));
+    const sessionReference = f.service.createReference(managerContext(f), unrelated.artifactId, {
+      sessionId: "session:manager", relation: "handoff", required: false, versionPolicy: "fixed"
+    });
+    assert.ok(sessionReference.referenceId);
+    assert.equal(f.service.indexForSession(workChatSession).items.find((item) => item.artifactId === unrelated.artifactId).contextRelation,
+      "session_reference");
+
+    f.service.createReference(managerContext(f), unrelated.artifactId, {
+      taskId: "task:one", relation: "implementation_spec", required: false, versionPolicy: "fixed"
+    });
+    const referenced = f.service.indexForSession(workerSession).items.find((item) => item.artifactId === unrelated.artifactId);
+    assert.equal(referenced.contextRelation, "task_reference");
+    assert.deepEqual(referenced.relations, ["implementation_spec"]);
+  } finally { f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
 test("Worker Artifact indexes never expose another Task's private Artifact", async () => {
   const f = await fixture();
   try {
