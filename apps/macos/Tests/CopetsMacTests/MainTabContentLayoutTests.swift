@@ -210,12 +210,12 @@ struct MainTabContentLayoutTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Sources/CopetsMac/MainTabView.swift")
+            .appendingPathComponent("Sources/CopetsMac/MainWindowNavigationRail.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
 
         #expect(contents.contains(".accessibilityIdentifier(\"main-tab.\\(tab.rawValue)\")"))
         #expect(contents.contains(".accessibilityLabel(tab.title)"))
-        #expect(contents.contains(".accessibilityValue(isSelected ? \"selected\" : \"not-selected\")"))
+        #expect(contents.contains(".accessibilityValue(selection == tab ? \"selected\" : \"not-selected\")"))
     }
 
     @Test

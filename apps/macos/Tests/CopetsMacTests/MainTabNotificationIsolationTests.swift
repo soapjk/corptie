@@ -38,14 +38,24 @@ struct MainTabNotificationIsolationTests {
         let source = try mainTabSource()
         let tabSurface = try sourceSlice(
             source,
-            from: "struct MainWindowTabBarSurfaceView: View {",
-            through: "struct MainWindowTaskSurfaceView: View {"
+            from: "struct MainWindowContentView: View {",
+            through: "struct MainWindowFixedChromeView: View {"
         )
 
-        #expect(tabSurface.contains("UnderlineTabBar(selection:"))
+        #expect(tabSurface.contains("MainWindowNavigationRail(selection:"))
         #expect(!tabSurface.contains("BackgroundTaskStatusBar"))
         #expect(!tabSurface.contains("backgroundTasks.records"))
         #expect(!tabSurface.contains("Connecting to the server…"))
+    }
+
+    @Test
+    func navigationRailChangesWidthOnlyAfterDirectionalEdgeDrag() {
+        #expect(MainNavigationRailLayout.width(expanded: true) == 200)
+        #expect(MainNavigationRailLayout.width(expanded: false) == 64)
+        #expect(!MainNavigationRailLayout.expanded(after: -32, currently: true))
+        #expect(MainNavigationRailLayout.expanded(after: 32, currently: false))
+        #expect(MainNavigationRailLayout.expanded(after: -12, currently: true))
+        #expect(!MainNavigationRailLayout.expanded(after: 12, currently: false))
     }
 
     @Test
