@@ -18,7 +18,7 @@ final class ProcessCardMigrationTests: XCTestCase {
         let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 400)
         let card = MacSharedMessageTextCard(row: row, layout: layout)
         XCTAssertEqual(card.presentedMessageStatus, queued)
-        XCTAssertTrue(row.showsMessageActionBar)
+        XCTAssertTrue(row.showsMessageStatusBar)
     }
 
     func testSharedProcessCellUpdatesElapsedTextWithoutRemeasuring() {

@@ -6,7 +6,7 @@ import CorptieClientCore
 
 @MainActor
 final class AppKitChatTimelineControlTests: XCTestCase {
-    func testForkControlIsLazyAndDoesNotChangeMessageHeight() throws {
+    func testForkMovesIntoContextMenuWithoutChangingMessageHeight() throws {
         let plain = AppKitChatTimelineRow(
             id: "answer", contentRevision: 1, nativeText: "好", copyText: "好",
             nativeStyle: .agent, title: "", metadata: "", expandableTurnId: nil,
@@ -14,19 +14,29 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         )
         let cell = AppKitChatNativeTextCell(identifier: .init("fork-control"))
         cell.setContent(plain, availableWidth: 400, onToggleExpansion: { _ in })
-        XCTAssertNil(button(in: cell, identifier: "chat.timeline.fork"))
+        XCTAssertNil(menuItem(in: cell.menu, identifier: "chat.timeline.context.fork"))
+        var unavailable = plain
+        unavailable.forkUnavailableReason = "This provider does not support conversation forks."
+        unavailable.contentRevision = 2
+        cell.setContent(unavailable, availableWidth: 400, onToggleExpansion: { _ in })
+        let unavailableControl = try XCTUnwrap(menuItem(in: cell.menu, identifier: "chat.timeline.context.fork"))
+        XCTAssertFalse(unavailableControl.isEnabled)
+        XCTAssertEqual(
+            menuItem(in: cell.menu, identifier: "chat.timeline.context.fork-reason")?.title,
+            unavailable.forkUnavailableReason
+        )
         var forkable = plain
         forkable.forkItemID = "answer"
-        forkable.contentRevision = 2
+        forkable.contentRevision = 3
         cell.setContent(forkable, availableWidth: 400, onToggleExpansion: { _ in })
-        let control = try XCTUnwrap(button(in: cell, identifier: "chat.timeline.fork"))
-        XCTAssertFalse(control.isHidden)
+        let control = try XCTUnwrap(menuItem(in: cell.menu, identifier: "chat.timeline.context.fork"))
+        XCTAssertTrue(control.isEnabled)
         XCTAssertEqual(
             NativeTimelineLayoutCache.shared.layout(for: forkable, columnWidth: 400).rowHeight,
             NativeTimelineLayoutCache.shared.layout(for: plain, columnWidth: 400).rowHeight
         )
         cell.setContent(plain, availableWidth: 400, onToggleExpansion: { _ in })
-        XCTAssertTrue(control.isHidden)
+        XCTAssertNil(menuItem(in: cell.menu, identifier: "chat.timeline.context.fork"))
     }
 
     func testMessageStatusUsesExistingActionFooterWithoutChangingBodyHeight() throws {
@@ -43,12 +53,12 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             nativeStyle: .user, title: "", metadata: "", expandableTurnId: nil,
             isExpanded: false, showsHeader: false, messageStatus: queued
         )
-        XCTAssertTrue(withStatus.showsMessageActionBar)
+        XCTAssertTrue(withStatus.showsMessageStatusBar)
         XCTAssertEqual(withStatus.copyText, plain.copyText)
         XCTAssertEqual(withStatus.nativeText, plain.nativeText)
         XCTAssertEqual(
             NativeTimelineLayoutCache.shared.layout(for: withStatus, columnWidth: 400).rowHeight,
-            NativeTimelineLayoutCache.shared.layout(for: plain, columnWidth: 400).rowHeight
+            NativeTimelineLayoutCache.shared.layout(for: plain, columnWidth: 400).rowHeight + 27
         )
     }
 
@@ -209,10 +219,10 @@ final class AppKitChatTimelineControlTests: XCTestCase {
                 as? AppKitChatNativeTextCell
         )
         let disclosure = try XCTUnwrap(button(in: cell, identifier: "chat.timeline.disclosure"))
-        let copy = try XCTUnwrap(button(in: cell, identifier: "chat.timeline.copy"))
+        let copy = try XCTUnwrap(menuItem(in: cell.menu, identifier: "chat.timeline.context.copy"))
 
         disclosure.performClick(self)
-        copy.performClick(self)
+        NSApp.sendAction(try XCTUnwrap(copy.action), to: copy.target, from: copy)
 
         XCTAssertEqual(toggledTurnID, "turn-42")
         XCTAssertEqual(NSPasteboard.general.string(forType: .string), source)
@@ -279,7 +289,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             harness.coordinator.tableView(harness.tableView, viewFor: harness.tableView.tableColumns[0], row: 0)
                 as? AppKitChatNativeTextCell
         )
-        let card = try XCTUnwrap(messageCell.subviews.first)
+        let card = try XCTUnwrap(view(in: messageCell, identifier: "chat.timeline.card"))
         XCTAssertEqual(card.layer?.cornerRadius, 14)
         XCTAssertEqual(card.layer?.borderWidth, 1)
         let messageActions = try XCTUnwrap(view(in: messageCell, identifier: "chat.timeline.message-actions"))
@@ -609,7 +619,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertTrue(rawTextView.font.map { NSFontManager.shared.traits(of: $0).contains(.fixedPitchFontMask) } == true)
     }
 
-    func testOrdinaryNativeMessagePlacesHoverTimestampBesideCopyAction() throws {
+    func testOrdinaryNativeMessageMovesTimestampAndCopyIntoContextMenu() throws {
         // Keep the legacy renderer baseline while shared-card coverage lives
         // in MessageTextCardMigrationTests.
         let harness = makeHarness(followsLatest: true, useSharedTextCards: false)
@@ -617,7 +627,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             id: "ordinary-message",
             text: "Ready",
             showsHeader: false,
-            hoverTimestamp: "08/17 20:30"
+            contextTimestamp: "08/17 20:30"
         )
         harness.coordinator.apply(rows: [message])
         harness.window.contentView?.layoutSubtreeIfNeeded()
@@ -629,41 +639,36 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         cell.layoutSubtreeIfNeeded()
         let title = try XCTUnwrap(textField(in: cell, identifier: "chat.timeline.title"))
         let metadata = try XCTUnwrap(textField(in: cell, identifier: "chat.timeline.metadata"))
-        let hoverTimestamp = try XCTUnwrap(textField(in: cell, identifier: "chat.timeline.hover-timestamp"))
         let messageActions = try XCTUnwrap(view(in: cell, identifier: "chat.timeline.message-actions"))
-        let copy = try XCTUnwrap(button(in: cell, identifier: "chat.timeline.copy"))
-        messageActions.layoutSubtreeIfNeeded()
+        let timestamp = try XCTUnwrap(menuItem(in: cell.menu, identifier: "chat.timeline.context.timestamp"))
+        let copy = try XCTUnwrap(menuItem(in: cell.menu, identifier: "chat.timeline.context.copy"))
 
         XCTAssertTrue(title.isHidden)
         XCTAssertTrue(metadata.isHidden)
-        XCTAssertFalse(hoverTimestamp.isHidden)
-        XCTAssertEqual(hoverTimestamp.stringValue, "08/17 20:30")
-        XCTAssertEqual(hoverTimestamp.alphaValue, 1)
-        XCTAssertTrue(hoverTimestamp.isDescendant(of: messageActions))
-        XCTAssertTrue(copy.isDescendant(of: messageActions))
-        XCTAssertLessThanOrEqual(hoverTimestamp.frame.maxX, copy.frame.minX)
-        XCTAssertLessThanOrEqual(copy.frame.minX - hoverTimestamp.frame.maxX, 6.5)
+        XCTAssertTrue(messageActions.isHidden)
+        XCTAssertTrue(timestamp.title.contains("08/17 20:30"))
+        XCTAssertEqual(copy.title, L10n("Copy Message"))
         XCTAssertLessThan(
             harness.coordinator.tableView(harness.tableView, heightOfRow: 0),
-            65
+            40
         )
     }
 
-    func testOrdinaryMessageActionsAreOutsideCardAndExcludedFromExecutionRows() throws {
+    func testOrdinaryMessageContextMenusAreExcludedFromExecutionRows() throws {
         let harness = makeHarness(followsLatest: true, useSharedTextCards: false)
         let agent = row(
             id: "agent-message",
             text: "First line\nSecond line",
             copyText: "First line\nSecond line",
             showsHeader: false,
-            hoverTimestamp: "08/17 20:30"
+            contextTimestamp: "08/17 20:30"
         )
         let user = row(
             id: "user-message",
             text: "Question",
             nativeStyle: .user,
             showsHeader: false,
-            hoverTimestamp: "08/17 20:31"
+            contextTimestamp: "08/17 20:31"
         )
         let process = AppKitChatTimelineRow(
             id: "process",
@@ -687,31 +692,22 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitChatNativeTextCell
         )
         agentCell.layoutSubtreeIfNeeded()
-        let agentCard = try XCTUnwrap(agentCell.subviews.first)
+        let agentCard = try XCTUnwrap(view(in: agentCell, identifier: "chat.timeline.card"))
         let agentActions = try XCTUnwrap(view(in: agentCell, identifier: "chat.timeline.message-actions"))
-        let copy = try XCTUnwrap(button(in: agentCell, identifier: "chat.timeline.copy"))
-        let agentTimestamp = try XCTUnwrap(textField(in: agentCell, identifier: "chat.timeline.hover-timestamp"))
-        XCTAssertFalse(agentActions.isHidden)
-        XCTAssertEqual(agentActions.alphaValue, 0)
-        XCTAssertFalse(copy.isDescendant(of: agentCard))
-        XCTAssertTrue(agentTimestamp.isDescendant(of: agentActions))
-        XCTAssertEqual(copy.toolTip, "复制消息")
-        XCTAssertNil(button(in: agentCell, identifier: "chat.timeline.quote"))
-        XCTAssertEqual(agentActions.frame.minX, agentCard.frame.minX + 2, accuracy: 1)
+        let copy = try XCTUnwrap(menuItem(in: agentCell.menu, identifier: "chat.timeline.context.copy"))
+        XCTAssertTrue(agentActions.isHidden)
 
-        copy.performClick(nil)
+        NSApp.sendAction(try XCTUnwrap(copy.action), to: copy.target, from: copy)
         XCTAssertEqual(NSPasteboard.general.string(forType: .string), "First line\nSecond line")
 
         let userCell = try XCTUnwrap(
             harness.tableView.view(atColumn: 0, row: 1, makeIfNecessary: true) as? AppKitChatNativeTextCell
         )
         userCell.layoutSubtreeIfNeeded()
-        let userCard = try XCTUnwrap(userCell.subviews.first)
+        let userCard = try XCTUnwrap(view(in: userCell, identifier: "chat.timeline.card"))
         let userActions = try XCTUnwrap(view(in: userCell, identifier: "chat.timeline.message-actions"))
-        let userTimestamp = try XCTUnwrap(textField(in: userCell, identifier: "chat.timeline.hover-timestamp"))
-        XCTAssertFalse(userActions.isHidden)
-        XCTAssertEqual(userActions.frame.maxX, userCard.frame.maxX - 2, accuracy: 1)
-        XCTAssertTrue(userTimestamp.isDescendant(of: userActions))
+        XCTAssertTrue(userActions.isHidden)
+        XCTAssertNotNil(menuItem(in: userCell.menu, identifier: "chat.timeline.context.timestamp"))
         XCTAssertFalse(
             try XCTUnwrap(NSColor(cgColor: userCard.layer?.backgroundColor ?? CGColor.clear))
                 .isEqual(try XCTUnwrap(NSColor(cgColor: agentCard.layer?.backgroundColor ?? CGColor.clear)))
@@ -722,6 +718,83 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         )
         let processActions = try XCTUnwrap(view(in: processCell, identifier: "chat.timeline.message-actions"))
         XCTAssertTrue(processActions.isHidden)
+        XCTAssertNil(processCell.menu)
+    }
+
+    func testTimeSeparatorsAppearOnlyAfterFiveMinuteMessageGaps() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let rows = [
+            row(id: "first", messageDate: start),
+            row(id: "short-gap", messageDate: start.addingTimeInterval(299)),
+            row(id: "long-gap", messageDate: start.addingTimeInterval(599))
+        ]
+
+        let decorated = ConversationTimeSeparatorPolicy.applying(
+            to: rows, now: start.addingTimeInterval(600)
+        )
+
+        XCTAssertNil(decorated[0].timeSeparatorText)
+        XCTAssertNil(decorated[1].timeSeparatorText)
+        XCTAssertNotNil(decorated[2].timeSeparatorText)
+        XCTAssertEqual(decorated.filter { $0.timeSeparatorText != nil }.count, 1)
+        XCTAssertEqual(
+            NativeTimelineLayoutCache.shared.layout(for: decorated[2], columnWidth: 400).rowHeight,
+            NativeTimelineLayoutCache.shared.layout(for: rows[2], columnWidth: 400).rowHeight + 28
+        )
+    }
+
+    func testTimeSeparatorIncludesDateAcrossCalendarDays() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let locale = Locale(identifier: "en_US_POSIX")
+        let first = calendar.date(from: DateComponents(year: 2026, month: 9, day: 27, hour: 23, minute: 58))!
+        let second = calendar.date(from: DateComponents(year: 2026, month: 9, day: 28, hour: 0, minute: 5))!
+
+        let decorated = ConversationTimeSeparatorPolicy.applying(
+            to: [row(id: "first", messageDate: first), row(id: "second", messageDate: second)],
+            now: second.addingTimeInterval(60), calendar: calendar, locale: locale
+        )
+
+        XCTAssertTrue(decorated[1].timeSeparatorText?.contains("2026") == true)
+    }
+
+    func testPrependingHistoryRecomputesOnlyTheNewGapBoundary() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let later = row(id: "later", messageDate: start.addingTimeInterval(301))
+
+        let initial = ConversationTimeSeparatorPolicy.applying(to: [later], now: later.messageDate!)
+        let prepended = ConversationTimeSeparatorPolicy.applying(
+            to: [row(id: "earlier", messageDate: start), later],
+            now: later.messageDate!
+        )
+
+        XCTAssertNil(initial[0].timeSeparatorText)
+        XCTAssertNil(prepended[0].timeSeparatorText)
+        XCTAssertNotNil(prepended[1].timeSeparatorText)
+        XCTAssertEqual(prepended.filter { $0.timeSeparatorText != nil }.count, 1)
+        XCTAssertNotEqual(initial[0].contentRevision, prepended[1].contentRevision)
+    }
+
+    func testNativeTimelineRendersOneCenteredSeparatorAtTheGapBoundary() throws {
+        let harness = makeHarness(followsLatest: true, useSharedTextCards: false)
+        let start = Date(timeIntervalSince1970: 1_000)
+        harness.coordinator.apply(rows: [
+            row(id: "first", messageDate: start),
+            row(id: "second", messageDate: start.addingTimeInterval(301))
+        ])
+        harness.window.contentView?.layoutSubtreeIfNeeded()
+
+        let first = try XCTUnwrap(
+            harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitChatNativeTextCell
+        )
+        let second = try XCTUnwrap(
+            harness.tableView.view(atColumn: 0, row: 1, makeIfNecessary: true) as? AppKitChatNativeTextCell
+        )
+        let firstSeparator = try XCTUnwrap(textField(in: first, identifier: "chat.timeline.time-separator"))
+        let secondSeparator = try XCTUnwrap(textField(in: second, identifier: "chat.timeline.time-separator"))
+        XCTAssertTrue(firstSeparator.isHidden)
+        XCTAssertFalse(secondSeparator.isHidden)
+        XCTAssertEqual(secondSeparator.alignment, .center)
     }
 
     func testSingleColumnReservesAStableScrollerGutter() async {
@@ -1972,7 +2045,8 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         expandableTurnId: String? = nil,
         isExpanded: Bool = false,
         showsHeader: Bool = true,
-        hoverTimestamp: String = "",
+        contextTimestamp: String = "",
+        messageDate: Date? = nil,
         actions: [AppKitChatTimelineRow.Action] = []
     ) -> AppKitChatTimelineRow {
         AppKitChatTimelineRow(
@@ -1986,9 +2060,14 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             expandableTurnId: expandableTurnId,
             isExpanded: isExpanded,
             showsHeader: showsHeader,
-            hoverTimestamp: hoverTimestamp,
+            contextTimestamp: contextTimestamp,
+            messageDate: messageDate,
             actions: actions
         )
+    }
+
+    private func menuItem(in menu: NSMenu?, identifier: String) -> NSMenuItem? {
+        menu?.items.first { $0.identifier?.rawValue == identifier }
     }
 
     private func button(in view: NSView, identifier: String) -> NSButton? {

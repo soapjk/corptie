@@ -44,3 +44,63 @@ test("fork worktree is inventoried and gated before its identity is returned", a
   assert.equal(result.worktreeId, "worktree");
   assert.equal(result.reused, false);
 });
+
+test("fork workspace rolls back when post-allocation preparation fails", async () => {
+  const calls = [];
+  const { prepareConversationForkWorkspace } = createSessionForkOperations({
+    store: {
+      layout: { worktreesDirectory: "/worktrees" }, dbPath: "/state/database",
+      getLogicalSessionByLegacySessionId: () => ({
+        repositoryId: "repository:one", activeBinding: { bindingId: "binding", boundCwd: "/source" }
+      }),
+      upsertGitWorkspaceSnapshot: () => calls.push("inventory")
+    },
+    createForkWorktree: async () => ({
+      path: "/worktrees/one/fork-target",
+      rollback: async () => calls.push("rollback")
+    }),
+    createGitWorkspaceSnapshot: async path => ({
+      repository: { id: "repository:one" }, worktrees: [{ path, worktreeId: "worktree" }]
+    }),
+    ensureArtifactCommitHook: async () => { throw new Error("gate failed"); }
+  });
+
+  await assert.rejects(prepareConversationForkWorkspace({
+    session: { id: "session" }, reference: { bindingId: "binding" }
+  }, "task"), /gate failed/);
+  assert.deepEqual(calls, ["inventory", "rollback"]);
+});
+
+test("chat fork removes its allocated worktree when session creation fails", async () => {
+  const calls = [];
+  const { sessionForkService } = createSessionForkOperations({
+    store: {
+      layout: { worktreesDirectory: "/worktrees" }, dbPath: "/state/database",
+      getLogicalSessionByLegacySessionId: () => ({
+        repositoryId: "repository:one", activeBinding: { bindingId: "binding", boundCwd: "/source" }
+      }),
+      upsertGitWorkspaceSnapshot: () => calls.push("inventory")
+    },
+    createForkWorktree: async () => ({
+      path: "/worktrees/one/fork-target",
+      rollback: async () => calls.push("rollback")
+    }),
+    createGitWorkspaceSnapshot: async path => ({
+      repository: { id: "repository:one" }, worktrees: [{ path, worktreeId: "worktree" }]
+    }),
+    ensureArtifactCommitHook: async () => calls.push("gate"),
+    createSessionThroughApplication: async () => {
+      calls.push("create-session");
+      throw Object.assign(new Error("provider failed"), { code: "PROVIDER_FAILED" });
+    }
+  });
+
+  await assert.rejects(sessionForkService.createChat({
+    source: {
+      session: { id: "session", agentId: "agent", external: {} },
+      reference: { providerId: "provider", bindingId: "binding" }
+    },
+    input: { requestId: "request-123", title: "Fork" }
+  }), { code: "PROVIDER_FAILED" });
+  assert.deepEqual(calls, ["inventory", "gate", "create-session", "rollback"]);
+});

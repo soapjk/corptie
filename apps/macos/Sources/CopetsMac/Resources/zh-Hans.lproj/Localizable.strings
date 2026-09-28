@@ -1483,3 +1483,22 @@
 "连接并验证" = "连接并验证";
 
 "将发送只读 Python 检查代码，通过 SSH 运行 Git 读取仓库及 Worktree 清单。不会安装文件或绑定工作树；结果保存在本机，远端可能保留连接审计记录。" = "将发送只读 Python 检查代码，通过 SSH 运行 Git 读取仓库及 Worktree 清单。不会安装文件或绑定工作树；结果保存在本机，远端可能保留连接审计记录。";
+
+/* Conversation fork */
+"Create Task Branch" = "创建 Task 分支";
+"Create Chat Branch" = "创建 Chat 分支";
+"Create Branch" = "创建分支";
+"Branch from %@ · Turn %d" = "分叉自 %@ · 第 %d 轮";
+"This turn has no text preview." = "这一轮没有可预览的文本。";
+"Verification Criteria" = "验证标准";
+"History through this turn and the current workspace, including uncommitted changes, will be copied. No instruction will run automatically." = "将复制截至这一轮的对话和当前工作区（包括未提交修改），不会自动执行任何指令。";
+"History through this turn will be copied. No instruction will run automatically." = "将复制截至这一轮的对话，不会自动执行任何指令。";
+"Loading branch details…" = "正在读取分叉信息…";
+"Creating Task, copying workspace, and forking history…" = "正在创建 Task、复制工作区并分叉历史…";
+"Creating Chat and forking history…" = "正在创建 Chat 并分叉历史…";
+"Create a branch from this turn" = "从这一轮创建分支";
+"Work Chat does not support conversation branching." = "Work Chat 不支持消息轮次分叉。";
+"The current Provider does not support native conversation branching." = "当前 Provider 不支持原生消息轮次分叉。";
+"Wait for the current turn to finish before creating a branch." = "请等待当前轮次结束后再创建分支。";
+"Copy Message" = "复制消息";
+"Time: %@" = "时间：%@";

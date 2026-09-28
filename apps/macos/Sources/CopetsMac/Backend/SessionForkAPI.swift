@@ -14,14 +14,16 @@ struct SessionForkAPI {
     }
 
     func createSessionFork(_ selection: SessionForkSelection, requestID: String, sourceBindingID: String,
-                           title: String, description: String, acceptanceCriteria: String) async throws -> SessionForkResponse {
+                           title: String, description: String, acceptanceCriteria: String,
+                           verificationCriteria: String, priority: String) async throws -> SessionForkResponse {
         var request = URLRequest(url: baseURL.appending(path: "sessions/\(selection.sessionID)/fork"))
         request.httpMethod = "POST"
         request.timeoutInterval = 180
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "requestId": requestID, "itemId": selection.itemID, "sourceBindingId": sourceBindingID,
-            "title": title, "description": description, "acceptanceCriteria": acceptanceCriteria
+            "title": title, "description": description, "acceptanceCriteria": acceptanceCriteria,
+            "verificationCriteria": verificationCriteria, "priority": priority
         ])
         let (data, response) = try await urlSession.data(for: request)
         try validateForkResponse(data, response)

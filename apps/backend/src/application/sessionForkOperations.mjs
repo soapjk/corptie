@@ -18,13 +18,22 @@ const sessionForkService = new SessionForkService({
   createChat: async ({ source, input }) => {
     const logical = store.getLogicalSessionByLegacySessionId(source.session.id);
     const workspace = logical?.repositoryId ? await prepareConversationForkWorkspace(source, `chat:${input.requestId}`) : null;
-    const session = await createSessionThroughApplication(source.reference.providerId, {
-      title: input.title, cwd: workspace?.path ?? source.session.external?.cwd,
-      sessionKind: "assistantChat", model: source.session.external?.currentModel,
-      reasoningLevel: source.session.external?.currentReasoningLevel,
-      ...(workspace ? { runtimeWorkspaceRoots: [workspace.path] } : {})
-    }, { source: "conversation-fork", actorId: source.session.agentId,
-      sessionKind: "assistantChat", forkSource: source, forkRequestId: input.requestId });
+    let session;
+    try {
+      session = await createSessionThroughApplication(source.reference.providerId, {
+        title: input.title, cwd: workspace?.path ?? source.session.external?.cwd,
+        sessionKind: "assistantChat", model: source.session.external?.currentModel,
+        reasoningLevel: source.session.external?.currentReasoningLevel,
+        ...(workspace ? { runtimeWorkspaceRoots: [workspace.path] } : {})
+      }, { source: "conversation-fork", actorId: source.session.agentId,
+        sessionKind: "assistantChat", forkSource: source, forkRequestId: input.requestId });
+    } catch (error) {
+      if (typeof workspace?.rollback === "function") {
+        try { await workspace.rollback(); }
+        catch (cleanupError) { error.cleanupError = cleanupError.message; }
+      }
+      throw error;
+    }
     collaborationCore.bindSession({ agentId: source.session.agentId, sessionId: session.id });
     const agent = store.getAgent(source.session.agentId);
     if (agent && isPlatformAssistant(agent)) store.grantSessionCapability(session.id, "platform.manage");
@@ -42,13 +51,21 @@ async function prepareConversationForkWorkspace(source, targetId) {
   const suffix = createHash("sha256").update(targetId).digest("hex").slice(0, 24);
   const targetPath = resolve(store.layout.worktreesDirectory, logical.repositoryId.split(":").at(-1), `fork-${suffix}`);
   const created = await createForkWorktree({ sourcePath, targetPath, branchName: `fork/${suffix}` });
-  const snapshot = await createGitWorkspaceSnapshot(targetPath);
-  if (snapshot.repository.id !== logical.repositoryId) throw new Error("Fork Repository identity changed.");
-  store.upsertGitWorkspaceSnapshot(snapshot);
-  const worktree = snapshot.worktrees.find(row => resolve(row.canonicalPath || row.path) === targetPath);
-  if (!worktree) throw new Error("Fork Worktree was not inventoried.");
-  await ensureArtifactCommitHook(targetPath, { dbPath: store.dbPath });
-  return { ...created, worktreeId: worktree.worktreeId, reused: false };
+  try {
+    const snapshot = await createGitWorkspaceSnapshot(targetPath);
+    if (snapshot.repository.id !== logical.repositoryId) throw new Error("Fork Repository identity changed.");
+    store.upsertGitWorkspaceSnapshot(snapshot);
+    const worktree = snapshot.worktrees.find(row => resolve(row.canonicalPath || row.path) === targetPath);
+    if (!worktree) throw new Error("Fork Worktree was not inventoried.");
+    await ensureArtifactCommitHook(targetPath, { dbPath: store.dbPath });
+    return { ...created, worktreeId: worktree.worktreeId, reused: false };
+  } catch (error) {
+    if (typeof created.rollback === "function") {
+      try { await created.rollback(); }
+      catch (cleanupError) { error.cleanupError = cleanupError.message; }
+    }
+    throw error;
+  }
 }
   return { sessionForkService, prepareConversationForkWorkspace };
 }
