@@ -25,7 +25,7 @@ struct CodexResetNoticeTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Sources/CopetsMac/FloatingRootView.swift")
+            .appendingPathComponent("Sources/CopetsMac/Conversation/ConversationSupplementaryViews.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
         #expect(contents.contains("resetNoticePopover"))
         #expect(contents.contains("isResetNoticePresented.toggle()"))

@@ -41,7 +41,7 @@ struct SettingsWindowLayoutTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Sources/CopetsMac/CopetsMacApp.swift")
+            .appendingPathComponent("Sources/CopetsMac/Settings/SettingsView.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
 
         for route in ["general", "notifications", "memory", "proxy", "gateway", "devices", "archivedSessions"] {

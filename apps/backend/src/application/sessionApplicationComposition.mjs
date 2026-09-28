@@ -1,0 +1,201 @@
+import { SessionApplicationService } from "../agent-provider/sessionApplicationService.mjs";
+import { persistProviderSessionProjection, persistSessionModelSelection } from "./providerSessionProjection.mjs";
+import { buildWorkSessionContext, mergeWorkerSessionContexts } from "./workSessionContext.mjs";
+import { sessionResponsibilityInstructions } from "./sessionResponsibilityInstructions.mjs";
+import { conversationMessageText, normalizeConversationMessage } from "./conversationMessage.mjs";
+import { resolveMessageMentionContext } from "./messageMentionContext.mjs";
+import { buildDirectUserMessageEvidence } from "./directUserMessageEvidence.mjs";
+import { skillMcpTurnContext } from "./skillMcpTurnContext.mjs";
+import { desiredToolDomainIds, appliedToolDomainIds } from "./sessionToolBindingProjection.mjs";
+
+// Product policy wired into the common Session service. Later-created services
+// enter through narrow deferred operations to preserve startup dependency order.
+export function createSessionApplicationComposition({
+  store, agentProviderRegistry, sessionBindingRepository, toolHostService, toolMaterializationPort,
+  requiredToolDomainsForSession, assertForkDispatchAllowed, assertSessionRecoveryMessageBoundary,
+  recoverSession, requireSessionReference, workChatContextService, resolveContextReferences,
+  artifactService, memoryRecallService, mcpAssignmentRevisionForAgent,
+  ensureCollaborationAgentForSession, ensureLogicalRouteForProviderSession,
+  sessionWithLogicalWorkspace, collaborationCore, emitEvent
+}) {
+  const sessionApplicationService = new SessionApplicationService({
+    registry: agentProviderRegistry,
+    observeLifecycle: ({ type, sessionId, ...payload }) => {
+      console.info(`[session-lifecycle] ${JSON.stringify({ type, sessionId, ...payload })}`);
+      emitEvent(type, payload, { sessionId });
+    },
+    toolHostService,
+    toolMaterializationPort,
+    resolveRequiredToolDomains: requiredToolDomainsForSession,
+    resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
+    resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
+    assertMessageDispatchAllowed: (reference) => {
+      assertForkDispatchAllowed(reference.sessionId);
+      return assertSessionRecoveryMessageBoundary(reference);
+    },
+    recoverUnavailableSession: async ({ sessionId, reference, error, context }) => {
+      if (!reference.logicalSessionId || !context.idempotencyKey) {
+        const recoveryError = new Error("Automatic recovery requires a logical Session and stable message idempotency key.");
+        recoveryError.code = "SESSION_RECOVERY_IDEMPOTENCY_REQUIRED";
+        throw recoveryError;
+      }
+      const recoveryKind = context.recoveryKind === "restart" ? "restart" : "message";
+      const attempt = await recoverSession({
+        logicalSessionId: reference.logicalSessionId,
+        providerId: reference.providerId,
+        idempotencyKey: `${recoveryKind}-recovery:${context.idempotencyKey}`,
+        triggerDeliveryId: recoveryKind === "message" ? context.idempotencyKey : null,
+        reason: error?.replacementReason ?? error?.code ?? "provider-session-unavailable"
+      });
+      const recoveredReference = requireSessionReference(sessionId);
+      const recoveredSession = store.getSession(sessionId);
+      await sessionApplicationService.resumeSession(sessionId, {
+        purpose: "session-create-finalization",
+        actorId: recoveredSession?.agentId ?? null,
+        sessionId,
+        logicalSessionId: recoveredReference.logicalSessionId,
+        providerBindingId: recoveredReference.bindingId,
+        sessionKind: recoveredSession?.sessionKind ?? "legacy",
+        workId: recoveredSession?.workId ?? null,
+        taskId: recoveredSession?.taskId ?? null,
+        desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
+      });
+      if (recoveryKind === "message") {
+        store.rerouteUnsentMessageDelivery(context.idempotencyKey, recoveredReference);
+      }
+      return { reference: recoveredReference, attempt };
+    },
+    resolveMessageContext: async (reference, messageContext = {}) => {
+      const session = store.getSession(reference.sessionId);
+      const mentionContext = resolveMessageMentionContext(
+        store,
+        reference.sessionId,
+        normalizeConversationMessage(messageContext.message).mentions ?? []
+      );
+      let baseContext = null;
+      if (session?.sessionKind === "workChat" && session.workId) {
+        baseContext = workChatContextService.build(session.workId, session);
+      } else if (session?.sessionKind === "assistantChat") {
+        baseContext = await resolveContextReferences(reference.sessionId);
+        baseContext = {
+          ...baseContext,
+          prompt: [sessionResponsibilityInstructions("assistantChat"), baseContext?.prompt].filter(Boolean).join("\n\n")
+        };
+      } else if (session?.sessionKind === "worker") {
+        const ownership = store.assertLogicalWorkSessionBinding(reference.logicalSessionId);
+        const task = store.getTask(ownership.taskId);
+        const work = task?.work_id ? store.getWork(task.work_id) : null;
+        const startupReceiptRow = store.selectOne(
+          `SELECT receipt.receipt_json, operation.updated_at FROM work_session_startup_receipts receipt
+           JOIN work_session_startup_operations operation
+             ON operation.startup_operation_id=receipt.startup_operation_id
+           WHERE operation.logical_session_id=? AND operation.state='ready'
+           UNION ALL
+           SELECT execution.receipt_json, execution.updated_at FROM execution_spaces execution
+           WHERE execution.logical_session_id=? AND execution.status='ready'
+           ORDER BY updated_at DESC LIMIT 1`,
+          [reference.logicalSessionId, reference.logicalSessionId]
+        );
+        const toolMaterialization = store.getSessionToolCatalogMaterialization(
+          reference.logicalSessionId,
+          reference.bindingId
+        );
+        baseContext = buildWorkSessionContext({
+          session, task, work,
+          artifactIndex: artifactService.indexForSession(session),
+          startupReceipt: startupReceiptRow ? JSON.parse(startupReceiptRow.receipt_json) : null,
+          toolDomains: appliedToolDomainIds(toolMaterialization),
+          toolCatalogVersion: toolMaterialization?.appliedCatalogVersion ?? null
+        });
+      }
+      let memoryContext = null;
+      if (session?.agentId) {
+        const recall = await memoryRecallService.turn(conversationMessageText(messageContext.message), {
+          sessionId: session.id,
+          agentId: session.agentId,
+          workId: session.workId ?? null,
+          taskId: session.taskId ?? null
+        }, { deepRecall: messageContext.deepRecall === true });
+        if (recall.memories.length > 0) {
+          const lines = recall.memories.map((memory) => `- [${memory.kind}] ${memory.content}`);
+          memoryContext = {
+            prompt: `<corptie_memory_recall mode="${recall.mode}" reason="${recall.reason}">\n${lines.join("\n")}\n</corptie_memory_recall>`,
+            memoryRecall: recall
+          };
+        }
+      }
+      // Provider-native thread context remains Provider-owned. Ordinary sends
+      // contain only this turn's Corptie product context and never replay chat
+      // history from either Provider or session_items.
+      const directUserIntentContext = buildDirectUserMessageEvidence(store, reference, messageContext);
+      const skillRoutingContext = skillMcpTurnContext(
+        mcpAssignmentRevisionForAgent(session?.agentId)
+      );
+      const contexts = [baseContext, skillRoutingContext, mentionContext, directUserIntentContext, memoryContext]
+        .filter((item) => item?.prompt);
+      if (contexts.length === 0) return null;
+      if (session?.sessionKind === "worker") {
+        return mergeWorkerSessionContexts({
+          baseContext,
+          directUserIntentContext,
+          memoryContext,
+          mentionContext,
+          requiredContexts: [skillRoutingContext].filter(Boolean)
+        });
+      }
+      if (contexts.length === 1) return contexts[0];
+      return {
+        ...baseContext,
+        prompt: contexts.map((item) => item.prompt).join("\n\n"),
+        memoryRecall: memoryContext?.memoryRecall ?? null
+      };
+    },
+    bindCreatedSession: async ({ providerId, session, input, context }) => {
+      persistProviderSessionProjection(store, session, {
+        providerId,
+        agentId: input.toolHost?.actorId ?? context.actorId ?? null,
+        sessionKind: input.sessionKind,
+        workId: context.workId ?? null,
+        taskId: context.taskId ?? null
+      });
+      ensureCollaborationAgentForSession(session, input.toolHost?.actorId ?? context.actorId);
+      const logical = await ensureLogicalRouteForProviderSession(session, providerId, {
+        instructionSources: input.instructionSources,
+        runtimeWorkspaceRoots: input.runtimeWorkspaceRoots,
+        approvalPolicy: input.approvalPolicy,
+        sandbox: input.sandbox
+      });
+      return logical ? {
+        sessionId: logical.legacySessionId,
+        logicalSessionId: logical.logicalSessionId,
+        bindingId: logical.activeBinding?.bindingId ?? null,
+        routingVersion: logical.routingVersion,
+        providerId,
+        providerSessionId: logical.activeBinding?.providerSessionId ?? null,
+        session: store.getSession(logical.legacySessionId)
+          ?? sessionWithLogicalWorkspace(session, logical)
+      } : null;
+    },
+    persistRenamedSession: async ({ reference, title, providerSession }) => {
+      const stored = store.renameSession(reference.sessionId, title);
+      return stored ? {
+        ...providerSession,
+        ...stored,
+        external: providerSession?.external ?? stored.external
+      } : providerSession;
+    },
+    persistModelSelection: (input) => persistSessionModelSelection(store, input),
+    removeSessionBinding: async ({ reference }) => {
+      collaborationCore.detachSession(reference.sessionId);
+      collaborationCore.detachSession(reference.providerSessionId);
+      store.deleteLogicalSessionByLegacySessionId(reference.sessionId);
+      store.deleteSession(reference.sessionId);
+      emitEvent("SessionDeleted", {
+        sessionId: reference.sessionId,
+        logicalSessionId: reference.logicalSessionId,
+        provider: reference.providerId
+      }, { detachedSession: true });
+    }
+  });
+  return sessionApplicationService;
+}

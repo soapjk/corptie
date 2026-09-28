@@ -175,7 +175,7 @@ final class WorktreeManagementNavigationTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Sources/CopetsMac/FloatingRootView.swift")
+            .appendingPathComponent("Sources/CopetsMac/Conversation/ConversationHeader.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
 
         XCTAssertFalse(contents.contains("ProjectWorktreeWindowManager.shared.show"))

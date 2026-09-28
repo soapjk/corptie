@@ -1,24 +1,47 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { CorptieStore } from "../src/store/corptieStore.mjs";
-import { resolveAvailableSessionTitle } from "../src/utils/sessionTitles.mjs";
+import { createSessionTitleReservations } from "../src/application/sessionTitleReservations.mjs";
 
-test("automatic titles do not retain historical tombstone names", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "corptie-title-reservation-"));
-  const store = new CorptieStore({ dbPath: join(directory, "db.sqlite"), configPath: join(directory, "config.json") });
-  try {
-    await store.initialize();
-    store.createLogicalSessionRoute({ logicalSessionId: "logical:old", providerThreadId: "thread:old", providerId: "claude-sdk", boundCwd: directory, sessionName: "测试claude" });
-    // Older compensation retained the key even though the route was deleted.
-    store.db.run("UPDATE logical_sessions SET deleted_at=?, archived=1 WHERE logical_session_id=?", [new Date().toISOString(), "logical:old"]);
-    const title = resolveAvailableSessionTitle(store.listSessionTitleIdentities(), "测试claude");
-    assert.equal(title, "测试claude");
-    assert.doesNotThrow(() => store.createLogicalSessionRoute({ logicalSessionId: "logical:new", providerThreadId: "thread:new", providerId: "claude-sdk", boundCwd: directory, sessionName: title }));
-  } finally {
-    store.close();
-    await rm(directory, { recursive: true, force: true });
-  }
+function fixture(identities = []) {
+  return createSessionTitleReservations({
+    store: {
+      listSessionTitleIdentities: () => identities,
+      getLogicalSession: (id) => id === "logical" ? { legacySessionId: "stored" } : null,
+      getLogicalSessionByLegacySessionId: () => null
+    }
+  });
+}
+
+test("pending reservations reject normalized duplicates and release their title", () => {
+  const titles = fixture();
+  const release = titles.reserveSessionTitle("Alpha");
+  assert.throws(() => titles.reserveSessionTitle(" alpha "), {
+    code: "SESSION_TITLE_CONFLICT", statusCode: 409, suggestedTitle: "alpha 1"
+  });
+  assert.equal(titles.availableTitle("Alpha"), "Alpha 1");
+  release();
+  assert.equal(titles.availableTitle("Alpha"), "Alpha");
+});
+
+test("persisted conflict suggestions also exclude titles held by pending creations", () => {
+  const titles = fixture([{ id: "stored", title: "Alpha" }]);
+  titles.reserveSessionTitle("Alpha 1");
+  assert.throws(() => titles.reserveSessionTitle("Alpha"), {
+    code: "SESSION_TITLE_CONFLICT", conflictingSessionId: "stored", suggestedTitle: "Alpha 2"
+  });
+});
+
+test("rename excludes the canonical stored identity of a logical session", () => {
+  const titles = fixture([{ id: "stored", title: "Alpha" }]);
+  const release = titles.reserveSessionTitle("Alpha", "logical");
+  assert.equal(typeof release, "function");
+  release();
+});
+
+test("agent title suggestions see the same pending reservation set", () => {
+  const titles = fixture();
+  const release = titles.reserveSessionTitle("Worker_Session");
+  assert.equal(titles.availableAgentTitle("Worker"), "Worker_Session_1");
+  release();
+  assert.equal(titles.availableAgentTitle("Worker"), "Worker_Session");
 });

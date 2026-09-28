@@ -54,7 +54,11 @@ test("development launcher starts one detached App without a process guardian", 
 });
 
 test("macOS App starts without a modal welcome prompt and owns its backend", async () => {
-  const contents = await source("apps/macos/Sources/CopetsMac/CopetsMacApp.swift");
+  const contents = (await Promise.all([
+    source("apps/macos/Sources/CopetsMac/CopetsMacApp.swift"),
+    source("apps/macos/Sources/CopetsMac/Application/AppDelegate.swift"),
+    source("apps/macos/Sources/CopetsMac/Application/BackendSupervisor.swift")
+  ])).join("\n");
 
   assert.match(contents, /applicationDidFinishLaunching[\s\S]*ensureBackendStarted\(\)/u);
   assert.doesNotMatch(contents, /showWelcomePromptIfNeeded|corptie\.hasAcknowledgedWelcomeSetup/u);

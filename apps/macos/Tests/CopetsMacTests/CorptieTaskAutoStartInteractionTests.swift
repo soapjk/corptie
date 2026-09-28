@@ -21,7 +21,7 @@ struct CorptieTaskAutoStartInteractionTests {
 
     @Test
     func taskInformationDoesNotExposeAManualStartButton() throws {
-        let source = try source(named: "WarRoomView.swift")
+        let source = try source(named: "WorkTasks/CorptieTaskDetailView.swift")
         let controlStart = try #require(source.range(of: "private var executionControlButton: some View"))
         let controlEnd = try #require(source.range(
             of: "// 开始执行：",
@@ -35,7 +35,7 @@ struct CorptieTaskAutoStartInteractionTests {
 
     @Test
     func openingTaskInformationNeverRepairsDomainStateFromAViewLifecycleCallback() throws {
-        let source = try source(named: "WarRoomView.swift")
+        let source = try source(named: "WorkTasks/CorptieTaskDetailView.swift")
 
         #expect(!source.contains("ensureCompanionSessionIfNeeded"))
         #expect(!source.contains("guard !isCompleted, currentSession == nil, !isLaunchingExecution"))

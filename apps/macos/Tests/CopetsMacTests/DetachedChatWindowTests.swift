@@ -6,7 +6,7 @@ import Testing
 struct DetachedChatWindowTests {
     @Test
     func chatHeaderExposesAnIndependentFloatingWindowAction() throws {
-        let source = try contents(of: "FloatingRootView.swift")
+        let source = try contents(of: "Conversation/ConversationHeader.swift")
 
         #expect(source.contains("DetachedChatWindowManager.shared.show(session: session)"))
         #expect(source.contains("accessibilityIdentifier(\"session.detail.detach\")"))
@@ -155,14 +155,14 @@ struct DetachedChatWindowTests {
         #expect(managerSource.contains("var hasKeyWindow: Bool"))
         #expect(managerSource.contains("controllers.values.contains(where: \\.isKeyWindow)"))
 
-        let appSource = try contents(of: "CopetsMacApp.swift")
+        let appSource = try contents(of: "Application/AppDelegate.swift")
         #expect(appSource.contains("DispatchQueue.main.async { [weak self] in"))
         #expect(appSource.contains("detachedChatWindowIsKey: DetachedChatWindowManager.shared.hasKeyWindow"))
     }
 
     @Test
     func returningFromDetachedChatOpensTheMatchingMainWindowSession() throws {
-        let source = try contents(of: "CopetsMacApp.swift")
+        let source = try contents(of: "Application/AppDelegate.swift")
 
         #expect(source.contains("func openSessionInMainWindow(sessionID: String)"))
         #expect(source.contains("openWarRoom()"))
@@ -171,7 +171,7 @@ struct DetachedChatWindowTests {
 
     @Test
     func detachedComposerTargetsItsOwnSessionWithoutChangingGlobalSelection() throws {
-        let source = try contents(of: "FloatingRootView.swift")
+        let source = try contents(of: "Conversation/Composer/MessageComposer.swift")
         let composerStart = try #require(source.range(of: "struct MessageComposer: View"))
         let composer = source[composerStart.lowerBound..<source.endIndex]
 

@@ -81,9 +81,9 @@ test("concurrent Codex initialization shares one app-server process generation",
 
   assert.equal(children.length, 1);
   assert.equal(children[0].requests.filter((request) => request.method === "initialize").length, 1);
-  assert.equal(client.process, children[0]);
-  assert.equal(client.initialized, true);
-  assert.equal(client.initializationTimeoutMs, 30000);
+  assert.equal(client.transport.process, children[0]);
+  assert.equal(client.transport.initialized, true);
+  assert.equal(client.transport.initializationTimeoutMs, 30000);
   await client.close();
 });
 
@@ -100,9 +100,9 @@ test("a detached Codex initialization timeout cannot become an unhandled rejecti
     client.initialize();
     await new Promise((resolve) => setTimeout(resolve, 30));
     assert.deepEqual(unhandled, []);
-    assert.equal(client.initialized, false);
-    assert.equal(client.process, null);
-    assert.equal(client.initializePromise, null);
+    assert.equal(client.transport.initialized, false);
+    assert.equal(client.transport.process, null);
+    assert.equal(client.transport.initializePromise, null);
   } finally {
     process.off("unhandledRejection", onUnhandled);
     await client.close();
@@ -127,8 +127,8 @@ test("a stale Codex process exit cannot tear down a newer initialized generation
   first.emit("exit", 0, null);
 
   assert.equal(children.length, 2);
-  assert.equal(client.process, second);
-  assert.equal(client.initialized, true);
+  assert.equal(client.transport.process, second);
+  assert.equal(client.transport.initialized, true);
   assert.equal(second.killed, false);
   await client.close();
 });

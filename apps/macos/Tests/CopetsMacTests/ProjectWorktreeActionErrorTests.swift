@@ -43,7 +43,7 @@ struct ProjectWorktreeActionErrorTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Sources/CopetsMac/FloatingRootView.swift")
+            .appendingPathComponent("Sources/CopetsMac/ProjectWorkspace/ProjectWorktreeManagerView.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
 
         #expect(contents.contains("handleIntegrationEntry(integrationEntryState)"))

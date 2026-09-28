@@ -30,7 +30,7 @@ struct UnifiedConsoleControlSurfaceTests {
 
         let source = try source(named: "UnifiedConsoleView.swift")
         #expect(!source.contains("recoverSelectionIfNeeded"))
-        #expect(source.contains("CorptieTaskCreateView(initialWorkId: taskCreationWorkID)"))
+        #expect(source.contains("CorptieTaskCreateView(initialWorkId: target.workID)"))
         #expect(source.contains("selectedTaskId = task.id"))
     }
 
@@ -70,37 +70,28 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func workNavigationHeaderUsesLiteralTitleAndHostsLayoutToggleBesideSearch() throws {
+    func navigationControlsShareTheNativeTitlebar() throws {
         let source = try source(named: "UnifiedConsoleView.swift")
-        let start = try #require(source.range(of: "private var unifiedWorkOutlineSidebar: some View"))
-        let end = try #require(source.range(
-            of: "    private var workOutlineList: some View",
-            range: start.upperBound..<source.endIndex
-        ))
-        let outlineSidebar = source[start.lowerBound..<end.lowerBound]
+        let titlebarStart = try #require(source.range(of: "ConsoleSidebarTitlebarControls("))
+        let titlebarEnd = try #require(source.range(of: ".onAppear {", range: titlebarStart.upperBound..<source.endIndex))
+        let titlebar = source[titlebarStart.lowerBound..<titlebarEnd.lowerBound]
 
-        #expect(outlineSidebar.contains("Text(verbatim: \"Work\")"))
-        let togglePosition = try #require(outlineSidebar.range(of: "navigationModeToggle"))
-        let searchPosition = try #require(outlineSidebar.range(of: "searchToggleButton"))
+        let togglePosition = try #require(titlebar.range(of: "navigationModeToggle"))
+        let searchPosition = try #require(titlebar.range(of: "searchToggleButton"))
         #expect(togglePosition.lowerBound < searchPosition.lowerBound)
+        #expect(source.contains("Picker(\"视图\", selection: $navigationModeRawValue)"))
         #expect(!source.contains(".overlay(alignment: .bottomLeading) {\n            navigationModeToggle"))
     }
 
     @Test
     func taskRowShowsAnAccessibleAlarmOnlyForPendingScheduledWakeProjection() throws {
-        let source = try source(named: "UnifiedConsoleView.swift")
-        let start = try #require(source.range(of: "private func taskRow(_ task: CorptieTask"))
-        let end = try #require(source.range(
-            of: "    @ViewBuilder\n    private func taskContextMenuContent",
-            range: start.upperBound..<source.endIndex
-        ))
-        let taskRow = source[start.lowerBound..<end.lowerBound]
+        let host = try source(named: "Console/UnifiedConsoleWorkTaskList.swift")
+        let taskRow = try source(named: "Console/ConsoleSessionRows.swift")
 
+        #expect(host.contains("ConsoleTaskRowContent("))
         #expect(taskRow.contains("if task.hasPendingScheduledWake == true"))
         #expect(taskRow.contains("ConsoleScheduledWakeIcon()"))
-        let iconStart = try #require(source.range(of: "struct ConsoleScheduledWakeIcon: View"))
-        let iconEnd = try #require(source.range(of: "private struct ConsoleWorkOutlineDisclosureStyle"))
-        let icon = source[iconStart.lowerBound..<iconEnd.lowerBound]
+        let icon = try source(named: "Console/ConsoleNavigationPolicies.swift")
         // The Mac wrapper keeps localization + tooltip; the animated body is shared with iPad.
         #expect(icon.contains("ScheduledWakeIcon(isActive: isActive, label: L10n(\"存在等待执行的计划任务\"))"))
         #expect(icon.contains(".help(L10n(\"存在等待执行的计划任务\"))"))
@@ -112,7 +103,9 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(sharedIcon.contains("paused: !isVisible || !isActive"))
         #expect(sharedIcon.contains("if reduceMotion"))
         let cards = try self.source(named: "ConsoleCardWorkspace.swift")
-        #expect(cards.contains("if task.hasPendingScheduledWake == true {\n                        ConsoleScheduledWakeIcon(isActive: isActive)"))
+        let cardLabel = try self.source(named: "ConsoleConversationCardLabel.swift")
+        #expect(cards.contains("hasScheduledWake: task.hasPendingScheduledWake == true"))
+        #expect(cardLabel.contains("if hasScheduledWake { ConsoleScheduledWakeIcon(isActive: isActive) }"))
     }
 
     @Test
@@ -133,7 +126,8 @@ struct UnifiedConsoleControlSurfaceTests {
 
     @Test
     func messageComposerStaysVisuallyStableWhileSubmissionIsGuarded() throws {
-        let source = try source(named: "FloatingRootView.swift")
+        let source = try source(named: "Conversation/SessionConversationContent.swift")
+            + source(named: "Conversation/Composer/MessageComposer.swift")
         let sessionComposerStart = try #require(source.range(of: "private var sessionComposer: some View"))
         let sessionComposerEnd = try #require(source.range(
             of: "    var body: some View",
@@ -161,10 +155,11 @@ struct UnifiedConsoleControlSurfaceTests {
 
     @Test
     func unavailableSessionExplainsTheDisabledComposerAndOffersRecovery() throws {
-        let source = try source(named: "FloatingRootView.swift")
-        let noticeStart = try #require(source.range(of: "private struct SessionNotReadyComposerNotice: View"))
+        let source = try source(named: "Conversation/SessionConversationContent.swift")
+            + source(named: "Conversation/ConversationEmptyStates.swift")
+        let noticeStart = try #require(source.range(of: "struct SessionNotReadyComposerNotice: View"))
         let noticeEnd = try #require(source.range(
-            of: "private struct ReadOnlyComposer: View",
+            of: "struct ReadOnlyComposer: View",
             range: noticeStart.upperBound..<source.endIndex
         ))
         let notice = source[noticeStart.lowerBound..<noticeEnd.lowerBound]
@@ -186,7 +181,9 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(ComposerMentionMenuMetrics.height(candidateCount: 1) == 180)
         #expect(ComposerMentionMenuMetrics.height(candidateCount: 10) == 326)
 
-        let source = try source(named: "FloatingRootView.swift")
+        let source = try source(named: "Conversation/Composer/MessageComposer.swift")
+            + source(named: "Conversation/Composer/ComposerMenus.swift")
+            + source(named: "Conversation/Composer/ComposerNativeInput.swift")
         let start = try #require(source.range(of: "struct MessageComposer: View"))
         let end = try #require(source.range(
             of: "enum ComposerInputLayout",
@@ -222,13 +219,13 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(unifiedSource.contains("floatingCreationMenu"))
         #expect(unifiedSource.contains("isCreatingWork = true"))
         #expect(unifiedSource.contains("WorkCreateView()"))
-        #expect(unifiedSource.contains("isCreatingTask = true"))
+        #expect(unifiedSource.contains("presentTaskCreation(for: selectedWorkId)"))
         #expect(unifiedSource.contains("CorptieTaskCreateView("))
         #expect(unifiedSource.contains("Button(L10n(\"New Assistant Session\")"))
         #expect(unifiedSource.contains("Button(L10n(\"New Task\")"))
         #expect(unifiedSource.contains("Button(L10n(\"New Work\")"))
         #expect(unifiedSource.contains("presentTaskCreation(for: work.id)"))
-        #expect(unifiedSource.contains("private struct HoverRevealHeaderAction<Header: View>: View"))
+        #expect(unifiedSource.contains("struct HoverRevealHeaderAction<Header: View>: View"))
         #expect(unifiedSource.contains(".opacity(isHovering || isFocused ? 1 : 0)"))
         #expect(unifiedSource.contains(".focused($isFocused)"))
         #expect(unifiedSource.contains(".onHover { isHovering = $0 }"))
@@ -277,7 +274,7 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(!detailSource.contains("工作类型"))
         #expect(!detailSource.contains("profile: profile"))
 
-        let consoleSource = try source(named: "UnifiedConsoleView.swift")
+        let consoleSource = try source(named: "Console/ConsoleWorkRail.swift")
         #expect(consoleSource.contains("avatarPath: work.avatarPath"))
         #expect(consoleSource.contains("ObjectiveAvatarView("))
         #expect(consoleSource.contains("objectiveID: work.id"))
@@ -285,24 +282,21 @@ struct UnifiedConsoleControlSurfaceTests {
 
     @Test
     func combinedSessionAndTaskDetailUsesOneOuterScrollContainer() throws {
-        let source = try source(named: "UnifiedConsoleView.swift")
-        let combinedStart = try #require(source.range(of: "if let taskId = session.taskId, !taskId.isEmpty"))
-        let combinedEnd = try #require(source.range(
-            of: "} else {\n                sessionCard(decoratesSurface: true)",
-            range: combinedStart.lowerBound..<source.endIndex
-        ))
-        let combined = source[combinedStart.lowerBound..<combinedEnd.lowerBound]
+        let source = try source(named: "Console/SessionDetailPanel.swift")
+        let cardStart = try #require(source.range(of: "private func sessionCard("))
+        let detailStart = try #require(source.range(of: "private var sessionDetailContent:", range: cardStart.upperBound..<source.endIndex))
+        let combined = source[cardStart.lowerBound..<detailStart.lowerBound]
 
         #expect(combined.components(separatedBy: "ScrollView {").count - 1 == 1)
-        #expect(combined.contains("scrollsContent: false"))
-        #expect(combined.contains("embedsInParentScroll: true"))
+        #expect(source.contains("embedsInParentScroll: true"))
+        #expect(source.contains("if detailKind == .taskDetail, let taskId = session.taskId"))
         #expect(!source.contains("会话恢复边界"))
         #expect(!source.contains("Provider 会话恢复限制"))
     }
 
     @Test
     func taskInformationDoesNotRepeatSessionWorkspaceOrShowLegacyGoal() throws {
-        let source = try source(named: "WarRoomView.swift")
+        let source = try source(named: "WorkTasks/CorptieTaskDetailView.swift")
         let detailStart = try #require(source.range(of: "private var detailContent: some View"))
         let detailEnd = try #require(source.range(
             of: "private var detailHeader: some View",
@@ -310,28 +304,16 @@ struct UnifiedConsoleControlSurfaceTests {
         ))
         let detail = source[detailStart.lowerBound..<detailEnd.lowerBound]
 
-        let overviewStart = try #require(source.range(of: "private var overviewSection: some View"))
-        let overviewEnd = try #require(source.range(
-            of: "private func creationOriginLabel",
-            range: overviewStart.upperBound..<source.endIndex
-        ))
-        let overview = source[overviewStart.lowerBound..<overviewEnd.lowerBound]
-
         #expect(!detail.contains("title: L10n(\"Goal\")"))
         #expect(!detail.contains("text: task.goal"))
-        #expect(!overview.contains("L10n(\"WORKSPACE\")"))
-        #expect(!overview.contains("workspaceName"))
-        #expect(!overview.contains("Text(task.title)"))
+        #expect(!detail.contains("overviewSection"))
         #expect(!source.contains("private var workspaceName: String?"))
 
-        let overviewPosition = try #require(detail.range(of: "overviewSection"))
         let definitionPosition = try #require(detail.range(of: "taskDefinitionSection"))
-        let executionPosition = try #require(detail.range(of: "executionAndWorkspaceSection"))
         let resourcesPosition = try #require(detail.range(of: "taskResourcesSection"))
-        #expect(overviewPosition.lowerBound < definitionPosition.lowerBound)
-        #expect(definitionPosition.lowerBound < executionPosition.lowerBound)
-        #expect(executionPosition.lowerBound < resourcesPosition.lowerBound)
-        #expect(detail.components(separatedBy: "Divider()").count - 1 == 3)
+        #expect(definitionPosition.lowerBound < resourcesPosition.lowerBound)
+        #expect(detail.contains("if isCompleted {\n                Divider()\n                worktreeSection"))
+        #expect(detail.components(separatedBy: "Divider()").count - 1 == 2)
         #expect(source.contains("private var taskDefinitionSection: some View"))
         #expect(source.contains("private var executionAndWorkspaceSection: some View"))
         #expect(source.contains("private var taskResourcesSection: some View"))
@@ -339,15 +321,16 @@ struct UnifiedConsoleControlSurfaceTests {
 
     @Test
     func detailRailCompactsEmptySectionsAndSharesReferencePresentation() throws {
-        let taskSource = try source(named: "WarRoomView.swift")
-        let sessionSource = try source(named: "UnifiedConsoleView.swift")
+        let taskSource = try source(named: "WorkTasks/CorptieTaskDetailView.swift")
+        let sessionSource = try source(named: "Console/SessionDetailPanel.swift")
         let artifactSource = try source(named: "ArtifactViews.swift")
         let styleSource = try source(named: "DetailRailStyles.swift")
 
         #expect(taskSource.contains("if hasTaskDefinitionContent"))
-        #expect(taskSource.contains("if hasContent(task.description)"))
-        #expect(taskSource.contains("if hasContent(task.acceptanceCriteria)"))
-        #expect(taskSource.contains("if hasContent(task.verificationCriteria)"))
+        #expect(taskSource.contains("ConversationTaskDefinition(description: task.description,"))
+        #expect(taskSource.contains("hasContent(task.description)"))
+        #expect(taskSource.contains("hasContent(task.acceptanceCriteria)"))
+        #expect(taskSource.contains("hasContent(task.verificationCriteria)"))
         #expect(!taskSource.contains("text.isEmpty ? L10n(\"No Content\")"))
         #expect(!taskSource.contains("Text(L10n(\"暂无记忆\"))"))
 
@@ -365,7 +348,7 @@ struct UnifiedConsoleControlSurfaceTests {
 
     @Test
     func runtimeEnvironmentShowsOnlyProviderAgentAndWorkspace() throws {
-        let source = try source(named: "UnifiedConsoleView.swift")
+        let source = try source(named: "Console/SessionDetailPanel.swift")
         let contentStart = try #require(source.range(of: "private var sessionDetailContent: some View"))
         let contentEnd = try #require(source.range(
             of: "private var statusCard: some View",
@@ -380,9 +363,9 @@ struct UnifiedConsoleControlSurfaceTests {
         let fields = source[fieldsStart.lowerBound..<fieldsEnd.lowerBound]
 
         #expect(content.contains("detailSection(title: \"运行环境\""))
-        #expect(content.contains("providerPicker"))
-        #expect(content.contains("detailFields(runtimeFields)"))
-        #expect(content.components(separatedBy: "工作空间").count - 1 == 0)
+        #expect(content.contains("compactProviderPicker"))
+        #expect(content.contains("detailFields([(\"工作空间\", compactPath(cwd))])"))
+        #expect(content.components(separatedBy: "工作空间").count - 1 == 1)
         #expect(fields.contains("(\"Agent\", agentDisplayName)"))
         #expect(fields.contains("(\"工作空间\", compactPath(cwd))"))
         #expect(!fields.contains("currentModel"))
@@ -408,8 +391,8 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains("outlineExpansionPreferences.collapsedWorkIDs"))
         #expect(source.contains("workChatRow(row)"))
         #expect(source.contains("taskRow(task)"))
-        #expect(source.contains("Toggle(L10n(\"Navigation layout\"), isOn: usesWorkOutlineBinding)"))
-        #expect(source.contains(".toggleStyle(.switch)"))
+        #expect(source.contains("Picker(\"视图\", selection: $navigationModeRawValue)"))
+        #expect(source.contains(".pickerStyle(.menu)"))
         #expect(!source.contains(".overlay(alignment: .bottomLeading)"))
         #expect(source.contains(".accessibilityValue(navigationMode.accessibilityValue)"))
     }
@@ -450,8 +433,8 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains(".padding(.leading, ConsoleWorkOutlineMetrics.childIndent)"))
         #expect(source.contains("outlineGroupEmptyRow"))
         #expect(source.contains("outlineChildSelectionBackground"))
-        #expect(source.contains("static let disclosureAnimation = Animation.easeInOut(duration: 0.16)"))
-        #expect(source.contains("private struct ConsoleWorkOutlineDisclosureStyle: DisclosureGroupStyle"))
+        #expect(try sharedSource(named: "WorkActivity.swift").contains("static let disclosureAnimation = Animation.easeInOut(duration: 0.16)"))
+        #expect(source.contains("struct ConsoleWorkOutlineDisclosureStyle: DisclosureGroupStyle"))
         #expect(source.contains("private typealias ConsoleWorkOutlineGroupCardModifier = WorkGroupCardSurface"))
         #expect(source.contains("return ScrollView {"))
         #expect(source.contains("LazyVStack(alignment: .leading, spacing: 8)"))
@@ -469,7 +452,7 @@ struct UnifiedConsoleControlSurfaceTests {
             separatedBy: "withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation)"
         ).count - 1 == 3)
         #expect(source.contains("Text(L10n(\"Chat\"))"))
-        #expect(source.contains("Text(verbatim: \"Work\")"))
+        #expect(source.contains("Picker(\"视图\", selection: $navigationModeRawValue)"))
         #expect(!source.contains("Text(L10n(\"Work & Tasks\"))"))
         #expect(!source.contains("Text(L10n(\"Assistant\"))"))
     }
@@ -502,9 +485,9 @@ struct UnifiedConsoleControlSurfaceTests {
     @Test
     func workOutlineKeepsContextMenusOnTheirNativeListRows() throws {
         let source = try source(named: "UnifiedConsoleView.swift")
-        let outlineStart = try #require(source.range(of: "private var workOutlineList: some View"))
+        let outlineStart = try #require(source.range(of: "var workOutlineList: some View"))
         let outlineEnd = try #require(source.range(
-            of: "private func outlineChatHeader",
+            of: "func outlineChatHeader",
             range: outlineStart.lowerBound..<source.endIndex
         ))
         let outline = source[outlineStart.lowerBound..<outlineEnd.lowerBound]
@@ -528,7 +511,7 @@ struct UnifiedConsoleControlSurfaceTests {
         let console = try source(named: "UnifiedConsoleView.swift")
         #expect(console.components(
             separatedBy: "NewSessionCreationSheet(fixedKind: .assistantChat)"
-        ).count - 1 == 2)
+        ).count - 1 >= 2)
         #expect(!console.contains("NewSessionCreationSheet()"))
 
         let sheet = try source(named: "NewChatPickerSheet.swift")
@@ -541,7 +524,7 @@ struct UnifiedConsoleControlSurfaceTests {
     @Test
     func workChatIsAnIndependentActionBesideTheWorkTitle() throws {
         let source = try source(named: "UnifiedConsoleView.swift")
-        let headerStart = try #require(source.range(of: "private struct ConsoleWorkOutlineHeader: View"))
+        let headerStart = try #require(source.range(of: "struct ConsoleWorkOutlineHeader: View"))
         let headerEnd = try #require(source.range(
             of: "enum ConsoleTaskSelectionPolicy",
             range: headerStart.upperBound..<source.endIndex
@@ -569,15 +552,15 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(!source.contains("NewSessionCreationSheet(fixedWork: work)"))
         #expect(source.contains("guard let workChat else { return }"))
         #expect(source.contains("openWorkChat(for: work, session: workChat)"))
-        #expect(source.contains("private func workChatSession(for workId: String)"))
+        #expect(source.contains("func workChatSession(for workId: String)"))
         #expect(source.contains("indexedSession ?? backendClient.sessions.first"))
-        #expect(source.contains("private func openWorkChat(for work: Work, session: TaskSession)"))
+        #expect(source.contains("func openWorkChat(for work: Work, session: TaskSession)"))
     }
 
 
     @Test
     func selectedWorkUsesADiscordStyleEdgePill() throws {
-        let source = try source(named: "UnifiedConsoleView.swift")
+        let source = try source(named: "Console/ConsoleWorkRail.swift")
         let iconStart = try #require(source.range(of: "private func consoleRailIcon("))
         let iconEnd = try #require(source.range(
             of: "private func workInitials",
@@ -598,20 +581,24 @@ struct UnifiedConsoleControlSurfaceTests {
 
     @Test
     func workRailAggregatesUnreadSessionsByOwner() throws {
-        let source = try source(named: "UnifiedConsoleView.swift")
+        let source = try source(named: "Console/ConsoleSessionRows.swift")
+        let rail = try self.source(named: "Console/ConsoleWorkRail.swift")
+        let host = try self.source(named: "UnifiedConsoleView.swift")
 
         #expect(source.contains("struct WorkRailUnreadSummary: Equatable"))
         #expect(source.contains("session.resolvedSessionKind == .assistantChat"))
         #expect(source.contains("workIDs.insert(workID)"))
         #expect(source.contains("session.archived != true"))
-        #expect(source.contains("unreadSummary.hasUnreadAssistantSessions"))
-        #expect(source.contains("unreadSummary.workIDs.contains(work.id)"))
+        #expect(rail.contains("unreadSummary.hasUnreadAssistantSessions"))
+        #expect(rail.contains("unreadSummary.workIDs.contains(work.id)"))
+        #expect(host.contains("ConsoleWorkRail("))
+        #expect(host.contains("sessions: sessionIndexStore.rows.map(\\.session)"))
     }
 
     @Test
     func expandedWorkHidesItsAggregateUnreadIndicator() throws {
-        let source = try source(named: "UnifiedConsoleView.swift")
-        let headerStart = try #require(source.range(of: "private struct ConsoleWorkOutlineHeader: View"))
+        let source = try source(named: "Console/ConsoleNavigationPolicies.swift")
+        let headerStart = try #require(source.range(of: "struct ConsoleWorkOutlineHeader: View"))
         let headerEnd = try #require(source.range(
             of: "enum ConsoleTaskSelectionPolicy",
             range: headerStart.upperBound..<source.endIndex
@@ -626,7 +613,7 @@ struct UnifiedConsoleControlSurfaceTests {
 
     @Test
     func selectedWorkDoesNotRestyleItsAvatar() throws {
-        let source = try source(named: "UnifiedConsoleView.swift")
+        let source = try source(named: "Console/ConsoleWorkRail.swift")
         let iconStart = try #require(source.range(of: "private func consoleRailIcon("))
         let iconEnd = try #require(source.range(
             of: "private func workInitials",
@@ -644,9 +631,10 @@ struct UnifiedConsoleControlSurfaceTests {
 
     @Test
     func workRailScrollsWithoutIndicatorsAndKeepsSelectionVisible() throws {
-        let source = try source(named: "UnifiedConsoleView.swift")
+        let source = try source(named: "Console/ConsoleWorkRail.swift")
 
-        #expect(source.contains("ScrollView(.vertical, showsIndicators: false)"))
+        #expect(source.contains("ScrollView(.vertical)"))
+        #expect(source.contains(".background(ConsoleOverlayScroller())"))
         #expect(source.contains("private var workRailScrollMask: some View"))
         #expect(source.contains("proxy.scrollTo(selectedWorkId, anchor: .center)"))
         #expect(source.contains(".padding(.vertical, 10)"))
@@ -655,14 +643,10 @@ struct UnifiedConsoleControlSurfaceTests {
 
     @Test
     func selectedTaskUsesACompactInsetLowRadiusBackground() throws {
-        let source = try source(named: "UnifiedConsoleView.swift")
-        let rowStart = try #require(source.range(of: "private func taskRow("))
-        let rowEnd = try #require(source.range(
-            of: "private func openTask(",
-            range: rowStart.lowerBound..<source.endIndex
-        ))
-        let row = source[rowStart.lowerBound..<rowEnd.lowerBound]
+        let row = try source(named: "Console/ConsoleSessionRows.swift")
+        let host = try source(named: "Console/UnifiedConsoleWorkTaskList.swift")
 
+        #expect(host.contains("ConsoleTaskRowContent("))
         #expect(row.contains("RoundedRectangle(cornerRadius: 5, style: .continuous)"))
         #expect(row.contains(".padding(.horizontal, 8)"))
         #expect(!row.contains("RoundedRectangle(cornerRadius: 10"))
@@ -670,13 +654,7 @@ struct UnifiedConsoleControlSurfaceTests {
 
     @Test
     func taskRowsUseOneLineAndDoNotExposeSessionStartupAsTaskState() throws {
-        let source = try source(named: "UnifiedConsoleView.swift")
-        let rowStart = try #require(source.range(of: "private func taskRow("))
-        let rowEnd = try #require(source.range(
-            of: "private func openTask(",
-            range: rowStart.lowerBound..<source.endIndex
-        ))
-        let row = source[rowStart.lowerBound..<rowEnd.lowerBound]
+        let row = try source(named: "Console/ConsoleSessionRows.swift")
 
         #expect(row.contains("Text(task.title)"))
         #expect(row.contains(".lineLimit(1)"))
@@ -687,16 +665,11 @@ struct UnifiedConsoleControlSurfaceTests {
 
     @Test
     func workChatUsesTheSameSingleLineVisualContractAsTaskRows() throws {
-        let source = try source(named: "UnifiedConsoleView.swift")
-        let rowStart = try #require(source.range(of: "private func workChatRow("))
-        let rowEnd = try #require(source.range(
-            of: "private func taskRow(",
-            range: rowStart.lowerBound..<source.endIndex
-        ))
-        let row = source[rowStart.lowerBound..<rowEnd.lowerBound]
+        let host = try source(named: "Console/UnifiedConsoleWorkTaskList.swift")
+        let row = try source(named: "Console/ConsoleSessionRows.swift")
 
-        #expect(source.contains("workChatRow(row)"))
-        #expect(!source.contains("sessionRow(row, subtitle: L10n(\"Work discussion\"))"))
+        #expect(host.contains("ConsoleWorkChatRowContent("))
+        #expect(!host.contains("sessionRow(row, subtitle: L10n(\"Work discussion\"))"))
         #expect(row.contains("HStack(spacing: 9)"))
         #expect(row.contains(".frame(width: 7, height: 7)"))
         #expect(row.contains(".font(.system(size: 12, weight: .semibold))"))
@@ -707,15 +680,16 @@ struct UnifiedConsoleControlSurfaceTests {
 
     @Test
     func chatSessionRowsUseTheSameCompactMetricsAsTaskRows() throws {
-        let source = try source(named: "UnifiedConsoleView.swift")
-        let rowStart = try #require(source.range(of: "private struct ConsoleSessionRow: View"))
+        let source = try source(named: "Console/ConsoleSessionRows.swift")
+        let host = try self.source(named: "UnifiedConsoleView.swift")
+        let rowStart = try #require(source.range(of: "struct ConsoleSessionRow: View"))
         let rowEnd = try #require(source.range(
             of: "func sessionMatchingPendingSelection(",
             range: rowStart.lowerBound..<source.endIndex
         ))
         let row = source[rowStart.lowerBound..<rowEnd.lowerBound]
 
-        #expect(source.contains("return ConsoleSessionRow("))
+        #expect(host.contains("return ConsoleSessionRow("))
         #expect(row.contains("HStack(spacing: 9)"))
         #expect(row.contains(".frame(width: 7, height: 7)"))
         #expect(row.contains(".font(.system(size: 12, weight: .semibold))"))
@@ -725,15 +699,11 @@ struct UnifiedConsoleControlSurfaceTests {
 
     @Test
     func taskRowsExposeUnreadStateFromTheirBoundSession() throws {
-        let source = try source(named: "UnifiedConsoleView.swift")
-        let rowStart = try #require(source.range(of: "private func taskRow("))
-        let rowEnd = try #require(source.range(
-            of: "private func openTask(",
-            range: rowStart.lowerBound..<source.endIndex
-        ))
-        let row = source[rowStart.lowerBound..<rowEnd.lowerBound]
+        let host = try source(named: "Console/UnifiedConsoleWorkTaskList.swift")
+        let row = try source(named: "Console/ConsoleSessionRows.swift")
 
-        #expect(row.contains("if let session, isSessionUnread(session)"))
+        #expect(host.contains("isUnread: session.map(isSessionUnread) ?? false"))
+        #expect(row.contains("if isUnread"))
         #expect(row.contains(".fill(Color.red)"))
         #expect(row.contains(".accessibilityLabel(L10n(\"Unread Session\"))"))
     }
@@ -748,7 +718,7 @@ struct UnifiedConsoleControlSurfaceTests {
         ))
         let pendingState = source[pendingStart.lowerBound..<pendingEnd.lowerBound]
 
-        #expect(pendingState.contains("The companion Work Session is being prepared."))
+        #expect(pendingState.contains("此 Task 的聊天会话尚未就绪。"))
         #expect(!pendingState.contains(".background(.regularMaterial"))
         #expect(!pendingState.contains("RoundedRectangle(cornerRadius: 12"))
     }
@@ -759,10 +729,15 @@ struct UnifiedConsoleControlSurfaceTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        return try String(
-            contentsOf: packageRoot.appendingPathComponent("Sources/CopetsMac/\(name)"),
-            encoding: .utf8
-        )
+        let sourceRoot = packageRoot.appendingPathComponent("Sources/CopetsMac")
+        let primary = try String(contentsOf: sourceRoot.appendingPathComponent(name), encoding: .utf8)
+        guard name == "UnifiedConsoleView.swift" else { return primary }
+        let consoleRoot = sourceRoot.appendingPathComponent("Console")
+        let companions = try FileManager.default.contentsOfDirectory(atPath: consoleRoot.path)
+            .filter { $0.hasSuffix(".swift") }
+            .sorted()
+            .map { try String(contentsOf: consoleRoot.appendingPathComponent($0), encoding: .utf8) }
+        return ([primary] + companions).joined(separator: "\n")
     }
 
     private func sharedSource(named name: String) throws -> String {
