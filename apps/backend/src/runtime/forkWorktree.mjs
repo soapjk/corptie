@@ -12,6 +12,10 @@ async function git(cwd, args) {
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }
   })).stdout;
 }
+async function removeAllocatedForkWorktree(source, target, branchName) {
+  await git(source, ["worktree", "remove", "--force", target]);
+  await git(source, ["branch", "-D", branchName]);
+}
 function fail(code, message) { throw Object.assign(new Error(message), { code, statusCode: 409 }); }
 function contained(root, path) {
   const value = relative(root, path);
@@ -85,11 +89,12 @@ export async function createForkWorktree({ sourcePath, targetPath, branchName })
     }
     if ((await snapshot(source)).hash !== before.hash) fail("FORK_SOURCE_CHANGED", "复制期间源工作区发生了变化，请稍后重试。");
     if ((await snapshot(target)).hash !== before.hash) fail("FORK_SNAPSHOT_MISMATCH", "分支文件校验未通过。");
-    return { path: target, branchName, headOid: before.head, snapshotHash: before.hash };
+    return { path: target, branchName, headOid: before.head, snapshotHash: before.hash,
+      rollback: () => removeAllocatedForkWorktree(source, target, branchName) };
   } catch (error) {
     // Only the worktree and branch allocated by this invocation may be removed.
     if (created) {
-      try { await git(source, ["worktree", "remove", "--force", target]); await git(source, ["branch", "-D", branchName]); }
+      try { await removeAllocatedForkWorktree(source, target, branchName); }
       catch (cleanupError) { error.cleanupError = cleanupError.message; }
     }
     throw error;

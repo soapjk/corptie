@@ -5,6 +5,8 @@ import CorptieClientCore
 
 struct AppKitChatTimelineRow: Identifiable {
     var forkItemID: String? = nil
+    var forkUnavailableReason: String? = nil
+    var timeSeparatorText: String? = nil
     var isWorkspaceCard = false
     typealias ProcessState = ConversationProcessState
 
@@ -46,18 +48,21 @@ struct AppKitChatTimelineRow: Identifiable {
     let processPlan: ConversationExecutionPlan?
     let processCurrentStepTitle: String?
     let showsHeader: Bool
-    let hoverTimestamp: String
+    let contextTimestamp: String
+    let messageDate: Date?
     let actions: [Action]
     let isPendingInteraction: Bool
     let showsCollaborationSentStatus: Bool
     let messageStatus: UserMessageStatusPresentation?
     let images: [ChatTimelineImage]
 
-    var showsMessageActionBar: Bool {
+    var showsMessageStatusBar: Bool {
         !showsHeader
-            && (!copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || messageStatus != nil)
+            && messageStatus != nil
             && (nativeStyle == .user || nativeStyle == .agent)
     }
+
+    var timeSeparatorHeight: CGFloat { timeSeparatorText == nil ? 0 : 28 }
 
     init(
         id: String,
@@ -80,7 +85,8 @@ struct AppKitChatTimelineRow: Identifiable {
         processPlan: ConversationExecutionPlan? = nil,
         processCurrentStepTitle: String? = nil,
         showsHeader: Bool = true,
-        hoverTimestamp: String = "",
+        contextTimestamp: String = "",
+        messageDate: Date? = nil,
         actions: [Action] = [],
         isPendingInteraction: Bool = false,
         showsCollaborationSentStatus: Bool = false,
@@ -107,7 +113,8 @@ struct AppKitChatTimelineRow: Identifiable {
         self.processPlan = processPlan
         self.processCurrentStepTitle = processCurrentStepTitle
         self.showsHeader = showsHeader
-        self.hoverTimestamp = hoverTimestamp
+        self.contextTimestamp = contextTimestamp
+        self.messageDate = messageDate
         self.actions = actions
         self.isPendingInteraction = isPendingInteraction
         self.showsCollaborationSentStatus = showsCollaborationSentStatus
@@ -156,6 +163,77 @@ struct ChatTimelineImage: Hashable {
 struct AppKitChatRowReuseIdentity: Equatable {
     let id: String
     let contentRevision: Int
+}
+
+@MainActor
+enum ConversationTimeSeparatorPolicy {
+    static let minimumGap: TimeInterval = 5 * 60
+
+    private struct FormatterKey: Hashable {
+        let localeIdentifier: String
+        let calendarIdentifier: String
+        let timeZoneIdentifier: String
+        let includesDate: Bool
+    }
+
+    private static var formatters: [FormatterKey: DateFormatter] = [:]
+
+    static func applying(
+        to rows: [AppKitChatTimelineRow],
+        now: Date = Date(),
+        calendar: Calendar = .current,
+        locale: Locale = .current
+    ) -> [AppKitChatTimelineRow] {
+        var previousMessageDate: Date?
+        return rows.map { row in
+            var decorated = row
+            decorated.timeSeparatorText = nil
+            guard let date = row.messageDate else { return decorated }
+            defer { previousMessageDate = date }
+            guard let previousMessageDate,
+                  date.timeIntervalSince(previousMessageDate) >= minimumGap else {
+                return decorated
+            }
+            let text = label(
+                for: date,
+                now: now,
+                calendar: calendar,
+                locale: locale,
+                forceDate: !calendar.isDate(date, inSameDayAs: previousMessageDate)
+            )
+            decorated.timeSeparatorText = text
+            var hasher = Hasher()
+            hasher.combine(row.contentRevision)
+            hasher.combine(text)
+            decorated.contentRevision = hasher.finalize()
+            return decorated
+        }
+    }
+
+    static func label(
+        for date: Date,
+        now: Date = Date(),
+        calendar: Calendar = .current,
+        locale: Locale = .current,
+        forceDate: Bool = false
+    ) -> String {
+        let includesDate = forceDate || !calendar.isDate(date, inSameDayAs: now)
+        let key = FormatterKey(
+            localeIdentifier: locale.identifier,
+            calendarIdentifier: String(describing: calendar.identifier),
+            timeZoneIdentifier: calendar.timeZone.identifier,
+            includesDate: includesDate
+        )
+        if let formatter = formatters[key] { return formatter.string(from: date) }
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.locale = locale
+        formatter.timeZone = calendar.timeZone
+        formatter.timeStyle = .short
+        formatter.dateStyle = includesDate ? .medium : .none
+        formatters[key] = formatter
+        return formatter.string(from: date)
+    }
 }
 
 enum AppKitChatRowReusePolicy {

@@ -89,7 +89,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         tableView.headerView = nil
         tableView.backgroundColor = .clear
         tableView.gridStyleMask = []
-        tableView.intercellSpacing = NSSize(width: 0, height: 10)
+        tableView.intercellSpacing = NSSize(width: 0, height: 6)
         tableView.rowHeight = 30
         // Every row has an exact cached height from the delegate. Automatic
         // row heights make NSTableView assign its 120pt estimate to offscreen

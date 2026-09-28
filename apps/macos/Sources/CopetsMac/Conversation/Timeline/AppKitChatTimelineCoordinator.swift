@@ -404,7 +404,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     }
 
     func apply(rows nextRows: [AppKitChatTimelineRow], animated: Bool = false) {
-        let nextRows = Self.uniquedRows(nextRows)
+        let nextRows = ConversationTimeSeparatorPolicy.applying(to: Self.uniquedRows(nextRows))
         defer { synchronizeProcessClock() }
         suppressNearTopDuringLayout()
         guard let tableView else {

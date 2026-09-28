@@ -42,6 +42,9 @@ test("fork preserves staged, unstaged, binary, deleted and untracked files witho
   assert.equal(await git(source, "status", "--porcelain=v1", "-z"), status);
   assert.equal(await git(source, "branch", "--show-current"), "main\n");
   assert.equal(result.snapshotHash.length, 64);
+  await result.rollback();
+  await assert.rejects(readFile(join(target, "file")), { code: "ENOENT" });
+  assert.doesNotMatch(await git(source, "branch", "--list", "fork/test"), /fork\/test/);
 });
 test("fork refuses occupied targets without altering their contents", async t => {
   const { source, target } = await fixture(t);

@@ -425,9 +425,11 @@ struct SessionConversationContent: View {
                 cachedAppKitRows = cachedAppKitRows.map { old in
                     guard let entry = entries[old.id] else { return old }
                     let itemID = forkItemID(for: entry)
-                    guard old.forkItemID != itemID else { return old }
+                    let unavailableReason = nativeRowBuilder.forkUnavailableReason(for: entry)
+                    guard old.forkItemID != itemID || old.forkUnavailableReason != unavailableReason else { return old }
                     var row = old
                     row.forkItemID = itemID
+                    row.forkUnavailableReason = unavailableReason
                     row.contentRevision = appKitContentRevision(entry, expandedTurnIds: expandedProcessTurnIds)
                     return row
                 }
@@ -527,10 +529,21 @@ struct SessionConversationContent: View {
             sessionTitle: displayedDetail?.title ?? backendClient.selectedSession?.title,
             workingDirectory: displayedDetail?.cwd,
             allowsFork: selectedSession?.actions?.fork?.available == true,
+            forkUnavailableReason: forkUnavailableReason,
             imageURL: { [backendClient, sessionId] path in
                 backendClient.chatImageURL(sessionID: sessionId, managedPath: path)
             }
         )
+    }
+
+    private var forkUnavailableReason: String? {
+        guard let action = selectedSession?.actions?.fork, action.available == false else { return nil }
+        switch action.reason {
+        case "SESSION_KIND_UNSUPPORTED": return L10n("Work Chat does not support conversation branching.")
+        case "CAPABILITY_UNSUPPORTED": return L10n("The current Provider does not support native conversation branching.")
+        case "SESSION_BUSY": return L10n("Wait for the current turn to finish before creating a branch.")
+        default: return nil
+        }
     }
 
     private func nativeAppKitRow(

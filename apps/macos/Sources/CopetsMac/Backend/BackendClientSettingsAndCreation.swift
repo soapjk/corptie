@@ -87,10 +87,12 @@ extension BackendClient {
     }
 
     func createSessionFork(_ selection: SessionForkSelection, requestID: String, sourceBindingID: String,
-                           title: String, description: String, acceptanceCriteria: String) async throws -> SessionForkResponse {
+                           title: String, description: String, acceptanceCriteria: String,
+                           verificationCriteria: String, priority: String) async throws -> SessionForkResponse {
         try await sessionForkAPI.createSessionFork(
             selection, requestID: requestID, sourceBindingID: sourceBindingID,
-            title: title, description: description, acceptanceCriteria: acceptanceCriteria
+            title: title, description: description, acceptanceCriteria: acceptanceCriteria,
+            verificationCriteria: verificationCriteria, priority: priority
         )
     }
 }
