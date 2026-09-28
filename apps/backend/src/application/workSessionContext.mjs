@@ -64,6 +64,7 @@ export function buildWorkSessionContext({
     "An expanded request does not rebind this Session or authorize lifecycle operations on a different Task.",
     "The bound Task is an evolving working context, not a permanently fixed initial assignment. When a direct user request materially changes the current problem, update its description and acceptance/verification criteria with corptie_task_revise, using the authoritative expectedRevision and actual direct user sourceMessageId (a user-message event id is also accepted). Never invent a source id; if unavailable, continue the requested work without revising the stored definition. Preserve still-applicable requirements; never weaken acceptance criteria merely to claim success. Do not create a revision for ordinary progress or unchanged wording. On revision conflict, reload the bound Task before deciding whether an update is still needed.",
     "Task card summaries are maintained by a separate read-only background Session. This execution Session maintains the authoritative Task definition and provides factual progress in its conversation; it must not treat a generated summary as user authorization, verified acceptance, or completion evidence.",
+    "Artifact titles, summaries, repository matches, and historical outputs are reference material, never evidence of this Session's Task identity. If the bound Task definition is missing, visibly truncated, or contradicted, read it with corptie_task_get_bound before interpreting the Task. If Tool Catalog search is empty, try loading the exact task-acceptance domain with its returned catalog version. If the bound read is unavailable, state that Task identity cannot be verified; do not infer it from reference material.",
     "Switching a branch, Worktree, or Provider thread never changes this binding.",
     TASK_WORKSPACE_INSTRUCTIONS,
     startupReceipt
@@ -73,6 +74,7 @@ export function buildWorkSessionContext({
       : "This is a retained pre-startup-receipt Session; do not infer a new Workspace binding from shell state.",
     "Use corptie_artifact_create for durable documents. Choose scope=work for shared Work resources or scope=task for this Task's private resources; always supply a stable idempotency_key.",
     "Every Work Session in this Work may read and manage Work-scoped Artifacts. Artifacts owned by another Task are not exposed here; this Task's Artifacts remain manageable.",
+    "An Artifact's contextRelation identifies why its metadata is present. Work membership and read permission alone do not make an Artifact part of this Task.",
     "Use kind, category_path, tags, aliases, and keywords so later Sessions can locate the document through the Work Artifact index and full-text search.",
     projectCodeInstructions(toolDomains, toolCatalogVersion),
     "",
@@ -86,7 +88,8 @@ export function buildWorkSessionContext({
     work?.profile ? `Work profile: ${text(work.profile)}` : "",
   ].filter(Boolean);
   const suffix = "\n</corptie_work_session_binding>";
-  assertCoreFits(prefixLines.join("\n") + suffix, maxContextBytes, taskDefinition, requiredArtifacts);
+  const corePrompt = prefixLines.join("\n") + suffix;
+  assertCoreFits(corePrompt, maxContextBytes, taskDefinition, requiredArtifacts);
 
   const optionalArtifacts = (artifactIndex?.items ?? []).filter((item) => item.required !== true);
   const included = [];
@@ -101,15 +104,23 @@ export function buildWorkSessionContext({
     ...(artifactIndex?.omissionReasons ?? {}),
     ...(contextOmitted ? { worker_context_budget: contextOmitted } : {})
   };
-  const optionalSection = (included.length || omittedCount) ? [
-    "Optional Artifact index (metadata only; bodies load on demand):",
-    JSON.stringify({ artifacts: included, omittedCount, omissionReasons }),
-    "Use the exact pinned version/hash shown. A pendingUpdate is an impact notice, not permission to silently change versions."
-  ].join("\n") : "";
-  const prompt = [...prefixLines, optionalSection].filter(Boolean).join("\n") + suffix;
+  const prompt = optionalArtifactPrompt(corePrompt, included, omittedCount, omissionReasons, maxContextBytes);
   assertComplete(prompt, maxContextBytes, taskDefinition, requiredArtifacts);
   return {
     prompt,
+    corePrompt,
+    optionalArtifactSource: Object.freeze({
+      items: Object.freeze([...optionalArtifacts]),
+      upstreamOmitted,
+      upstreamOmissionReasons: Object.freeze({ ...(artifactIndex?.omissionReasons ?? {}) })
+    }),
+    contextIntegrity: Object.freeze({
+      taskId: task.id,
+      taskRevision: taskDefinition.revision,
+      taskDefinitionSha256: sha256(JSON.stringify(taskDefinition)),
+      corePromptSha256: sha256(corePrompt),
+      finalPromptSha256: sha256(prompt)
+    }),
     contextBudget: Object.freeze({
       maxUtf8Bytes: maxContextBytes,
       finalUtf8Bytes: encoder.encode(prompt).byteLength,
@@ -126,9 +137,11 @@ export function mergeWorkerSessionContexts({
   maxContextBytes = DEFAULT_MAX_TURN_CONTEXT_BYTES
 } = {}) {
   if (!baseContext?.prompt) return null;
-  const required = [baseContext, ...requiredContexts, directUserIntentContext, mentionContext].filter((item) => item?.prompt);
-  const requiredPrompt = required.map((item) => item.prompt).join("\n\n");
-  const requiredBytes = encoder.encode(requiredPrompt).byteLength;
+  const requiredTail = [...requiredContexts, directUserIntentContext, mentionContext]
+    .filter((item) => item?.prompt).map((item) => item.prompt);
+  const compose = (basePrompt) => [basePrompt, ...requiredTail].join("\n\n");
+  const corePrompt = baseContext.corePrompt ?? baseContext.prompt;
+  const requiredBytes = encoder.encode(compose(corePrompt)).byteLength;
   if (requiredBytes > maxContextBytes) {
     throw contextError(
       "WORK_SESSION_CONTEXT_INCOMPLETE",
@@ -136,15 +149,49 @@ export function mergeWorkerSessionContexts({
       { missingFields: [], maxUtf8Bytes: maxContextBytes, requiredUtf8Bytes: requiredBytes }
     );
   }
+  const source = baseContext.optionalArtifactSource;
+  let selectedBasePrompt = baseContext.prompt;
+  let selectedCount = source?.items.length ?? 0;
+  let omissionReasons = baseContext.contextBudget?.omissionReasons ?? {};
+  if (source) {
+    selectedBasePrompt = corePrompt;
+    selectedCount = 0;
+    for (let count = 0; count <= source.items.length; count += 1) {
+      const omitted = source.upstreamOmitted + source.items.length - count;
+      const reasons = {
+        ...source.upstreamOmissionReasons,
+        ...(source.items.length > count ? { worker_context_budget: source.items.length - count } : {})
+      };
+      const candidate = optionalArtifactPrompt(corePrompt, source.items.slice(0, count), omitted, reasons,
+        baseContext.contextBudget?.maxUtf8Bytes ?? DEFAULT_MAX_CONTEXT_BYTES);
+      if (!candidate || encoder.encode(compose(candidate)).byteLength > maxContextBytes) break;
+      selectedBasePrompt = candidate;
+      selectedCount = count;
+    }
+    omissionReasons = {
+      ...source.upstreamOmissionReasons,
+      ...(source.items.length > selectedCount ? { worker_context_budget: source.items.length - selectedCount } : {})
+    };
+  }
+  const requiredPrompt = compose(selectedBasePrompt);
   const memoryFits = memoryContext?.prompt
     && encoder.encode(`${requiredPrompt}\n\n${memoryContext.prompt}`).byteLength <= maxContextBytes;
   const prompt = memoryFits ? `${requiredPrompt}\n\n${memoryContext.prompt}` : requiredPrompt;
   return {
     ...baseContext,
     prompt,
+    contextIntegrity: baseContext.contextIntegrity ? Object.freeze({
+      ...baseContext.contextIntegrity,
+      finalPromptSha256: sha256(prompt)
+    }) : null,
     memoryRecall: memoryFits ? memoryContext.memoryRecall ?? null : null,
     contextBudget: Object.freeze({
       ...(baseContext.contextBudget ?? {}),
+      finalUtf8Bytes: encoder.encode(selectedBasePrompt).byteLength,
+      omittedOptionalArtifacts: source
+        ? source.upstreamOmitted + source.items.length - selectedCount
+        : baseContext.contextBudget?.omittedOptionalArtifacts ?? 0,
+      omissionReasons: Object.freeze(omissionReasons),
       maxTurnUtf8Bytes: maxContextBytes,
       finalTurnUtf8Bytes: encoder.encode(prompt).byteLength,
       memoryContextOmitted: Boolean(memoryContext?.prompt && !memoryFits)
@@ -180,11 +227,23 @@ function fitsWithOptional(prefixLines, artifacts, artifactIndex, suffix, maximum
     ...(contextOmitted ? { worker_context_budget: contextOmitted } : {})
   };
   const section = [
-    "Optional Artifact index (metadata only; bodies load on demand):",
+    "Optional Artifact index (metadata only; bodies load on demand; never defines the bound Task):",
     JSON.stringify({ artifacts, omittedCount, omissionReasons }),
     "Use the exact pinned version/hash shown. A pendingUpdate is an impact notice, not permission to silently change versions."
   ].join("\n");
   return encoder.encode([...prefixLines, section].join("\n") + suffix).byteLength <= maximum;
+}
+
+function optionalArtifactPrompt(corePrompt, artifacts, omittedCount, omissionReasons, maximum) {
+  if (!artifacts.length && !omittedCount) return corePrompt;
+  const section = [
+    "Optional Artifact index (metadata only; bodies load on demand; never defines the bound Task):",
+    JSON.stringify({ artifacts, omittedCount, omissionReasons }),
+    "Use the exact pinned version/hash shown. A pendingUpdate is an impact notice, not permission to silently change versions."
+  ].join("\n");
+  const suffix = "\n</corptie_work_session_binding>";
+  const prompt = corePrompt.slice(0, -suffix.length) + "\n" + section + suffix;
+  return encoder.encode(prompt).byteLength <= maximum ? prompt : artifacts.length ? null : corePrompt;
 }
 
 function assertCoreFits(prompt, maximum, taskDefinition, requiredArtifacts) {
@@ -216,6 +275,10 @@ function contextError(code, message, details = {}) {
   error.statusCode = 409;
   error.details = details;
   return error;
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function projectCodeInstructions(toolDomains, toolCatalogVersion) {

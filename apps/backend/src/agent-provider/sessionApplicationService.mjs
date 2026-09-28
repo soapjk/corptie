@@ -694,6 +694,20 @@ export class SessionApplicationService {
     } catch (error) {
       throw withDispatchStateNotSent(error);
     }
+    if (sessionContext?.contextIntegrity) {
+      console.info(`[worker-context-dispatch] ${JSON.stringify({
+        sessionId: dispatchReference.sessionId,
+        providerId: dispatchReference.providerId,
+        taskId: sessionContext.contextIntegrity.taskId,
+        taskRevision: sessionContext.contextIntegrity.taskRevision,
+        taskDefinitionSha256: sessionContext.contextIntegrity.taskDefinitionSha256,
+        corePromptSha256: sessionContext.contextIntegrity.corePromptSha256,
+        finalPromptSha256: sessionContext.contextIntegrity.finalPromptSha256,
+        finalUtf8Bytes: sessionContext.contextBudget?.finalTurnUtf8Bytes ?? null,
+        omittedOptionalArtifacts: sessionContext.contextBudget?.omittedOptionalArtifacts ?? 0,
+        omissionReasons: sessionContext.contextBudget?.omissionReasons ?? {}
+      })}`);
+    }
     return this.registry.invoke(
       dispatchReference.providerId,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
