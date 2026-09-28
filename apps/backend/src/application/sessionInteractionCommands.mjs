@@ -1,5 +1,5 @@
 import { approvalRequestIsCurrent } from "./clientSessionAPI.mjs";
-import { validateInteractionAnswers } from "./interactionInput.mjs";
+import { validateInteractionAnswers, withSubmittedUserInputAnswers } from "./interactionInput.mjs";
 
 // Session interaction command boundary; pending input dispatches belong to this
 // instance, while durable item status stays in the shared timeline authority.
@@ -135,7 +135,10 @@ export function createSessionInteractionCommands({
       }
       const current = store.getSessionItem(reference.sessionId, item.id);
       if (current && ["pending", "dispatching", "submitted"].includes(current.status)) {
-        store.upsertTimelineItemProjection(reference.sessionId, { ...current, status: cancelling ? "cancelled" : "submitted" });
+        store.upsertTimelineItemProjection(reference.sessionId, {
+          ...(cancelling ? current : withSubmittedUserInputAnswers(current, input.answers)),
+          status: cancelling ? "cancelled" : "submitted"
+        });
       }
       emitEvent("SessionUserInputResponded", { sessionId: reference.sessionId, itemId: item.id,
         status: cancelling ? "cancelled" : "submitted" }, { sessionId: reference.sessionId, source });

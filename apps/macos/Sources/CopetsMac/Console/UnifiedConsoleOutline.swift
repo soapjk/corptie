@@ -147,7 +147,7 @@ extension UnifiedConsoleView {
             }
             .padding(.horizontal, ConsoleWorkOutlineMetrics.groupHorizontalInset)
             .padding(.vertical, 4)
-            .background(ConsoleOverlayScroller())
+            .background(ConsoleOverlayScroller(placeOnLeadingEdge: true))
         }
         .scrollIndicators(.automatic)
     }

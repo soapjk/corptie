@@ -25,6 +25,32 @@ export function validateInteractionAnswers(userInput, answers) {
   return true;
 }
 
+// Keep declared option labels for the checked state of the original card.
+export function selectedUserInputOptions(userInput, answers) {
+  const selectedOptions = {};
+  for (const question of userInput?.questions ?? []) {
+    if (!Array.isArray(question?.options)) continue;
+    const declared = new Set(question.options.map(option => option.label));
+    const values = answers?.[question.id];
+    const selected = Array.isArray(values) ? values.filter(value => declared.has(value)) : [];
+    if (selected.length) selectedOptions[question.id] = selected;
+  }
+  return selectedOptions;
+}
+
+export function withSubmittedUserInputAnswers(item, answers) {
+  let metadata = {};
+  try { metadata = JSON.parse(item.rawMetadataJSON) ?? {}; } catch { /* Legacy item. */ }
+  const userInput = item.userInput ?? metadata.userInput;
+  if (!userInput) return item;
+  return {
+    ...item,
+    rawMetadataJSON: JSON.stringify({ ...metadata,
+      userInput: { ...userInput, submittedAnswers: answers,
+        selectedOptions: selectedUserInputOptions(userInput, answers) } })
+  };
+}
+
 export function publicUserInput(userInput) {
   if (userInput?.kind != null && !["question", "form", "url", "permissions"].includes(userInput.kind)) return null;
   if (userInput?.responseMode != null && !["message", "request"].includes(userInput.responseMode)) return null;
@@ -60,7 +86,12 @@ export function publicUserInput(userInput) {
       ...(question.required === false ? { required: false } : {}),
       options });
   }
+  const selectedOptions = selectedUserInputOptions(userInput, userInput.selectedOptions);
+  const submittedAnswers = validateInteractionAnswers(userInput, userInput.submittedAnswers)
+    ? userInput.submittedAnswers : null;
   return { schemaVersion: 1, isBlocking: userInput.isBlocking === true, questions,
+    ...(Object.keys(selectedOptions).length ? { selectedOptions } : {}),
+    ...(submittedAnswers ? { submittedAnswers } : {}),
     ...(userInput.kind ? { kind: userInput.kind } : {}),
     ...(userInput.responseMode ? { responseMode: userInput.responseMode } : {}),
     ...(userInput.canCancel === true ? { canCancel: true } : {}),

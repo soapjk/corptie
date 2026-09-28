@@ -67,7 +67,7 @@ public struct WorkGroupCardSurface: ViewModifier {
     public func body(content: Content) -> some View {
         content.padding(.horizontal, 6).padding(.vertical, 5)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.black.opacity(0.065),
+            .background(Color.primary.opacity(0.065),
                 in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }

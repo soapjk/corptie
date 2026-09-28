@@ -29,15 +29,17 @@ struct PadInspectorResources: View {
     private func section(_ key: String) -> ClientInspectorValue { store.sections[key] ?? .null }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 12) {
             connectionStatus
             taskControls
             if store.snapshot?.taskDefinition?["lifecycleState"].text == "done" { taskWorktree }
             references
             if store.snapshot?.workId != nil { artifacts; memories }
-            schedules
-            recalls
-            turnAnalysis
+            if !section("schedules").items.isEmpty { schedules }
+            if !section("recalls").items.isEmpty { recalls.modifier(ConversationDetailModuleSurface()) }
+            if section("turn")["identity"]["turnExecutionId"] != .null {
+                turnAnalysis.modifier(ConversationDetailModuleSurface())
+            }
             environment
         }
         .sheet(item: $editor) { edit in
@@ -91,7 +93,7 @@ struct PadInspectorResources: View {
     }
 
     private var references: some View {
-        ConversationInspectorSection(title: "引用内容", systemImage: "link") {
+        ConversationDetailModuleCard(title: "引用内容", systemImage: "link") {
             Menu("添加引用", systemImage: "plus") {
                 Button("从 iPad 导入文件…") { importAsArtifact = false; importing = true }
                 ForEach([("localFile", "Mac 本地文件"), ("webURL", "网页链接"), ("work", "Work"),
@@ -152,7 +154,7 @@ struct PadInspectorResources: View {
     }
 
     private var artifacts: some View {
-        ConversationInspectorSection(title: store.snapshot?.taskId == nil ? "Artifacts" : "Artifact 引用", systemImage: "doc.on.doc") {
+        ConversationDetailModuleCard(title: store.snapshot?.taskId == nil ? "Artifacts" : "Artifact 引用", systemImage: "doc.on.doc") {
             Button("创建 Artifact", systemImage: "plus") {
                 editor = .init(title: "创建 Artifact", action: "artifact.create", fields: ["mimeType": .string("text/markdown")],
                     inputs: [.init(key: "title", label: "标题"), .init(key: "summary", label: "摘要"), .init(key: "content", label: "正文", multiline: true)])
@@ -199,7 +201,7 @@ struct PadInspectorResources: View {
     }
 
     private var memories: some View {
-        ConversationInspectorSection(title: store.snapshot?.taskId == nil ? "Work 记忆" : "Task 记忆", systemImage: "brain") {
+        ConversationDetailModuleCard(title: store.snapshot?.taskId == nil ? "Work 记忆" : "Task 记忆", systemImage: "brain") {
             Button("记录记忆", systemImage: "plus") {
                 editor = .init(title: "记录记忆", action: "memory.create", inputs: [
                     .init(key: "kind", label: "类型", choices: ["fact", "lesson", "preference", "procedure", "dev_experience", "feedback", "episodic", "skill"].map { ($0, $0) }),
@@ -238,7 +240,7 @@ struct PadInspectorResources: View {
     }
     @ViewBuilder private var taskControls: some View {
         if let definition = store.snapshot?.taskDefinition {
-            ConversationInspectorSection(title: "Task 摘要与设置", systemImage: "checklist") {
+            ConversationDetailModuleCard(title: "Task 摘要与设置", systemImage: "checklist") {
                 let summary = definition["summary"]["content"]
                 ForEach(["messageSummary", "focus", "progress", "nextAction"], id: \.self) { key in
                     if let text = summary[key].text, !text.isEmpty { ConversationDetailText(text: text) }
@@ -258,7 +260,7 @@ struct PadInspectorResources: View {
         }
     }
     private var schedules: some View {
-        ConversationInspectorSection(title: "定时任务", systemImage: "clock.badge") {
+        ConversationDetailModuleCard(title: "定时任务", systemImage: "clock.badge") {
             ForEach(section("schedules").items, id: \.inspectorID) { task in
                 VStack(alignment: .leading, spacing: 3) {
                     Text(task["name"].text ?? "定时任务")
@@ -269,7 +271,7 @@ struct PadInspectorResources: View {
         }
     }
     private var taskWorktree: some View {
-        ConversationInspectorSection(title: "Worktree", systemImage: "arrow.triangle.branch") {
+        ConversationDetailModuleCard(title: "Worktree", systemImage: "arrow.triangle.branch") {
             if worktree != .null {
                 Text(worktree["worktree"]["branchName"].text ?? worktree["status"].text ?? "")
                 Text(worktree["worktree"]["path"].text ?? "").font(.caption.monospaced()).textSelection(.enabled)
@@ -325,7 +327,7 @@ struct PadInspectorResources: View {
         }
     }
     private var environment: some View {
-        ConversationInspectorSection(title: "工作空间与 Provider", systemImage: "cpu") {
+        ConversationDetailModuleCard(title: "工作空间与 Provider", systemImage: "cpu") {
             if let cwd = store.snapshot?.environment["cwd"].text { Text(cwd).font(.caption.monospaced()).textSelection(.enabled); ShareLink("分享工作空间路径", item: cwd) }
             Menu("切换 Provider") {
                 ForEach(section("providers").items, id: \.inspectorID) { provider in

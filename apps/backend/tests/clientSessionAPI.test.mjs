@@ -189,7 +189,7 @@ test("uncertain approval outcome remains non-replayable after service recreation
   } finally { await f.close(); }
 });
 
-test("device multi-question input submits once without storing secret answers", async () => {
+test("device multi-question input submits once and retains the complete answer on its card", async () => {
   const f = await fixture();
   try {
     const item = { id: "input:one", turnId: "turn:one", type: "userInput",
@@ -197,7 +197,7 @@ test("device multi-question input submits once without storing secret answers", 
       rawMetadataJSON: JSON.stringify({ userInput: {
         schemaVersion: 1, isBlocking: true, questions: [
           { id: "route", header: "Route", question: "Choose route", isOther: false,
-            isSecret: false, options: [{ label: "A", description: "Fast" }] },
+            isSecret: true, options: [{ label: "A", description: "Fast" }] },
           { id: "token", header: "Token", question: "Enter token", isOther: false,
             isSecret: true, options: null }
         ]
@@ -222,7 +222,11 @@ test("device multi-question input submits once without storing secret answers", 
     const result = await api.userInput(identity, "session:test", { itemId: item.id, answers });
     assert.equal(result.status, "submitted");
     assert.deepEqual(calls[0][1], { itemId: item.id, answers });
-    assert.equal(JSON.stringify(f.store.getSessionItem("session:test", item.id)).includes("secret-value"), false);
+    assert.deepEqual(f.store.getSessionItem("session:test", item.id).userInput.submittedAnswers, answers);
+    assert.deepEqual(f.store.getSessionItem("session:test", item.id).userInput.selectedOptions, { route: ["A"] });
+    const completedPage = await api.messages(identity, "session:test", new URLSearchParams());
+    assert.deepEqual(completedPage.items[0].userInput.selectedOptions, { route: ["A"] });
+    assert.deepEqual(completedPage.items[0].userInput.submittedAnswers, answers);
     assert.equal(JSON.stringify(result).includes("secret-value"), false);
     const restarted = new ClientSessionAPI({ store: f.store, ...callbacks,
       respondToUserInput: async () => assert.fail("submitted input must not replay") });

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ClientSessionAPI } from "../src/application/clientSessionAPI.mjs";
+import { withSubmittedUserInputAnswers } from "../src/application/interactionInput.mjs";
 import { ProviderEventProjector } from "../src/application/providerEventProjector.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
@@ -235,7 +236,8 @@ test("input submission and native resolution update one item without reviving a 
     const item = { id: "input:one", turnId: "turn:one", turnStatus: "blocked",
       type: "userInput", text: "Choose route", status: "pending",
       rawMetadataJSON: JSON.stringify({ userInput: {
-        schemaVersion: 1, isBlocking: true, questions: [{ id: "route", question: "Choose route" }]
+        schemaVersion: 1, isBlocking: true, questions: [{ id: "route", question: "Choose route",
+          isSecret: false, options: [{ label: "A", description: "Fast" }] }]
       } }) };
     projector.project({ binding, event: event("turn.started") });
     projector.project({ binding, event: event("interaction.requested", { itemId: item.id,
@@ -244,8 +246,14 @@ test("input submission and native resolution update one item without reviving a 
       payload: { item: { ...item, status: "submitted" } } }) });
     assert.equal(store.getSession(binding.sessionId).status, "blocked");
     assert.equal(store.getSessionItem(binding.sessionId, item.id).status, "submitted");
+    store.upsertTimelineItemProjection(binding.sessionId, {
+      ...withSubmittedUserInputAnswers(store.getSessionItem(binding.sessionId, item.id), { route: ["A"] }),
+      status: "submitted"
+    });
     projector.project({ binding, event: event("interaction.resolved", { itemId: item.id,
       payload: { item: { ...item, status: "submitted", turnStatus: "inProgress" } } }) });
+    assert.deepEqual(store.getSessionItem(binding.sessionId, item.id).userInput.selectedOptions, { route: ["A"] });
+    assert.deepEqual(store.getSessionItem(binding.sessionId, item.id).userInput.submittedAnswers, { route: ["A"] });
     assert.equal(store.getSession(binding.sessionId).status, "running");
     assert.equal(store.getItems(binding.sessionId).filter((candidate) => candidate.id === item.id).length, 1);
     projector.project({ binding, event: event("turn.completed") });

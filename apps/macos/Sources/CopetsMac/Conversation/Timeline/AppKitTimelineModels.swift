@@ -8,6 +8,9 @@ struct AppKitChatTimelineRow: Identifiable {
     var forkUnavailableReason: String? = nil
     var timeSeparatorText: String? = nil
     var isWorkspaceCard = false
+    var userInput: ConversationUserInput? = nil
+    var userInputStatus: String? = nil
+    var sessionID: String? = nil
     typealias ProcessState = ConversationProcessState
 
     struct Action: Identifiable {
@@ -15,7 +18,6 @@ struct AppKitChatTimelineRow: Identifiable {
             case forkMessage(itemID: String)
             case codexApproval(CodexApprovalOption)
             case ptyChoice(CodexApprovalOption, choiceID: String)
-            case userInput(itemID: String)
             case sendMessage(String)
             case collaborationConfirmation(id: String, approve: Bool)
             case reviewChanges(turnID: String)

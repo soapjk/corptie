@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import CorptieClientCore
+import CorptieConversation
 @preconcurrency import UserNotifications
 
 /// Feature state and the single event subscription outlive individual navigation pages.
@@ -64,7 +65,7 @@ struct PadAppShell: View {
             }
         }
         .background {
-            Color(uiColor: .systemGroupedBackground)
+            (tab == .workspace ? WorkbenchCanvasSurface.color : Color(uiColor: .systemGroupedBackground))
                 .ignoresSafeArea()
         }
         .background { PadKeyboardDismissal().frame(width: 0, height: 0) }
