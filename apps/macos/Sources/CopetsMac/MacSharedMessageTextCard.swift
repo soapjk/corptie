@@ -35,14 +35,24 @@ struct MacSharedMessageTextCard: View {
     }
 
     var body: some View {
-        Group {
-            if row.nativeStyle == .process { processCard }
-            else { messageCard }
+        VStack(spacing: 0) {
+            if let timeSeparatorText = row.timeSeparatorText {
+                Text(timeSeparatorText)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 28, maxHeight: 28)
+                    .accessibilityLabel(L10nFormat("Time: %@", timeSeparatorText))
+                    .accessibilityIdentifier("chat.timeline.time-separator")
+            }
+            Group {
+                if row.nativeStyle == .process { processCard }
+                else { messageCard }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity,
+                alignment: row.nativeStyle == .user ? .topTrailing : .topLeading)
+            .padding(.horizontal, 2)
+            .padding(.top, 1)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity,
-            alignment: row.nativeStyle == .user ? .topTrailing : .topLeading)
-        .padding(.horizontal, 2)
-        .padding(.top, 1)
     }
 
     private var processCard: some View {
@@ -79,9 +89,9 @@ struct MacSharedMessageTextCard: View {
 
     private var messageCard: some View {
         MessageTextCard(messageID: row.id, role: row.nativeStyle == .user ? .user : .agent,
-            timestamp: row.hoverTimestamp, showsActions: row.showsMessageActionBar,
+            timestamp: "", showsActions: false,
             actionsAlwaysVisible: false, cardWidth: layout.cardWidth,
-            cardHeight: layout.rowHeight - (row.showsMessageActionBar ? 28 : 2),
+            cardHeight: layout.rowHeight - row.timeSeparatorHeight - (row.showsMessageStatusBar ? 28 : 2),
             status: presentedMessageStatus, copy: copy) {
             VStack(alignment: .leading, spacing: 0) {
                 if row.nativeStyle == .user && !row.images.isEmpty {
@@ -132,6 +142,47 @@ struct MacSharedMessageTextCard: View {
                 }
             }
         }
+        .contextMenu { messageContextMenu }
+        .accessibilityActions {
+            if !row.copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button(L10n("Copy Message"), action: copy)
+            }
+            if let itemID = row.forkItemID {
+                Button(L10n("Create Branch")) {
+                    performAction(.init(id: "fork:\(itemID)", label: L10n("Create Branch"),
+                                        isDestructive: false, kind: .forkMessage(itemID: itemID)))
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var messageContextMenu: some View {
+        if !row.contextTimestamp.isEmpty {
+            Button {} label: { Label(L10nFormat("Time: %@", row.contextTimestamp), systemImage: "clock") }
+                .disabled(true)
+            if hasMessageContextAction { Divider() }
+        }
+        if !row.copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            Button(action: copy) { Label(L10n("Copy Message"), systemImage: "doc.on.doc") }
+        }
+        if let itemID = row.forkItemID {
+            Button {
+                performAction(.init(id: "fork:\(itemID)", label: L10n("Create Branch"),
+                                    isDestructive: false, kind: .forkMessage(itemID: itemID)))
+            } label: {
+                Label(L10n("Create Branch"), systemImage: "arrow.triangle.branch")
+            }
+        } else if let reason = row.forkUnavailableReason {
+            Button {} label: { Label(L10n("Create Branch"), systemImage: "arrow.triangle.branch") }
+                .disabled(true)
+            Text(reason)
+        }
+    }
+
+    private var hasMessageContextAction: Bool {
+        !row.copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || row.forkItemID != nil
+            || row.forkUnavailableReason != nil
     }
 
     private var attachmentStrip: some View {

@@ -6,18 +6,17 @@ import CorptieClientCore
 @MainActor
 final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private let cardView = NSView()
+    private let timeSeparatorLabel = NSTextField(labelWithString: "")
     private let titleLabel = NSTextField(labelWithString: "")
     private let metadataLabel = NSTextField(labelWithString: "")
-    private let hoverTimestampLabel = NSTextField(labelWithString: "")
     private let messageStatusButton = NSButton()
     private let label = NativeTimelineTextView()
     private let imageStack = NSStackView()
     private let rawStatusScrollView = NSScrollView()
     private let rawStatusTextView = NSTextView()
     private let disclosureButton = NSButton()
-    private let copyButton = NSButton()
-    private var forkButton: NSButton?
     private var forkItemID: String?
+    private var forkUnavailableReason: String?
     private let messageActionBar = NSStackView()
     private let actionStack = NSStackView()
     private let collaborationSentStatus = NSStackView()
@@ -35,6 +34,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private var cardWidthConstraint: NSLayoutConstraint!
     private var cardLeadingConstraint: NSLayoutConstraint!
     private var cardTrailingConstraint: NSLayoutConstraint!
+    private var cardTopConstraint: NSLayoutConstraint!
     private var cardBottomStandardConstraint: NSLayoutConstraint!
     private var cardBottomWithMessageActionsConstraint: NSLayoutConstraint!
     private var messageActionBarLeadingConstraint: NSLayoutConstraint!
@@ -63,6 +63,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private var timelineActions: [AppKitChatTimelineRow.Action] = []
     private var onAction: ((AppKitChatTimelineRow.Action) -> Void)?
     private var copiedText = ""
+    private var contextTimestamp = ""
     private var hasVisibleMessageStatus = false
     private var messageStatusDetail = ""
     private var representedRowID: String?
@@ -76,6 +77,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         super.init(frame: .zero)
         self.identifier = identifier
         cardView.translatesAutoresizingMaskIntoConstraints = false
+        cardView.identifier = NSUserInterfaceItemIdentifier("chat.timeline.card")
         cardView.wantsLayer = true
         cardView.layer?.cornerCurve = .continuous
         cardView.layer?.cornerRadius = 14
@@ -85,9 +87,14 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         cardView.layer?.shadowOpacity = 0.04
         cardView.layer?.shadowRadius = 8
         cardView.layer?.shadowOffset = CGSize(width: 0, height: -3)
+        timeSeparatorLabel.translatesAutoresizingMaskIntoConstraints = false
+        timeSeparatorLabel.font = .systemFont(ofSize: 10.5, weight: .medium)
+        timeSeparatorLabel.textColor = NativeTimelineCardPalette.mutedText
+        timeSeparatorLabel.alignment = .center
+        timeSeparatorLabel.maximumNumberOfLines = 1
+        timeSeparatorLabel.identifier = NSUserInterfaceItemIdentifier("chat.timeline.time-separator")
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         metadataLabel.translatesAutoresizingMaskIntoConstraints = false
-        hoverTimestampLabel.translatesAutoresizingMaskIntoConstraints = false
         label.translatesAutoresizingMaskIntoConstraints = false
         imageStack.translatesAutoresizingMaskIntoConstraints = false
         imageStack.orientation = .horizontal
@@ -95,7 +102,6 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         imageStack.spacing = 7
         rawStatusScrollView.translatesAutoresizingMaskIntoConstraints = false
         disclosureButton.translatesAutoresizingMaskIntoConstraints = false
-        copyButton.translatesAutoresizingMaskIntoConstraints = false
         messageActionBar.translatesAutoresizingMaskIntoConstraints = false
         messageActionBar.orientation = .horizontal
         messageActionBar.alignment = .centerY
@@ -155,14 +161,6 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         disclosureButton.target = self
         disclosureButton.action = #selector(toggleDisclosure)
         disclosureButton.isHidden = true
-        copyButton.isBordered = false
-        copyButton.identifier = NSUserInterfaceItemIdentifier("chat.timeline.copy")
-        copyButton.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "复制消息")
-        copyButton.imagePosition = .imageOnly
-        copyButton.target = self
-        copyButton.action = #selector(copyText)
-        copyButton.toolTip = "复制消息"
-        copyButton.setAccessibilityLabel("复制消息")
         messageStatusButton.isBordered = false
         messageStatusButton.imagePosition = .imageLeading
         messageStatusButton.imageHugsTitle = true
@@ -171,10 +169,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         messageStatusButton.action = #selector(showMessageStatusDetail)
         messageStatusButton.identifier = NSUserInterfaceItemIdentifier("chat.timeline.message-status")
         messageActionBar.identifier = NSUserInterfaceItemIdentifier("chat.timeline.message-actions")
-        messageActionBar.alphaValue = 0
-        messageActionBar.addArrangedSubview(hoverTimestampLabel)
         messageActionBar.addArrangedSubview(messageStatusButton)
-        messageActionBar.addArrangedSubview(copyButton)
         processButton.isBordered = false
         processButton.alignment = .left
         processButton.imagePosition = .imageLeading
@@ -184,11 +179,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         processButton.identifier = NSUserInterfaceItemIdentifier("chat.timeline.process")
         titleLabel.identifier = NSUserInterfaceItemIdentifier("chat.timeline.title")
         metadataLabel.identifier = NSUserInterfaceItemIdentifier("chat.timeline.metadata")
-        hoverTimestampLabel.identifier = NSUserInterfaceItemIdentifier("chat.timeline.hover-timestamp")
-        hoverTimestampLabel.font = .systemFont(ofSize: 9, weight: .medium)
-        hoverTimestampLabel.textColor = NativeTimelineCardPalette.mutedText
-        hoverTimestampLabel.maximumNumberOfLines = 1
-        hoverTimestampLabel.alphaValue = 1
+        addSubview(timeSeparatorLabel)
         addSubview(cardView)
         addSubview(messageActionBar)
         [
@@ -212,6 +203,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         cardWidthConstraint = cardView.widthAnchor.constraint(equalToConstant: ChatBubbleWidthPolicy.maximumWidth)
         cardLeadingConstraint = cardView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2)
         cardTrailingConstraint = cardView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2)
+        cardTopConstraint = cardView.topAnchor.constraint(equalTo: topAnchor, constant: 1)
         cardBottomStandardConstraint = cardView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -1)
         cardBottomWithMessageActionsConstraint = cardView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -27)
         messageActionBarLeadingConstraint = messageActionBar.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 2)
@@ -237,8 +229,12 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         NSLayoutConstraint.activate([
             cardWidthConstraint,
             cardLeadingConstraint,
-            cardView.topAnchor.constraint(equalTo: topAnchor, constant: 1),
+            cardTopConstraint,
             cardBottomStandardConstraint,
+            timeSeparatorLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            timeSeparatorLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            timeSeparatorLabel.topAnchor.constraint(equalTo: topAnchor, constant: 3),
+            timeSeparatorLabel.heightAnchor.constraint(equalToConstant: 18),
             disclosureButton.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
             disclosureButton.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 8),
             disclosureButton.widthAnchor.constraint(equalToConstant: 16),
@@ -247,8 +243,6 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             titleLabel.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 9),
             metadataLabel.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -10),
             metadataLabel.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
-            copyButton.widthAnchor.constraint(equalToConstant: 22),
-            copyButton.heightAnchor.constraint(equalToConstant: 22),
             messageActionBar.topAnchor.constraint(equalTo: cardView.bottomAnchor, constant: 2),
             messageActionBar.heightAnchor.constraint(equalToConstant: 22),
             label.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
@@ -331,17 +325,19 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         configureCollaborationSentStatus(row.showsCollaborationSentStatus)
         configureImages(row.images, rowID: row.id)
         copiedText = row.copyText
+        contextTimestamp = row.contextTimestamp
         forkItemID = row.forkItemID
-        configureForkButton()
+        forkUnavailableReason = row.forkUnavailableReason
+        configureContextMenu()
         configureMessageStatus(row.messageStatus)
-        let showsMessageActions = row.showsMessageActionBar
+        let showsMessageStatus = row.showsMessageStatusBar
         NSLayoutConstraint.deactivate([
             cardBottomStandardConstraint,
             cardBottomWithMessageActionsConstraint,
             messageActionBarLeadingConstraint,
             messageActionBarTrailingConstraint
         ])
-        if showsMessageActions {
+        if showsMessageStatus {
             cardBottomWithMessageActionsConstraint.isActive = true
             if row.nativeStyle == .user {
                 messageActionBarTrailingConstraint.isActive = true
@@ -351,10 +347,11 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         } else {
             cardBottomStandardConstraint.isActive = true
         }
-        messageActionBar.isHidden = !showsMessageActions
-        messageActionBar.alphaValue = hasVisibleMessageStatus ? 1 : 0
-        copyButton.isHidden = copiedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        copyButton.alphaValue = 1
+        messageActionBar.isHidden = !showsMessageStatus
+        messageActionBar.alphaValue = 1
+        timeSeparatorLabel.stringValue = row.timeSeparatorText ?? ""
+        timeSeparatorLabel.isHidden = row.timeSeparatorText == nil
+        cardTopConstraint.constant = row.timeSeparatorText == nil ? 1 : 29
         cardLeadingConstraint.isActive = row.nativeStyle != .user
         cardTrailingConstraint.isActive = row.nativeStyle == .user
         let hasProcess = row.processCount != nil
@@ -414,9 +411,6 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             }
             processButtonBottomConstraint.isActive = true
         }
-        hoverTimestampLabel.stringValue = row.hoverTimestamp
-        hoverTimestampLabel.isHidden = row.hoverTimestamp.isEmpty || isStandaloneProcess || hasVisibleMessageStatus
-        hoverTimestampLabel.alphaValue = 1
         label.isHidden = isStandaloneProcess && !row.isExpanded
         processSeparator.isHidden = !hasProcess || isStandaloneProcess
         processButton.isHidden = !hasProcess
@@ -643,34 +637,6 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         }
     }
 
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
-            owner: self
-        ))
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.12
-            if !hasVisibleMessageStatus {
-                messageActionBar.animator().alphaValue = messageActionBar.isHidden ? 0 : 1
-            }
-        }
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.12
-            if !hasVisibleMessageStatus {
-                messageActionBar.animator().alphaValue = 0
-            }
-        }
-    }
-
     private func configureMessageStatus(_ status: UserMessageStatusPresentation?) {
         hasVisibleMessageStatus = status != nil
         guard let status else {
@@ -724,30 +690,69 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
 
     @objc private func forkMessage() {
         guard let forkItemID else { return }
-        onAction?(.init(id: "fork:\(forkItemID)", label: "创建分支", isDestructive: false,
+        onAction?(.init(id: "fork:\(forkItemID)", label: L10n("Create Branch"), isDestructive: false,
                         kind: .forkMessage(itemID: forkItemID)))
     }
 
-    private func configureForkButton() {
-        if forkItemID != nil, forkButton == nil {
-            let button = NSButton()
-            button.translatesAutoresizingMaskIntoConstraints = false
-            button.isBordered = false
-            button.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: "从此处创建分支")
-            button.imagePosition = .imageOnly
-            button.target = self
-            button.action = #selector(forkMessage)
-            button.toolTip = "从这一轮创建分支"
-            button.setAccessibilityLabel("从这一轮创建分支")
-            button.identifier = NSUserInterfaceItemIdentifier("chat.timeline.fork")
-            messageActionBar.addArrangedSubview(button)
-            NSLayoutConstraint.activate([
-                button.widthAnchor.constraint(equalToConstant: 22),
-                button.heightAnchor.constraint(equalToConstant: 22)
-            ])
-            forkButton = button
+    private func configureContextMenu() {
+        guard representedProcessRow == nil else {
+            self.menu = nil
+            cardView.menu = nil
+            label.menu = nil
+            setAccessibilityCustomActions([])
+            return
         }
-        forkButton?.isHidden = forkItemID == nil
+        let menu = NSMenu()
+        if !contextTimestamp.isEmpty {
+            let timestamp = NSMenuItem(title: L10nFormat("Time: %@", contextTimestamp), action: nil, keyEquivalent: "")
+            timestamp.image = NSImage(systemSymbolName: "clock", accessibilityDescription: nil)
+            timestamp.isEnabled = false
+            timestamp.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.timestamp")
+            menu.addItem(timestamp)
+        }
+        let hasCopy = !copiedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasFork = forkItemID != nil || forkUnavailableReason != nil
+        if !menu.items.isEmpty, hasCopy || hasFork { menu.addItem(.separator()) }
+        if hasCopy {
+            let copy = NSMenuItem(title: L10n("Copy Message"), action: #selector(copyText), keyEquivalent: "")
+            copy.target = self
+            copy.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)
+            copy.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.copy")
+            menu.addItem(copy)
+        }
+        if forkItemID != nil {
+            let fork = NSMenuItem(title: L10n("Create Branch"), action: #selector(forkMessage), keyEquivalent: "")
+            fork.target = self
+            fork.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: nil)
+            fork.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.fork")
+            menu.addItem(fork)
+        } else if let forkUnavailableReason {
+            let fork = NSMenuItem(title: L10n("Create Branch"), action: nil, keyEquivalent: "")
+            fork.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: nil)
+            fork.isEnabled = false
+            fork.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.fork")
+            menu.addItem(fork)
+            let reason = NSMenuItem(title: forkUnavailableReason, action: nil, keyEquivalent: "")
+            reason.isEnabled = false
+            reason.indentationLevel = 1
+            reason.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.fork-reason")
+            menu.addItem(reason)
+        }
+        self.menu = menu.items.isEmpty ? nil : menu
+        cardView.menu = self.menu
+        label.menu = self.menu
+        var accessibilityActions: [NSAccessibilityCustomAction] = []
+        if hasCopy {
+            accessibilityActions.append(NSAccessibilityCustomAction(
+                name: L10n("Copy Message"), target: self, selector: #selector(copyText)
+            ))
+        }
+        if forkItemID != nil {
+            accessibilityActions.append(NSAccessibilityCustomAction(
+                name: L10n("Create Branch"), target: self, selector: #selector(forkMessage)
+            ))
+        }
+        setAccessibilityCustomActions(accessibilityActions)
     }
 
     @objc private func toggleDisclosure() {

@@ -51,6 +51,15 @@ test("fork rejects stale binding and pending turns before allocating", async t =
   await assert.rejects(service.create("source", input), { code: "FORK_POINT_UNAVAILABLE" });
   assert.equal(creates(), 0);
 });
+test("fork preview identifies the exact source turn and validates Task priority", async t => {
+  const { service, input } = await fixture(t);
+  const preview = await service.preview("source", "a1");
+  assert.equal(preview.sourceSessionTitle, "source");
+  assert.equal(preview.sourceTurnNumber, 1);
+  assert.equal(preview.sourceExcerpt, "first");
+  assert.equal(preview.priority, "medium");
+  await assert.rejects(service.create("source", { ...input, priority: "immediate" }), { code: "INVALID_FORK_INPUT" });
+});
 test("Work Chat cannot fork", async t => {
   const { store, service, input, creates } = await fixture(t);
   const getSession = store.getSession.bind(store);
@@ -75,12 +84,15 @@ test("Task fork retains Work and Agent, applies confirmed fields, and never disp
     store.bindSessionToTask("child", command.taskId, work.id);
     return { status: "ready", session: store.getSession("child") };
   };
-  const result = await service.create("source", { ...input, description: "新目标", acceptanceCriteria: "新标准" });
+  const result = await service.create("source", { ...input, description: "新目标", acceptanceCriteria: "新标准",
+    verificationCriteria: "新验证", priority: "high" });
   const child = store.getTask(result.taskId);
   assert.notEqual(child.id, parent.id);
   assert.equal(child.work_id, work.id);
   assert.equal(child.description, "新目标");
   assert.equal(child.acceptance_criteria, "新标准");
+  assert.equal(child.verification_criteria, "新验证");
+  assert.equal(child.priority, "high");
   assert.equal(result.session.sessionKind, "worker");
   assert.equal(creates(), 0);
   assert.equal(store.getTask(parent.id).description, "原描述");

@@ -339,6 +339,8 @@ final class NativeTimelineLayoutCache {
         let showsHeader: Bool
         let actionCount: Int
         let showsCollaborationSentStatus: Bool
+        let showsMessageStatusBar: Bool
+        let hasTimeSeparator: Bool
         let widthBucket: Int
         let isWorkspaceCard: Bool
         let imagePaths: [String]
@@ -393,6 +395,8 @@ final class NativeTimelineLayoutCache {
             showsHeader: row.showsHeader,
             actionCount: row.actions.count,
             showsCollaborationSentStatus: row.showsCollaborationSentStatus,
+            showsMessageStatusBar: row.showsMessageStatusBar,
+            hasTimeSeparator: row.timeSeparatorText != nil,
             widthBucket: Int((normalizedWidth * 2).rounded()),
             isWorkspaceCard: row.isWorkspaceCard,
             imagePaths: row.images.map { $0.managedPath }
@@ -497,15 +501,15 @@ final class NativeTimelineLayoutCache {
                 let footerHeight: CGFloat = row.processCount == nil ? 0 : 24
                 let actionHeight: CGFloat = row.actions.isEmpty ? 0 : 34
                 let sentStatusHeight: CGFloat = row.showsCollaborationSentStatus ? 30 : 0
-                let messageActionBarHeight: CGFloat = row.showsMessageActionBar ? 27 : 0
+                let messageStatusBarHeight: CGFloat = row.showsMessageStatusBar ? 27 : 0
                 // Replaces the ordinary 6pt title-to-body gap with
                 // 8pt + 92pt summary + 10pt, for a net 104pt addition.
                 let collaborationRouteHeight: CGFloat = row.collaborationRoute == nil ? 0 : 104
                 let verticalChrome: CGFloat = (row.showsHeader ? 39 : 20) + collaborationRouteHeight
                 rowHeight = max(
                     row.showsHeader ? 54 : 30,
-                    textHeight + verticalChrome + footerHeight + actionHeight + sentStatusHeight + messageActionBarHeight
-                ) + (row.images.isEmpty ? 0 : 96)
+                    textHeight + verticalChrome + footerHeight + actionHeight + sentStatusHeight + messageStatusBarHeight
+                ) + (row.images.isEmpty ? 0 : 96) + row.timeSeparatorHeight
             }
         }
         let layout = Layout(

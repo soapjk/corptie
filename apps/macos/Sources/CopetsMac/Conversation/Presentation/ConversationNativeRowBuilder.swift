@@ -9,6 +9,7 @@ struct ConversationNativeRowBuilder {
     let sessionTitle: String?
     let workingDirectory: String?
     let allowsFork: Bool
+    let forkUnavailableReason: String?
     let imageURL: (String) -> URL?
 
     func nativeAppKitRow(
@@ -31,7 +32,8 @@ struct ConversationNativeRowBuilder {
         var processPlan: ConversationExecutionPlan?
         var processCurrentStepTitle: String?
         var showsHeader: Bool
-        var hoverTimestamp: String
+        var contextTimestamp: String
+        var messageDate: Date?
         let isCollaboration: Bool
         let collaborationRoute: NativeCollaborationRoutePresentation?
         let actions: [AppKitChatTimelineRow.Action]
@@ -89,7 +91,10 @@ struct ConversationNativeRowBuilder {
             title = collaboration?.title ?? specialEvent?.title ?? (isOrdinaryMessage ? "" : item.title)
             metadata = collaboration?.metadata ?? specialEvent?.metadata ?? (isOrdinaryMessage ? "" : nativeTimelineMetadata(for: item))
             showsHeader = !isOrdinaryMessage
-            hoverTimestamp = isOrdinaryMessage ? nativeTimelineMetadata(for: item) : ""
+            contextTimestamp = isOrdinaryMessage ? nativeTimelineMetadata(for: item) : ""
+            messageDate = isOrdinaryMessage
+                ? item.createdAt.flatMap(ISO8601DateFormatter.corptieThreadItemDate(from:))
+                : nil
             expandableTurnId = nil
             isExpanded = false
             processCount = nil
@@ -148,7 +153,8 @@ struct ConversationNativeRowBuilder {
                 }
             }
             showsHeader = false
-            hoverTimestamp = ""
+            contextTimestamp = ""
+            messageDate = nil
             actions = []
             isPendingInteraction = false
             showsCollaborationSentStatus = false
@@ -176,7 +182,8 @@ struct ConversationNativeRowBuilder {
             processPlan: processPlan,
             processCurrentStepTitle: processCurrentStepTitle,
             showsHeader: showsHeader,
-            hoverTimestamp: hoverTimestamp,
+            contextTimestamp: contextTimestamp,
+            messageDate: messageDate,
             actions: actions,
             isPendingInteraction: isPendingInteraction,
             showsCollaborationSentStatus: showsCollaborationSentStatus,
@@ -184,6 +191,7 @@ struct ConversationNativeRowBuilder {
             images: images
         )
         row.forkItemID = forkItemID(for: entry)
+        row.forkUnavailableReason = forkUnavailableReason(for: entry)
         return row
     }
 
@@ -194,6 +202,17 @@ struct ConversationNativeRowBuilder {
            ["complete", "completed", "interrupted", "cancelled", "failed"].contains(item.turnStatus),
            allowsFork {
             return item.id
+        }
+        return nil
+    }
+
+    func forkUnavailableReason(for entry: ChatDisplayEntry) -> String? {
+        guard !allowsFork, forkUnavailableReason != nil else { return nil }
+        if case .message(let item) = entry.kind,
+           item.type == "agentMessage",
+           item.presentationRole == "final_answer",
+           ["complete", "completed", "interrupted", "cancelled", "failed"].contains(item.turnStatus) {
+            return forkUnavailableReason
         }
         return nil
     }
@@ -313,6 +332,7 @@ struct ConversationNativeRowBuilder {
         var hasher = Hasher()
         hasher.combine(entry.id)
         hasher.combine(forkItemID(for: entry))
+        hasher.combine(forkUnavailableReason(for: entry))
         switch entry.kind {
         case .message(let item):
             hasher.combine(itemSignature(item))
