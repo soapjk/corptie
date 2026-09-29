@@ -44,6 +44,7 @@ public struct ConversationInlineUserInput: View {
         VStack(alignment: .leading, spacing: 12) {
             Label("需要你的输入", systemImage: "questionmark.bubble")
                 .font(.headline)
+                .textSelection(.enabled)
                 .accessibilityAddTraits(.isHeader)
             if isPending {
                 ConversationInputFields(request: request, selected: $selected, typed: $typed,
@@ -66,10 +67,12 @@ public struct ConversationInlineUserInput: View {
                                         showsSubmittedText: (submittedLocally && !cancelledLocally) || status == "submitted",
                                         submittedAnswers: displayedAnswers)
                 Text(statusText).font(.caption).foregroundStyle(.secondary)
+                    .textSelection(.enabled)
             }
             if submitting { ProgressView("正在提交…").controlSize(.small) }
             if let errorText {
                 Text(errorText).font(.caption).foregroundStyle(.red)
+                    .textSelection(.enabled)
                     .accessibilityAddTraits(.updatesFrequently)
             }
         }

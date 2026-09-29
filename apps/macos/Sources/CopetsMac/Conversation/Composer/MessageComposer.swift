@@ -51,6 +51,10 @@ struct MessageComposer: View {
     let sessionId: String
     let draftRepository: ComposerDraftRepository
     let allowsModelSwitch: Bool
+    let status: TaskStatus?
+    let isReady: Bool
+    let notReadyReason: SessionNotReadyReason?
+    let activityStatus: String?
     @FocusState private var isFocused: Bool
     @State private var composerWidth: CGFloat = 0
     @State private var inputHeight = ComposerInputLayout.minimumHeight
@@ -71,12 +75,20 @@ struct MessageComposer: View {
         sessionId: String,
         draftRepository: ComposerDraftRepository,
         modelCatalog: ProviderCatalogStore,
-        allowsModelSwitch: Bool = true
+        allowsModelSwitch: Bool = true,
+        status: TaskStatus?,
+        isReady: Bool,
+        notReadyReason: SessionNotReadyReason?,
+        activityStatus: String?
     ) {
         self.sessionId = sessionId
         _modelCatalog = ObservedObject(wrappedValue: modelCatalog)
         self.draftRepository = draftRepository
         self.allowsModelSwitch = allowsModelSwitch
+        self.status = status
+        self.isReady = isReady
+        self.notReadyReason = notReadyReason
+        self.activityStatus = activityStatus
         let draft = draftRepository.draft(for: sessionId)
         draft.sessionId = sessionId
         _attachedImages = State(initialValue: draft.images)
@@ -86,29 +98,71 @@ struct MessageComposer: View {
     }
 
     var body: some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 0) {
-                if !attachedImages.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 7) {
-                            ForEach(attachedImages) { image in
-                                ComposerImageChip(
-                                    imageURL: backendClient.chatImageURL(
-                                        sessionID: sessionId,
-                                        managedPath: image.managedPath
-                                    ),
-                                    onRemove: { removeAttachedImage(image) }
-                                )
-                            }
-                        }
-                        .padding(.horizontal, 9)
-                        .padding(.top, 8)
-                        .padding(.bottom, 4)
-                    }
-                    .frame(height: 62)
-                }
+        ConversationComposerChrome {
+            ThreadMetaView(sessionID: sessionId, status: status, isReady: isReady,
+                           notReadyReason: notReadyReason, activityStatus: activityStatus)
+        } content: {
+            editorRow
+        }
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(key: ComposerWidthPreferenceKey.self, value: proxy.size.width)
+            }
+        )
+        .onReceive(NotificationCenter.default.publisher(for: .consoleComposerFocusRequested)) { notification in
+            if notification.object as? String == sessionId { editorController.focusIfRequested() }
+        }
+        .onChange(of: attachedImages) { _, images in editorController.draft.images = images }
+        .photosPicker(
+            isPresented: $isShowingPhotoPicker,
+            selection: $selectedPhotoItems,
+            maxSelectionCount: max(1, 8 - attachedImages.count),
+            matching: .images,
+            preferredItemEncoding: .current
+        )
+        .onChange(of: selectedPhotoItems) { _, items in importPhotoItems(items) }
+        .onChange(of: selectedMentions) { _, mentions in editorController.draft.mentions = mentions }
+        .onPreferenceChange(ComposerWidthPreferenceKey.self) { width in composerWidth = width }
+        .task {
+            guard allowsModelSwitch,
+                  backendClient.selectedSession?.id == sessionId else { return }
+            let provider = backendClient.selectedSession?.external?.provider ?? "codex-pty"
+            if modelCatalog.codexModels.isEmpty || modelCatalog.loadedModelProvider != provider {
+                await backendClient.loadModelsForSelectedSession()
+            }
+        }
+        .sheet(isPresented: $isShowingScheduleSheet) {
+            if let session {
+                ScheduledTaskEditorSheet(
+                    session: session,
+                    initialMessage: scheduleSubmission?.text ?? "",
+                    onSaved: clearScheduledSubmissionIfUnchanged
+                )
+                .environmentObject(backendClient)
+            }
+        }
+    }
 
-                HStack(spacing: 2) {
+    private var editorRow: some View {
+        ConversationComposerEditorRow(
+            showsAttachments: !attachedImages.isEmpty,
+            showsModel: allowsModelSwitch && canSwitchModel
+        ) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: ComposerShellMetrics.attachmentSpacing) {
+                    ForEach(attachedImages) { image in
+                        ComposerImageChip(
+                            imageURL: backendClient.chatImageURL(sessionID: sessionId, managedPath: image.managedPath),
+                            onRemove: { removeAttachedImage(image) }
+                        )
+                    }
+                }
+                .padding(.horizontal, 9)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
+            }
+            .frame(height: ComposerShellMetrics.attachmentStripHeight)
+        } editor: {
                 ComposerInputTextView(
                     controller: editorController,
                     placeholder: "Send a instruction",
@@ -130,148 +184,68 @@ struct MessageComposer: View {
                     onMentionCommand: handleMentionCommand,
                     onSubmit: send
                 )
-                    .frame(minWidth: 0, maxWidth: .infinity)
-                    .frame(height: inputHeight)
-                    .popover(
-                        isPresented: mentionMenuPresented,
-                        attachmentAnchor: .point(mentionAnchorPoint),
-                        arrowEdge: .bottom
-                    ) {
-                        ComposerMentionMenu(
-                            candidates: mentionCandidates,
-                            selectedIndex: mentionSelectionIndex,
-                            onSelect: selectMention
-                        )
-                        .frame(
-                            width: ComposerMentionMenuMetrics.width,
-                            height: ComposerMentionMenuMetrics.height(candidateCount: mentionCandidates.count)
-                        )
+                .frame(height: inputHeight)
+                .popover(isPresented: mentionMenuPresented,
+                         attachmentAnchor: .point(mentionAnchorPoint), arrowEdge: .bottom) {
+                    ComposerMentionMenu(candidates: mentionCandidates,
+                                        selectedIndex: mentionSelectionIndex, onSelect: selectMention)
+                        .frame(width: ComposerMentionMenuMetrics.width,
+                               height: ComposerMentionMenuMetrics.height(candidateCount: mentionCandidates.count))
+                }
+                .onTapGesture { isFocused = true }
+        } send: {
+            Button { sendCurrentDraft() } label: {
+                ComposerActionGlyph(systemName: "paperplane.fill", tint: ComposerPalette.softBlue,
+                                    isBusy: backendClient.isSendingMessage, showsSurface: false)
+                    .overlay {
+                        Circle().strokeBorder(ComposerPalette.softBlue.opacity(0.4), lineWidth: 1)
+                            .allowsHitTesting(false)
                     }
-                    .padding(.leading, 10)
-                    .padding(.trailing, 2)
-                    .onTapGesture {
-                        isFocused = true
-                    }
-                    .disabled(false)
-                    .layoutPriority(-1)
-
+                    .conversationGlassControl(tint: ComposerPalette.softBlue)
+                    .contentShape(Circle().inset(by: -8))
+            }
+            .buttonStyle(.plain)
+            .disabled(isSendDisabled)
+            .help(L10n("Send instruction"))
+            .accessibilityLabel(L10n("Send instruction"))
+            .accessibilityIdentifier("conversation-composer-send")
+        } more: {
+            Menu {
                 Button {
-                    sendCurrentDraft()
+                    isShowingPhotoPicker = true
                 } label: {
-                    Group {
-                        if backendClient.isSendingMessage {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Image(systemName: "paperplane.fill")
-                                .font(.system(size: 10, weight: .bold))
-                        }
-                    }
-                    .frame(width: 24, height: 24)
-                    .frame(width: 28, height: 28)
-                    .conversationGlassControl(tint: CorptiePalette.softBlue)
-                    .contentShape(Circle())
+                    Label(isImportingImages ? L10n("正在导入图片…") : L10n("从照片选择"),
+                          systemImage: "photo.on.rectangle")
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(CorptiePalette.softBlue)
-                .disabled(isSendDisabled)
-                .help(L10n("Send instruction"))
-                .accessibilityLabel(L10n("Send instruction"))
-                .accessibilityIdentifier("conversation-composer-send")
-
-                Menu {
-                    Button {
-                        isShowingPhotoPicker = true
-                    } label: {
-                        Label(isImportingImages ? L10n("正在导入图片…") : L10n("从照片选择"),
-                              systemImage: "photo.on.rectangle")
-                    }
-                    .disabled(!canAttachImages || isImportingImages || attachedImages.count >= 8)
-
-                    Button(action: chooseImageFiles) {
-                        Label(L10n("从文件选择"), systemImage: "folder")
-                    }
-                    .disabled(!canAttachImages || isImportingImages || attachedImages.count >= 8)
-
-                    Button {
-                        scheduleSubmission = editorController.submission()
-                        isShowingScheduleSheet = true
-                    } label: {
-                        Label(L10n("创建定时消息"), systemImage: ScheduledSessionAccessibilityID.composerSymbol)
-                    }
-                    .accessibilityIdentifier(ScheduledSessionAccessibilityID.composerEntry)
-
+                .disabled(!canAttachImages || isImportingImages || attachedImages.count >= 8)
+                Button(action: chooseImageFiles) {
+                    Label(L10n("从文件选择"), systemImage: "folder")
+                }
+                .disabled(!canAttachImages || isImportingImages || attachedImages.count >= 8)
+                Button {
+                    scheduleSubmission = editorController.submission()
+                    isShowingScheduleSheet = true
                 } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 10, weight: .semibold))
-                        .frame(width: 24, height: 24)
-                        .frame(width: 28, height: 28)
-                        .conversationGlassControl()
-                        .contentShape(Circle())
+                    Label(L10n("创建定时消息"), systemImage: ScheduledSessionAccessibilityID.composerSymbol)
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .foregroundStyle(CorptiePalette.secondaryText)
-                .frame(width: 28, height: 28)
-                .fixedSize()
-                .help(L10n("更多功能"))
-                .accessibilityLabel(L10n("更多功能"))
-                .accessibilityIdentifier("composer.more-actions")
-                .padding(.trailing, 4)
-                }
+                .accessibilityIdentifier(ScheduledSessionAccessibilityID.composerEntry)
+            } label: {
+                ComposerActionGlyph(systemName: "ellipsis", tint: ComposerPalette.secondaryText,
+                                    weight: .semibold, showsSurface: false)
+                    .contentShape(Circle().inset(by: -8))
             }
-            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-            .modifier(ComposerShellSurface(isFocused: isFocused))
-            .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier], isTargeted: nil) { providers in
-                importDroppedImages(providers)
-            }
-
-            if allowsModelSwitch, canSwitchModel {
-                CodexModelMenu(modelCatalog: modelCatalog, maxWidth: modelMenuMaxWidth)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .frame(width: ComposerShellMetrics.actionHitEdge, height: ComposerShellMetrics.actionHitEdge)
+            .fixedSize()
+            .help(L10n("更多功能"))
+            .accessibilityLabel(L10n("更多功能"))
+            .accessibilityIdentifier("composer.more-actions")
+        } model: {
+            CodexModelMenu(modelCatalog: modelCatalog, maxWidth: modelMenuMaxWidth)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            GeometryReader { proxy in
-                Color.clear.preference(key: ComposerWidthPreferenceKey.self, value: proxy.size.width)
-            }
-        )
-        .onReceive(NotificationCenter.default.publisher(for: .consoleComposerFocusRequested)) { notification in
-            if notification.object as? String == sessionId { editorController.focusIfRequested() }
-        }
-        .onChange(of: attachedImages) { _, images in editorController.draft.images = images }
-        .photosPicker(
-            isPresented: $isShowingPhotoPicker,
-            selection: $selectedPhotoItems,
-            maxSelectionCount: max(1, 8 - attachedImages.count),
-            matching: .images,
-            preferredItemEncoding: .current
-        )
-        .onChange(of: selectedPhotoItems) { _, items in
-            importPhotoItems(items)
-        }
-        .onChange(of: selectedMentions) { _, mentions in editorController.draft.mentions = mentions }
-        .onPreferenceChange(ComposerWidthPreferenceKey.self) { width in
-            composerWidth = width
-        }
-        .task {
-            guard allowsModelSwitch,
-                  backendClient.selectedSession?.id == sessionId else { return }
-            let provider = backendClient.selectedSession?.external?.provider ?? "codex-pty"
-            if modelCatalog.codexModels.isEmpty || modelCatalog.loadedModelProvider != provider {
-                await backendClient.loadModelsForSelectedSession()
-            }
-        }
-        .sheet(isPresented: $isShowingScheduleSheet) {
-            if let session {
-                ScheduledTaskEditorSheet(
-                    session: session,
-                    initialMessage: scheduleSubmission?.text ?? "",
-                    onSaved: clearScheduledSubmissionIfUnchanged
-                )
-                .environmentObject(backendClient)
-            }
+        .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier], isTargeted: nil) { providers in
+            importDroppedImages(providers)
         }
     }
 

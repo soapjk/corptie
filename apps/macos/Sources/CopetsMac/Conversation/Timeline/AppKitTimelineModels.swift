@@ -9,6 +9,7 @@ struct AppKitChatTimelineRow: Identifiable {
     var timeSeparatorText: String? = nil
     var isWorkspaceCard = false
     var userInput: ConversationUserInput? = nil
+    var userInputItemID: String? = nil
     var userInputStatus: String? = nil
     var sessionID: String? = nil
     typealias ProcessState = ConversationProcessState
