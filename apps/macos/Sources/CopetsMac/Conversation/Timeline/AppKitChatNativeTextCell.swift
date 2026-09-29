@@ -295,6 +295,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in }
     ) {
         let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth)
+        label.endTextSelection()
         representedRowID = row.id
         representedContentRevision = row.contentRevision
         representedProcessRow = row.nativeStyle == .process ? row : nil
@@ -698,7 +699,8 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         guard representedProcessRow == nil else {
             self.menu = nil
             cardView.menu = nil
-            label.menu = nil
+            label.cardContextMenu = nil
+            label.endTextSelection()
             setAccessibilityCustomActions([])
             return
         }
@@ -711,8 +713,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             menu.addItem(timestamp)
         }
         let hasCopy = !copiedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let hasFork = forkItemID != nil || forkUnavailableReason != nil
-        if !menu.items.isEmpty, hasCopy || hasFork { menu.addItem(.separator()) }
+        if !menu.items.isEmpty { menu.addItem(.separator()) }
         if hasCopy {
             let copy = NSMenuItem(title: L10n("Copy Message"), action: #selector(copyText), keyEquivalent: "")
             copy.target = self
@@ -720,6 +721,11 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             copy.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.copy")
             menu.addItem(copy)
         }
+        let selectTextItem = NSMenuItem(title: L10n("Select Text"), action: #selector(selectText), keyEquivalent: "")
+        selectTextItem.target = self
+        selectTextItem.image = NSImage(systemSymbolName: "text.cursor", accessibilityDescription: nil)
+        selectTextItem.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.select-text")
+        menu.addItem(selectTextItem)
         if forkItemID != nil {
             let fork = NSMenuItem(title: L10n("Create Branch"), action: #selector(forkMessage), keyEquivalent: "")
             fork.target = self
@@ -740,19 +746,26 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         }
         self.menu = menu.items.isEmpty ? nil : menu
         cardView.menu = self.menu
-        label.menu = self.menu
+        label.cardContextMenu = self.menu
         var accessibilityActions: [NSAccessibilityCustomAction] = []
         if hasCopy {
             accessibilityActions.append(NSAccessibilityCustomAction(
                 name: L10n("Copy Message"), target: self, selector: #selector(copyText)
             ))
         }
+        accessibilityActions.append(NSAccessibilityCustomAction(
+            name: L10n("Select Text"), target: self, selector: #selector(selectText)
+        ))
         if forkItemID != nil {
             accessibilityActions.append(NSAccessibilityCustomAction(
                 name: L10n("Create Branch"), target: self, selector: #selector(forkMessage)
             ))
         }
         setAccessibilityCustomActions(accessibilityActions)
+    }
+
+    @objc private func selectText() {
+        label.beginTextSelection()
     }
 
     @objc private func toggleDisclosure() {

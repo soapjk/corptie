@@ -109,6 +109,58 @@ final class MessageTextCardMigrationTests: XCTestCase {
         window.orderOut(nil)
     }
 
+    func testSharedBodyAndCardUseOneMenuAndSelectionResetsOnReuse() throws {
+        _ = NSApplication.shared
+        let first = row("Shared selectable text", revision: 1)
+        let layout = NativeTimelineLayoutCache.shared.layout(for: first, columnWidth: 480)
+        let cell = AppKitSharedMessageTextCell(identifier: .init("shared-context-menu"))
+        cell.frame = NSRect(x: 0, y: 0, width: 480, height: layout.rowHeight)
+        let window = NSWindow(contentRect: cell.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = cell
+        cell.setContent(first, availableWidth: 480, onToggleExpansion: { _ in })
+        cell.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.01))
+
+        func textViews(in view: NSView) -> [NativeTimelineTextView] {
+            (view as? NativeTimelineTextView).map { [$0] } ?? view.subviews.flatMap(textViews)
+        }
+        let body = try XCTUnwrap(textViews(in: cell).first)
+        let rightClick = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .rightMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: 0, context: nil, eventNumber: 1, clickCount: 1, pressure: 1
+        ))
+        XCTAssertTrue(body.cardContextMenu === cell.menu)
+        XCTAssertTrue(body.menu(for: rightClick) === cell.menu)
+        XCTAssertFalse(body.usesNativeTextMenu)
+        let select = try XCTUnwrap(cell.menu?.items.first {
+            $0.identifier?.rawValue == "chat.timeline.context.select-text"
+        })
+        NSApp.sendAction(try XCTUnwrap(select.action), to: select.target, from: select)
+        cell.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.01))
+        XCTAssertTrue(body.usesNativeTextMenu)
+        XCTAssertFalse(body.menu(for: rightClick) === cell.menu)
+        body.setSelectedRange(NSRange(location: 0, length: 6))
+        body.copy(nil)
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), "Shared")
+        body.cancelOperation(nil)
+        XCTAssertFalse(body.usesNativeTextMenu)
+        XCTAssertTrue(body.menu(for: rightClick) === cell.menu)
+        NSApp.sendAction(try XCTUnwrap(select.action), to: select.target, from: select)
+        cell.layoutSubtreeIfNeeded()
+        XCTAssertTrue(body.usesNativeTextMenu)
+
+        let second = row("Reused message", revision: 2)
+        cell.setContent(second, availableWidth: 480, onToggleExpansion: { _ in })
+        cell.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.01))
+        let reusedBody = try XCTUnwrap(textViews(in: cell).first)
+        XCTAssertFalse(reusedBody.usesNativeTextMenu)
+        XCTAssertTrue(reusedBody.cardContextMenu === cell.menu)
+        XCTAssertTrue(reusedBody.menu(for: rightClick) === cell.menu)
+        window.orderOut(nil)
+    }
+
     func testCachedRenderingPerformanceAgainstNativeCell() throws {
         guard ProcessInfo.processInfo.environment["CORPTIE_CARD_BENCHMARK"] == "1" else {
             throw XCTSkip("Opt-in local performance gate")
