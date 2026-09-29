@@ -79,14 +79,8 @@ struct SessionDetailPanel: View {
 
     private var sessionDetailContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ConversationDetailCompactPair {
-                detailSection(title: "执行状态", systemImage: "waveform.path.ecg") {
-                    Text(session.executionTaskStatus.label)
-                }
-            } trailing: {
-                detailSection(title: "会话信息", systemImage: "info.circle") {
-                    Text(session.id).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
-                }
+            detailSection(title: "会话信息", systemImage: "info.circle") {
+                Text(session.id).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
             }
             if detailKind == .taskDetail, let taskId = session.taskId, !taskId.isEmpty {
                 SessionCorptieTaskDetailCard(

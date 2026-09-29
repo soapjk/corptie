@@ -339,6 +339,8 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(!taskSource.contains("Text(L10n(\"暂无记忆\"))"))
 
         #expect(sessionSource.contains("Label(L10n(\"引用内容\"), systemImage: \"link\")"))
+        #expect(!sessionSource.contains("detailSection(title: \"执行状态\""))
+        #expect(sessionSource.contains("detailSection(title: \"会话信息\""))
         #expect(artifactSource.contains("taskId == nil ? L10n(\"Artifacts\") : L10n(\"引用内容\")"))
         #expect(!sessionSource.contains("添加文件、网页或 Corptie 对象，作为这个会话的持续上下文。"))
         #expect(!artifactSource.contains("Text(L10n(\"No private Artifacts are referenced.\"))"))
