@@ -5,6 +5,53 @@ import CorptieClientCore
 
 @MainActor
 final class ProcessCardMigrationTests: XCTestCase {
+    func testInPlaceProcessExpansionRekeysTheCachedCell() throws {
+        _ = NSApplication.shared
+        let table = AppKitChatTimelineView.makeTableView()
+        let scroll = AppKitChatTimelineView.makeScrollView(tableView: table)
+        let coordinator = AppKitChatTimelineView.Coordinator(followsLatest: .constant(false),
+            useSharedProcessCards: true, onToggleExpansion: { _ in })
+        coordinator.attach(tableView: table, scrollView: scroll)
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 480, height: 600),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = scroll
+        defer { window.orderOut(nil) }
+        coordinator.apply(rows: [row(expanded: false)])
+        window.contentView?.layoutSubtreeIfNeeded()
+        for revision in [1, 0, 1, 0, 1] {
+            let current = try XCTUnwrap(table.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitSharedMessageTextCell)
+            let model = row(expanded: revision == 1, revision: revision, stepCount: 40)
+            coordinator.apply(rows: [model])
+            let count = current.contentConfigurationCount
+            let cached = try XCTUnwrap(coordinator.tableView(table, viewFor: table.tableColumns[0], row: 0) as? AppKitSharedMessageTextCell)
+            XCTAssertTrue(cached === current, "In-place changes must move the cache key, not create a second cell")
+            XCTAssertEqual(cached.contentConfigurationCount, count, "A valid cache hit must not reconfigure content")
+            XCTAssertTrue(cached.updateLayoutIfContentUnchanged(model, availableWidth: table.tableColumns[0].width))
+            XCTAssertEqual(coordinator.tableView(table, heightOfRow: 0),
+                NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: table.tableColumns[0].width).rowHeight,
+                accuracy: 0.5)
+        }
+    }
+
+    func testStaleCachedProcessContentIsRepairedBeforeReturningCell() throws {
+        _ = NSApplication.shared
+        let table = AppKitChatTimelineView.makeTableView()
+        let scroll = AppKitChatTimelineView.makeScrollView(tableView: table)
+        var toggled: String?
+        let coordinator = AppKitChatTimelineView.Coordinator(followsLatest: .constant(false),
+            useSharedProcessCards: true, onToggleExpansion: { toggled = $0 })
+        coordinator.attach(tableView: table, scrollView: scroll)
+        let expected = row(expanded: false, revision: 0)
+        coordinator.apply(rows: [expected])
+        let cell = try XCTUnwrap(coordinator.tableView(table, viewFor: table.tableColumns[0], row: 0) as? AppKitSharedMessageTextCell)
+        // Simulate an AppKit reuse/in-place mutation after the cache entry was installed.
+        cell.setContent(row(expanded: true, revision: 1, turn: "other"), availableWidth: 480, onToggleExpansion: { _ in })
+        let repaired = try XCTUnwrap(coordinator.tableView(table, viewFor: table.tableColumns[0], row: 0) as? AppKitSharedMessageTextCell)
+        XCTAssertTrue(repaired.updateLayoutIfContentUnchanged(expected, availableWidth: table.tableColumns[0].width))
+        repaired.toggleRepresentedProcess()
+        XCTAssertEqual(toggled, "turn")
+    }
+
     func testSharedUserMessageCardRetainsProcessingStatus() throws {
         let queued = try XCTUnwrap(UserMessageStatusPresentation(
             authoritativeStatus: "queued", legacyStatus: nil, queuePosition: 2
@@ -91,13 +138,13 @@ final class ProcessCardMigrationTests: XCTestCase {
         XCTAssertLessThanOrEqual(sharedTimes[57], nativeTimes[57] * 1.5 + 1)
         native.0.orderOut(nil); shared.0.orderOut(nil)
     }
-    private func row(expanded: Bool, revision: Int = 0, turn: String = "turn", raw: Bool = true) -> AppKitChatTimelineRow {
+    private func row(expanded: Bool, revision: Int = 0, turn: String = "turn", raw: Bool = true, stepCount: Int = 1) -> AppKitChatTimelineRow {
         AppKitChatTimelineRow(id: "process:\(turn)", contentRevision: revision,
             nativeText: "Read source\nresult \(revision)", rawStatusText: raw ? String(repeating: "item_status: completed \(revision)\n", count: 50) : "",
             copyText: "", nativeStyle: .process, title: "", metadata: "",
-            expandableTurnId: turn, isExpanded: expanded, processCount: 1,
+            expandableTurnId: turn, isExpanded: expanded, processCount: stepCount,
             processDuration: "4.2s", processState: .running,
-            processSteps: [.init(id: "step", kind: .action, state: .running, title: "Read source", detail: "source.swift · result \(revision)")],
+            processSteps: (0..<stepCount).map { .init(id: "step-\($0)", kind: .action, state: .running, title: "Read source", detail: "source.swift · result \(revision)") },
             processCurrentStepTitle: "Read source \(revision)", showsHeader: false)
     }
 

@@ -366,10 +366,16 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                 onAction: onAction
             )
             cachedCell.updateLinkContext(baseDirectory: baseDirectory)
-            _ = cachedCell.updateLayoutIfContentUnchanged(
+            if !cachedCell.updateLayoutIfContentUnchanged(
                 rowModel,
                 availableWidth: availableWidth
-            )
+            ) {
+                ChatPerformanceRecorder.shared.increment(.appKitRowsConfigured)
+                cachedCell.setContent(rowModel, availableWidth: availableWidth,
+                    baseDirectory: baseDirectory, onToggleExpansion: onToggleExpansion,
+                    onAction: onAction)
+                cacheCell(cachedCell, for: rowModel)
+            }
             return cachedCell
         }
         let identifier = usesSharedText ? Self.sharedTextCellIdentifier : Self.nativeCellIdentifier
@@ -379,8 +385,6 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                 if usesSharedText { return AppKitSharedMessageTextCell(identifier: identifier) }
                 return AppKitChatNativeTextCell(identifier: identifier)
             }()
-        cellsByKey = cellsByKey.filter { $0.value !== cell }
-        cellRecency.removeAll { cellsByKey[$0] == nil }
         ChatPerformanceRecorder.shared.increment(.appKitRowsConfigured)
         cell.setContent(
             rowModel,
@@ -389,13 +393,26 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
             onToggleExpansion: onToggleExpansion,
             onAction: onAction
         )
-        cellsByKey[cacheKey] = cell
-        touchCell(cacheKey)
+        cacheCell(cell, for: rowModel)
+        return cell
+    }
+
+    /// A mutable cell may only be indexed by the revision it currently renders.
+    /// In-place expansion and width-reflow repairs must obey the same rule as reuse.
+    private func cacheCell(_ cell: NSTableCellView & AppKitChatRowRendering,
+                           for row: AppKitChatTimelineRow) {
+        let key = CellCacheKey(sessionID: representedSessionID, rowID: row.id,
+                               revision: row.contentRevision)
+        cellsByKey = cellsByKey.filter {
+            $0.value !== cell && !($0.key.sessionID == key.sessionID && $0.key.rowID == key.rowID)
+        }
+        cellRecency.removeAll { cellsByKey[$0] == nil }
+        cellsByKey[key] = cell
+        touchCell(key)
         while cellRecency.count > 96, let oldest = cellRecency.first {
             cellRecency.removeFirst()
             cellsByKey[oldest] = nil
         }
-        return cell
     }
 
     private func touchCell(_ key: CellCacheKey) {
@@ -533,6 +550,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                     onToggleExpansion: onToggleExpansion,
                     onAction: onAction
                 )
+                cacheCell(nativeCell, for: nextRows[row])
             }
         }
         tableView.noteHeightOfRows(withIndexesChanged: changed)
@@ -903,6 +921,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                                 onToggleExpansion: onToggleExpansion,
                                 onAction: onAction
                             )
+                            cacheCell(nativeCell, for: rows[row])
                         }
                     }
                 }
@@ -954,6 +973,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                             onToggleExpansion: onToggleExpansion,
                             onAction: onAction
                         )
+                        cacheCell(nativeCell, for: rows[row])
                     }
                 }
             }
