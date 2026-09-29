@@ -976,6 +976,28 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertTrue(harness.followState.value)
     }
 
+    func testFloatingComposerLeavesLatestMessageAboveItsInset() async {
+        let harness = makeHarness(followsLatest: false, height: 180)
+        AppKitChatTimelineView.updateBottomInset(90, on: harness.scrollView)
+        let rows = (0..<30).map { row(id: "floating-composer-\($0)", text: "Message \($0)") }
+        harness.coordinator.apply(rows: rows)
+        harness.coordinator.scrollToBottom()
+        await settleMainQueue()
+
+        let lastBottom = harness.tableView.rect(ofRow: rows.count - 1).maxY
+        let unobscuredBottom = harness.scrollView.contentView.bounds.maxY - 90
+        XCTAssertLessThanOrEqual(lastBottom, unobscuredBottom + 2)
+        XCTAssertTrue(harness.followState.value)
+
+        AppKitChatTimelineView.updateBottomInset(120, on: harness.scrollView)
+        harness.coordinator.composerInsetDidChange()
+        await settleMainQueue()
+        XCTAssertLessThanOrEqual(
+            lastBottom,
+            harness.scrollView.contentView.bounds.maxY - 120 + 2
+        )
+    }
+
     func testDirectScrollbarJumpMaterializesTheLastMessageWithoutIntermediatePrewarming() async throws {
         let harness = makeHarness(followsLatest: false, height: 180)
         let rows = (0..<40).map { index in
