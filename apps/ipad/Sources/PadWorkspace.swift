@@ -347,6 +347,31 @@ final class PadWorkspace {
     /// Usage of the selected Session; re-read once per timeline change, never per frame.
     var usage: ClientSessionUsage?
     @ObservationIgnored private var usageRevision: Int?
+    /// Account quota belongs to the provider/model, not to a Session timeline.
+    /// Context remains Session-scoped. Keep this small and outside observation;
+    /// only the selected usage projection invalidates the status row.
+    @ObservationIgnored private var accountUsageByProviderModel: [String: ClientSessionUsage.Account] = [:]
+
+    private func accountKey(_ account: ClientSessionUsage.Account?) -> String? {
+        guard let provider = account?.provider, !provider.isEmpty else { return nil }
+        return provider + "\u{1f}" + (account?.model ?? "")
+    }
+
+    /// A direct usage read is authoritative. Resident timeline snapshots may
+    /// carry older account data, so they only seed an empty shared cache.
+    func applyUsage(_ incoming: ClientSessionUsage?, authoritative: Bool = false) {
+        guard let incoming else { usage = nil; return }
+        guard let key = accountKey(incoming.account) else { usage = incoming; return }
+        if let account = incoming.account,
+           authoritative || (account.available == true && accountUsageByProviderModel[key] == nil) {
+            accountUsageByProviderModel[key] = account
+        }
+        let sharedAccount = accountUsageByProviderModel[key] ?? incoming.account
+        let projected = ClientSessionUsage(
+            schemaVersion: incoming.schemaVersion, sessionId: incoming.sessionId,
+            context: incoming.context, account: sharedAccount)
+        if usage != projected { usage = projected }
+    }
     var composerConfiguration: ClientComposerConfiguration?
     var commandCatalog: ClientConversationCommandCatalog?
     var configuringComposer = false
@@ -448,7 +473,7 @@ final class PadWorkspace {
             before = cached.before
             lastTimelineRevision = cached.revision
             capabilities = cached.capabilities
-            usage = cached.usage
+            applyUsage(cached.usage)
             composerConfiguration = cached.composer
             isLoadingDetail = false
             refreshDisplayEntries()
@@ -561,7 +586,7 @@ final class PadWorkspace {
             return
         }
         capabilities = snapshot.capabilities
-        if let incoming = snapshot.usage { usage = incoming }
+        if let incoming = snapshot.usage { applyUsage(incoming) }
         composerConfiguration = snapshot.composer
         applyLatestWindow(snapshot.messages.items, cursor: snapshot.messages.nextBefore, revision: snapshot.revision)
         if let selection { saveResidentState(for: selection) }
@@ -581,7 +606,7 @@ final class PadWorkspace {
         }
         let previous = messages
         messages = state.messages
-        usage = state.usage
+        applyUsage(state.usage)
         lastTimelineRevision = state.revision
         if previous != state.messages { messageRevision += 1 }
         return true
@@ -838,7 +863,7 @@ final class PadWorkspace {
             let snapshot = try await api.usage(sessionId: routedID)
             guard !Task.isCancelled, selection == sessionID, generation == timelineGeneration else { return }
             usageRevision = revision
-            if usage != snapshot { usage = snapshot }
+            applyUsage(snapshot, authoritative: true)
         } catch is CancellationError {
             return
         } catch let failure as ClientServiceFailure where failure.code == "CAPABILITY_UNSUPPORTED" {
