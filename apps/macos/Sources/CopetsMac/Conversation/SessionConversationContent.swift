@@ -169,7 +169,11 @@ struct SessionConversationContent: View {
                 sessionId: sessionId,
                 draftRepository: composerDraftRepository,
                 modelCatalog: backendClient.modelCatalog,
-                allowsModelSwitch: allowsModelSwitch
+                allowsModelSwitch: allowsModelSwitch,
+                status: selectedSession?.executionTaskStatus ?? displayedDetail?.status,
+                isReady: selectedSession?.isReady ?? displayedDetail?.isReady ?? true,
+                notReadyReason: selectedSession?.notReadyReason ?? displayedDetail?.notReadyReason,
+                activityStatus: selectedSession?.activityStatus ?? displayedDetail?.activityStatus
             )
             .id(sessionId)
         }
@@ -202,18 +206,6 @@ struct SessionConversationContent: View {
             switch contentPhase {
             case .live:
                 if let detail = displayedDetail {
-                    ThreadMetaView(
-                        sessionID: sessionId,
-                        status: selectedSession != nil
-                            ? selectedSession?.executionTaskStatus ?? detail.status
-                            : detail.status,
-                        isReady: selectedSession?.isReady ?? detail.isReady,
-                        notReadyReason: selectedSession?.notReadyReason ?? detail.notReadyReason,
-                        activityStatus: selectedSession != nil
-                            ? selectedSession?.activityStatus
-                            : detail.activityStatus
-                    )
-
                     Group {
                         if shouldRenderDetailMessages {
                             appKitCachedDetailMessages()
@@ -229,15 +221,6 @@ struct SessionConversationContent: View {
                 // The presentation cache is a valid stale-while-revalidate
                 // first frame. Do not hide already rendered messages behind
                 // the transport loading state while SSE reconnects.
-                if let session = selectedSession {
-                    ThreadMetaView(
-                        sessionID: sessionId,
-                        status: session.executionTaskStatus,
-                        isReady: session.isReady,
-                        notReadyReason: session.notReadyReason,
-                        activityStatus: session.activityStatus
-                    )
-                }
                 if shouldRenderDetailMessages {
                     appKitCachedDetailMessages()
                 } else {

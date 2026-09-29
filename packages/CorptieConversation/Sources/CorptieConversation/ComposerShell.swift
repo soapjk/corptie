@@ -249,6 +249,93 @@ public struct ComposerShellSurface: ViewModifier {
     }
 }
 
+/// The same compact glass module surrounds the status row and editor on both clients.
+public struct ConversationComposerChrome<Header: View, Content: View>: View {
+    private let header: Header
+    private let content: Content
+
+    public init(@ViewBuilder header: () -> Header, @ViewBuilder content: () -> Content) {
+        self.header = header()
+        self.content = content()
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            header.padding(.horizontal, 8)
+            content
+        }
+        .padding(6)
+        .modifier(ConversationComposerGlassSurface())
+        .shadow(color: .black.opacity(0.06), radius: 4, y: 1.5)
+    }
+}
+
+private struct ConversationComposerGlassSurface: ViewModifier {
+    private let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, iOS 26.0, *) {
+            content.glassEffect(.regular, in: shape)
+        } else {
+            content.background(.ultraThinMaterial, in: shape)
+                .overlay(shape.stroke(Color.primary.opacity(0.10), lineWidth: 0.5)
+                    .allowsHitTesting(false))
+        }
+    }
+}
+
+/// Hosts supply their native editor and actions; spacing, border and model placement are shared.
+public struct ConversationComposerEditorRow<Attachments: View, Editor: View, Send: View, More: View, Model: View>: View {
+    private let showsAttachments: Bool
+    private let showsModel: Bool
+    private let attachments: Attachments
+    private let editor: Editor
+    private let send: Send
+    private let more: More
+    private let model: Model
+
+    public init(showsAttachments: Bool, showsModel: Bool,
+                @ViewBuilder attachments: () -> Attachments,
+                @ViewBuilder editor: () -> Editor,
+                @ViewBuilder send: () -> Send,
+                @ViewBuilder more: () -> More,
+                @ViewBuilder model: () -> Model) {
+        self.showsAttachments = showsAttachments
+        self.showsModel = showsModel
+        self.attachments = attachments()
+        self.editor = editor()
+        self.send = send()
+        self.more = more()
+        self.model = model()
+    }
+
+    public var body: some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 0) {
+                if showsAttachments { attachments }
+                HStack(spacing: 2) {
+                    editor
+                        .frame(minWidth: 0, maxWidth: .infinity)
+                        .padding(.leading, 10)
+                        .padding(.trailing, 2)
+                        .layoutPriority(-1)
+                    send
+                    more.padding(.trailing, 4)
+                }
+            }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            .overlay {
+                RoundedRectangle(cornerRadius: ComposerShellMetrics.cornerRadius, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.22), lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
+            if showsModel { model.fixedSize(horizontal: true, vertical: false) }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 /// 24pt tinted circle inside a 28pt slot: the send / more glyphs of the composer.
 public struct ComposerActionGlyph: View {
     private let systemName: String

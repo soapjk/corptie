@@ -62,8 +62,14 @@ struct MacSharedMessageTextCard: View {
             guard let sessionID = row.sessionID else {
                 throw BackendError.message("会话不可用，无法提交答案。")
             }
+            guard let itemID = row.userInputItemID else {
+                throw BackendError.message("问题标识不可用，无法提交答案。")
+            }
             try await BackendClient.shared.respondToUserInput(
-                sessionID: sessionID, itemID: row.id, answers: answers, action: action)
+                sessionID: sessionID, itemID: itemID, answers: answers, action: action)
+        }
+        .accessibilityActions {
+            Button(L10n("Copy Message"), action: copy)
         }
         .padding(14)
         .frame(width: layout.cardWidth,
@@ -470,7 +476,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
     }
 
     private func configureContextMenu(for row: AppKitChatTimelineRow) {
-        guard row.nativeStyle != .process, row.userInput == nil else {
+        guard row.nativeStyle != .process else {
             menu = nil
             setAccessibilityCustomActions([])
             return
@@ -492,11 +498,13 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
             copy.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.copy")
             menu.addItem(copy)
         }
-        let selectText = NSMenuItem(title: L10n("Select Text"), action: #selector(beginTextSelection), keyEquivalent: "")
-        selectText.target = self
-        selectText.image = NSImage(systemSymbolName: "text.cursor", accessibilityDescription: nil)
-        selectText.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.select-text")
-        menu.addItem(selectText)
+        if row.userInput == nil {
+            let selectText = NSMenuItem(title: L10n("Select Text"), action: #selector(beginTextSelection), keyEquivalent: "")
+            selectText.target = self
+            selectText.image = NSImage(systemSymbolName: "text.cursor", accessibilityDescription: nil)
+            selectText.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.select-text")
+            menu.addItem(selectText)
+        }
         if row.forkItemID != nil {
             let fork = NSMenuItem(title: L10n("Create Branch"), action: #selector(forkRepresentedMessage), keyEquivalent: "")
             fork.target = self
@@ -516,9 +524,10 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
             menu.addItem(reasonItem)
         }
         self.menu = menu
-        var actions = [NSAccessibilityCustomAction(
-            name: L10n("Select Text"), target: self, selector: #selector(beginTextSelection)
-        )]
+        var actions: [NSAccessibilityCustomAction] = row.userInput == nil ? [
+            NSAccessibilityCustomAction(name: L10n("Select Text"), target: self,
+                                        selector: #selector(beginTextSelection))
+        ] : []
         if hasCopy {
             actions.insert(NSAccessibilityCustomAction(
                 name: L10n("Copy Message"), target: self, selector: #selector(copyRepresentedMessage)
