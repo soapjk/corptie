@@ -11,6 +11,9 @@ export const reply = (response, status, body) => {
   response.end(JSON.stringify(body));
 };
 export const bearer = request => /^Bearer ([A-Za-z0-9_-]{43})$/.exec(request.headers.authorization ?? "")?.[1];
+const decode = (value, code) => {
+  try { return decodeURIComponent(value); } catch { throw deviceError(code, 400); }
+};
 async function body(request, maxBytes = 4096) {
   if (!/^application\/json(?:;|$)/i.test(request.headers["content-type"] ?? "")) throw deviceError("JSON_REQUIRED", 415);
   let size = 0;
@@ -206,9 +209,6 @@ export class ClientDeviceGateway {
       if (this.worktreeAPI && (worktreeRepository || worktreePushStatus || worktreeDelete
           || worktreeWorkspaceAction || worktreeService || worktreeServiceAction || worktreePlan
           || worktreeJob || worktreeJobAction)) {
-        const decode = (value, code) => {
-          try { return decodeURIComponent(value); } catch { throw deviceError(code, 400); }
-        };
         let result;
         if (request.method === "GET" && worktreeRepository) {
           const forceFreshValues = url.searchParams.getAll("forceFresh");

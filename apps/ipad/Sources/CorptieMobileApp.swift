@@ -716,7 +716,6 @@ struct ConversationView: View {
         }
         .padding(.horizontal, 12)
         .padding(.top, 10)
-        .padding(.bottom, 8)
         .background { ConversationChromeBackdrop(isBottom: true) }
     }
 

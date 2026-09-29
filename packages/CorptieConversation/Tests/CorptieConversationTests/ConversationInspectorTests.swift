@@ -39,4 +39,10 @@ struct ConversationInspectorTests {
         #expect(CollapsibleDetailTextLayout.isOverflowing(fullHeight: 61, collapsedHeight: 60))
         #expect(!CollapsibleDetailTextLayout.isOverflowing(fullHeight: 40, collapsedHeight: 60))
     }
+
+    @Test func taskDefinitionCardAppearsOnlyWithActualContent() {
+        #expect(!ConversationTaskDefinition.hasContent(description: " \n", acceptance: "", verification: "\t"))
+        #expect(ConversationTaskDefinition.hasContent(description: "", acceptance: "验收", verification: ""))
+        #expect(ConversationTaskDefinition.hasContent(description: "描述", acceptance: "", verification: ""))
+    }
 }
