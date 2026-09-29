@@ -39,6 +39,49 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertNil(menuItem(in: cell.menu, identifier: "chat.timeline.context.fork"))
     }
 
+    func testMessageBodyUsesCardMenuUntilSelectTextEnablesNativeMenu() throws {
+        let first = AppKitChatTimelineRow(
+            id: "answer", contentRevision: 1, nativeText: "Selectable answer", copyText: "Selectable answer",
+            nativeStyle: .agent, title: "", metadata: "", expandableTurnId: nil,
+            isExpanded: false, showsHeader: false, contextTimestamp: "09/28 21:05:12"
+        )
+        let cell = AppKitChatNativeTextCell(identifier: .init("context-menu-routing"))
+        cell.frame = NSRect(x: 0, y: 0, width: 420, height: 80)
+        cell.setContent(first, availableWidth: 420, onToggleExpansion: { _ in })
+        cell.layoutSubtreeIfNeeded()
+
+        let body = try XCTUnwrap(textView(in: cell, identifier: "chat.timeline.body"))
+        let rightClick = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .rightMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: 0, context: nil, eventNumber: 1, clickCount: 1, pressure: 1
+        ))
+        XCTAssertTrue(body.cardContextMenu === cell.menu)
+        XCTAssertTrue(body.menu(for: rightClick) === cell.menu)
+        XCTAssertFalse(body.usesNativeTextMenu)
+        let select = try XCTUnwrap(menuItem(in: cell.menu, identifier: "chat.timeline.context.select-text"))
+        NSApp.sendAction(try XCTUnwrap(select.action), to: select.target, from: select)
+        XCTAssertTrue(body.usesNativeTextMenu)
+        XCTAssertFalse(body.menu(for: rightClick) === cell.menu)
+        body.setSelectedRange(NSRange(location: 0, length: 10))
+        body.copy(nil)
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), "Selectable")
+        body.cancelOperation(nil)
+        XCTAssertFalse(body.usesNativeTextMenu)
+        XCTAssertTrue(body.menu(for: rightClick) === cell.menu)
+        NSApp.sendAction(try XCTUnwrap(select.action), to: select.target, from: select)
+        XCTAssertTrue(body.usesNativeTextMenu)
+
+        let reused = AppKitChatTimelineRow(
+            id: "answer", contentRevision: 2, nativeText: "Updated answer", copyText: "Updated answer",
+            nativeStyle: .agent, title: "", metadata: "", expandableTurnId: nil,
+            isExpanded: false, showsHeader: false, contextTimestamp: "09/28 21:05:12"
+        )
+        cell.setContent(reused, availableWidth: 420, onToggleExpansion: { _ in })
+        XCTAssertFalse(body.usesNativeTextMenu)
+        XCTAssertTrue(body.cardContextMenu === cell.menu)
+        XCTAssertTrue(body.menu(for: rightClick) === cell.menu)
+    }
+
     func testMessageStatusUsesExistingActionFooterWithoutChangingBodyHeight() throws {
         let queued = try XCTUnwrap(UserMessageStatusPresentation(
             authoritativeStatus: "queued", legacyStatus: nil, queuePosition: 2

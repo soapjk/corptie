@@ -329,6 +329,7 @@ struct ConversationView: View {
                                     }).id(message.id)
                             } else {
                                 MobileMessageBubble(message: message, deliveryState: workspace.outgoingStates[message.id],
+                                    timeSeparatorText: workspace.timeSeparatorTextByMessageID[message.id],
                                     laneWidth: laneWidth, connection: connection, sessionID: sessionID,
                                     images: messageImages,
                                     openAttachment: { attachmentPreview = PadAttachmentPreview(sessionID: sessionID, image: $0) },
@@ -1134,9 +1135,8 @@ struct PadAttachmentPreview: Identifiable {
     var id: String { sessionID + "\u{0}" + image.managedPath }
 }
 
-/// Ordinary text message. Card geometry (`MessageBubbleWidthPolicy`), the attachment
-/// strip and the timestamp + copy action bar are the macOS row; only text
-/// measurement (UIKit) and the always-visible action bar (no hover) differ.
+/// Ordinary text message. Card geometry (`MessageBubbleWidthPolicy`), attachments
+/// and the product-owned message menu are shared; iPad invokes the menu by long press.
 private struct PadApprovalCard: View {
     let message: ClientMessage
     let connection: PadConnection
@@ -1270,6 +1270,7 @@ private struct PadUserInputCard: View {
 private struct MobileMessageBubble: View {
     let message: ClientMessage
     var deliveryState: String? = nil
+    var timeSeparatorText: String? = nil
     let laneWidth: CGFloat
     let connection: PadConnection
     let sessionID: String
@@ -1313,23 +1314,38 @@ private struct MobileMessageBubble: View {
     }
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 0) {
+        let timestamp = ConversationTimestampText.messageLabel(createdAt: message.createdAt)
+        let copyText = ConversationMessageDisplayText.copyText(
+            type: message.type, authoritativeText: message.text,
+            presentationText: message.presentationText, displayedText: displayText)
+        VStack(spacing: 0) {
+            if let timeSeparatorText {
+                Text(timeSeparatorText)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 28, maxHeight: 28)
+                    .accessibilityLabel("时间：\(timeSeparatorText)")
+                    .accessibilityIdentifier("chat.timeline.time-separator")
+            }
+            HStack(alignment: .bottom, spacing: 0) {
             if fromUser { Spacer(minLength: 0) }
             VStack(alignment: fromUser ? .trailing : .leading, spacing: 5) {
                 MessageTextCard(messageID: message.id, role: fromUser ? .user : .agent,
-                    timestamp: ConversationTimestampText.messageLabel(createdAt: message.createdAt),
-                    showsActions: true, actionsAlwaysVisible: true, cardWidth: cardWidth,
+                    timestamp: "", showsActions: false, actionsAlwaysVisible: false, cardWidth: cardWidth,
                     status: messageStatus,
-                    copy: { UIPasteboard.general.string = ConversationMessageDisplayText.copyText(
-                        type: message.type, authoritativeText: message.text,
-                        presentationText: message.presentationText, displayedText: displayText) }) {
+                    contextMenu: MessageTextCardMenuConfiguration(
+                        timestampTitle: timestamp.isEmpty ? nil : "时间：\(timestamp)",
+                        copyTitle: "复制消息", selectTextTitle: "选择文本",
+                        canCopy: !copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty),
+                    copy: { UIPasteboard.general.string = copyText }) { isTextSelectionEnabled in
                         VStack(alignment: .leading, spacing: MessageImageStripMetrics.bottomSpacing) {
                             if fromUser && !attachments.isEmpty { attachmentStrip }
                             ForEach(contentBlocks) { block in
                                 switch block.content {
                                 case .markdown(let text):
                                     if !text.isEmpty {
-                                        PadMessageText(text: text, fromUser: fromUser)
+                                        PadMessageText(text: text, fromUser: fromUser,
+                                            isTextSelectionEnabled: isTextSelectionEnabled)
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                     }
                                 case .chart(let spec, _):
@@ -1338,7 +1354,8 @@ private struct MobileMessageBubble: View {
                                 case .invalidChart(let original, let reason):
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(reason).font(.caption2).foregroundStyle(.secondary)
-                                        PadMessageText(text: original, fromUser: false)
+                                        PadMessageText(text: original, fromUser: false,
+                                            isTextSelectionEnabled: isTextSelectionEnabled)
                                     }
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 }
@@ -1363,6 +1380,7 @@ private struct MobileMessageBubble: View {
                     }
             }
             if !fromUser { Spacer(minLength: 0) }
+            }
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .contain)

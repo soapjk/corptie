@@ -8,11 +8,26 @@ struct PadMessageText: UIViewRepresentable {
     let text: String
     let fromUser: Bool
     var steps: [ConversationExecutionStep]? = nil
+    @Binding var isTextSelectionEnabled: Bool
 
-    final class Coordinator {
+    init(text: String, fromUser: Bool, steps: [ConversationExecutionStep]? = nil,
+         isTextSelectionEnabled: Binding<Bool> = .constant(false)) {
+        self.text = text
+        self.fromUser = fromUser
+        self.steps = steps
+        _isTextSelectionEnabled = isTextSelectionEnabled
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
         var text: String?
         var fromUser: Bool?
         var steps: [ConversationExecutionStep]?
+        var isTextSelectionEnabled: Binding<Bool>?
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            guard isTextSelectionEnabled?.wrappedValue == true else { return }
+            isTextSelectionEnabled?.wrappedValue = false
+        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -26,10 +41,13 @@ struct PadMessageText: UIViewRepresentable {
         view.textContainerInset = .zero
         view.textContainer.lineFragmentPadding = 0
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        view.delegate = context.coordinator
         return view
     }
 
     func updateUIView(_ view: UITextView, context: Context) {
+        context.coordinator.isTextSelectionEnabled = $isTextSelectionEnabled
+        configureTextSelection(view, enabled: isTextSelectionEnabled)
         // Width changes and unrelated workspace updates must not reparse Markdown.
         guard context.coordinator.text != text || context.coordinator.fromUser != fromUser
             || context.coordinator.steps != steps else { return }
@@ -42,6 +60,18 @@ struct PadMessageText: UIViewRepresentable {
             view.attributedText = PadMessageLayout.entry(text: text, style: fromUser ? .user : .agent).attributed
         }
         view.invalidateIntrinsicContentSize()
+    }
+
+    private func configureTextSelection(_ view: UITextView, enabled: Bool) {
+        // Keep UITextView selectable so links continue to work, but suppress its
+        // long-press recognizers until the user explicitly chooses “选择文本”.
+        // The ancestor MessageTextCard context menu then owns the default long press.
+        for case let recognizer as UILongPressGestureRecognizer in view.gestureRecognizers ?? [] {
+            if recognizer.isEnabled != enabled { recognizer.isEnabled = enabled }
+        }
+        if !enabled, view.selectedRange.length > 0 {
+            view.selectedRange = NSRange(location: 0, length: 0)
+        }
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
