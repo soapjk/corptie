@@ -3,6 +3,25 @@ import Testing
 @testable import CorptieClientCore
 
 struct SessionAPITests {
+    @MainActor
+    @Test func sharedTimeSeparatorUsesFiveMinuteGapAndCalendarDay() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let locale = Locale(identifier: "en_US_POSIX")
+        let first = calendar.date(from: DateComponents(year: 2026, month: 9, day: 27, hour: 23, minute: 58))!
+        let near = first.addingTimeInterval(299)
+        let nextDay = first.addingTimeInterval(420)
+
+        #expect(ConversationTimeSeparatorText.label(
+            for: first, after: nil, now: nextDay, calendar: calendar, locale: locale
+        ) == nil)
+        #expect(ConversationTimeSeparatorText.label(
+            for: near, after: first, now: nextDay, calendar: calendar, locale: locale
+        ) == nil)
+        #expect(ConversationTimeSeparatorText.label(
+            for: nextDay, after: first, now: nextDay, calendar: calendar, locale: locale
+        )?.contains("2026") == true)
+    }
     @Test func workCreationUsesPairedDeviceRouteAndTypedReceipt() async throws {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [SessionProtocol.self]

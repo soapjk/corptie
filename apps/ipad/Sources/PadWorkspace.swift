@@ -212,6 +212,7 @@ final class PadWorkspace {
         }
     }
     private(set) var displayEntries: [ConversationEntry<ClientMessage>] = []
+    private(set) var timeSeparatorTextByMessageID: [String: String] = [:]
     private(set) var processPresentations: [String: ConversationProcessPresentation] = [:]
     private(set) var activeProcessEntryID: String?
     private(set) var processSteps: [String: [ConversationExecutionStep]] = [:]
@@ -240,6 +241,19 @@ final class PadWorkspace {
         totalDisplayEntryCount = allEntries.count
         displayEntries = Self.visibleEntries(from: allEntries, limit: visibleMessageLimit)
         let now = Date()
+        var previousMessageDate: Date?
+        var separators: [String: String] = [:]
+        for entry in displayEntries {
+            guard case .message(let message) = entry.kind,
+                  message.type == "userMessage" || message.type == "agentMessage",
+                  let createdAt = message.createdAt,
+                  let date = ConversationTimestampText.date(from: createdAt) else { continue }
+            if let label = ConversationTimeSeparatorText.label(for: date, after: previousMessageDate, now: now) {
+                separators[message.id] = label
+            }
+            previousMessageDate = date
+        }
+        timeSeparatorTextByMessageID = separators
         processSteps = Dictionary(uniqueKeysWithValues: displayEntries.compactMap { entry in
             guard case let .process(_, items) = entry.kind else { return nil }
             return (entry.id, ConversationExecutionProjection.steps(for: items))

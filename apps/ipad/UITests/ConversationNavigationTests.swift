@@ -78,8 +78,14 @@ final class ConversationNavigationTests: XCTestCase {
         }
         XCTAssertTrue(row.exists && row.isHittable, "Target Task must be visible")
         row.tap()
-        XCTAssertTrue(app.otherElements["conversation-message"].firstMatch.waitForExistence(timeout: 20),
+        let message = app.otherElements["conversation-message"].firstMatch
+        XCTAssertTrue(message.waitForExistence(timeout: 20),
                       "Tapping an active Task must load its messages.\n\(app.debugDescription)")
+        message.press(forDuration: 0.8)
+        XCTAssertTrue(app.buttons["复制消息"].waitForExistence(timeout: 3))
+        let selectText = app.buttons["选择文本"]
+        XCTAssertTrue(selectText.exists)
+        selectText.tap()
         let input = app.descendants(matching: .any)["conversation-composer-input"].firstMatch
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         XCTAssertTrue(input.isHittable)

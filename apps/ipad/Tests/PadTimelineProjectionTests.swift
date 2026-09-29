@@ -87,6 +87,30 @@ struct PadTimelineProjectionTests {
         #expect(workspace.displayEntries.map(\.id) == ["message:u", "process:t", "message:a", "message:pending"])
     }
 
+    @Test func messageTimeSeparatorsFollowDesktopGapAndRecomputeAtHistoryBoundary() throws {
+        let name = "pad-time-separators-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let workspace = PadWorkspace(defaults: defaults)
+        workspace.selection = "session:time"
+        let messages = try JSONDecoder().decode([ClientMessage].self, from: Data(#"""
+        [
+            {"id":"first","type":"userMessage","text":"one","createdAt":"2026-09-27T10:00:00Z"},
+            {"id":"near","type":"agentMessage","text":"two","createdAt":"2026-09-27T10:04:59Z"},
+            {"id":"later","type":"userMessage","text":"three","createdAt":"2026-09-27T10:10:00Z"}
+        ]
+        """#.utf8))
+        workspace.messages = messages
+        #expect(workspace.timeSeparatorTextByMessageID["first"] == nil)
+        #expect(workspace.timeSeparatorTextByMessageID["near"] == nil)
+        #expect(workspace.timeSeparatorTextByMessageID["later"] != nil)
+
+        workspace.messages = Array(messages.suffix(1))
+        #expect(workspace.timeSeparatorTextByMessageID.isEmpty)
+        workspace.messages = messages
+        #expect(workspace.timeSeparatorTextByMessageID.count == 1)
+    }
+
     @Test func planRevisionsUpdateOneProcessCardAndOlderWindowsCannotRollItBack() throws {
         let name = "pad-plan-revision-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
