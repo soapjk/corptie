@@ -243,18 +243,24 @@ final class PadWorktreeStore {
     }
 
     func preparePlan(operation: ClientWorktreePlanOperation? = nil, sources: [String]? = nil, target: String? = nil,
-                     connection: PadConnection) async {
+                     replacingDraft: Bool = false, connection: PadConnection) async {
         guard let repositoryID = detail?.repository.id, !planning, !jobBusy else { return }
         let token = operationScope
         planning = true; errorMessage = nil
         defer { if token == operationScope { planning = false } }
         do {
             let api = ClientWorktreeAPI(transport: try await connection.transport())
+            if replacingDraft, let existing = job, existing.status == "awaiting_confirmation" {
+                let canceled = try await api.cancel(jobId: existing.id)
+                guard token == operationScope else { return }
+                replaceJob(canceled)
+            }
+            guard token == operationScope, !Task.isCancelled else { return }
             let next = try await api.preparePlan(repositoryId: repositoryID, operationType: operation,
                                             sources: sources, target: target)
+            guard token == operationScope, !Task.isCancelled else { return }
             let key = "corptie.worktree.job:\(connection.serverID):\(connection.address):\(repositoryID)"
             UserDefaults.standard.set(next.id, forKey: key)
-            guard token == operationScope else { return }
             replaceJob(next)
             startPollingIfNeeded(repositoryID, connection: connection)
         } catch {
