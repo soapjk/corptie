@@ -1,32 +1,18 @@
 import SwiftUI
 
-/// One scroll owner and header for both platform Detail rails.
-public struct ConversationDetailDashboard<Actions: View, Content: View>: View {
-    private let title: String
-    private let actions: Actions
+/// One scroll owner for both platform Detail rails.
+public struct ConversationDetailDashboard<Content: View>: View {
     private let content: Content
 
-    public init(title: String = "Detail", @ViewBuilder actions: () -> Actions,
-                @ViewBuilder content: () -> Content) {
-        self.title = title
-        self.actions = actions()
+    public init(@ViewBuilder content: () -> Content) {
         self.content = content()
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Text(title).font(.headline).accessibilityAddTraits(.isHeader)
-                Spacer(minLength: 0)
-                actions
-            }
-            .frame(minHeight: 44)
-            .padding(.horizontal, 16)
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) { content }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-            }
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 12) { content }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(WorkbenchCanvasSurface.color)

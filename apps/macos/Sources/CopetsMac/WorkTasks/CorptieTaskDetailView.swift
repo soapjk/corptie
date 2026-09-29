@@ -199,12 +199,6 @@ struct CorptieTaskDetailView: View {
 
     private var detailHeader: some View {
         HStack(spacing: 8) {
-            Image(systemName: "square.text.square")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.accentColor)
-            Text(verbatim: "Detail")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
             Spacer()
             Button {
                 showEdit = true
