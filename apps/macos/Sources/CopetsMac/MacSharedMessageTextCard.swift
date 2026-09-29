@@ -12,6 +12,7 @@ struct MacSharedMessageTextCard: View {
     var copy: () -> Void = {}
     var toggle: () -> Void = {}
     var performAction: (AppKitChatTimelineRow.Action) -> Void = { _ in }
+    var selectText: () -> Void = {}
 
     var presentedMessageStatus: UserMessageStatusPresentation? {
         row.nativeStyle == .user ? row.messageStatus : nil
@@ -163,7 +164,6 @@ struct MacSharedMessageTextCard: View {
                 }
             }
         }
-        .contextMenu { messageContextMenu }
         .accessibilityActions {
             if !row.copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Button(L10n("Copy Message"), action: copy)
@@ -174,36 +174,8 @@ struct MacSharedMessageTextCard: View {
                                         isDestructive: false, kind: .forkMessage(itemID: itemID)))
                 }
             }
+            Button(L10n("Select Text"), action: selectText)
         }
-    }
-
-    @ViewBuilder private var messageContextMenu: some View {
-        if !row.contextTimestamp.isEmpty {
-            Button {} label: { Label(L10nFormat("Time: %@", row.contextTimestamp), systemImage: "clock") }
-                .disabled(true)
-            if hasMessageContextAction { Divider() }
-        }
-        if !row.copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            Button(action: copy) { Label(L10n("Copy Message"), systemImage: "doc.on.doc") }
-        }
-        if let itemID = row.forkItemID {
-            Button {
-                performAction(.init(id: "fork:\(itemID)", label: L10n("Create Branch"),
-                                    isDestructive: false, kind: .forkMessage(itemID: itemID)))
-            } label: {
-                Label(L10n("Create Branch"), systemImage: "arrow.triangle.branch")
-            }
-        } else if let reason = row.forkUnavailableReason {
-            Button {} label: { Label(L10n("Create Branch"), systemImage: "arrow.triangle.branch") }
-                .disabled(true)
-            Text(reason)
-        }
-    }
-
-    private var hasMessageContextAction: Bool {
-        !row.copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || row.forkItemID != nil
-            || row.forkUnavailableReason != nil
     }
 
     private var attachmentStrip: some View {
@@ -368,6 +340,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
     private var baseDirectory: String?
     private var measuredWidth: CGFloat?
     private var elapsedSummary: String?
+    private var usesNativeTextMenu = false
     var displayedProcessSummary: String? { elapsedSummary }
     private var onToggleExpansion: (String) -> Void = { _ in }
     private var onAction: (AppKitChatTimelineRow.Action) -> Void = { _ in }
@@ -396,6 +369,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
                     onToggleExpansion: @escaping (String) -> Void,
                     onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in }) {
         precondition(MacSharedMessageTextCard.supports(row))
+        usesNativeTextMenu = false
         self.row = row; self.baseDirectory = baseDirectory
         elapsedSummary = nil
         self.onToggleExpansion = onToggleExpansion
@@ -403,6 +377,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         measuredLayout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth)
         measuredWidth = availableWidth
         contentConfigurationCount += 1
+        configureContextMenu(for: row)
         updateHost()
     }
 
@@ -424,7 +399,8 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
             processSummaryOverride: elapsedSummary, baseDirectory: baseDirectory,
             copy: { [weak self] in self?.copyRepresentedMessage() },
             toggle: { [weak self] in self?.toggleRepresentedProcess() },
-            performAction: { [weak self] action in self?.onAction(action) })
+            performAction: { [weak self] action in self?.onAction(action) },
+            selectText: { [weak self] in self?.beginTextSelection() })
         if let host { host.rootView = root }
         else {
             let host = NSHostingView(rootView: root)
@@ -434,6 +410,9 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
             addSubview(host)
             self.host = host
         }
+        self.host?.menu = menu
+        configureHostedTextViews()
+        DispatchQueue.main.async { [weak self] in self?.configureHostedTextViews() }
         if needsLayout { self.needsLayout = true }
     }
 
@@ -451,10 +430,106 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         super.layout()
     }
 
-    func copyRepresentedMessage() {
+    @objc func copyRepresentedMessage() {
         guard let text = row?.copyText else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    @objc private func forkRepresentedMessage() {
+        guard let itemID = row?.forkItemID else { return }
+        onAction(.init(id: "fork:\(itemID)", label: L10n("Create Branch"),
+                       isDestructive: false, kind: .forkMessage(itemID: itemID)))
+    }
+
+    @objc private func beginTextSelection() {
+        guard row?.nativeStyle != .process else { return }
+        usesNativeTextMenu = true
+        configureHostedTextViews()
+    }
+
+    private func configureHostedTextViews() {
+        guard let host else { return }
+        func textViews(in view: NSView) -> [NativeTimelineTextView] {
+            (view as? NativeTimelineTextView).map { [$0] }
+                ?? view.subviews.flatMap(textViews)
+        }
+        for textView in textViews(in: host) {
+            textView.cardContextMenu = menu
+            textView.onTextSelectionEnded = { [weak self] in
+                guard self?.usesNativeTextMenu == true else { return }
+                self?.usesNativeTextMenu = false
+                self?.configureHostedTextViews()
+            }
+            if usesNativeTextMenu, !textView.usesNativeTextMenu {
+                textView.beginTextSelection()
+            } else if !usesNativeTextMenu, textView.usesNativeTextMenu {
+                textView.endTextSelection()
+            }
+        }
+    }
+
+    private func configureContextMenu(for row: AppKitChatTimelineRow) {
+        guard row.nativeStyle != .process, row.userInput == nil else {
+            menu = nil
+            setAccessibilityCustomActions([])
+            return
+        }
+        let menu = NSMenu()
+        if !row.contextTimestamp.isEmpty {
+            let timestamp = NSMenuItem(title: L10nFormat("Time: %@", row.contextTimestamp), action: nil, keyEquivalent: "")
+            timestamp.image = NSImage(systemSymbolName: "clock", accessibilityDescription: nil)
+            timestamp.isEnabled = false
+            timestamp.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.timestamp")
+            menu.addItem(timestamp)
+        }
+        let hasCopy = !row.copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if !menu.items.isEmpty { menu.addItem(.separator()) }
+        if hasCopy {
+            let copy = NSMenuItem(title: L10n("Copy Message"), action: #selector(copyRepresentedMessage), keyEquivalent: "")
+            copy.target = self
+            copy.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)
+            copy.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.copy")
+            menu.addItem(copy)
+        }
+        let selectText = NSMenuItem(title: L10n("Select Text"), action: #selector(beginTextSelection), keyEquivalent: "")
+        selectText.target = self
+        selectText.image = NSImage(systemSymbolName: "text.cursor", accessibilityDescription: nil)
+        selectText.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.select-text")
+        menu.addItem(selectText)
+        if row.forkItemID != nil {
+            let fork = NSMenuItem(title: L10n("Create Branch"), action: #selector(forkRepresentedMessage), keyEquivalent: "")
+            fork.target = self
+            fork.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: nil)
+            fork.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.fork")
+            menu.addItem(fork)
+        } else if let reason = row.forkUnavailableReason {
+            let fork = NSMenuItem(title: L10n("Create Branch"), action: nil, keyEquivalent: "")
+            fork.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: nil)
+            fork.isEnabled = false
+            fork.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.fork")
+            menu.addItem(fork)
+            let reasonItem = NSMenuItem(title: reason, action: nil, keyEquivalent: "")
+            reasonItem.isEnabled = false
+            reasonItem.indentationLevel = 1
+            reasonItem.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.fork-reason")
+            menu.addItem(reasonItem)
+        }
+        self.menu = menu
+        var actions = [NSAccessibilityCustomAction(
+            name: L10n("Select Text"), target: self, selector: #selector(beginTextSelection)
+        )]
+        if hasCopy {
+            actions.insert(NSAccessibilityCustomAction(
+                name: L10n("Copy Message"), target: self, selector: #selector(copyRepresentedMessage)
+            ), at: 0)
+        }
+        if row.forkItemID != nil {
+            actions.append(NSAccessibilityCustomAction(
+                name: L10n("Create Branch"), target: self, selector: #selector(forkRepresentedMessage)
+            ))
+        }
+        setAccessibilityCustomActions(actions)
     }
 
     func toggleRepresentedProcess() {

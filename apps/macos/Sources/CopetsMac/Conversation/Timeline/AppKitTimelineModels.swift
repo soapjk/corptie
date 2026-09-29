@@ -169,17 +169,6 @@ struct AppKitChatRowReuseIdentity: Equatable {
 
 @MainActor
 enum ConversationTimeSeparatorPolicy {
-    static let minimumGap: TimeInterval = 5 * 60
-
-    private struct FormatterKey: Hashable {
-        let localeIdentifier: String
-        let calendarIdentifier: String
-        let timeZoneIdentifier: String
-        let includesDate: Bool
-    }
-
-    private static var formatters: [FormatterKey: DateFormatter] = [:]
-
     static func applying(
         to rows: [AppKitChatTimelineRow],
         now: Date = Date(),
@@ -192,17 +181,10 @@ enum ConversationTimeSeparatorPolicy {
             decorated.timeSeparatorText = nil
             guard let date = row.messageDate else { return decorated }
             defer { previousMessageDate = date }
-            guard let previousMessageDate,
-                  date.timeIntervalSince(previousMessageDate) >= minimumGap else {
-                return decorated
-            }
-            let text = label(
-                for: date,
-                now: now,
-                calendar: calendar,
-                locale: locale,
-                forceDate: !calendar.isDate(date, inSameDayAs: previousMessageDate)
-            )
+            guard let text = ConversationTimeSeparatorText.label(
+                for: date, after: previousMessageDate, now: now,
+                calendar: calendar, locale: locale
+            ) else { return decorated }
             decorated.timeSeparatorText = text
             var hasher = Hasher()
             hasher.combine(row.contentRevision)
@@ -210,31 +192,6 @@ enum ConversationTimeSeparatorPolicy {
             decorated.contentRevision = hasher.finalize()
             return decorated
         }
-    }
-
-    static func label(
-        for date: Date,
-        now: Date = Date(),
-        calendar: Calendar = .current,
-        locale: Locale = .current,
-        forceDate: Bool = false
-    ) -> String {
-        let includesDate = forceDate || !calendar.isDate(date, inSameDayAs: now)
-        let key = FormatterKey(
-            localeIdentifier: locale.identifier,
-            calendarIdentifier: String(describing: calendar.identifier),
-            timeZoneIdentifier: calendar.timeZone.identifier,
-            includesDate: includesDate
-        )
-        if let formatter = formatters[key] { return formatter.string(from: date) }
-        let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.locale = locale
-        formatter.timeZone = calendar.timeZone
-        formatter.timeStyle = .short
-        formatter.dateStyle = includesDate ? .medium : .none
-        formatters[key] = formatter
-        return formatter.string(from: date)
     }
 }
 
