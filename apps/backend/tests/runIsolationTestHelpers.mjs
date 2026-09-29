@@ -11,8 +11,15 @@ export const startupRef = Object.freeze({
 });
 export const session = Object.freeze({logicalSessionId:"logical:test",taskId:"task:test",repositoryId:null,worktreeId:null});
 
+export const RUN_ISOLATION_TEST_CACHE_ROOT = "/Volumes/T9/cache/corptie-tests";
+
+export async function createRunIsolationTestRoot(prefix) {
+  await mkdir(RUN_ISOLATION_TEST_CACHE_ROOT, { recursive: true });
+  return mkdtemp(join(RUN_ISOLATION_TEST_CACHE_ROOT, prefix));
+}
+
 export async function fixture(t,{clock=()=>new Date("2026-08-30T00:00:00.000Z"),uuid=undefined,serviceOptions={}}={}){
-  const root=await mkdtemp("/Volumes/T9/corptie-run-isolation-test-");await mkdir(root,{recursive:true});const info=await stat(root,{bigint:true});
+  const root=await createRunIsolationTestRoot("corptie-run-isolation-test-");const info=await stat(root,{bigint:true});
   const verifier=new DataRootVerifier({homeDirectory:"/Users/test",clock,volumeInspector:async()=>({external:true,volumeUUID:"volume:test",mountPoint:"/Volumes/T9",filesystemType:"apfs"})});
   const service=new RunIsolationService({dataRoot:root,dataRootVerifier:verifier,reserveBytes:0,quotaBytes:16*1024*1024,clock,...(uuid?{uuid}:{}),...serviceOptions});await service.initialize();
   t.after(async()=>{await service.close();await rm(root,{recursive:true,force:true})});return {root,service,info};
