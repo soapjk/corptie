@@ -4,11 +4,22 @@ import CorptieClientCore
 import CorptieConversation
 import UniformTypeIdentifiers
 
-struct PadInspectorResources: View {
+struct PadInspectorResources<Primary: View, Secondary: View>: View {
     @Bindable var store: PadInspectorStore
     let connection: PadConnection
     let sessionID: String
     @Bindable var workspace: PadWorkspace
+    let primary: Primary
+    let secondary: Secondary
+    init(store: PadInspectorStore, connection: PadConnection, sessionID: String, workspace: PadWorkspace,
+         @ViewBuilder primary: () -> Primary, @ViewBuilder secondary: () -> Secondary) {
+        self.store = store
+        self.connection = connection
+        self.sessionID = sessionID
+        self.workspace = workspace
+        self.primary = primary()
+        self.secondary = secondary()
+    }
     @Environment(\.openURL) private var openURL
     @State private var editor: PadInspectorEdit?
     @State private var document: PadInspectorDocument?
@@ -31,10 +42,12 @@ struct PadInspectorResources: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             connectionStatus
+            primary
             taskControls
+            secondary
             if store.snapshot?.taskDefinition?["lifecycleState"].text == "done" { taskWorktree }
-            references
             if store.snapshot?.workId != nil { artifacts; memories }
+            references
             if !section("schedules").items.isEmpty { schedules }
             if !section("recalls").items.isEmpty { recalls.modifier(ConversationDetailModuleSurface()) }
             if section("turn")["identity"]["turnExecutionId"] != .null {
@@ -328,6 +341,15 @@ struct PadInspectorResources: View {
     }
     private var environment: some View {
         ConversationDetailModuleCard(title: "工作空间与 Provider", systemImage: "cpu") {
+            if workspace.selection == sessionID {
+                if let provider = workspace.usage?.account?.provider { LabeledContent("Provider", value: provider) }
+                if let model = workspace.composerConfiguration?.currentModel ?? workspace.usage?.account?.model {
+                    LabeledContent("模型", value: model)
+                }
+                if let reasoning = workspace.composerConfiguration?.currentReasoningLevel {
+                    LabeledContent("推理强度", value: reasoning)
+                }
+            }
             if let cwd = store.snapshot?.environment["cwd"].text { Text(cwd).font(.caption.monospaced()).textSelection(.enabled); ShareLink("分享工作空间路径", item: cwd) }
             Menu("切换 Provider") {
                 ForEach(section("providers").items, id: \.inspectorID) { provider in

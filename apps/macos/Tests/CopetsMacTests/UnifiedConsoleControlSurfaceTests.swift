@@ -331,9 +331,8 @@ struct UnifiedConsoleControlSurfaceTests {
 
         #expect(taskSource.contains("if hasTaskDefinitionContent"))
         #expect(taskSource.contains("ConversationTaskDefinition(description: task.description,"))
-        #expect(taskSource.contains("hasContent(task.description)"))
-        #expect(taskSource.contains("hasContent(task.acceptanceCriteria)"))
-        #expect(taskSource.contains("hasContent(task.verificationCriteria)"))
+        #expect(taskSource.contains("ConversationTaskDefinition.hasContent(description: task.description,"))
+        #expect(taskSource.contains("acceptance: task.acceptanceCriteria, verification: task.verificationCriteria)"))
         #expect(!taskSource.contains("text.isEmpty ? L10n(\"No Content\")"))
         #expect(!taskSource.contains("Text(L10n(\"暂无记忆\"))"))
 

@@ -126,6 +126,10 @@ test("real TLS route boundary and authenticated local approval", async () => {
     developmentServiceAction: async (repositoryId, action, input) => ({ repositoryId, action, input }),
     jobAction: async (jobId, action, input) => ({ job: { id: jobId, action, input } })
   }, sessionAPI: {
+    inspector: {
+      scope: (id, identity) => ({ sessionId: id, deviceId: identity.deviceId }),
+      snapshot: async (_identity, id) => ({ schemaVersion: 1, sessionId: id, sections: {}, errors: {} })
+    },
     commandCatalog(identity, sessionId) {
       return { schemaVersion: 1, sessionId, commands: [{ name: "goal" }] };
     },
@@ -255,6 +259,13 @@ test("real TLS route boundary and authenticated local approval", async () => {
     assert.equal((await call("/client/v1/control/agents", { token: creds.accessToken })).status, 200);
     assert.equal((await call("/client/v1/capabilities", { token: creds.accessToken })).body.controlRead, true);
     assert.equal((await call(messagesPath, { token: creds.accessToken })).status, 200);
+    const inspectorPath = "/client/v1/sessions/session%3Atest/inspector";
+    assert.equal((await call(inspectorPath)).status, 401);
+    const inspector = await call(inspectorPath, { token: creds.accessToken });
+    assert.equal(inspector.status, 200);
+    assert.equal(inspector.body.sessionId, "session:test");
+    assert.equal((await call(`${inspectorPath}?x=1`, { token: creds.accessToken })).status, 403);
+    assert.equal((await call("/client/v1/sessions/%ZZ/inspector", { token: creds.accessToken })).status, 400);
     const approvalPath = "/client/v1/sessions/session%3Atest/approval";
     const approvalInput = { itemId: "approval:one", optionId: "allow" };
     assert.equal((await call(approvalPath, { method: "POST", value: approvalInput })).status, 401);
