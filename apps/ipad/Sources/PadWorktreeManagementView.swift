@@ -11,6 +11,8 @@ struct PadWorktreeManagementView: View {
     @State private var pendingCleanup: [ClientManagedWorktree] = []
     @State private var showingPlan = false
     @State private var showingJobReview = false
+    @State private var planSheetDismissed = true
+    @State private var reviewAfterPlanDismissal = false
 
     var body: some View {
         Group {
@@ -41,12 +43,26 @@ struct PadWorktreeManagementView: View {
                 Task { await manager.execute(confirmed, connection: connection) }
             }
         }
-        .sheet(isPresented: $showingPlan) {
+        .sheet(isPresented: $showingPlan, onDismiss: {
+            planSheetDismissed = true
+            if reviewAfterPlanDismissal {
+                reviewAfterPlanDismissal = false
+                showingJobReview = true
+            }
+        }) {
             if let project = manager.detail?.project {
                 PadWorktreePlanSheet(project: project) { operation, sources, target in
-                    Task { await manager.preparePlan(operation: operation, sources: sources,
-                                                     target: target, connection: connection) }
+                    Task {
+                        let previousJobID = manager.job?.id
+                        await manager.preparePlan(operation: operation, sources: sources,
+                                                  target: target, replacingDraft: true, connection: connection)
+                        if manager.job?.id != previousJobID, manager.job?.status == "awaiting_confirmation" {
+                            if planSheetDismissed { showingJobReview = true }
+                            else { reviewAfterPlanDismissal = true }
+                        }
+                    }
                 }
+                .onAppear { planSheetDismissed = false }
             }
         }
         .sheet(isPresented: $showingJobReview) {
@@ -93,7 +109,7 @@ struct PadWorktreeManagementView: View {
             Menu {
                 Button("生成集成计划", systemImage: "arrow.triangle.merge") { showingPlan = true }
                 Button("快速生成全部待处理计划", systemImage: "wand.and.stars") {
-                    Task { await manager.preparePlan(connection: connection) }
+                    prepareAllPending()
                 }
                 if let targets = cleanupTargets, !targets.isEmpty {
                     Button("清理 \(targets.count) 个已合并 Worktree", systemImage: "trash", role: .destructive) {
@@ -154,6 +170,7 @@ struct PadWorktreeManagementView: View {
                     .labelsHidden()
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                integrationActions(detail.project)
                 if let worktree = manager.selectedWorktree {
                     worktreeOverview(worktree)
                     worktreeChanges(worktree)
@@ -167,6 +184,43 @@ struct PadWorktreeManagementView: View {
             .frame(maxWidth: 820, alignment: .leading)
         }
         .refreshable { await manager.load(repository.id, connection: connection, force: true) }
+    }
+
+    private func integrationActions(_ project: ClientManagedGitProject) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button(action: prepareAllPending) {
+                Label("一键合并至 main", systemImage: "arrow.triangle.merge")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(project.pendingWorktreeCount == 0 || manager.planning || manager.jobBusy
+                || ["queued", "running", "paused", "cancellation_requested", "replanning"].contains(manager.job?.status ?? ""))
+            .accessibilityIdentifier("worktree.integrate.preflight")
+
+            HStack {
+                Text("\(project.pendingWorktreeCount) 个待合并 Worktree")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Spacer()
+                Button("自选范围…") { showingPlan = true }
+                    .font(.footnote)
+                    .disabled(manager.planning || manager.jobBusy)
+            }
+            Text("先生成审查计划，确认后才会依次本地合并；不会推送到远程。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func prepareAllPending() {
+        Task {
+            let previousJobID = manager.job?.id
+            await manager.preparePlan(replacingDraft: true, connection: connection)
+            if manager.job?.id != previousJobID, manager.job?.status == "awaiting_confirmation" {
+                showingJobReview = true
+            }
+        }
     }
 
     private func worktreeOverview(_ worktree: ClientManagedWorktree) -> some View {
@@ -479,13 +533,27 @@ private struct PadWorktreeOperationSheet: View {
     }
 }
 
+enum PadWorktreePlanDefaults {
+    static func sources(in project: ClientManagedGitProject) -> [String] {
+        project.worktrees.filter { !$0.isMain && $0.pendingIntegration }.map(\.worktreeId)
+    }
+}
+
 private struct PadWorktreePlanSheet: View {
     @Environment(\.dismiss) private var dismiss
     let project: ClientManagedGitProject
     let submit: (ClientWorktreePlanOperation, [String], String) -> Void
     @State private var operation = ClientWorktreePlanOperation.merge
-    @State private var sources: [String] = []
-    @State private var target = ""
+    @State private var sources: [String]
+    @State private var target: String
+
+    init(project: ClientManagedGitProject, submit: @escaping (ClientWorktreePlanOperation, [String], String) -> Void) {
+        self.project = project
+        self.submit = submit
+        _sources = State(initialValue: PadWorktreePlanDefaults.sources(in: project))
+        _target = State(initialValue: project.mainWorktreeId)
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -495,6 +563,12 @@ private struct PadWorktreePlanSheet: View {
                     Text("收敛到目标分支").tag(ClientWorktreePlanOperation.converge)
                 }
                 Section("来源 Worktree") {
+                    HStack {
+                        Button("全选待合并") { sources = PadWorktreePlanDefaults.sources(in: project) }
+                        Spacer()
+                        Button("清空") { sources = [] }
+                    }
+                    .font(.footnote)
                     ForEach(project.worktrees.filter { !$0.isMain }) { tree in
                         Toggle(tree.branchName ?? tree.path, isOn: Binding(
                             get: { sources.contains(tree.worktreeId) },
@@ -520,7 +594,6 @@ private struct PadWorktreePlanSheet: View {
                 }
             }
             .navigationTitle("生成集成计划")
-            .onAppear { target = project.mainWorktreeId }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
