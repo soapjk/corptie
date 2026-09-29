@@ -685,6 +685,10 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         scrollToBottom()
     }
 
+    func composerInsetDidChange() {
+        if followsLatest { enqueueCorrection(.bottom) }
+    }
+
     private func claimViewportIntent() {
         traceViewport("cancel-pending=\(pendingCorrection != nil)")
         scrollCommandGeneration &+= 1
@@ -735,7 +739,8 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         defer { applyingCorrection = false }
         tableView.layoutSubtreeIfNeeded()
         synchronizeDocumentHeight(in: tableView)
-        let maximumY = max(0, tableView.rect(ofRow: rows.count - 1).maxY - clip.bounds.height)
+        let maximumY = max(0, tableView.rect(ofRow: rows.count - 1).maxY
+            + (scrollView?.contentInsets.bottom ?? 0) - clip.bounds.height)
         let y: CGFloat
         switch correction {
         case .bottom:
@@ -769,6 +774,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         }
         let visibleMaxY = scrollView.contentView.bounds.maxY
         let contentMaxY = tableView.rect(ofRow: rows.count - 1).maxY
+            + scrollView.contentInsets.bottom
         return contentMaxY - visibleMaxY <= 8
     }
 
@@ -1096,7 +1102,8 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         suppressNearTopDuringLayout()
         tableView.layoutSubtreeIfNeeded()
         synchronizeDocumentHeight(in: tableView)
-        let maximumY = max(0, tableView.frame.height - clipView.bounds.height)
+        let maximumY = max(0, tableView.frame.height
+            + (scrollView?.contentInsets.bottom ?? 0) - clipView.bounds.height)
         if let position = pendingRestorePosition {
             if let row = rows.firstIndex(where: { $0.id == position.rowID }) {
                 let anchorY = tableView.rect(ofRow: row).minY + CGFloat(position.offset)

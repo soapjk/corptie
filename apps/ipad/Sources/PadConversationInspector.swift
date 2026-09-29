@@ -17,20 +17,11 @@ struct PadConversationInspector: View {
         ConversationDetailDashboard {
             if let session {
                 PadInspectorResources(store: inspector, connection: connection, sessionID: sessionID, workspace: workspace) {
-                    ConversationDetailCompactPair {
-                        ConversationDetailModuleCard(title: "执行状态", systemImage: "waveform.path.ecg") {
-                            Text(executionLabel(session.executionStatus))
-                            if let activity = session.activityStatus, !activity.isEmpty {
-                                ConversationDetailText(text: activity)
-                            }
-                        }
-                    } trailing: {
-                        ConversationDetailModuleCard(title: "会话信息", systemImage: "info.circle") {
-                            Text(session.id).font(.caption.monospaced()).lineLimit(1)
-                                .truncationMode(.middle).textSelection(.enabled)
-                            if let work = workspace.works.first(where: { $0.id == session.workId }) {
-                                Text(work.name).lineLimit(2)
-                            }
+                    ConversationDetailModuleCard(title: "会话信息", systemImage: "info.circle") {
+                        Text(session.id).font(.caption.monospaced()).lineLimit(1)
+                            .truncationMode(.middle).textSelection(.enabled)
+                        if let work = workspace.works.first(where: { $0.id == session.workId }) {
+                            Text(work.name).lineLimit(2)
                         }
                     }
                 } secondary: {
@@ -89,16 +80,6 @@ struct PadConversationInspector: View {
     }
     private func unavailable(_ text: String) -> some View {
         Text(text).font(.footnote).foregroundStyle(.secondary)
-    }
-    private func executionLabel(_ status: String) -> String {
-        switch SessionExecutionState(executionStatus: status) {
-        case .running: "执行中"
-        case .blocked: "等待处理"
-        case .complete: "已完成"
-        case .failed: "执行失败"
-        case .cancelled: "已中断"
-        case nil: status
-        }
     }
 }
 #endif
