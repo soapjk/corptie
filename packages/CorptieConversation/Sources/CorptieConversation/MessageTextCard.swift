@@ -110,10 +110,6 @@ public struct MessageTextCard<Content: View>: View {
                         .fill(background)
                         .shadow(color: .black.opacity(0.04), radius: 8, x: 0, y: 3)
                 }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder(border, lineWidth: 1)
-                }
             if showsActions || status != nil {
                 HStack(spacing: 6) {
                     if let status {
@@ -195,10 +191,6 @@ public struct MessageTextCard<Content: View>: View {
         #endif
         return role == .user ? Color.accentColor.opacity(0.1) : surface
     }
-    private var border: Color {
-        role == .user ? Color.accentColor.opacity(0.3) : Color.primary.opacity(0.08)
-    }
-
     private func statusColor(_ tone: UserMessageStatusPresentation.Tone) -> Color {
         switch tone {
         case .neutral: .secondary

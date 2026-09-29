@@ -287,8 +287,10 @@ struct UnifiedConsoleControlSurfaceTests {
         let detailStart = try #require(source.range(of: "private var sessionDetailContent:", range: cardStart.upperBound..<source.endIndex))
         let combined = source[cardStart.lowerBound..<detailStart.lowerBound]
 
-        #expect(combined.contains("ConversationDetailDashboard(actions:"))
+        #expect(combined.contains("ConversationDetailDashboard {"))
+        #expect(!combined.contains("link.badge.plus"))
         #expect(!combined.contains("ScrollView {"))
+        #expect(!source.contains("Text(session.title)"))
         #expect(source.contains("embedsInParentScroll: true"))
         #expect(source.contains("if detailKind == .taskDetail, let taskId = session.taskId"))
         #expect(!source.contains("会话恢复边界"))

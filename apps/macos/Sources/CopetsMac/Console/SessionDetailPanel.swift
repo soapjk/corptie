@@ -72,33 +72,13 @@ struct SessionDetailPanel: View {
     }
 
     private var sessionCard: some View {
-        ConversationDetailDashboard(actions: {
-            Menu {
-                Button("本地文件…") { chooseLocalFile() }
-                Button("网页链接…") { contextReferenceAddMode = .webURL }
-                Button("Work…") { contextReferenceAddMode = .work }
-                Button("Task…") { contextReferenceAddMode = .task }
-                Button("Agent…") { contextReferenceAddMode = .agent }
-                Button("其他会话…") { contextReferenceAddMode = .session }
-            } label: {
-                Image(systemName: "link.badge.plus")
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("添加引用")
-        }) {
+        ConversationDetailDashboard {
             sessionDetailContent.background(ConsoleOverlayScroller())
         }
     }
 
     private var sessionDetailContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(session.title)
-                .font(.system(size: 15, weight: .semibold))
-                .lineLimit(2)
-                .textSelection(.enabled)
-                .padding(.horizontal, 4)
             ConversationDetailCompactPair {
                 detailSection(title: "执行状态", systemImage: "waveform.path.ecg") {
                     Text(session.executionTaskStatus.label)
@@ -126,9 +106,7 @@ struct SessionDetailPanel: View {
 
             if detailKind == .workDetail { workDetailContent }
 
-            if !contextReferences.isEmpty || isLoadingContextReferences {
-                contextReferencesSection.modifier(ConversationDetailModuleSurface())
-            }
+            contextReferencesSection.modifier(ConversationDetailModuleSurface())
 
             if backendClient.supplementaryDataController.isLoadingScheduledTasks
                 || !backendClient.supplementaryDataController.selectedScheduledTasks.isEmpty

@@ -14,10 +14,8 @@ struct PadConversationInspector: View {
         .resolve(sessionKind: session?.sessionKind, taskID: session?.taskId, workID: session?.workId)
     }
     var body: some View {
-        ConversationDetailDashboard(actions: { EmptyView() }) {
+        ConversationDetailDashboard {
             if let session {
-                Text(session.title).font(.title3.weight(.semibold)).textSelection(.enabled)
-                    .padding(.horizontal, 4)
                 PadInspectorResources(store: inspector, connection: connection, sessionID: sessionID, workspace: workspace) {
                     ConversationDetailCompactPair {
                         ConversationDetailModuleCard(title: "执行状态", systemImage: "waveform.path.ecg") {
