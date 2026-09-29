@@ -41,9 +41,16 @@ public struct ConversationInputFields: View {
             }
             ForEach(request.questions) { question in
                 VStack(alignment: .leading, spacing: 8) {
-                    if !question.header.isEmpty { Text(question.header).font(.caption).foregroundStyle(.secondary) }
+                    if !question.header.isEmpty {
+                        Text(question.header).font(.caption).foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
                     Text(question.question).font(.body).fixedSize(horizontal: false, vertical: true)
-                    if question.required == false { Text("可选").font(.caption).foregroundStyle(.secondary) }
+                        .textSelection(.enabled)
+                    if question.required == false {
+                        Text("可选").font(.caption).foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
                     if let options = question.options {
                         ForEach(options, id: \.label) { option in
                             if readOnly {
@@ -77,6 +84,7 @@ public struct ConversationInputFields: View {
                                 if entered.isEmpty {
                                     Text(submittedAnswers == nil ? "旧记录未保留文本答案" : "未填写其他答案")
                                         .font(.caption).foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
                                 } else {
                                     ForEach(Array(entered.enumerated()), id: \.offset) { entry in
                                         Text(entry.element).font(.callout)

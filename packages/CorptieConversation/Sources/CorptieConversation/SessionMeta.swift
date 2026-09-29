@@ -1,3 +1,4 @@
+import CorptieClientCore
 import SwiftUI
 
 /// Readiness / usage semantics of the desktop `ThreadMetaView`, shared with the
@@ -286,5 +287,108 @@ public struct SessionUsageItem: View {
                 .contentTransition(.numericText(value: numericValue))
                 .animation(.snappy(duration: 0.45), value: numericValue)
         }
+    }
+}
+
+/// The shared 32pt usage slot used by both composer status rows.
+public struct ConversationComposerUsageSlot<Content: View>: View {
+    private let content: Content
+
+    public init(@ViewBuilder content: () -> Content) { self.content = content() }
+
+    public var body: some View {
+        content.padding(.horizontal, 10).frame(height: 32)
+    }
+}
+
+/// Compact readiness, execution and usage strip above the editor on both platforms.
+public struct ConversationComposerStatusRow<Usage: View>: View {
+    public let isReady: Bool
+    public let readinessTitle: String
+    public let readinessMessage: String
+    public let readinessCode: String?
+    public let executionState: SessionExecutionState?
+    public let activity: String?
+    private let usage: Usage
+    @State private var showingNotReadyReason = false
+    @State private var showingActivity = false
+
+    public init(isReady: Bool, readinessTitle: String, readinessMessage: String,
+                readinessCode: String?, executionState: SessionExecutionState?, activity: String?,
+                @ViewBuilder usage: () -> Usage) {
+        self.isReady = isReady
+        self.readinessTitle = readinessTitle
+        self.readinessMessage = readinessMessage
+        self.readinessCode = readinessCode
+        self.executionState = executionState
+        self.activity = activity
+        self.usage = usage()
+    }
+
+    public static func compactStatus(for state: SessionExecutionState?) -> String {
+        switch state {
+        case .running: "执行中"
+        case .blocked: "待处理"
+        case .complete: "已完成"
+        case .failed: "已失败"
+        case .cancelled: "已停止"
+        case nil: "待开始"
+        }
+    }
+
+    public var body: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 2) {
+                Button {
+                    if !isReady { showingNotReadyReason = true }
+                } label: {
+                    SessionReadinessLight(isReady: isReady)
+                        .frame(width: 16, height: 28)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(isReady)
+                .accessibilityLabel(isReady ? "Session Ready" : "Session Not Ready")
+                .accessibilityIdentifier("conversation-readiness")
+                .popover(isPresented: $showingNotReadyReason, arrowEdge: .top) {
+                    SessionNotReadyDetail(title: readinessTitle, message: readinessMessage, code: readinessCode)
+                        .presentationCompactAdaptation(.popover)
+                }
+                Button { showingActivity = true } label: {
+                    Group {
+                        if let executionState {
+                            SessionExecutionStatusText(state: executionState, label: Self.compactStatus(for: executionState))
+                        } else {
+                            Text(Self.compactStatus(for: nil))
+                        }
+                    }
+                    .lineLimit(1)
+                    .frame(width: 32, height: 32, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Self.compactStatus(for: executionState))
+                .accessibilityValue(activity ?? "")
+                .accessibilityHint("查看执行详情")
+                .popover(isPresented: $showingActivity) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(Self.compactStatus(for: executionState)).font(.headline)
+                        if let activity, !activity.isEmpty {
+                            Text(activity).font(.callout).textSelection(.enabled)
+                        }
+                    }
+                    .padding(16)
+                    .frame(idealWidth: 280, maxWidth: 320, alignment: .leading)
+                    .presentationCompactAdaptation(.popover)
+                }
+            }
+            .padding(.leading, 2)
+            .padding(.trailing, 5)
+            .frame(width: 58, height: 32, alignment: .leading)
+            .accessibilityIdentifier("conversation-execution-state")
+            usage
+        }
+        .font(.system(size: 9, weight: .semibold))
+        .foregroundStyle(ComposerPalette.secondaryText)
     }
 }

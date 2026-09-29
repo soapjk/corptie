@@ -9,93 +9,26 @@ struct PadThreadMetaView: View {
     let session: ClientSession?
     let capabilities: ClientSessionCapabilities?
     let usage: ClientSessionUsage?
-    @State private var showingNotReadyReason = false
-    @State private var showingActivity = false
 
     private var isReady: Bool {
         // Older hosts do not project readiness; treat their sessions as ready like the desktop did.
         capabilities?.readiness != "not_ready"
     }
-    private var executionState: SessionExecutionState? {
-        SessionExecutionState(executionStatus: session?.executionStatus)
-    }
-
-    private var compactStatus: String {
-        switch executionState {
-        case .running: "执行中"
-        case .blocked: "待处理"
-        case .complete: "已完成"
-        case .failed: "已失败"
-        case .cancelled: "已停止"
-        case nil: "待开始"
-        }
-    }
 
     var body: some View {
-        HStack(spacing: 10) {
-            HStack(spacing: 2) {
-                Button {
-                    if !isReady { showingNotReadyReason = true }
-                } label: {
-                    SessionReadinessLight(isReady: isReady)
-                        .frame(width: 16, height: 28)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .disabled(isReady)
-                .accessibilityLabel(isReady ? "Session Ready" : "Session Not Ready")
-                .accessibilityIdentifier("conversation-readiness")
-                .popover(isPresented: $showingNotReadyReason, arrowEdge: .top) {
-                    let reason = capabilities?.notReadyReason
-                    SessionNotReadyDetail(
-                        title: SessionReadinessPresentation.title(code: reason?.code),
-                        message: SessionReadinessPresentation.message(code: reason?.code, fallback: reason?.message),
-                        code: reason?.code)
-                        .presentationCompactAdaptation(.popover)
-                }
-                Button {
-                    showingActivity = true
-                } label: {
-                    Group {
-                        if let executionState {
-                            SessionExecutionStatusText(state: executionState, label: compactStatus)
-                        } else {
-                            Text(compactStatus)
-                        }
-                    }
-                    .lineLimit(1)
-                    .frame(width: 32, height: 32, alignment: .leading)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(compactStatus)
-                .accessibilityValue(session?.activityStatus ?? "")
-                .accessibilityHint("查看执行详情")
-                .popover(isPresented: $showingActivity) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(compactStatus).font(.headline)
-                        if let activity = session?.activityStatus, !activity.isEmpty {
-                            Text(activity).font(.callout).textSelection(.enabled)
-                        }
-                    }
-                    .padding(16)
-                    .frame(idealWidth: 280, maxWidth: 320, alignment: .leading)
-                    .presentationCompactAdaptation(.popover)
-                }
-            }
-            .padding(.leading, 2)
-            .padding(.trailing, 5)
-            // Three-character labels share a compact slot; full activity text
-            // lives in the popover rather than changing this row's geometry.
-            .frame(width: 58, height: 32, alignment: .leading)
-            .accessibilityIdentifier("conversation-execution-state")
-
+        let reason = capabilities?.notReadyReason
+        ConversationComposerStatusRow(
+            isReady: isReady,
+            readinessTitle: SessionReadinessPresentation.title(code: reason?.code),
+            readinessMessage: SessionReadinessPresentation.message(code: reason?.code, fallback: reason?.message),
+            readinessCode: reason?.code,
+            executionState: SessionExecutionState(executionStatus: session?.executionStatus),
+            activity: session?.activityStatus
+        ) {
             if let usage {
                 PadUsageBar(usage: usage)
             }
         }
-        .font(.system(size: 9, weight: .semibold))
-        .foregroundStyle(ComposerPalette.secondaryText)
     }
 }
 
@@ -120,27 +53,27 @@ private struct PadUsageBar: View {
                 let used = SessionUsagePolicy.contextUsed(usedTokens: context.usedTokens.map(Double.init),
                                                           contextWindow: Double(window), remainingTokens: Double(remaining))
                 let usedPercent = SessionUsagePolicy.contextUsedPercent(reported: context.usedPercent, used: used, contextWindow: Double(window))
-                SessionUsageItem(
-                    icon: "text.alignleft",
-                    value: "\(SessionUsagePolicy.exactTokens(used))/\(SessionUsagePolicy.exactTokens(Double(window)))",
-                    progress: usedPercent / 100,
-                    color: SessionMetaPalette.color(for: SessionUsagePolicy.contextTone(usedPercent: usedPercent)),
-                    numericValue: used)
-                    .padding(.horizontal, 10)
-                    .frame(height: 32)
-                    .accessibilityLabel("Context: \(SessionUsagePolicy.exactTokens(used)) / \(SessionUsagePolicy.exactTokens(Double(window))) · \(SessionUsagePolicy.percent(usedPercent, maximumFractionDigits: 2))% used")
-                    .accessibilityIdentifier("conversation-usage-context")
+                ConversationComposerUsageSlot {
+                    SessionUsageItem(
+                        icon: "text.alignleft",
+                        value: "\(SessionUsagePolicy.exactTokens(used))/\(SessionUsagePolicy.exactTokens(Double(window)))",
+                        progress: usedPercent / 100,
+                        color: SessionMetaPalette.color(for: SessionUsagePolicy.contextTone(usedPercent: usedPercent)),
+                        numericValue: used)
+                }
+                .accessibilityLabel("Context: \(SessionUsagePolicy.exactTokens(used)) / \(SessionUsagePolicy.exactTokens(Double(window))) · \(SessionUsagePolicy.percent(usedPercent, maximumFractionDigits: 2))% used")
+                .accessibilityIdentifier("conversation-usage-context")
             }
             if let quota {
-                SessionUsageItem(
-                    icon: "bolt.fill",
-                    value: "\(SessionUsagePolicy.percent(quota.remaining))%",
-                    progress: quota.remaining / 100,
-                    color: SessionMetaPalette.color(for: SessionUsagePolicy.quotaTone(remainingPercent: quota.remaining)))
-                    .padding(.horizontal, 10)
-                    .frame(height: 32)
-                    .accessibilityLabel("\(SessionUsagePolicy.quotaLabel(provider: usage.account?.provider)): \(SessionUsagePolicy.percent(quota.remaining, maximumFractionDigits: 2))% remaining")
-                    .accessibilityIdentifier("conversation-usage-quota")
+                ConversationComposerUsageSlot {
+                    SessionUsageItem(
+                        icon: "bolt.fill",
+                        value: "\(SessionUsagePolicy.percent(quota.remaining))%",
+                        progress: quota.remaining / 100,
+                        color: SessionMetaPalette.color(for: SessionUsagePolicy.quotaTone(remainingPercent: quota.remaining)))
+                }
+                .accessibilityLabel("\(SessionUsagePolicy.quotaLabel(provider: usage.account?.provider)): \(SessionUsagePolicy.percent(quota.remaining, maximumFractionDigits: 2))% remaining")
+                .accessibilityIdentifier("conversation-usage-quota")
             }
         }
         .font(.system(size: 9, weight: .semibold))

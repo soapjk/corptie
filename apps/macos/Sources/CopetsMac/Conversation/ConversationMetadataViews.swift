@@ -24,53 +24,25 @@ struct DetailMessagesPlaceholder: View {
 
 struct ThreadMetaView: View {
     @ObservedObject private var supplementaryData = BackendClient.shared.supplementaryDataController
-    @State private var isShowingNotReadyReason = false
+    @ObservedObject private var restartState = BackendClient.shared.sessionRestartActivityController
     let sessionID: String
-    let status: TaskStatus
+    let status: TaskStatus?
     let isReady: Bool
     let notReadyReason: SessionNotReadyReason?
     let activityStatus: String?
 
     var body: some View {
-        HStack(spacing: 10) {
-            HStack(spacing: 5) {
-                Button {
-                    if !isReady { isShowingNotReadyReason = true }
-                } label: {
-                    SessionReadinessLight(isReady: isReady)
-                        .frame(width: 28, height: 28)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .disabled(isReady)
-                .help(isReady ? L10n("Ready") : L10n("Not Ready — click for details"))
-                .accessibilityLabel(isReady ? L10n("Session Ready") : L10n("Session Not Ready"))
-                .accessibilityIdentifier("conversation-readiness")
-                .popover(isPresented: $isShowingNotReadyReason, arrowEdge: .top) {
-                    SessionNotReadyDetail(
-                        title: notReadyReason?.presentationTitle ?? L10n("Session Not Ready"),
-                        message: notReadyReason?.presentationMessage
-                            ?? L10n("This Session cannot accept messages right now."),
-                        code: notReadyReason?.code
-                    )
-                }
-                SessionExecutionStatusText(state: status.sharedExecutionState, label: status.label)
-                SessionActivityStatusText(
-                    sessionID: sessionID,
-                    fallbackText: activityStatus,
-                    fallbackIsActive: status == .running,
-                    fontSize: 9
-                )
-                .layoutPriority(-1)
-            }
-
-            Spacer(minLength: 8)
-
+        ConversationComposerStatusRow(
+            isReady: isReady,
+            readinessTitle: notReadyReason?.presentationTitle ?? L10n("Session Not Ready"),
+            readinessMessage: notReadyReason?.presentationMessage
+                ?? L10n("This Session cannot accept messages right now."),
+            readinessCode: notReadyReason?.code,
+            executionState: status?.sharedExecutionState,
+            activity: restartState.activityBySessionID[sessionID]?.text ?? activityStatus
+        ) {
             ChatUsageBar(usage: supplementaryData.selectedSessionUsage)
         }
-        .font(.system(size: 9, weight: .semibold))
-        .foregroundStyle(CorptiePalette.secondaryText)
-        .frame(maxWidth: .infinity)
     }
 }
 

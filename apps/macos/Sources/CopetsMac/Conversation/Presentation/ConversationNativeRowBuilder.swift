@@ -63,8 +63,10 @@ struct ConversationNativeRowBuilder {
             let specialEvent = nativeAutomationCardPresentation(for: item)
                 ?? nativeSystemEventCardPresentation(for: item)
             style = collaboration == nil && specialEvent == nil && item.type == "userMessage" ? .user : .agent
-            copyText = collaboration?.messageText ?? specialEvent?.messageText
-                ?? ChatTimelineRowRouting.copyText(for: item)
+            copyText = item.type == "userInput" && item.userInput?.schemaVersion == 1
+                ? item.userInput.map(userInputCopyText) ?? ChatTimelineRowRouting.copyText(for: item)
+                : collaboration?.messageText ?? specialEvent?.messageText
+                    ?? ChatTimelineRowRouting.copyText(for: item)
             let supplementalText = nativeTimelineSupplementalText(for: item)
             let displayedText = nativeTimelineText(for: item)
             let presentedText = collaboration?.bodyMarkdown ?? specialEvent?.bodyMarkdown ?? (supplementalText.isEmpty
@@ -195,9 +197,20 @@ struct ConversationNativeRowBuilder {
         if case .message(let item) = entry.kind, item.type == "userInput",
            item.userInput?.schemaVersion == 1 {
             row.userInput = item.userInput
+            row.userInputItemID = item.id
             row.userInputStatus = item.status
         }
         return row
+    }
+
+    private func userInputCopyText(_ request: ConversationUserInput) -> String {
+        request.questions.map { question in
+            let heading = [question.header, question.question].filter { !$0.isEmpty }.joined(separator: "\n")
+            let options = (question.options ?? []).map { option in
+                option.description.isEmpty ? option.label : "\(option.label) — \(option.description)"
+            }
+            return ([heading] + options).joined(separator: "\n")
+        }.joined(separator: "\n\n")
     }
 
     func forkItemID(for entry: ChatDisplayEntry) -> String? {
