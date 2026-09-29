@@ -82,10 +82,12 @@ struct CodexModelMenu: View {
                 reasoningShortLabel: reasoningShortLabel(currentReasoningLevel),
                 isBusy: backendClient.isSwitchingModel || backendClient.isSwitchingReasoning
                     || modelCatalog.isLoadingCodexModels,
-                maxWidth: maxWidth
+                maxWidth: maxWidth,
+                showsSurface: false
             )
         }
-        .menuStyle(.borderlessButton)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
         .disabled(!SessionConfigurationMenuAvailability.isEnabled(
             canSwitchModel: supportsModelSwitch,
             canSwitchReasoning: supportsReasoningSwitch,

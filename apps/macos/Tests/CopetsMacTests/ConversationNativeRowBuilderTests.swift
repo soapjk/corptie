@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import XCTest
 import CorptieClientCore
@@ -47,9 +48,19 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         let row = builder().nativeAppKitRow(pending, expandedTurnIds: [])
         XCTAssertTrue(row.actions.isEmpty)
         XCTAssertNotNil(row.userInput)
+        XCTAssertEqual(row.id, "message:message:one")
+        XCTAssertEqual(row.userInputItemID, "message:one")
+        XCTAssertTrue(row.copyText.contains("Choose route"))
+        XCTAssertTrue(row.copyText.contains("A — Fast"))
         XCTAssertTrue(MacSharedMessageTextCard.supports(row))
         let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 600)
         XCTAssertGreaterThan(layout.rowHeight, 180)
+        _ = NSApplication.shared
+        let cell = AppKitSharedMessageTextCell(identifier: .init("user-input-copy"))
+        cell.setContent(row, availableWidth: 600, onToggleExpansion: { _ in })
+        XCTAssertNotNil(cell.menu?.items.first { $0.identifier?.rawValue == "chat.timeline.context.copy" })
+        cell.copyRepresentedMessage()
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), row.copyText)
 
         let submitted = ChatDisplayEntry(kind: .message(try item([
             "type": "userInput", "status": "submitted", "userInput": input.merging(

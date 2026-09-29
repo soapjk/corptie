@@ -49,13 +49,9 @@ struct PadComposer<Header: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            header().padding(.horizontal, 8)
+        ConversationComposerChrome(header: header) {
             editorRow
         }
-        .padding(6)
-        .padGlassSurface(in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .shadow(color: .black.opacity(0.06), radius: 4, y: 1.5)
         // Outside the glass and above the entire module, without presenting a
         // controller or stealing first responder from the editor.
         .overlay(alignment: .topLeading) {
@@ -82,111 +78,93 @@ struct PadComposer<Header: View>: View {
     }
 
     private var editorRow: some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 0) {
-                if !attachedImages.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: ComposerShellMetrics.attachmentSpacing) {
-                            ForEach(attachedImages) { image in
-                                PadDraftImageChip(image: image) {
-                                    workspace.draftImages[sessionID]?.removeAll { $0.id == image.id }
-                                }
-                            }
+        ConversationComposerEditorRow(
+            showsAttachments: !attachedImages.isEmpty,
+            showsModel: workspace.capabilities?.composer == true
+        ) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: ComposerShellMetrics.attachmentSpacing) {
+                    ForEach(attachedImages) { image in
+                        PadDraftImageChip(image: image) {
+                            workspace.draftImages[sessionID]?.removeAll { $0.id == image.id }
                         }
-                        .padding(.horizontal, 9)
-                        .padding(.top, 8)
-                        .padding(.bottom, 4)
                     }
-                    .frame(height: ComposerShellMetrics.attachmentStripHeight)
                 }
-
-                HStack(spacing: 2) {
-                    PadComposerTextView(
-                        text: draft,
-                        placeholder: "Send a instruction",
-                        editor: editor,
-                        onHeightChange: { next in if abs(inputHeight - next) > 0.5 { inputHeight = next } },
-                        onFocusChange: { _ in },
-                        onSelectionChange: updateMentionQuery,
-                        onKey: handleKey,
-                        onSubmit: submit,
-                        onPasteImages: pasteImages
-                    )
-                    .frame(minWidth: 0, maxWidth: .infinity)
-                    .frame(height: inputHeight)
-                    .padding(.leading, 10)
-                    .padding(.trailing, 2)
-                    .layoutPriority(-1)
-
-                    Button {
-                        submit()
-                    } label: {
-                        ComposerActionGlyph(systemName: "paperplane.fill", tint: ComposerPalette.softBlue,
-                                            isBusy: isSubmitting, showsSurface: false)
-                            .overlay {
-                                Circle().strokeBorder(ComposerPalette.softBlue.opacity(0.4), lineWidth: 1)
-                                    .allowsHitTesting(false)
-                            }
-                            .conversationGlassControl(tint: ComposerPalette.softBlue)
-                            .contentShape(Circle().inset(by: -8))
+                .padding(.horizontal, 9)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
+            }
+            .frame(height: ComposerShellMetrics.attachmentStripHeight)
+        } editor: {
+            PadComposerTextView(
+                text: draft,
+                placeholder: "Send a instruction",
+                editor: editor,
+                onHeightChange: { next in if abs(inputHeight - next) > 0.5 { inputHeight = next } },
+                onFocusChange: { _ in },
+                onSelectionChange: updateMentionQuery,
+                onKey: handleKey,
+                onSubmit: submit,
+                onPasteImages: pasteImages
+            )
+            .frame(height: inputHeight)
+        } send: {
+            Button {
+                submit()
+            } label: {
+                ComposerActionGlyph(systemName: "paperplane.fill", tint: ComposerPalette.softBlue,
+                                    isBusy: isSubmitting, showsSurface: false)
+                    .overlay {
+                        Circle().strokeBorder(ComposerPalette.softBlue.opacity(0.4), lineWidth: 1)
+                            .allowsHitTesting(false)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(isSendDisabled)
-                    .accessibilityLabel("发送")
-                    .accessibilityIdentifier("conversation-composer-send")
-
-                    Menu {
-                        Button {
-                            showPhotos = true
-                        } label: {
-                            Label(importing ? "正在导入图片…" : "从照片选择", systemImage: "photo.on.rectangle")
-                        }
-                        .disabled(!canAttachImages)
-                        Button {
-                            showFiles = true
-                        } label: {
-                            Label("从文件选择", systemImage: "folder")
-                        }
-                        .disabled(!canAttachImages)
-                        Button {
-                            scheduleMessage()
-                        } label: {
-                            Label("创建定时消息", systemImage: "calendar.badge.clock")
-                        }
-                        .disabled(!canScheduleMessage)
-                    } label: {
-                        ComposerActionGlyph(systemName: "ellipsis", tint: ComposerPalette.secondaryText,
-                                            weight: .semibold, showsSurface: false)
-                            .contentShape(Circle().inset(by: -8))
-                    }
-                    .buttonStyle(.plain)
-                    .menuIndicator(.hidden)
-                    .frame(width: ComposerShellMetrics.actionHitEdge, height: ComposerShellMetrics.actionHitEdge)
-                    .fixedSize()
-                    .accessibilityLabel("更多功能")
-                    .accessibilityIdentifier("composer.more-actions")
-                    .padding(.trailing, 4)
+                    .conversationGlassControl(tint: ComposerPalette.softBlue)
+                    .contentShape(Circle().inset(by: -8))
+            }
+            .buttonStyle(.plain)
+            .disabled(isSendDisabled)
+            .accessibilityLabel("发送")
+            .accessibilityIdentifier("conversation-composer-send")
+        } more: {
+            Menu {
+                Button {
+                    showPhotos = true
+                } label: {
+                    Label(importing ? "正在导入图片…" : "从照片选择", systemImage: "photo.on.rectangle")
                 }
+                .disabled(!canAttachImages)
+                Button {
+                    showFiles = true
+                } label: {
+                    Label("从文件选择", systemImage: "folder")
+                }
+                .disabled(!canAttachImages)
+                Button {
+                    scheduleMessage()
+                } label: {
+                    Label("创建定时消息", systemImage: "calendar.badge.clock")
+                }
+                .disabled(!canScheduleMessage)
+            } label: {
+                ComposerActionGlyph(systemName: "ellipsis", tint: ComposerPalette.secondaryText,
+                                    weight: .semibold, showsSurface: false)
+                    .contentShape(Circle().inset(by: -8))
             }
-            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-            .overlay {
-                RoundedRectangle(cornerRadius: ComposerShellMetrics.cornerRadius, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.22), lineWidth: 1)
-                    .allowsHitTesting(false)
-            }
-            .dropDestination(for: Data.self) { items, _ in
-                guard canAttachImages else { return false }
-                for item in items { addImage(item, name: "拖入的图片") }
-                return true
-            }
-
-            if workspace.capabilities?.composer == true {
-                PadModelMenu(connection: connection, workspace: workspace,
-                             maxWidth: ComposerShellMetrics.modelMenuMaxWidth(composerWidth: composerWidth))
-                    .fixedSize(horizontal: true, vertical: false)
-            }
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .frame(width: ComposerShellMetrics.actionHitEdge, height: ComposerShellMetrics.actionHitEdge)
+            .fixedSize()
+            .accessibilityLabel("更多功能")
+            .accessibilityIdentifier("composer.more-actions")
+        } model: {
+            PadModelMenu(connection: connection, workspace: workspace,
+                         maxWidth: ComposerShellMetrics.modelMenuMaxWidth(composerWidth: composerWidth))
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .dropDestination(for: Data.self) { items, _ in
+            guard canAttachImages else { return false }
+            for item in items { addImage(item, name: "拖入的图片") }
+            return true
+        }
         .background {
             GeometryReader { proxy in
                 Color.clear.preference(key: PadComposerWidthKey.self, value: proxy.size.width)

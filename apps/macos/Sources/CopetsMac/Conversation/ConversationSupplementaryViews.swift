@@ -101,13 +101,15 @@ struct ChatUsageBar: View {
                         contextWindow: window, remainingTokens: remaining)
                     let usedPercent = SessionUsagePolicy.contextUsedPercent(reported: context.usedPercent,
                         used: used, contextWindow: window)
-                    SessionUsageItem(
-                        icon: "text.alignleft",
-                        value: "\(SessionUsagePolicy.exactTokens(used))/\(SessionUsagePolicy.exactTokens(window))",
-                        progress: usedPercent / 100,
-                        color: SessionMetaPalette.color(for: SessionUsagePolicy.contextTone(usedPercent: usedPercent)),
-                        numericValue: used
-                    )
+                    ConversationComposerUsageSlot {
+                        SessionUsageItem(
+                            icon: "text.alignleft",
+                            value: "\(SessionUsagePolicy.exactTokens(used))/\(SessionUsagePolicy.exactTokens(window))",
+                            progress: usedPercent / 100,
+                            color: SessionMetaPalette.color(for: SessionUsagePolicy.contextTone(usedPercent: usedPercent)),
+                            numericValue: used
+                        )
+                    }
                     .help("\(L10n("Context")): \(SessionUsagePolicy.exactTokens(used)) / \(SessionUsagePolicy.exactTokens(window)) · \(SessionUsagePolicy.percent(usedPercent, maximumFractionDigits: 2))% used")
                     .accessibilityLabel("\(L10n("Context")): \(SessionUsagePolicy.exactTokens(used)) / \(SessionUsagePolicy.exactTokens(window)) · \(SessionUsagePolicy.percent(usedPercent, maximumFractionDigits: 2))% used")
                     .accessibilityIdentifier("conversation-usage-context")
@@ -118,12 +120,14 @@ struct ChatUsageBar: View {
                         Button {
                             isResetNoticePresented.toggle()
                         } label: {
-                            SessionUsageItem(
-                                icon: "bolt.fill",
-                                value: "\(SessionUsagePolicy.percent(remainingPercent))%",
-                                progress: remainingPercent / 100,
-                                color: SessionMetaPalette.color(for: SessionUsagePolicy.quotaTone(remainingPercent: remainingPercent))
-                            )
+                            ConversationComposerUsageSlot {
+                                SessionUsageItem(
+                                    icon: "bolt.fill",
+                                    value: "\(SessionUsagePolicy.percent(remainingPercent))%",
+                                    progress: remainingPercent / 100,
+                                    color: SessionMetaPalette.color(for: SessionUsagePolicy.quotaTone(remainingPercent: remainingPercent))
+                                )
+                            }
                         }
                         .buttonStyle(.plain)
                         .help("\(L10n(SessionUsagePolicy.quotaLabel(provider: usage.account.provider))): \(SessionUsagePolicy.percent(remainingPercent, maximumFractionDigits: 2))% remaining")
@@ -133,12 +137,14 @@ struct ChatUsageBar: View {
                             resetNoticePopover(usage: usage, window: window)
                         }
                     } else {
-                        SessionUsageItem(
-                            icon: "bolt.fill",
-                            value: "\(SessionUsagePolicy.percent(remainingPercent))%",
-                            progress: remainingPercent / 100,
-                            color: SessionMetaPalette.color(for: SessionUsagePolicy.quotaTone(remainingPercent: remainingPercent))
-                        )
+                        ConversationComposerUsageSlot {
+                            SessionUsageItem(
+                                icon: "bolt.fill",
+                                value: "\(SessionUsagePolicy.percent(remainingPercent))%",
+                                progress: remainingPercent / 100,
+                                color: SessionMetaPalette.color(for: SessionUsagePolicy.quotaTone(remainingPercent: remainingPercent))
+                            )
+                        }
                         .help("\(L10n(SessionUsagePolicy.quotaLabel(provider: usage.account.provider))): \(SessionUsagePolicy.percent(remainingPercent, maximumFractionDigits: 2))% remaining")
                         .accessibilityIdentifier("conversation-usage-quota")
                     }

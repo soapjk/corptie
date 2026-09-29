@@ -144,13 +144,13 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(sessionComposer.contains("MessageComposer("))
         #expect(!sessionComposer.contains("else if !sessionIsReady"))
         #expect(!sessionComposer.contains("ReadOnlyComposer(\n                reason: composerUnavailableReason"))
-        #expect(composer.contains(".disabled(false)"))
+        #expect(composer.contains("ConversationComposerChrome"))
+        #expect(composer.contains("ConversationComposerEditorRow"))
+        #expect(composer.contains("ThreadMetaView("))
         #expect(composer.contains("|| backendClient.isSendingMessage"))
         #expect(composer.contains("!backendClient.isSendingMessage else"))
         #expect(!composer.contains(".opacity(!backendClient.selectedCanSendNow"))
-        #expect(composer.contains(".frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)"))
-        #expect(composer.contains(".frame(maxWidth: .infinity, alignment: .leading)"))
-        #expect(composer.contains(".fixedSize(horizontal: true, vertical: false)"))
+        #expect(!composer.contains(".disabled(!isReady)"))
     }
 
     @Test
