@@ -34,6 +34,19 @@ test("section failures are not projected as empty successful results", async () 
     await assert.rejects(() => f.inspector.snapshot(identity, "missing"), { code: "SESSION_NOT_FOUND" });
   } finally { await f.close(); }
 });
+test("task Detail snapshot carries the same definition fields as desktop", async () => {
+  const f = await fixture();
+  try {
+    const task = f.store.createTask({ workId: "work:test", title: "Task", description: "Scope",
+      acceptanceCriteria: "Accepted", verificationCriteria: "Verified", mainAgentId: "agent:test" });
+    f.store.createSession({ id: "s:task", title: "Worker", workId: "work:test", taskId: task.id, agentId: "agent:test" });
+    const snapshot = await f.inspector.snapshot(identity, "s:task");
+    assert.equal(snapshot.taskId, task.id);
+    assert.equal(snapshot.taskDefinition.description, "Scope");
+    assert.equal(snapshot.taskDefinition.acceptanceCriteria, "Accepted");
+    assert.equal(snapshot.taskDefinition.verificationCriteria, "Verified");
+  } finally { await f.close(); }
+});
 test("commands share durable receipts, reject field injection and never replay side effects", async () => {
   const f = await fixture();
   try {

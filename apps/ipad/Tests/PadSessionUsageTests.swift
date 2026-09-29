@@ -56,6 +56,42 @@ struct PadSessionUsageTests {
         workspace.clearSelectionState()
         #expect(workspace.usage == nil)
     }
+
+    @Test func sharedQuotaDoesNotRevertWhenSwitchingBetweenSessions() throws {
+        let (workspace, _) = try fixture()
+        func snapshot(_ id: String, used: Int, quotaUsed: Double, model: String = "core-x") -> ClientSessionUsage {
+            ClientSessionUsage(sessionId: id,
+                context: .init(usedTokens: used, contextWindow: 100, remainingTokens: 100 - used,
+                    usedPercent: Double(used)),
+                account: .init(available: true, provider: "codex", model: model,
+                    rateLimits: .init(limitId: "codex", limitName: "Codex",
+                        primary: .init(usedPercent: quotaUsed, windowDurationMins: 300, resetsAt: nil),
+                        secondary: nil), rateLimitsByLimitId: nil))
+        }
+        let oldA = snapshot("session:a", used: 10, quotaUsed: 20)
+        let oldB = snapshot("session:b", used: 40, quotaUsed: 35)
+        workspace.applyUsage(oldA)
+        workspace.saveResidentState(for: "session:a")
+        workspace.applyUsage(oldB)
+        workspace.saveResidentState(for: "session:b")
+        workspace.applyUsage(snapshot("session:b", used: 40, quotaUsed: 50), authoritative: true)
+        workspace.saveResidentState(for: "session:b")
+
+        workspace.selectSession(from: "session:b", to: "session:a")
+        #expect(workspace.usage?.context?.usedTokens == 10)
+        #expect(workspace.usage?.account?.rateLimits?.primary?.usedPercent == 50)
+        workspace.applyUsage(oldA) // A delayed resident push must not revert the account quota.
+        #expect(workspace.usage?.account?.rateLimits?.primary?.usedPercent == 50)
+        workspace.selectSession(from: "session:a", to: "session:b")
+        #expect(workspace.usage?.context?.usedTokens == 40)
+        #expect(workspace.usage?.account?.rateLimits?.primary?.usedPercent == 50)
+
+        workspace.applyUsage(snapshot("session:b", used: 40, quotaUsed: 70, model: "other"), authoritative: true)
+        #expect(workspace.usage?.account?.rateLimits?.primary?.usedPercent == 70)
+        workspace.selectSession(from: "session:b", to: "session:a")
+        #expect(workspace.usage?.account?.rateLimits?.primary?.usedPercent == 50,
+            "a different model must not replace core-x quota")
+    }
 }
 
 private final class UsageProtocol: URLProtocol, @unchecked Sendable {

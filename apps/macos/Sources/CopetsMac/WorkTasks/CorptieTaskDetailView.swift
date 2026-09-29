@@ -308,13 +308,8 @@ struct CorptieTaskDetailView: View {
     }
 
     private var hasTaskDefinitionContent: Bool {
-        hasContent(task.description)
-            || hasContent(task.acceptanceCriteria)
-            || hasContent(task.verificationCriteria)
-    }
-
-    private func hasContent(_ text: String) -> Bool {
-        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        ConversationTaskDefinition.hasContent(description: task.description,
+            acceptance: task.acceptanceCriteria, verification: task.verificationCriteria)
     }
 
     private var executionAndWorkspaceSection: some View {

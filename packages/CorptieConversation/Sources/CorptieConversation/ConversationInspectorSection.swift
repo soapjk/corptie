@@ -54,20 +54,16 @@ public struct ConversationDetailCompactPair<Leading: View, Trailing: View>: View
     }
 }
 
-/// Static card styling; unlike the former full-height surface it adds no large blur layer.
+/// A single adaptive monochrome surface for Detail modules on both platforms.
 public struct ConversationDetailModuleSurface: ViewModifier {
     public init() {}
 
     public func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
         content
-            .padding(12)
+            .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background {
-                shape.fill(WorkbenchCanvasSurface.color)
-                    .overlay { shape.fill(Color.primary.opacity(0.045)) }
-            }
-            .overlay { shape.strokeBorder(Color.primary.opacity(0.12), lineWidth: 1) }
+            .background(Color.primary.opacity(0.055),
+                        in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }
 
@@ -140,6 +136,11 @@ public struct ConversationTaskDefinition: View {
     private let titles: [String]
     private let expandLabel: String
     private let collapseLabel: String
+    nonisolated public static func hasContent(description: String, acceptance: String, verification: String) -> Bool {
+        [description, acceptance, verification].contains {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
     public init(description: String, acceptance: String, verification: String,
                 descriptionTitle: String = "描述", acceptanceTitle: String = "验收标准",
                 verificationTitle: String = "验证标准", expandLabel: String = "展开", collapseLabel: String = "收起") {
