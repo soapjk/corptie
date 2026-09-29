@@ -23,7 +23,7 @@ struct SessionCorptieTaskDetailCard: View {
     var body: some View {
         Group {
             if let task, decoratesSurface {
-                ConversationDetailDashboard(actions: { EmptyView() }) {
+                ConversationDetailDashboard {
                     taskDetail(task, embedsInParentScroll: true)
                 }
             } else if let task {

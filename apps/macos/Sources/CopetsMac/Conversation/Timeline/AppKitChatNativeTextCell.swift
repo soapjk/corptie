@@ -427,11 +427,13 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             setProcessSummary(row.processSummary, expanded: row.isExpanded)
         }
         if row.isPendingInteraction {
+            cardView.layer?.borderWidth = 1
             let tint = NSColor.systemOrange
             cardView.layer?.backgroundColor = tint.withAlphaComponent(0.065).cgColor
             cardView.layer?.borderColor = tint.withAlphaComponent(0.36).cgColor
             titleLabel.textColor = tint
         } else if row.isCollaboration {
+            cardView.layer?.borderWidth = 1
             cardView.layer?.backgroundColor = NSColor(
                 calibratedRed: 0.945,
                 green: 0.955,
@@ -447,12 +449,15 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         } else {
             switch row.nativeStyle {
             case .user:
+                cardView.layer?.borderWidth = 0
                 cardView.layer?.backgroundColor = NativeTimelineCardPalette.userBackground.cgColor
                 cardView.layer?.borderColor = NativeTimelineCardPalette.userBorder.cgColor
             case .agent:
+                cardView.layer?.borderWidth = 0
                 cardView.layer?.backgroundColor = NSColor.white.cgColor
                 cardView.layer?.borderColor = NSColor.black.withAlphaComponent(0.08).cgColor
             case .process:
+                cardView.layer?.borderWidth = 1
                 let tint = row.processState.color
                 cardView.layer?.backgroundColor = tint.withAlphaComponent(row.isExpanded ? 0.055 : 0.035).cgColor
                 cardView.layer?.borderColor = tint.withAlphaComponent(0.16).cgColor
