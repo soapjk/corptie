@@ -64,6 +64,37 @@ test("bootstrap does not advertise command execution without an implementation",
   assert.equal(registry.supports("codex-app-server", AGENT_PROVIDER_CAPABILITIES.CONVERSATION_COMMAND), false);
 });
 
+test("Codex production bootstrap exposes conversation branching only with a fork operation", async () => {
+  const calls = [];
+  const registry = createAgentProviderRuntimeRegistry({
+    claudeProvider: createClaudeAgentSdkProvider(recordingManager()),
+    codexOperations: {
+      ...recordingCodexOperations(),
+      forkSession: (input, context) => {
+        calls.push([input, context]);
+        return { id: "thread:forked" };
+      }
+    }
+  });
+  const session = registry.decorateSession("codex-app-server", {
+    sessionKind: "worker", status: "complete", archived: false
+  });
+  assert.equal(registry.supports("codex-app-server", AGENT_PROVIDER_CAPABILITIES.SESSION_FORK), true);
+  assert.equal(session.actions.fork.available, true);
+  assert.deepEqual(await registry.invoke("codex-app-server", AGENT_PROVIDER_CAPABILITIES.SESSION_FORK,
+    { title: "Branch" }, { forkSource: { point: { turnId: "turn:one" } } }), { id: "thread:forked" });
+  assert.equal(calls.length, 1);
+
+  const withoutFork = createAgentProviderRuntimeRegistry({
+    claudeProvider: createClaudeAgentSdkProvider(recordingManager()),
+    codexOperations: recordingCodexOperations()
+  });
+  assert.equal(withoutFork.supports("codex-app-server", AGENT_PROVIDER_CAPABILITIES.SESSION_FORK), false);
+  assert.equal(withoutFork.decorateSession("codex-app-server", {
+    sessionKind: "worker", status: "complete", archived: false
+  }).actions.fork.reason, "CAPABILITY_UNSUPPORTED");
+});
+
 test("structured plan output is declared only by Providers whose adapters enable it", () => {
   const registry = createAgentProviderRuntimeRegistry({
     claudeProvider: createClaudeAgentSdkProvider(recordingManager()),
