@@ -39,6 +39,10 @@ test("failed account refresh returns stored quota without writing or publishing"
     account: f.stored.account, context: f.stored.context, resetForecast: null
   });
   assert.deepEqual(f.calls, []);
+  await assert.rejects(
+    f.reader.readSessionUsage("one", undefined, { requireFreshAccount: true }),
+    { code: "ACCOUNT_USAGE_REFRESH_FAILED" }
+  );
 });
 
 test("gateway quota reads remain local and missing sessions retain their fallback contract", async () => {

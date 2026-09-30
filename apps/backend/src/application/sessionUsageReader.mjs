@@ -6,7 +6,7 @@ export function createSessionUsageReader({
   store, sessionApplicationService, publishTimeline, resetForecastForSession
 }) {
   /** Account quota + context usage of one Session; shared by the desktop route and the paired-device gateway. */
-  function readSessionUsage(sessionId, session = store.getSession(sessionId)) {
+  function readSessionUsage(sessionId, session = store.getSession(sessionId), { requireFreshAccount = false } = {}) {
     if (!session) return Promise.reject(new Error("Session not found."));
     const provider = session.external?.provider === "codex-app-server"
       ? "codex"
@@ -20,6 +20,7 @@ export function createSessionUsageReader({
         provider,
         model: storedUsage?.model ?? session.external?.currentModel ?? null
       },
+      requireFreshAccount,
       persistAccount: (account) => {
         const result = store.upsertSessionUsageSnapshot({
           sessionId,

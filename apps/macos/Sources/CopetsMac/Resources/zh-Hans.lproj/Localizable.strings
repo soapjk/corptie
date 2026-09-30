@@ -728,6 +728,8 @@
 "Tibo forecast: %@" = "Tibo预告：%@";
 "Tibo forecast: No upcoming reset announcement" = "Tibo预告：暂无即将重置的消息";
 "Banked resets remaining: %lld" = "已存额度重置：剩余 %lld 次";
+"Refreshing banked resets…" = "正在获取已存额度重置次数…";
+"Banked resets refresh failed" = "已存额度重置次数获取失败";
 "Earliest banked reset expiry: %@" = "最早过期：%@";
 "Banked reset expiry unavailable" = "已存额度重置的过期时间暂不可用";
 
