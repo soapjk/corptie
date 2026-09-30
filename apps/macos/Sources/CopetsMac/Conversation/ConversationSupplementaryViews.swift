@@ -90,6 +90,9 @@ struct OrphanedWorkspaceRecoveryView: View {
 struct ChatUsageBar: View {
     let usage: SessionUsageResponse?
     @State private var isResetNoticePresented = false
+    @State private var isRefreshingResetCredits = false
+    @State private var resetCreditRefreshFailed = false
+    @State private var resetCreditRefreshGeneration = 0
 
     var body: some View {
         if let usage {
@@ -119,6 +122,9 @@ struct ChatUsageBar: View {
                     if usage.account.provider == "codex" {
                         Button {
                             isResetNoticePresented.toggle()
+                            if isResetNoticePresented {
+                                refreshResetCredits()
+                            }
                         } label: {
                             ConversationComposerUsageSlot {
                                 SessionUsageItem(
@@ -152,6 +158,11 @@ struct ChatUsageBar: View {
             }
             .font(.system(size: 9, weight: .semibold))
             .fixedSize(horizontal: true, vertical: false)
+            .onChange(of: usage) { _, updated in
+                if updated.accountFresh == true {
+                    resetCreditRefreshFailed = false
+                }
+            }
         }
     }
 
@@ -161,6 +172,14 @@ struct ChatUsageBar: View {
         window: CodexRateLimitWindow
     ) -> some View {
         VStack(alignment: .leading, spacing: 7) {
+            if isRefreshingResetCredits {
+                Label(L10n("Updating banked resets; showing the last known value…"), systemImage: "arrow.clockwise")
+                    .foregroundStyle(.secondary)
+            } else if resetCreditRefreshFailed || usage.accountFresh != true {
+                Label(L10n("Banked resets could not be verified; showing the last known value."),
+                      systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            }
             Label(
                 L10nFormat("Plan reset: %@", formattedResetDate(window.resetsAt)),
                 systemImage: "clock"
@@ -205,6 +224,19 @@ struct ChatUsageBar: View {
             date: .abbreviated,
             time: .shortened
         )
+    }
+
+    private func refreshResetCredits() {
+        resetCreditRefreshGeneration &+= 1
+        let generation = resetCreditRefreshGeneration
+        isRefreshingResetCredits = true
+        resetCreditRefreshFailed = false
+        Task {
+            let succeeded = await BackendClient.shared.usageController.refreshSelectedUsageWithOutcome()
+            guard generation == resetCreditRefreshGeneration, isResetNoticePresented else { return }
+            isRefreshingResetCredits = false
+            resetCreditRefreshFailed = !succeeded
+        }
     }
 
     private func formattedBankedResetDate(_ date: Date) -> String {

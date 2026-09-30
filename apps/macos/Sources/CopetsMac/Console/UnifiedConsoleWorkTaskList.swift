@@ -17,6 +17,7 @@ extension UnifiedConsoleView {
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
+        .contentMargins(.top, 40, for: .scrollContent)
     }
 
     @ViewBuilder
@@ -62,6 +63,7 @@ extension UnifiedConsoleView {
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
+        .contentMargins(.top, 40, for: .scrollContent)
     }
 
     func activeWorkTaskList(_ work: Work) -> some View {
@@ -88,6 +90,7 @@ extension UnifiedConsoleView {
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
+        .contentMargins(.top, 40, for: .scrollContent)
     }
 
     @ViewBuilder

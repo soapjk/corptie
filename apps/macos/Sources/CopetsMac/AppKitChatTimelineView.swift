@@ -20,6 +20,10 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     var scrollToTurnID: String? = nil
     var scrollToTurnRevision: Int = 0
     var historyRequestEpoch: Int = 0
+    /// Clear space at the document tail for chrome overlaid on this viewport.
+    /// The scroll view itself stays full height, so earlier rows can pass
+    /// beneath the glass while the latest row rests above it.
+    var bottomClearance: CGFloat = 0
 
     nonisolated static func rowIndex(forTurnID turnID: String, in rows: [AppKitChatTimelineRow]) -> Int? {
         rows.firstIndex(where: {
@@ -59,6 +63,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         let scrollView = Self.makeScrollView(tableView: tableView)
 
         context.coordinator.attach(tableView: tableView, scrollView: scrollView)
+        context.coordinator.setBottomClearance(bottomClearance)
         context.coordinator.setProcessClockEnabled(canAdvanceProcessClock)
         if let initialPosition, !initialPosition.followsLatest {
             context.coordinator.prepareInitialPosition(initialPosition)
@@ -134,6 +139,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         context.coordinator.onNearTop = onNearTop
         context.coordinator.onUnderfilledHistory = onUnderfilledHistory
         context.coordinator.updateHistoryAvailability(hasMoreHistory)
+        context.coordinator.setBottomClearance(bottomClearance)
         context.coordinator.onPositionChange = onPositionChange
         context.coordinator.apply(rows: rows, animated: context.transaction.animation != nil)
         if let initialPosition {

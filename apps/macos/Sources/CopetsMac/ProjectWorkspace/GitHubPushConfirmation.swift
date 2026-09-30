@@ -47,6 +47,7 @@ struct GitHubPushButtonVisual: View {
 
     let color: Color
     let state: State
+    var showsSurface = true
 
     var body: some View {
         ZStack {
@@ -72,7 +73,9 @@ struct GitHubPushButtonVisual: View {
             width: GitHubPushButtonAppearance.diameter,
             height: GitHubPushButtonAppearance.diameter
         )
-        .background { ComposerGlassActionBackground(tint: color) }
+        .background {
+            if showsSurface { ComposerGlassActionBackground(tint: color) }
+        }
     }
 }
 

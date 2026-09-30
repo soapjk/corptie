@@ -48,6 +48,7 @@ final class SessionUsageClient: SessionUsageServing {
         )
         let usage = SessionUsageResponse(
             account: account, context: event.payload.context,
+            accountFresh: current?.accountFresh,
             resetForecast: current?.resetForecast
         )
         remember(usage, for: event.payload.sessionId)

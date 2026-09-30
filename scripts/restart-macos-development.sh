@@ -14,6 +14,16 @@ if [[ "${EXTERNAL_RUNTIME_ROOT}" != /Volumes/* ]]; then
 fi
 WORKTREE_HASH="$(printf '%s' "${ROOT_DIR}" | shasum -a 256 | awk '{print substr($1,1,24)}')"
 WORKTREE_RUNTIME_ROOT="${EXTERNAL_RUNTIME_ROOT}/worktrees/${WORKTREE_HASH}"
+SHARED_PREVIEW_ROOT="${EXTERNAL_RUNTIME_ROOT}/shared-preview-data"
+if [[ -z "${CORPTIE_DEVELOPMENT_DATA_ROOT:-}" && ! -e "${WORKTREE_RUNTIME_ROOT}/preview-data" \
+      && -f "${SHARED_PREVIEW_ROOT}/.preview-only" \
+      && -f "${SHARED_PREVIEW_ROOT}/development/database/corptie.sqlite" ]]; then
+  # One stable browsing dataset, cloned on APFS for each Worktree. Backends
+  # must retain distinct Data Roots because each owns its own process lock.
+  mkdir -p "${WORKTREE_RUNTIME_ROOT}"
+  cp -c -R "${SHARED_PREVIEW_ROOT}" "${WORKTREE_RUNTIME_ROOT}/preview-data"
+  echo "Development preview cloned from shared dataset."
+fi
 LEGACY_APP_LAUNCH_LABEL="com.corptie.mac.development.${WORKTREE_HASH}"
 LEGACY_BACKEND_LAUNCH_LABEL="com.corptie.backend.development.${WORKTREE_HASH}"
 APP_LOG="${CORPTIE_APP_LOG:-${WORKTREE_RUNTIME_ROOT}/logs/app.log}"
@@ -22,6 +32,10 @@ DEVELOPMENT_DATA_ROOT="${CORPTIE_DEVELOPMENT_DATA_ROOT:-${WORKTREE_RUNTIME_ROOT}
 if [[ -z "${CORPTIE_DEVELOPMENT_DATA_ROOT:-}" && -f "${WORKTREE_RUNTIME_ROOT}/preview-data/.preview-only" ]]; then
   DEVELOPMENT_DATA_ROOT="${WORKTREE_RUNTIME_ROOT}/preview-data"
   echo "Development preview: read-only snapshot; execution is disabled."
+fi
+DEVELOPMENT_PREVIEW_SESSION_ID=""
+if [[ -f "${DEVELOPMENT_DATA_ROOT}/.preview-only" ]]; then
+  DEVELOPMENT_PREVIEW_SESSION_ID="session:development-structured-preview-v1"
 fi
 RUN_ISOLATION_DATA_ROOT="${CORPTIE_RUN_ISOLATION_DATA_ROOT:-${WORKTREE_RUNTIME_ROOT}/run-isolation}"
 PRESENTATION_DATA_DIR="${WORKTREE_RUNTIME_ROOT}/presentation"
@@ -184,6 +198,7 @@ echo "Starting CorptieMac..."
   CORPTIE_DATA_ROOT="${DEVELOPMENT_DATA_ROOT}" \
   CORPTIE_RUN_ISOLATION_DATA_ROOT="${RUN_ISOLATION_DATA_ROOT}" \
   CORPTIE_DEVELOPMENT_FIXTURES="${CORPTIE_DEVELOPMENT_FIXTURES:-1}" \
+  CORPTIE_DEVELOPMENT_PREVIEW_SESSION_ID="${DEVELOPMENT_PREVIEW_SESSION_ID}" \
   CORPTIE_DEVELOPMENT_BACKEND_LAUNCHER="${ROOT_DIR}/scripts/start-backend-development.sh" \
   CORPTIE_DEVELOPMENT_BACKEND_LOG="${BACKEND_LOG}" \
   CORPTIE_USER_DEFAULTS_SUITE="${USER_DEFAULTS_SUITE}" \

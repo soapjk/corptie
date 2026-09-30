@@ -12,6 +12,7 @@ test("session usage keeps context data when account quota loading fails", async 
   });
   assert.deepEqual(snapshot, {
     account: { available: true, provider: "codex", cached: true },
+    accountFresh: false,
     context: { usedTokens: 25, contextWindow: 100, remainingTokens: 75 },
     resetForecast: null
   });
@@ -29,6 +30,7 @@ test("session usage keeps account quota when context loading fails", async () =>
   });
   assert.deepEqual(snapshot, {
     account: { available: true, provider: "claude", rateLimits: { primary: {} } },
+    accountFresh: true,
     context: null,
     resetForecast: { forecast: null }
   });

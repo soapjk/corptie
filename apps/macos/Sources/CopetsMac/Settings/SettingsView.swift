@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CorptieConversation
 import os
 import QuartzCore
 import SwiftUI
@@ -13,6 +14,7 @@ enum SettingsWindowLayout {
 
 enum SettingsTab: Hashable, CaseIterable {
     case general
+    case appearance
     case notifications
     case devices
     case memory
@@ -23,6 +25,7 @@ enum SettingsTab: Hashable, CaseIterable {
     var titleKey: String {
         switch self {
         case .general: "General"
+        case .appearance: "外观"
         case .notifications: "Notifications"
         case .devices: "设备接入"
         case .memory: "Memory Inspector"
@@ -35,6 +38,7 @@ enum SettingsTab: Hashable, CaseIterable {
     var systemImage: String {
         switch self {
         case .general: "gearshape"
+        case .appearance: "paintpalette"
         case .notifications: "bell"
         case .devices: "ipad.and.iphone"
         case .memory: "brain.head.profile"
@@ -97,7 +101,7 @@ struct SettingsView: View {
 
             HStack {
                 Spacer()
-                if selectedTab == .archivedSessions || selectedTab == .notifications || selectedTab == .memory || selectedTab == .devices {
+                if selectedTab == .archivedSessions || selectedTab == .notifications || selectedTab == .memory || selectedTab == .devices || selectedTab == .appearance {
                     Button(L10n("Close")) {
                         onClose()
                     }
@@ -345,6 +349,8 @@ struct SettingsView: View {
         switch selectedTab {
         case .general:
             generalSettingsTab
+        case .appearance:
+            LocalWallpaperSettingsView()
         case .notifications:
             NotificationSettingsView()
         case .devices:

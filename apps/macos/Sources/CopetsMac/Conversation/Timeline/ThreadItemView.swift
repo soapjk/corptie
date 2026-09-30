@@ -626,7 +626,6 @@ struct ThreadItemView: View {
             )
             .padding(4)
         }
-        .shadow(color: Color.black.opacity(isLiquidGlass ? 0.04 : 0), radius: isLiquidGlass ? 8 : 0, y: isLiquidGlass ? 3 : 0)
         .frame(
             idealWidth: isUserOrAgentMessage ? preferredMessageBubbleWidth : nil,
             maxWidth: isUserOrAgentMessage ? preferredMessageBubbleWidth : .infinity,
@@ -945,12 +944,15 @@ struct ThreadItemView: View {
                 return CorptiePalette.softBlue.opacity(0.16)
             }
             if item.type == "agentMessage" {
-                return Color(nsColor: .controlBackgroundColor).opacity(0.72)
+                return Color(red: 0.952, green: 0.961, blue: 0.941)
             }
             if item.type == "approval" || item.type == "choice" {
                 return Color(nsColor: NSColor(calibratedRed: 1.0, green: 0.98, blue: 0.91, alpha: 1))
             }
             return Color.clear
+        }
+        if item.type == "agentMessage" {
+            return Color(red: 0.952, green: 0.961, blue: 0.941)
         }
         return item.type == "approval" || item.type == "choice" ? Color(nsColor: NSColor(calibratedRed: 1.0, green: 0.98, blue: 0.91, alpha: 1)) : Color.white
     }
@@ -965,13 +967,14 @@ struct ThreadItemView: View {
                 return CorptiePalette.softBlue.opacity(0.18)
             }
             if item.type == "agentMessage" {
-                return Color(nsColor: .separatorColor).opacity(0.55)
+                return .clear
             }
             if item.type == "approval" || item.type == "choice" {
                 return CorptiePalette.amber.opacity(0.32)
             }
             return Color.clear
         }
+        if item.type == "agentMessage" { return .clear }
         return item.type == "approval" || item.type == "choice" ? CorptiePalette.amber.opacity(0.32) : Color.black.opacity(0.08)
     }
 

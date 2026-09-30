@@ -7,6 +7,24 @@ import test from "node:test";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 
+test("legacy completed Session status projects as client complete", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-session-status-contract-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    store.createSession({ id: "session:legacy-completed", sessionKind: "assistantChat", status: "completed" });
+    assert.equal(store.getSession("session:legacy-completed").status, "complete");
+    assert.equal(store.listSessions()[0].status, "complete");
+    assert.equal(store.getDetail("session:legacy-completed").status, "complete");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 function codexToolConfirmation(threadId) {
   return {
     providerRevision: `thread-start:${threadId}:confirmed`,

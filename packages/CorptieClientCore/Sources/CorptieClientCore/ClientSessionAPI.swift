@@ -222,10 +222,12 @@ public struct ClientSessionUsage: Decodable, Equatable, Sendable {
     }
     public let schemaVersion: Int
     public let sessionId: String
+    public let accountFresh: Bool?
     public let context: Context?
     public let account: Account?
-    public init(schemaVersion: Int = 1, sessionId: String, context: Context?, account: Account?) {
-        self.schemaVersion = schemaVersion; self.sessionId = sessionId; self.context = context; self.account = account
+    public init(schemaVersion: Int = 1, sessionId: String, context: Context?, account: Account?, accountFresh: Bool? = nil) {
+        self.schemaVersion = schemaVersion; self.sessionId = sessionId; self.accountFresh = accountFresh
+        self.context = context; self.account = account
     }
 }
 

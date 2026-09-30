@@ -68,6 +68,7 @@ struct UnifiedConsoleView: View {
     @State var cardAttentionCount = 0
     @State var cardSelectionExplicitlyCleared = false
     @State var cardRefreshRevision = 0
+    @State private var didResolveDevelopmentPreviewStart = false
     /// 每个 Tab（SessionCategory）独立记录其上一次选中的 Session，跨窗口/重启恢复，
     /// 避免不同 Tab 的选择相互覆盖。key 形如 `sessions.lastSelectedSessionId.<category>`。
     static let recentSessionIdsKey = "sessions.recentSessionIds"
@@ -79,31 +80,26 @@ struct UnifiedConsoleView: View {
     var body: some View {
         ConsoleWindowSplitView(mode: navigationMode, isActive: sidebarState.isSelected) {
             consoleNavigationContent
+                .ignoresSafeArea(.container, edges: .top)
                 .environmentObject(router)
                 .environmentObject(sidebarState)
                 .environmentObject(backendClient)
                 .environmentObject(layoutState)
         } detail: {
             sessionConversation
+                .ignoresSafeArea(.container, edges: .top)
                 .environmentObject(router)
                 .environmentObject(sidebarState)
                 .environmentObject(backendClient)
                 .environmentObject(layoutState)
         }
         .ignoresSafeArea(.container, edges: .top)
-        .background(ConsoleSidebarTitlebarControls(
-            isActive: sidebarState.isSelected,
-            content: HStack(spacing: 6) {
-                navigationModeToggle.labelsHidden().frame(width: 108)
-                searchToggleButton
-                taskArchiveToggle
-            }.padding(.horizontal, 4)
-        ))
         .environmentObject(backendClient)
         .environmentObject(layoutState)
         .environment(\.isLiquidGlass, false)
         .onAppear {
             PerfStopwatch.event("UnifiedConsoleView·onAppear", value: 1)
+            selectDevelopmentPreviewAtStartupIfAvailable(backendClient.sessions)
             restoreConsoleSpaceIfNeeded()
             activateSessions()
         }
@@ -122,6 +118,7 @@ struct UnifiedConsoleView: View {
         .onReceive(backendClient.sessionsDidChange) { sessions in
             guard sidebarState.isSelected else { return }
             attemptPendingSelection(sessions)
+            selectDevelopmentPreviewAtStartupIfAvailable(sessions)
             restoreConsoleContentIfNeeded()
             if let selectedSessionID = backendClient.selectedSession?.id {
                 markOpenedSessionRead(sessions.first(where: { $0.id == selectedSessionID }))
@@ -283,6 +280,19 @@ struct UnifiedConsoleView: View {
                 .accessibilityHidden(navigationMode != .taskCards)
         }
         .frame(maxHeight: .infinity)
+        .modifier(ConsoleTopEdgeEffectModifier())
+        .overlay(alignment: .topLeading) {
+            HStack(spacing: 6) {
+                navigationModeToggle.labelsHidden().frame(width: 108)
+                    .platformGlassSurface(in: Capsule(), interactive: true)
+                searchToggleButton
+                    .platformGlassSurface(in: Circle(), interactive: true)
+                taskArchiveToggle
+                    .platformGlassSurface(in: Circle(), interactive: true)
+            }
+            .padding(.leading, navigationMode == .workRail ? 72 : 8)
+            .padding(.top, 3)
+        }
     }
 
     var navigationMode: ConsoleNavigationMode {
@@ -299,13 +309,46 @@ struct UnifiedConsoleView: View {
     }
 
     var navigationModeToggle: some View {
-        Picker("视图", selection: $navigationModeRawValue) {
-            Text("经典").tag(ConsoleNavigationMode.workRail.rawValue)
-            Text("分组").tag(ConsoleNavigationMode.workOutline.rawValue)
-            Text("卡片 · 实验").tag(ConsoleNavigationMode.taskCards.rawValue)
+        Menu {
+            navigationModeOption(.workRail, title: "经典")
+            navigationModeOption(.workOutline, title: "分组")
+            navigationModeOption(.taskCards, title: "卡片 · 实验")
+        } label: {
+            HStack(spacing: 5) {
+                Text(navigationModeTitle)
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .font(.system(size: 11, weight: .medium))
+            .frame(width: 108, height: 24)
+            .contentShape(Capsule())
         }
-        .pickerStyle(.menu).fixedSize().controlSize(.small)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .accessibilityLabel("视图")
         .accessibilityValue(navigationMode.accessibilityValue)
+    }
+
+    private var navigationModeTitle: String {
+        switch navigationMode {
+        case .workRail: "经典"
+        case .workOutline: "分组"
+        case .taskCards: "卡片 · 实验"
+        }
+    }
+
+    private func navigationModeOption(_ mode: ConsoleNavigationMode, title: String) -> some View {
+        Button {
+            navigationModeRawValue = mode.rawValue
+        } label: {
+            if navigationMode == mode {
+                Label(title, systemImage: "checkmark")
+            } else {
+                Text(title)
+            }
+        }
     }
 
     var cardWorkspaceSidebar: some View {
@@ -353,6 +396,7 @@ struct UnifiedConsoleView: View {
                 }, createTask: { presentTaskCreation(for: $0.id) },
                 taskMenu: { task in taskContextMenuContent(for: task, session: workerSession(for: task)) })
         }
+        .padding(.top, 40)
         .sheet(isPresented: Binding(
             get: { navigationMode == .taskCards && showNewSessionCreation },
             set: { if navigationMode == .taskCards { showNewSessionCreation = $0 } }
@@ -389,6 +433,15 @@ struct UnifiedConsoleView: View {
         selectedWorkId = entityClient.works.first?.id
         selectedCategory = selectedWorkId == nil ? .assistant : .worker
         selectDefaultContentForCurrentSpace()
+    }
+
+    private func selectDevelopmentPreviewAtStartupIfAvailable(_ sessions: [TaskSession]) {
+        guard !didResolveDevelopmentPreviewStart, !sessions.isEmpty else { return }
+        didResolveDevelopmentPreviewStart = true
+        guard router.pendingSessionId == nil,
+              let previewID = ProcessInfo.processInfo.environment["CORPTIE_DEVELOPMENT_PREVIEW_SESSION_ID"],
+              let session = sessions.first(where: { $0.id == previewID }) else { return }
+        selectSessionAfterHighlight(session)
     }
 
     func selectAssistantSpace() {
@@ -1068,4 +1121,15 @@ struct UnifiedConsoleView: View {
         }
     }
 
+}
+
+private struct ConsoleTopEdgeEffectModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.scrollEdgeEffectHidden(true, for: .top)
+        } else {
+            content
+        }
+    }
 }

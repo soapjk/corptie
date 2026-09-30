@@ -74,6 +74,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     private var isProcessingUserScrollEvent = false
     private var needsExactWidthReflow = false
     private var lastReflowMeasurementWidth: CGFloat?
+    private var bottomClearance: CGFloat = 0
 
     /// The timeline width is a parent-owned layout input. Reserving a
     /// legacy scroller gutter unconditionally prevents the feedback loop
@@ -609,13 +610,22 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
 
     private func synchronizeDocumentHeight(in tableView: NSTableView) {
         tableView.layoutSubtreeIfNeeded()
-        let contentHeight = rows.isEmpty
+        let contentHeight = (rows.isEmpty
             ? 0
-            : tableView.rect(ofRow: rows.count - 1).maxY
+            : tableView.rect(ofRow: rows.count - 1).maxY) + bottomClearance
         if abs(tableView.frame.height - contentHeight) >= 0.5 {
             tableView.setFrameSize(NSSize(width: tableView.frame.width, height: contentHeight))
         }
         scheduleUnderfilledHistoryEvaluation()
+    }
+
+    func setBottomClearance(_ value: CGFloat) {
+        let next = max(0, value.isFinite ? value : 0)
+        guard abs(bottomClearance - next) >= 0.5 else { return }
+        bottomClearance = next
+        guard let tableView else { return }
+        synchronizeDocumentHeight(in: tableView)
+        if followsLatest { enqueueCorrection(.bottom) }
     }
 
     func updateHistoryAvailability(_ hasMoreHistory: Bool) {
