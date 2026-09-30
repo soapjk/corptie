@@ -52,7 +52,7 @@ struct ConsoleWindowSplitViewTests {
         controller.view.layoutSubtreeIfNeeded()
 
         let sidebar = try #require(controller.splitViewItems.first)
-        #expect(sidebar.behavior == .sidebar)
+        #expect(sidebar.behavior == .default)
         #expect(sidebar.allowsFullHeightLayout)
         let frame = sidebar.viewController.view.convert(sidebar.viewController.view.bounds, to: window.contentView)
         #expect(abs(frame.height - controller.splitView.bounds.height) < 1)

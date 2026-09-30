@@ -13,7 +13,6 @@ enum MainNavigationRailLayout {
 
 /// A lightweight navigation column. Page hosts remain resident beside it.
 struct MainWindowNavigationRail: View {
-    @ObservedObject private var wallpaper = LocalWallpaperStore.shared
     @Binding var selection: AppTab
     @Binding var isExpanded: Bool
 
@@ -52,10 +51,6 @@ struct MainWindowNavigationRail: View {
         .padding(.top, MainWindowLayoutMetrics.titlebarHeight + 8)
         .padding(.bottom, 8)
         .frame(maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(wallpaper.hasWallpaper ? 0.72 : 1))
-        .overlay(alignment: .trailing) {
-            Rectangle().fill(Color.primary.opacity(0.08)).frame(width: 1).allowsHitTesting(false)
-        }
         .overlay(alignment: .trailing) {
             Color.clear
                 .frame(width: 12)

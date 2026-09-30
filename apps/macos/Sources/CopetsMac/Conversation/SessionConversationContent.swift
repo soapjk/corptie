@@ -204,8 +204,9 @@ struct SessionConversationContent: View {
                 OrphanedWorkspaceRecoveryView(status: recovery)
             }
 
-            // Match iPad: the composer owns a real bottom safe-area inset so
-            // AppKit's viewport ends above it without a measured spacer.
+            // Keep the full-height native viewport under the glass composer.
+            // AppKit reserves the measured composer height as a scroll inset,
+            // so the final row can stop above the glass without a fake table tail.
             Group {
                 switch contentPhase {
                 case .live:

@@ -20,9 +20,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     var scrollToTurnID: String? = nil
     var scrollToTurnRevision: Int = 0
     var historyRequestEpoch: Int = 0
-    /// Clear space at the document tail for chrome overlaid on this viewport.
-    /// The scroll view itself stays full height, so earlier rows can pass
-    /// beneath the glass while the latest row rests above it.
+    /// Reserve native scroll content inset for chrome overlaid on this viewport.
+    /// The full-height clip view lets earlier rows pass beneath the glass.
     var bottomClearance: CGFloat = 0
 
     nonisolated static func rowIndex(forTurnID turnID: String, in rows: [AppKitChatTimelineRow]) -> Int? {
@@ -63,7 +62,6 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         let scrollView = Self.makeScrollView(tableView: tableView)
 
         context.coordinator.attach(tableView: tableView, scrollView: scrollView)
-        context.coordinator.setBottomClearance(bottomClearance)
         context.coordinator.setProcessClockEnabled(canAdvanceProcessClock)
         if let initialPosition, !initialPosition.followsLatest {
             context.coordinator.prepareInitialPosition(initialPosition)
@@ -71,6 +69,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             context.coordinator.prepareInitialScrollToBottom()
         }
         context.coordinator.apply(rows: rows, animated: false)
+        context.coordinator.setBottomClearance(bottomClearance)
         context.coordinator.lastScrollToBottomRevision = scrollToBottomRevision
         context.coordinator.lastScrollToTurnRevision = scrollToTurnRevision
         context.coordinator.lastHistoryRequestEpoch = historyRequestEpoch
@@ -114,6 +113,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     static func makeScrollView(tableView: NSTableView) -> NSScrollView {
         let scrollView = FirstLayoutRestoringScrollView()
         scrollView.contentView = NSClipView()
+        scrollView.automaticallyAdjustsContentInsets = false
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.verticalScroller = TimelineIntentScroller()
@@ -139,9 +139,11 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         context.coordinator.onNearTop = onNearTop
         context.coordinator.onUnderfilledHistory = onUnderfilledHistory
         context.coordinator.updateHistoryAvailability(hasMoreHistory)
-        context.coordinator.setBottomClearance(bottomClearance)
         context.coordinator.onPositionChange = onPositionChange
         context.coordinator.apply(rows: rows, animated: context.transaction.animation != nil)
+        // Decide whether to follow the new rows against the previous stable
+        // viewport before changing its scrollable bottom edge.
+        context.coordinator.setBottomClearance(bottomClearance)
         if let initialPosition {
             context.coordinator.restoreIfNeeded(position: initialPosition)
         }
