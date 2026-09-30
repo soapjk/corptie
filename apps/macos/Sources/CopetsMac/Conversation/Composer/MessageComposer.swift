@@ -99,8 +99,12 @@ struct MessageComposer: View {
 
     var body: some View {
         ConversationComposerChrome {
-            ThreadMetaView(sessionID: sessionId, status: status, isReady: isReady,
-                           notReadyReason: notReadyReason, activityStatus: activityStatus)
+            HStack(spacing: 0) {
+                ThreadMetaView(sessionID: sessionId, status: status, isReady: isReady,
+                               notReadyReason: notReadyReason, activityStatus: activityStatus)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                SessionComposerStopButton(session: session)
+            }
         } content: {
             editorRow
         }
