@@ -1145,7 +1145,7 @@ const sessionApplicationService = createSessionApplicationComposition({
   assertSessionRecoveryMessageBoundary,
   recoverSession: (input) => sessionRecoveryCoordinator.recover(input),
   requireSessionReference, workChatContextService,
-  resolveContextReferences: (sessionId) => sessionContextReferenceService.resolve(sessionId),
+  resolveContextReferences: (sessionId, options) => sessionContextReferenceService.resolve(sessionId, options),
   artifactService, memoryRecallService, mcpAssignmentRevisionForAgent,
   ensureCollaborationAgentForSession, ensureLogicalRouteForProviderSession,
   sessionWithLogicalWorkspace, collaborationCore, emitEvent

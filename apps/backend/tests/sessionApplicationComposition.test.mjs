@@ -81,3 +81,50 @@ test("deletion detaches both identities and publishes a detached event after dur
   assert.equal(f.calls[4][1], "SessionDeleted");
   assert.deepEqual(f.calls[4][3], { detachedSession: true });
 });
+
+test("Worker message context injects bounded selected references after authoritative Task binding", async () => {
+  const session = { id: "session:worker", sessionKind: "worker", taskId: "task:one", workId: "work:one" };
+  const task = { id: "task:one", work_id: "work:one", title: "Task one", description: "Build it",
+    acceptance_criteria: "Verified", verification_criteria: "Run tests", revision: 1, resource_version: 1 };
+  const reference = { sessionId: session.id, logicalSessionId: "logical:one", bindingId: "binding:one" };
+  const calls = [];
+  const service = createSessionApplicationComposition({
+    store: {
+      getSession: () => session,
+      assertLogicalWorkSessionBinding: () => ({ taskId: task.id }),
+      getTask: () => task,
+      getWork: () => ({ id: "work:one", name: "Work one" }),
+      selectOne: () => null,
+      getSessionToolCatalogMaterialization: () => null
+    },
+    agentProviderRegistry: {}, sessionBindingRepository: { resolve: () => reference },
+    artifactService: { indexForSession: () => ({ items: [] }) },
+    mcpAssignmentRevisionForAgent: () => null,
+    resolveContextReferences: async (id, options) => {
+      calls.push([id, options]);
+      return { prompt: "The following Corptie Session context references are user-selected reference material.\nReference: test document" };
+    },
+    emitEvent: () => {}
+  });
+  const context = await service.resolveMessageContext(reference, { message: { text: "Use the reference" } });
+  assert.deepEqual(calls, [[session.id, { characterBudget: 4_096 }]]);
+  assert.match(context.prompt, /Authoritative bound Task definition/);
+  assert.match(context.prompt, /Reference: test document/);
+  assert.ok(context.prompt.indexOf("Authoritative bound Task definition") < context.prompt.indexOf("Reference: test document"));
+});
+
+test("Work Chat message context also includes references already allowed by its Detail UI", async () => {
+  const session = { id: "session:work-chat", sessionKind: "workChat", workId: "work:one" };
+  const reference = { sessionId: session.id, logicalSessionId: "logical:work-chat" };
+  const service = createSessionApplicationComposition({
+    store: { getSession: () => session },
+    agentProviderRegistry: {}, sessionBindingRepository: { resolve: () => reference },
+    workChatContextService: { build: () => ({ prompt: "Work snapshot: authoritative scope" }) },
+    resolveContextReferences: async () => ({ prompt: "Reference: selected document" }),
+    mcpAssignmentRevisionForAgent: () => null,
+    emitEvent: () => {}
+  });
+  const context = await service.resolveMessageContext(reference, { message: { text: "Use the document" } });
+  assert.match(context.prompt, /Work snapshot: authoritative scope/);
+  assert.match(context.prompt, /Reference: selected document/);
+});
