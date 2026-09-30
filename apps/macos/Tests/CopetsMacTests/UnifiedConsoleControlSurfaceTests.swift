@@ -154,6 +154,21 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
+    func jumpToLatestFloatsAboveTheComposerInsteadOfBehindIt() throws {
+        let source = try source(named: "Conversation/SessionConversationContent.swift")
+        let bodyStart = try #require(source.range(of: "    var body: some View"))
+        let timelineStart = try #require(source.range(of: "    private func appKitDetailMessages("))
+        let jumpButtonStart = try #require(source.range(of: "    private var jumpToLatestButton: some View"))
+        let body = source[bodyStart.lowerBound..<timelineStart.lowerBound]
+        let timeline = source[timelineStart.lowerBound..<jumpButtonStart.lowerBound]
+
+        #expect(body.contains(".overlay(alignment: .bottomTrailing) {\n                jumpToLatestButton"))
+        #expect(body.contains(".padding(.bottom, composerOverlayHeight + 10)"))
+        #expect(!timeline.contains(".overlay(alignment: .bottomTrailing)"))
+        #expect(source.contains("if viewportState.showsJumpToLatest"))
+    }
+
+    @Test
     func unavailableSessionExplainsTheDisabledComposerAndOffersRecovery() throws {
         let source = try source(named: "Conversation/SessionConversationContent.swift")
             + source(named: "Conversation/ConversationEmptyStates.swift")

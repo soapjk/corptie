@@ -10,8 +10,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     var baseDirectory: String? = nil
     var canAdvanceProcessClock = false
     /// Space occupied by the floating composer at the bottom of the timeline.
-    /// NSScrollView keeps drawing beneath it while making the last row reachable.
-    var bottomContentInset: CGFloat = 0
+    var bottomOverlayHeight: CGFloat = 0
     @Binding var followsLatest: Bool
     let onToggleExpansion: (String) -> Void
     var onAction: (AppKitChatTimelineRow.Action) -> Void = { _ in }
@@ -60,9 +59,9 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let tableView = Self.makeTableView()
         let scrollView = Self.makeScrollView(tableView: tableView)
-        Self.updateBottomInset(bottomContentInset, on: scrollView)
 
         context.coordinator.attach(tableView: tableView, scrollView: scrollView)
+        context.coordinator.setBottomOverlayHeight(bottomOverlayHeight)
         context.coordinator.setProcessClockEnabled(canAdvanceProcessClock)
         if let initialPosition, !initialPosition.followsLatest {
             context.coordinator.prepareInitialPosition(initialPosition)
@@ -126,18 +125,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         return scrollView
     }
 
-    @discardableResult
-    static func updateBottomInset(_ height: CGFloat, on scrollView: NSScrollView) -> Bool {
-        let bottom = max(0, height)
-        guard abs(scrollView.contentInsets.bottom - bottom) > 0.5 else { return false }
-        scrollView.automaticallyAdjustsContentInsets = false
-        scrollView.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: bottom, right: 0)
-        scrollView.scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: bottom, right: 0)
-        return true
-    }
-
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        let insetChanged = Self.updateBottomInset(bottomContentInset, on: scrollView)
+        context.coordinator.setBottomOverlayHeight(bottomOverlayHeight)
         context.coordinator.switchSessionIfNeeded(
             to: sessionID,
             initialPosition: initialPosition
@@ -151,7 +140,6 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         context.coordinator.updateHistoryAvailability(hasMoreHistory)
         context.coordinator.onPositionChange = onPositionChange
         context.coordinator.apply(rows: rows, animated: context.transaction.animation != nil)
-        if insetChanged { context.coordinator.composerInsetDidChange() }
         if let initialPosition {
             context.coordinator.restoreIfNeeded(position: initialPosition)
         }
