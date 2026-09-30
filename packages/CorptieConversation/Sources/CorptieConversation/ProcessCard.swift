@@ -1,4 +1,9 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 /// Shared process-card chrome. Platforms supply the selectable detail text leaf.
 public struct ProcessCard<Details: View>: View {
@@ -16,6 +21,14 @@ public struct ProcessCard<Details: View>: View {
     private let progressLabel: String?
     private let toggle: () -> Void
     private let details: () -> Details
+
+    private var surfaceColor: Color {
+        #if os(macOS)
+        Color(nsColor: .controlBackgroundColor)
+        #else
+        Color(uiColor: .secondarySystemBackground)
+        #endif
+    }
 
     public init(summary: String, secondary: String? = nil,
                 symbol: String, tint: Color, expanded: Bool,
@@ -64,8 +77,14 @@ public struct ProcessCard<Details: View>: View {
         .padding(.horizontal, 10)
         .padding(.top, expanded ? 3 : 4)
         .padding(.bottom, expanded ? 13 : 4)
-        .background(tint.opacity(expanded ? 0.055 : 0.035),
-                    in: RoundedRectangle(cornerRadius: expanded ? 12 : 10))
+        .background {
+            RoundedRectangle(cornerRadius: expanded ? 12 : 10)
+                .fill(surfaceColor.opacity(0.88))
+                .overlay {
+                    RoundedRectangle(cornerRadius: expanded ? 12 : 10)
+                        .fill(tint.opacity(expanded ? 0.08 : 0.06))
+                }
+        }
         .overlay(alignment: .bottomLeading) {
             if let progress {
                 GeometryReader { geometry in
