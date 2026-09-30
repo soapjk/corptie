@@ -161,6 +161,16 @@ struct PadRealtimeTests {
         #expect(workspace.refreshWorker == nil)
     }
 
+    @Test func cachedCapabilitiesWithoutTimelineStillBootstrapsMessages() async throws {
+        let (connection, workspace) = try fixture()
+        workspace.capabilities = try JSONDecoder().decode(ClientSessionCapabilities.self, from: Data(
+            #"{"schemaVersion":1,"sessionId":"session:test","readMessages":true,"send":{"available":true},"stop":{"available":false}}"#.utf8))
+        #expect(!workspace.selectedTimelineReady)
+        await workspace.waitForRealtimeTimelineOrFallback(connection, graceAttempts: 0)
+        #expect(workspace.messages.first?.text == "partial")
+        #expect(workspace.selectedTimelineReady)
+    }
+
     @Test func unchangedSnapshotDoesNotInvalidateMessageLayoutAndHistorySurvives() async throws {
         let (connection, workspace) = try fixture()
         workspace.messages = try JSONDecoder().decode([ClientMessage].self, from: Data(#"[{"id":"history","type":"userMessage","text":"old"},{"id":"item:1","type":"agentMessage","text":"partial"}]"#.utf8))
