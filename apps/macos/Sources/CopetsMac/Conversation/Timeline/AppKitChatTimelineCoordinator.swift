@@ -22,6 +22,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     private weak var tableView: NSTableView?
     private weak var scrollView: NSScrollView?
     private var rows: [AppKitChatTimelineRow] = []
+    private var bottomOverlayHeight: CGFloat = 0
     private var canAdvanceProcessClock: Bool
     private var processClockTimer: Timer?
     private var revisionsByID: [String: Int] = [:]
@@ -301,6 +302,18 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         for cell in cellsByKey.values {
             cell.updateLinkContext(baseDirectory: normalized)
         }
+    }
+
+    func setBottomOverlayHeight(_ height: CGFloat) {
+        let resolved = max(0, height)
+        guard abs(bottomOverlayHeight - resolved) > 0.5 else { return }
+        bottomOverlayHeight = resolved
+        // The scroller must use the same bottom boundary as the document.
+        // NSScrollView.contentInsets alone permits a programmatic overscroll,
+        // but does not extend the native scrollbar's document range.
+        scrollView?.scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: resolved, right: 0)
+        if let tableView { synchronizeDocumentHeight(in: tableView) }
+        if followsLatest { enqueueCorrection(.bottom) }
     }
 
     private static func normalizedBaseDirectory(_ value: String?) -> String? {
@@ -611,7 +624,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         tableView.layoutSubtreeIfNeeded()
         let contentHeight = rows.isEmpty
             ? 0
-            : tableView.rect(ofRow: rows.count - 1).maxY
+            : tableView.rect(ofRow: rows.count - 1).maxY + bottomOverlayHeight
         if abs(tableView.frame.height - contentHeight) >= 0.5 {
             tableView.setFrameSize(NSSize(width: tableView.frame.width, height: contentHeight))
         }
@@ -685,10 +698,6 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         scrollToBottom()
     }
 
-    func composerInsetDidChange() {
-        if followsLatest { enqueueCorrection(.bottom) }
-    }
-
     private func claimViewportIntent() {
         traceViewport("cancel-pending=\(pendingCorrection != nil)")
         scrollCommandGeneration &+= 1
@@ -739,8 +748,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         defer { applyingCorrection = false }
         tableView.layoutSubtreeIfNeeded()
         synchronizeDocumentHeight(in: tableView)
-        let maximumY = max(0, tableView.rect(ofRow: rows.count - 1).maxY
-            + (scrollView?.contentInsets.bottom ?? 0) - clip.bounds.height)
+        let maximumY = max(0, tableView.frame.height - clip.bounds.height)
         let y: CGFloat
         switch correction {
         case .bottom:
@@ -773,8 +781,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
             return followsLatest
         }
         let visibleMaxY = scrollView.contentView.bounds.maxY
-        let contentMaxY = tableView.rect(ofRow: rows.count - 1).maxY
-            + scrollView.contentInsets.bottom
+        let contentMaxY = tableView.frame.height
         return contentMaxY - visibleMaxY <= 8
     }
 
@@ -1102,8 +1109,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         suppressNearTopDuringLayout()
         tableView.layoutSubtreeIfNeeded()
         synchronizeDocumentHeight(in: tableView)
-        let maximumY = max(0, tableView.frame.height
-            + (scrollView?.contentInsets.bottom ?? 0) - clipView.bounds.height)
+        let maximumY = max(0, tableView.frame.height - clipView.bounds.height)
         if let position = pendingRestorePosition {
             if let row = rows.firstIndex(where: { $0.id == position.rowID }) {
                 let anchorY = tableView.rect(ofRow: row).minY + CGFloat(position.offset)
