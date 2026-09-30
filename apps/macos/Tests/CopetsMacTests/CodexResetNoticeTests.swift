@@ -29,6 +29,8 @@ struct CodexResetNoticeTests {
         let contents = try String(contentsOf: source, encoding: .utf8)
         #expect(contents.contains("resetNoticePopover"))
         #expect(contents.contains("isResetNoticePresented.toggle()"))
+        #expect(contents.contains("refreshFreshAccount(for: sessionID)"))
+        #expect(contents.contains("Banked resets refresh failed"))
         #expect(contents.contains(".popover(isPresented: $isResetNoticePresented"))
         #expect(!contents.contains("scheduleResetNoticeIfNeeded"))
         #expect(!contents.contains("automaticPresentationDelay"))

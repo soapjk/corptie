@@ -88,8 +88,17 @@ struct OrphanedWorkspaceRecoveryView: View {
 }
 
 struct ChatUsageBar: View {
+    let sessionID: String
     let usage: SessionUsageResponse?
     @State private var isResetNoticePresented = false
+    @State private var bankedResetState: BankedResetState = .idle
+
+    private enum BankedResetState: Equatable {
+        case idle
+        case loading
+        case ready(CodexRateLimitResetCredits)
+        case failed
+    }
 
     var body: some View {
         if let usage {
@@ -134,7 +143,21 @@ struct ChatUsageBar: View {
                         .accessibilityLabel("\(L10n(SessionUsagePolicy.quotaLabel(provider: usage.account.provider))): \(SessionUsagePolicy.percent(remainingPercent, maximumFractionDigits: 2))% remaining")
                         .accessibilityIdentifier("conversation-usage-quota")
                         .popover(isPresented: $isResetNoticePresented, arrowEdge: .bottom) {
-                            resetNoticePopover(usage: usage, window: window)
+                            resetNoticePopover(window: window)
+                        }
+                        .task(id: "\(sessionID):\(isResetNoticePresented)") {
+                            guard isResetNoticePresented else {
+                                bankedResetState = .idle
+                                return
+                            }
+                            bankedResetState = .loading
+                            let refreshed = await BackendClient.shared.usageController.refreshFreshAccount(for: sessionID)
+                            guard !Task.isCancelled else { return }
+                            if let resets = refreshed?.account.rateLimitResetCredits {
+                                bankedResetState = .ready(resets)
+                            } else {
+                                bankedResetState = .failed
+                            }
                         }
                     } else {
                         ConversationComposerUsageSlot {
@@ -157,7 +180,6 @@ struct ChatUsageBar: View {
 
     @ViewBuilder
     private func resetNoticePopover(
-        usage: SessionUsageResponse,
         window: CodexRateLimitWindow
     ) -> some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -167,7 +189,8 @@ struct ChatUsageBar: View {
             )
             .lineLimit(1)
 
-            if let bankedResets = usage.account.rateLimitResetCredits {
+            switch bankedResetState {
+            case .ready(let bankedResets):
                 Label(
                     L10nFormat("Banked resets remaining: %lld", Int64(max(0, bankedResets.availableCount))),
                     systemImage: "arrow.counterclockwise.circle"
@@ -191,6 +214,12 @@ struct ChatUsageBar: View {
                         .lineLimit(1)
                     }
                 }
+            case .idle, .loading:
+                Label(L10n("Refreshing banked resets…"), systemImage: "arrow.clockwise")
+                    .lineLimit(1)
+            case .failed:
+                Label(L10n("Banked resets refresh failed"), systemImage: "exclamationmark.triangle")
+                    .lineLimit(1)
             }
         }
         .font(.system(size: 11, weight: .medium))

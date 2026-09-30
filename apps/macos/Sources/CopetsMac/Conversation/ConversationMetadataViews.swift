@@ -41,7 +41,7 @@ struct ThreadMetaView: View {
             executionState: status?.sharedExecutionState,
             activity: restartState.activityBySessionID[sessionID]?.text ?? activityStatus
         ) {
-            ChatUsageBar(usage: supplementaryData.selectedSessionUsage)
+            ChatUsageBar(sessionID: sessionID, usage: supplementaryData.selectedSessionUsage)
         }
     }
 }

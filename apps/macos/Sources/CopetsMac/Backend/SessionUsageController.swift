@@ -72,6 +72,20 @@ final class SessionUsageController {
         }
     }
 
+    func refreshFreshAccount(for sessionID: String) async -> SessionUsageResponse? {
+        guard selectedSessionID() == sessionID else { return nil }
+        do {
+            guard let usage = try await client.fetchFreshAccount(for: sessionID),
+                  !Task.isCancelled,
+                  selectedSessionID() == sessionID else { return nil }
+            client.remember(usage, for: sessionID)
+            state.selectedSessionUsage = usage
+            return usage
+        } catch {
+            return nil
+        }
+    }
+
     func refreshSelectedUsage() async {
         guard let sessionID = selectedSessionID() else { return }
         await loadUsage(for: sessionID)

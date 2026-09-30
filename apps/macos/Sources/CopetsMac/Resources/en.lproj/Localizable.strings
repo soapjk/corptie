@@ -384,6 +384,8 @@
 "Tibo forecast: %@" = "Tibo forecast: %@";
 "Tibo forecast: No upcoming reset announcement" = "Tibo forecast: No upcoming reset announcement";
 "Banked resets remaining: %lld" = "Banked resets remaining: %lld";
+"Refreshing banked resets…" = "Refreshing banked resets…";
+"Banked resets refresh failed" = "Could not refresh banked resets";
 "Earliest banked reset expiry: %@" = "Earliest banked reset expiry: %@";
 "Banked reset expiry unavailable" = "Banked reset expiry unavailable";
 
