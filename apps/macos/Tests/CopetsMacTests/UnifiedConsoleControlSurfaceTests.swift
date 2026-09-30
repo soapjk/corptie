@@ -175,8 +175,8 @@ struct UnifiedConsoleControlSurfaceTests {
         let nativeTimeline = try self.source(named: "AppKitChatTimelineView.swift")
         let coordinator = try self.source(named: "Conversation/Timeline/AppKitChatTimelineCoordinator.swift")
         #expect(nativeTimeline.contains("scrollView.automaticallyAdjustsContentInsets = false"))
-        #expect(coordinator.contains("scrollView.contentInsets = insets"))
-        #expect(!coordinator.contains("tableView.rect(ofRow: rows.count - 1).maxY) + bottomClearance"))
+        #expect(coordinator.contains("let documentHeight = rowsHeight + bottomClearance"))
+        #expect(!coordinator.contains("scrollView.contentInsets = insets"))
         #expect(!timeline.contains(".overlay(alignment: .bottomTrailing)"))
         #expect(source.contains("if viewportState.showsJumpToLatest"))
     }

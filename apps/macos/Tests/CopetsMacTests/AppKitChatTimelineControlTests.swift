@@ -1003,13 +1003,14 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             [view] + view.subviews.flatMap(descendants)
         }
         let scroll = try XCTUnwrap(descendants(host).compactMap { $0 as? FirstLayoutRestoringScrollView }.first)
-        let table = try XCTUnwrap(scroll.documentView as? NSTableView)
+        let document = try XCTUnwrap(scroll.documentView)
+        let table = try XCTUnwrap(document.subviews.compactMap { $0 as? NSTableView }.first)
         XCTAssertEqual(scroll.frame.height, 224, accuracy: 2)
         XCTAssertEqual(table.frame.height, table.rect(ofRow: rows.count - 1).maxY, accuracy: 1)
-        XCTAssertEqual(scroll.contentView.documentRect.height, table.frame.height, accuracy: 1)
+        XCTAssertEqual(scroll.contentView.documentRect.height, document.frame.height, accuracy: 1)
     }
 
-    func testNativeBottomInsetKeepsLatestRowAboveGlassWithoutShrinkingViewport() async {
+    func testNativeDocumentClearanceKeepsLatestRowAboveGlassWithoutShrinkingViewport() async {
         let harness = makeHarness(followsLatest: true, height: 320)
         let rows = (0..<30).map { row(id: "glass-clearance-\($0)", text: "Message \($0)") }
         harness.coordinator.apply(rows: rows)
@@ -1020,8 +1021,25 @@ final class AppKitChatTimelineControlTests: XCTestCase {
 
         let lastRowBottom = harness.tableView.rect(ofRow: rows.count - 1).maxY
         XCTAssertEqual(harness.scrollView.contentView.bounds.height, 320, accuracy: 2)
-        XCTAssertEqual(harness.scrollView.contentInsets.bottom, 96, accuracy: 1)
+        XCTAssertEqual(harness.scrollView.contentInsets.bottom, 0, accuracy: 1)
         XCTAssertEqual(harness.tableView.frame.height, lastRowBottom, accuracy: 1)
+        XCTAssertEqual(harness.scrollView.documentView?.frame.height ?? 0, lastRowBottom + 96, accuracy: 1)
+        XCTAssertLessThanOrEqual(lastRowBottom,
+                                 harness.scrollView.contentView.bounds.maxY - 96 + 2)
+    }
+
+    func testNativeScrollRangeIncludesComposerClearance() async {
+        let harness = makeHarness(followsLatest: false, height: 320)
+        let rows = (0..<30).map { row(id: "native-end-\($0)", text: "Message \($0)") }
+        harness.coordinator.apply(rows: rows)
+        harness.coordinator.setBottomClearance(96)
+        await settleMainQueue()
+
+        let lastRowBottom = harness.tableView.rect(ofRow: rows.count - 1).maxY
+        let naturalBottom = (harness.scrollView.documentView?.frame.height ?? 0)
+            - harness.scrollView.contentView.bounds.height
+        harness.scrollView.contentView.scroll(to: NSPoint(x: 0, y: naturalBottom))
+        harness.scrollView.reflectScrolledClipView(harness.scrollView.contentView)
         XCTAssertLessThanOrEqual(lastRowBottom,
                                  harness.scrollView.contentView.bounds.maxY - 96 + 2)
     }
@@ -1044,10 +1062,13 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             [view] + view.subviews.flatMap(descendants)
         }
         let scroll = try XCTUnwrap(descendants(host).compactMap { $0 as? FirstLayoutRestoringScrollView }.first)
-        let table = try XCTUnwrap(scroll.documentView as? NSTableView)
+        let document = try XCTUnwrap(scroll.documentView)
+        let table = try XCTUnwrap(document.subviews.compactMap { $0 as? NSTableView }.first)
         let lastRowBottom = table.rect(ofRow: rows.count - 1).maxY
         XCTAssertEqual(scroll.frame.height, 320, accuracy: 2)
-        XCTAssertEqual(scroll.contentInsets.bottom, 96, accuracy: 2)
+        XCTAssertEqual(scroll.contentInsets.bottom, 0, accuracy: 2)
+        XCTAssertEqual(table.frame.height, lastRowBottom, accuracy: 2)
+        XCTAssertEqual(document.frame.height, lastRowBottom + 96, accuracy: 2)
         XCTAssertLessThanOrEqual(lastRowBottom, scroll.contentView.bounds.maxY - 96 + 2)
     }
 

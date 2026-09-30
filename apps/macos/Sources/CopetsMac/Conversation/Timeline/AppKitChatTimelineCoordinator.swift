@@ -610,11 +610,22 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
 
     private func synchronizeDocumentHeight(in tableView: NSTableView) {
         tableView.layoutSubtreeIfNeeded()
-        let contentHeight = (rows.isEmpty
+        let rowsHeight = (rows.isEmpty
             ? 0
             : tableView.rect(ofRow: rows.count - 1).maxY)
-        if abs(tableView.frame.height - contentHeight) >= 0.5 {
-            tableView.setFrameSize(NSSize(width: tableView.frame.width, height: contentHeight))
+        // The native document extent, not NSScrollView.contentInsets, defines
+        // the scrollbar's reachable bottom. Keep this space outside the rows
+        // so earlier messages can still scroll behind the overlaid composer.
+        let documentHeight = rowsHeight + bottomClearance
+        if let documentView = scrollView?.documentView {
+            let documentSize = NSSize(
+                width: max(tableView.frame.width, scrollView?.contentView.bounds.width ?? 0),
+                height: documentHeight
+            )
+            if abs(documentView.frame.width - documentSize.width) >= 0.5
+                || abs(documentView.frame.height - documentSize.height) >= 0.5 {
+                documentView.setFrameSize(documentSize)
+            }
         }
         scheduleUnderfilledHistoryEvaluation()
     }
@@ -626,10 +637,8 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
             ? tableView.flatMap { visibleAnchor(in: $0) }
             : nil
         bottomClearance = next
-        guard let scrollView else { return }
-        var insets = scrollView.contentInsets
-        insets.bottom = next
-        scrollView.contentInsets = insets
+        guard let tableView else { return }
+        synchronizeDocumentHeight(in: tableView)
         if followsLatest {
             enqueueCorrection(.bottom)
         } else if let anchor {
@@ -754,7 +763,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         defer { applyingCorrection = false }
         tableView.layoutSubtreeIfNeeded()
         synchronizeDocumentHeight(in: tableView)
-        let maximumY = max(0, tableView.frame.height + bottomClearance - clip.bounds.height)
+        let maximumY = max(0, (scrollView?.documentView?.frame.height ?? 0) - clip.bounds.height)
         let y: CGFloat
         switch correction {
         case .bottom:
@@ -787,7 +796,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
             return followsLatest
         }
         let visibleMaxY = scrollView.contentView.bounds.maxY
-        let contentMaxY = tableView.frame.height + bottomClearance
+        let contentMaxY = scrollView.documentView?.frame.height ?? tableView.frame.height
         return contentMaxY - visibleMaxY <= 8
     }
 
@@ -902,6 +911,12 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         guard abs(column.width - width) >= 0.5 else { return }
         let anchor = visibleAnchor(in: tableView)
         column.width = width
+        if let documentView = scrollView.documentView {
+            documentView.setFrameSize(NSSize(
+                width: scrollView.contentView.bounds.width,
+                height: documentView.frame.height
+            ))
+        }
         // This path now runs only for an actual container resize. Scroller
         // visibility no longer changes the layout width.
         lastMeasuredWidth = width
@@ -1115,7 +1130,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         suppressNearTopDuringLayout()
         tableView.layoutSubtreeIfNeeded()
         synchronizeDocumentHeight(in: tableView)
-        let maximumY = max(0, tableView.frame.height + bottomClearance - clipView.bounds.height)
+        let maximumY = max(0, (scrollView?.documentView?.frame.height ?? 0) - clipView.bounds.height)
         if let position = pendingRestorePosition {
             if let row = rows.firstIndex(where: { $0.id == position.rowID }) {
                 let anchorY = tableView.rect(ofRow: row).minY + CGFloat(position.offset)
