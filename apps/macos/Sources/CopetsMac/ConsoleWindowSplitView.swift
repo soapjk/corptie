@@ -125,7 +125,9 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
     override func viewDidLoad() {
         splitView.isVertical = true
         splitView.dividerStyle = .thin
-        let sidebar = NSSplitViewItem(sidebarWithViewController: sidebarController)
+        // The console's Work/Task surfaces already draw their own cards.
+        // A system Sidebar item adds a full-column material behind them.
+        let sidebar = NSSplitViewItem(viewController: sidebarController)
         sidebar.allowsFullHeightLayout = true
         sidebar.canCollapse = true
         sidebar.minimumThickness = 284

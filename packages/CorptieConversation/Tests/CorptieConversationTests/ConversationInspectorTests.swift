@@ -45,4 +45,16 @@ struct ConversationInspectorTests {
         #expect(ConversationTaskDefinition.hasContent(description: "", acceptance: "验收", verification: ""))
         #expect(ConversationTaskDefinition.hasContent(description: "描述", acceptance: "", verification: ""))
     }
+
+    @Test func detailModulesUseGroupedNativeGlassWithoutNestedCardFills() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CorptieConversation/ConversationInspectorSection.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        #expect(source.contains("GlassEffectContainer(spacing: 0) { content }"))
+        #expect(source.contains(".platformGlassSurface(in: RoundedRectangle(cornerRadius: 18, style: .continuous))"))
+        #expect(!source.contains(".background(Color.primary.opacity(0.055)"))
+    }
 }
