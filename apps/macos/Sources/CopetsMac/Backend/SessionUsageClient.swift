@@ -5,6 +5,7 @@ protocol SessionUsageServing: AnyObject {
     func cached(for sessionID: String) -> SessionUsageResponse?
     func remember(_ usage: SessionUsageResponse, for sessionID: String)
     func fetch(for sessionID: String) async throws -> SessionUsageResponse?
+    func fetchFreshAccount(for sessionID: String) async throws -> SessionUsageResponse?
     func applyingEvent(_ data: String, sessionID: String?, current: SessionUsageResponse?) -> SessionUsageResponse?
 }
 
@@ -29,9 +30,23 @@ final class SessionUsageClient: SessionUsageServing {
     }
 
     func fetch(for sessionID: String) async throws -> SessionUsageResponse? {
-        let (data, response) = try await urlSession.data(
-            from: baseURL.appending(path: "sessions/\(sessionID)/usage")
-        )
+        try await fetch(for: sessionID, requireFreshAccount: false)
+    }
+
+    func fetchFreshAccount(for sessionID: String) async throws -> SessionUsageResponse? {
+        try await fetch(for: sessionID, requireFreshAccount: true)
+    }
+
+    private func fetch(for sessionID: String, requireFreshAccount: Bool) async throws -> SessionUsageResponse? {
+        let url = baseURL.appending(path: "sessions/\(sessionID)/usage")
+        let requestURL = requireFreshAccount
+            ? url.appending(queryItems: [URLQueryItem(name: "freshAccount", value: "1")])
+            : url
+        var request = URLRequest(url: requestURL)
+        if requireFreshAccount {
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+        }
+        let (data, response) = try await urlSession.data(for: request)
         guard let response = response as? HTTPURLResponse, response.statusCode == 200 else { return nil }
         return try JSONDecoder().decode(SessionUsageResponse.self, from: data)
     }

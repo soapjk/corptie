@@ -102,6 +102,9 @@ test("read receipts commit before deferred state publishing and failures do not 
 test("usage failures and unmatched methods preserve existing contracts", async () => {
   const f = fixture();
   assert.deepEqual(await f.dispatch("/sessions/public/usage").result, { status: 200, body: { tokens: 5 } });
+  f.dependencies.readSessionUsage = async (_sessionId, _session, options) => ({ fresh: options.requireFreshAccount });
+  assert.deepEqual(await f.dispatch("/sessions/public/usage?freshAccount=1").result,
+    { status: 200, body: { fresh: true } });
   f.dependencies.readSessionUsage = async () => { throw new Error("unavailable"); };
   assert.equal((await f.dispatch("/sessions/public/usage").result).status, 503);
   f.dependencies.store.getSession = () => null;

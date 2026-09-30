@@ -58,7 +58,7 @@ export function handleSessionTimelineHttpRequest({
       sendJson(response, 404, { error: "Session not found." });
       return true;
     }
-    readSessionUsage(sessionId, session)
+    readSessionUsage(sessionId, session, { requireFreshAccount: url.searchParams.get("freshAccount") === "1" })
       .then((usage) => sendJson(response, 200, usage))
       .catch((error) => sendJson(response, 503, { error: error.message }));
     return true;
