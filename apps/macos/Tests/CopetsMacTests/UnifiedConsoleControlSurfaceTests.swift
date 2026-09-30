@@ -154,7 +154,7 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func jumpToLatestFloatsAboveTheComposerInsteadOfBehindIt() throws {
+    func jumpToLatestSharesTheTimelineViewportAboveTheSafeAreaComposer() throws {
         let source = try source(named: "Conversation/SessionConversationContent.swift")
         let bodyStart = try #require(source.range(of: "    var body: some View"))
         let timelineStart = try #require(source.range(of: "    private func appKitDetailMessages("))
@@ -162,8 +162,10 @@ struct UnifiedConsoleControlSurfaceTests {
         let body = source[bodyStart.lowerBound..<timelineStart.lowerBound]
         let timeline = source[timelineStart.lowerBound..<jumpButtonStart.lowerBound]
 
-        #expect(body.contains(".overlay(alignment: .bottomTrailing) {\n                jumpToLatestButton"))
-        #expect(body.contains(".padding(.bottom, composerOverlayHeight + 10)"))
+        let jumpOverlay = try #require(body.range(of: ".overlay(alignment: .bottomTrailing) {\n                jumpToLatestButton"))
+        let composerInset = try #require(body.range(of: ".safeAreaInset(edge: .bottom, spacing: 0)"))
+        #expect(jumpOverlay.lowerBound < composerInset.lowerBound)
+        #expect(!body.contains("composerOverlayHeight"))
         #expect(!timeline.contains(".overlay(alignment: .bottomTrailing)"))
         #expect(source.contains("if viewportState.showsJumpToLatest"))
     }
