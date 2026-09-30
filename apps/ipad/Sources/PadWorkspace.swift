@@ -475,7 +475,7 @@ final class PadWorkspace {
             capabilities = cached.capabilities
             applyUsage(cached.usage)
             composerConfiguration = cached.composer
-            isLoadingDetail = false
+            isLoadingDetail = cached.revision == nil && cached.messages.isEmpty
             refreshDisplayEntries()
         } else {
             messages = []
