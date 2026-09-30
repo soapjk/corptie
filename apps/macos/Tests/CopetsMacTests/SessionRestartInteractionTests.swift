@@ -30,6 +30,34 @@ struct SessionRestartInteractionTests {
     }
 
     @Test
+    func sessionHeaderGroupsMetadataInOneGlassCapsuleAndKeepsActionsSeparate() throws {
+        let source = try contents(of: "Conversation/ConversationHeader.swift")
+        let rowStart = try #require(source.range(of: "private var headerControlRow: some View"))
+        let rowEnd = try #require(source.range(of: "private var selectedTitle:", range: rowStart.upperBound..<source.endIndex))
+        let row = source[rowStart.lowerBound..<rowEnd.lowerBound]
+
+        #expect(source.contains("GlassEffectContainer(spacing: 6)"))
+        #expect(row.contains("headerIdentityCapsule"))
+        #expect(row.components(separatedBy: ".frame(width: 66, alignment:").count - 1 == 2)
+        #expect(row.contains("VStack(alignment: .center, spacing: 3)"))
+        #expect(row.contains(".multilineTextAlignment(.center)"))
+        #expect(row.contains(".platformGlassSurface(in: Capsule())"))
+        #expect(row.contains("SessionProviderIdentity(session: selectedSession, prominentText: true)"))
+        #expect(row.contains(".foregroundStyle(.primary)"))
+        #expect(row.contains("if let cwd = workspacePath"))
+        #expect(row.contains("gitHeadState.stampText"))
+        #expect(row.contains("GitBranchStamp(headState: gitHeadState)"))
+        #expect(row.contains("ProjectServiceStatusDot(status: status.service)"))
+        #expect(row.components(separatedBy: ".platformGlassSurface(in: Circle(), interactive: true)").count - 1 >= 2)
+        #expect(row.contains(".accessibilityIdentifier(\"session.detail.detach\")"))
+        #expect(row.contains(".accessibilityIdentifier(\"session.detail.actions\")"))
+        let menu = try #require(row.range(of: "Menu {"))
+        let menuGlass = try #require(row.range(of: ".platformGlassSurface(in: Circle(), interactive: true)", range: menu.upperBound..<row.endIndex))
+        #expect(menu.upperBound < menuGlass.lowerBound)
+        #expect(!row.contains(".conversationGlassControl()"))
+    }
+
+    @Test
     func selectedSessionHeaderMenuOnlyOpensTheWorkspaceAndHidesItsIndicator() throws {
         let source = try contents(of: "Conversation/ConversationHeader.swift")
         let headerStart = try #require(source.range(of: "struct DetailHeaderView: View"))

@@ -9,6 +9,7 @@ final class SessionUsageController {
     private let selectedSessionID: () -> String?
     private var refreshTask: Task<Void, Never>?
     private var eventRefreshTask: Task<Void, Never>?
+    private var fetchGeneration: UInt64 = 0
 
     init(
         client: any SessionUsageServing,
@@ -61,19 +62,32 @@ final class SessionUsageController {
     }
 
     func loadUsage(for sessionID: String) async {
-        guard selectedSessionID() == sessionID else { return }
+        _ = await fetchUsage(for: sessionID)
+    }
+
+    private func fetchUsage(for sessionID: String) async -> Bool {
+        guard selectedSessionID() == sessionID else { return false }
+        fetchGeneration &+= 1
+        let generation = fetchGeneration
         do {
-            guard let usage = try await client.fetch(for: sessionID) else { return }
-            guard selectedSessionID() == sessionID else { return }
+            guard let usage = try await client.fetch(for: sessionID) else { return false }
+            guard selectedSessionID() == sessionID, generation == fetchGeneration else { return false }
             client.remember(usage, for: sessionID)
             state.selectedSessionUsage = usage
+            return true
         } catch {
             // Usage is supplementary; failure must not disable conversation.
+            return false
         }
     }
 
     func refreshSelectedUsage() async {
         guard let sessionID = selectedSessionID() else { return }
         await loadUsage(for: sessionID)
+    }
+
+    func refreshSelectedUsageWithOutcome() async -> Bool {
+        guard let sessionID = selectedSessionID() else { return false }
+        return await fetchUsage(for: sessionID)
     }
 }

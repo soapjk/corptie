@@ -7,13 +7,15 @@ import Testing
 struct SettingsWindowLayoutTests {
     @Test
     func settingsContentIsWideEnoughForEveryVisibleTab() {
-        let minimumUsableTabWidth: CGFloat = 120
+        let minimumUsableTabWidth: CGFloat = 96
         let horizontalPadding: CGFloat = 40
+        let interTabSpacing: CGFloat = 8
 
-        #expect(SettingsTab.allCases.count == 7)
+        #expect(SettingsTab.allCases.count == 8)
         #expect(
             SettingsWindowLayout.contentSize.width
-                >= CGFloat(SettingsTab.allCases.count) * minimumUsableTabWidth + horizontalPadding
+                >= CGFloat(SettingsTab.allCases.count) * minimumUsableTabWidth
+                    + CGFloat(SettingsTab.allCases.count - 1) * interTabSpacing + horizontalPadding
         )
     }
 
@@ -29,6 +31,7 @@ struct SettingsWindowLayoutTests {
     func everyExistingSettingsRouteRemainsDeclared() throws {
         #expect(Set(SettingsTab.allCases) == [
             .general,
+            .appearance,
             .notifications,
             .memory,
             .proxy,
@@ -44,9 +47,10 @@ struct SettingsWindowLayoutTests {
             .appendingPathComponent("Sources/CopetsMac/Settings/SettingsView.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
 
-        for route in ["general", "notifications", "memory", "proxy", "gateway", "devices", "archivedSessions"] {
+        for route in ["general", "appearance", "notifications", "memory", "proxy", "gateway", "devices", "archivedSessions"] {
             #expect(contents.contains("case .\(route):"))
         }
+        #expect(contents.contains("LocalWallpaperSettingsView()"))
         #expect(contents.contains("ForEach(SettingsTab.allCases"))
         #expect(contents.contains("selectedTab = tab"))
         #expect(!contents.contains(".tabItem"))

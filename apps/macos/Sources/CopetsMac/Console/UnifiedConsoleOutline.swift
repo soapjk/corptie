@@ -150,6 +150,7 @@ extension UnifiedConsoleView {
             .background(ConsoleOverlayScroller(placeOnLeadingEdge: true))
         }
         .scrollIndicators(.automatic)
+        .contentMargins(.top, 40, for: .scrollContent)
     }
 
     func outlineChatHeader(hasUnread: Bool) -> some View {

@@ -31,6 +31,7 @@ struct SessionConversationContent: View {
     @State private var expandedProcessTurnIds: Set<String> = []
     @State private var viewportState = ConversationViewportState()
     @State private var appKitScrollToBottomRevision = 0
+    @State private var composerClearance: CGFloat = 0
     @State private var displayProjectionTask: Task<Void, Never>?
     @State private var displayProjectionGeneration = 0
     @State private var pendingProjectionSourceSignature: String?
@@ -256,9 +257,11 @@ struct SessionConversationContent: View {
             }
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
             .overlay(alignment: .bottomTrailing) {
-                jumpToLatestButton.padding(10)
+                jumpToLatestButton
+                    .padding(.trailing, 10)
+                    .padding(.bottom, composerClearance + 10)
             }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
+            .overlay(alignment: .bottom) {
                 VStack(spacing: 6) {
                     if let session = selectedSession {
                         SessionSendFailureView(sessionID: session.id)
@@ -267,6 +270,19 @@ struct SessionConversationContent: View {
                     sessionComposer
                 }
                 .padding(.bottom, 4)
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear.preference(
+                            key: ComposerClearancePreferenceKey.self,
+                            value: geometry.size.height
+                        )
+                    }
+                }
+            }
+            .onPreferenceChange(ComposerClearancePreferenceKey.self) { height in
+                if abs(composerClearance - height) >= 0.5 {
+                    composerClearance = height
+                }
             }
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         }
@@ -400,7 +416,8 @@ struct SessionConversationContent: View {
                 },
                 scrollToTurnID: scrollTargetTurnID,
                 scrollToTurnRevision: scrollTargetTurnRevision,
-                historyRequestEpoch: historyRequestEpoch
+                historyRequestEpoch: historyRequestEpoch,
+                bottomClearance: composerClearance
             )
             .sheet(item: $pendingFork) { selection in
                 SessionForkSheet(selection: selection, backendClient: backendClient)
@@ -1058,4 +1075,12 @@ struct SessionConversationContent: View {
     }
 
 
+}
+
+private struct ComposerClearancePreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
 }

@@ -37,6 +37,32 @@ final class SessionUsageControllerTests: XCTestCase {
         XCTAssertEqual(client.values["one"], usage)
     }
 
+    func testOpeningQuotaPopoverCanRequestAnImmediateUsageRefresh() async {
+        let client = UsageServingStub()
+        let state = SessionSupplementaryDataController()
+        let usage = sampleUsage()
+        client.onFetch = { _ in usage }
+        let controller = SessionUsageController(client: client, state: state, selectedSessionID: { "one" })
+
+        let succeeded = await controller.refreshSelectedUsageWithOutcome()
+        XCTAssertTrue(succeeded)
+        XCTAssertEqual(client.fetchCount, 1)
+        XCTAssertEqual(state.selectedSessionUsage, usage)
+    }
+
+    func testFailedImmediateRefreshKeepsPreviousUsageButReportsFailure() async {
+        let client = UsageServingStub()
+        let state = SessionSupplementaryDataController()
+        let usage = sampleUsage()
+        state.selectedSessionUsage = usage
+        client.onFetch = { _ in throw BackendError.message("unavailable") }
+        let controller = SessionUsageController(client: client, state: state, selectedSessionID: { "one" })
+
+        let succeeded = await controller.refreshSelectedUsageWithOutcome()
+        XCTAssertFalse(succeeded)
+        XCTAssertEqual(state.selectedSessionUsage, usage)
+    }
+
     func testSupplementaryFailurePreservesPreviouslyPublishedUsage() async {
         let client = UsageServingStub()
         let state = SessionSupplementaryDataController()

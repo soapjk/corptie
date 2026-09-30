@@ -176,13 +176,16 @@ struct CorptieTaskDetailView: View {
 
     private var detailContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if task.userSummary?.content != nil {
-                TaskSummaryView(task: task)
-                    .modifier(ConversationDetailModuleSurface())
-            }
-            if hasTaskDefinitionContent {
-                ConversationDetailModuleCard(title: L10n("Task 定义"), systemImage: "checklist") {
-                    taskDefinitionSection
+            if task.userSummary?.content != nil || hasTaskDefinitionContent {
+                ConversationDetailModuleCard(title: L10n("Task 信息"), systemImage: "checklist") {
+                    VStack(alignment: .leading, spacing: 14) {
+                        if task.userSummary?.content != nil {
+                            TaskSummaryView(task: task)
+                        }
+                        if hasTaskDefinitionContent {
+                            taskDefinitionSection
+                        }
+                    }
                 }
             }
 
@@ -297,7 +300,7 @@ struct CorptieTaskDetailView: View {
         ConversationTaskDefinition(description: task.description,
             acceptance: task.acceptanceCriteria, verification: task.verificationCriteria,
             descriptionTitle: L10n("Description"), acceptanceTitle: L10n("Acceptance Criteria"),
-            verificationTitle: L10n("Verification Criteria"),
+            verificationTitle: L10n("验证所需证据"),
             expandLabel: L10n("Expand"), collapseLabel: L10n("Collapse"))
     }
 

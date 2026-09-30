@@ -66,10 +66,6 @@ public struct ProcessCard<Details: View>: View {
         .padding(.bottom, expanded ? 13 : 4)
         .background(tint.opacity(expanded ? 0.055 : 0.035),
                     in: RoundedRectangle(cornerRadius: expanded ? 12 : 10))
-        .overlay {
-            RoundedRectangle(cornerRadius: expanded ? 12 : 10)
-                .strokeBorder(tint.opacity(0.16), lineWidth: 1)
-        }
         .overlay(alignment: .bottomLeading) {
             if let progress {
                 GeometryReader { geometry in

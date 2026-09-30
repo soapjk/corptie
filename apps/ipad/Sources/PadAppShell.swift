@@ -65,8 +65,9 @@ struct PadAppShell: View {
             }
         }
         .background {
-            (tab == .workspace ? WorkbenchCanvasSurface.color : Color(uiColor: .systemGroupedBackground))
-                .ignoresSafeArea()
+            LocalWallpaperCanvas(fallbackColor: tab == .workspace
+                ? WorkbenchCanvasSurface.defaultColor
+                : Color(uiColor: .systemGroupedBackground))
         }
         .background { PadKeyboardDismissal().frame(width: 0, height: 0) }
         .sheet(item: $sheet) { _ in PadSettingsView(connection: connection, workspace: workspace) }
@@ -169,6 +170,7 @@ struct PadAppShell: View {
 }
 
 private struct PadNavigationRail: View {
+    @ObservedObject private var wallpaper = LocalWallpaperStore.shared
     @Binding var selection: PadTab
     @Binding var isExpanded: Bool
     let settings: () -> Void
@@ -206,7 +208,7 @@ private struct PadNavigationRail: View {
         .padding(.vertical, 8)
         .frame(maxHeight: .infinity)
         .background {
-            Color(uiColor: .systemGroupedBackground)
+            Color(uiColor: .systemGroupedBackground).opacity(wallpaper.hasWallpaper ? 0.72 : 1)
                 .ignoresSafeArea(edges: [.top, .bottom, .leading])
         }
         .overlay(alignment: .trailing) {
@@ -349,6 +351,7 @@ private struct PadBottomTabBar: View {
 
 private enum PadSettingsTab: String, CaseIterable, Identifiable {
     case general
+    case appearance
     case notifications
     case devices
 
@@ -356,6 +359,7 @@ private enum PadSettingsTab: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .general: "通用"
+        case .appearance: "外观"
         case .notifications: "通知"
         case .devices: "设备接入"
         }
@@ -363,6 +367,7 @@ private enum PadSettingsTab: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .general: "gearshape"
+        case .appearance: "paintpalette"
         case .notifications: "bell"
         case .devices: "ipad.and.iphone"
         }
@@ -400,6 +405,8 @@ private struct PadSettingsView: View {
                     switch selectedTab {
                     case .general:
                         PadGeneralSettingsView(connection: connection, workspace: workspace)
+                    case .appearance:
+                        LocalWallpaperSettingsView()
                     case .notifications:
                         PadNotificationSettingsView()
                     case .devices:
@@ -438,10 +445,6 @@ private struct PadGeneralSettingsView: View {
                 Text("会话、自动化、Worktree 与 Agent 数据均由已配对的 Mac 通过长连接主动推送。")
             }
 
-            Section("外观") {
-                LabeledContent("界面", value: "跟随系统")
-                LabeledContent("布局", value: UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "紧凑")
-            }
         }
     }
 }

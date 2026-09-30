@@ -401,6 +401,7 @@ export class ClientSessionAPI {
     const account = snapshot?.account && typeof snapshot.account === "object" ? snapshot.account : null;
     const context = snapshot?.context && typeof snapshot.context === "object" ? snapshot.context : null;
     return { schemaVersion: 1, sessionId,
+      accountFresh: cached ? false : snapshot?.accountFresh ?? null,
       context: context ? { usedTokens: number(context.usedTokens), contextWindow: number(context.contextWindow),
         remainingTokens: number(context.remainingTokens), usedPercent: number(context.usedPercent) } : null,
       account: account ? { available: account.available === true, provider: account.provider == null ? null : String(account.provider),

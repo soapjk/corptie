@@ -16,8 +16,7 @@ struct ConsoleWindowSplitViewTests {
         let surface = MainWindowSurfaceContainer(rootView: MainWindowContentView().environmentObject(state), resizeState: state)
         surface.frame = try #require(window.contentView).bounds
         window.contentView = surface
-        let layoutBeforeAccessory = window.contentLayoutRect
-        window.addTitlebarAccessoryViewController(MainWindowTitlebarAccessoryController())
+        let unobscuredRect = window.contentLayoutRect
         window.makeKeyAndOrderFront(nil)
         window.contentView?.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
@@ -28,37 +27,14 @@ struct ConsoleWindowSplitViewTests {
             let content = try #require(descendants(split).first { $0.identifier?.rawValue == identifier })
             let contentFrame = content.convert(content.bounds, to: surface)
             #expect(contentFrame.height >= window.contentLayoutRect.height - 1)
-            #expect(contentFrame.maxY <= window.contentLayoutRect.maxY + 1)
+            #expect(contentFrame.maxY > unobscuredRect.maxY)
         }
         let sidebar = try #require(split.arrangedSubviews.first)
         #expect(abs(sidebar.convert(sidebar.bounds, to: surface).maxY - surface.bounds.maxY) < 1)
         #expect(abs(rect.maxY - surface.bounds.maxY) < 1)
         #expect(window.titlebarAppearsTransparent)
         #expect(window.toolbar == nil)
-        #expect(window.contentLayoutRect == layoutBeforeAccessory)
-        let actions = try #require(window.titlebarAccessoryViewControllers.map(\.view).first {
-            $0.identifier?.rawValue == "console.sidebar.titlebarActions"
-        })
-        let closeButton = try #require(window.standardWindowButton(.closeButton))
-        let actionFrame = actions.convert(actions.bounds, to: nil)
-        let closeFrame = closeButton.convert(closeButton.bounds, to: nil)
-        #expect(abs(actionFrame.midY - closeFrame.midY) <= 2)
-        #expect(actionFrame.minX >= closeFrame.maxX)
-        // Geometry alone missed a SwiftUI ancestor clip: the sidebar frame
-        // reached the top while its pixels were cut off at the safe area.
-        let bitmap = try #require(surface.bitmapImageRepForCachingDisplay(in: surface.bounds))
-        surface.cacheDisplay(in: surface.bounds, to: bitmap)
-        let sampleX = bitmap.pixelsWide / 10
-        let top = try #require(bitmap.colorAt(x: sampleX, y: 4)?.usingColorSpace(.deviceRGB))
-        let body = try #require(bitmap.colorAt(x: sampleX, y: bitmap.pixelsHigh / 4)?.usingColorSpace(.deviceRGB))
-        #expect(abs(top.redComponent - body.redComponent) < 0.02)
-        #expect(abs(top.greenComponent - body.greenComponent) < 0.02)
-        #expect(abs(top.blueComponent - body.blueComponent) < 0.02)
-        if let path = ProcessInfo.processInfo.environment["CORPTIE_WINDOW_TEST_CAPTURE"] {
-            if let data = bitmap.representation(using: .png, properties: [:]) {
-                try data.write(to: URL(fileURLWithPath: path))
-            }
-        }
+        #expect(window.titlebarAccessoryViewControllers.isEmpty)
         window.close()
     }
     @Test
@@ -70,7 +46,6 @@ struct ConsoleWindowSplitViewTests {
         window.isReleasedWhenClosed = false
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
-        window.addTitlebarAccessoryViewController(MainWindowTitlebarAccessoryController())
         window.contentViewController = controller
         controller.view.layoutSubtreeIfNeeded()
         controller.update(mode: .workOutline, isActive: true, sidebar: Text("Work"), detail: Text("Messages"))

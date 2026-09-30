@@ -94,15 +94,26 @@ export class CodexLiveThreadCache {
 
     if (method === "error") {
       const error = params.error ?? {};
-      const index = items.size + 1;
-      items.set(`${threadId}:error:${index}`, {
-        id: `${threadId}:error:${index}`,
+      // Codex emits one native error notification for each retry. Keep those
+      // events in the Provider inbox, but project one stable Timeline item per
+      // Turn so clients update a single card instead of appending five cards.
+      const retryId = turnId && params.willRetry
+        ? `${threadId}:reconnect:${turnId}` : null;
+      const itemId = retryId ?? `${threadId}:error:${items.size + 1}`;
+      const previous = retryId ? items.get(retryId) : null;
+      const attempt = previous ? (previous.retryAttempt ?? 1) + 1 : 1;
+      items.set(itemId, {
+        id: itemId,
         turnId: turnId ?? threadId,
         turnStatus: params.willRetry ? "inProgress" : "failed",
         type: "error",
-        title: params.willRetry ? "Codex reconnecting" : "Codex error",
+        title: params.willRetry ? `Codex reconnecting · retry ${attempt}` : "Codex error",
         text: [error.message, error.additionalDetails].filter(Boolean).join("\n"),
-        status: params.willRetry ? "retrying" : "failed"
+        status: params.willRetry ? "retrying" : "failed",
+        ...(retryId ? {
+          retryAttempt: attempt,
+          rawMetadataJSON: JSON.stringify({ connectionRetry: { schemaVersion: 1, attempt } })
+        } : {})
       });
       return;
     }
@@ -116,7 +127,17 @@ export class CodexLiveThreadCache {
         this.expireTurnRequests(threadId, completedTurnId);
         for (const [itemId, item] of items) {
           if (item.turnId !== completedTurnId) continue;
-          items.set(itemId, { ...item, turnStatus: terminalStatus });
+          const retrySettled = item.type === "error" && item.retryAttempt;
+          items.set(itemId, {
+            ...item,
+            turnStatus: terminalStatus,
+            ...(retrySettled ? {
+              title: terminalStatus === "completed"
+                ? `Codex reconnected · ${item.retryAttempt} retries`
+                : `Codex reconnect failed · ${item.retryAttempt} retries`,
+              status: terminalStatus === "completed" ? "completed" : "failed"
+            } : {})
+          });
         }
       }
       if (!turn.error) {

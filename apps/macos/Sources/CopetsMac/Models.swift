@@ -1159,6 +1159,7 @@ struct SessionTimelineWindowResponse: Decodable, Sendable {
 struct SessionUsageResponse: Decodable, Equatable {
     let account: CodexAccountUsage
     let context: CodexContextUsage?
+    var accountFresh: Bool? = nil
     var resetForecast: CodexResetForecastSnapshot? = nil
 }
 

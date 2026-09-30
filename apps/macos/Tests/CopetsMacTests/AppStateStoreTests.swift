@@ -4,6 +4,25 @@ import Testing
 
 @MainActor
 struct AppStateStoreTests {
+    @Test func liveDevelopmentSnapshotDecodesIntoConsoleCollections() async throws {
+        guard let port = ProcessInfo.processInfo.environment["CORPTIE_TEST_LIVE_PREVIEW_PORT"],
+              let url = URL(string: "http://127.0.0.1:\(port)/state/snapshot") else {
+            return
+        }
+        let (data, _) = try await URLSession.shared.data(from: url)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let snapshot = try decoder.decode(StateSnapshotEnvelope.self, from: data)
+        #expect(!snapshot.state.works.isEmpty)
+        #expect(!snapshot.state.tasks.isEmpty)
+        #expect(!snapshot.state.sessions.isEmpty)
+        let store = AppStateStore()
+        #expect(store.apply(snapshot: snapshot) == .applied)
+        #expect(store.works.count == snapshot.state.works.count)
+        #expect(store.tasks.count == snapshot.state.tasks.count)
+        #expect(store.sessions.count == snapshot.state.sessions.count)
+    }
+
     @Test func snapshotReplacesEveryNormalizedCollection() {
         let store = AppStateStore()
         let session = TaskSession.fixture(id: "session:1", title: "One")

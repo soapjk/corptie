@@ -534,7 +534,7 @@ test("capabilities carry Session readiness and usage is a sanitized read-only pr
     assert.equal(ready.capabilities(identity, "session:test").notReadyReason, null);
 
     const usage = await api.usage(identity, "session:test");
-    assert.deepEqual(usage, { schemaVersion: 1, sessionId: "session:test",
+    assert.deepEqual(usage, { schemaVersion: 1, sessionId: "session:test", accountFresh: null,
       context: { usedTokens: 1200, contextWindow: 4000, remainingTokens: 2800, usedPercent: 30 },
       account: { available: true, provider: "codex", model: "gpt-5",
         rateLimitResetCredits: { availableCount: 2, credits: [
