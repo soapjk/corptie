@@ -612,7 +612,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         tableView.layoutSubtreeIfNeeded()
         let contentHeight = (rows.isEmpty
             ? 0
-            : tableView.rect(ofRow: rows.count - 1).maxY) + bottomClearance
+            : tableView.rect(ofRow: rows.count - 1).maxY)
         if abs(tableView.frame.height - contentHeight) >= 0.5 {
             tableView.setFrameSize(NSSize(width: tableView.frame.width, height: contentHeight))
         }
@@ -622,10 +622,19 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     func setBottomClearance(_ value: CGFloat) {
         let next = max(0, value.isFinite ? value : 0)
         guard abs(bottomClearance - next) >= 0.5 else { return }
+        let anchor = !followsLatest && !isProcessingUserScrollEvent
+            ? tableView.flatMap { visibleAnchor(in: $0) }
+            : nil
         bottomClearance = next
-        guard let tableView else { return }
-        synchronizeDocumentHeight(in: tableView)
-        if followsLatest { enqueueCorrection(.bottom) }
+        guard let scrollView else { return }
+        var insets = scrollView.contentInsets
+        insets.bottom = next
+        scrollView.contentInsets = insets
+        if followsLatest {
+            enqueueCorrection(.bottom)
+        } else if let anchor {
+            enqueueCorrection(.anchor(id: anchor.id, offset: anchor.offset))
+        }
     }
 
     func updateHistoryAvailability(_ hasMoreHistory: Bool) {
@@ -745,7 +754,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         defer { applyingCorrection = false }
         tableView.layoutSubtreeIfNeeded()
         synchronizeDocumentHeight(in: tableView)
-        let maximumY = max(0, tableView.frame.height - clip.bounds.height)
+        let maximumY = max(0, tableView.frame.height + bottomClearance - clip.bounds.height)
         let y: CGFloat
         switch correction {
         case .bottom:
@@ -778,7 +787,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
             return followsLatest
         }
         let visibleMaxY = scrollView.contentView.bounds.maxY
-        let contentMaxY = tableView.frame.height
+        let contentMaxY = tableView.frame.height + bottomClearance
         return contentMaxY - visibleMaxY <= 8
     }
 
@@ -1106,7 +1115,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         suppressNearTopDuringLayout()
         tableView.layoutSubtreeIfNeeded()
         synchronizeDocumentHeight(in: tableView)
-        let maximumY = max(0, tableView.frame.height - clipView.bounds.height)
+        let maximumY = max(0, tableView.frame.height + bottomClearance - clipView.bounds.height)
         if let position = pendingRestorePosition {
             if let row = rows.firstIndex(where: { $0.id == position.rowID }) {
                 let anchorY = tableView.rect(ofRow: row).minY + CGFloat(position.offset)

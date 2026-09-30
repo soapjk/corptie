@@ -172,6 +172,11 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(body.contains("ComposerClearancePreferenceKey.self"))
         #expect(timeline.contains("bottomClearance: composerClearance"))
         #expect(!body.contains(".safeAreaInset(edge: .bottom"))
+        let nativeTimeline = try self.source(named: "AppKitChatTimelineView.swift")
+        let coordinator = try self.source(named: "Conversation/Timeline/AppKitChatTimelineCoordinator.swift")
+        #expect(nativeTimeline.contains("scrollView.automaticallyAdjustsContentInsets = false"))
+        #expect(coordinator.contains("scrollView.contentInsets = insets"))
+        #expect(!coordinator.contains("tableView.rect(ofRow: rows.count - 1).maxY) + bottomClearance"))
         #expect(!timeline.contains(".overlay(alignment: .bottomTrailing)"))
         #expect(source.contains("if viewportState.showsJumpToLatest"))
     }

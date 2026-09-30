@@ -245,7 +245,7 @@ struct MainTabContentLayoutTests {
         let settings = try #require(contents.range(of: ".accessibilityIdentifier(\"main-window.settings\")"))
         #expect(capsule.upperBound < settings.lowerBound)
         #expect(contents.contains(".padding(.top, MainWindowLayoutMetrics.titlebarHeight + 8)"))
-        #expect(contents.contains(".background(Color(nsColor: .windowBackgroundColor).opacity(wallpaper.hasWallpaper ? 0.72 : 1))"))
+        #expect(!contents.contains(".background(Color(nsColor: .windowBackgroundColor)"))
         #expect(contents.contains(".fill(Color(nsColor: .controlBackgroundColor))"))
     }
 
