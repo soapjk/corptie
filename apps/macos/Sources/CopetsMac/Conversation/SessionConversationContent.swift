@@ -31,6 +31,7 @@ struct SessionConversationContent: View {
     @State private var expandedProcessTurnIds: Set<String> = []
     @State private var viewportState = ConversationViewportState()
     @State private var appKitScrollToBottomRevision = 0
+    @State private var headerClearance: CGFloat = 0
     @State private var composerClearance: CGFloat = 0
     @State private var displayProjectionTask: Task<Void, Never>?
     @State private var displayProjectionGeneration = 0
@@ -193,20 +194,9 @@ struct SessionConversationContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: presentation == .workspaceCard ? 6 : 12) {
-            if showsHeader {
-                DetailHeaderView()
-            }
-
-            backendConnectionBanner
-
-            if let recovery = displayedWorkspaceRecoveryStatus,
-               recovery.orphaned {
-                OrphanedWorkspaceRecoveryView(status: recovery)
-            }
-
-            // Keep the full-height native viewport under the glass composer.
-            // The timeline extends its scrollable document by the measured
-            // composer height, so its native bottom lands above the glass.
+            // The native viewport fills the conversation. Its document reserves
+            // the actual top and bottom chrome intersections, so messages pass
+            // behind glass while both scroll endpoints remain unobscured.
             Group {
                 switch contentPhase {
                 case .live:
@@ -257,6 +247,22 @@ struct SessionConversationContent: View {
                 }
             }
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+            .background {
+                conversationChromeFrame(.viewport)
+            }
+            .overlay(alignment: .top) {
+                VStack(alignment: .leading, spacing: presentation == .workspaceCard ? 6 : 12) {
+                    if showsHeader {
+                        DetailHeaderView()
+                    }
+                    backendConnectionBanner
+                    if let recovery = displayedWorkspaceRecoveryStatus,
+                       recovery.orphaned {
+                        OrphanedWorkspaceRecoveryView(status: recovery)
+                    }
+                }
+                .background { conversationChromeFrame(.header) }
+            }
             .overlay(alignment: .bottomTrailing) {
                 jumpToLatestButton
                     .padding(.trailing, 10)
@@ -271,18 +277,16 @@ struct SessionConversationContent: View {
                     sessionComposer
                 }
                 .padding(.bottom, 4)
-                .background {
-                    GeometryReader { geometry in
-                        Color.clear.preference(
-                            key: ComposerClearancePreferenceKey.self,
-                            value: geometry.size.height
-                        )
-                    }
-                }
+                .background { conversationChromeFrame(.composer) }
             }
-            .onPreferenceChange(ComposerClearancePreferenceKey.self) { height in
-                if abs(composerClearance - height) >= 0.5 {
-                    composerClearance = height
+            .coordinateSpace(name: ConversationChromeFramePreferenceKey.coordinateSpace)
+            .onPreferenceChange(ConversationChromeFramePreferenceKey.self) { frames in
+                guard let clearances = ConversationChromeClearances(frames: frames) else { return }
+                if abs(headerClearance - clearances.top) >= 0.5 {
+                    headerClearance = clearances.top
+                }
+                if abs(composerClearance - clearances.bottom) >= 0.5 {
+                    composerClearance = clearances.bottom
                 }
             }
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
@@ -418,6 +422,7 @@ struct SessionConversationContent: View {
                 scrollToTurnID: scrollTargetTurnID,
                 scrollToTurnRevision: scrollTargetTurnRevision,
                 historyRequestEpoch: historyRequestEpoch,
+                topClearance: headerClearance,
                 bottomClearance: composerClearance
             )
             .sheet(item: $pendingFork) { selection in
@@ -1078,10 +1083,44 @@ struct SessionConversationContent: View {
 
 }
 
-private struct ComposerClearancePreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
+enum ConversationChromeElement: Hashable {
+    case viewport
+    case header
+    case composer
+}
 
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+struct ConversationChromeFramePreferenceKey: PreferenceKey {
+    static let coordinateSpace = "conversation.chrome"
+    static let defaultValue: [ConversationChromeElement: CGRect] = [:]
+
+    static func reduce(
+        value: inout [ConversationChromeElement: CGRect],
+        nextValue: () -> [ConversationChromeElement: CGRect]
+    ) {
+        value.merge(nextValue()) { _, next in next }
+    }
+}
+
+struct ConversationChromeClearances {
+    let top: CGFloat
+    let bottom: CGFloat
+
+    init?(frames: [ConversationChromeElement: CGRect]) {
+        guard let viewport = frames[.viewport] else { return nil }
+        let headerOverlap = frames[.header].map { max(0, $0.maxY - viewport.minY) } ?? 0
+        let composerOverlap = frames[.composer].map { max(0, viewport.maxY - $0.minY) } ?? 0
+        top = headerOverlap > 0 ? headerOverlap + 10 : 0
+        bottom = composerOverlap > 0 ? composerOverlap + 10 : 0
+    }
+}
+
+private extension SessionConversationContent {
+    func conversationChromeFrame(_ element: ConversationChromeElement) -> some View {
+        GeometryReader { geometry in
+            Color.clear.preference(
+                key: ConversationChromeFramePreferenceKey.self,
+                value: [element: geometry.frame(in: .named(ConversationChromeFramePreferenceKey.coordinateSpace))]
+            )
+        }
     }
 }

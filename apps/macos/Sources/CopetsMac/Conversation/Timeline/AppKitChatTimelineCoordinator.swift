@@ -74,6 +74,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     private var isProcessingUserScrollEvent = false
     private var needsExactWidthReflow = false
     private var lastReflowMeasurementWidth: CGFloat?
+    private var topClearance: CGFloat = 0
     private var bottomClearance: CGFloat = 0
 
     /// The timeline width is a parent-owned layout input. Reserving a
@@ -613,10 +614,18 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         let rowsHeight = (rows.isEmpty
             ? 0
             : tableView.rect(ofRow: rows.count - 1).maxY)
-        // The native document extent, not NSScrollView.contentInsets, defines
-        // the scrollbar's reachable bottom. Keep this space outside the rows
-        // so earlier messages can still scroll behind the overlaid composer.
-        let documentHeight = rowsHeight + bottomClearance
+        // Keep chrome clearance in the scrollable document, outside the table.
+        // The table's origin is the readable top boundary at scroll position 0.
+        if abs(tableView.frame.minY - topClearance) >= 0.5
+            || abs(tableView.frame.height - rowsHeight) >= 0.5 {
+            tableView.frame = NSRect(
+                x: 0,
+                y: topClearance,
+                width: tableView.frame.width,
+                height: rowsHeight
+            )
+        }
+        let documentHeight = topClearance + rowsHeight + bottomClearance
         if let documentView = scrollView?.documentView {
             let documentSize = NSSize(
                 width: max(tableView.frame.width, scrollView?.contentView.bounds.width ?? 0),
@@ -628,6 +637,22 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
             }
         }
         scheduleUnderfilledHistoryEvaluation()
+    }
+
+    func setTopClearance(_ value: CGFloat) {
+        let next = max(0, value.isFinite ? value : 0)
+        guard abs(topClearance - next) >= 0.5 else { return }
+        let anchor = !followsLatest && !isProcessingUserScrollEvent
+            ? tableView.flatMap { visibleAnchor(in: $0) }
+            : nil
+        topClearance = next
+        guard let tableView else { return }
+        synchronizeDocumentHeight(in: tableView)
+        if followsLatest {
+            enqueueCorrection(.bottom)
+        } else if let anchor {
+            enqueueCorrection(.anchor(id: anchor.id, offset: anchor.offset))
+        }
     }
 
     func setBottomClearance(_ value: CGFloat) {
@@ -673,7 +698,8 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                   !self.rows.isEmpty,
                   clipView.bounds.height > 1 else { return }
             let contentHeight = tableView.rect(ofRow: self.rows.count - 1).maxY
-            guard contentHeight <= clipView.bounds.height + 0.5 else { return }
+            let readableHeight = max(0, clipView.bounds.height - self.topClearance - self.bottomClearance)
+            guard contentHeight <= readableHeight + 0.5 else { return }
             let signature = "\(self.representedSessionID)|\(self.rows.map(\.id).joined(separator: ","))"
             guard signature != self.lastUnderfilledHistoryRequestSignature else { return }
             self.lastUnderfilledHistoryRequestSignature = signature
@@ -1022,11 +1048,14 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     }
 
     private func visibleAnchor(in tableView: NSTableView) -> (id: String, offset: CGFloat)? {
-        let visibleRows = tableView.rows(in: tableView.visibleRect)
-        guard visibleRows.location != NSNotFound,
-              rows.indices.contains(visibleRows.location) else { return nil }
-        let row = visibleRows.location
-        let offset = tableView.visibleRect.minY - tableView.rect(ofRow: row).minY
+        guard let clipView = scrollView?.contentView, !rows.isEmpty else { return nil }
+        // The table begins after topClearance. The readable viewport also
+        // begins after topClearance, so the two offsets cancel in table space.
+        // Do not anchor to a row hidden behind the floating header.
+        let readableY = max(0, clipView.bounds.minY)
+        let row = tableView.row(at: NSPoint(x: 1, y: readableY))
+        guard rows.indices.contains(row) else { return nil }
+        let offset = readableY - tableView.rect(ofRow: row).minY
         return (rows[row].id, offset)
     }
 
