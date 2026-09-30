@@ -9,8 +9,6 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     let scrollToBottomRevision: Int
     var baseDirectory: String? = nil
     var canAdvanceProcessClock = false
-    /// Space occupied by the floating composer at the bottom of the timeline.
-    var bottomOverlayHeight: CGFloat = 0
     @Binding var followsLatest: Bool
     let onToggleExpansion: (String) -> Void
     var onAction: (AppKitChatTimelineRow.Action) -> Void = { _ in }
@@ -61,7 +59,6 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         let scrollView = Self.makeScrollView(tableView: tableView)
 
         context.coordinator.attach(tableView: tableView, scrollView: scrollView)
-        context.coordinator.setBottomOverlayHeight(bottomOverlayHeight)
         context.coordinator.setProcessClockEnabled(canAdvanceProcessClock)
         if let initialPosition, !initialPosition.followsLatest {
             context.coordinator.prepareInitialPosition(initialPosition)
@@ -126,7 +123,6 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        context.coordinator.setBottomOverlayHeight(bottomOverlayHeight)
         context.coordinator.switchSessionIfNeeded(
             to: sessionID,
             initialPosition: initialPosition

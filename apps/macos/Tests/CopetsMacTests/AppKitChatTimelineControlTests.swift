@@ -976,45 +976,33 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertTrue(harness.followState.value)
     }
 
-    func testFloatingComposerLeavesLatestMessageAboveItsInset() async {
-        let harness = makeHarness(followsLatest: false, height: 180)
-        harness.coordinator.setBottomOverlayHeight(90)
-        let rows = (0..<30).map { row(id: "floating-composer-\($0)", text: "Message \($0)") }
-        harness.coordinator.apply(rows: rows)
-        harness.coordinator.scrollToBottom()
-        await settleMainQueue()
-
-        let lastBottom = harness.tableView.rect(ofRow: rows.count - 1).maxY
-        XCTAssertEqual(harness.tableView.frame.height, lastBottom + 90, accuracy: 1)
-        XCTAssertEqual(harness.scrollView.contentView.documentRect.height, lastBottom + 90, accuracy: 1)
-        let unobscuredBottom = harness.scrollView.contentView.bounds.maxY - 90
-        XCTAssertLessThanOrEqual(lastBottom, unobscuredBottom + 2)
-        XCTAssertTrue(harness.followState.value)
-
-        harness.coordinator.setBottomOverlayHeight(120)
-        await settleMainQueue()
-        XCTAssertEqual(harness.tableView.frame.height, lastBottom + 120, accuracy: 1)
-        XCTAssertLessThanOrEqual(
-            lastBottom,
-            harness.scrollView.contentView.bounds.maxY - 120 + 2
+    func testSafeAreaComposerReservesNativeTimelineViewport() async throws {
+        let rows = (0..<30).map { row(id: "safe-area-\($0)", text: "Message \($0)") }
+        let timeline = AppKitChatTimelineView(
+            sessionID: "safe-area-test", rows: rows, scrollToBottomRevision: 0,
+            followsLatest: .constant(true), onToggleExpansion: { _ in }
         )
-    }
-
-    func testNativeScrollbarBottomIncludesFloatingComposerClearance() async {
-        let harness = makeHarness(followsLatest: false, height: 180)
-        harness.coordinator.setBottomOverlayHeight(96)
-        let rows = (0..<30).map { row(id: "native-bottom-\($0)", text: "Message \($0)") }
-        harness.coordinator.apply(rows: rows)
+        let host = NSHostingView(rootView: timeline
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                Color.clear.frame(height: 96)
+            }
+            .frame(width: 420, height: 320))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 320),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.contentView = host
+        window.layoutIfNeeded()
         await settleMainQueue()
 
-        let lastBottom = harness.tableView.rect(ofRow: rows.count - 1).maxY
-        let documentBottom = harness.scrollView.contentView.documentRect.maxY
-        XCTAssertEqual(documentBottom, lastBottom + 96, accuracy: 1)
-        let clip = harness.scrollView.contentView
-        clip.scroll(to: NSPoint(x: 0, y: documentBottom - clip.bounds.height))
-        harness.scrollView.reflectScrolledClipView(clip)
-        XCTAssertLessThanOrEqual(lastBottom, clip.bounds.maxY - 96 + 2)
-        XCTAssertTrue(harness.scrollView.verticalScroller?.floatValue == 1)
+        func descendants(_ view: NSView) -> [NSView] {
+            [view] + view.subviews.flatMap(descendants)
+        }
+        let scroll = try XCTUnwrap(descendants(host).compactMap { $0 as? FirstLayoutRestoringScrollView }.first)
+        let table = try XCTUnwrap(scroll.documentView as? NSTableView)
+        XCTAssertEqual(scroll.frame.height, 224, accuracy: 2)
+        XCTAssertEqual(table.frame.height, table.rect(ofRow: rows.count - 1).maxY, accuracy: 1)
+        XCTAssertEqual(scroll.contentView.documentRect.height, table.frame.height, accuracy: 1)
     }
 
     func testDirectScrollbarJumpMaterializesTheLastMessageWithoutIntermediatePrewarming() async throws {

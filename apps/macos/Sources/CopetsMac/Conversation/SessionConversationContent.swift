@@ -31,7 +31,6 @@ struct SessionConversationContent: View {
     @State private var expandedProcessTurnIds: Set<String> = []
     @State private var viewportState = ConversationViewportState()
     @State private var appKitScrollToBottomRevision = 0
-    @State private var composerOverlayHeight: CGFloat = 0
     @State private var displayProjectionTask: Task<Void, Never>?
     @State private var displayProjectionGeneration = 0
     @State private var pendingProjectionSourceSignature: String?
@@ -204,60 +203,62 @@ struct SessionConversationContent: View {
                 OrphanedWorkspaceRecoveryView(status: recovery)
             }
 
-            // The timeline paints behind the floating glass composer. Its AppKit
-            // document tail keeps the final message clear of the composer.
-            ZStack(alignment: .bottom) {
-                Group {
-                    switch contentPhase {
-                    case .live:
-                        if let detail = displayedDetail {
-                            Group {
-                                if shouldRenderDetailMessages {
-                                    appKitCachedDetailMessages()
-                                } else {
-                                    DetailMessagesPlaceholder()
-                                }
-                            }
-                            .onAppear {
-                                updateCachedDisplayEntries(for: detail)
+            // Match iPad: the composer owns a real bottom safe-area inset so
+            // AppKit's viewport ends above it without a measured spacer.
+            Group {
+                switch contentPhase {
+                case .live:
+                    if let detail = displayedDetail {
+                        Group {
+                            if shouldRenderDetailMessages {
+                                appKitCachedDetailMessages()
+                            } else {
+                                DetailMessagesPlaceholder()
                             }
                         }
-                    case .cached:
-                        // Preserve cached messages during SSE reconnects.
-                        if shouldRenderDetailMessages {
-                            appKitCachedDetailMessages()
-                        } else {
-                            DetailMessagesPlaceholder()
+                        .onAppear {
+                            updateCachedDisplayEntries(for: detail)
                         }
-                    case .loading:
-                        VStack(spacing: 10) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text(L10n("Loading Codex thread"))
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(CorptiePalette.secondaryText)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    case .failed:
-                        SessionMessageLoadFailureView(
-                            error: backendClient.selectedTimelineLoadError
-                                ?? backendClient.lastError
-                                ?? L10n("No detail is available for this task."),
-                            retry: {
-                                Task { await backendClient.reloadSelectedSessionMessages() }
-                            }
-                        )
-                    case .empty:
-                        VStack(spacing: 10) {
-                            ProgressView()
-                                .controlSize(.small)
-                            DetailMessagesPlaceholder()
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
+                case .cached:
+                    // Preserve cached messages during SSE reconnects.
+                    if shouldRenderDetailMessages {
+                        appKitCachedDetailMessages()
+                    } else {
+                        DetailMessagesPlaceholder()
+                    }
+                case .loading:
+                    VStack(spacing: 10) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(L10n("Loading Codex thread"))
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(CorptiePalette.secondaryText)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                case .failed:
+                    SessionMessageLoadFailureView(
+                        error: backendClient.selectedTimelineLoadError
+                            ?? backendClient.lastError
+                            ?? L10n("No detail is available for this task."),
+                        retry: {
+                            Task { await backendClient.reloadSelectedSessionMessages() }
+                        }
+                    )
+                case .empty:
+                    VStack(spacing: 10) {
+                        ProgressView()
+                            .controlSize(.small)
+                        DetailMessagesPlaceholder()
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-
+            }
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+            .overlay(alignment: .bottomTrailing) {
+                jumpToLatestButton.padding(10)
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 6) {
                     if let session = selectedSession {
                         SessionSendFailureView(sessionID: session.id)
@@ -266,26 +267,8 @@ struct SessionConversationContent: View {
                     sessionComposer
                 }
                 .padding(.bottom, 4)
-                .background {
-                    GeometryReader { proxy in
-                        Color.clear.preference(
-                            key: ComposerOverlayHeightPreferenceKey.self,
-                            value: proxy.size.height
-                        )
-                    }
-                }
             }
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-            .overlay(alignment: .bottomTrailing) {
-                jumpToLatestButton
-                    .padding(.trailing, 10)
-                    .padding(.bottom, composerOverlayHeight + 10)
-            }
-            .onPreferenceChange(ComposerOverlayHeightPreferenceKey.self) { height in
-                if abs(composerOverlayHeight - height) > 0.5 {
-                    composerOverlayHeight = height
-                }
-            }
         }
         .padding(1)
         .background(
@@ -400,7 +383,6 @@ struct SessionConversationContent: View {
                 baseDirectory: displayedDetail?.cwd,
                 canAdvanceProcessClock: backendClient.isOnline
                     && selectedSession?.executionTaskStatus == .running,
-                bottomOverlayHeight: composerOverlayHeight,
                 followsLatest: followsLatestBinding,
                 onToggleExpansion: toggleNativeProcessExpansion,
                 onAction: performNativeTimelineAction,
@@ -1076,12 +1058,4 @@ struct SessionConversationContent: View {
     }
 
 
-}
-
-private struct ComposerOverlayHeightPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
 }
