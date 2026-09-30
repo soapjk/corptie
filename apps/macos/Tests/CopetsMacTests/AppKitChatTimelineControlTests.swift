@@ -978,24 +978,43 @@ final class AppKitChatTimelineControlTests: XCTestCase {
 
     func testFloatingComposerLeavesLatestMessageAboveItsInset() async {
         let harness = makeHarness(followsLatest: false, height: 180)
-        AppKitChatTimelineView.updateBottomInset(90, on: harness.scrollView)
+        harness.coordinator.setBottomOverlayHeight(90)
         let rows = (0..<30).map { row(id: "floating-composer-\($0)", text: "Message \($0)") }
         harness.coordinator.apply(rows: rows)
         harness.coordinator.scrollToBottom()
         await settleMainQueue()
 
         let lastBottom = harness.tableView.rect(ofRow: rows.count - 1).maxY
+        XCTAssertEqual(harness.tableView.frame.height, lastBottom + 90, accuracy: 1)
+        XCTAssertEqual(harness.scrollView.contentView.documentRect.height, lastBottom + 90, accuracy: 1)
         let unobscuredBottom = harness.scrollView.contentView.bounds.maxY - 90
         XCTAssertLessThanOrEqual(lastBottom, unobscuredBottom + 2)
         XCTAssertTrue(harness.followState.value)
 
-        AppKitChatTimelineView.updateBottomInset(120, on: harness.scrollView)
-        harness.coordinator.composerInsetDidChange()
+        harness.coordinator.setBottomOverlayHeight(120)
         await settleMainQueue()
+        XCTAssertEqual(harness.tableView.frame.height, lastBottom + 120, accuracy: 1)
         XCTAssertLessThanOrEqual(
             lastBottom,
             harness.scrollView.contentView.bounds.maxY - 120 + 2
         )
+    }
+
+    func testNativeScrollbarBottomIncludesFloatingComposerClearance() async {
+        let harness = makeHarness(followsLatest: false, height: 180)
+        harness.coordinator.setBottomOverlayHeight(96)
+        let rows = (0..<30).map { row(id: "native-bottom-\($0)", text: "Message \($0)") }
+        harness.coordinator.apply(rows: rows)
+        await settleMainQueue()
+
+        let lastBottom = harness.tableView.rect(ofRow: rows.count - 1).maxY
+        let documentBottom = harness.scrollView.contentView.documentRect.maxY
+        XCTAssertEqual(documentBottom, lastBottom + 96, accuracy: 1)
+        let clip = harness.scrollView.contentView
+        clip.scroll(to: NSPoint(x: 0, y: documentBottom - clip.bounds.height))
+        harness.scrollView.reflectScrolledClipView(clip)
+        XCTAssertLessThanOrEqual(lastBottom, clip.bounds.maxY - 96 + 2)
+        XCTAssertTrue(harness.scrollView.verticalScroller?.floatValue == 1)
     }
 
     func testDirectScrollbarJumpMaterializesTheLastMessageWithoutIntermediatePrewarming() async throws {

@@ -205,7 +205,7 @@ struct SessionConversationContent: View {
             }
 
             // The timeline paints behind the floating glass composer. Its AppKit
-            // scroll inset keeps the final message clear of the composer.
+            // document tail keeps the final message clear of the composer.
             ZStack(alignment: .bottom) {
                 Group {
                     switch contentPhase {
@@ -276,6 +276,11 @@ struct SessionConversationContent: View {
                 }
             }
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+            .overlay(alignment: .bottomTrailing) {
+                jumpToLatestButton
+                    .padding(.trailing, 10)
+                    .padding(.bottom, composerOverlayHeight + 10)
+            }
             .onPreferenceChange(ComposerOverlayHeightPreferenceKey.self) { height in
                 if abs(composerOverlayHeight - height) > 0.5 {
                     composerOverlayHeight = height
@@ -395,7 +400,7 @@ struct SessionConversationContent: View {
                 baseDirectory: displayedDetail?.cwd,
                 canAdvanceProcessClock: backendClient.isOnline
                     && selectedSession?.executionTaskStatus == .running,
-                bottomContentInset: composerOverlayHeight,
+                bottomOverlayHeight: composerOverlayHeight,
                 followsLatest: followsLatestBinding,
                 onToggleExpansion: toggleNativeProcessExpansion,
                 onAction: performNativeTimelineAction,
@@ -458,25 +463,26 @@ struct SessionConversationContent: View {
                     relinquishRestorationAnchorIfNeeded()
                 }
             }
-            .overlay(alignment: .bottomTrailing) {
-                if viewportState.showsJumpToLatest {
-                    Button {
-                        timelineRestorationIntent.clearAnchor()
-                        viewportState.jumpToLatest()
-                        if let currentDetail = displayedDetail {
-                            updateCachedDisplayEntries(for: currentDetail)
-                        }
-                        appKitScrollToBottomRevision &+= 1
-                    } label: {
-                        Image(systemName: "arrow.down")
-                            .font(.system(size: 12, weight: .bold))
-                            .frame(width: 30, height: 30)
-                    }
-                    .buttonStyle(JumpToLatestButtonStyle(highlightsUnread: viewportState.hasNewMessagesBelow))
-                    .help(L10n("Jump to latest message"))
-                    .padding(10)
+        }
+    }
+
+    @ViewBuilder
+    private var jumpToLatestButton: some View {
+        if viewportState.showsJumpToLatest {
+            Button {
+                timelineRestorationIntent.clearAnchor()
+                viewportState.jumpToLatest()
+                if let currentDetail = displayedDetail {
+                    updateCachedDisplayEntries(for: currentDetail)
                 }
+                appKitScrollToBottomRevision &+= 1
+            } label: {
+                Image(systemName: "arrow.down")
+                    .font(.system(size: 12, weight: .bold))
+                    .frame(width: 30, height: 30)
             }
+            .buttonStyle(JumpToLatestButtonStyle(highlightsUnread: viewportState.hasNewMessagesBelow))
+            .help(L10n("Jump to latest message"))
         }
     }
 
