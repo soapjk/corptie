@@ -65,17 +65,20 @@ test("Assistant Sessions persist and resolve Provider-neutral context references
   }
 });
 
-test("context references reject non-Assistant owners, self references, and duplicates", async () => {
+test("Task Worker Sessions can manage and resolve references; self references and duplicates still fail", async () => {
   const value = await fixture();
   try {
     value.store.createSession({
       id: "worker", title: "Worker", sessionKind: "worker", status: "complete",
       workId: "work-a", taskId: "task-a"
     });
-    await assert.rejects(
-      value.service.create("worker", { targetType: "work", targetId: "work-a" }),
-      { code: "CONTEXT_REFERENCES_REQUIRE_ASSISTANT" }
-    );
+    const created = await value.service.create("worker", { targetType: "work", targetId: "work-a" });
+    assert.equal(value.service.list("worker").length, 1);
+    assert.match((await value.service.resolve("worker")).prompt, /Work: Ship context/);
+    value.service.update("worker", created.referenceId, { enabled: false });
+    assert.equal((await value.service.resolve("worker")).prompt, "");
+    value.service.delete("worker", created.referenceId);
+    assert.deepEqual(value.service.list("worker"), []);
     await assert.rejects(
       value.service.create("assistant-session", { targetType: "session", targetId: "assistant-session" }),
       { code: "CONTEXT_REFERENCE_CYCLE" }

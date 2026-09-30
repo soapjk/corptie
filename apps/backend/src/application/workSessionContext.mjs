@@ -134,14 +134,15 @@ export function mergeWorkerSessionContexts({
   baseContext, directUserIntentContext = null, memoryContext = null,
   requiredContexts = [],
   mentionContext = null,
+  referenceContext = null,
   maxContextBytes = DEFAULT_MAX_TURN_CONTEXT_BYTES
 } = {}) {
   if (!baseContext?.prompt) return null;
   const requiredTail = [...requiredContexts, directUserIntentContext, mentionContext]
     .filter((item) => item?.prompt).map((item) => item.prompt);
-  const compose = (basePrompt) => [basePrompt, ...requiredTail].join("\n\n");
+  const composeRequired = (basePrompt) => [basePrompt, ...requiredTail].join("\n\n");
   const corePrompt = baseContext.corePrompt ?? baseContext.prompt;
-  const requiredBytes = encoder.encode(compose(corePrompt)).byteLength;
+  const requiredBytes = encoder.encode(composeRequired(corePrompt)).byteLength;
   if (requiredBytes > maxContextBytes) {
     throw contextError(
       "WORK_SESSION_CONTEXT_INCOMPLETE",
@@ -149,6 +150,15 @@ export function mergeWorkerSessionContexts({
       { missingFields: [], maxUtf8Bytes: maxContextBytes, requiredUtf8Bytes: requiredBytes }
     );
   }
+  // User-selected references are useful but never outrank the complete Task
+  // definition, direct-user evidence, or explicitly selected mentions. Bound
+  // them before packing optional Artifact metadata and memory.
+  const referencePrompt = fitOptionalReferencePrompt(
+    referenceContext?.prompt,
+    Math.min(4_096, maxContextBytes - requiredBytes - 2)
+  );
+  const compose = (basePrompt) => [basePrompt, ...requiredTail, referencePrompt]
+    .filter(Boolean).join("\n\n");
   const source = baseContext.optionalArtifactSource;
   let selectedBasePrompt = baseContext.prompt;
   let selectedCount = source?.items.length ?? 0;
@@ -194,9 +204,27 @@ export function mergeWorkerSessionContexts({
       omissionReasons: Object.freeze(omissionReasons),
       maxTurnUtf8Bytes: maxContextBytes,
       finalTurnUtf8Bytes: encoder.encode(prompt).byteLength,
+      referenceContextOmitted: Boolean(referenceContext?.prompt && !referencePrompt),
+      referenceContextTruncated: Boolean(referenceContext?.prompt && referencePrompt !== referenceContext.prompt),
       memoryContextOmitted: Boolean(memoryContext?.prompt && !memoryFits)
     })
   };
+}
+
+function fitOptionalReferencePrompt(prompt, maxUtf8Bytes) {
+  if (!prompt || maxUtf8Bytes < 512) return "";
+  if (encoder.encode(prompt).byteLength <= maxUtf8Bytes) return prompt;
+  const suffix = "\n[Additional reference content omitted by the Turn budget.]";
+  const contentBudget = maxUtf8Bytes - encoder.encode(suffix).byteLength;
+  let result = "";
+  let used = 0;
+  for (const point of prompt) {
+    const size = encoder.encode(point).byteLength;
+    if (used + size > contentBudget) break;
+    result += point;
+    used += size;
+  }
+  return result + suffix;
 }
 
 function canonicalTaskDefinition(task) {
