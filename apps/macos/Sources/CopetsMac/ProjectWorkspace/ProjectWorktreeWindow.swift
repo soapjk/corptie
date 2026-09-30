@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 
 struct ProjectWorktreeStatusChip: View {
     let status: ProjectWorktreeStatusResponse
+    var showsSurface = true
 
     var body: some View {
         HStack(spacing: 5) {
@@ -18,8 +19,12 @@ struct ProjectWorktreeStatusChip: View {
         .foregroundStyle(status.project.pendingWorktreeCount > 0 ? CorptiePalette.amber : CorptiePalette.secondaryText)
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .background(Color.white.opacity(0.06), in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 0.75))
+        .background {
+            if showsSurface { Capsule().fill(Color.white.opacity(0.06)) }
+        }
+        .overlay {
+            if showsSurface { Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 0.75) }
+        }
     }
 
 }

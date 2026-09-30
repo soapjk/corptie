@@ -1116,3 +1116,7 @@
 "Copy Message" = "Copy Message";
 "Time: %@" = "Time: %@";
 "Select Text" = "Select Text";
+"Updating banked resets; showing the last known value…" = "Updating banked resets; showing the last known value…";
+"Banked resets could not be verified; showing the last known value." = "Banked resets could not be verified; showing the last known value.";
+"Task 信息" = "Task Information";
+"验证所需证据" = "Verification Evidence";

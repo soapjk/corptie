@@ -334,7 +334,8 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         )
         let card = try XCTUnwrap(view(in: messageCell, identifier: "chat.timeline.card"))
         XCTAssertEqual(card.layer?.cornerRadius, 14)
-        XCTAssertEqual(card.layer?.borderWidth, 1)
+        XCTAssertEqual(card.layer?.borderWidth, 0) // Message cards intentionally have no outline.
+        XCTAssertEqual(card.layer?.shadowOpacity, 0) // Shadows are clipped by reused timeline rows.
         let messageActions = try XCTUnwrap(view(in: messageCell, identifier: "chat.timeline.message-actions"))
         XCTAssertTrue(messageActions.isHidden)
 
@@ -347,6 +348,9 @@ final class AppKitChatTimelineControlTests: XCTestCase {
                 as? AppKitChatNativeTextCell
         )
         let processButton = try XCTUnwrap(button(in: processCell, identifier: "chat.timeline.process"))
+        let processCard = try XCTUnwrap(view(in: processCell, identifier: "chat.timeline.card"))
+        XCTAssertEqual(processCard.layer?.borderWidth, 0)
+        XCTAssertEqual(processCard.layer?.shadowOpacity, 0)
         XCTAssertTrue(processButton.attributedTitle.string.contains("Worked for 1.2s"))
         XCTAssertTrue(processButton.attributedTitle.string.contains("3 steps"))
         XCTAssertLessThan(processCell.subviews[0].frame.width, harness.tableView.tableColumns[0].width)
@@ -1003,6 +1007,22 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(scroll.frame.height, 224, accuracy: 2)
         XCTAssertEqual(table.frame.height, table.rect(ofRow: rows.count - 1).maxY, accuracy: 1)
         XCTAssertEqual(scroll.contentView.documentRect.height, table.frame.height, accuracy: 1)
+    }
+
+    func testOverlaidComposerClearanceKeepsLatestRowAboveGlassWithoutShrinkingViewport() async {
+        let harness = makeHarness(followsLatest: true, height: 320)
+        let rows = (0..<30).map { row(id: "glass-clearance-\($0)", text: "Message \($0)") }
+        harness.coordinator.apply(rows: rows)
+        harness.coordinator.setBottomClearance(96)
+        harness.coordinator.scrollToBottom()
+        await settleMainQueue()
+        harness.window.contentView?.layoutSubtreeIfNeeded()
+
+        let lastRowBottom = harness.tableView.rect(ofRow: rows.count - 1).maxY
+        XCTAssertEqual(harness.scrollView.contentView.bounds.height, 320, accuracy: 2)
+        XCTAssertEqual(harness.tableView.frame.height - lastRowBottom, 96, accuracy: 1)
+        XCTAssertLessThanOrEqual(lastRowBottom,
+                                 harness.scrollView.contentView.bounds.maxY - 96 + 2)
     }
 
     func testDirectScrollbarJumpMaterializesTheLastMessageWithoutIntermediatePrewarming() async throws {

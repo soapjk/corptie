@@ -53,6 +53,20 @@ test("development launcher starts one detached App without a process guardian", 
   assert.doesNotMatch(detachedLauncher, /while|for\s+/u);
 });
 
+test("development launcher clones the shared read-only preview per Worktree", async () => {
+  const restart = await source("scripts/restart-macos-development.sh");
+  const foreground = await source("scripts/run-macos-development.sh");
+
+  for (const contents of [restart, foreground]) {
+    assert.match(contents, /SHARED_PREVIEW_ROOT=.*shared-preview-data/u);
+    assert.match(contents, /-f "\$\{SHARED_PREVIEW_ROOT\}\/\.preview-only"/u);
+    assert.match(contents, /cp -c -R "\$\{SHARED_PREVIEW_ROOT\}" "\$\{WORKTREE_RUNTIME_ROOT\}\/preview-data"/u);
+    assert.match(contents, /CORPTIE_DEVELOPMENT_PREVIEW_SESSION_ID=/u);
+  }
+  assert.match(restart, /CORPTIE_DATA_ROOT="\$\{DEVELOPMENT_DATA_ROOT\}"/u);
+  assert.match(foreground, /export CORPTIE_DATA_ROOT="\$\{WORKTREE_RUNTIME_ROOT\}\/preview-data"/u);
+});
+
 test("macOS App starts without a modal welcome prompt and owns its backend", async () => {
   const contents = (await Promise.all([
     source("apps/macos/Sources/CopetsMac/CopetsMacApp.swift"),

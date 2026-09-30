@@ -105,10 +105,8 @@ public struct MessageTextCard<Content: View>: View {
                 .padding(10)
                 .frame(width: cardWidth, height: cardHeight, alignment: .topLeading)
                 .background {
-                    // Shadow the card silhouette, never the embedded platform text view.
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .fill(background)
-                        .shadow(color: .black.opacity(0.04), radius: 8, x: 0, y: 3)
                 }
             if showsActions || status != nil {
                 HStack(spacing: 6) {
@@ -184,12 +182,8 @@ public struct MessageTextCard<Content: View>: View {
     }
 
     private var background: Color {
-        #if canImport(AppKit)
-        let surface = Color(nsColor: .controlBackgroundColor)
-        #else
-        let surface = Color(uiColor: .secondarySystemBackground)
-        #endif
-        return role == .user ? Color.accentColor.opacity(0.1) : surface
+        role == .user ? Color.accentColor.opacity(0.1)
+            : Color(red: 0.952, green: 0.961, blue: 0.941)
     }
     private func statusColor(_ tone: UserMessageStatusPresentation.Tone) -> Color {
         switch tone {

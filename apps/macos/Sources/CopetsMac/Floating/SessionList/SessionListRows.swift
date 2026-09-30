@@ -236,17 +236,19 @@ struct SessionIdentityLine: View {
 struct SessionProviderIdentity: View {
     @ObservedObject private var modelCatalog = BackendClient.shared.modelCatalog
     let session: TaskSession
+    var prominentText = false
 
     var body: some View {
         HStack(spacing: 2) {
             Image(systemName: "cpu")
+                .foregroundStyle(session.accent.color)
             Text(sessionProviderIdentityLabel(
                 providerIdentity: session.external?.provider,
                 legacyAgentLabel: session.agent,
                 providers: modelCatalog.agentProviders
             ))
+            .foregroundStyle(prominentText ? Color.primary : session.accent.color)
         }
-        .foregroundStyle(session.accent.color)
         .fixedSize(horizontal: true, vertical: false)
     }
 }

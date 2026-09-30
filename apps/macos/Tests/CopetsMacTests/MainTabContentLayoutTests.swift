@@ -198,8 +198,8 @@ struct MainTabContentLayoutTests {
 
         #expect(contents.contains("let hostingView = MainWindowSurfaceContainer("))
         #expect(contents.contains("rootView: FirstRunSetupRoot { MainWindowContentView() }.environmentObject(resizeState)"))
-        #expect(contents.contains("let titlebarControls = MainWindowTitlebarAccessoryController()"))
-        #expect(contents.contains("window.addTitlebarAccessoryViewController(titlebarControls)"))
+        #expect(!contents.contains("window.addTitlebarAccessoryViewController("))
+        #expect(contents.contains("window.titlebarAppearsTransparent = true"))
         #expect(!contents.contains("chromeSurfaces: MainWindowChromeSurfaces("))
         #expect(contents.contains("override func viewWillStartLiveResize()"))
         #expect(contents.contains("override func viewDidEndLiveResize()"))
@@ -233,6 +233,23 @@ struct MainTabContentLayoutTests {
     }
 
     @Test
+    func tabCapsuleStaysBelowTitlebarAndLeavesSettingsOutside() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac/MainWindowNavigationRail.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        let capsule = try #require(contents.range(of: ".accessibilityIdentifier(\"navigation-tab-capsule\")"))
+        let settings = try #require(contents.range(of: ".accessibilityIdentifier(\"main-window.settings\")"))
+        #expect(capsule.upperBound < settings.lowerBound)
+        #expect(contents.contains(".padding(.top, MainWindowLayoutMetrics.titlebarHeight + 8)"))
+        #expect(contents.contains(".background(Color(nsColor: .windowBackgroundColor).opacity(wallpaper.hasWallpaper ? 0.72 : 1))"))
+        #expect(contents.contains(".fill(Color(nsColor: .controlBackgroundColor))"))
+    }
+
+    @Test
     func contentDoesNotReserveASecondRowBelowTheNativeTitlebar() throws {
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -250,5 +267,6 @@ struct MainTabContentLayoutTests {
         #expect(contentView.contains("MainTabPageHost("))
         #expect(!contentView.contains("Color.clear"))
         #expect(!contentView.contains("contentTopInset"))
+        #expect(!contentView.contains("LinearGradient("))
     }
 }

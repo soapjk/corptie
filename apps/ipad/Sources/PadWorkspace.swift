@@ -363,13 +363,14 @@ final class PadWorkspace {
         guard let incoming else { usage = nil; return }
         guard let key = accountKey(incoming.account) else { usage = incoming; return }
         if let account = incoming.account,
-           authoritative || (account.available == true && accountUsageByProviderModel[key] == nil) {
+           (authoritative && incoming.accountFresh != false)
+            || (account.available == true && accountUsageByProviderModel[key] == nil) {
             accountUsageByProviderModel[key] = account
         }
         let sharedAccount = accountUsageByProviderModel[key] ?? incoming.account
         let projected = ClientSessionUsage(
             schemaVersion: incoming.schemaVersion, sessionId: incoming.sessionId,
-            context: incoming.context, account: sharedAccount)
+            context: incoming.context, account: sharedAccount, accountFresh: incoming.accountFresh)
         if usage != projected { usage = projected }
     }
     var composerConfiguration: ClientComposerConfiguration?

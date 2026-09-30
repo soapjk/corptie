@@ -1503,3 +1503,7 @@
 "Copy Message" = "复制消息";
 "Time: %@" = "时间：%@";
 "Select Text" = "选择文本";
+"Updating banked resets; showing the last known value…" = "正在刷新已存额度重置；以下为上次记录…";
+"Banked resets could not be verified; showing the last known value." = "无法核实当前已存额度重置；以下为上次记录。";
+"Task 信息" = "Task 信息";
+"验证所需证据" = "验证所需证据";

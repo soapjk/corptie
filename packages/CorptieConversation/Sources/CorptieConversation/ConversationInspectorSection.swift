@@ -16,6 +16,9 @@ public struct ConversationDetailDashboard<Content: View>: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(WorkbenchCanvasSurface.color)
+        #if os(macOS)
+        .contentMargins(.top, 40, for: .scrollContent)
+        #endif
     }
 }
 
@@ -85,7 +88,7 @@ public struct ConversationDetailCardSurface: ViewModifier {
             .background {
                 if enabled {
                     shape
-                        .fill(WorkbenchCanvasSurface.color)
+                        .fill(WorkbenchCanvasSurface.defaultColor)
                         .overlay { shape.fill(Color.primary.opacity(0.045)) }
                 }
             }

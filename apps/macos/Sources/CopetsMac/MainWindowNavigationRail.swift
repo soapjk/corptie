@@ -1,4 +1,5 @@
 import SwiftUI
+import CorptieConversation
 
 enum MainNavigationRailLayout {
     static func width(expanded: Bool) -> CGFloat { expanded ? 200 : 64 }
@@ -12,24 +13,33 @@ enum MainNavigationRailLayout {
 
 /// A lightweight navigation column. Page hosts remain resident beside it.
 struct MainWindowNavigationRail: View {
+    @ObservedObject private var wallpaper = LocalWallpaperStore.shared
     @Binding var selection: AppTab
     @Binding var isExpanded: Bool
 
     var body: some View {
         VStack(spacing: 4) {
-            ForEach(AppTab.allCases) { tab in
-                Button { selection = tab } label: {
-                    label(symbol: tab.systemImage, title: tab.title, selected: selection == tab)
+            VStack(spacing: 4) {
+                ForEach(AppTab.allCases) { tab in
+                    Button { selection = tab } label: {
+                        label(symbol: tab.systemImage, title: tab.title, selected: selection == tab)
+                    }
+                    .buttonStyle(.plain)
+                    .help(tab.title)
+                    .accessibilityLabel(tab.title)
+                    .accessibilityAddTraits(selection == tab ? .isSelected : [])
+                    .accessibilityIdentifier("main-tab.\(tab.rawValue)")
+                    .accessibilityValue(selection == tab ? "selected" : "not-selected")
                 }
-                .buttonStyle(.plain)
-                .help(tab.title)
-                .accessibilityLabel(tab.title)
-                .accessibilityAddTraits(selection == tab ? .isSelected : [])
-                .accessibilityIdentifier("main-tab.\(tab.rawValue)")
-                .accessibilityValue(selection == tab ? "selected" : "not-selected")
             }
+            .padding(4)
+            .background {
+                RoundedRectangle(cornerRadius: isExpanded ? 20 : 24, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("navigation-tab-capsule")
             Spacer(minLength: 12)
-            Divider().padding(.horizontal, 8)
             Button { AppDelegate.shared?.openSettings() } label: {
                 label(symbol: "gearshape", title: L10n("设置"), selected: false)
             }
@@ -42,7 +52,7 @@ struct MainWindowNavigationRail: View {
         .padding(.top, MainWindowLayoutMetrics.titlebarHeight + 8)
         .padding(.bottom, 8)
         .frame(maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Color(nsColor: .windowBackgroundColor).opacity(wallpaper.hasWallpaper ? 0.72 : 1))
         .overlay(alignment: .trailing) {
             Rectangle().fill(Color.primary.opacity(0.08)).frame(width: 1).allowsHitTesting(false)
         }

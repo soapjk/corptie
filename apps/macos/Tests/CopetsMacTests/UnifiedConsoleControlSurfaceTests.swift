@@ -70,17 +70,20 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func navigationControlsShareTheNativeTitlebar() throws {
+    func navigationControlsFloatOverTheFullHeightSidebar() throws {
         let source = try source(named: "UnifiedConsoleView.swift")
-        let titlebarStart = try #require(source.range(of: "ConsoleSidebarTitlebarControls("))
-        let titlebarEnd = try #require(source.range(of: ".onAppear {", range: titlebarStart.upperBound..<source.endIndex))
-        let titlebar = source[titlebarStart.lowerBound..<titlebarEnd.lowerBound]
+        let controlsStart = try #require(source.range(of: ".overlay(alignment: .topLeading) {"))
+        let controlsEnd = try #require(source.range(of: "var navigationMode:", range: controlsStart.upperBound..<source.endIndex))
+        let controls = source[controlsStart.lowerBound..<controlsEnd.lowerBound]
 
-        let togglePosition = try #require(titlebar.range(of: "navigationModeToggle"))
-        let searchPosition = try #require(titlebar.range(of: "searchToggleButton"))
+        let togglePosition = try #require(controls.range(of: "navigationModeToggle"))
+        let searchPosition = try #require(controls.range(of: "searchToggleButton"))
         #expect(togglePosition.lowerBound < searchPosition.lowerBound)
-        #expect(source.contains("Picker(\"视图\", selection: $navigationModeRawValue)"))
-        #expect(!source.contains(".overlay(alignment: .bottomLeading) {\n            navigationModeToggle"))
+        #expect(source.contains("Menu {\n            navigationModeOption(.workRail, title: \"经典\")"))
+        #expect(source.contains(".buttonStyle(.plain)\n        .menuIndicator(.hidden)"))
+        #expect(source.contains(".modifier(ConsoleTopEdgeEffectModifier())"))
+        #expect(controls.contains(".platformGlassSurface(in: Circle(), interactive: true)"))
+        #expect(!source.contains("ConsoleSidebarTitlebarControls("))
     }
 
     @Test
@@ -154,7 +157,7 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func jumpToLatestSharesTheTimelineViewportAboveTheSafeAreaComposer() throws {
+    func jumpToLatestStaysAboveTheGlassWhileHistoryScrollsBehindIt() throws {
         let source = try source(named: "Conversation/SessionConversationContent.swift")
         let bodyStart = try #require(source.range(of: "    var body: some View"))
         let timelineStart = try #require(source.range(of: "    private func appKitDetailMessages("))
@@ -163,9 +166,12 @@ struct UnifiedConsoleControlSurfaceTests {
         let timeline = source[timelineStart.lowerBound..<jumpButtonStart.lowerBound]
 
         let jumpOverlay = try #require(body.range(of: ".overlay(alignment: .bottomTrailing) {\n                jumpToLatestButton"))
-        let composerInset = try #require(body.range(of: ".safeAreaInset(edge: .bottom, spacing: 0)"))
-        #expect(jumpOverlay.lowerBound < composerInset.lowerBound)
-        #expect(!body.contains("composerOverlayHeight"))
+        let composerOverlay = try #require(body.range(of: ".overlay(alignment: .bottom) {"))
+        #expect(jumpOverlay.lowerBound < composerOverlay.lowerBound)
+        #expect(body.contains(".padding(.bottom, composerClearance + 10)"))
+        #expect(body.contains("ComposerClearancePreferenceKey.self"))
+        #expect(timeline.contains("bottomClearance: composerClearance"))
+        #expect(!body.contains(".safeAreaInset(edge: .bottom"))
         #expect(!timeline.contains(".overlay(alignment: .bottomTrailing)"))
         #expect(source.contains("if viewportState.showsJumpToLatest"))
     }
@@ -335,7 +341,9 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(detail.contains("worktreeSection.modifier(ConversationDetailModuleSurface())"))
         #expect(detail.contains("memorySection.modifier(ConversationDetailModuleSurface())"))
         #expect(!detail.contains("Divider()"))
-        #expect(detail.contains("ConversationDetailModuleCard(title: L10n(\"Task 定义\")"))
+        #expect(detail.contains("ConversationDetailModuleCard(title: L10n(\"Task 信息\")"))
+        #expect(detail.contains("TaskSummaryView(task: task)"))
+        #expect(!detail.contains("ConversationDetailModuleCard(title: L10n(\"Task 定义\")"))
         #expect(source.contains("private var taskDefinitionSection: some View"))
         #expect(source.contains("private var executionAndWorkspaceSection: some View"))
         #expect(source.contains("private var taskResourcesSection: some View"))
@@ -414,8 +422,10 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains("outlineExpansionPreferences.collapsedWorkIDs"))
         #expect(source.contains("workChatRow(row)"))
         #expect(source.contains("taskRow(task)"))
-        #expect(source.contains("Picker(\"视图\", selection: $navigationModeRawValue)"))
-        #expect(source.contains(".pickerStyle(.menu)"))
+        #expect(source.contains("navigationModeOption(.workRail, title: \"经典\")"))
+        #expect(source.contains("navigationModeOption(.workOutline, title: \"分组\")"))
+        #expect(source.contains("navigationModeOption(.taskCards, title: \"卡片 · 实验\")"))
+        #expect(source.contains(".menuStyle(.button)"))
         #expect(!source.contains(".overlay(alignment: .bottomLeading)"))
         #expect(source.contains(".accessibilityValue(navigationMode.accessibilityValue)"))
     }
@@ -475,7 +485,7 @@ struct UnifiedConsoleControlSurfaceTests {
             separatedBy: "withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation)"
         ).count - 1 == 3)
         #expect(source.contains("Text(L10n(\"Chat\"))"))
-        #expect(source.contains("Picker(\"视图\", selection: $navigationModeRawValue)"))
+        #expect(source.contains("navigationModeOption(.workOutline, title: \"分组\")"))
         #expect(!source.contains("Text(L10n(\"Work & Tasks\"))"))
         #expect(!source.contains("Text(L10n(\"Assistant\"))"))
     }

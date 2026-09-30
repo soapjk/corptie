@@ -6,9 +6,11 @@ import AppKit
 /// The Work outline and conversation share one adaptive canvas on each platform.
 public enum WorkbenchCanvasSurface {
 #if os(iOS)
-    public static var color: Color { Color(uiColor: .systemBackground) }
+    public static var color: Color { .clear }
+    public static var defaultColor: Color { Color(uiColor: .systemBackground) }
 #elseif os(macOS)
-    public static var color: Color { Color(nsColor: nativeColor) }
-    public static var nativeColor: NSColor { .textBackgroundColor }
+    public static var color: Color { .clear }
+    public static var defaultColor: Color { Color(nsColor: .textBackgroundColor) }
+    public static var nativeColor: NSColor { .clear }
 #endif
 }
