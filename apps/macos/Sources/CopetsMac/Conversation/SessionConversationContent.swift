@@ -205,8 +205,8 @@ struct SessionConversationContent: View {
             }
 
             // Keep the full-height native viewport under the glass composer.
-            // AppKit reserves the measured composer height as a scroll inset,
-            // so the final row can stop above the glass without a fake table tail.
+            // The timeline extends its scrollable document by the measured
+            // composer height, so its native bottom lands above the glass.
             Group {
                 switch contentPhase {
                 case .live:

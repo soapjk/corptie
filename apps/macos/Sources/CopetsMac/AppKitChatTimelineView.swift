@@ -20,7 +20,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     var scrollToTurnID: String? = nil
     var scrollToTurnRevision: Int = 0
     var historyRequestEpoch: Int = 0
-    /// Reserve native scroll content inset for chrome overlaid on this viewport.
+    /// Extend the native scrollable document for chrome overlaid on this viewport.
     /// The full-height clip view lets earlier rows pass beneath the glass.
     var bottomClearance: CGFloat = 0
 
@@ -123,7 +123,9 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         scrollView.autohidesScrollers = true
         scrollView.verticalScrollElasticity = .none
         scrollView.horizontalScrollElasticity = .none
-        scrollView.documentView = tableView
+        let documentView = TimelineScrollDocumentView()
+        documentView.addSubview(tableView)
+        scrollView.documentView = documentView
         return scrollView
     }
 
@@ -142,7 +144,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         context.coordinator.onPositionChange = onPositionChange
         context.coordinator.apply(rows: rows, animated: context.transaction.animation != nil)
         // Decide whether to follow the new rows against the previous stable
-        // viewport before changing its scrollable bottom edge.
+        // viewport before extending its scrollable bottom edge.
         context.coordinator.setBottomClearance(bottomClearance)
         if let initialPosition {
             context.coordinator.restoreIfNeeded(position: initialPosition)
@@ -162,4 +164,10 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     }
 
     typealias Coordinator = AppKitChatTimelineCoordinator
+}
+
+/// The table owns only message rows. Its enclosing document owns the
+/// scrollable clearance under the overlaid composer.
+private final class TimelineScrollDocumentView: NSView {
+    override var isFlipped: Bool { true }
 }
