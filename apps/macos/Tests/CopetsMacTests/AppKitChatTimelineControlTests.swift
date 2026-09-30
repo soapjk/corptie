@@ -1009,7 +1009,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(scroll.contentView.documentRect.height, table.frame.height, accuracy: 1)
     }
 
-    func testOverlaidComposerClearanceKeepsLatestRowAboveGlassWithoutShrinkingViewport() async {
+    func testNativeBottomInsetKeepsLatestRowAboveGlassWithoutShrinkingViewport() async {
         let harness = makeHarness(followsLatest: true, height: 320)
         let rows = (0..<30).map { row(id: "glass-clearance-\($0)", text: "Message \($0)") }
         harness.coordinator.apply(rows: rows)
@@ -1020,9 +1020,72 @@ final class AppKitChatTimelineControlTests: XCTestCase {
 
         let lastRowBottom = harness.tableView.rect(ofRow: rows.count - 1).maxY
         XCTAssertEqual(harness.scrollView.contentView.bounds.height, 320, accuracy: 2)
-        XCTAssertEqual(harness.tableView.frame.height - lastRowBottom, 96, accuracy: 1)
+        XCTAssertEqual(harness.scrollView.contentInsets.bottom, 96, accuracy: 1)
+        XCTAssertEqual(harness.tableView.frame.height, lastRowBottom, accuracy: 1)
         XCTAssertLessThanOrEqual(lastRowBottom,
                                  harness.scrollView.contentView.bounds.maxY - 96 + 2)
+    }
+
+    func testMeasuredSwiftUIComposerInsetReachesNativeTimeline() async throws {
+        let rows = (0..<30).map { row(id: "measured-glass-\($0)", text: "Message \($0)") }
+        let host = NSHostingView(rootView: MeasuredComposerTimelineFixture(rows: rows)
+            .frame(width: 420, height: 320))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 320),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.contentView = host
+        window.layoutIfNeeded()
+        await settleMainQueue()
+        window.layoutIfNeeded()
+        await settleMainQueue()
+
+        func descendants(_ view: NSView) -> [NSView] {
+            [view] + view.subviews.flatMap(descendants)
+        }
+        let scroll = try XCTUnwrap(descendants(host).compactMap { $0 as? FirstLayoutRestoringScrollView }.first)
+        let table = try XCTUnwrap(scroll.documentView as? NSTableView)
+        let lastRowBottom = table.rect(ofRow: rows.count - 1).maxY
+        XCTAssertEqual(scroll.frame.height, 320, accuracy: 2)
+        XCTAssertEqual(scroll.contentInsets.bottom, 96, accuracy: 2)
+        XCTAssertLessThanOrEqual(lastRowBottom, scroll.contentView.bounds.maxY - 96 + 2)
+    }
+
+    func testGrowingComposerInsetAndAppendingMessagePreservesLatestFollow() async {
+        let harness = makeHarness(followsLatest: true, height: 320)
+        var rows = (0..<30).map { row(id: "growing-glass-\($0)", text: "Message \($0)") }
+        harness.coordinator.apply(rows: rows)
+        harness.coordinator.setBottomClearance(48)
+        harness.coordinator.scrollToBottom()
+        await settleMainQueue()
+
+        rows.append(row(id: "growing-glass-newest", text: "Newest message"))
+        harness.coordinator.apply(rows: rows)
+        harness.coordinator.setBottomClearance(112)
+        await settleMainQueue()
+
+        let lastRowBottom = harness.tableView.rect(ofRow: rows.count - 1).maxY
+        XCTAssertTrue(harness.followState.value)
+        XCTAssertLessThanOrEqual(lastRowBottom,
+                                 harness.scrollView.contentView.bounds.maxY - 112 + 2)
+    }
+
+    func testComposerInsetGrowthPreservesHistoryReaderAnchor() async {
+        let harness = makeHarness(followsLatest: false, height: 320)
+        let rows = (0..<40).map { row(id: "history-glass-\($0)", text: "Message \($0)") }
+        harness.coordinator.apply(rows: rows)
+        harness.coordinator.setBottomClearance(48)
+        harness.tableView.scrollRowToVisible(15)
+        await settleMainQueue()
+        let before = visibleAnchor(in: harness.tableView, rows: rows)
+
+        harness.coordinator.setBottomClearance(112)
+        await settleMainQueue()
+        let after = visibleAnchor(in: harness.tableView, rows: rows)
+
+        XCTAssertEqual(after.id, before.id)
+        XCTAssertEqual(after.offset, before.offset, accuracy: 2)
+        XCTAssertFalse(harness.followState.value)
     }
 
     func testDirectScrollbarJumpMaterializesTheLastMessageWithoutIntermediatePrewarming() async throws {
@@ -2237,5 +2300,41 @@ final class AppKitChatTimelineControlTests: XCTestCase {
                 }
             }
         }
+    }
+}
+
+private struct MeasuredComposerClearanceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct MeasuredComposerTimelineFixture: View {
+    let rows: [AppKitChatTimelineRow]
+    @State private var composerHeight: CGFloat = 0
+
+    var body: some View {
+        AppKitChatTimelineView(
+            sessionID: "measured-composer-test",
+            rows: rows,
+            scrollToBottomRevision: 0,
+            followsLatest: .constant(true),
+            onToggleExpansion: { _ in },
+            bottomClearance: composerHeight
+        )
+        .overlay(alignment: .bottom) {
+            Color.clear.frame(height: 96)
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear.preference(
+                            key: MeasuredComposerClearanceKey.self,
+                            value: geometry.size.height
+                        )
+                    }
+                }
+        }
+        .onPreferenceChange(MeasuredComposerClearanceKey.self) { composerHeight = $0 }
     }
 }
