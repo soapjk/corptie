@@ -22,7 +22,6 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     private weak var tableView: NSTableView?
     private weak var scrollView: NSScrollView?
     private var rows: [AppKitChatTimelineRow] = []
-    private var bottomOverlayHeight: CGFloat = 0
     private var canAdvanceProcessClock: Bool
     private var processClockTimer: Timer?
     private var revisionsByID: [String: Int] = [:]
@@ -302,18 +301,6 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         for cell in cellsByKey.values {
             cell.updateLinkContext(baseDirectory: normalized)
         }
-    }
-
-    func setBottomOverlayHeight(_ height: CGFloat) {
-        let resolved = max(0, height)
-        guard abs(bottomOverlayHeight - resolved) > 0.5 else { return }
-        bottomOverlayHeight = resolved
-        // The scroller must use the same bottom boundary as the document.
-        // NSScrollView.contentInsets alone permits a programmatic overscroll,
-        // but does not extend the native scrollbar's document range.
-        scrollView?.scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: resolved, right: 0)
-        if let tableView { synchronizeDocumentHeight(in: tableView) }
-        if followsLatest { enqueueCorrection(.bottom) }
     }
 
     private static func normalizedBaseDirectory(_ value: String?) -> String? {
@@ -624,7 +611,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         tableView.layoutSubtreeIfNeeded()
         let contentHeight = rows.isEmpty
             ? 0
-            : tableView.rect(ofRow: rows.count - 1).maxY + bottomOverlayHeight
+            : tableView.rect(ofRow: rows.count - 1).maxY
         if abs(tableView.frame.height - contentHeight) >= 0.5 {
             tableView.setFrameSize(NSSize(width: tableView.frame.width, height: contentHeight))
         }
