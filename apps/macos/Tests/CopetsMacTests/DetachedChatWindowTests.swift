@@ -176,10 +176,10 @@ struct DetachedChatWindowTests {
         let composer = source[composerStart.lowerBound..<source.endIndex]
 
         #expect(composer.contains("backendClient.sendMessage(submission.text, to: session"))
-        #expect(!composer.contains("surface: .sessionDetailComposerControl"))
-        let header = try contents(of: "SessionHeaderStopButton.swift")
-        #expect(header.contains("backendClient.interrupt(session: session, surface: .sessionDetailToolbar)"))
-        #expect(!header.contains("backendClient.selectedSession"))
+        #expect(composer.contains("SessionComposerStopButton(session: session)"))
+        let stopButton = try contents(of: "SessionComposerStopButton.swift")
+        #expect(stopButton.contains("backendClient.interrupt(session: session, surface: .sessionDetailComposerControl)"))
+        #expect(!stopButton.contains("backendClient.selectedSession"))
         #expect(composer.contains("backendClient.sessions.first(where: { $0.id == sessionId })"))
     }
 
