@@ -45,4 +45,20 @@ struct ConsoleOverlayScrollerTests {
         scroll.layoutSubtreeIfNeeded()
         #expect(try #require(scroll.verticalScroller).frame.minX < 16)
     }
+
+    @Test func workRailScrollerAutoHidesOnTheLeadingEdge() throws {
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 64, height: 240))
+        scroll.hasVerticalScroller = true
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 64, height: 600))
+        scroll.documentView = content
+        let probe = ConsoleOverlayScroller.Probe(placeOnLeadingEdge: true)
+        content.addSubview(probe)
+        probe.configure()
+        scroll.layoutSubtreeIfNeeded()
+
+        #expect(scroll.scrollerStyle == .overlay)
+        #expect(scroll.autohidesScrollers)
+        #expect(try #require(scroll.verticalScroller).frame.minX < 16)
+        #expect(scroll.contentView.frame.width == 64)
+    }
 }

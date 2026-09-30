@@ -137,10 +137,6 @@ struct DetailHeaderView: View {
             }
 
             if backendClient.selectedSession != nil {
-                if let session = backendClient.selectedSession {
-                    SessionHeaderStopButton(session: session)
-                }
-
                 Button {
                     guard let session = backendClient.selectedSession else { return }
                     DetachedChatWindowManager.shared.show(session: session)

@@ -30,28 +30,29 @@ struct SessionInterruptObservabilityTests {
         let taskSource = try source(named: "WorkTasks/CorptieTaskDetailView.swift")
 
         #expect(rootSource.contains("surface: .sessionListRowControl"))
-        let headerSource = try source(named: "SessionHeaderStopButton.swift")
-        #expect(headerSource.contains("surface: .sessionDetailToolbar"))
-        #expect(headerSource.contains("session.executionTaskStatus == .running && session.canInterruptNow"))
-        #expect(headerSource.contains(".disabled(!backendClient.isOnline)"))
-        #expect(!rootSource.contains("surface: .sessionDetailComposerControl"))
+        let stopSource = try source(named: "SessionComposerStopButton.swift")
+        #expect(stopSource.contains("surface: .sessionDetailComposerControl"))
+        #expect(stopSource.contains("session.executionTaskStatus == .running"))
+        #expect(stopSource.contains("session.canInterruptNow"))
+        #expect(stopSource.contains(".disabled(!backendClient.isOnline)"))
+        #expect(rootSource.contains("SessionComposerStopButton(session: session)"))
         for name in ["Conversation/ConversationHeader.swift", "WorkspaceMessagePanel.swift", "DetachedChatWindowManager.swift"] {
-            #expect(try source(named: name).contains("SessionHeaderStopButton(session: session)"))
+            #expect(try !source(named: name).contains("SessionHeaderStopButton"))
         }
         #expect(taskSource.contains("surface: .taskDetailExecutionControl"))
     }
 
     @Test
-    func stopButtonHasDefinedCircleAndPrecedesDetachButton() throws {
-        let button = try source(named: "SessionHeaderStopButton.swift")
+    func stopButtonHasDefinedCircleInComposerHeader() throws {
+        let button = try source(named: "SessionComposerStopButton.swift")
         #expect(button.contains(".conversationGlassControl(tint: .red)"))
-        #expect(button.contains(".contentShape(Circle())"))
-        let root = try source(named: "Conversation/ConversationHeader.swift")
-        let start = try #require(root.range(of: "struct DetailHeaderView: View"))
-        let header = root[start.lowerBound...]
-        let stop = try #require(header.range(of: "SessionHeaderStopButton(session: session)"))
-        let detach = try #require(header.range(of: "DetachedChatWindowManager.shared.show(session: session)"))
-        #expect(stop.lowerBound < detach.lowerBound)
+        #expect(button.contains(".contentShape(Rectangle())"))
+        #expect(button.contains(".frame(width: 44, height: 32)"))
+        let composer = try source(named: "Conversation/Composer/MessageComposer.swift")
+        let chrome = try #require(composer.range(of: "ConversationComposerChrome {"))
+        let status = try #require(composer.range(of: "ThreadMetaView(", range: chrome.lowerBound..<composer.endIndex))
+        let stop = try #require(composer.range(of: "SessionComposerStopButton(session: session)", range: chrome.lowerBound..<composer.endIndex))
+        #expect(status.lowerBound < stop.lowerBound)
     }
 
     private func source(named name: String) throws -> String {
