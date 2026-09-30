@@ -20,6 +20,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     var scrollToTurnID: String? = nil
     var scrollToTurnRevision: Int = 0
     var historyRequestEpoch: Int = 0
+    /// Scrollable space occupied by chrome above the native viewport.
+    var topClearance: CGFloat = 0
     /// Extend the native scrollable document for chrome overlaid on this viewport.
     /// The full-height clip view lets earlier rows pass beneath the glass.
     var bottomClearance: CGFloat = 0
@@ -69,6 +71,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             context.coordinator.prepareInitialScrollToBottom()
         }
         context.coordinator.apply(rows: rows, animated: false)
+        context.coordinator.setTopClearance(topClearance)
         context.coordinator.setBottomClearance(bottomClearance)
         context.coordinator.lastScrollToBottomRevision = scrollToBottomRevision
         context.coordinator.lastScrollToTurnRevision = scrollToTurnRevision
@@ -143,8 +146,9 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         context.coordinator.updateHistoryAvailability(hasMoreHistory)
         context.coordinator.onPositionChange = onPositionChange
         context.coordinator.apply(rows: rows, animated: context.transaction.animation != nil)
-        // Decide whether to follow the new rows against the previous stable
-        // viewport before extending its scrollable bottom edge.
+        // Decide whether to follow new rows against the previous stable
+        // viewport before changing the document's chrome clearances.
+        context.coordinator.setTopClearance(topClearance)
         context.coordinator.setBottomClearance(bottomClearance)
         if let initialPosition {
             context.coordinator.restoreIfNeeded(position: initialPosition)
@@ -166,8 +170,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     typealias Coordinator = AppKitChatTimelineCoordinator
 }
 
-/// The table owns only message rows. Its enclosing document owns the
-/// scrollable clearance under the overlaid composer.
+/// The table owns only message rows. Its enclosing document owns scrollable
+/// clearance under the overlaid header and composer.
 private final class TimelineScrollDocumentView: NSView {
     override var isFlipped: Bool { true }
 }
