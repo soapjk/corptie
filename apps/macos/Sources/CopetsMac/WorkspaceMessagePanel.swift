@@ -12,14 +12,11 @@ struct WorkspaceMessagePanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Text(session.title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(2)
-                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-                    .help(session.title)
-                SessionHeaderStopButton(session: session)
-            }
+            Text(session.title)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(2)
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                .help(session.title)
 
             SessionConversationContent(
                 sessionId: session.id,

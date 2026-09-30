@@ -657,7 +657,7 @@ struct UnifiedConsoleControlSurfaceTests {
         let source = try source(named: "Console/ConsoleWorkRail.swift")
 
         #expect(source.contains("ScrollView(.vertical)"))
-        #expect(source.contains(".background(ConsoleOverlayScroller())"))
+        #expect(source.contains(".background(ConsoleOverlayScroller(placeOnLeadingEdge: true))"))
         #expect(source.contains("private var workRailScrollMask: some View"))
         #expect(source.contains("proxy.scrollTo(selectedWorkId, anchor: .center)"))
         #expect(source.contains(".padding(.vertical, 10)"))

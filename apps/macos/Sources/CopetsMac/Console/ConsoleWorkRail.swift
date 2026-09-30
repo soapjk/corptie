@@ -61,7 +61,7 @@ struct ConsoleWorkRail: View {
                         }
                     }
                     .padding(.vertical, 10)
-                    .background(ConsoleOverlayScroller())
+                    .background(ConsoleOverlayScroller(placeOnLeadingEdge: true))
                 }
                 .mask(workRailScrollMask)
                 .onAppear {
