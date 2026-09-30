@@ -271,6 +271,8 @@ struct ConversationView: View {
     /// Rounded whole-point lane width prevents sub-pixel geometry changes from
     /// invalidating every realized message row during keyboard/split resizing.
     @State private var laneWidth: CGFloat = 0
+    @State private var initialTimelinePlacementScheduled = false
+    @State private var didPlaceInitialTimeline = false
     @State private var attachmentPreview: PadAttachmentPreview?
     @State private var composerSheet: ComposerSheet?
     private enum ComposerSheet: String, Identifiable {
@@ -392,6 +394,15 @@ struct ConversationView: View {
                 }
             ))
             .scrollDismissesKeyboard(.interactively)
+            .overlay {
+                if workspace.displayEntries.isEmpty {
+                    ContentUnavailableView(
+                        workspace.selectedTimelineReady ? "暂无消息" : "正在同步消息…",
+                        systemImage: workspace.selectedTimelineReady ? "bubble.left" : "arrow.triangle.2.circlepath"
+                    )
+                    .allowsHitTesting(false)
+                }
+            }
             .background {
                 GeometryReader { proxy in
                     Color.clear.preference(key: TimelineViewportSizeKey.self, value: proxy.size)
@@ -405,10 +416,15 @@ struct ConversationView: View {
             .onPreferenceChange(TimelineContentHeightKey.self) { height in
                 guard height != historyViewport.contentHeight else { return }
                 historyViewport.contentHeight = height
+                placeInitialTimelineIfReady(reader)
                 if pendingHistoryViewport != nil {
                     restoreHistoryViewportIfReady()
-                } else if viewportState.followsLatest {
-                    pinTimelineToLatestIfReady()
+                } else if didPlaceInitialTimeline && viewportState.followsLatest {
+                    // Lazy rows can temporarily report an estimated UIKit
+                    // contentSize. Follow the stable SwiftUI tail identity for
+                    // content changes; native offset correction is reserved
+                    // for viewport-only (keyboard/split) resizing below.
+                    reader.scrollTo("latest", anchor: .bottom)
                 }
                 requestEarlierHistoryIfNeeded()
             }
@@ -418,11 +434,12 @@ struct ConversationView: View {
                 let roundedHeight = size.height.rounded(.down)
                 guard roundedHeight != historyViewport.viewportHeight else { return }
                 historyViewport.viewportHeight = roundedHeight
+                placeInitialTimelineIfReady(reader)
                 // Keyboard safe-area changes resize the timeline and composer
                 // in the same animation. Pin a followed conversation to its
                 // bottom on every distinct viewport step so the last message
                 // travels with the composer instead of catching up afterward.
-                if viewportState.followsLatest {
+                if didPlaceInitialTimeline && viewportState.followsLatest {
                     if !pinTimelineToLatestIfReady() {
                         reader.scrollTo("latest", anchor: .bottom)
                     }
@@ -434,14 +451,13 @@ struct ConversationView: View {
                 let hadCachedCapabilities = workspace.capabilities != nil
                 await workspace.waitForRealtimeTimelineOrFallback(connection)
                 guard !Task.isCancelled else { return }
-                if !hadCachedCapabilities || viewportState.followsLatest {
-                    reader.scrollTo("latest", anchor: .bottom)
-                }
+                if !hadCachedCapabilities || viewportState.followsLatest { placeInitialTimelineIfReady(reader) }
                 await workspace.repairMissingUsage(connection)
             }
             .onChange(of: workspace.messageRevision) {
                 if viewportState.timelineTailDidChange() {
-                    reader.scrollTo("latest", anchor: .bottom)
+                    if didPlaceInitialTimeline { reader.scrollTo("latest", anchor: .bottom) }
+                    else { placeInitialTimelineIfReady(reader) }
                 }
             }
             .onChange(of: workspace.scrollRequest) {
@@ -456,9 +472,7 @@ struct ConversationView: View {
                     if pendingHistoryViewport != nil {
                         restoreHistoryViewportIfReady()
                     } else if viewportState.followsLatest {
-                        if !pinTimelineToLatestIfReady() {
-                            reader.scrollTo("latest", anchor: .bottom)
-                        }
+                        reader.scrollTo("latest", anchor: .bottom)
                     }
                     requestEarlierHistoryIfNeeded()
                 }
@@ -473,6 +487,8 @@ struct ConversationView: View {
                 timelineScrollView = nil
                 historyViewport = TimelineHistoryViewportState()
                 historyAutoLoadGate = PadHistoryAutoLoadGate()
+                initialTimelinePlacementScheduled = false
+                didPlaceInitialTimeline = false
             }
             .overlay(alignment: .bottomTrailing) {
                 if viewportState.showsJumpToLatest {
@@ -533,6 +549,24 @@ struct ConversationView: View {
             get: { viewportState.followsLatest },
             set: { viewportState.setFollowsLatest($0) }
         )
+    }
+
+    /// ScrollViewReader cannot reliably resolve the lazy tail marker before
+    /// the first message rows and viewport have both completed layout. Wait
+    /// one UI turn, then perform the initial semantic jump exactly once.
+    private func placeInitialTimelineIfReady(_ reader: ScrollViewProxy) {
+        guard !didPlaceInitialTimeline, !initialTimelinePlacementScheduled,
+              !workspace.displayEntries.isEmpty, historyViewport.viewportHeight > 1,
+              laneWidth > 0, viewportState.followsLatest else { return }
+        initialTimelinePlacementScheduled = true
+        Task { @MainActor in
+            await Task.yield()
+            initialTimelinePlacementScheduled = false
+            guard !Task.isCancelled, !isUserInteractingWithTimeline,
+                  viewportState.followsLatest, !workspace.displayEntries.isEmpty else { return }
+            reader.scrollTo("latest", anchor: .bottom)
+            didPlaceInitialTimeline = true
+        }
     }
 
     private func requestEarlierHistoryIfNeeded(userInitiated: Bool = false) {

@@ -83,14 +83,17 @@ final class PadWorktreeStore {
         do {
             let api = ClientWorktreeAPI(transport: try await connection.transport())
             async let loadedDetail = api.repository(repositoryID, forceFresh: force)
-            async let loadedService = api.developmentService(repositoryID)
+            async let loadedService = try? api.developmentService(repositoryID)
             let next = try await loadedDetail
-            let status = try await loadedService
             guard token == generation, !Task.isCancelled else { return }
             if selectedWorktreeID == nil || !next.project.worktrees.contains(where: { $0.worktreeId == selectedWorktreeID }) {
                 selectedWorktreeID = next.project.worktrees.first(where: \.isMain)?.worktreeId
                     ?? next.project.worktrees.first?.worktreeId
             }
+            detail = next
+            job = next.latestJob
+            loading = false
+            startPollingIfNeeded(repositoryID, connection: connection)
             if let selectedWorktreeID {
                 let push = try? await api.pushStatus(
                     repositoryId: repositoryID, worktreeId: selectedWorktreeID)
@@ -104,8 +107,7 @@ final class PadWorktreeStore {
                 if nextJob == nil || saved.updatedAt > nextJob!.updatedAt { nextJob = saved }
             }
             guard token == generation, !Task.isCancelled else { return }
-            detail = next
-            service = status
+            service = await loadedService
             job = nextJob
             if let job { UserDefaults.standard.set(job.id, forKey: recoveryKey) }
             startPollingIfNeeded(repositoryID, connection: connection)
@@ -153,7 +155,10 @@ final class PadWorktreeStore {
     }
 
     func execute(_ draft: PadWorktreeOperationDraft, connection: PadConnection) async {
-        guard draft.privateFilesDecision != "cancel" else { return }
+        guard draft.canExecute else {
+            errorMessage = "请选择有效的操作、提交信息和私密文件处理方式。"
+            return
+        }
         await action(draft.worktree, connection: connection) { api, repositoryID in
             var completed: [String] = []
             var stage = "提交主 Worktree"
@@ -210,11 +215,44 @@ final class PadWorktreeStore {
     }
 
     func cleanup(_ worktrees: [ClientManagedWorktree], connection: PadConnection) async {
+        guard let repositoryID = detail?.repository.id, !worktrees.isEmpty else { return }
         let scope = operationScope
+        var removed: [String] = []
+        var failed: [String] = []
+        errorMessage = nil
+        let api: ClientWorktreeAPI
+        do { api = ClientWorktreeAPI(transport: try await connection.transport()) }
+        catch {
+            errorMessage = PadWorktreeFailure.describe(error, stage: "连接 Worktree 服务")
+            return
+        }
         for worktree in worktrees where !Task.isCancelled {
             guard scope == operationScope else { return }
-            await delete(worktree, connection: connection)
-            if errorMessage != nil { return }
+            guard let current = detail?.project.worktrees.first(where: { $0.worktreeId == worktree.worktreeId }),
+                  !current.isMain, current.availability == "available", !current.isLocked,
+                  current.operationState == nil, current.conflictFiles.isEmpty, current.dirty == false,
+                  current.mergedIntoMain == true, current.associations.isEmpty else {
+                failed.append("\(worktree.branchName ?? worktree.worktreeId)：状态已变化，未删除")
+                continue
+            }
+            do {
+                try await api.delete(repositoryId: repositoryID, worktreeId: worktree.worktreeId)
+                removed.append(worktree.branchName ?? worktree.worktreeId)
+            } catch {
+                failed.append("\(worktree.branchName ?? worktree.worktreeId)：\(PadWorktreeFailure.describe(error, stage: "删除失败", mutation: true))")
+            }
+        }
+        guard scope == operationScope else { return }
+        await load(repositoryID, connection: connection, force: true,
+                   afterOperation: removed.isEmpty ? nil : "已清理 \(removed.count) 个 Worktree")
+        if !failed.isEmpty {
+            let summary = "已清理：\(removed.isEmpty ? "无" : removed.joined(separator: "、"))。\n未完成：\n"
+                + failed.joined(separator: "\n")
+            errorMessage = [summary, errorMessage].compactMap { $0 }.joined(separator: "\n")
+            notice = nil
+        } else if !removed.isEmpty, errorMessage == nil,
+                  notice?.contains("列表更新失败") != true {
+            notice = "已清理：\(removed.joined(separator: "、"))"
         }
     }
 
@@ -269,16 +307,22 @@ final class PadWorktreeStore {
         }
     }
 
-    func jobAction(_ action: String, decisions: [ClientWorktreeCommitDecision] = [], reviewedJob: ClientWorktreeJob? = nil,
-                   connection: PadConnection) async {
-        guard let job, !jobBusy, !planning else { return }
+    @discardableResult func jobAction(_ action: String, decisions: [ClientWorktreeCommitDecision] = [], reviewedJob: ClientWorktreeJob? = nil,
+                   connection: PadConnection) async -> Bool {
+        guard let job, !jobBusy, !planning else { return false }
         if action == "confirm" {
             guard let reviewedJob, reviewedJob.id == job.id,
                   reviewedJob.planFingerprint == job.planFingerprint,
                   job.status == "awaiting_confirmation", job.plan.blockingRisks.isEmpty else {
                 errorMessage = "集成计划或状态已变化，请重新查看并确认计划。"
-                return
+                return false
             }
+        }
+        if action == "cancel", let reviewedJob,
+           (reviewedJob.id != job.id || reviewedJob.planFingerprint != job.planFingerprint
+            || job.status != "awaiting_confirmation") {
+            errorMessage = "集成计划或状态已变化，请重新查看任务。"
+            return false
         }
         let token = operationScope
         jobBusy = true; errorMessage = nil
@@ -291,14 +335,16 @@ final class PadWorktreeStore {
             case "cancel": updated = try await api.cancel(jobId: job.id)
             case "retry": updated = try await api.retry(jobId: job.id)
             case "resolve-conflict": updated = try await api.resolveConflict(jobId: job.id)
-            default: return
+            default: return false
             }
-            guard token == operationScope else { return }
+            guard token == operationScope else { return false }
             replaceJob(updated)
             startPollingIfNeeded(job.repositoryId, connection: connection)
+            return true
         } catch {
-            guard token == operationScope else { return }
+            guard token == operationScope else { return false }
             errorMessage = PadWorktreeFailure.describe(error, stage: "集成任务 \(action)", mutation: true)
+            return false
         }
     }
 
@@ -358,11 +404,29 @@ final class PadWorktreeStore {
 struct PadWorktreeOperationDraft: Identifiable {
     let id = UUID()
     let worktree: ClientManagedWorktree
-    var mergeIntoMain = true
-    var synchronizeWithMain = true
-    var restartService = true
+    var mergeIntoMain: Bool
+    var synchronizeWithMain: Bool
+    var restartService = false
     var commitMessage: String
     let protection: ClientGitCommitProtectionStatus?
     var privateFilesDecision: String?
     var neverRemindPrivateFiles = false
+
+    init(worktree: ClientManagedWorktree, commitMessage: String, protection: ClientGitCommitProtectionStatus?) {
+        self.worktree = worktree
+        self.commitMessage = commitMessage
+        self.protection = protection
+        self.mergeIntoMain = worktree.isMain ? false : (worktree.dirty == true || worktree.mergedIntoMain != true)
+        self.synchronizeWithMain = !worktree.isMain && worktree.synchronizedWithMain != true
+    }
+
+    var canExecute: Bool {
+        let committing = worktree.isMain || mergeIntoMain
+        guard committing || synchronizeWithMain || restartService else { return false }
+        if committing && worktree.dirty == true {
+            guard !commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+            if protection?.requiresDecision == true && !["ignore", "include"].contains(privateFilesDecision ?? "") { return false }
+        }
+        return true
+    }
 }

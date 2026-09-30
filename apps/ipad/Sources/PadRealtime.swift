@@ -2,15 +2,23 @@ import Foundation
 import CorptieClientCore
 
 extension PadWorkspace {
+    /// Capabilities can arrive before the timeline snapshot. They describe
+    /// permission, not whether the selected conversation has any message data.
+    var selectedTimelineReady: Bool {
+        lastTimelineRevision != nil || !messages.isEmpty
+            || (capabilities != nil && !isLoadingDetail)
+    }
+
     func waitForRealtimeTimelineOrFallback(
         _ connection: PadConnection,
-        after revision: Int? = nil
+        after revision: Int? = nil,
+        graceAttempts: Int = 30
     ) async {
-        for _ in 0..<30 {
+        for _ in 0..<graceAttempts {
             if Task.isCancelled { return }
             if let revision {
                 if (lastTimelineRevision ?? 0) > revision { return }
-            } else if capabilities != nil {
+            } else if selectedTimelineReady {
                 return
             }
             try? await Task.sleep(for: .milliseconds(100))
