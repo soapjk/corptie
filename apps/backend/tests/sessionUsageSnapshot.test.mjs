@@ -38,3 +38,12 @@ test("session usage keeps account quota when context loading fails", async () =>
     { available: true, provider: "claude", rateLimits: { primary: {} } }
   ]);
 });
+
+test("strict account refresh rejects cached quota after Provider failure", async () => {
+  await assert.rejects(loadSessionUsageSnapshot({
+    loadAccount: async () => { throw new Error("rate-limit API unavailable"); },
+    loadContext: async () => ({ usedTokens: 25 }),
+    fallbackAccount: { available: true, provider: "codex", rateLimitResetCredits: { availableCount: 2 } },
+    requireFreshAccount: true
+  }), { code: "ACCOUNT_USAGE_REFRESH_FAILED" });
+});

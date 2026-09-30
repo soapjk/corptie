@@ -88,11 +88,17 @@ struct OrphanedWorkspaceRecoveryView: View {
 }
 
 struct ChatUsageBar: View {
+    let sessionID: String
     let usage: SessionUsageResponse?
     @State private var isResetNoticePresented = false
-    @State private var isRefreshingResetCredits = false
-    @State private var resetCreditRefreshFailed = false
-    @State private var resetCreditRefreshGeneration = 0
+    @State private var bankedResetState: BankedResetState = .idle
+
+    private enum BankedResetState: Equatable {
+        case idle
+        case loading
+        case ready(CodexRateLimitResetCredits)
+        case failed
+    }
 
     var body: some View {
         if let usage {
@@ -122,9 +128,6 @@ struct ChatUsageBar: View {
                     if usage.account.provider == "codex" {
                         Button {
                             isResetNoticePresented.toggle()
-                            if isResetNoticePresented {
-                                refreshResetCredits()
-                            }
                         } label: {
                             ConversationComposerUsageSlot {
                                 SessionUsageItem(
@@ -142,6 +145,20 @@ struct ChatUsageBar: View {
                         .popover(isPresented: $isResetNoticePresented, arrowEdge: .bottom) {
                             resetNoticePopover(usage: usage, window: window)
                         }
+                        .task(id: "\(sessionID):\(isResetNoticePresented)") {
+                            guard isResetNoticePresented else {
+                                bankedResetState = .idle
+                                return
+                            }
+                            bankedResetState = .loading
+                            let refreshed = await BackendClient.shared.usageController.refreshFreshAccount(for: sessionID)
+                            guard !Task.isCancelled else { return }
+                            if let resets = refreshed?.account.rateLimitResetCredits {
+                                bankedResetState = .ready(resets)
+                            } else {
+                                bankedResetState = .failed
+                            }
+                        }
                     } else {
                         ConversationComposerUsageSlot {
                             SessionUsageItem(
@@ -158,11 +175,6 @@ struct ChatUsageBar: View {
             }
             .font(.system(size: 9, weight: .semibold))
             .fixedSize(horizontal: true, vertical: false)
-            .onChange(of: usage) { _, updated in
-                if updated.accountFresh == true {
-                    resetCreditRefreshFailed = false
-                }
-            }
         }
     }
 
@@ -172,10 +184,10 @@ struct ChatUsageBar: View {
         window: CodexRateLimitWindow
     ) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            if isRefreshingResetCredits {
+            if bankedResetState == .loading {
                 Label(L10n("Updating banked resets; showing the last known value…"), systemImage: "arrow.clockwise")
                     .foregroundStyle(.secondary)
-            } else if resetCreditRefreshFailed || usage.accountFresh != true {
+            } else if bankedResetState == .failed {
                 Label(L10n("Banked resets could not be verified; showing the last known value."),
                       systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
@@ -186,7 +198,7 @@ struct ChatUsageBar: View {
             )
             .lineLimit(1)
 
-            if let bankedResets = usage.account.rateLimitResetCredits {
+            if let bankedResets = displayedBankedResets(fallback: usage.account.rateLimitResetCredits) {
                 Label(
                     L10nFormat("Banked resets remaining: %lld", Int64(max(0, bankedResets.availableCount))),
                     systemImage: "arrow.counterclockwise.circle"
@@ -226,17 +238,13 @@ struct ChatUsageBar: View {
         )
     }
 
-    private func refreshResetCredits() {
-        resetCreditRefreshGeneration &+= 1
-        let generation = resetCreditRefreshGeneration
-        isRefreshingResetCredits = true
-        resetCreditRefreshFailed = false
-        Task {
-            let succeeded = await BackendClient.shared.usageController.refreshSelectedUsageWithOutcome()
-            guard generation == resetCreditRefreshGeneration, isResetNoticePresented else { return }
-            isRefreshingResetCredits = false
-            resetCreditRefreshFailed = !succeeded
+    private func displayedBankedResets(
+        fallback: CodexRateLimitResetCredits?
+    ) -> CodexRateLimitResetCredits? {
+        if case .ready(let refreshed) = bankedResetState {
+            return refreshed
         }
+        return fallback
     }
 
     private func formattedBankedResetDate(_ date: Date) -> String {

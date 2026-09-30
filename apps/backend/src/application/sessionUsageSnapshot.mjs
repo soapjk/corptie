@@ -2,6 +2,7 @@ export async function loadSessionUsageSnapshot({
   loadAccount,
   loadContext,
   fallbackAccount,
+  requireFreshAccount = false,
   persistAccount = null,
   resetForecast = null
 }) {
@@ -12,6 +13,11 @@ export async function loadSessionUsageSnapshot({
   const loadedAccount = accountResult.status === "fulfilled" && accountResult.value
     ? accountResult.value
     : null;
+  if (requireFreshAccount && !loadedAccount) {
+    const error = new Error("Account usage could not be refreshed.");
+    error.code = "ACCOUNT_USAGE_REFRESH_FAILED";
+    throw error;
+  }
   if (loadedAccount && typeof persistAccount === "function") {
     await persistAccount(loadedAccount);
   }
