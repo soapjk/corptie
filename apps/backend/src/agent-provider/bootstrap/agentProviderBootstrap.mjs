@@ -39,6 +39,9 @@ const CODEX_APP_SERVER_CAPABILITIES = Object.freeze([
 export function createAgentProviderRuntimeRegistry(options = {}) {
   const codexCapabilities = [
     ...CODEX_APP_SERVER_CAPABILITIES,
+    ...(typeof options.codexOperations?.forkSession === "function"
+      ? [AGENT_PROVIDER_CAPABILITIES.SESSION_FORK]
+      : []),
     ...(typeof options.codexOperations?.respondToUserInput === "function"
       ? [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_USER_INPUT]
       : []),
