@@ -73,8 +73,13 @@ export function createSessionApplicationComposition({
         normalizeConversationMessage(messageContext.message).mentions ?? []
       );
       let baseContext = null;
+      let referenceContext = null;
       if (session?.sessionKind === "workChat" && session.workId) {
         baseContext = workChatContextService.build(session.workId, session);
+        referenceContext = await resolveContextReferences(reference.sessionId, { characterBudget: 4_096 });
+        if (referenceContext?.prompt) {
+          baseContext = { ...baseContext, prompt: `${baseContext.prompt}\n\n${referenceContext.prompt}` };
+        }
       } else if (session?.sessionKind === "assistantChat") {
         baseContext = await resolveContextReferences(reference.sessionId);
         baseContext = {
@@ -107,6 +112,7 @@ export function createSessionApplicationComposition({
           toolDomains: appliedToolDomainIds(toolMaterialization),
           toolCatalogVersion: toolMaterialization?.appliedCatalogVersion ?? null
         });
+        referenceContext = await resolveContextReferences(reference.sessionId, { characterBudget: 4_096 });
       }
       let memoryContext = null;
       if (session?.agentId) {
@@ -140,6 +146,7 @@ export function createSessionApplicationComposition({
           directUserIntentContext,
           memoryContext,
           mentionContext,
+          referenceContext,
           requiredContexts: [skillRoutingContext].filter(Boolean)
         });
       }
