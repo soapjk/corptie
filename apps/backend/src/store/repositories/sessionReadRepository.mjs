@@ -207,7 +207,10 @@ export class SessionReadRepository {
   rowToSession(row) {
     const rawStatus = parseJson(row.raw_json, {});
     const args = parseJson(row.args_json, []);
-    const status = row.status;
+    // Stored Provider turn outcomes use "completed"; the product Session
+    // contract exposed to both clients uses "complete". A legacy value must
+    // not make an entire State Sync snapshot undecodable on macOS.
+    const status = row.status === "completed" ? "complete" : row.status;
     const projectedProvider = row.projection_provider_id ?? row.provider;
     const isCodexAppServer = projectedProvider === "codex-app-server";
     const publicId = row.id;

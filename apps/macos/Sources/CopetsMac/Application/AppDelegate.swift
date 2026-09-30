@@ -454,7 +454,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.center()
         window.isReleasedWhenClosed = false
         let resizeState = MainWindowResizeState()
-        let titlebarControls = MainWindowTitlebarAccessoryController()
         let hostingView = MainWindowSurfaceContainer(
             rootView: FirstRunSetupRoot { MainWindowContentView() }.environmentObject(resizeState),
             resizeState: resizeState
@@ -470,7 +469,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.contentMinSize = MainWindowInitialLayout.minimumContentSize
         window.preservesContentDuringLiveResize = true
         window.contentView = hostingView
-        window.addTitlebarAccessoryViewController(titlebarControls)
         applyMainWindowLevel(to: window)
         window.makeKeyAndOrderFront(nil)
         warRoomWindow = window

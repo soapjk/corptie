@@ -1,7 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "$(dirname "$0")/../apps/macos"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
+EXTERNAL_RUNTIME_ROOT="${CORPTIE_DEVELOPMENT_RUNTIME_ROOT:-/Volumes/T9/CorptieData/development-launcher}"
+if [[ "${EXTERNAL_RUNTIME_ROOT}" != /Volumes/* ]]; then
+  echo "Development runtime root must be an explicitly configured external volume path." >&2
+  exit 1
+fi
+WORKTREE_HASH="$(printf '%s' "${ROOT_DIR}" | shasum -a 256 | awk '{print substr($1,1,24)}')"
+WORKTREE_RUNTIME_ROOT="${EXTERNAL_RUNTIME_ROOT}/worktrees/${WORKTREE_HASH}"
+SHARED_PREVIEW_ROOT="${EXTERNAL_RUNTIME_ROOT}/shared-preview-data"
+if [[ -z "${CORPTIE_DEVELOPMENT_DATA_ROOT:-}" && ! -e "${WORKTREE_RUNTIME_ROOT}/preview-data" \
+      && -f "${SHARED_PREVIEW_ROOT}/.preview-only" \
+      && -f "${SHARED_PREVIEW_ROOT}/development/database/corptie.sqlite" ]]; then
+  mkdir -p "${WORKTREE_RUNTIME_ROOT}"
+  cp -c -R "${SHARED_PREVIEW_ROOT}" "${WORKTREE_RUNTIME_ROOT}/preview-data"
+fi
+if [[ -z "${CORPTIE_DEVELOPMENT_DATA_ROOT:-}" && -f "${WORKTREE_RUNTIME_ROOT}/preview-data/.preview-only" ]]; then
+  export CORPTIE_DATA_ROOT="${WORKTREE_RUNTIME_ROOT}/preview-data"
+  export CORPTIE_DEVELOPMENT_PREVIEW_SESSION_ID="session:development-structured-preview-v1"
+fi
+
+cd "${ROOT_DIR}/apps/macos"
 export CORPTIE_ENV=development
 export CORPTIE_BACKEND_PORT="${CORPTIE_BACKEND_PORT:-47322}"
 

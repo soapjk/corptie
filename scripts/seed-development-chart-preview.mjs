@@ -113,9 +113,16 @@ try {
   await store.initialize({ performMigrations: false });
   const missing = items.filter((item) => !store.getSessionItem(sessionId, item.id));
   store.runInTransaction(() => {
+    // Earlier versions seeded a Provider turn outcome ("completed") into the
+    // product Session status field ("complete"). Repair those exact synthetic
+    // records so older Development clients can still decode the full snapshot.
+    store.db.run(
+      "UPDATE sessions SET status = 'complete' WHERE id IN (?, ?) AND status = 'completed'",
+      [sessionId, processSessionId]
+    );
     if (!store.getSession(sessionId)) {
       store.createSession({ id: sessionId, title: "图表展示预览", sessionKind: "assistantChat",
-        agentName: "本地预览", provider: "codex-app-server", status: "completed" });
+        agentName: "本地预览", provider: "codex-app-server", status: "complete" });
     }
     missing.forEach((item) => {
       const index = items.indexOf(item);
@@ -128,7 +135,7 @@ try {
     });
     if (!store.getSession(processSessionId)) {
       store.createSession({ id: processSessionId, title: "结构化消息展示预览", sessionKind: "assistantChat",
-        agentName: "本地预览", provider: "codex-app-server", status: "completed" });
+        agentName: "本地预览", provider: "codex-app-server", status: "complete" });
     }
     processItems.filter((item) => !store.getSessionItem(processSessionId, item.id)).forEach((item) => {
       const index = processItems.indexOf(item);

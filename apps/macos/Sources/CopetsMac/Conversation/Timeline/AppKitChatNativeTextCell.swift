@@ -81,12 +81,9 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         cardView.wantsLayer = true
         cardView.layer?.cornerCurve = .continuous
         cardView.layer?.cornerRadius = 14
-        cardView.layer?.borderWidth = 1
+        cardView.layer?.borderWidth = 0
         cardView.layer?.masksToBounds = false
-        cardView.layer?.shadowColor = NSColor.black.cgColor
-        cardView.layer?.shadowOpacity = 0.04
-        cardView.layer?.shadowRadius = 8
-        cardView.layer?.shadowOffset = CGSize(width: 0, height: -3)
+        cardView.layer?.shadowOpacity = 0
         timeSeparatorLabel.translatesAutoresizingMaskIntoConstraints = false
         timeSeparatorLabel.font = .systemFont(ofSize: 10.5, weight: .medium)
         timeSeparatorLabel.textColor = NativeTimelineCardPalette.mutedText
@@ -454,10 +451,10 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
                 cardView.layer?.borderColor = NativeTimelineCardPalette.userBorder.cgColor
             case .agent:
                 cardView.layer?.borderWidth = 0
-                cardView.layer?.backgroundColor = NSColor.white.cgColor
+                cardView.layer?.backgroundColor = NativeTimelineCardPalette.agentBackground.cgColor
                 cardView.layer?.borderColor = NSColor.black.withAlphaComponent(0.08).cgColor
             case .process:
-                cardView.layer?.borderWidth = 1
+                cardView.layer?.borderWidth = 0
                 let tint = row.processState.color
                 cardView.layer?.backgroundColor = tint.withAlphaComponent(row.isExpanded ? 0.055 : 0.035).cgColor
                 cardView.layer?.borderColor = tint.withAlphaComponent(0.16).cgColor
@@ -796,5 +793,6 @@ private enum NativeTimelineCardPalette {
     static let agentText = NSColor(calibratedRed: 0.18, green: 0.48, blue: 0.27, alpha: 1)
     static let collaborationText = NSColor(calibratedRed: 0.30, green: 0.34, blue: 0.68, alpha: 1)
     static let userBackground = NSColor(calibratedRed: 0.945, green: 0.965, blue: 0.988, alpha: 1)
+    static let agentBackground = NSColor(calibratedRed: 0.952, green: 0.961, blue: 0.941, alpha: 1)
     static let userBorder = NSColor(calibratedRed: 0.45, green: 0.58, blue: 0.76, alpha: 0.22)
 }

@@ -98,23 +98,6 @@ struct MainWindowResizeLayoutTests {
         #expect(!resizeState.isLiveResize)
     }
 
-    @MainActor
-    @Test
-    func titlebarContainsOnlyTrailingStatusNotNavigation() {
-        let trailingChrome = NSView(frame: .zero)
-        let controller = MainWindowTitlebarAccessoryController(trailingSurface: trailingChrome)
-        let view = controller.surfaceView
-        #expect(controller.layoutAttribute == .top)
-        #expect(view.subviews.count == 1)
-        for width: CGFloat in [1_200, 1_420] {
-            view.frame = NSRect(x: 0, y: 0, width: width, height: 32)
-            view.layoutSubtreeIfNeeded()
-            #expect(trailingChrome.frame.size == NSSize(width: 220, height: 22))
-            #expect(view.bounds.maxX - trailingChrome.frame.maxX == 12)
-            #expect(trailingChrome.frame.midY == view.bounds.midY)
-        }
-    }
-
     @Test
     func initialWindowSizeUsesLargerScreenAwareBounds() {
         #expect(MainWindowInitialLayout.contentSize(

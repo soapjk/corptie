@@ -18,188 +18,209 @@ struct DetailHeaderView: View {
     @State private var gitHeadState: GitHeadState?
 
     var body: some View {
-        HStack(spacing: 10) {
-            if isLiquidGlass {
-                Button {
-                    withAnimation(.easeOut(duration: 0.16)) {
-                        backendClient.closeDetail()
-                    }
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 13, weight: .bold))
-                        .frame(width: 28, height: 28)
-                }
-                .buttonStyle(IconButtonStyle())
-                .help(L10n("Back to task list"))
+        headerControls
+            .task(id: workspaceRouteIdentity) {
+                await refreshGitBranch()
             }
-
-            VStack(alignment: .leading, spacing: 2) {
-                if !isLiquidGlass, let selectedTitle {
-                    HStack(spacing: 7) {
-                        Button {
-                            copySessionTitle(selectedTitle)
-                        } label: {
-                            Text(selectedTitle)
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help(L10n("Click to copy Session title"))
-                        .accessibilityLabel(L10n("Copy Session title"))
-
-                        if didCopySessionTitle {
-                            Label(L10n("Copied"), systemImage: "checkmark")
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundStyle(CorptiePalette.connected)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 3)
-                                .background(CorptiePalette.connected.opacity(0.10), in: Capsule())
-                                .transition(.opacity.combined(with: .scale(scale: 0.94)))
-                                .accessibilityHidden(true)
-                        }
-                    }
-                }
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    if backendClient.viewingHistoricalThreadId != nil {
-                        Label(L10n("Read-only history"), systemImage: "clock.arrow.circlepath")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.orange)
-                    } else if backendClient.selectedSession?.external?.workspace?.continuationState == "failed" {
-                        Label(L10n("Worktree continuation failed"), systemImage: "exclamationmark.triangle.fill")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.orange)
-                    } else if backendClient.selectedSession?.external?.workspace?.transitionStrategy == "handoff" {
-                        Label(L10n("Context handoff"), systemImage: "arrow.triangle.branch")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(CorptiePalette.secondaryText)
-                    }
-                }
-                if let cwd = workspacePath, !cwd.isEmpty {
-                    HStack(alignment: .center, spacing: 6) {
-                        if let selectedSession = backendClient.selectedSession {
-                            SessionProviderIdentity(session: selectedSession)
-                                .font(.system(size: 11, weight: .semibold))
-                        }
-
-                        Button(action: copyWorkspacePath) {
-                            HStack(spacing: 4) {
-                                Text(projectName ?? URL(fileURLWithPath: cwd).lastPathComponent)
-                                    .lineLimit(1)
-                                if didCopyWorkspacePath {
-                                    Image(systemName: "checkmark")
-                                        .font(.system(size: 8, weight: .bold))
-                                        .foregroundStyle(CorptiePalette.connected)
-                                        .transition(.opacity.combined(with: .scale))
-                                }
-                            }
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(CorptiePalette.secondaryText)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help(L10nFormat("Copy full workspace path: %@", cwd))
-
-                        if let gitHeadState,
-                           gitHeadState.stampText != nil {
-                            Button {
-                                openWorktreeManagement()
-                            } label: {
-                                GitBranchStamp(headState: gitHeadState)
-                            }
-                            .buttonStyle(.plain)
-                            .help(L10n("Manage project worktrees and service"))
-                            .accessibilityLabel(L10n("Manage project worktrees and service"))
-                        }
-                    }
+            .onChange(of: backendClient.gitHubPushPreparation) { _, preparation in
+                if let preparation {
+                    GitHubPushConfirmationWindowManager.shared.show(
+                        preparation: preparation,
+                        backendClient: backendClient
+                    )
                 } else {
-                    Text(backendClient.selectedSession?.summary ?? "")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(CorptiePalette.secondaryText)
-                        .lineLimit(1)
+                    GitHubPushConfirmationWindowManager.shared.close()
                 }
             }
+            .onChange(of: backendClient.selectedSession?.id) { _, _ in
+                sessionTitleCopyFeedbackTask?.cancel()
+                sessionTitleCopyFeedbackTask = nil
+                didCopySessionTitle = false
+            }
+            .onDisappear {
+                sessionTitleCopyFeedbackTask?.cancel()
+                sessionTitleCopyFeedbackTask = nil
+            }
+    }
 
-            Spacer()
+    @ViewBuilder
+    private var headerControls: some View {
+        if #available(macOS 26.0, *) {
+            GlassEffectContainer(spacing: 6) { headerControlRow }
+        } else {
+            headerControlRow
+        }
+    }
 
-            if let action = primaryHeaderAction {
-                headerActionButton(action)
-                    .contextMenu {
-                        headerActionMenu
+    private var headerControlRow: some View {
+        HStack(spacing: 10) {
+            HStack {
+                if isLiquidGlass {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.16)) {
+                            backendClient.closeDetail()
+                        }
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 13, weight: .bold))
+                            .frame(width: 28, height: 28)
                     }
+                    .buttonStyle(.plain)
+                    .platformGlassSurface(in: Circle(), interactive: true)
+                    .help(L10n("Back to task list"))
+                }
             }
+            .frame(width: 66, alignment: .leading)
 
-            if let status = supplementaryData.selectedProjectWorktreeStatus {
-                ProjectServiceStatusDot(status: status.service)
-                    .help(projectServiceStatusHelp(status))
+            HStack {
+                Spacer(minLength: 0)
+                headerIdentityCapsule
+                Spacer(minLength: 0)
             }
+            .frame(maxWidth: .infinity)
 
-            if backendClient.selectedSession != nil {
+            HStack(spacing: 10) {
+                if backendClient.selectedSession != nil {
+                    Button {
+                        guard let session = backendClient.selectedSession else { return }
+                        DetachedChatWindowManager.shared.show(session: session)
+                    } label: {
+                        Image(systemName: "macwindow.on.rectangle")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(width: 28, height: 28)
+                            .platformGlassSurface(in: Circle(), interactive: true)
+                    }
+                    .buttonStyle(.plain)
+                    .help(L10n("Open chat in floating window"))
+                    .accessibilityLabel(L10n("Open chat in floating window"))
+                    .accessibilityIdentifier("session.detail.detach")
+
+                    Menu {
+                        Button(action: openWorkspaceInVSCode) {
+                            Label(
+                                L10n("Open in Visual Studio Code"),
+                                systemImage: "chevron.left.forwardslash.chevron.right"
+                            )
+                        }
+                        .disabled(workspacePath == nil)
+
+                        Button(action: openWorkspaceInFinder) {
+                            Label(L10n("Open in Finder"), systemImage: "folder")
+                        }
+                        .disabled(workspacePath == nil)
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 13, weight: .semibold))
+                            .frame(width: 28, height: 28)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .frame(width: 28, height: 28)
+                    .platformGlassSurface(in: Circle(), interactive: true)
+                    .help(L10n("Open workspace"))
+                    .accessibilityLabel(L10n("Open workspace"))
+                    .accessibilityIdentifier("session.detail.actions")
+                }
+            }
+            .frame(width: 66, alignment: .trailing)
+        }
+    }
+
+    private var headerIdentityCapsule: some View {
+        VStack(alignment: .center, spacing: 3) {
+            if let selectedTitle {
                 Button {
-                    guard let session = backendClient.selectedSession else { return }
-                    DetachedChatWindowManager.shared.show(session: session)
+                    copySessionTitle(selectedTitle)
                 } label: {
-                    Image(systemName: "macwindow.on.rectangle")
-                        .font(.system(size: 12, weight: .semibold))
-                        .frame(width: 28, height: 28)
-                        .conversationGlassControl()
+                    Text(selectedTitle)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .multilineTextAlignment(.center)
+                        .accessibilityAddTraits(.isHeader)
+                        .accessibilityIdentifier("conversation-task-title")
                 }
                 .buttonStyle(.plain)
-                .help(L10n("Open chat in floating window"))
-                .accessibilityLabel(L10n("Open chat in floating window"))
-                .accessibilityIdentifier("session.detail.detach")
+                .help(L10n("Click to copy Session title"))
+                .accessibilityLabel(L10n("Copy Session title"))
 
-                Menu {
-                    Button(action: openWorkspaceInVSCode) {
-                        Label(
-                            L10n("Open in Visual Studio Code"),
-                            systemImage: "chevron.left.forwardslash.chevron.right"
-                        )
-                    }
-                    .disabled(workspacePath == nil)
-
-                    Button(action: openWorkspaceInFinder) {
-                        Label(L10n("Open in Finder"), systemImage: "folder")
-                    }
-                    .disabled(workspacePath == nil)
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 13, weight: .semibold))
-                        .frame(width: 28, height: 28)
+                if didCopySessionTitle {
+                    Label(L10n("Copied"), systemImage: "checkmark")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(CorptiePalette.connected)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(CorptiePalette.connected.opacity(0.10), in: Capsule())
+                        .transition(.opacity.combined(with: .scale(scale: 0.94)))
+                        .accessibilityHidden(true)
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help(L10n("Open workspace"))
-                .accessibilityLabel(L10n("Open workspace"))
-                .accessibilityIdentifier("session.detail.actions")
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if backendClient.viewingHistoricalThreadId != nil {
+                    Label(L10n("Read-only history"), systemImage: "clock.arrow.circlepath")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.orange)
+                } else if backendClient.selectedSession?.external?.workspace?.continuationState == "failed" {
+                    Label(L10n("Worktree continuation failed"), systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.orange)
+                } else if backendClient.selectedSession?.external?.workspace?.transitionStrategy == "handoff" {
+                    Label(L10n("Context handoff"), systemImage: "arrow.triangle.branch")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                }
+            }
+            HStack(alignment: .center, spacing: 6) {
+                if let selectedSession = backendClient.selectedSession {
+                    SessionProviderIdentity(session: selectedSession, prominentText: true)
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                if let cwd = workspacePath, !cwd.isEmpty {
+                    Button(action: copyWorkspacePath) {
+                        HStack(spacing: 4) {
+                            Text(projectName ?? URL(fileURLWithPath: cwd).lastPathComponent)
+                                .lineLimit(1)
+                            if didCopyWorkspacePath {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundStyle(CorptiePalette.connected)
+                                    .transition(.opacity.combined(with: .scale))
+                            }
+                        }
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(L10nFormat("Copy full workspace path: %@", cwd))
 
+                    if let gitHeadState,
+                       gitHeadState.stampText != nil {
+                        Button {
+                            openWorktreeManagement()
+                        } label: {
+                            GitBranchStamp(headState: gitHeadState)
+                        }
+                        .buttonStyle(.plain)
+                        .help(gitHeadState.helpText ?? L10n("Manage project worktrees and service"))
+                        .accessibilityLabel(gitHeadState.helpText ?? L10n("Manage project worktrees and service"))
+                    }
+                }
+                if let status = supplementaryData.selectedProjectWorktreeStatus {
+                    ProjectServiceStatusDot(status: status.service)
+                        .help(projectServiceStatusHelp(status))
+                }
+            }
+            if let action = primaryHeaderAction {
+                headerActionButton(action)
+                    .contextMenu { headerActionMenu }
             }
         }
-        .task(id: workspaceRouteIdentity) {
-            await refreshGitBranch()
-        }
-        .onChange(of: backendClient.gitHubPushPreparation) { _, preparation in
-            if let preparation {
-                GitHubPushConfirmationWindowManager.shared.show(
-                    preparation: preparation,
-                    backendClient: backendClient
-                )
-            } else {
-                GitHubPushConfirmationWindowManager.shared.close()
-            }
-        }
-        .onChange(of: backendClient.selectedSession?.id) { _, _ in
-            sessionTitleCopyFeedbackTask?.cancel()
-            sessionTitleCopyFeedbackTask = nil
-            didCopySessionTitle = false
-        }
-        .onDisappear {
-            sessionTitleCopyFeedbackTask?.cancel()
-            sessionTitleCopyFeedbackTask = nil
-        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .frame(maxWidth: 560)
+        .platformGlassSurface(in: Capsule())
     }
 
     private var selectedTitle: String? {
@@ -272,8 +293,7 @@ struct DetailHeaderView: View {
                 Label(L10n("Active thread"), systemImage: "arrow.forward.circle")
                     .font(.system(size: 11, weight: .semibold))
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .buttonStyle(.plain)
             .help(L10n("Return to the active workspace thread"))
         case .reconnect:
             Button {
@@ -283,13 +303,13 @@ struct DetailHeaderView: View {
                     .font(.system(size: 11, weight: .bold))
                     .frame(width: 28, height: 28)
             }
-            .buttonStyle(IconButtonStyle())
+            .buttonStyle(.plain)
             .help(L10n("Reconnect session"))
         case .gitHubPush:
             let worktree = selectedSessionWorktree
             let color = gitHubButtonColor(worktree)
             if backendClient.isSelectedSessionPushingGitHub {
-                GitHubPushButtonVisual(color: color, state: .pushing)
+                GitHubPushButtonVisual(color: color, state: .pushing, showsSurface: false)
                     .help(gitHubPushButtonHelp(worktree))
             } else {
                 Button {
@@ -297,7 +317,8 @@ struct DetailHeaderView: View {
                 } label: {
                     GitHubPushButtonVisual(
                         color: color,
-                        state: backendClient.isPreparingGitHubPush ? .preparing : .ready
+                        state: backendClient.isPreparingGitHubPush ? .preparing : .ready,
+                        showsSurface: false
                     )
                 }
                 .buttonStyle(.plain)
@@ -311,7 +332,7 @@ struct DetailHeaderView: View {
                 Button {
                     openWorktreeManagement()
                 } label: {
-                    ProjectWorktreeStatusChip(status: status)
+                    ProjectWorktreeStatusChip(status: status, showsSurface: false)
                 }
                 .buttonStyle(.plain)
                 .help(L10n("Manage project worktrees and service"))

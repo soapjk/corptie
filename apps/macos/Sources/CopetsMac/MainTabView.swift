@@ -1,4 +1,5 @@
 import AppKit
+import CorptieConversation
 import SwiftUI
 
 // Sessions 与控制台共用的栏位几何，确保 sidebar 与详情卡片宽度稳定。
@@ -152,7 +153,7 @@ final class MainTabPageContainer: NSView {
         self.pageProvider = pageProvider
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        layer?.backgroundColor = NSColor.clear.cgColor
         layer?.masksToBounds = true
     }
 
@@ -163,7 +164,7 @@ final class MainTabPageContainer: NSView {
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        layer?.backgroundColor = NSColor.clear.cgColor
     }
 
     override func layout() {
@@ -443,6 +444,16 @@ struct MainWindowContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .ignoresSafeArea(.container, edges: .top)
+        .background {
+            LocalWallpaperCanvas(fallbackColor: selectionState.selectedTab == .console
+                ? WorkbenchCanvasSurface.defaultColor
+                : Color(nsColor: .windowBackgroundColor))
+        }
+        .overlay(alignment: .topTrailing) {
+            MainWindowTaskSurfaceView()
+                .padding(.top, 5)
+                .padding(.trailing, MainWindowLayoutMetrics.titlebarTrailingInset)
+        }
         // MainTabPageContainer and MainWindowSurfaceContainer already clip to
         // window bounds. A SwiftUI clip here uses the safe-area layout bounds
         // and cuts off the full-height sidebar beneath the title bar.

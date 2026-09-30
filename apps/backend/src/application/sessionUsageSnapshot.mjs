@@ -17,6 +17,7 @@ export async function loadSessionUsageSnapshot({
   }
   return {
     account: loadedAccount ?? fallbackAccount,
+    accountFresh: loadedAccount !== null,
     context: contextResult.status === "fulfilled" ? contextResult.value ?? null : null,
     resetForecast
   };

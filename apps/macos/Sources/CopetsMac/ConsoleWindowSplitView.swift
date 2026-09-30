@@ -2,34 +2,8 @@ import AppKit
 import CorptieConversation
 import SwiftUI
 
-/// A single opaque canvas replaces the sidebar-only material without adding a blur layer.
-private final class ConsoleWorkbenchCanvasView: NSView {
-    override var isOpaque: Bool { true }
-
-    override func draw(_ dirtyRect: NSRect) {
-        WorkbenchCanvasSurface.nativeColor.setFill()
-        dirtyRect.fill()
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        needsDisplay = true
-    }
-}
-
 @MainActor
 final class ConsoleNativeSplitView: NSSplitView {
-    var windowChanged: (() -> Void)?
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        windowChanged?()
-    }
-
-    override func layout() {
-        super.layout()
-        windowChanged?()
-    }
     // A viewport has no content-derived ideal size. In particular, querying
     // fittingSize must not recursively measure the SwiftUI trees it contains.
     override var fittingSize: NSSize { NSSize(width: 1000, height: 700) }
@@ -94,7 +68,6 @@ struct ConsoleWindowSplitView<Sidebar: View, Detail: View>: NSViewControllerRepr
 final class ConsolePaneController<Content: View>: NSViewController {
     let host: NSHostingController<Content>
     private let isSidebar: Bool
-    private var contentHeightConstraint: NSLayoutConstraint?
 
     init(root: Content, isSidebar: Bool) {
         host = NSHostingController(rootView: root)
@@ -107,31 +80,19 @@ final class ConsolePaneController<Content: View>: NSViewController {
     required init?(coder: NSCoder) { fatalError() }
 
     override func loadView() {
-        view = ConsoleWorkbenchCanvasView()
+        // The window owns the canvas wallpaper. Panes are transparent so the
+        // same image is not duplicated or recropped during divider drags.
+        view = NSView()
         addChild(host)
         host.view.identifier = NSUserInterfaceItemIdentifier(isSidebar ? "console.sidebar.content" : "console.detail.content")
         host.view.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(host.view)
-        let height = host.view.heightAnchor.constraint(equalTo: view.heightAnchor)
-        contentHeightConstraint = height
         NSLayoutConstraint.activate([
             host.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             host.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            height,
+            host.view.topAnchor.constraint(equalTo: view.topAnchor),
             host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
-    }
-
-    func updateWindowLayoutGuide() {
-        guard let window = view.window, let contentView = window.contentView else { return }
-        // Keep constraints inside this pane's layout engine. A cross-host
-        // constraint to the window guide collapsed the hosting view to zero.
-        // Read only the system-owned unobscured rect; never measure content.
-        let unobscured = contentView.convert(window.contentLayoutRect, from: nil)
-        let inset = max(0, contentView.bounds.maxY - unobscured.maxY)
-        if contentHeightConstraint?.constant != -inset {
-            contentHeightConstraint?.constant = -inset
-        }
     }
 }
 
@@ -157,7 +118,6 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
 
     override func loadView() {
         let native = ConsoleNativeSplitView()
-        native.windowChanged = { [weak self] in self?.attachToolbar() }
         splitView = native
         view = native
     }
@@ -177,18 +137,12 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
         super.viewDidLoad()
     }
 
-    override func viewDidAppear() {
-        super.viewDidAppear()
-        attachToolbar()
-    }
-
     override func viewDidLayout() {
         super.viewDidLayout()
         if !restoredWidth, splitView.bounds.width > 0 {
             restoredWidth = true
             restoreWidth()
         }
-        attachToolbar()
     }
 
     func update(mode: ConsoleNavigationMode, isActive: Bool, sidebar: Sidebar, detail: Detail) {
@@ -200,12 +154,6 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
             self.mode = mode
             restoreWidth()
         }
-        attachToolbar()
-    }
-
-    private func attachToolbar() {
-        sidebarController.updateWindowLayoutGuide()
-        detailController.updateWindowLayoutGuide()
     }
 
     override func splitView(_ splitView: NSSplitView, shouldHideDividerAt dividerIndex: Int) -> Bool {
