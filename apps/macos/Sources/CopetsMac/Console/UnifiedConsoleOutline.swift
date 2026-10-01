@@ -149,7 +149,6 @@ extension UnifiedConsoleView {
             .padding(.vertical, 4)
             .background(ConsoleOverlayScroller(placeOnLeadingEdge: true))
         }
-        .scrollIndicators(.automatic)
         .contentMargins(.top, 40, for: .scrollContent)
     }
 
