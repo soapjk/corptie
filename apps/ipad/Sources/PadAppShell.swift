@@ -170,54 +170,29 @@ struct PadAppShell: View {
 }
 
 private struct PadNavigationRail: View {
-    @ObservedObject private var wallpaper = LocalWallpaperStore.shared
     @Binding var selection: PadTab
     @Binding var isExpanded: Bool
     let settings: () -> Void
 
     var body: some View {
-        VStack(spacing: 4) {
-            ForEach(PadTab.allCases) { item in
-                let isSelected = selection == item
-                Button {
-                    selection = item
-                } label: {
-                    railLabel(symbol: item.symbol, title: item.title, selected: isSelected)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                .help(item.title)
-                .accessibilityLabel(item.title)
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
-                .accessibilityIdentifier("tab-\(item.rawValue)")
-            }
-
-            Spacer(minLength: 12)
-            Divider().padding(.horizontal, 8)
-
-            Button(action: settings) {
-                railLabel(symbol: "gearshape", title: "设置")
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("设置")
-            .accessibilityLabel("设置")
-            .accessibilityIdentifier("navigation-settings")
-        }
+        PlatformNavigationRail(
+            items: PadTab.allCases.map {
+                PlatformNavigationItem(id: String($0.rawValue), title: $0.title,
+                                       symbol: $0.symbol,
+                                       accessibilityID: "tab-\($0.rawValue)")
+            },
+            selectedID: String(selection.rawValue),
+            expanded: isExpanded,
+            settingsTitle: "设置",
+            settingsAccessibilityID: "navigation-settings",
+            onSelect: { id in
+                if let rawValue = Int(id), let tab = PadTab(rawValue: rawValue) { selection = tab }
+            },
+            onSettings: settings
+        )
         .padding(.horizontal, 8)
         .padding(.vertical, 8)
         .frame(maxHeight: .infinity)
-        .background {
-            Color(uiColor: .systemGroupedBackground).opacity(wallpaper.hasWallpaper ? 0.72 : 1)
-                .ignoresSafeArea(edges: [.top, .bottom, .leading])
-        }
-        .overlay(alignment: .trailing) {
-            Rectangle()
-                .fill(Color.primary.opacity(0.08))
-                .frame(width: 0.5)
-                .ignoresSafeArea(edges: [.top, .bottom])
-                .allowsHitTesting(false)
-        }
         .overlay(alignment: .trailing) {
             Rectangle()
                 .fill(Color.clear)
@@ -256,42 +231,6 @@ private struct PadNavigationRail: View {
         .accessibilityIdentifier("navigation-rail")
     }
 
-    private func railLabel(symbol: String, title: String, selected: Bool = false) -> some View {
-        ZStack {
-            if selected {
-                if isExpanded {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color.accentColor.opacity(0.10))
-                } else {
-                    Circle()
-                        .fill(Color.accentColor.opacity(0.10))
-                        .frame(width: 40, height: 40)
-                }
-            }
-
-            if isExpanded {
-                HStack(spacing: 10) {
-                    railIcon(symbol, selected: selected)
-                    Text(title)
-                        .font(.system(size: 15, weight: selected ? .semibold : .medium))
-                        .lineLimit(1)
-                    Spacer(minLength: 4)
-                }
-            } else {
-                railIcon(symbol, selected: selected)
-                    .frame(maxWidth: .infinity, alignment: .center)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: 44)
-        .contentShape(Rectangle())
-    }
-
-    private func railIcon(_ symbol: String, selected: Bool) -> some View {
-        Image(systemName: symbol)
-            .font(.system(size: 16, weight: selected ? .semibold : .medium))
-            .frame(width: 40, height: 40)
-    }
 }
 
 private struct PadBottomTabBar: View {

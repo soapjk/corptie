@@ -11,11 +11,11 @@ extension UnifiedConsoleView {
             } else {
                 ForEach(assistantSessionRows) { row in
                     sessionRow(row)
-                        .background(ConsoleOverlayScroller(placeOnLeadingEdge: true))
                 }
             }
         }
         .listStyle(.sidebar)
+        .scrollIndicators(.hidden)
         .scrollContentBackground(.hidden)
         .contentMargins(.top, 40, for: .scrollContent)
     }
@@ -49,7 +49,6 @@ extension UnifiedConsoleView {
         return List {
             ForEach(archivedTasks) { task in
                 taskRow(task)
-                    .background(ConsoleOverlayScroller(placeOnLeadingEdge: true))
             }
             if rows.isEmpty && archivedTasks.isEmpty {
                 Text(L10n("No Archived Sessions"))
@@ -57,11 +56,11 @@ extension UnifiedConsoleView {
             } else {
                 ForEach(rows) { row in
                     sessionRow(row)
-                        .background(ConsoleOverlayScroller(placeOnLeadingEdge: true))
                 }
             }
         }
         .listStyle(.sidebar)
+        .scrollIndicators(.hidden)
         .scrollContentBackground(.hidden)
         .contentMargins(.top, 40, for: .scrollContent)
     }
@@ -77,7 +76,6 @@ extension UnifiedConsoleView {
                 }
             } header: {
                 Text(L10n("Work Chat"))
-                    .background(ConsoleOverlayScroller(placeOnLeadingEdge: true))
             }
 
             Section {
@@ -89,6 +87,7 @@ extension UnifiedConsoleView {
             }
         }
         .listStyle(.sidebar)
+        .scrollIndicators(.hidden)
         .scrollContentBackground(.hidden)
         .contentMargins(.top, 40, for: .scrollContent)
     }

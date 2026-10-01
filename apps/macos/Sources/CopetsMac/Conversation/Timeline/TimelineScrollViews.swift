@@ -38,8 +38,7 @@ final class IntrinsicHeightTableView: NSTableView {
     }
 }
 
-final class TimelineIntentScroller: NSScroller {
-    override class var isCompatibleWithOverlayScrollers: Bool { true }
+final class TimelineIntentScroller: ConsoleThinScroller {
     var onBegin: (() -> Void)?
     var onEnd: (() -> Void)?
 
