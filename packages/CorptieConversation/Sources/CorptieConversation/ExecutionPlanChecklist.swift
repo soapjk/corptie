@@ -34,7 +34,7 @@ public struct ExecutionPlanChecklist: View {
             }
 
             if !plan.steps.isEmpty {
-                LazyVStack(alignment: .leading, spacing: 5) {
+                VStack(alignment: .leading, spacing: 5) {
                     ForEach(plan.steps) { step in
                         HStack(alignment: .firstTextBaseline, spacing: 7) {
                             Text(step.marker)

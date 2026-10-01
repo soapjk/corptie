@@ -346,6 +346,7 @@ final class NativeTimelineLayoutCache {
         let imagePaths: [String]
         let userInput: ConversationUserInput?
         let userInputStatus: String?
+        let executionPlan: ConversationExecutionPlan?
 
         var estimatedTextLength: Int {
             text.utf16.count + rawStatusText.utf16.count + processSteps.reduce(into: 0) { total, step in
@@ -403,7 +404,8 @@ final class NativeTimelineLayoutCache {
             isWorkspaceCard: row.isWorkspaceCard,
             imagePaths: row.images.map { $0.managedPath },
             userInput: row.userInput,
-            userInputStatus: row.userInputStatus
+            userInputStatus: row.userInputStatus,
+            executionPlan: row.executionPlan
         )
         if let cached = values[key] {
             touch(key)
@@ -419,6 +421,20 @@ final class NativeTimelineLayoutCache {
             values[key] = layout
             touch(key)
             estimatedBytes += 512 + request.questions.reduce(0) { $0 + $1.question.utf16.count * 8 }
+            evictIfNeeded()
+            return layout
+        }
+
+        if let plan = row.executionPlan {
+            let cardWidth = min(560, max(120, normalizedWidth - 8))
+            let measured = NativePlanChecklistHeightCache.shared.height(of: plan, width: cardWidth - 28)
+            let height = min(300, measured) + 28
+            let layout = Layout(attributedText: NSAttributedString(string: ""), richBlocks: [],
+                processBlocks: [], cardWidth: cardWidth, textHeight: 0, rawStatusHeight: 0,
+                rowHeight: height + row.timeSeparatorHeight)
+            values[key] = layout
+            touch(key)
+            estimatedBytes += 512 + plan.steps.reduce(0) { $0 + $1.text.utf16.count * 8 }
             evictIfNeeded()
             return layout
         }
@@ -447,8 +463,8 @@ final class NativeTimelineLayoutCache {
                 let blockWidth = max(20, textWidth - 16)
                 let height: CGFloat
                 if let plan = step.plan {
-                    height = plan.steps.count > 8 ? 300
-                        : NativePlanChecklistHeightCache.shared.height(of: plan, width: blockWidth)
+                    let measured = NativePlanChecklistHeightCache.shared.height(of: plan, width: blockWidth)
+                    height = min(300, measured)
                 } else if let structured {
                     height = structured.height
                 } else {
@@ -584,9 +600,9 @@ final class NativeTimelineLayoutCache {
             if !direct { height += 38 }
             if request.canCancel == true { height += 32 }
         } else {
-            height += 30
+            height += 20
         }
-        return max(100, height + 28) // room for progress or a short inline error
+        return max(72, height + 8)
     }
 
     private func chartHeight(_ spec: ConversationChartSpec, width: CGFloat) -> CGFloat {
