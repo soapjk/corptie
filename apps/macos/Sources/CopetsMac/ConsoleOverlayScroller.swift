@@ -1,6 +1,17 @@
 import AppKit
 import SwiftUI
 
+/// A narrow native overlay scroller. The scroll view still owns its visibility,
+/// tracking and accessibility behavior; only the allocated width changes.
+class ConsoleThinScroller: NSScroller {
+    override class var isCompatibleWithOverlayScrollers: Bool { true }
+
+    override class func scrollerWidth(for controlSize: NSControl.ControlSize,
+                                     scrollerStyle: NSScroller.Style) -> CGFloat {
+        scrollerStyle == .overlay ? 8 : super.scrollerWidth(for: controlSize, scrollerStyle: scrollerStyle)
+    }
+}
+
 /// Install on scroll content, so only its enclosing scroll view is configured.
 /// AppKit owns showing/fading the overlay; no timers or scroll observations.
 struct ConsoleOverlayScroller: NSViewRepresentable {
@@ -37,6 +48,9 @@ struct ConsoleOverlayScroller: NSViewRepresentable {
         func configure() {
             guard let scrollView = enclosingScrollView else { return }
             if scrollView.scrollerStyle != .overlay { scrollView.scrollerStyle = .overlay }
+            if scrollView.hasVerticalScroller, !(scrollView.verticalScroller is ConsoleThinScroller) {
+                scrollView.verticalScroller = ConsoleThinScroller()
+            }
             if !scrollView.autohidesScrollers { scrollView.autohidesScrollers = true }
             if scrollView.drawsBackground { scrollView.drawsBackground = false }
             if scrollView.contentView.drawsBackground { scrollView.contentView.drawsBackground = false }

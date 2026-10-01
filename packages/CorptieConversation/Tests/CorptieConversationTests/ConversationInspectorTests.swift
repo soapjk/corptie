@@ -54,7 +54,22 @@ struct ConversationInspectorTests {
             .appendingPathComponent("Sources/CorptieConversation/ConversationInspectorSection.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         #expect(source.contains("GlassEffectContainer(spacing: 0) { content }"))
-        #expect(source.contains(".platformGlassSurface(in: RoundedRectangle(cornerRadius: 18, style: .continuous))"))
+        #expect(source.contains("let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)"))
+        #expect(source.contains(".platformGlassSurface(in: shape)"))
+        #expect(source.contains(".clipShape(shape)"))
         #expect(!source.contains(".background(Color.primary.opacity(0.055)"))
+    }
+
+    @Test func navigationRailSharesOneGlassCapsuleAcrossPlatforms() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CorptieConversation/PlatformNavigationRail.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        #expect(source.contains(".platformGlassSurface(in: Capsule())"))
+        #expect(source.contains(".accessibilityIdentifier(\"navigation-tab-capsule\")"))
+        #expect(source.contains(".accessibilityIdentifier(item.accessibilityID)"))
+        #expect(source.contains(".accessibilityValue(selected ? \"selected\" : \"not-selected\")"))
     }
 }

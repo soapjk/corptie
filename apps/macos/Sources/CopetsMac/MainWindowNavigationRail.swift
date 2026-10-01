@@ -17,36 +17,21 @@ struct MainWindowNavigationRail: View {
     @Binding var isExpanded: Bool
 
     var body: some View {
-        VStack(spacing: 4) {
-            VStack(spacing: 4) {
-                ForEach(AppTab.allCases) { tab in
-                    Button { selection = tab } label: {
-                        label(symbol: tab.systemImage, title: tab.title, selected: selection == tab)
-                    }
-                    .buttonStyle(.plain)
-                    .help(tab.title)
-                    .accessibilityLabel(tab.title)
-                    .accessibilityAddTraits(selection == tab ? .isSelected : [])
-                    .accessibilityIdentifier("main-tab.\(tab.rawValue)")
-                    .accessibilityValue(selection == tab ? "selected" : "not-selected")
-                }
-            }
-            .padding(4)
-            .background {
-                RoundedRectangle(cornerRadius: isExpanded ? 20 : 24, style: .continuous)
-                    .fill(Color(nsColor: .controlBackgroundColor))
-            }
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("navigation-tab-capsule")
-            Spacer(minLength: 12)
-            Button { AppDelegate.shared?.openSettings() } label: {
-                label(symbol: "gearshape", title: L10n("设置"), selected: false)
-            }
-            .buttonStyle(.plain)
-            .help(L10n("设置"))
-            .accessibilityLabel(L10n("设置"))
-            .accessibilityIdentifier("main-window.settings")
-        }
+        PlatformNavigationRail(
+            items: AppTab.allCases.map {
+                PlatformNavigationItem(id: $0.rawValue, title: $0.title,
+                                       symbol: $0.systemImage,
+                                       accessibilityID: "main-tab.\($0.rawValue)")
+            },
+            selectedID: selection.rawValue,
+            expanded: isExpanded,
+            settingsTitle: L10n("设置"),
+            settingsAccessibilityID: "main-window.settings",
+            onSelect: { id in
+                if let tab = AppTab(rawValue: id) { selection = tab }
+            },
+            onSettings: { AppDelegate.shared?.openSettings() }
+        )
         .padding(.horizontal, 8)
         .padding(.top, MainWindowLayoutMetrics.titlebarHeight + 8)
         .padding(.bottom, 8)
@@ -77,22 +62,4 @@ struct MainWindowNavigationRail: View {
         .accessibilityIdentifier("navigation-rail")
     }
 
-    private func label(symbol: String, title: String, selected: Bool) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: symbol).font(.system(size: 19, weight: selected ? .semibold : .regular))
-                .frame(width: 32, height: 40)
-            if isExpanded {
-                Text(title).font(.system(size: 14, weight: selected ? .semibold : .regular)).lineLimit(1)
-                Spacer(minLength: 0)
-            }
-        }
-        .padding(.horizontal, isExpanded ? 8 : 0)
-        .frame(maxWidth: .infinity, minHeight: 44)
-        .foregroundStyle(selected ? Color.accentColor : .secondary)
-        .background {
-            RoundedRectangle(cornerRadius: isExpanded ? 12 : 22)
-                .fill(selected ? Color.accentColor.opacity(0.10) : .clear)
-        }
-        .contentShape(Rectangle())
-    }
 }

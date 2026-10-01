@@ -227,9 +227,8 @@ struct MainTabContentLayoutTests {
             .appendingPathComponent("Sources/CopetsMac/MainWindowNavigationRail.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
 
-        #expect(contents.contains(".accessibilityIdentifier(\"main-tab.\\(tab.rawValue)\")"))
-        #expect(contents.contains(".accessibilityLabel(tab.title)"))
-        #expect(contents.contains(".accessibilityValue(selection == tab ? \"selected\" : \"not-selected\")"))
+        #expect(contents.contains("accessibilityID: \"main-tab.\\($0.rawValue)\""))
+        #expect(contents.contains("PlatformNavigationRail("))
     }
 
     @Test
@@ -241,12 +240,11 @@ struct MainTabContentLayoutTests {
             .appendingPathComponent("Sources/CopetsMac/MainWindowNavigationRail.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
 
-        let capsule = try #require(contents.range(of: ".accessibilityIdentifier(\"navigation-tab-capsule\")"))
-        let settings = try #require(contents.range(of: ".accessibilityIdentifier(\"main-window.settings\")"))
-        #expect(capsule.upperBound < settings.lowerBound)
+        #expect(contents.contains("settingsAccessibilityID: \"main-window.settings\""))
+        #expect(contents.contains("PlatformNavigationRail("))
         #expect(contents.contains(".padding(.top, MainWindowLayoutMetrics.titlebarHeight + 8)"))
         #expect(!contents.contains(".background(Color(nsColor: .windowBackgroundColor)"))
-        #expect(contents.contains(".fill(Color(nsColor: .controlBackgroundColor))"))
+        #expect(!contents.contains(".fill(Color(nsColor: .controlBackgroundColor))"))
     }
 
     @Test
