@@ -267,6 +267,8 @@ struct ConversationView: View {
     @State private var historyAutoLoadGate = PadHistoryAutoLoadGate()
     @State private var timelineScrollView: UIScrollView?
     @State private var pendingHistoryViewport: PendingHistoryViewport?
+    @State private var historyAnchorGeometry = TimelineAnchorGeometry()
+    @State private var deferredHistoryLoad = false
     @State private var isUserInteractingWithTimeline = false
     /// Rounded whole-point lane width prevents sub-pixel geometry changes from
     /// invalidating every realized message row during keyboard/split resizing.
@@ -315,6 +317,7 @@ struct ConversationView: View {
                             .padding(.vertical, 8)
                     }
                     ForEach(workspace.displayEntries) { entry in
+                        Group {
                         switch entry.kind {
                         case .message(let message):
                             if message.type == "userInput" {
@@ -358,6 +361,22 @@ struct ConversationView: View {
                                     .id(sessionID + ":" + entry.id)
                             }
                         }
+                        }
+                        .id(entry.id)
+                        .background {
+                            if entry.id == workspace.displayEntries.first?.id
+                                || entry.id == pendingHistoryViewport?.entryID {
+                                GeometryReader { proxy in
+                                    Color.clear.preference(
+                                        key: TimelineAnchorPositionKey.self,
+                                        value: TimelineAnchorPosition(
+                                            entryID: entry.id,
+                                            minY: proxy.frame(in: .named(timelineCoordinateSpace)).minY
+                                        )
+                                    )
+                                }
+                            }
+                        }
                     }
                     Color.clear.frame(height: 1).id("latest")
                         .onAppear {
@@ -365,7 +384,7 @@ struct ConversationView: View {
                         }
                         .onDisappear {
                             if #unavailable(iOS 18.0) { viewportState.setFollowsLatest(false) }
-                            requestEarlierHistoryIfNeeded()
+                            requestEarlierHistoryIfNeeded(reader)
                         }
                 }
                 .padding(.horizontal, 16).padding(.vertical, 12)
@@ -389,7 +408,10 @@ struct ConversationView: View {
                     isUserInteractingWithTimeline = interacting
                     if interacting {
                         pendingHistoryViewport = nil
-                        requestEarlierHistoryIfNeeded(userInitiated: true)
+                        requestEarlierHistoryIfNeeded(reader, userInitiated: true)
+                    } else {
+                        finishDeferredHistoryLoadIfReady(reader)
+                        if pendingHistoryViewport != nil { restoreHistoryViewportIfReady(reader) }
                     }
                 }
             ))
@@ -411,22 +433,24 @@ struct ConversationView: View {
             .onPreferenceChange(TimelineNearTopKey.self) { nearTop in
                 guard nearTop != historyViewport.nearTop else { return }
                 historyViewport.nearTop = nearTop
-                requestEarlierHistoryIfNeeded()
+                requestEarlierHistoryIfNeeded(reader)
+            }
+            .onPreferenceChange(TimelineAnchorPositionKey.self) { position in
+                historyAnchorGeometry.latest = position
+                correctHistoryAnchorIfReady(position)
             }
             .onPreferenceChange(TimelineContentHeightKey.self) { height in
                 guard height != historyViewport.contentHeight else { return }
                 historyViewport.contentHeight = height
                 placeInitialTimelineIfReady(reader)
-                if pendingHistoryViewport != nil {
-                    restoreHistoryViewportIfReady()
-                } else if didPlaceInitialTimeline && viewportState.followsLatest {
+                if pendingHistoryViewport == nil && didPlaceInitialTimeline && viewportState.followsLatest {
                     // Lazy rows can temporarily report an estimated UIKit
                     // contentSize. Follow the stable SwiftUI tail identity for
                     // content changes; native offset correction is reserved
                     // for viewport-only (keyboard/split) resizing below.
                     reader.scrollTo("latest", anchor: .bottom)
                 }
-                requestEarlierHistoryIfNeeded()
+                requestEarlierHistoryIfNeeded(reader)
             }
             .onPreferenceChange(TimelineViewportSizeKey.self) { size in
                 let roundedWidth = max(0, size.width - 32).rounded(.down)
@@ -444,7 +468,7 @@ struct ConversationView: View {
                         reader.scrollTo("latest", anchor: .bottom)
                     }
                 }
-                requestEarlierHistoryIfNeeded()
+                requestEarlierHistoryIfNeeded(reader)
             }
             .accessibilityIdentifier("conversation-timeline")
             .task {
@@ -465,24 +489,29 @@ struct ConversationView: View {
                 reader.scrollTo("latest", anchor: .bottom)
             }
             .onChange(of: workspace.before) {
-                requestEarlierHistoryIfNeeded()
+                requestEarlierHistoryIfNeeded(reader)
             }
             .onChange(of: workspace.isLoadingEarlier) { _, isLoading in
                 if !isLoading {
                     if pendingHistoryViewport != nil {
-                        restoreHistoryViewportIfReady()
+                        restoreHistoryViewportIfReady(reader)
                     } else if viewportState.followsLatest {
                         reader.scrollTo("latest", anchor: .bottom)
                     }
-                    requestEarlierHistoryIfNeeded()
+                    requestEarlierHistoryIfNeeded(reader)
                 }
             }
             .onChange(of: connection.busy) { _, isBusy in
-                if !isBusy { requestEarlierHistoryIfNeeded() }
+                if !isBusy {
+                    finishDeferredHistoryLoadIfReady(reader)
+                    requestEarlierHistoryIfNeeded(reader)
+                }
             }
             .onChange(of: sessionID) { _, _ in
                 viewportState.reset()
                 pendingHistoryViewport = nil
+                historyAnchorGeometry.latest = nil
+                deferredHistoryLoad = false
                 isUserInteractingWithTimeline = false
                 timelineScrollView = nil
                 historyViewport = TimelineHistoryViewportState()
@@ -569,7 +598,7 @@ struct ConversationView: View {
         }
     }
 
-    private func requestEarlierHistoryIfNeeded(userInitiated: Bool = false) {
+    private func requestEarlierHistoryIfNeeded(_ reader: ScrollViewProxy, userInitiated: Bool = false) {
         let viewportReady = historyViewport.contentHeight > 0 && historyViewport.viewportHeight > 1
         let underfilled = viewportReady
             && historyViewport.contentHeight <= historyViewport.viewportHeight + 0.5
@@ -582,16 +611,41 @@ struct ConversationView: View {
             isLoading: workspace.isLoadingEarlier,
             connectionBusy: connection.busy
         ) != nil else { return }
-        viewportState.prepareForHistoryPrepend(preservingLatestFollow: underfilled)
-        if !viewportState.followsLatest, let timelineScrollView {
+        // A local history window can expand in the same frame as the reader's
+        // drag. Wait for the gesture to settle before changing the lazy stack;
+        // otherwise the newly inserted rows become visible before restoration.
+        if isUserInteractingWithTimeline && !underfilled {
+            deferredHistoryLoad = true
+            return
+        }
+        startEarlierHistoryLoad(reader, preservingLatestFollow: underfilled)
+    }
+
+    private func finishDeferredHistoryLoadIfReady(_ reader: ScrollViewProxy) {
+        guard deferredHistoryLoad, !isUserInteractingWithTimeline else { return }
+        guard historyViewport.nearTop else {
+            deferredHistoryLoad = false
+            return
+        }
+        guard !connection.busy, !workspace.isLoadingEarlier else { return }
+        deferredHistoryLoad = false
+        startEarlierHistoryLoad(reader, preservingLatestFollow: false)
+    }
+
+    private func startEarlierHistoryLoad(_ reader: ScrollViewProxy, preservingLatestFollow: Bool) {
+        viewportState.prepareForHistoryPrepend(preservingLatestFollow: preservingLatestFollow)
+        if !viewportState.followsLatest,
+           let entryID = workspace.displayEntries.first?.id,
+           let position = historyAnchorGeometry.latest,
+           position.entryID == entryID {
             pendingHistoryViewport = PendingHistoryViewport(
-                contentHeight: timelineScrollView.contentSize.height,
-                contentOffsetY: timelineScrollView.contentOffset.y
+                entryID: entryID,
+                minY: position.minY
             )
         }
         Task {
             await workspace.loadEarlierMessagesIfNeeded(connection)
-            restoreHistoryViewportIfReady()
+            restoreHistoryViewportIfReady(reader)
         }
     }
 
@@ -616,23 +670,54 @@ struct ConversationView: View {
         return true
     }
 
-    private func restoreHistoryViewportIfReady() {
+    private func restoreHistoryViewportIfReady(_ reader: ScrollViewProxy) {
+        guard !workspace.isLoadingEarlier,
+              var pending = pendingHistoryViewport,
+              !pending.isRestorationScheduled,
+              !isUserInteractingWithTimeline else { return }
+        guard workspace.displayEntries.contains(where: { $0.id == pending.entryID }) else {
+            pendingHistoryViewport = nil
+            return
+        }
+        pending.isRestorationScheduled = true
+        pendingHistoryViewport = pending
+        Task { @MainActor in
+            await Task.yield()
+            guard pendingHistoryViewport?.entryID == pending.entryID else { return }
+            guard !isUserInteractingWithTimeline else {
+                pendingHistoryViewport?.isRestorationScheduled = false
+                return
+            }
+            historyAnchorGeometry.latest = nil
+            pendingHistoryViewport?.didScrollToAnchor = true
+            withTransaction(Transaction(animation: nil)) {
+                reader.scrollTo(pending.entryID, anchor: .top)
+            }
+            await Task.yield()
+            correctHistoryAnchorIfReady(historyAnchorGeometry.latest)
+        }
+    }
+
+    private func correctHistoryAnchorIfReady(_ position: TimelineAnchorPosition?) {
         guard !workspace.isLoadingEarlier,
               let pendingHistoryViewport,
+              pendingHistoryViewport.didScrollToAnchor,
+              let position, position.entryID == pendingHistoryViewport.entryID,
               let timelineScrollView else { return }
         timelineScrollView.layoutIfNeeded()
-        let heightDelta = timelineScrollView.contentSize.height - pendingHistoryViewport.contentHeight
-        guard abs(heightDelta) >= 0.5 else { return }
         let minimumY = -timelineScrollView.adjustedContentInset.top
         let maximumY = max(
             minimumY,
             timelineScrollView.contentSize.height - timelineScrollView.bounds.height
                 + timelineScrollView.adjustedContentInset.bottom
         )
-        let restoredY = min(maximumY, max(minimumY, pendingHistoryViewport.contentOffsetY + heightDelta))
-        timelineScrollView.setContentOffset(
-            CGPoint(x: timelineScrollView.contentOffset.x, y: restoredY), animated: false
-        )
+        let delta = position.minY - pendingHistoryViewport.minY
+        let restoredY = min(maximumY, max(minimumY, timelineScrollView.contentOffset.y + delta))
+        if abs(restoredY - timelineScrollView.contentOffset.y) >= 0.5 {
+            timelineScrollView.setContentOffset(
+                CGPoint(x: timelineScrollView.contentOffset.x, y: restoredY), animated: false
+            )
+        }
         self.pendingHistoryViewport = nil
     }
 
@@ -953,8 +1038,26 @@ private struct TimelineHistoryViewportState: Equatable {
 }
 
 private struct PendingHistoryViewport: Equatable {
-    let contentHeight: CGFloat
-    let contentOffsetY: CGFloat
+    let entryID: String
+    let minY: CGFloat
+    var isRestorationScheduled = false
+    var didScrollToAnchor = false
+}
+
+private struct TimelineAnchorPosition: Equatable {
+    let entryID: String
+    let minY: CGFloat
+}
+
+private final class TimelineAnchorGeometry {
+    var latest: TimelineAnchorPosition?
+}
+
+private struct TimelineAnchorPositionKey: PreferenceKey {
+    static let defaultValue: TimelineAnchorPosition? = nil
+    static func reduce(value: inout TimelineAnchorPosition?, nextValue: () -> TimelineAnchorPosition?) {
+        value = nextValue() ?? value
+    }
 }
 
 private struct TimelineNearTopKey: PreferenceKey {
@@ -1113,9 +1216,9 @@ private struct TimelineFollowLatestModifier: ViewModifier {
     }
 }
 
-/// Resolves SwiftUI's native scroll view once. History prepends then compensate
-/// the exact content-height delta, which is the UIKit equivalent of macOS
-/// restoring a stable row plus its intra-row offset.
+/// Resolves SwiftUI's native scroll view for physical viewport corrections.
+/// History prepends use a stable row identity and its on-screen offset instead
+/// of the lazy stack's estimated total content height.
 private struct TimelineScrollViewResolver: UIViewRepresentable {
     let onResolve: (UIScrollView) -> Void
 
