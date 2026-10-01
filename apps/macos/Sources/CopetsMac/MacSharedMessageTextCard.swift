@@ -19,7 +19,7 @@ struct MacSharedMessageTextCard: View {
     }
 
     static func supports(_ row: AppKitChatTimelineRow) -> Bool {
-        row.userInput != nil || supportsProcess(row) || (row.nativeStyle != .process && !row.showsHeader && !row.isCollaboration
+        row.userInput != nil || row.executionPlan != nil || supportsProcess(row) || (row.nativeStyle != .process && !row.showsHeader && !row.isCollaboration
             && row.collaborationRoute == nil && row.processCount == nil && row.expandableTurnId == nil
             && (row.actions.isEmpty || (row.nativeStyle == .agent
                 && row.nativeText.contains("```corptie-chart")))
@@ -47,6 +47,7 @@ struct MacSharedMessageTextCard: View {
             }
             Group {
                 if let input = row.userInput { userInputCard(input) }
+                else if let plan = row.executionPlan { executionPlanCard(plan) }
                 else if row.nativeStyle == .process { processCard }
                 else { messageCard }
             }
@@ -72,15 +73,27 @@ struct MacSharedMessageTextCard: View {
             Button(L10n("Copy Message"), action: copy)
         }
         .padding(14)
-        .frame(width: layout.cardWidth,
-               height: layout.rowHeight - row.timeSeparatorHeight - 2,
-               alignment: .topLeading)
+        .frame(width: layout.cardWidth, alignment: .topLeading)
         .background(Color.orange.opacity(row.userInputStatus == "pending" ? 0.06 : 0.025),
                     in: RoundedRectangle(cornerRadius: 14))
         .overlay {
             RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(Color.orange.opacity(row.userInputStatus == "pending" ? 0.38 : 0.16), lineWidth: 1)
         }
+    }
+
+    private func executionPlanCard(_ plan: ConversationExecutionPlan) -> some View {
+        ExecutionPlanChecklist(plan: plan)
+            .accessibilityActions {
+                Button(L10n("Copy Message"), action: copy)
+            }
+            .padding(14)
+            .frame(width: layout.cardWidth, alignment: .topLeading)
+            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14)
+                    .strokeBorder(Color.secondary.opacity(0.2), lineWidth: 1)
+            }
     }
 
     private var processCard: some View {
@@ -275,7 +288,7 @@ private struct MacProcessBlockView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             if let plan = block.step.plan {
-                if plan.steps.count > 8 {
+                if block.textHeight >= 300 {
                     ScrollView {
                         ExecutionPlanChecklist(plan: plan)
                             .frame(width: cardWidth - 36, alignment: .leading)

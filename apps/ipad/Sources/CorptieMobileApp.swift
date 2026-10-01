@@ -435,6 +435,10 @@ struct ConversationView: View {
                                         let revision = workspace.lastTimelineRevision
                                         await workspace.waitForRealtimeTimelineOrFallback(connection, after: revision)
                                     }).id(message.id)
+                            } else if (message.type == "executionPlan" || message.type == "plan"),
+                                      let plan = message.executionPlan {
+                                PadExecutionPlanTimelineCard(plan: plan, laneWidth: cardLaneWidth)
+                                    .id(message.id)
                             } else {
                                 MobileMessageBubble(message: message, deliveryState: workspace.outgoingStates[message.id],
                                     timeSeparatorText: workspace.timeSeparatorTextByMessageID[message.id],
@@ -1324,12 +1328,12 @@ private struct PadExecutionStepCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             if let plan = step.plan {
-                if plan.steps.count > 8 {
+                if plan.steps.count > 12 {
                     ScrollView {
                         ExecutionPlanChecklist(plan: plan)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(height: 300)
+                    .frame(maxHeight: 300)
                 } else {
                     ExecutionPlanChecklist(plan: plan)
                 }
@@ -1634,6 +1638,32 @@ private struct PadUserInputCard: View {
         .padding(14)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct PadExecutionPlanTimelineCard: View {
+    let plan: ConversationExecutionPlan
+    let laneWidth: CGFloat
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if plan.steps.count > 12 {
+                ScrollView {
+                    ExecutionPlanChecklist(plan: plan)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 300)
+            } else {
+                ExecutionPlanChecklist(plan: plan)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: laneWidth > 0 ? min(560, laneWidth) : 560, alignment: .leading)
+        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(Color.secondary.opacity(0.2), lineWidth: 1)
+        }
     }
 }
 

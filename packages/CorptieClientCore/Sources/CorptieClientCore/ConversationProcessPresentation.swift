@@ -55,6 +55,17 @@ public struct ConversationProcessPresentation: Sendable {
         }
     }
 public static func state<Item: ConversationTimelineItem>(for items: [Item]) -> ConversationProcessState {
+    if let first = items.first, first.processEndedAt != nil {
+        guard let status = items.lazy
+            .map({ $0.timelineTurnStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+            .last(where: { !$0.isEmpty }) else {
+            return .completed
+        }
+        if status == "failed" || status == "error" { return .failed }
+        if status == "cancelled" || status == "canceled" || status == "interrupted" { return .cancelled }
+        return .completed
+    }
+
     guard let status = items.lazy
         .map({ $0.timelineTurnStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
         .last(where: { !$0.isEmpty }) else {

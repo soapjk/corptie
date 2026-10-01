@@ -68,14 +68,14 @@ struct PadTimelineProjectionTests {
         workspace.selection = "session:a"
         let messages = try JSONDecoder().decode([ClientMessage].self, from: Data(#"[{"id":"u","turnId":"t","type":"userMessage","text":"question"},{"id":"p","turnId":"t","type":"agentMessage","text":"checking","presentationRole":"commentary","turnStatus":"running"},{"id":"tool","turnId":"t","type":"mcpToolCall","text":"result","turnStatus":"running"},{"id":"a","turnId":"t","type":"agentMessage","text":"answer","presentationRole":"final_answer"}]"#.utf8))
         workspace.messages = messages
-        #expect(workspace.displayEntries.map(\.id) == ["message:u", "process:t", "message:a"])
+        #expect(workspace.displayEntries.map(\.id) == ["message:u", "message:p", "process:t", "message:a"])
         #expect(workspace.processPresentations["process:t"]?.state == .running)
         #expect(workspace.activeProcessEntryID == "process:t")
         #expect(workspace.processPresentations["process:t"]?.duration == nil)
-        #expect(workspace.processSteps["process:t"]?.map(\.kind) == [.context, .action])
+        #expect(workspace.processSteps["process:t"]?.map(\.kind) == [.action])
         #expect(workspace.processPresentations["process:t"]?.currentStepTitle == "Used tool")
         workspace.outgoingMessages["session:a"] = [ClientMessage(id: "pending", text: "next")]
-        #expect(workspace.displayEntries.map(\.id) == ["message:u", "process:t", "message:a", "message:pending"])
+        #expect(workspace.displayEntries.map(\.id) == ["message:u", "message:p", "process:t", "message:a", "message:pending"])
         workspace.messages.append(ClientMessage(id: "pending", text: "next"))
         #expect(workspace.displayEntries.filter { $0.id == "message:pending" }.count == 1)
         workspace.selection = "session:b"
@@ -84,7 +84,7 @@ struct PadTimelineProjectionTests {
         #expect(workspace.activeProcessEntryID == nil)
         #expect(workspace.processSteps.isEmpty)
         workspace.selection = "session:a"
-        #expect(workspace.displayEntries.map(\.id) == ["message:u", "process:t", "message:a", "message:pending"])
+        #expect(workspace.displayEntries.map(\.id) == ["message:u", "message:p", "process:t", "message:a", "message:pending"])
     }
 
     @Test func messageTimeSeparatorsFollowDesktopGapAndRecomputeAtHistoryBoundary() throws {
@@ -136,15 +136,15 @@ struct PadTimelineProjectionTests {
         let first = try planMessage(revision: 1, status: "pending")
         let updated = try planMessage(revision: 2, status: "completed")
         workspace.applyLatestWindow([first], cursor: nil, revision: 10)
-        #expect(workspace.displayEntries.map(\.id) == ["process:turn:one"])
-        #expect(workspace.processSteps["process:turn:one"]?.first?.plan?.steps.first?.status == "pending")
+        #expect(workspace.displayEntries.map(\.id) == ["message:plan:one"])
+        #expect(workspace.messages.first?.executionPlan?.steps.first?.status == "pending")
         workspace.applyLatestWindow([updated], cursor: nil, revision: 11)
-        #expect(workspace.displayEntries.map(\.id) == ["process:turn:one"])
+        #expect(workspace.displayEntries.map(\.id) == ["message:plan:one"])
         #expect(workspace.messages.count == 1)
-        #expect(workspace.processSteps["process:turn:one"]?.first?.plan?.revision == 2)
-        #expect(workspace.processSteps["process:turn:one"]?.first?.plan?.steps.first?.status == "completed")
+        #expect(workspace.messages.first?.executionPlan?.revision == 2)
+        #expect(workspace.messages.first?.executionPlan?.steps.first?.status == "completed")
         workspace.applyLatestWindow([first], cursor: nil, revision: 10)
-        #expect(workspace.processSteps["process:turn:one"]?.first?.plan?.revision == 2)
+        #expect(workspace.messages.first?.executionPlan?.revision == 2)
     }
 
     @Test func settledProcessDoesNotKeepCurrentStepSubtitle() throws {
