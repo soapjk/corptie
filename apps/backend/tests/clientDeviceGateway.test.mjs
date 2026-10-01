@@ -120,6 +120,8 @@ test("real TLS route boundary and authenticated local approval", async () => {
     developmentService: async repositoryId => ({ projectId: repositoryId, service: { state: "stopped" } }),
     job: id => ({ job: { id, status: "running" } }),
     createPlan: async (repositoryId, input) => ({ job: { id: "job:one", repositoryId, input } }),
+    createCandidate: async (repositoryId, input) => ({ candidate: { id: "candidate:one", repositoryId, input } }),
+    startCandidate: async (repositoryId, input) => ({ job: { id: "job:started", repositoryId, input } }),
     deleteWorktree: async (repositoryId, worktreeId) => ({ result: { repositoryId, worktreeId } }),
     workspaceAction: async (repositoryId, worktreeId, action, input) => {
       worktreeCalls.push({ repositoryId, worktreeId, action, input }); return { ok: true };
@@ -284,6 +286,31 @@ test("real TLS route boundary and authenticated local approval", async () => {
     assert.equal((await call("/client/v1/capabilities", { token: creds.accessToken })).body.controlRead, true);
     assert.equal((await call("/client/v1/capabilities", { token: creds.accessToken })).body.controlWrite, true);
     assert.equal((await call("/client/v1/worktrees/repositories/repo%3Aone", { token: creds.accessToken })).status, 200);
+    const candidatePath = "/client/v1/worktrees/repositories/repo%3Aone/integration-candidates";
+    const candidate = await call(candidatePath, { token: creds.accessToken, method: "POST", value: {} });
+    assert.equal(candidate.body.candidate.id, "candidate:one");
+    const repositoryJobsPath = "/client/v1/worktrees/repositories/repo%3Aone/integration-jobs";
+    assert.equal((await call(repositoryJobsPath, { token: creds.accessToken })).status, 404);
+    const startedJob = await call(repositoryJobsPath, {
+      token: creds.accessToken, method: "POST", value: { idempotencyKey: "start:one" }
+    });
+    assert.equal(startedJob.body.job.id, "job:started");
+    gateway.worktreeAPI.startCandidate = async () => {
+      throw Object.assign(new Error("Resolve blocking Worktree risks."), {
+        code: "PREFLIGHT_RISKS_UNRESOLVED",
+        statusCode: 409,
+        retryable: false
+      });
+    };
+    const blockedStart = await call(repositoryJobsPath, {
+      token: creds.accessToken, method: "POST", value: { idempotencyKey: "start:blocked" }
+    });
+    assert.deepEqual(blockedStart.body, {
+      code: "PREFLIGHT_RISKS_UNRESOLVED",
+      error: "Resolve blocking Worktree risks.",
+      retryable: false
+    });
+    assert.equal(blockedStart.status, 409);
     assert.equal((await call(messagesPath, { token: creds.accessToken })).body.sessionId, "session:test");
     const readReceiptPath = "/client/v1/sessions/session%3Atest/read-receipt";
     assert.equal((await call(readReceiptPath, { method: "POST", value: { throughSequence: 7 } })).status, 401);

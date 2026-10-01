@@ -38,6 +38,37 @@ export function migrateStoreDatabase({ db, selectAll, selectOne, ensureColumn, r
 
     // --- 实体层：Work / Task / 依赖 DAG（净新增，见 15 Phase 1） ---
     db.run(workDomainSchemaSql);
+    ensureColumn("worktree_integration_jobs", "fingerprint_version", "INTEGER");
+    ensureColumn("worktree_integration_jobs", "idempotency_key", "TEXT");
+    ensureColumn("worktree_integration_jobs", "start_request_fingerprint", "TEXT");
+    ensureColumn("worktree_integration_jobs", "start_request_fingerprint_version", "INTEGER");
+    db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_worktree_integration_jobs_idempotency
+      ON worktree_integration_jobs(repository_id, idempotency_key)
+      WHERE idempotency_key IS NOT NULL`);
+    const duplicateActiveExecutions = selectAll(
+      `SELECT repository_id, COUNT(*) AS active_count, GROUP_CONCAT(id) AS job_ids
+       FROM worktree_integration_jobs
+       WHERE status IN ('queued', 'running', 'paused', 'cancellation_requested', 'replanning')
+       GROUP BY repository_id HAVING COUNT(*) > 1`
+    );
+    if (duplicateActiveExecutions.length > 0) {
+      const summary = duplicateActiveExecutions.map((row) =>
+        `${row.repository_id}: ${row.active_count} active jobs (${row.job_ids})`).join("; ");
+      const error = new Error(
+        `WORKTREE_INTEGRATION_ACTIVE_ROWS_CONFLICT: resolve duplicate active Worktree integration jobs before migration: ${summary}`
+      );
+      error.code = "WORKTREE_INTEGRATION_ACTIVE_ROWS_CONFLICT";
+      throw error;
+    }
+    runDataMigrationOnce("worktree-integration-active-index-v1", () => {
+      db.run("DROP INDEX IF EXISTS idx_worktree_integration_jobs_active");
+      db.run(`CREATE UNIQUE INDEX idx_worktree_integration_jobs_active
+        ON worktree_integration_jobs(repository_id)
+        WHERE status IN ('queued', 'running', 'paused', 'cancellation_requested', 'replanning')`);
+    });
+    db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_worktree_integration_jobs_active
+      ON worktree_integration_jobs(repository_id)
+      WHERE status IN ('queued', 'running', 'paused', 'cancellation_requested', 'replanning')`);
 
     ensureMemoryFoundationTables({ db: db });
 

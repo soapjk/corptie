@@ -140,23 +140,72 @@ export class ProjectIntegrationRepository {
     const timestamp = createdAtFromOrNow();
     this.db.run(
       `INSERT INTO worktree_integration_jobs (
-         id, repository_id, status, phase, plan_fingerprint, details_json,
+         id, repository_id, status, phase, plan_fingerprint, fingerprint_version,
+         idempotency_key, start_request_fingerprint, start_request_fingerprint_version, details_json,
          error, created_at, updated_at, confirmed_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         requiredText(input.repositoryId, "repositoryId"),
         input.status ?? "awaiting_confirmation",
         input.phase ?? "preflight_complete",
         requiredText(input.planFingerprint, "planFingerprint"),
+        input.fingerprintVersion ?? null,
+        input.idempotencyKey == null ? null : requiredText(input.idempotencyKey, "idempotencyKey"),
+        input.startRequestFingerprint == null
+          ? null
+          : requiredText(input.startRequestFingerprint, "startRequestFingerprint"),
+        input.startRequestFingerprintVersion ?? null,
         JSON.stringify(input.details ?? {}),
         input.error ?? null,
         timestamp,
-        timestamp
+        timestamp,
+        input.confirmedAt ?? null,
+        input.completedAt ?? null
       ]
     );
     this.scheduleSave();
     return this.getWorktreeIntegrationJob(id);
+  }
+
+  createWorktreeIntegrationJobIdempotently(input) {
+    const repositoryId = requiredText(input.repositoryId, "repositoryId");
+    const idempotencyKey = requiredText(input.idempotencyKey, "idempotencyKey");
+    const startRequestFingerprint = requiredText(
+      input.startRequestFingerprint,
+      "startRequestFingerprint"
+    );
+    try {
+      return this.runInTransaction(() => {
+        const existing = this.getWorktreeIntegrationJobByIdempotencyKey(repositoryId, idempotencyKey);
+        if (existing) return assertMatchingStartRequest(existing, startRequestFingerprint);
+        const active = this.selectOne(
+          `SELECT id FROM worktree_integration_jobs
+           WHERE repository_id = ?
+             AND status IN ('queued', 'running', 'paused', 'cancellation_requested', 'replanning')
+           LIMIT 1`,
+          [repositoryId]
+        );
+        if (active) throw integrationJobActiveError();
+        return this.createWorktreeIntegrationJob(input);
+      });
+    } catch (error) {
+      if (error?.code === "IDEMPOTENCY_KEY_REUSED" || error?.code === "INTEGRATION_JOB_ACTIVE") throw error;
+      if (isIdempotencyConstraintError(error)) {
+        const existing = this.getWorktreeIntegrationJobByIdempotencyKey(repositoryId, idempotencyKey);
+        if (existing) return assertMatchingStartRequest(existing, startRequestFingerprint);
+      }
+      if (isActiveConstraintError(error)) throw integrationJobActiveError();
+      throw error;
+    }
+  }
+
+  getWorktreeIntegrationJobByIdempotencyKey(repositoryId, idempotencyKey) {
+    const row = this.selectOne(
+      `SELECT * FROM worktree_integration_jobs WHERE repository_id = ? AND idempotency_key = ?`,
+      [repositoryId, idempotencyKey]
+    );
+    return worktreeIntegrationJobFromRow(row);
   }
 
   getWorktreeIntegrationJob(id) {
@@ -253,6 +302,29 @@ function projectIntegrationItemFromRow(row) {
   };
 }
 
+function assertMatchingStartRequest(job, startRequestFingerprint) {
+  if (job.startRequestFingerprint === startRequestFingerprint) return job;
+  const error = new Error("This idempotency key was already used for a different integration start request.");
+  error.code = "IDEMPOTENCY_KEY_REUSED";
+  throw error;
+}
+
+function integrationJobActiveError() {
+  const error = new Error("Resolve or complete the existing Worktree integration task first.");
+  error.code = "INTEGRATION_JOB_ACTIVE";
+  return error;
+}
+
+function isIdempotencyConstraintError(error) {
+  const message = String(error?.message ?? "");
+  return /idx_worktree_integration_jobs_idempotency|worktree_integration_jobs\.repository_id, worktree_integration_jobs\.idempotency_key/i.test(message);
+}
+
+function isActiveConstraintError(error) {
+  const message = String(error?.message ?? "");
+  return /idx_worktree_integration_jobs_active|UNIQUE constraint failed: worktree_integration_jobs\.repository_id/i.test(message);
+}
+
 function worktreeIntegrationJobFromRow(row) {
   if (!row) return null;
   return {
@@ -261,6 +333,10 @@ function worktreeIntegrationJobFromRow(row) {
     status: row.status,
     phase: row.phase,
     planFingerprint: row.plan_fingerprint,
+    fingerprintVersion: row.fingerprint_version ?? null,
+    idempotencyKey: row.idempotency_key ?? null,
+    startRequestFingerprint: row.start_request_fingerprint ?? null,
+    startRequestFingerprintVersion: row.start_request_fingerprint_version ?? null,
     details: parseJson(row.details_json, {}),
     error: row.error ?? null,
     createdAt: row.created_at,

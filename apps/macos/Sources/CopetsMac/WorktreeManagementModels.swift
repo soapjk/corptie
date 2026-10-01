@@ -271,6 +271,131 @@ struct WorktreeIntegrationJobEnvelope: Decodable, Sendable {
     let job: WorktreeIntegrationJob
 }
 
+struct WorktreeIntegrationCandidateEnvelope: Decodable, Sendable {
+    let candidate: WorktreeIntegrationCandidate
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if container.contains(.candidate) {
+            candidate = try container.decode(WorktreeIntegrationCandidate.self, forKey: .candidate)
+        } else {
+            candidate = try WorktreeIntegrationCandidate(from: decoder)
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey { case candidate }
+}
+
+struct WorktreeIntegrationCandidate: Identifiable, Decodable, Equatable, Sendable {
+    let id: String
+    let repositoryId: String
+    let planFingerprint: String
+    let fingerprint: String
+    let fingerprintVersion: Int?
+    let operationType: String?
+    let sourceWorktreeIds: [String]?
+    let targetWorktreeId: String?
+    let generatedAt: String
+    let expiresAt: String
+    let ttlMs: Int
+    let plan: WorktreeIntegrationPlan
+    let progress: WorktreeIntegrationProgress
+    let noWorkRequired: Bool
+
+    var reviewIdentity: String { "\(id):\(planFingerprint)" }
+}
+
+struct WorktreeIntegrationCandidateReviewState: Equatable, Sendable {
+    let candidate: WorktreeIntegrationCandidate?
+    let refreshDiff: WorktreeIntegrationCandidateDiff?
+    let preparationError: String?
+    let wasRefreshed: Bool
+
+    static let empty = WorktreeIntegrationCandidateReviewState(
+        candidate: nil,
+        refreshDiff: nil,
+        preparationError: nil,
+        wasRefreshed: false
+    )
+}
+
+struct WorktreeIntegrationCandidateDiff: Decodable, Equatable, Sendable {
+    let addedWorktreeIds: [String]
+    let removedWorktreeIds: [String]
+    let changedWorktrees: [WorktreeIntegrationCandidateChangedWorktree]
+    let risks: WorktreeIntegrationCandidateRiskDiff
+    let mergeOrder: WorktreeIntegrationCandidateMergeOrderDiff
+    let contextChanges: [WorktreeIntegrationCandidateFieldChange]?
+    let reason: String?
+    let changed: Bool
+
+    var isEmpty: Bool { !changed }
+}
+
+struct WorktreeIntegrationCandidateChangedWorktree: Identifiable, Decodable, Equatable, Sendable {
+    let worktreeId: String
+    let changes: [WorktreeIntegrationCandidateFieldChange]
+
+    var id: String { worktreeId }
+}
+
+struct WorktreeIntegrationCandidateFieldChange: Decodable, Equatable, Sendable {
+    let field: String
+
+    private enum CodingKeys: String, CodingKey { case field }
+}
+
+struct WorktreeIntegrationCandidateRiskDiff: Decodable, Equatable, Sendable {
+    let changed: Bool
+    let before: [WorktreeIntegrationRisk]
+    let after: [WorktreeIntegrationRisk]
+}
+
+struct WorktreeIntegrationCandidateMergeOrderDiff: Decodable, Equatable, Sendable {
+    let changed: Bool
+    let before: [String]
+    let after: [String]
+}
+
+struct WorktreeIntegrationStartRequest: Sendable {
+    let candidateId: String
+    let candidateFingerprint: String
+    let operationType: String?
+    let sourceWorktreeIds: [String]?
+    let targetWorktreeId: String?
+    let idempotencyKey: String
+    let commitProtectionDecisions: [WorktreeCommitProtectionDecision]
+
+    var payloadIdentity: String {
+        let data = try? JSONSerialization.data(withJSONObject: payloadBody, options: [.sortedKeys])
+        return data.map { String(decoding: $0, as: UTF8.self) } ?? candidateId
+    }
+
+    var body: [String: Any] {
+        var body = payloadBody
+        body["idempotencyKey"] = idempotencyKey
+        return body
+    }
+
+    private var payloadBody: [String: Any] {
+        var body: [String: Any] = [
+            "candidateId": candidateId,
+            "candidateFingerprint": candidateFingerprint,
+            "commitProtectionDecisions": commitProtectionDecisions
+                .sorted { $0.worktreeId < $1.worktreeId }
+                .map(\.body)
+        ]
+        if let operationType { body["operationType"] = operationType }
+        if let sourceWorktreeIds { body["sourceWorktreeIds"] = sourceWorktreeIds }
+        if let targetWorktreeId { body["targetWorktreeId"] = targetWorktreeId }
+        return body
+    }
+}
+
+struct WorktreeIntegrationStartEnvelope: Decodable, Sendable {
+    let job: WorktreeIntegrationJob
+}
+
 struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
     let id: String
     let repositoryId: String
@@ -374,7 +499,7 @@ struct WorktreeIntegrationPlan: Decodable, Equatable, Sendable {
     let executionPath: String?
     let mainWorktreeId: String
     let mainPath: String
-    let mainHeadBefore: String
+    let mainHeadBefore: String?
     let inventoryVersion: String
     let mergeOrder: [String]
     let blockingRisks: [WorktreeIntegrationRisk]
@@ -428,7 +553,7 @@ struct WorktreeIntegrationItem: Identifiable, Decodable, Equatable, Sendable {
     let mergedIntoMain: Bool?
     let associations: [ManagedWorktreeAssociation]
     let risks: [WorktreeIntegrationRisk]
-    let commitProtection: GitCommitProtectionStatus?
+    let commitProtection: WorktreeIntegrationCommitProtectionStatus?
     let commitMessage: String?
     let commitStatus: String
     let commitHead: String?
@@ -439,10 +564,33 @@ struct WorktreeIntegrationItem: Identifiable, Decodable, Equatable, Sendable {
     let error: String?
 }
 
+struct WorktreeIntegrationCommitProtectionStatus: Decodable, Equatable, Sendable {
+    let repositoryRoot: String
+    let protectedPaths: [String]
+    let protectedPathsDigest: String?
+    let localSymlinkPaths: [String]?
+    let suggestedIgnorePatterns: [String]
+    let warningEnabled: Bool
+    let requiresDecision: Bool
+}
+
 struct WorktreeCommitProtectionDecision: Equatable, Sendable {
     let worktreeId: String
     let decision: String
     let neverRemind: Bool
+    let candidateFingerprint: String?
+    let protectedPathsDigest: String?
+
+    var body: [String: Any] {
+        var body: [String: Any] = [
+            "worktreeId": worktreeId,
+            "decision": decision,
+            "neverRemind": neverRemind
+        ]
+        if let candidateFingerprint { body["candidateFingerprint"] = candidateFingerprint }
+        if let protectedPathsDigest { body["protectedPathsDigest"] = protectedPathsDigest }
+        return body
+    }
 }
 
 struct WorktreePersistedCommitProtectionDecision: Decodable, Equatable, Sendable {

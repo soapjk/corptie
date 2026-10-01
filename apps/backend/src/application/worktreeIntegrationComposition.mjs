@@ -94,14 +94,14 @@ export function createWorktreeIntegrationServices({
       }
       return gitWorkspaces.managementInspectionForProject(path, repositoryId, options);
     },
-    inspectRepository: async (repositoryId) => {
+    inspectRepository: async (repositoryId, options = {}) => {
       const path = store.resolveWorkspacePath(repositoryId);
       if (!path) {
         const error = new Error("The repository main checkout is unavailable.");
         error.code = "REPOSITORY_MAIN_UNAVAILABLE";
         throw error;
       }
-      return gitWorkspaces.integrationInspectionForProject(path, repositoryId);
+      return gitWorkspaces.integrationInspectionForProject(path, repositoryId, options);
     },
     inspectCommitProtection: (path) => gitCommitProtection.inspect(path),
     commitChanges: (input) => gitWorkspaces.commitIntegrationChanges({
