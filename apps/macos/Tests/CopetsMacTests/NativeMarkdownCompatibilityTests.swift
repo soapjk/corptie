@@ -196,7 +196,7 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         XCTAssertEqual(executionProcessDurationText(for: processItems), "12s")
     }
 
-    func testStoredTimelineJSONKeepsCommentaryInsideProcessAndFinalAnswerSeparate() throws {
+    func testStoredTimelineJSONProjectsCommentaryAsDirectMessageAndToolInsideProcess() throws {
         let data = Data(#"""
         [
           {"id":"user","turnId":"turn","turnStatus":"completed","type":"userMessage","title":"User","text":"Do it","options":null,"status":"completed","createdAt":"2026-08-25T00:00:00Z"},
@@ -209,11 +209,11 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
 
         let entries = makeChatDisplayEntriesForTurn(items)
 
-        XCTAssertEqual(entries.map(\.id), ["message:user", "process:turn", "message:final"])
-        guard case .process(_, let processItems) = entries[1].kind else {
-            return XCTFail("Expected commentary and tool output inside the process card")
+        XCTAssertEqual(entries.map(\.id), ["message:user", "message:commentary", "process:turn", "message:final"])
+        guard case .process(_, let processItems) = entries[2].kind else {
+            return XCTFail("Expected tool output inside the process card")
         }
-        XCTAssertEqual(processItems.map(\.id), ["commentary", "tool"])
+        XCTAssertEqual(processItems.map(\.id), ["tool"])
     }
 
     func testSingleTimestampDoesNotInventSubsecondExecutionDuration() {

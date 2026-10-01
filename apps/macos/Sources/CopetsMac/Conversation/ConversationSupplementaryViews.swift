@@ -206,6 +206,7 @@ struct ChatUsageBar: View {
             expiryHelp: expirationDates.map(formattedBankedResetDate).joined(separator: "\n")
         )
         .foregroundStyle(CorptiePalette.primaryText)
+        .fixedSize(horizontal: true, vertical: true)
     }
 
     private func formattedResetDate(_ epochSeconds: Double?) -> String {

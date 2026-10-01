@@ -11,6 +11,7 @@ struct AppKitChatTimelineRow: Identifiable {
     var userInput: ConversationUserInput? = nil
     var userInputItemID: String? = nil
     var userInputStatus: String? = nil
+    var executionPlan: ConversationExecutionPlan? = nil
     var sessionID: String? = nil
     typealias ProcessState = ConversationProcessState
 

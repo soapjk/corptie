@@ -577,7 +577,7 @@ final class ScheduledSessionUITests: XCTestCase {
             encoding: .utf8
         )
 
-        let detailCardStart = try XCTUnwrap(sessionsView.range(of: "private func sessionCard(decoratesSurface: Bool, scrollsContent: Bool = true) -> some View"))
+        let detailCardStart = try XCTUnwrap(sessionsView.range(of: "private var sessionDetailContent: some View"))
         let scheduleRange = try XCTUnwrap(
             sessionsView.range(
                 of: "ScheduledSessionStrip(session: session)",

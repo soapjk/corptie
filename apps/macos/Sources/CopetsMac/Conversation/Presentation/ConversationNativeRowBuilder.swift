@@ -194,11 +194,15 @@ struct ConversationNativeRowBuilder {
         )
         row.forkItemID = forkItemID(for: entry)
         row.forkUnavailableReason = forkUnavailableReason(for: entry)
-        if case .message(let item) = entry.kind, item.type == "userInput",
-           item.userInput?.schemaVersion == 1 {
-            row.userInput = item.userInput
-            row.userInputItemID = item.id
-            row.userInputStatus = item.status
+        if case .message(let item) = entry.kind {
+            if item.type == "userInput", item.userInput?.schemaVersion == 1 {
+                row.userInput = item.userInput
+                row.userInputItemID = item.id
+                row.userInputStatus = item.status
+            } else if (item.type == "executionPlan" || item.type == "plan"),
+                      let plan = item.executionPlan, plan.schemaVersion == 1 {
+                row.executionPlan = plan
+            }
         }
         return row
     }
