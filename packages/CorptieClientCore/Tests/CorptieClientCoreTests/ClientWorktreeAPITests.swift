@@ -24,6 +24,21 @@ import Testing
         }
     }
 
+    @Test func unbornRepositoryPlanDecodesWithoutAHeadCommit() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [WorktreeProtocol.self]
+        let api = ClientWorktreeAPI(transport: try BackendTransport(
+            endpoint: BackendEndpoint(URL(string: "http://127.0.0.1:1")!), configuration: configuration))
+        WorktreeProtocol.handler = { request in
+            #expect(request.url?.path == "/client/v1/worktrees/repositories/repo:empty/integration-plans")
+            return #"{"job":{"id":"job:empty","repositoryId":"repo:empty","status":"awaiting_confirmation","phase":"plan","planFingerprint":"fingerprint","createdAt":"now","updatedAt":"now","plan":{"repositoryId":"repo:empty","mainWorktreeId":"main","mainPath":"/repo","mainHeadBefore":null,"inventoryVersion":"1","mergeOrder":[],"blockingRisks":[],"items":[]},"progress":{"completed":0,"total":0,"fraction":0}}}"#
+        }
+
+        let job = try await api.preparePlan(repositoryId: "repo:empty")
+
+        #expect(job.plan.mainHeadBefore == nil)
+    }
+
     @Test func invalidPlanSelectionIsRejectedBeforeTransport() throws {
         #expect(throws: ClientServiceFailure.self) {
             try ClientWorktreePlanRequest(operation: .merge, sources: ["main"], target: "main")

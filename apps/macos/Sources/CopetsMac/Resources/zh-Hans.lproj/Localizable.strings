@@ -1509,3 +1509,22 @@
 "Banked resets could not be verified; showing the last known value." = "无法核实当前已存额度重置；以下为上次记录。";
 "Task 信息" = "Task 信息";
 "验证所需证据" = "验证所需证据";
+
+/* Worktree integration candidate review */
+"Generated: %@" = "生成时间：%@";
+"Expires: %@" = "过期时间：%@";
+"Corptie will recheck the repository before creating a durable Job. If anything changed, nothing runs until you review the updated plan." = "Corptie 会在创建持久化 Job 前再次核对仓库。如果状态发生变化，在你审阅更新后的计划前不会执行任何操作。";
+"Rechecking repository…" = "正在重新核对仓库…";
+"Could not generate the integration plan." = "无法生成集成计划。";
+"Confirm the recheck to record an up-to-date no-work integration result." = "确认重新核对，以记录最新的无需集成结果。";
+"Confirm No Changes" = "确认无变更";
+"The selected repository changed. Generate a new integration plan before confirming." = "所选仓库已更改。请先生成新的集成计划，再进行确认。";
+"The refreshed integration plan belongs to a different repository. Generate a new plan." = "刷新后的集成计划属于其他仓库。请生成新计划。";
+"The repository changed. Review this refreshed plan before confirming again." = "仓库状态已变化。请审阅刷新后的计划，再次确认。";
+"Added: %@" = "新增：%@";
+"Removed: %@" = "移除：%@";
+"Changed: %@" = "变化：%@";
+"Risks: %d → %d%@" = "风险：%d → %d%@";
+"Context changed: %@" = "上下文已变化：%@";
+"Other plan details changed." = "计划的其他细节已变化。";
+" · order changed" = " · 顺序已变化";

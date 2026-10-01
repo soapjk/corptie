@@ -1,11 +1,22 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+
+const ACTIVE_JOB_STATUSES = Object.freeze([
+  "queued", "running", "paused", "cancellation_requested", "replanning"
+]);
+const DEFAULT_CANDIDATE_TTL_MS = 120_000;
+const MAX_CANDIDATE_TTL_MS = 300_000;
+const MAX_CACHED_CANDIDATES = 128;
+const MAX_CACHED_CANDIDATES_PER_REPOSITORY = 8;
+const PLAN_FINGERPRINT_VERSION = 1;
+const START_REQUEST_FINGERPRINT_VERSION = 1;
 
 export class WorktreeIntegrationJobError extends Error {
-  constructor(code, message, statusCode = 400) {
+  constructor(code, message, statusCode = 400, details = {}) {
     super(message);
     this.name = "WorktreeIntegrationJobError";
     this.code = code;
     this.statusCode = statusCode;
+    Object.assign(this, details);
   }
 }
 
@@ -34,6 +45,13 @@ export class WorktreeIntegrationJobService {
     this.onEvent = options.onEvent ?? (() => {});
     this.activeJobs = new Set();
     this.activeConflictResolutions = new Map();
+    this.integrationCandidates = new Map();
+    this.repositoryStartOperations = new Map();
+    this.candidateTtlMs = Math.max(1_000, Math.min(
+      Number(options.candidateTtlMs) || DEFAULT_CANDIDATE_TTL_MS,
+      MAX_CANDIDATE_TTL_MS
+    ));
+    this.now = options.now ?? (() => Date.now());
     this.maxConflictFallbackAttempts = Math.max(1, Math.min(Number(options.maxConflictFallbackAttempts) || 3, 10));
     for (const name of [
       "inspectRepository",
@@ -46,6 +64,12 @@ export class WorktreeIntegrationJobService {
       "launchConflictResolution"
     ]) {
       if (typeof this[name] !== "function") throw new TypeError(`${name}() is required.`);
+    }
+    for (const name of [
+      "getWorktreeIntegrationJobByIdempotencyKey",
+      "createWorktreeIntegrationJobIdempotently"
+    ]) {
+      if (typeof this.store?.[name] !== "function") throw new TypeError(`store.${name}() is required.`);
     }
   }
 
@@ -188,21 +212,38 @@ export class WorktreeIntegrationJobService {
 
   async preflight(repositoryId, options = {}) {
     const repository = this.#requireRepository(repositoryId);
-    const active = this.store.listWorktreeIntegrationJobs(repository.id)
-      .find((job) => job.id !== options.ignoreJobId
-        && ["awaiting_confirmation", "queued", "running", "paused", "cancellation_requested", "replanning"].includes(job.status));
-    if (active) {
-      throw new WorktreeIntegrationJobError(
-        "INTEGRATION_JOB_ACTIVE",
-        "Resolve or complete the existing Worktree integration task first.",
-        409
-      );
+    this.#assertNoActiveJob(repository.id, options.ignoreJobId, true);
+    const built = await this.#buildPlan(repository, options);
+    let job = this.store.createWorktreeIntegrationJob({
+      repositoryId: repository.id,
+      planFingerprint: built.planFingerprint,
+      fingerprintVersion: PLAN_FINGERPRINT_VERSION,
+      status: built.noWorkRequired ? "completed" : "awaiting_confirmation",
+      phase: built.noWorkRequired ? "completed" : "preflight_complete",
+      details: {
+        plan: built.plan,
+        currentWorktreeId: null,
+        progress: progressFor(built.plan.items),
+        audit: [{
+          at: new Date().toISOString(),
+          event: built.noWorkRequired ? "preflight_no_changes" : "preflight_created",
+          planFingerprint: built.planFingerprint
+        }]
+      }
+    });
+    if (built.noWorkRequired) {
+      job = this.store.updateWorktreeIntegrationJob(job.id, { completedAt: new Date().toISOString() });
     }
+    return presentJob(job);
+  }
+
+  async #buildPlan(repository, options = {}, inspectionOptions = {}) {
     const branchOperation = normalizeBranchOperation(options);
     if (branchOperation) {
-      return this.#branchOperationPreflight(repository, branchOperation);
+      const plan = await this.#buildBranchOperationPlan(repository, branchOperation, inspectionOptions);
+      return { plan, planFingerprint: fingerprint(plan), noWorkRequired: false };
     }
-    const inspection = this.#associate(await this.inspectRepository(repository.id));
+    const inspection = this.#associate(await this.inspectRepository(repository.id, inspectionOptions));
     const ordered = [...inspection.worktrees].sort((left, right) => {
       if (left.isMain !== right.isMain) return left.isMain ? -1 : 1;
       return `${left.branchName ?? ""}\0${left.path}`.localeCompare(`${right.branchName ?? ""}\0${right.path}`);
@@ -226,7 +267,7 @@ export class WorktreeIntegrationJobService {
       // outside this flow; only task Worktrees may receive a planned commit.
       const shouldCommit = !worktree.isMain && worktree.dirty === true;
       const commitProtection = shouldCommit
-        ? await this.inspectCommitProtection(worktree.path)
+        ? withProtectedPathsDigest(await this.inspectCommitProtection(worktree.path))
         : null;
       if ((commitProtection?.localSymlinkPaths ?? []).length > 0) {
         risks.push({
@@ -278,32 +319,15 @@ export class WorktreeIntegrationJobService {
       blockingRisks,
       items
     };
-    const planFingerprint = fingerprint(plan);
-    const noWorkRequired = items.length === 0;
-    let job = this.store.createWorktreeIntegrationJob({
-      repositoryId: repository.id,
-      planFingerprint,
-      status: noWorkRequired ? "completed" : "awaiting_confirmation",
-      phase: noWorkRequired ? "completed" : "preflight_complete",
-      details: {
-        plan,
-        currentWorktreeId: null,
-        progress: progressFor(items),
-        audit: [{
-          at: new Date().toISOString(),
-          event: noWorkRequired ? "preflight_no_changes" : "preflight_created",
-          planFingerprint
-        }]
-      }
-    });
-    if (noWorkRequired) {
-      job = this.store.updateWorktreeIntegrationJob(job.id, { completedAt: new Date().toISOString() });
-    }
-    return presentJob(job);
+    return {
+      plan,
+      planFingerprint: fingerprint(plan),
+      noWorkRequired: items.length === 0
+    };
   }
 
-  async #branchOperationPreflight(repository, operation) {
-    const inspection = this.#associate(await this.inspectRepository(repository.id));
+  async #buildBranchOperationPlan(repository, operation, inspectionOptions = {}) {
+    const inspection = this.#associate(await this.inspectRepository(repository.id, inspectionOptions));
     const byId = new Map(inspection.worktrees.map((worktree) => [worktree.worktreeId, worktree]));
     const selectedIds = operation.type === "converge"
       ? operation.sourceWorktreeIds
@@ -328,7 +352,9 @@ export class WorktreeIntegrationJobService {
       const isTarget = worktree.worktreeId === target.worktreeId;
       const risks = risksForBranchOperation(worktree, { isTarget, operationType: operation.type });
       const shouldCommit = !isTarget && worktree.dirty === true;
-      const commitProtection = shouldCommit ? await this.inspectCommitProtection(worktree.path) : null;
+      const commitProtection = shouldCommit
+        ? withProtectedPathsDigest(await this.inspectCommitProtection(worktree.path))
+        : null;
       if ((commitProtection?.localSymlinkPaths ?? []).length > 0) {
         risks.push({
           code: "GIT_LOCAL_AGENT_SYMLINK_NOT_COMMITTABLE",
@@ -383,19 +409,273 @@ export class WorktreeIntegrationJobService {
       blockingRisks,
       items
     };
-    const planFingerprint = fingerprint(plan);
-    return presentJob(this.store.createWorktreeIntegrationJob({
+    return plan;
+  }
+
+  async createCandidate(repositoryId, options = {}) {
+    const repository = this.#requireRepository(repositoryId);
+    const input = requestObject(options);
+    const normalizedOptions = candidateOptions(input);
+    const built = await this.#buildPlan(repository, normalizedOptions, {
+      forceFresh: true,
+      reason: "integration_candidate_generation"
+    });
+    return this.#cacheCandidate(repository.id, normalizedOptions, built);
+  }
+
+  async startCandidate(repositoryId, input = {}) {
+    const repository = this.#requireRepository(repositoryId);
+    input = requestObject(input);
+    const idempotencyKey = requiredBoundedText(input.idempotencyKey, "IDEMPOTENCY_KEY_REQUIRED", 512);
+    const requestedOptions = candidateOptions(input, { canonicalOnly: true });
+    const commitProtectionDecisions = normalizeCommitProtectionDecisions(input.commitProtectionDecisions);
+    const startRequestFingerprint = startRequestFingerprintFor(
+      repository.id,
+      input,
+      requestedOptions,
+      commitProtectionDecisions
+    );
+    return this.#serializeCandidateStart(
+      repository.id,
+      idempotencyKey,
+      startRequestFingerprint,
+      () => this.#startCandidate(
+        repository,
+        input,
+        requestedOptions,
+        idempotencyKey,
+        startRequestFingerprint,
+        commitProtectionDecisions
+      )
+    );
+  }
+
+  async #startCandidate(
+    repository,
+    input,
+    requestedOptions,
+    idempotencyKey,
+    startRequestFingerprint,
+    commitProtectionDecisions
+  ) {
+    const existing = this.store.getWorktreeIntegrationJobByIdempotencyKey?.(repository.id, idempotencyKey);
+    if (existing) return presentJob(assertIdempotentReplay(existing, startRequestFingerprint));
+
+    const candidateId = String(input.candidateId ?? input.id ?? "").trim();
+    const candidateFingerprint = String(input.candidateFingerprint ?? input.planFingerprint ?? "").trim();
+    if (!candidateId || !candidateFingerprint) {
+      throw new WorktreeIntegrationJobError(
+        "CANDIDATE_CONFIRMATION_REQUIRED",
+        "Confirm the exact reviewed integration candidate before starting."
+      );
+    }
+    const cached = this.integrationCandidates.get(candidateId);
+    if (cached?.repositoryId === repository.id
+      && canonicalStringify(cached.options) !== canonicalStringify(requestedOptions)) {
+      throw new WorktreeIntegrationJobError(
+        "CANDIDATE_OPTIONS_MISMATCH",
+        "The integration operation does not match the reviewed candidate.",
+        409
+      );
+    }
+    if (!cached && branchCandidateId(candidateId) && !requestedOptions.operationType) {
+      throw new WorktreeIntegrationJobError(
+        "CANDIDATE_OPTIONS_REQUIRED",
+        "Include the reviewed branch operation when confirming this candidate.",
+        409
+      );
+    }
+    const options = requestedOptions;
+    const built = await this.#buildPlan(repository, options, {
+      forceFresh: true,
+      reason: "integration_candidate_confirmation"
+    });
+    const expired = !cached || cached.expiresAtMs <= this.now();
+    const candidateMismatch = cached?.repositoryId !== repository.id
+      || cached?.candidate.planFingerprint !== candidateFingerprint
+      || cached?.candidate.id !== candidateId;
+    if (expired || candidateMismatch || built.planFingerprint !== candidateFingerprint) {
+      const freshCandidate = this.#cacheCandidate(repository.id, options, built);
+      throw new WorktreeIntegrationJobError(
+        "PLAN_REFRESH_REQUIRED",
+        "Worktree state changed or the reviewed candidate expired. Review the refreshed candidate before starting.",
+        409,
+        {
+          candidate: freshCandidate,
+          diff: deterministicPlanDiff(cached?.candidate.plan ?? null, built.plan)
+        }
+      );
+    }
+    if ((built.plan.blockingRisks ?? []).length > 0) {
+      throw new WorktreeIntegrationJobError(
+        "PREFLIGHT_RISKS_UNRESOLVED",
+        "Resolve the blocking Worktree risks and generate a new candidate.",
+        409
+      );
+    }
+    validateCommitProtectionDecisionBindings(
+      built.plan,
+      commitProtectionDecisions,
+      candidateFingerprint,
+      { requireBindings: true }
+    );
+    const boundCommitProtectionDecisions = bindCommitProtectionDecisions(
+      built.plan,
+      commitProtectionDecisions,
+      candidateFingerprint
+    );
+    assertCommitProtectionDecisions(built.plan, boundCommitProtectionDecisions);
+    this.#assertNoActiveJob(repository.id);
+
+    const now = new Date(this.now()).toISOString();
+    const noWorkRequired = built.noWorkRequired;
+    const jobInput = {
       repositoryId: repository.id,
-      planFingerprint,
-      status: "awaiting_confirmation",
-      phase: "preflight_complete",
+      planFingerprint: built.planFingerprint,
+      fingerprintVersion: PLAN_FINGERPRINT_VERSION,
+      idempotencyKey,
+      startRequestFingerprint,
+      startRequestFingerprintVersion: START_REQUEST_FINGERPRINT_VERSION,
+      status: noWorkRequired ? "completed" : "queued",
+      phase: noWorkRequired ? "completed" : "queued",
+      confirmedAt: now,
+      completedAt: noWorkRequired ? now : null,
       details: {
-        plan,
+        plan: built.plan,
         currentWorktreeId: null,
-        progress: progressFor(items),
-        audit: [{ at: new Date().toISOString(), event: "branch_operation_preflight_created", planFingerprint }]
+        progress: progressFor(built.plan.items),
+        commitProtectionDecisions: boundCommitProtectionDecisions,
+        audit: [{
+          at: now,
+          event: noWorkRequired ? "candidate_confirmed_no_changes" : "candidate_confirmed",
+          planFingerprint: built.planFingerprint,
+          idempotencyKey
+        }]
       }
-    }));
+    };
+    let job;
+    try {
+      job = this.store.createWorktreeIntegrationJobIdempotently
+        ? this.store.createWorktreeIntegrationJobIdempotently(jobInput)
+        : this.store.createWorktreeIntegrationJob(jobInput);
+    } catch (error) {
+      if (error?.code === "IDEMPOTENCY_KEY_REUSED") {
+        throw new WorktreeIntegrationJobError(
+          "IDEMPOTENCY_KEY_REUSED",
+          "This idempotency key was already used for a different integration start request.",
+          409
+        );
+      }
+      if (error?.code === "INTEGRATION_JOB_ACTIVE" || /idx_worktree_integration_jobs_active/i.test(error?.message ?? "")) {
+        throw new WorktreeIntegrationJobError(
+          "INTEGRATION_JOB_ACTIVE",
+          "Resolve or complete the existing Worktree integration task first.",
+          409
+        );
+      }
+      throw error;
+    }
+    this.integrationCandidates.delete(candidateId);
+    if (!noWorkRequired) this.#schedule(job.id);
+    return presentJob(job);
+  }
+
+  async #serializeCandidateStart(
+    repositoryId,
+    idempotencyKey,
+    startRequestFingerprint,
+    operation
+  ) {
+    const inFlight = this.repositoryStartOperations.get(repositoryId);
+    if (inFlight) {
+      if (inFlight.idempotencyKey === idempotencyKey
+        && inFlight.startRequestFingerprint === startRequestFingerprint) {
+        return inFlight.promise;
+      }
+      throw new WorktreeIntegrationJobError(
+        "INTEGRATION_CONFIRMATION_IN_PROGRESS",
+        "Another integration confirmation is being checked for this repository. Retry shortly.",
+        409,
+        { retryable: true }
+      );
+    }
+    const promise = Promise.resolve().then(operation);
+    this.repositoryStartOperations.set(repositoryId, {
+      idempotencyKey,
+      startRequestFingerprint,
+      promise
+    });
+    try {
+      return await promise;
+    } finally {
+      if (this.repositoryStartOperations.get(repositoryId)?.promise === promise) {
+        this.repositoryStartOperations.delete(repositoryId);
+      }
+    }
+  }
+
+  #cacheCandidate(repositoryId, options, built) {
+    const generatedAtMs = this.now();
+    const candidate = {
+      id: `integration_candidate:${options.operationType ?? "default"}:${randomUUID()}`,
+      repositoryId,
+      planFingerprint: built.planFingerprint,
+      fingerprint: built.planFingerprint,
+      fingerprintVersion: PLAN_FINGERPRINT_VERSION,
+      operationType: options.operationType ?? null,
+      sourceWorktreeIds: options.sourceWorktreeIds ?? [],
+      targetWorktreeId: options.targetWorktreeId ?? null,
+      generatedAt: new Date(generatedAtMs).toISOString(),
+      expiresAt: new Date(generatedAtMs + this.candidateTtlMs).toISOString(),
+      ttlMs: this.candidateTtlMs,
+      plan: built.plan,
+      progress: progressFor(built.plan.items),
+      noWorkRequired: built.noWorkRequired
+    };
+    this.integrationCandidates.set(candidate.id, {
+      repositoryId,
+      options,
+      candidate,
+      expiresAtMs: generatedAtMs + this.candidateTtlMs
+    });
+    this.#pruneCandidates(generatedAtMs, candidate.id);
+    return candidate;
+  }
+
+  #pruneCandidates(now, keepId) {
+    for (const [id, entry] of this.integrationCandidates) {
+      if (id !== keepId && entry.expiresAtMs <= now) this.integrationCandidates.delete(id);
+    }
+    const kept = this.integrationCandidates.get(keepId);
+    if (kept) {
+      const repositoryCandidateIds = [...this.integrationCandidates]
+        .filter(([, entry]) => entry.repositoryId === kept.repositoryId)
+        .map(([id]) => id);
+      while (repositoryCandidateIds.length > MAX_CACHED_CANDIDATES_PER_REPOSITORY) {
+        const oldest = repositoryCandidateIds.shift();
+        if (oldest !== keepId) this.integrationCandidates.delete(oldest);
+      }
+    }
+    while (this.integrationCandidates.size > MAX_CACHED_CANDIDATES) {
+      const oldest = this.integrationCandidates.keys().next().value;
+      if (oldest === keepId && this.integrationCandidates.size === 1) break;
+      this.integrationCandidates.delete(oldest);
+    }
+  }
+
+  #assertNoActiveJob(repositoryId, ignoreJobId = null, includeAwaitingConfirmation = false) {
+    const activeStatuses = includeAwaitingConfirmation
+      ? ["awaiting_confirmation", ...ACTIVE_JOB_STATUSES]
+      : ACTIVE_JOB_STATUSES;
+    const active = this.store.listWorktreeIntegrationJobs(repositoryId)
+      .find((job) => job.id !== ignoreJobId && activeStatuses.includes(job.status));
+    if (active) {
+      throw new WorktreeIntegrationJobError(
+        "INTEGRATION_JOB_ACTIVE",
+        "Resolve or complete the existing Worktree integration task first.",
+        409
+      );
+    }
   }
 
   async confirm(jobId, input = {}) {
@@ -417,17 +697,17 @@ export class WorktreeIntegrationJobService {
       );
     }
     const commitProtectionDecisions = normalizeCommitProtectionDecisions(input.commitProtectionDecisions);
-    for (const item of job.details.plan.items) {
-      if (item.commitProtection?.requiresDecision !== true) continue;
-      const decision = commitProtectionDecisions[item.worktreeId]?.decision;
-      if (decision !== "ignore" && decision !== "include") {
-        throw new WorktreeIntegrationJobError(
-          "GIT_COMMIT_PROTECTION_REQUIRED",
-          `Choose how to handle protected files in ${item.branchName ?? item.path} before confirming.`,
-          409
-        );
-      }
-    }
+    validateCommitProtectionDecisionBindings(
+      job.details.plan,
+      commitProtectionDecisions,
+      job.planFingerprint
+    );
+    const boundCommitProtectionDecisions = bindCommitProtectionDecisions(
+      job.details.plan,
+      commitProtectionDecisions,
+      job.planFingerprint
+    );
+    assertCommitProtectionDecisions(job.details.plan, boundCommitProtectionDecisions);
     const current = this.#associate(await this.inspectRepository(job.repositoryId));
     const mismatch = planInspectionMismatch(job.details.plan, current);
     if (mismatch) {
@@ -438,13 +718,27 @@ export class WorktreeIntegrationJobService {
         auditData: { code: mismatch.code }
       }));
     }
-    const updated = this.#update(job, {
-      status: "queued",
-      phase: "queued",
-      confirmedAt: new Date().toISOString(),
-      details: { ...job.details, commitProtectionDecisions },
-      auditEvent: "plan_confirmed"
-    });
+    this.#assertNoActiveJob(job.repositoryId, job.id);
+    let updated;
+    try {
+      updated = this.#update(job, {
+        status: "queued",
+        phase: "queued",
+        confirmedAt: new Date().toISOString(),
+        details: { ...job.details, commitProtectionDecisions: boundCommitProtectionDecisions },
+        auditEvent: "plan_confirmed"
+      });
+    } catch (error) {
+      if (/worktree_integration_jobs\.repository_id|idx_worktree_integration_jobs_active/i
+        .test(error?.message ?? "")) {
+        throw new WorktreeIntegrationJobError(
+          "INTEGRATION_JOB_ACTIVE",
+          "Resolve or complete the existing Worktree integration task first.",
+          409
+        );
+      }
+      throw error;
+    }
     this.#schedule(updated.id);
     return presentJob(updated);
   }
@@ -932,7 +1226,10 @@ export class WorktreeIntegrationJobService {
         || job.details.conflictResolution?.status === "ready"
         || job.details.convergenceWorkspace != null;
       if (!completedAny) {
-        const current = await this.inspectRepository(job.repositoryId);
+        const current = await this.inspectRepository(job.repositoryId, {
+          forceFresh: true,
+          reason: "integration_execution_validation"
+        });
         const mismatch = planInspectionMismatch(job.details.plan, current);
         if (mismatch) {
           throw new WorktreeIntegrationJobError(
@@ -949,6 +1246,7 @@ export class WorktreeIntegrationJobService {
         let result;
         let commitInputItem = item;
         for (let attempt = 0; attempt < this.maxConflictFallbackAttempts; attempt += 1) {
+          await this.#assertCommitProtectionBinding(job, commitInputItem);
           try {
             result = await this.commitChanges({
               path: commitInputItem.path,
@@ -1255,6 +1553,19 @@ export class WorktreeIntegrationJobService {
     if (latest.status !== "cancellation_requested") return false;
     await this.#finishCancellation(latest, { replan: latest.details.replanAfterCancel === true });
     return true;
+  }
+
+  async #assertCommitProtectionBinding(job, item) {
+    const decision = job.details.commitProtectionDecisions?.[item.worktreeId];
+    if (!decision?.protectedPathsDigest) return;
+    const current = await this.inspectCommitProtection(item.path);
+    if (protectedPathsDigest(current) === decision.protectedPathsDigest
+      && decision.candidateFingerprint === job.planFingerprint) return;
+    throw new WorktreeIntegrationJobError(
+      "PLAN_STALE",
+      `Protected files changed in ${item.branchName ?? item.path} after confirmation. Generate and review a fresh candidate.`,
+      409
+    );
   }
 
   async #assertWorktreeIdle(repositoryId, worktreeId) {
@@ -1634,11 +1945,218 @@ function risksForBranchOperation(worktree, { isTarget, operationType }) {
   return risks;
 }
 
+function withProtectedPathsDigest(commitProtection) {
+  if (!commitProtection) return null;
+  return {
+    ...commitProtection,
+    protectedPathsDigest: protectedPathsDigest(commitProtection)
+  };
+}
+
+function validateCommitProtectionDecisionBindings(
+  plan,
+  decisions,
+  candidateFingerprint,
+  { requireBindings = false } = {}
+) {
+  for (const [worktreeId, decision] of Object.entries(decisions)) {
+    const item = plan.items.find((candidate) => candidate.worktreeId === worktreeId);
+    if (!item) {
+      throw new WorktreeIntegrationJobError(
+        "COMMIT_PROTECTION_DECISION_INVALID",
+        `The protected-file decision references an unknown Worktree: ${worktreeId}.`,
+        409
+      );
+    }
+    if ((requireBindings && decision.candidateFingerprint !== candidateFingerprint)
+      || (decision.candidateFingerprint != null
+        && decision.candidateFingerprint !== candidateFingerprint)) {
+      throw new WorktreeIntegrationJobError(
+        "COMMIT_PROTECTION_DECISION_STALE",
+        `The protected-file decision for ${item.branchName ?? item.path} belongs to a different candidate.`,
+        409
+      );
+    }
+    const expectedDigest = item.commitProtection?.protectedPathsDigest
+      ?? protectedPathsDigest(item.commitProtection);
+    if ((requireBindings && decision.protectedPathsDigest !== expectedDigest)
+      || (decision.protectedPathsDigest != null
+        && decision.protectedPathsDigest !== expectedDigest)) {
+      throw new WorktreeIntegrationJobError(
+        "COMMIT_PROTECTION_DECISION_STALE",
+        `The protected-file decision for ${item.branchName ?? item.path} no longer matches its reviewed paths.`,
+        409
+      );
+    }
+  }
+}
+
+function bindCommitProtectionDecisions(plan, decisions, candidateFingerprint) {
+  return Object.fromEntries(Object.entries(decisions).map(([worktreeId, decision]) => {
+    const item = plan.items.find((candidate) => candidate.worktreeId === worktreeId);
+    return [worktreeId, {
+      ...decision,
+      candidateFingerprint,
+      protectedPathsDigest: protectedPathsDigest(item?.commitProtection)
+    }];
+  }));
+}
+
+function protectedPathsDigest(commitProtection) {
+  return fingerprintValue({
+    protectedPaths: [...(commitProtection?.protectedPaths ?? [])].sort(),
+    localSymlinkPaths: [...(commitProtection?.localSymlinkPaths ?? [])].sort()
+  });
+}
+
+function startRequestFingerprintFor(repositoryId, input, options, decisions) {
+  return fingerprintValue({
+    version: START_REQUEST_FINGERPRINT_VERSION,
+    repositoryId,
+    candidateId: String(input.candidateId ?? input.id ?? "").trim(),
+    candidateFingerprint: String(input.candidateFingerprint ?? input.planFingerprint ?? "").trim(),
+    options,
+    commitProtectionDecisions: Object.fromEntries(Object.entries(decisions).sort(([left], [right]) =>
+      left.localeCompare(right)))
+  });
+}
+
+function assertIdempotentReplay(job, startRequestFingerprint) {
+  if (job.startRequestFingerprint === startRequestFingerprint) return job;
+  throw new WorktreeIntegrationJobError(
+    "IDEMPOTENCY_KEY_REUSED",
+    "This idempotency key was already used for a different integration start request.",
+    409
+  );
+}
+
+function requestObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new WorktreeIntegrationJobError(
+      "INVALID_REQUEST_BODY",
+      "The request body must be a JSON object."
+    );
+  }
+  return value;
+}
+
+function candidateOptions(value = {}, { canonicalOnly = false } = {}) {
+  const rawType = String(value.operationType ?? "").trim();
+  const hasSources = Array.isArray(value.sourceWorktreeIds)
+    ? value.sourceWorktreeIds.length > 0
+    : value.sourceWorktreeIds != null;
+  const hasTarget = String(value.targetWorktreeId ?? "").trim().length > 0;
+  if (!rawType) {
+    if (hasSources || hasTarget) {
+      throw new WorktreeIntegrationJobError(
+        "BRANCH_OPERATION_INVALID",
+        "Include a canonical operationType with branch-operation Worktree identifiers."
+      );
+    }
+    return {};
+  }
+  if (canonicalOnly && !["merge", "sync", "converge"].includes(rawType)) {
+    throw new WorktreeIntegrationJobError(
+      "BRANCH_OPERATION_INVALID",
+      "Use the canonical merge, sync, or converge operation type when starting a candidate."
+    );
+  }
+  const operation = normalizeBranchOperation(value);
+  return {
+    operationType: operation.type,
+    sourceWorktreeIds: operation.sourceWorktreeIds,
+    targetWorktreeId: operation.targetWorktreeId
+  };
+}
+
+function branchCandidateId(candidateId) {
+  return /^integration_candidate:(?:merge|sync|converge):/.test(candidateId);
+}
+
+function requiredBoundedText(value, code, maxLength) {
+  const text = String(value ?? "").trim();
+  if (!text || text.length > maxLength) {
+    throw new WorktreeIntegrationJobError(code, "A stable idempotency key is required.");
+  }
+  return text;
+}
+
+function assertCommitProtectionDecisions(plan, decisions) {
+  for (const item of plan.items) {
+    if (item.commitProtection?.requiresDecision !== true) continue;
+    const decision = decisions[item.worktreeId]?.decision;
+    if (decision !== "ignore" && decision !== "include") {
+      throw new WorktreeIntegrationJobError(
+        "GIT_COMMIT_PROTECTION_REQUIRED",
+        `Choose how to handle protected files in ${item.branchName ?? item.path} before confirming.`,
+        409
+      );
+    }
+  }
+}
+
+function deterministicPlanDiff(previousPlan, nextPlan) {
+  const previousItems = new Map((previousPlan?.items ?? []).map((item) => [item.worktreeId, item]));
+  const nextItems = new Map((nextPlan?.items ?? []).map((item) => [item.worktreeId, item]));
+  const previousIds = [...previousItems.keys()].sort();
+  const nextIds = [...nextItems.keys()].sort();
+  const addedWorktreeIds = nextIds.filter((id) => !previousItems.has(id));
+  const removedWorktreeIds = previousIds.filter((id) => !nextItems.has(id));
+  const comparedFields = [
+    "path", "branchName", "availability", "sourceHeadBefore", "statusSummary", "changedFiles",
+    "dirty", "aheadOfMain", "behindMain", "mergedIntoMain", "risks", "commitProtection",
+    "commitMessage", "commitStatus", "mergeStatus"
+  ];
+  const changedWorktrees = previousIds.filter((id) => nextItems.has(id)).flatMap((worktreeId) => {
+    const before = previousItems.get(worktreeId);
+    const after = nextItems.get(worktreeId);
+    const changes = comparedFields.flatMap((field) => canonicalStringify(before[field]) === canonicalStringify(after[field])
+      ? []
+      : [{ field, before: before[field] ?? null, after: after[field] ?? null }]);
+    return changes.length > 0 ? [{ worktreeId, changes }] : [];
+  });
+  const beforeRisks = sortedRisks(previousPlan?.blockingRisks ?? []);
+  const afterRisks = sortedRisks(nextPlan?.blockingRisks ?? []);
+  const beforeOrder = [...(previousPlan?.mergeOrder ?? [])];
+  const afterOrder = [...(nextPlan?.mergeOrder ?? [])];
+  const risksChanged = canonicalStringify(beforeRisks) !== canonicalStringify(afterRisks);
+  const orderChanged = canonicalStringify(beforeOrder) !== canonicalStringify(afterOrder);
+  const contextFields = [
+    "repositoryId", "operationType", "syncMode", "targetWorktreeId", "targetBranchName",
+    "sourceWorktreeIds", "mainWorktreeId", "mainPath", "mainHeadBefore", "inventoryVersion",
+    "validationSnapshot", "executionPath"
+  ];
+  const contextChanges = contextFields.flatMap((field) => (
+    canonicalStringify(previousPlan?.[field]) === canonicalStringify(nextPlan?.[field])
+      ? []
+      : [{ field, before: previousPlan?.[field] ?? null, after: nextPlan?.[field] ?? null }]
+  ));
+  const changed = canonicalStringify(previousPlan) !== canonicalStringify(nextPlan);
+  const hasDetailedChange = addedWorktreeIds.length > 0 || removedWorktreeIds.length > 0
+    || changedWorktrees.length > 0 || risksChanged || orderChanged || contextChanges.length > 0;
+  return {
+    addedWorktreeIds,
+    removedWorktreeIds,
+    changedWorktrees,
+    contextChanges,
+    reason: changed && !hasDetailedChange ? "plan_changed" : null,
+    risks: { changed: risksChanged, before: beforeRisks, after: afterRisks },
+    mergeOrder: { changed: orderChanged, before: beforeOrder, after: afterOrder },
+    changed
+  };
+}
+
+function sortedRisks(risks) {
+  return [...risks].map((risk) => ({ ...risk })).sort((left, right) =>
+    `${left.worktreeId ?? ""}\0${left.code ?? ""}\0${left.message ?? ""}`
+      .localeCompare(`${right.worktreeId ?? ""}\0${right.code ?? ""}\0${right.message ?? ""}`));
+}
+
 function normalizeBranchOperation(value) {
   const rawType = String(value?.operationType ?? "").trim();
   if (!rawType) return null;
-  const type = rawType === "batch_merge" ? "merge"
-    : rawType === "one_way_sync" ? "sync"
+  const type = rawType === "merge" || rawType === "batch_merge" ? "merge"
+    : rawType === "sync" || rawType === "one_way_sync" ? "sync"
       : rawType === "converge" ? "converge" : null;
   if (!type) {
     throw new WorktreeIntegrationJobError("BRANCH_OPERATION_INVALID", "Choose merge, one-way synchronization, or convergence.");
@@ -1662,7 +2180,12 @@ function normalizeCommitProtectionDecisions(value) {
     const worktreeId = String(entry?.worktreeId ?? "").trim();
     const decision = String(entry?.decision ?? "").trim();
     if (!worktreeId || !["ignore", "include"].includes(decision)) return [];
-    return [[worktreeId, { decision, neverRemind: entry?.neverRemind === true }]];
+    const normalized = { decision, neverRemind: entry?.neverRemind === true };
+    const candidateFingerprint = String(entry?.candidateFingerprint ?? "").trim();
+    const pathsDigest = String(entry?.protectedPathsDigest ?? "").trim();
+    if (candidateFingerprint) normalized.candidateFingerprint = candidateFingerprint;
+    if (pathsDigest) normalized.protectedPathsDigest = pathsDigest;
+    return [[worktreeId, normalized]];
   }));
 }
 
@@ -1742,7 +2265,7 @@ function expectedMainHeadBefore(plan, worktreeId) {
 }
 
 function conflictResolutionKey(job, item, sourceHead, expectedMainHead) {
-  return fingerprint({
+  return legacyFingerprint({
     jobId: job.id,
     worktreeId: item.worktreeId,
     sourceHead,
@@ -1796,8 +2319,24 @@ function blockedConflictAutomation(job, item, error) {
   };
 }
 
-function fingerprint(value) {
+function legacyFingerprint(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function fingerprint(value) {
+  return fingerprintValue({ version: PLAN_FINGERPRINT_VERSION, plan: value });
+}
+
+function fingerprintValue(value) {
+  return createHash("sha256").update(canonicalStringify(value)).digest("hex");
+}
+
+function canonicalStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalStringify).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalStringify(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function isRecoverableConflictFallbackError(error) {

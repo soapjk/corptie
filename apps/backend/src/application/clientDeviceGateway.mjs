@@ -105,6 +105,8 @@ export class ClientDeviceGateway {
       const worktreeService = /^\/client\/v1\/worktrees\/repositories\/([^/]+)\/development-service$/.exec(path);
       const worktreeServiceAction = /^\/client\/v1\/worktrees\/repositories\/([^/]+)\/development-service\/actions\/([^/]+)$/.exec(path);
       const worktreePlan = /^\/client\/v1\/worktrees\/repositories\/([^/]+)\/integration-plans$/.exec(path);
+      const worktreeCandidate = /^\/client\/v1\/worktrees\/repositories\/([^/]+)\/integration-candidates$/.exec(path);
+      const worktreeRepositoryJobs = /^\/client\/v1\/worktrees\/repositories\/([^/]+)\/integration-jobs$/.exec(path);
       const worktreeJob = /^\/client\/v1\/worktrees\/jobs\/([^/]+)$/.exec(path);
       const worktreeJobAction = /^\/client\/v1\/worktrees\/jobs\/([^/]+)\/actions\/([^/]+)$/.exec(path);
       const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|stop|capabilities|composer|conversation-commands|tasks|read-receipt|images|usage|approval|user-input)$/.exec(path);
@@ -208,7 +210,7 @@ export class ClientDeviceGateway {
       }
       if (this.worktreeAPI && (worktreeRepository || worktreePushStatus || worktreeDelete
           || worktreeWorkspaceAction || worktreeService || worktreeServiceAction || worktreePlan
-          || worktreeJob || worktreeJobAction)) {
+          || worktreeCandidate || worktreeRepositoryJobs || worktreeJob || worktreeJobAction)) {
         let result;
         if (request.method === "GET" && worktreeRepository) {
           const forceFreshValues = url.searchParams.getAll("forceFresh");
@@ -246,6 +248,12 @@ export class ClientDeviceGateway {
           );
           else if (worktreePlan) result = await this.worktreeAPI.createPlan(
             decode(worktreePlan[1], "INVALID_REPOSITORY_ID"), input
+          );
+          else if (worktreeCandidate) result = await this.worktreeAPI.createCandidate(
+            decode(worktreeCandidate[1], "INVALID_REPOSITORY_ID"), input
+          );
+          else if (worktreeRepositoryJobs) result = await this.worktreeAPI.startCandidate(
+            decode(worktreeRepositoryJobs[1], "INVALID_REPOSITORY_ID"), input
           );
           else if (worktreeJobAction) result = await this.worktreeAPI.jobAction(
             decode(worktreeJobAction[1], "INVALID_JOB_ID"),
@@ -384,7 +392,16 @@ export class ClientDeviceGateway {
       }
       throw deviceError("ROUTE_NOT_AVAILABLE", 404);
     } catch (error) {
-      reply(response, error.status ?? error.statusCode ?? 500, { code: error.code ?? "DEVICE_SERVICE_ERROR" });
+      const status = error.status ?? error.statusCode ?? 500;
+      reply(response, status, {
+        code: error.code ?? "DEVICE_SERVICE_ERROR",
+        ...(status < 500 ? { error: error.message } : {}),
+        ...(typeof error.retryable === "boolean" ? { retryable: error.retryable } : {}),
+        ...(error.code === "PLAN_REFRESH_REQUIRED" ? {
+          candidate: error.candidate,
+          diff: error.diff
+        } : {})
+      });
     }
   }
 

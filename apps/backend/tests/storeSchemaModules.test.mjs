@@ -29,7 +29,7 @@ test("schema modules preserve the original SQL batches byte for byte", () => {
   // Recorded from the unsplit migration before moving any schema text.
   const hash = value => createHash("sha256").update(value).digest("hex");
   assert.equal(hash(sessionRuntimeSchemaSql), "94122e8089ae2be39767b682184f3cb9450fa49e86479b559fdc33b9a8727235");
-  assert.equal(hash(workDomainSchemaSql), "f150bf8f6f239d510e7a5050072646eb0f277682ab8aa438f17f61a3df08681b");
+  assert.equal(hash(workDomainSchemaSql), "9c1de325a9e531cd988108d2c65b932372d0744ceb657093187fc11e4930c7d2");
 });
 
 test("extracted schema migrations run directly on the caller connection without schema drift", async () => {

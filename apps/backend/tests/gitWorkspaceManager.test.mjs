@@ -444,6 +444,54 @@ test("management inspection keeps a longer snapshot cache and supports an explic
   }
 });
 
+test("a superseded inspection cannot overwrite a newer force-fresh cache entry", async () => {
+  const fixture = await createFixture("inspection-cache-monotonic", { activeFeatureWorktree: true });
+  let snapshotCount = 0;
+  let signalFirstStarted;
+  let releaseFirst;
+  const firstStarted = new Promise((resolve) => { signalFirstStarted = resolve; });
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") },
+    inspectionCacheTtlMs: 60_000,
+    createSnapshot: async (...args) => {
+      snapshotCount += 1;
+      const sequence = snapshotCount;
+      const snapshot = await createGitWorkspaceSnapshot(...args);
+      if (sequence === 1) {
+        signalFirstStarted();
+        await firstGate;
+      }
+      return { ...snapshot, inventoryVersion: sequence === 1 ? "stale" : "fresh" };
+    }
+  });
+  try {
+    const staleRequest = manager.projectStatusForPath(fixture.repository, fixture.repositoryId, {
+      inspectionLevel: "management",
+      reason: "stale_scan"
+    });
+    await firstStarted;
+    const fresh = await manager.projectStatusForPath(fixture.repository, fixture.repositoryId, {
+      inspectionLevel: "management",
+      reason: "forced_scan",
+      forceFresh: true
+    });
+    assert.equal(fresh.inventoryVersion, "fresh");
+    releaseFirst();
+    assert.equal((await staleRequest).inventoryVersion, "stale");
+    const cached = await manager.projectStatusForPath(fixture.repository, fixture.repositoryId, {
+      inspectionLevel: "management",
+      reason: "cache_check"
+    });
+    assert.equal(cached.inventoryVersion, "fresh");
+    assert.equal(snapshotCount, 2);
+  } finally {
+    releaseFirst();
+    await fixture.close();
+  }
+});
+
 test("commit and workspace switch invalidate only the affected repository inspection cache", async () => {
   const fixture = await createFixture("operation-invalidation", { activeFeatureWorktree: true });
   let snapshotCount = 0;
@@ -511,6 +559,32 @@ test("session inspection probes status only for main and the active Worktree", a
   } finally {
     await fixture.close();
   }
+});
+
+test("integration inspection forwards cache freshness options to project status", async () => {
+  const manager = new GitWorkspaceManager({
+    store: {},
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  const calls = [];
+  manager.projectStatusForPath = async (...args) => {
+    calls.push(args);
+    return { repositoryId: "repository", worktrees: [] };
+  };
+
+  await manager.integrationInspectionForProject("/repo", "repository", {
+    forceFresh: true,
+    reason: "integration_candidate_confirmation",
+    cacheTtlMs: 0
+  });
+
+  assert.deepEqual(calls, [["/repo", "repository", {
+    includeDiffStat: false,
+    inspectionLevel: "integration",
+    reason: "integration_candidate_confirmation",
+    forceFresh: true,
+    cacheTtlMs: 0
+  }]]);
 });
 
 test("management inspection preserves list fields while avoiding deep per-Worktree Git probes", async () => {
