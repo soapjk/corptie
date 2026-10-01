@@ -4,6 +4,10 @@ import SwiftUI
 
 @MainActor
 final class ConsoleNativeSplitView: NSSplitView {
+    // Keep the native divider hit area and resize behavior without drawing a
+    // line between the Work cards and the conversation canvas.
+    override func drawDivider(in rect: NSRect) {}
+
     // A viewport has no content-derived ideal size. In particular, querying
     // fittingSize must not recursively measure the SwiftUI trees it contains.
     override var fittingSize: NSSize { NSSize(width: 1000, height: 700) }

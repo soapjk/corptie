@@ -55,10 +55,14 @@ public struct ConversationDetailModuleSurface: ViewModifier {
     public init() {}
 
     public func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
         content
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .platformGlassSurface(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .platformGlassSurface(in: shape)
+            // Native glass draws beyond its bounds. Keep the glass itself, but
+            // trim its outer halo so neighboring Detail cards cast no shadow.
+            .clipShape(shape)
     }
 }
 
