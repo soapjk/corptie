@@ -91,7 +91,7 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
 
     @ViewBuilder private var connectionStatus: some View {
         if store.snapshot == nil && store.error == nil { ProgressView("正在连接详情推送…") }
-        if !store.connected && store.snapshot != nil {
+        if !store.connected && store.snapshot != nil && store.error != nil {
             Label("详情连接中断，保留上次数据", systemImage: "wifi.slash").font(.footnote).foregroundStyle(.orange)
         }
         if let error = store.error { Text(error).font(.footnote).foregroundStyle(.red).textSelection(.enabled) }

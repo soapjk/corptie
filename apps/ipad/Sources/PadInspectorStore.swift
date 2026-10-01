@@ -41,12 +41,15 @@ final class PadInspectorStore {
             } catch {
                 guard generation == token, !Task.isCancelled else { return }
                 connected = false
-                self.error = PadWorktreeFailure.describe(error, stage: "读取 Detail")
+                if snapshot == nil || failures >= 2 {
+                    self.error = PadWorktreeFailure.describe(error, stage: "读取 Detail")
+                }
                 if let failure = error as? ClientServiceFailure, [401, 403, 404].contains(failure.statusCode) { return }
                 if case ClientConnectionError.httpStatus(let code) = error, [401, 403, 404].contains(code) { return }
             }
             failures += 1
-            do { try await Task.sleep(for: .seconds(min(30, pow(2, Double(min(failures, 5)))))) }
+            let delaySeconds = failures == 1 ? 0.4 : min(30.0, pow(2.0, Double(min(failures, 5))))
+            do { try await Task.sleep(for: .seconds(delaySeconds)) }
             catch { return }
         }
     }

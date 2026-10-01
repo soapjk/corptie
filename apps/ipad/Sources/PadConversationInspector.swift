@@ -7,8 +7,8 @@ import CorptieConversation
 struct PadConversationInspector: View {
     @Bindable var workspace: PadWorkspace
     let connection: PadConnection
-    @State private var inspector = PadInspectorStore()
     let sessionID: String
+    private var inspector: PadInspectorStore { workspace.inspectorStore(for: sessionID) }
     private var session: ClientSession? { workspace.sessionsByID[sessionID] }
     private var kind: ConversationInspectorKind {
         .resolve(sessionKind: session?.sessionKind, taskID: session?.taskId, workID: session?.workId)

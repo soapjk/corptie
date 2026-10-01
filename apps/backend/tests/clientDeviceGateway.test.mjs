@@ -37,6 +37,7 @@ test("pairing requires local approval, exchanges once, rotates and revokes persi
     assert.equal(disk.includes(creds.refreshToken), false);
     assert.equal((await stat(join(f.dir, "auth", "devices.json"))).mode & 0o777, 0o600);
     const rotated = await a.refresh(creds);
+    f.advance(30_001);
     await assert.rejects(a.refresh(creds), { code: "INVALID_CREDENTIAL" });
     assert.throws(() => a.authenticate(creds.accessToken), { code: "INVALID_CREDENTIAL" });
     const restored = new ClientDeviceAuthority(join(f.dir, "auth"));
@@ -395,4 +396,33 @@ test("real TLS route boundary and authenticated local approval", async () => {
     if (admin) await new Promise(resolve => admin.close(resolve));
     await f.close();
   }
+});
+
+test("refresh token rotation grace period allows replaying previous refresh token during grace window", async () => {
+  const f = await fixture();
+  try {
+    const invite = f.authority.invite();
+    const claim = f.authority.claim({ ...invite, name: "iPad Grace" });
+    f.authority.approve(invite.pairingId, true);
+    const initial = await f.authority.exchange(claim);
+
+    // First rotation
+    const firstRotation = await f.authority.refresh(initial);
+    assert.ok(firstRotation.accessToken);
+    assert.notEqual(firstRotation.refreshToken, initial.refreshToken);
+
+    // Replay initial token within grace window (e.g. 5 seconds later due to dropped response)
+    f.advance(5_000);
+    const replayed = await f.authority.refresh(initial);
+    assert.equal(replayed.deviceId, initial.deviceId);
+    assert.ok(f.authority.authenticate(replayed.accessToken));
+
+    // After grace window expires, initial token fails closed
+    f.advance(30_001);
+    await assert.rejects(f.authority.refresh(initial), { code: "INVALID_CREDENTIAL" });
+
+    // But the replayed (current) token can still refresh normally
+    const subsequent = await f.authority.refresh(replayed);
+    assert.equal(subsequent.deviceId, initial.deviceId);
+  } finally { await f.close(); }
 });
