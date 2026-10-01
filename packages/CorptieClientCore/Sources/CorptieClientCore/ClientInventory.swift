@@ -76,11 +76,13 @@ public struct ClientSession: Decodable, Sendable, Identifiable, Equatable {
     /// Read-receipt cursors; identical inputs to the desktop unread rule (`SessionReadAttention`).
     public let lastAgentMessageSequence: Int
     public let lastReadMessageSequence: Int
+    /// Durable user or formal assistant reply time; excludes tool and stream updates.
+    public let lastMessageAt: String?
     public let updatedAt: String
 
     enum CodingKeys: String, CodingKey {
         case id, title, workId, taskId, sessionKind, executionStatus, activityStatus, summary
-        case lastAgentMessageSequence, lastReadMessageSequence, updatedAt
+        case lastAgentMessageSequence, lastReadMessageSequence, lastMessageAt, updatedAt
     }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -94,6 +96,7 @@ public struct ClientSession: Decodable, Sendable, Identifiable, Equatable {
         activityStatus = try container.decodeIfPresent(String.self, forKey: .activityStatus)
         lastAgentMessageSequence = try container.decodeIfPresent(Int.self, forKey: .lastAgentMessageSequence) ?? 0
         lastReadMessageSequence = try container.decodeIfPresent(Int.self, forKey: .lastReadMessageSequence) ?? 0
+        lastMessageAt = try container.decodeIfPresent(String.self, forKey: .lastMessageAt)
         updatedAt = try container.decode(String.self, forKey: .updatedAt)
     }
 

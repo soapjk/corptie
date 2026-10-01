@@ -1,4 +1,4 @@
-import { agentMessageEventSQL } from "../sessionEventSemantics.mjs";
+import { agentMessageEventSQL, conversationActivityEventSQL } from "../sessionEventSemantics.mjs";
 
 export function migrateSessionEventStorage({ ensureColumn, migrateSessionEventAgentMessageFlag, db, migrateCanonicalCompletionAgentMessageFlag, runDataMigrationOnce, hadSessionReadReceipts }) {
     // --- 会话日志事件溯源（10）：补 session_logs + session_events 语义列 ---
@@ -19,11 +19,11 @@ export function migrateSessionEventStorage({ ensureColumn, migrateSessionEventAg
     db.run("CREATE INDEX IF NOT EXISTS idx_session_events_producer ON session_events(session_id, producer)");
     db.run("CREATE INDEX IF NOT EXISTS idx_session_events_call_id ON session_events(session_id, call_id)");
     db.run(`
-      CREATE INDEX IF NOT EXISTS idx_session_events_latest_message
+      CREATE INDEX IF NOT EXISTS idx_session_events_conversation_activity
       ON session_events(session_id, created_at DESC)
-      WHERE surface = 1
-         OR type IN ('SessionUserMessageCreated', 'CodexThreadCompleted')
+      WHERE ${conversationActivityEventSQL()}
     `);
+    db.run("DROP INDEX IF EXISTS idx_session_events_latest_message");
     runDataMigrationOnce("session-events-agent-message-index-v1", () => {
       db.run("DROP INDEX IF EXISTS idx_session_events_agent_message");
       db.run(`

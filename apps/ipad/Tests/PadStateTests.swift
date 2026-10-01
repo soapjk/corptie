@@ -156,6 +156,7 @@ struct PadStateTests {
         let connection = PadConnection()
         let savedAddress = UserDefaults.standard.string(forKey: "serverAddress")
         connection.address = "https://previous.local"
+        connection.hasSavedPairing = true
         #expect(throws: (any Error).self) { try connection.applyPairingCode("https://not-a-pairing-code") }
         #expect(connection.address == "https://previous.local")
         let code = DevicePairingCode(address: "https://mac.local:8443", serverId: "server:scan",
@@ -167,6 +168,7 @@ struct PadStateTests {
         #expect(connection.secret == code.pairingSecret)
         #expect(!connection.connected)
         #expect(connection.claim == nil)
+        #expect(!connection.hasSavedPairing)
         #expect(UserDefaults.standard.string(forKey: "serverAddress") == savedAddress)
         connection.busy = true
         #expect(throws: (any Error).self) { try connection.applyPairingCode(code.encoded()) }
