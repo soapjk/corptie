@@ -44,6 +44,8 @@ final class PadConnection {
             case "PAIRING_DENIED": return "Mac 已拒绝此设备。请核对设备后重新扫码。"
             case "PAIRING_EXPIRED": return "配对已过期，请重新扫描 Mac 上的二维码。"
             case "PAIRING_NOT_APPROVED": return "等待 Mac 批准设备…"
+            case "INVALID_CREDENTIAL": return "设备凭据无效或已被撤销，请重新扫码配对。"
+            case "DEVICE_REVOKED": return "此设备已被 Mac 撤销，请重新扫码配对。"
             default: return "配对信息已失效，请重新扫码。"
             }
         }
@@ -171,10 +173,17 @@ final class PadConnection {
             hasSavedPairing = true
             self.endpoint = endpoint
             credentials = saved
-            let transport = try await transport()
-            let (_, _) = try await transport.data(for: endpoint.request(path: ["client", "v1", "me"]))
-            remember(endpoint)
-            connected = true
+            do {
+                let transport = try await transport()
+                let (_, _) = try await transport.data(for: endpoint.request(path: ["client", "v1", "me"]))
+                remember(endpoint)
+                connected = true
+            } catch let error as DevicePairingFailure where error.code == "INVALID_CREDENTIAL" || error.code == "DEVICE_REVOKED" {
+                hasSavedPairing = false
+                try? await vault.remove(endpoint: endpoint, serverId: serverID)
+                self.credentials = nil
+                throw error
+            }
         }
     }
 
