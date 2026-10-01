@@ -14,6 +14,12 @@ export function handleProjectWorkspaceHttpRequest({
   const worktreeManagementPreflightMatch = url.pathname.match(
     /^\/worktree-management\/repositories\/([^/]+)\/integration-plans$/
   );
+  const worktreeManagementCandidatesMatch = url.pathname.match(
+    /^\/worktree-management\/repositories\/([^/]+)\/integration-candidates$/
+  );
+  const worktreeManagementRepositoryJobsMatch = url.pathname.match(
+    /^\/worktree-management\/repositories\/([^/]+)\/integration-jobs$/
+  );
   const worktreeManagementCleanupMatch = url.pathname.match(
     /^\/worktree-management\/repositories\/([^/]+)\/cleanup$/
   );
@@ -63,6 +69,24 @@ export function handleProjectWorkspaceHttpRequest({
       .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
         error: error.message, code: error.code
       }));
+    return true;
+  }
+  if (request.method === "POST" && worktreeManagementCandidatesMatch) {
+    Promise.resolve()
+      .then(() => decodeRouteId(worktreeManagementCandidatesMatch[1], "INVALID_REPOSITORY_ID"))
+      .then((repositoryId) => readJson(request)
+        .then((input) => worktreeIntegrationJobService.createCandidate(repositoryId, input)))
+      .then((candidate) => sendJson(response, 200, { candidate }))
+      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), worktreeErrorBody(error)));
+    return true;
+  }
+  if (request.method === "POST" && worktreeManagementRepositoryJobsMatch) {
+    Promise.resolve()
+      .then(() => decodeRouteId(worktreeManagementRepositoryJobsMatch[1], "INVALID_REPOSITORY_ID"))
+      .then((repositoryId) => readJson(request)
+        .then((input) => worktreeIntegrationJobService.startCandidate(repositoryId, input)))
+      .then((job) => sendJson(response, 202, { job }))
+      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), worktreeErrorBody(error)));
     return true;
   }
   if (request.method === "POST" && worktreeManagementPreflightMatch) {
@@ -227,4 +251,25 @@ export function handleProjectWorkspaceHttpRequest({
   }
 
   return false;
+}
+
+function decodeRouteId(value, code) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    const error = new Error("The repository identifier is malformed.");
+    error.code = code;
+    error.statusCode = 400;
+    throw error;
+  }
+}
+
+function worktreeErrorBody(error) {
+  return {
+    error: error.message,
+    code: error.code,
+    ...(typeof error.retryable === "boolean" ? { retryable: error.retryable } : {}),
+    ...(error.candidate ? { candidate: error.candidate } : {}),
+    ...(error.diff ? { diff: error.diff } : {})
+  };
 }

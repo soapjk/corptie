@@ -10,7 +10,7 @@ function fixture() {
     (...args) => { calls.push([name, ...args]); return sync.includes(name) ? result : Promise.resolve(result); }
   ]));
   const dependencies = {
-    worktreeIntegrationJobService: service("repositories repository worktreeGitHubPushStatus preflight cleanupMergedWorktrees deleteWorktree get confirm cancel resolveConflictWithAgent retry", ["repositories", "get"]),
+    worktreeIntegrationJobService: service("repositories repository worktreeGitHubPushStatus preflight createCandidate startCandidate cleanupMergedWorktrees deleteWorktree get confirm cancel resolveConflictWithAgent retry", ["repositories", "get"]),
     projectWorktreeIntegrationService: service("status integrateCompleted createConflictTask"),
     projectApplicationService: service("listWorkspaces runWorkspaceAction readDevelopmentService runDevelopmentServiceAction readProject")
   };
@@ -36,6 +36,8 @@ const cases = [
   ["/worktree-management/repositories/repo%2Fid?forceFresh=true", "GET", ["repository", "repo/id", { forceFresh: true }], 200],
   ["/worktree-management/repositories/repo/worktrees/tree/github-push-status", "GET", ["worktreeGitHubPushStatus", "repo", "tree"], 200],
   ["/worktree-management/repositories/repo/integration-plans", "POST", ["preflight", "repo", input], 201, "job"],
+  ["/worktree-management/repositories/repo/integration-candidates", "POST", ["createCandidate", "repo", input], 200, "candidate"],
+  ["/worktree-management/repositories/repo/integration-jobs", "POST", ["startCandidate", "repo", input], 202, "job"],
   ["/worktree-management/repositories/repo/cleanup", "POST", ["cleanupMergedWorktrees", "repo", input], 200, "result", "WorktreeCleanupCompleted"],
   ["/worktree-management/repositories/repo/worktrees/tree/delete", "POST", ["deleteWorktree", "repo", "tree"], 200, "result", "WorktreeDeleted"],
   ["/worktree-management/jobs/job%2Fid", "GET", ["get", "job/id"], 200, "job"],
@@ -75,6 +77,77 @@ test("reused conflict tasks return 200 and failure responses retain recovery det
   assert.deepEqual(await f.dispatch("/projects/p/workspaces/w/actions/remove", "POST").response,
     { status: 409, body: { error: "unmerged", code: "UNMERGED", unmergedCommitCount: 3, branchName: "feature" } });
   assert.deepEqual(f.events, []);
+});
+
+test("candidate refresh errors retain the fresh candidate and deterministic diff", async () => {
+  const f = fixture();
+  const candidate = { id: "candidate:fresh" };
+  const diff = { changed: true, addedWorktreeIds: ["wt:new"] };
+  f.dependencies.worktreeIntegrationJobService.startCandidate = async () => {
+    throw Object.assign(new Error("review again"), {
+      statusCode: 409, code: "PLAN_REFRESH_REQUIRED", retryable: true, candidate, diff
+    });
+  };
+  assert.deepEqual(
+    await f.dispatch("/worktree-management/repositories/r/integration-jobs", "POST").response,
+    { status: 409, body: { error: "review again", code: "PLAN_REFRESH_REQUIRED", retryable: true, candidate, diff } }
+  );
+});
+
+test("new candidate routes contain malformed repository URL encoding", async () => {
+  for (const route of ["integration-candidates", "integration-jobs"]) {
+    const f = fixture();
+    const response = await f.dispatch(
+      `/worktree-management/repositories/%ZZ/${route}`,
+      "POST"
+    ).response;
+    assert.deepEqual(response, {
+      status: 400,
+      body: {
+        error: "The repository identifier is malformed.",
+        code: "INVALID_REPOSITORY_ID"
+      }
+    });
+    assert.deepEqual(f.calls, []);
+  }
+});
+
+test("new candidate routes reject non-object JSON bodies", async () => {
+  for (const route of ["integration-candidates", "integration-jobs"]) {
+    for (const body of [null, []]) {
+      const f = fixture();
+      f.dependencies.worktreeIntegrationJobService[route === "integration-candidates"
+        ? "createCandidate"
+        : "startCandidate"] = async (_repositoryId, input) => {
+        if (!input || typeof input !== "object" || Array.isArray(input)) {
+          throw Object.assign(new Error("The request body must be a JSON object."), {
+            code: "INVALID_REQUEST_BODY",
+            statusCode: 400
+          });
+        }
+      };
+      const response = await f.dispatch(
+        `/worktree-management/repositories/repo/${route}`,
+        "POST",
+        body
+      ).response;
+      assert.deepEqual(response, {
+        status: 400,
+        body: {
+          error: "The request body must be a JSON object.",
+          code: "INVALID_REQUEST_BODY"
+        }
+      });
+    }
+  }
+});
+
+test("repository integration jobs do not expose an unbounded list route", () => {
+  const f = fixture();
+  assert.equal(
+    f.dispatch("/worktree-management/repositories/repo/integration-jobs", "GET").handled,
+    false
+  );
 });
 
 test("invalid bodies prevent destructive dispatch and synchronous job errors are contained", async () => {
