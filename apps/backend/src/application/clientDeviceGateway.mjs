@@ -110,7 +110,7 @@ export class ClientDeviceGateway {
       const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|stop|capabilities|composer|conversation-commands|tasks|read-receipt|images|usage|approval|user-input)$/.exec(path);
       const commandReceipt = /^\/client\/v1\/commands\/([A-Za-z0-9_-]{8,128})$/.exec(path);
       if (url.search && !inventory && !control && !eventV2 && !worktreeRepository
-          && !(["messages", "tasks", "images"].includes(conversation?.[2]) && request.method === "GET")) {
+          && !(["messages", "tasks", "images", "usage"].includes(conversation?.[2]) && request.method === "GET")) {
         throw deviceError("REQUEST_NOT_ALLOWED", 403);
       }
       if (request.method === "POST" && path === "/client/v1/pairing/claim") {
@@ -334,7 +334,14 @@ export class ClientDeviceGateway {
           return reply(response, 200, this.sessionAPI.capabilities(identity, sessionId));
         }
         if (request.method === "GET" && conversation[2] === "usage") {
-          const result = await this.sessionAPI.usage(identity, sessionId);
+          const freshAccountValues = url.searchParams.getAll("freshAccount");
+          if ([...url.searchParams.keys()].some(key => key !== "freshAccount")
+              || freshAccountValues.length > 1
+              || freshAccountValues.some(value => value !== "1")) {
+            throw deviceError("REQUEST_NOT_ALLOWED", 403);
+          }
+          const result = await this.sessionAPI.usage(identity, sessionId,
+            { freshAccount: freshAccountValues[0] === "1" });
           this.authority.authenticate(bearer(request));
           return reply(response, 200, result);
         }

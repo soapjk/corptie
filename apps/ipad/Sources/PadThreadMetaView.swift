@@ -9,6 +9,8 @@ struct PadThreadMetaView: View {
     let session: ClientSession?
     let capabilities: ClientSessionCapabilities?
     let usage: ClientSessionUsage?
+    let refreshAccount: () async -> ClientSessionUsage?
+    var compactUsage = false
 
     private var isReady: Bool {
         // Older hosts do not project readiness; treat their sessions as ready like the desktop did.
@@ -26,7 +28,7 @@ struct PadThreadMetaView: View {
             activity: session?.activityStatus
         ) {
             if let usage {
-                PadUsageBar(usage: usage)
+                PadUsageBar(usage: usage, compact: compactUsage, refreshAccount: refreshAccount)
             }
         }
     }
@@ -35,6 +37,11 @@ struct PadThreadMetaView: View {
 /// Desktop `ChatUsageBar`: context tokens and remaining plan quota as 10pt rings.
 private struct PadUsageBar: View {
     let usage: ClientSessionUsage
+    let compact: Bool
+    let refreshAccount: () async -> ClientSessionUsage?
+    @State private var isResetNoticePresented = false
+    @State private var verification: SessionQuotaResetDetails.Verification = .idle
+    @State private var refreshedCredits: ClientSessionUsage.RateLimitResetCredits?
 
     private var quota: (window: SessionUsagePolicy.Window, remaining: Double)? {
         guard let account = usage.account else { return nil }
@@ -48,7 +55,7 @@ private struct PadUsageBar: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
+        HStack(alignment: .center, spacing: compact ? 4 : 10) {
             if let context = usage.context, let remaining = context.remainingTokens, let window = context.contextWindow, window > 0 {
                 let used = SessionUsagePolicy.contextUsed(usedTokens: context.usedTokens.map(Double.init),
                                                           contextWindow: Double(window), remainingTokens: Double(remaining))
@@ -65,19 +72,80 @@ private struct PadUsageBar: View {
                 .accessibilityIdentifier("conversation-usage-context")
             }
             if let quota {
-                ConversationComposerUsageSlot {
-                    SessionUsageItem(
-                        icon: "bolt.fill",
-                        value: "\(SessionUsagePolicy.percent(quota.remaining))%",
-                        progress: quota.remaining / 100,
-                        color: SessionMetaPalette.color(for: SessionUsagePolicy.quotaTone(remainingPercent: quota.remaining)))
+                if usage.account?.provider == "codex" {
+                    Button { isResetNoticePresented.toggle() } label: {
+                        quotaSlot(remaining: quota.remaining)
+                    }
+                    .buttonStyle(.plain)
+                    .popover(isPresented: $isResetNoticePresented, arrowEdge: .bottom) {
+                        resetNoticePopover(window: quota.window)
+                            .presentationCompactAdaptation(.popover)
+                    }
+                    .task(id: isResetNoticePresented) {
+                        guard isResetNoticePresented else {
+                            verification = .idle
+                            refreshedCredits = nil
+                            return
+                        }
+                        verification = .loading
+                        let refreshed = await refreshAccount()
+                        guard !Task.isCancelled else { return }
+                        if let credits = refreshed?.account?.rateLimitResetCredits {
+                            refreshedCredits = credits
+                            verification = .idle
+                        } else {
+                            verification = .failed
+                        }
+                    }
+                    .accessibilityLabel(quotaAccessibilityLabel(remaining: quota.remaining))
+                    .accessibilityIdentifier("conversation-usage-quota")
+                } else {
+                    quotaSlot(remaining: quota.remaining)
+                        .accessibilityLabel(quotaAccessibilityLabel(remaining: quota.remaining))
+                        .accessibilityIdentifier("conversation-usage-quota")
                 }
-                .accessibilityLabel("\(SessionUsagePolicy.quotaLabel(provider: usage.account?.provider)): \(SessionUsagePolicy.percent(quota.remaining, maximumFractionDigits: 2))% remaining")
-                .accessibilityIdentifier("conversation-usage-quota")
             }
         }
         .font(.system(size: 9, weight: .semibold))
         .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func quotaSlot(remaining: Double) -> some View {
+        ConversationComposerUsageSlot {
+            SessionUsageItem(
+                icon: "bolt.fill",
+                value: "\(SessionUsagePolicy.percent(remaining))%",
+                progress: remaining / 100,
+                color: SessionMetaPalette.color(for: SessionUsagePolicy.quotaTone(remainingPercent: remaining)))
+        }
+    }
+
+    private func quotaAccessibilityLabel(remaining: Double) -> String {
+        "\(SessionUsagePolicy.quotaLabel(provider: usage.account?.provider)): \(SessionUsagePolicy.percent(remaining, maximumFractionDigits: 2))% remaining"
+    }
+
+    private func resetNoticePopover(window: SessionUsagePolicy.Window) -> some View {
+        let credits = refreshedCredits ?? usage.account?.rateLimitResetCredits
+        let expirationDates = (credits?.credits ?? [])
+            .filter { $0.status == "available" }
+            .compactMap(\.expiresAt)
+            .filter { $0.isFinite && $0 > Date.now.timeIntervalSince1970 }
+            .map(Date.init(timeIntervalSince1970:))
+            .sorted()
+        let formattedDate: (Date) -> String = { $0.formatted(date: .abbreviated, time: .shortened) }
+        let resetDate = window.resetsAt.map { formattedDate(Date(timeIntervalSince1970: $0)) } ?? "未知"
+        return SessionQuotaResetDetails(
+            verification: verification,
+            loadingText: "正在刷新已存额度重置；以下为上次记录…",
+            failureText: "无法核实当前已存额度重置；以下为上次记录。",
+            resetText: "套餐重置：\(resetDate)",
+            bankedText: credits?.availableCount.map { "已存额度重置：剩余 \(max(0, $0)) 次" },
+            expiryText: (credits?.availableCount ?? 0) > 0
+                ? expirationDates.first.map { "最早过期：\(formattedDate($0))" } ?? "已存额度重置的过期时间暂不可用"
+                : nil,
+            expiryHelp: expirationDates.map(formattedDate).joined(separator: "\n")
+        )
+        .accessibilityIdentifier("conversation-usage-quota-details")
     }
 
     private static func snapshot(_ limit: ClientSessionUsage.RateLimit) -> SessionUsagePolicy.Snapshot {

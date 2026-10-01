@@ -19,6 +19,16 @@ export function agentMessageEventSQL(tableAlias) {
   return `${tableAlias}.has_agent_message = 1`;
 }
 
+// Ordering is about meaningful exchanges, not streaming output or tool/status
+// traffic. Completion markers count only when they durably confirm a reply.
+export function conversationActivityEventSQL(tableAlias = null) {
+  const prefix = tableAlias ? `${tableAlias}.` : "";
+  return `(${prefix}type IN (
+    'user/message', 'user.message.accepted', 'SessionUserMessageCreated',
+    'assistant/message'
+  ) OR ${prefix}has_agent_message = 1)`;
+}
+
 export function eventHasAgentMessage(event) {
   return ["CodexThreadCompleted", "AgentTurnCompleted", "turn.completed"].includes(event.type)
     && (event.payload?.hasAgentMessage === true || event.payload?.hasAgentMessage === 1);

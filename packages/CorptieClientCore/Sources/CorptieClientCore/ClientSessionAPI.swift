@@ -297,8 +297,9 @@ public struct ClientSessionAPI: Sendable {
         try await read(transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "capabilities"]))
     }
     /// Usage snapshot behind `messages.read`; hosts without a usage reader answer 409 `CAPABILITY_UNSUPPORTED`.
-    public func usage(sessionId: String) async throws -> ClientSessionUsage {
-        try await read(transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "usage"]))
+    public func usage(sessionId: String, freshAccount: Bool = false) async throws -> ClientSessionUsage {
+        let query = freshAccount ? [URLQueryItem(name: "freshAccount", value: "1")] : []
+        return try await read(transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "usage"], query: query))
     }
     public func composer(sessionId: String, update: [String: String]? = nil) async throws -> ClientComposerConfiguration {
         var request = try transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "composer"])
