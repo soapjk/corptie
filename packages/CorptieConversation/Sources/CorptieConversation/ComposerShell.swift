@@ -4,7 +4,7 @@ import SwiftUI
 /// and iPad. Hosts keep their own text engine (NSTextView / UITextView); the
 /// clamp, chip strip, action glyphs and model menu frame live here.
 public enum ComposerShellMetrics {
-    public static let minimumInputHeight: CGFloat = 44
+    public static let minimumInputHeight: CGFloat = 30
     public static let maximumInputHeight: CGFloat = 96
     public static let inputFontSize: CGFloat = 12
     public static let textInsetHeight: CGFloat = 6
@@ -20,7 +20,7 @@ public enum ComposerShellMetrics {
     public static let modelMenuHeight: CGFloat = 30
     public static let modelMenuCornerRadius: CGFloat = 12
 
-    /// Auto-height of the editor: content height clamped to 44–96, whole points.
+    /// A single text line plus insets at rest; grow with content up to 96pt.
     public static func resolvedInputHeight(for contentHeight: CGFloat) -> CGFloat {
         min(maximumInputHeight, max(minimumInputHeight, ceil(contentHeight)))
     }
@@ -253,18 +253,24 @@ public struct ComposerShellSurface: ViewModifier {
 public struct ConversationComposerChrome<Header: View, Content: View>: View {
     private let header: Header
     private let content: Content
+    private let verticalPadding: CGFloat
+    private let contentSpacing: CGFloat
 
-    public init(@ViewBuilder header: () -> Header, @ViewBuilder content: () -> Content) {
+    public init(verticalPadding: CGFloat = 6, contentSpacing: CGFloat = 2,
+                @ViewBuilder header: () -> Header, @ViewBuilder content: () -> Content) {
         self.header = header()
         self.content = content()
+        self.verticalPadding = verticalPadding
+        self.contentSpacing = contentSpacing
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: contentSpacing) {
             header.padding(.horizontal, 8)
             content
         }
-        .padding(6)
+        .padding(.horizontal, 6)
+        .padding(.vertical, verticalPadding)
         .modifier(ConversationComposerGlassSurface())
         .shadow(color: .black.opacity(0.06), radius: 4, y: 1.5)
     }

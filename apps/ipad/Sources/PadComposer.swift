@@ -2,17 +2,20 @@ import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
 import ImageIO
+import UIKit
 import CorptieClientCore
 import CorptieConversation
 
-/// The desktop `MessageComposer` row on iPad: attachment strip, editor, send and
-/// more glyphs inside one shell, model menu beside it. Draft text / images /
+/// The desktop `MessageComposer` row on iPad: attachment strip, editor, optional
+/// send glyph and more glyph inside one shell, model menu beside it. Draft text / images /
 /// mentions live in the workspace so a submission snapshot can clear them safely.
 struct PadComposer<Header: View>: View {
     let connection: PadConnection
     @Bindable var workspace: PadWorkspace
     let sessionID: String
     let scheduleMessage: () -> Void
+    let canStop: Bool
+    let stop: () -> Void
     @ViewBuilder let header: () -> Header
     @State private var editor = PadComposerEditor()
     @State private var inputHeight = ComposerShellMetrics.minimumInputHeight
@@ -23,6 +26,8 @@ struct PadComposer<Header: View>: View {
     @State private var showPhotos = false
     @State private var showFiles = false
     @State private var importing = false
+
+    private var isPhone: Bool { UIDevice.current.userInterfaceIdiom == .phone }
 
     private var draft: Binding<String> {
         Binding(get: { workspace.drafts[sessionID] ?? "" }, set: { workspace.drafts[sessionID] = $0 })
@@ -49,7 +54,21 @@ struct PadComposer<Header: View>: View {
     }
 
     var body: some View {
-        ConversationComposerChrome(header: header) {
+        ConversationComposerChrome(verticalPadding: isPhone ? 3 : 6,
+                                   contentSpacing: isPhone ? 1 : 2) {
+            if isPhone {
+                HStack(spacing: 4) {
+                    header()
+                        .frame(minWidth: 0, maxWidth: .infinity)
+                    if workspace.capabilities?.composer == true {
+                        PadModelMenu(connection: connection, workspace: workspace, maxWidth: 54)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                }
+            } else {
+                header()
+            }
+        } content: {
             editorRow
         }
         // Outside the glass and above the entire module, without presenting a
@@ -80,7 +99,7 @@ struct PadComposer<Header: View>: View {
     private var editorRow: some View {
         ConversationComposerEditorRow(
             showsAttachments: !attachedImages.isEmpty,
-            showsModel: workspace.capabilities?.composer == true
+            showsModel: !isPhone && workspace.capabilities?.composer == true
         ) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: ComposerShellMetrics.attachmentSpacing) {
@@ -105,26 +124,50 @@ struct PadComposer<Header: View>: View {
                 onSelectionChange: updateMentionQuery,
                 onKey: handleKey,
                 onSubmit: submit,
+                allowsEmptyTextSubmission: isPhone && !attachedImages.isEmpty,
                 onPasteImages: pasteImages
             )
-            .frame(height: inputHeight)
+            .frame(height: isPhone ? max(36, inputHeight) : inputHeight)
         } send: {
-            Button {
-                submit()
-            } label: {
-                ComposerActionGlyph(systemName: "paperplane.fill", tint: ComposerPalette.softBlue,
-                                    isBusy: isSubmitting, showsSurface: false)
-                    .overlay {
-                        Circle().strokeBorder(ComposerPalette.softBlue.opacity(0.4), lineWidth: 1)
-                            .allowsHitTesting(false)
+            if isPhone {
+                if canStop {
+                    Button(action: stop) {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(.red)
+                            .frame(width: 20, height: 20)
+                            .padGlassSurface(in: Circle(), tint: .red.opacity(0.12))
+                            .overlay {
+                                Circle().strokeBorder(Color.red.opacity(0.45), lineWidth: 1)
+                                    .allowsHitTesting(false)
+                            }
+                            .frame(width: ComposerShellMetrics.actionHitEdge,
+                                   height: ComposerShellMetrics.actionHitEdge)
+                            .contentShape(Rectangle())
                     }
-                    .conversationGlassControl(tint: ComposerPalette.softBlue)
-                    .contentShape(Circle().inset(by: -8))
+                    .buttonStyle(.plain)
+                    .disabled(connection.busy || workspace.pending != nil)
+                    .accessibilityLabel("停止当前运行")
+                    .accessibilityIdentifier("conversation-stop")
+                }
+            } else {
+                Button {
+                    submit()
+                } label: {
+                    ComposerActionGlyph(systemName: "paperplane.fill", tint: ComposerPalette.softBlue,
+                                        isBusy: isSubmitting, showsSurface: false)
+                        .overlay {
+                            Circle().strokeBorder(ComposerPalette.softBlue.opacity(0.4), lineWidth: 1)
+                                .allowsHitTesting(false)
+                        }
+                        .conversationGlassControl(tint: ComposerPalette.softBlue)
+                        .contentShape(Circle().inset(by: -8))
+                }
+                .buttonStyle(.plain)
+                .disabled(isSendDisabled)
+                .accessibilityLabel("发送")
+                .accessibilityIdentifier("conversation-composer-send")
             }
-            .buttonStyle(.plain)
-            .disabled(isSendDisabled)
-            .accessibilityLabel("发送")
-            .accessibilityIdentifier("conversation-composer-send")
         } more: {
             Menu {
                 Button {

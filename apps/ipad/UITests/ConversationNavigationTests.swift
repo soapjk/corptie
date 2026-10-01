@@ -2,11 +2,92 @@ import XCTest
 
 final class ConversationNavigationTests: XCTestCase {
     @MainActor
+    func testCompactWorkbenchReusesConversationAndDetailPages() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        let session = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "outline-session-")
+        ).firstMatch
+        guard session.waitForExistence(timeout: 20) else {
+            throw XCTSkip("No independent session is available on this paired device")
+        }
+        session.tap()
+        let back = app.buttons["conversation-back"]
+        guard back.waitForExistence(timeout: 3) else {
+            throw XCTSkip("This window is using the wide three-column workbench")
+        }
+
+        XCTAssertTrue(app.scrollViews["conversation-timeline"].waitForExistence(timeout: 10))
+        let openDetail = app.buttons["conversation-open-detail"]
+        XCTAssertTrue(openDetail.isHittable)
+        openDetail.tap()
+        let inspector = app.descendants(matching: .any)["conversation-detail-inspector"].firstMatch
+        XCTAssertTrue(inspector.waitForExistence(timeout: 10))
+        XCTAssertEqual(app.buttons.matching(identifier: "conversation-detail-back").count, 1)
+        XCTAssertFalse(app.navigationBars.firstMatch.exists,
+                       "Compact Detail must not show a second system back button")
+        let detailSwipeStart = inspector.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.5))
+        detailSwipeStart.press(forDuration: 0.05,
+            thenDragTo: detailSwipeStart.withOffset(CGVector(dx: 120, dy: 0)))
+        XCTAssertTrue(openDetail.waitForExistence(timeout: 5))
+
+        back.tap()
+        XCTAssertTrue(session.waitForExistence(timeout: 5))
+        session.tap()
+        XCTAssertTrue(openDetail.waitForExistence(timeout: 5),
+                      "Opening the same Task again must return to its conversation")
+
+        let timeline = app.scrollViews["conversation-timeline"].firstMatch
+        let message = app.otherElements["conversation-message"].firstMatch
+        if message.exists {
+            XCTAssertGreaterThanOrEqual(message.frame.minX, timeline.frame.minX - 1)
+            XCTAssertLessThanOrEqual(message.frame.maxX, timeline.frame.maxX + 1)
+        }
+        let start = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5))
+        let end = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: end)
+        XCTAssertTrue(app.buttons["conversation-detail-back"].waitForExistence(timeout: 5))
+        app.buttons["conversation-detail-back"].tap()
+        let backSwipeStart = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.5))
+        backSwipeStart.press(forDuration: 0.05,
+            thenDragTo: backSwipeStart.withOffset(CGVector(dx: 120, dy: 0)))
+        XCTAssertTrue(session.waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testWideWorkbenchKeepsDetailBesideConversation() throws {
+        let app = XCUIApplication()
+        app.launch()
+        guard app.otherElements["navigation-rail"].waitForExistence(timeout: 20) else {
+            throw XCTSkip("The wide navigation rail is only available on iPad")
+        }
+        if app.descendants(matching: .any)["compact-workspace"].firstMatch.exists {
+            throw XCTSkip("This iPad window is using the compact page layout")
+        }
+
+        let session = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "outline-session-")
+        ).firstMatch
+        XCTAssertTrue(session.waitForExistence(timeout: 20))
+        session.tap()
+
+        let timeline = app.scrollViews["conversation-timeline"].firstMatch
+        let inspector = app.descendants(matching: .any)["conversation-detail-inspector"].firstMatch
+        XCTAssertTrue(timeline.waitForExistence(timeout: 20))
+        XCTAssertTrue(inspector.waitForExistence(timeout: 20))
+        XCTAssertLessThan(session.frame.maxX, timeline.frame.minX)
+        XCTAssertLessThan(timeline.frame.maxX, inspector.frame.minX)
+    }
+
+    @MainActor
     func testExpandedNavigationRowsRemainBounded() throws {
         let app = XCUIApplication()
         app.launch()
         let resizer = app.otherElements["navigation-rail-resizer"]
-        XCTAssertTrue(resizer.waitForExistence(timeout: 20))
+        guard resizer.waitForExistence(timeout: 20) else {
+            throw XCTSkip("The expandable navigation rail is only available on iPad")
+        }
         let wasExpanded = (resizer.value as? String) == "已展开"
         if !wasExpanded {
             let start = resizer.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
@@ -94,9 +175,25 @@ final class ConversationNavigationTests: XCTestCase {
         if usesRail {
             XCTAssertTrue(app.otherElements["navigation-rail"].exists,
                           "The iPad navigation rail must remain visible with the keyboard open")
+            XCTAssertTrue(app.buttons["conversation-composer-send"].exists)
         } else {
             XCTAssertFalse(app.buttons["navigation-settings"].exists,
                            "Compact bottom navigation must hide with the keyboard")
+            XCTAssertFalse(app.buttons["conversation-composer-send"].exists,
+                           "iPhone sends from the keyboard instead of a duplicate composer button")
+            XCTAssertGreaterThanOrEqual(input.frame.height, 36)
+            let model = app.buttons["conversation-composer-model"]
+            if model.exists {
+                XCTAssertLessThanOrEqual(model.frame.maxY, input.frame.minY,
+                                         "The iPhone model menu belongs in the status row above the editor")
+            }
+            let stop = app.buttons["conversation-stop"]
+            if stop.exists {
+                XCTAssertGreaterThanOrEqual(stop.frame.minX, input.frame.maxX,
+                                            "The iPhone stop button belongs in the former send slot")
+                XCTAssertLessThanOrEqual(stop.frame.maxY, input.frame.maxY,
+                                         "The iPhone stop button must stay inside the editor row")
+            }
         }
         XCTAssertTrue(input.isHittable, "Composer must remain visible above the keyboard")
         XCTAssertLessThanOrEqual(input.frame.maxY, app.keyboards.firstMatch.frame.minY)

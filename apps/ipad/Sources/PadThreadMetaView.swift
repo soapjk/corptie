@@ -9,6 +9,7 @@ struct PadThreadMetaView: View {
     let session: ClientSession?
     let capabilities: ClientSessionCapabilities?
     let usage: ClientSessionUsage?
+    var compactUsage = false
 
     private var isReady: Bool {
         // Older hosts do not project readiness; treat their sessions as ready like the desktop did.
@@ -26,7 +27,7 @@ struct PadThreadMetaView: View {
             activity: session?.activityStatus
         ) {
             if let usage {
-                PadUsageBar(usage: usage)
+                PadUsageBar(usage: usage, compact: compactUsage)
             }
         }
     }
@@ -35,6 +36,7 @@ struct PadThreadMetaView: View {
 /// Desktop `ChatUsageBar`: context tokens and remaining plan quota as 10pt rings.
 private struct PadUsageBar: View {
     let usage: ClientSessionUsage
+    let compact: Bool
 
     private var quota: (window: SessionUsagePolicy.Window, remaining: Double)? {
         guard let account = usage.account else { return nil }
@@ -48,7 +50,7 @@ private struct PadUsageBar: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
+        HStack(alignment: .center, spacing: compact ? 4 : 10) {
             if let context = usage.context, let remaining = context.remainingTokens, let window = context.contextWindow, window > 0 {
                 let used = SessionUsagePolicy.contextUsed(usedTokens: context.usedTokens.map(Double.init),
                                                           contextWindow: Double(window), remainingTokens: Double(remaining))
@@ -56,10 +58,12 @@ private struct PadUsageBar: View {
                 ConversationComposerUsageSlot {
                     SessionUsageItem(
                         icon: "text.alignleft",
-                        value: "\(SessionUsagePolicy.exactTokens(used))/\(SessionUsagePolicy.exactTokens(Double(window)))",
+                        value: compact
+                            ? "\(SessionUsagePolicy.percent(usedPercent, maximumFractionDigits: 0))%"
+                            : "\(SessionUsagePolicy.exactTokens(used))/\(SessionUsagePolicy.exactTokens(Double(window)))",
                         progress: usedPercent / 100,
                         color: SessionMetaPalette.color(for: SessionUsagePolicy.contextTone(usedPercent: usedPercent)),
-                        numericValue: used)
+                        numericValue: compact ? usedPercent : used)
                 }
                 .accessibilityLabel("Context: \(SessionUsagePolicy.exactTokens(used)) / \(SessionUsagePolicy.exactTokens(Double(window))) · \(SessionUsagePolicy.percent(usedPercent, maximumFractionDigits: 2))% used")
                 .accessibilityIdentifier("conversation-usage-context")
