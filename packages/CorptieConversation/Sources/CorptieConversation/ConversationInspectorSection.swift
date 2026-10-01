@@ -11,11 +11,7 @@ public struct ConversationDetailDashboard<Content: View>: View {
     public var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
-                if #available(macOS 26.0, iOS 26.0, *) {
-                    GlassEffectContainer(spacing: 0) { content }
-                } else {
-                    content
-                }
+                content
             }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(12)
@@ -49,8 +45,8 @@ public struct ConversationDetailCompactPair<Leading: View, Trailing: View>: View
     }
 }
 
-/// One native glass surface per Detail module; the dashboard groups them for
-/// efficient rendering without merging adjacent cards at rest.
+/// A flat, shadow-free surface for each Detail module on both platforms.
+/// Native Liquid Glass adds a system shadow that cannot be disabled separately.
 public struct ConversationDetailModuleSurface: ViewModifier {
     public init() {}
 
@@ -58,7 +54,10 @@ public struct ConversationDetailModuleSurface: ViewModifier {
         content
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .platformGlassSurface(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .background {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(Color.primary.opacity(0.06))
+            }
     }
 }
 

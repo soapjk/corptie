@@ -36,10 +36,21 @@ struct PairingView: View {
                 Section {
                     Button("扫码配对 Mac", systemImage: "qrcode.viewfinder") { scanner = .camera }
                         .disabled(connection.claim != nil)
-                    Text("在 Mac 的设备接入设置中生成二维码，扫码后无需手填连接信息。")
+                    Text("在 Mac 的设备接入设置中生成二维码；扫码后会自动申请配对，请在 Mac 上批准。")
                         .font(.footnote).foregroundStyle(.secondary)
+                    if connection.claim == nil, !connection.pairingID.isEmpty, !connection.secret.isEmpty {
+                        Button("重试申请配对") { Task { await connection.requestPairing() } }
+                            .accessibilityIdentifier("pairing-retry-request")
+                    }
+                    if connection.busy { ProgressView("正在连接 Mac…") }
+                    if !connection.notice.isEmpty {
+                        Text(connection.notice)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("pairing-status")
+                    }
                 }
-                if !connection.serverID.isEmpty {
+                if connection.hasSavedPairing, !connection.serverID.isEmpty {
                     Section("已配对的 Mac") {
                         Text(connection.address).font(.footnote)
                         Button("连接") { Task { await connection.reconnect() } }
@@ -51,7 +62,6 @@ struct PairingView: View {
                         .disabled(connection.claim != nil)
                     TextField("Server ID（来自 Mac）", text: $connection.serverID)
                         .disabled(connection.claim != nil)
-                    Button("连接已配对的 Mac") { Task { await connection.reconnect() } }
                     TextField("Pairing ID", text: $connection.pairingID)
                         .disabled(connection.claim != nil)
                     SecureField("配对密钥", text: $connection.secret)
@@ -74,8 +84,6 @@ struct PairingView: View {
                 Section {
                     Text("在 Mac 点击开启设备接入即可。扫码会验证 Mac 的证书，无需安装系统证书；请允许局域网访问。批准后可浏览、发送和停止；修改类会话命令与清空上下文需在 Mac 设备设置中另外授权。")
                         .font(.footnote).foregroundStyle(.secondary)
-                    if !connection.notice.isEmpty { Text(connection.notice).font(.callout) }
-                    if connection.busy { ProgressView("连接中") }
                 }
             }
             .textInputAutocapitalization(.never)
@@ -103,14 +111,21 @@ struct PairingView: View {
     }
 }
 
+private enum CompactWorkspacePage: Hashable {
+    case conversation(String)
+    case detail(String)
+}
+
 struct WorkspaceView: View {
     let connection: PadConnection
     @Bindable var workspace: PadWorkspace
+    let compactOpenSessionRequest: Int
+    let onCompactRootChange: (Bool) -> Void
     @State private var expandedWorkIDs = PadWorkExpansionStore().load()
     @State private var isChatExpanded = true
     @State private var taskCreationRoute: PadTaskCreationRoute?
     @State private var taskCreationStates: [String: PadTaskCreationState] = [:]
-    @State private var columnVisibility = NavigationSplitViewVisibility.all
+    @State private var compactPath: [CompactWorkspacePage] = []
     @State private var workAvatars = PadWorkAvatarStore()
     @State private var messageImages = PadMessageImageStore()
     @State private var entityCommands: PadEntityCommandState?
@@ -127,55 +142,28 @@ struct WorkspaceView: View {
 
     var body: some View {
         let commands = activeEntityCommands
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            PadWorkOutline(connection: connection, workspace: workspace, workAvatars: workAvatars,
-                entityCommands: commands, isActive: scenePhase == .active, expandedWorkIDs: $expandedWorkIDs,
-                isChatExpanded: $isChatExpanded, createTask: openTaskCreation, onEntityRoute: { route in
-                    entityRoute = route
-                })
-            .disabled(connection.busy)
-            .safeAreaInset(edge: .top, spacing: 0) {
-                if !commands.notice.isEmpty {
-                    HStack(spacing: 8) {
-                        Text(commands.notice)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        if commands.pending != nil {
-                            Button("核对") {
-                                Task { await commands.reconcile(connection) }
-                            }
-                            .font(.caption2.weight(.semibold))
-                            .buttonStyle(.plain)
-                            .disabled(commands.checking)
-                        }
+        GeometryReader { geometry in
+            // 312 Work + 440 conversation + 320 Detail. Narrower windows
+            // present the same pages one at a time instead of squeezing cards.
+            if horizontalSizeClass == .regular && geometry.size.width >= 1_072 {
+                HStack(spacing: 0) {
+                    workColumn(commands, onOpenSession: { workspace.selection = $0 })
+                        .frame(width: 312)
+                    conversationColumn
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if let id = workspace.selection {
+                        PadConversationInspector(workspace: workspace, connection: connection, sessionID: id)
+                            .id(id)
+                            .frame(width: 320)
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 4)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .padding(.horizontal, 16)
-                    .padding(.top, 6)
-                    .padding(.bottom, 4)
                 }
-            }
-            .toolbar(removing: .sidebarToggle)
-        } detail: {
-            if let id = workspace.selection {
-                ConversationView(connection: connection, workspace: workspace, sessionID: id,
-                    messageImages: messageImages)
-                    .id(id)
+                .background(WorkbenchCanvasSurface.color)
             } else {
-                ContentUnavailableView("选择一个 Task 或会话", systemImage: "bubble.left.and.text.bubble.right",
-                    description: Text("消息与状态自动更新。"))
+                compactWorkspace(commands)
             }
         }
         .toolbar(removing: .sidebarToggle)
         .toolbar(.hidden, for: .navigationBar)
-        .onChange(of: horizontalSizeClass, initial: true) { _, sizeClass in
-            if sizeClass == .regular { columnVisibility = .all }
-        }
-        .onChange(of: workspace.selection) {
-            if workspace.selection == nil { columnVisibility = .all }
-        }
         // Same trigger set as macOS `markOpenedSessionRead`: open, scene active, new agent output.
         .onChange(of: readAcknowledgementKey, initial: true) {
             workspace.acknowledgeOpenedSession(connection, isActive: scenePhase == .active)
@@ -224,6 +212,114 @@ struct WorkspaceView: View {
         }
     }
 
+    private func compactWorkspace(_ commands: PadEntityCommandState) -> some View {
+        NavigationStack(path: $compactPath) {
+            workColumn(commands, onOpenSession: openCompactSession)
+                .navigationDestination(for: CompactWorkspacePage.self) { page in
+                    switch page {
+                    case .conversation(let id):
+                        ConversationView(connection: connection, workspace: workspace, sessionID: id,
+                            messageImages: messageImages,
+                            onBack: { if compactPath.last == .conversation(id) { compactPath.removeLast() } },
+                            onOpenDetail: { if compactPath.last == .conversation(id) { compactPath.append(.detail(id)) } })
+                    case .detail(let id):
+                        PadConversationInspector(workspace: workspace, connection: connection, sessionID: id)
+                            .safeAreaInset(edge: .top, spacing: 0) { compactDetailHeader }
+                            .toolbar(.hidden, for: .navigationBar)
+                            .modifier(CompactBackSwipe {
+                                if compactPath.last == .detail(id) { compactPath.removeLast() }
+                            })
+                    }
+                }
+        }
+        .toolbar(.hidden, for: .navigationBar)
+        .accessibilityIdentifier("compact-workspace")
+        .onChange(of: compactPath, initial: true) { _, path in
+            onCompactRootChange(path.isEmpty)
+        }
+        .onChange(of: workspace.selection) { _, id in
+            guard let id else { compactPath = []; return }
+            guard compactPath.last != .conversation(id), compactPath.last != .detail(id) else { return }
+            compactPath = [.conversation(id)]
+        }
+        .onChange(of: compactOpenSessionRequest) {
+            if let id = workspace.selection { compactPath = [.conversation(id)] }
+        }
+    }
+
+    private func openCompactSession(_ id: String) {
+        workspace.selection = id
+        compactPath = [.conversation(id)]
+    }
+
+    private var compactDetailHeader: some View {
+        HStack(spacing: 8) {
+            Button {
+                if !compactPath.isEmpty { compactPath.removeLast() }
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 16, weight: .semibold))
+                    .frame(width: 44, height: 44)
+                    .padGlassSurface(in: Circle(), interactive: true)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("返回聊天")
+            .accessibilityIdentifier("conversation-detail-back")
+            Spacer(minLength: 0)
+            Text("Detail")
+                .font(.title3.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
+            Spacer(minLength: 0)
+            Color.clear.frame(width: 44, height: 44)
+                .accessibilityHidden(true)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 4)
+        .padding(.bottom, 8)
+    }
+
+    private func workColumn(_ commands: PadEntityCommandState,
+                            onOpenSession: @escaping (String) -> Void) -> some View {
+        PadWorkOutline(connection: connection, workspace: workspace, workAvatars: workAvatars,
+            entityCommands: commands, isActive: scenePhase == .active, expandedWorkIDs: $expandedWorkIDs,
+            isChatExpanded: $isChatExpanded, onOpenSession: onOpenSession,
+            createTask: openTaskCreation, onEntityRoute: { route in
+                entityRoute = route
+        })
+        .disabled(connection.busy)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if !commands.notice.isEmpty {
+                HStack(spacing: 8) {
+                    Text(commands.notice).font(.caption2).foregroundStyle(.secondary)
+                    if commands.pending != nil {
+                        Button("核对") { Task { await commands.reconcile(connection) } }
+                            .font(.caption2.weight(.semibold))
+                            .buttonStyle(.plain)
+                            .disabled(commands.checking)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+                .background(.ultraThinMaterial, in: Capsule())
+                .padding(.horizontal, 16)
+                .padding(.top, 6)
+                .padding(.bottom, 4)
+            }
+        }
+    }
+
+    @ViewBuilder private var conversationColumn: some View {
+        if let id = workspace.selection {
+            ConversationView(connection: connection, workspace: workspace, sessionID: id,
+                messageImages: messageImages,
+                onBack: nil, onOpenDetail: nil)
+                .id(id)
+        } else {
+            ContentUnavailableView("选择一个 Task 或会话", systemImage: "bubble.left.and.text.bubble.right",
+                description: Text("消息与状态自动更新。"))
+        }
+    }
+
     private struct ReadAcknowledgementKey: Equatable {
         let sessionID: String?
         let lastAgentMessageSequence: Int
@@ -261,6 +357,8 @@ struct ConversationView: View {
     @Bindable var workspace: PadWorkspace
     let sessionID: String
     let messageImages: PadMessageImageStore
+    let onBack: (() -> Void)?
+    let onOpenDetail: (() -> Void)?
     @State private var confirmForget = false
     @State private var viewportState = ConversationViewportState()
     @State private var historyViewport = TimelineHistoryViewportState()
@@ -285,6 +383,8 @@ struct ConversationView: View {
         Binding(get: { workspace.drafts[sessionID] ?? "" }, set: { workspace.drafts[sessionID] = $0 })
     }
     var body: some View {
+        GeometryReader { viewport in
+        let cardLaneWidth = max(0, viewport.size.width - 32).rounded(.down)
         ScrollViewReader { reader in
             ScrollView {
                 LazyVStack(spacing: 12) {
@@ -335,7 +435,7 @@ struct ConversationView: View {
                             } else {
                                 MobileMessageBubble(message: message, deliveryState: workspace.outgoingStates[message.id],
                                     timeSeparatorText: workspace.timeSeparatorTextByMessageID[message.id],
-                                    laneWidth: laneWidth, connection: connection, sessionID: sessionID,
+                                    laneWidth: cardLaneWidth, connection: connection, sessionID: sessionID,
                                     images: messageImages,
                                     openAttachment: { attachmentPreview = PadAttachmentPreview(sessionID: sessionID, image: $0) },
                                     canSendSuggestedReply: !connection.busy && workspace.pending == nil
@@ -348,7 +448,7 @@ struct ConversationView: View {
                         case .process(_, let items):
                             if let presentation = workspace.processPresentations[entry.id] {
                                 PadProcessCard(steps: workspace.processSteps[entry.id] ?? [], presentation: presentation,
-                                               laneWidth: laneWidth,
+                                               laneWidth: cardLaneWidth,
                                                startedAt: items.contains(where: { $0.processEndedAt != nil })
                                                    ? nil : ConversationProcessPresentation.startedAt(for: items),
                                                canAdvance: PadProcessClockPolicy.canAdvance(
@@ -471,6 +571,8 @@ struct ConversationView: View {
                 requestEarlierHistoryIfNeeded(reader)
             }
             .accessibilityIdentifier("conversation-timeline")
+            .modifier(CompactPageSwipe(onBack: onBack, onOpenDetail: onOpenDetail,
+                viewportWidth: viewport.size.width))
             .task {
                 let hadCachedCapabilities = workspace.capabilities != nil
                 await workspace.waitForRealtimeTimelineOrFallback(connection)
@@ -562,10 +664,6 @@ struct ConversationView: View {
         .sheet(item: $attachmentPreview) { preview in
             PadAttachmentViewer(connection: connection, preview: preview)
         }
-        .inspector(isPresented: .constant(true)) {
-            PadConversationInspector(workspace: workspace, connection: connection, sessionID: sessionID)
-                .id(sessionID)
-                .inspectorColumnWidth(min: 280, ideal: 320, max: 400)
         }
     }
 
@@ -726,7 +824,18 @@ struct ConversationView: View {
         let title = workspace.tasks.first(where: { $0.id == session?.taskId })?.title
             ?? session?.title ?? "会话"
 
-        return VStack(spacing: 4) {
+        return HStack(spacing: 8) {
+            if let onBack {
+                Button(action: onBack) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 16, weight: .semibold))
+                        .frame(width: 44, height: 44)
+                        .padGlassSurface(in: Circle(), interactive: true)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("返回 Work")
+                .accessibilityIdentifier("conversation-back")
+            }
             Text(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "会话" : title)
                 .font(.title3.weight(.semibold))
                 .lineLimit(2)
@@ -735,9 +844,20 @@ struct ConversationView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 5)
                 .padGlassSurface(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .frame(maxWidth: 360)
+                .frame(maxWidth: onBack == nil ? 360 : .infinity)
                 .accessibilityAddTraits(.isHeader)
                 .accessibilityIdentifier("conversation-task-title")
+            if let onOpenDetail {
+                Button(action: onOpenDetail) {
+                    Image(systemName: "sidebar.right")
+                        .font(.system(size: 16, weight: .medium))
+                        .frame(width: 44, height: 44)
+                        .padGlassSurface(in: Circle(), interactive: true)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("打开 Detail")
+                .accessibilityIdentifier("conversation-open-detail")
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 16)
@@ -748,40 +868,49 @@ struct ConversationView: View {
     private var conversationStatusRow: some View {
         HStack(spacing: 8) {
             PadThreadMetaView(session: workspace.sessionsByID[sessionID],
-                              capabilities: workspace.capabilities, usage: workspace.usage)
+                              capabilities: workspace.capabilities, usage: workspace.usage,
+                              compactUsage: UIDevice.current.userInterfaceIdiom == .phone)
             Spacer(minLength: 0)
-            let session = workspace.sessionsByID[sessionID]
-            let isRunning = SessionExecutionState(executionStatus: session?.executionStatus) == .running
-                || SessionExecutionState(executionStatus: workspace.executionByTaskID[session?.taskId ?? ""]) == .running
-            let canStop = isRunning && workspace.capabilities?.stop.available == true
-            ZStack {
-              if canStop {
-                Button {
-                    Task { await workspace.command(connection, stop: true) }
-                } label: {
-                    Image(systemName: "stop.fill")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.red)
-                        .frame(width: 28, height: 28)
-                        .padGlassSurface(in: Circle(), tint: .red.opacity(0.12))
-                        .overlay {
-                            Circle().strokeBorder(Color.red.opacity(0.45), lineWidth: 1)
-                                .allowsHitTesting(false)
+            if UIDevice.current.userInterfaceIdiom != .phone {
+                ZStack {
+                    if canStopCurrentSession {
+                        Button {
+                            stopCurrentSession()
+                        } label: {
+                            Image(systemName: "stop.fill")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(.red)
+                                .frame(width: 28, height: 28)
+                                .padGlassSurface(in: Circle(), tint: .red.opacity(0.12))
+                                .overlay {
+                                    Circle().strokeBorder(Color.red.opacity(0.45), lineWidth: 1)
+                                        .allowsHitTesting(false)
+                                }
+                                .frame(width: 44, height: 32)
+                                .contentShape(Rectangle())
                         }
-                        .frame(width: 44, height: 32)
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
+                        .disabled(connection.busy || workspace.pending != nil)
+                        .accessibilityLabel("停止当前运行")
+                        .accessibilityIdentifier("conversation-stop")
+                    }
                 }
-                .buttonStyle(.plain)
-                .disabled(connection.busy || workspace.pending != nil)
-                .accessibilityLabel("停止当前运行")
-                .accessibilityIdentifier("conversation-stop")
-              }
+                // iPad keeps its stable status-row slot; iPhone puts Stop in the editor.
+                .frame(width: 44, height: 32)
             }
-            // Reserve the same slot while idle; stop visibility must not change
-            // either the status row height or the space available to usage text.
-            .frame(width: 44, height: 32)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var canStopCurrentSession: Bool {
+        let session = workspace.sessionsByID[sessionID]
+        let isRunning = SessionExecutionState(executionStatus: session?.executionStatus) == .running
+            || SessionExecutionState(executionStatus: workspace.executionByTaskID[session?.taskId ?? ""]) == .running
+        return isRunning && workspace.capabilities?.stop.available == true
+    }
+
+    private func stopCurrentSession() {
+        Task { await workspace.command(connection, stop: true) }
     }
 
     private var composer: some View {
@@ -829,7 +958,8 @@ struct ConversationView: View {
                 }
             }
             PadComposer(connection: connection, workspace: workspace, sessionID: sessionID,
-                        scheduleMessage: { composerSheet = .schedule }) {
+                        scheduleMessage: { composerSheet = .schedule },
+                        canStop: canStopCurrentSession, stop: stopCurrentSession) {
                 conversationStatusRow
             }
         }
@@ -842,6 +972,48 @@ struct ConversationView: View {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix("/"), !trimmed.contains(where: { $0.isWhitespace }) else { return nil }
         return String(trimmed.dropFirst())
+    }
+}
+
+private struct CompactPageSwipe: ViewModifier {
+    let onBack: (() -> Void)?
+    let onOpenDetail: (() -> Void)?
+    let viewportWidth: CGFloat
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if onBack != nil || onOpenDetail != nil {
+            content.simultaneousGesture(
+                DragGesture(minimumDistance: 20).onEnded { gesture in
+                    guard viewportWidth > 0 else { return }
+                    let horizontal = gesture.translation.width
+                    guard abs(horizontal) > 64,
+                          abs(horizontal) > abs(gesture.translation.height) * 1.5 else { return }
+                    if horizontal > 0, gesture.startLocation.x <= 48 {
+                        onBack?()
+                    } else if horizontal < 0,
+                              gesture.startLocation.x >= viewportWidth - 48 {
+                        onOpenDetail?()
+                    }
+                }
+            )
+        } else {
+            content
+        }
+    }
+}
+
+private struct CompactBackSwipe: ViewModifier {
+    let onBack: () -> Void
+
+    func body(content: Content) -> some View {
+        content.simultaneousGesture(
+            DragGesture(minimumDistance: 20).onEnded { gesture in
+                let horizontal = gesture.translation.width
+                guard gesture.startLocation.x <= 48, horizontal > 64,
+                      horizontal > abs(gesture.translation.height) * 1.5 else { return }
+                onBack()
+            }
+        )
     }
 }
 

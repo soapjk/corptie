@@ -39,8 +39,8 @@ final class ComposerDraftTests: XCTestCase {
         )
     }
 
-    func testComposerInputHeightUsesComfortableMinimumAndCapsGrowth() {
-        XCTAssertEqual(ComposerInputLayout.resolvedHeight(for: 20), 44)
+    func testComposerInputHeightStartsAtOneLineAndCapsGrowth() {
+        XCTAssertEqual(ComposerInputLayout.resolvedHeight(for: 20), 30)
         XCTAssertEqual(ComposerInputLayout.resolvedHeight(for: 63.2), 64)
         XCTAssertEqual(ComposerInputLayout.resolvedHeight(for: 140), 96)
     }

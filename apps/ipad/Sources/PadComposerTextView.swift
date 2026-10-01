@@ -23,7 +23,7 @@ final class PadComposerEditor {
 }
 
 /// UIKit port of the desktop `ComposerInputTextView`: plain text, 12pt medium,
-/// 44–96 auto-height, placeholder, image paste, cursor-anchored @ queries and
+/// 30–96 auto-height, placeholder, image paste, cursor-anchored @ queries and
 /// hardware-key semantics from `ComposerKeyPolicy`. The soft keyboard's Return
 /// inserts a newline; the explicit send glyph submits.
 struct PadComposerTextView: UIViewRepresentable {
@@ -36,6 +36,8 @@ struct PadComposerTextView: UIViewRepresentable {
     /// Returns true when the key was consumed (the text view then swallows it).
     var onKey: (ComposerKeyPolicy.Key, _ shift: Bool, _ hasMarkedText: Bool) -> Bool
     var onSubmit: () -> Void
+    /// Allow the keyboard Send key for an image-only draft on iPhone.
+    var allowsEmptyTextSubmission = false
     var onPasteImages: () -> Bool
 
     func makeUIView(context: Context) -> SubmitTextView {
@@ -53,7 +55,7 @@ struct PadComposerTextView: UIViewRepresentable {
         textView.smartQuotesType = .no
         textView.smartDashesType = .no
         textView.returnKeyType = .send
-        textView.enablesReturnKeyAutomatically = true
+        textView.enablesReturnKeyAutomatically = !allowsEmptyTextSubmission
         textView.placeholder = placeholder
         textView.text = text
         textView.accessibilityIdentifier = "conversation-composer-input"
@@ -73,6 +75,11 @@ struct PadComposerTextView: UIViewRepresentable {
         textView.onHeightChange = onHeightChange
         textView.onKey = onKey
         textView.onPasteImages = onPasteImages
+        let automaticallyEnablesReturnKey = !allowsEmptyTextSubmission
+        if textView.enablesReturnKeyAutomatically != automaticallyEnablesReturnKey {
+            textView.enablesReturnKeyAutomatically = automaticallyEnablesReturnKey
+            if textView.isFirstResponder { textView.reloadInputViews() }
+        }
         editor.textView = textView
         // Never fight the input method: a composing session owns the buffer.
         if textView.markedTextRange == nil, textView.text != text {
@@ -166,10 +173,14 @@ struct PadComposerTextView: UIViewRepresentable {
             onContentChange?(self)
         }
 
-        /// Content height clamped by the shared 44–96 policy; only forwarded on change.
+        /// Content height clamped by the shared 30–96 policy; only forwarded on change.
         func reportHeight() {
             guard bounds.width > 0 else { return }
-            let fitting = sizeThatFits(CGSize(width: bounds.width, height: .greatestFiniteMagnitude)).height
+            // UITextView may report extra empty-document padding on some iOS
+            // versions; an empty draft should stay at the shared one-line size.
+            let fitting = (text ?? "").isEmpty
+                ? ComposerShellMetrics.minimumInputHeight
+                : sizeThatFits(CGSize(width: bounds.width, height: .greatestFiniteMagnitude)).height
             let resolved = ComposerShellMetrics.resolvedInputHeight(for: fitting)
             guard abs(resolved - lastReportedHeight) > 0.5 else { return }
             lastReportedHeight = resolved

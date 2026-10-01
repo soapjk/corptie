@@ -15,6 +15,7 @@ struct PadWorkOutline: View {
     let isActive: Bool
     @Binding var expandedWorkIDs: Set<String>
     @Binding var isChatExpanded: Bool
+    let onOpenSession: (String) -> Void
     let createTask: (ClientWork) -> Void
     let onEntityRoute: (PadEntityRoute) -> Void
     @AppStorage("corptie.mobile.workOutlineSort") private var sortRaw = PadOutlineSort.standard.rawValue
@@ -24,6 +25,11 @@ struct PadWorkOutline: View {
     @State private var tasksByWork: [String: [ClientTask]] = [:]
     @State private var workNames: [String: String] = [:]
     private var sort: PadOutlineSort { PadOutlineSort(rawValue: sortRaw) ?? .standard }
+    private var isPhone: Bool { UIDevice.current.userInterfaceIdiom == .phone }
+    private var headerFont: Font { isPhone ? .system(size: 16, weight: .semibold) : WorkOutlineMetrics.headerTitleFont }
+    private var rowFont: Font { isPhone ? .system(size: 15, weight: .semibold) : WorkOutlineMetrics.rowTitleFont }
+    private var rowPadding: CGFloat { isPhone ? 8 : WorkOutlineMetrics.rowPadding }
+    private var headerPadding: CGFloat { isPhone ? 8 : WorkOutlineMetrics.headerPadding }
 
     private var selectedWorkID: String? {
         workspace.selection.flatMap { workspace.sessionsByID[$0]?.workId }
@@ -61,6 +67,9 @@ struct PadWorkOutline: View {
             .padding(.vertical, 4)
             .environment(\.layoutDirection, .leftToRight)
         }
+        // The floating iPhone tab bar is outside this scroll view. Keep the
+        // final row scrollable above it without adding a visible full-width bar.
+        .contentMargins(.bottom, isPhone ? 82 : 0, for: .scrollContent)
         .environment(\.layoutDirection, .rightToLeft)
         .scrollIndicators(.automatic)
         .safeAreaInset(edge: .top, spacing: 0) { outlineToolbar }
@@ -141,7 +150,7 @@ struct PadWorkOutline: View {
                     HStack(spacing: 7) {
                         ChatGroupIcon()
                         Text("聊天")
-                            .font(WorkOutlineMetrics.headerTitleFont)
+                            .font(headerFont)
                             .foregroundStyle(selectedWorkID == nil ? Color.primary : Color.secondary)
                             .lineLimit(1)
                         Spacer(minLength: 0)
@@ -149,7 +158,7 @@ struct PadWorkOutline: View {
                             UnreadSessionDot()
                         }
                     }
-                    .padding(.vertical, WorkOutlineMetrics.headerPadding)
+                    .padding(.vertical, headerPadding)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -178,19 +187,19 @@ struct PadWorkOutline: View {
 
     private func sessionRow(_ session: ClientSession) -> some View {
         Button {
-            workspace.selection = session.id
+            onOpenSession(session.id)
         } label: {
             HStack(spacing: WorkOutlineMetrics.rowSpacing) {
                 SessionExecutionDot(state: SessionExecutionState(executionStatus: session.executionStatus))
                 Text(session.title)
-                    .font(WorkOutlineMetrics.rowTitleFont)
+                    .font(rowFont)
                     .lineLimit(1)
                 Spacer(minLength: 0)
                 if workspace.unreadSessionIDs.contains(session.id) {
                     UnreadSessionDot()
                 }
             }
-            .padding(.vertical, WorkOutlineMetrics.rowPadding)
+            .padding(.vertical, rowPadding)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -226,15 +235,16 @@ struct PadWorkOutline: View {
             disclosureButton(isExpanded: isExpanded, action: toggle)
             Button(action: toggle) {
                 HStack(spacing: 7) {
-                    PadWorkAvatar(work: work, size: WorkOutlineMetrics.headerIconSize, image: workAvatars.image(for: work))
+                    PadWorkAvatar(work: work, size: isPhone ? 28 : WorkOutlineMetrics.headerIconSize,
+                        image: workAvatars.image(for: work))
                     ConsoleWorkTitle(title: work.name,
                         isWorking: workspace.processingWorkIDs.contains(work.id),
                         isActive: isActive)
-                        .font(WorkOutlineMetrics.headerTitleFont)
+                        .font(headerFont)
                         .foregroundStyle(isSelected ? Color.primary : Color.secondary)
                         .lineLimit(1)
                 }
-                .padding(.vertical, WorkOutlineMetrics.headerPadding)
+                .padding(.vertical, headerPadding)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -250,7 +260,7 @@ struct PadWorkOutline: View {
                     accessibilityState: workspace.selection == discussion.id ? "已选中"
                         : workspace.unreadSessionIDs.contains(discussion.id) ? "未读会话" : "",
                     minimumHitHeight: WorkOutlineMetrics.headerIconSize + WorkOutlineMetrics.headerPadding * 2) {
-                        workspace.selection = discussion.id
+                        onOpenSession(discussion.id)
                     }
                     .padding(.leading, 6)
                     .accessibilityIdentifier("work-discussion-\(discussion.id)")
@@ -262,19 +272,15 @@ struct PadWorkOutline: View {
                 UnreadSessionDot()
             }
 
-            // macOS reveals this on hover; touch has no hover, so it stays visible but quiet.
-            Button { createTask(work) } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle().inset(by: -4))
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("在 \(work.name) 中创建 Task")
-            .accessibilityIdentifier("work-create-task-\(work.id)")
         }
         .contextMenu {
+            Button {
+                createTask(work)
+            } label: {
+                Label("新建 Task", systemImage: "plus")
+            }
+            .disabled(entityCommands.isBusy)
+            Divider()
             Button {
                 onEntityRoute(.editWork(work))
             } label: {
@@ -304,13 +310,13 @@ struct PadWorkOutline: View {
         let isDeleting = task.deletionStatus == "deleting"
         return Button {
             if let sessionID, !workspace.sessionIsKnownUnavailable(sessionID) {
-                workspace.selection = sessionID
+                onOpenSession(sessionID)
             }
         } label: {
             HStack(spacing: WorkOutlineMetrics.rowSpacing) {
                 TaskActivityIndicator(activity: activity, lifecycleState: task.lifecycleState)
                 Text(task.title)
-                    .font(WorkOutlineMetrics.rowTitleFont)
+                    .font(rowFont)
                     .lineLimit(1)
                 if task.hasPendingScheduledWake {
                     ScheduledWakeIcon(isActive: isActive)
@@ -325,7 +331,7 @@ struct PadWorkOutline: View {
                     UnreadSessionDot()
                 }
             }
-            .padding(.vertical, WorkOutlineMetrics.rowPadding)
+            .padding(.vertical, rowPadding)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

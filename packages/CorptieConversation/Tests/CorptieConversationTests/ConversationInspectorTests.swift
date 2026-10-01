@@ -46,15 +46,18 @@ struct ConversationInspectorTests {
         #expect(ConversationTaskDefinition.hasContent(description: "描述", acceptance: "", verification: ""))
     }
 
-    @Test func detailModulesUseGroupedNativeGlassWithoutNestedCardFills() throws {
+    @Test func detailModulesUseShadowFreeFlatSurfaces() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/CorptieConversation/ConversationInspectorSection.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
-        #expect(source.contains("GlassEffectContainer(spacing: 0) { content }"))
-        #expect(source.contains(".platformGlassSurface(in: RoundedRectangle(cornerRadius: 18, style: .continuous))"))
-        #expect(!source.contains(".background(Color.primary.opacity(0.055)"))
+        let module = try #require(source.components(separatedBy: "public struct ConversationDetailModuleSurface").last?
+            .components(separatedBy: "public struct ConversationDetailModuleCard").first)
+        #expect(module.contains(".fill(Color.primary.opacity(0.06))"))
+        #expect(!module.contains(".platformGlassSurface"))
+        #expect(!module.contains(".shadow("))
+        #expect(!source.contains("GlassEffectContainer(spacing: 0) { content }"))
     }
 }
