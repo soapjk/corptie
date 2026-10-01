@@ -430,7 +430,10 @@ struct SessionConversationContent: View {
             }
             .onChange(of: selectedSession?.actions?.fork?.available) { _, _ in
                 guard cachedSessionId == sessionId else { return }
-                let entries = Dictionary(uniqueKeysWithValues: cachedDisplayEntries.map { ($0.id, $0) })
+                let entries = Dictionary(
+                    cachedDisplayEntries.map { ($0.id, $0) },
+                    uniquingKeysWith: { _, latest in latest }
+                )
                 cachedAppKitRows = cachedAppKitRows.map { old in
                     guard let entry = entries[old.id] else { return old }
                     let itemID = forkItemID(for: entry)
@@ -813,6 +816,24 @@ struct SessionConversationContent: View {
 
     private func commitDisplayCache(_ preparedDisplay: DetailDisplayCache) {
         ChatPerformanceRecorder.shared.increment(.displayRebuilds)
+        let uniqueEntries = uniquedChatDisplayEntries(preparedDisplay.displayEntries)
+        let removedDisplayWeight = preparedDisplay.displayEntries.reduce(0) { $0 + $1.displayWeight }
+            - uniqueEntries.reduce(0) { $0 + $1.displayWeight }
+        let preparedDisplay = uniqueEntries.count == preparedDisplay.displayEntries.count
+            ? preparedDisplay
+            : DetailDisplayCache(
+                sessionId: preparedDisplay.sessionId,
+                displayItems: preparedDisplay.displayItems,
+                displayEntries: uniqueEntries,
+                totalDisplayEntryCount: max(
+                    uniqueEntries.reduce(0) { $0 + $1.displayWeight },
+                    preparedDisplay.totalDisplayEntryCount - removedDisplayWeight
+                ),
+                visibleMessageLimit: preparedDisplay.visibleMessageLimit,
+                signature: preparedDisplay.signature,
+                sourceSignature: preparedDisplay.sourceSignature,
+                restorationAnchorRowID: preparedDisplay.restorationAnchorRowID
+            )
         var transaction = Transaction()
         transaction.disablesAnimations = true
         let nextAppKitRows = PerfStopwatch.measure("会话切换.makeCachedAppKitRows") {
@@ -899,6 +920,10 @@ struct SessionConversationContent: View {
             // old rows without revisiting the rest of the Session history.
             guard appendedItems.allSatisfy({ $0.turnId != cachedLast.turnId }) else { return nil }
             let appendedEntries = makeChatDisplayEntries(from: Array(appendedItems))
+            guard canIncrementallyAppendChatDisplayEntries(
+                cached: cachedDisplayEntries,
+                appended: appendedEntries
+            ) else { return nil }
             let combined = cachedDisplayEntries + appendedEntries
             return (
                 displayItems: nextDisplayItems,

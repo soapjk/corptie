@@ -80,19 +80,20 @@ private func makeVisibleDetailDisplay(
     let displayEntries = PerfStopwatch.measure("timeline.makeChatDisplayEntries") {
         makeChatDisplayEntries(from: displayItems)
     }
+    let uniqueDisplayEntries = uniquedChatDisplayEntries(displayEntries)
     let anchoredWindow = restorationAnchorRowID.flatMap { anchorRowID in
         restorationDetailEntries(
-            from: displayEntries,
+            from: uniqueDisplayEntries,
             anchorRowID: anchorRowID,
             historyLimit: visibleMessageLimit
         )
     }
     let visibleEntries = anchoredWindow
-        ?? visibleDetailEntries(from: displayEntries, limit: visibleMessageLimit)
+        ?? visibleDetailEntries(from: uniqueDisplayEntries, limit: visibleMessageLimit)
     return (
         displayItems: displayItems,
         visibleEntries: visibleEntries,
-        totalCount: displayEntries.reduce(0) { $0 + $1.displayWeight },
+        totalCount: uniqueDisplayEntries.reduce(0) { $0 + $1.displayWeight },
         signature: detailDisplaySignature(for: visibleEntries, visibleMessageLimit: visibleMessageLimit),
         sourceSignature: makeDetailSourceSignature(
             for: detail,
@@ -203,6 +204,40 @@ func visibleDetailEntries(from displayEntries: [ChatDisplayEntry], limit: Int) -
         }
     }
     return Array(displayEntries[startIndex...])
+}
+
+/// Timeline identity is stable across optimistic and authoritative updates.
+/// Preserve the first position while letting the latest value replace stale
+/// content so transient reconciliation overlap cannot escape into renderer
+/// state or identity-indexed callbacks.
+func uniquedChatDisplayEntries(_ entries: [ChatDisplayEntry]) -> [ChatDisplayEntry] {
+    var indexesByID: [String: Int] = [:]
+    indexesByID.reserveCapacity(entries.count)
+    var result: [ChatDisplayEntry] = []
+    result.reserveCapacity(entries.count)
+    for entry in entries {
+        if let index = indexesByID[entry.id] {
+            result[index] = entry
+        } else {
+            indexesByID[entry.id] = result.count
+            result.append(entry)
+        }
+    }
+    return result
+}
+
+/// The incremental fast path is valid only when both sides have disjoint,
+/// unique identities. Any overlap needs a full projection so optimistic and
+/// authoritative versions are reconciled from the source timeline.
+func canIncrementallyAppendChatDisplayEntries(
+    cached: [ChatDisplayEntry],
+    appended: [ChatDisplayEntry]
+) -> Bool {
+    var ids = Set<String>()
+    ids.reserveCapacity(cached.count + appended.count)
+    for entry in cached where !ids.insert(entry.id).inserted { return false }
+    for entry in appended where !ids.insert(entry.id).inserted { return false }
+    return true
 }
 
 func makeChatDisplayEntries(from items: [CodexThreadItem]) -> [ChatDisplayEntry] {

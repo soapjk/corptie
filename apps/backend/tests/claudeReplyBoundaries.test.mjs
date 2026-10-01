@@ -52,3 +52,16 @@ test("tool continuation text is not promoted to a formal answer at settlement", 
   manager.handleSdkMessage(session, { type: "result", subtype: "success", result: "" });
   assert.equal(session.items.find(i => i.type === "agentMessage").presentationRole, "commentary");
 });
+
+test("subagent reports remain commentary when the parent Turn settles", () => {
+  const manager = new ClaudeAgentManager(); manager.start({ id: "subagent-report" });
+  const session = manager.get("subagent-report"); session.currentTurnId = "turn:one";
+  manager.handleSdkMessage(session, {
+    type: "assistant",
+    uuid: "child-message",
+    parent_tool_use_id: "agent-call",
+    message: { stop_reason: "end_turn", content: [{ type: "text", text: "Child exploration report" }] }
+  });
+  manager.handleSdkMessage(session, { type: "result", subtype: "success", result: "Done" });
+  assert.equal(session.items.find(i => i.type === "agentMessage").presentationRole, "commentary");
+});

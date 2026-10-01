@@ -951,7 +951,7 @@ test("Claude live messages become process items until the result marks a final a
   assert.ok(manager.detail("claude-live").items.every((item) => item.turnStatus === "complete"));
 });
 
-test("Claude remains working and interruptible while a background task outlives the parent result", async () => {
+test("Claude remains working through task completion until its continuation result settles the Turn", async () => {
   const settled = [];
   const manager = new ClaudeAgentManager({ onTurnSettled: (event) => settled.push(event) });
   manager.start({ id: "claude-background", cwd: "/tmp", prompt: "" });
@@ -982,6 +982,20 @@ test("Claude remains working and interruptible while a background task outlives 
     task_id: "task-market-cow",
     status: "completed",
     summary: "Implementation completed"
+  });
+
+  detail = manager.detail("claude-background");
+  assert.equal(detail.status, "running");
+  assert.equal(detail.capabilities.canInterrupt, true);
+  await Promise.resolve();
+  assert.equal(settled.length, 0);
+
+  manager.handleSdkMessage(session, sdkAssistant([{ type: "text", text: "Implementation verified." }]));
+  manager.handleSdkMessage(session, {
+    type: "result",
+    subtype: "success",
+    origin: { kind: "task-notification" },
+    result: "Implementation verified."
   });
 
   detail = manager.detail("claude-background");
