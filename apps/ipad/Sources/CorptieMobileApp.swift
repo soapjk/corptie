@@ -373,6 +373,9 @@ struct ConversationView: View {
     @State private var laneWidth: CGFloat = 0
     @State private var initialTimelinePlacementScheduled = false
     @State private var didPlaceInitialTimeline = false
+    @State private var pendingLatestJump = false
+    @State private var latestJumpCorrectionScheduled = false
+    @State private var latestJumpGeneration: UInt64 = 0
     @State private var attachmentPreview: PadAttachmentPreview?
     @State private var composerSheet: ComposerSheet?
     private enum ComposerSheet: String, Identifiable {
@@ -507,12 +510,20 @@ struct ConversationView: View {
                 onUserInteractionChange: { interacting in
                     isUserInteractingWithTimeline = interacting
                     if interacting {
+                        latestJumpGeneration &+= 1
+                        pendingLatestJump = false
+                        latestJumpCorrectionScheduled = false
                         pendingHistoryViewport = nil
                         requestEarlierHistoryIfNeeded(reader, userInitiated: true)
                     } else {
                         finishDeferredHistoryLoadIfReady(reader)
                         if pendingHistoryViewport != nil { restoreHistoryViewportIfReady(reader) }
                     }
+                },
+                onBottomProximityChange: { nearBottom in
+                    guard pendingLatestJump else { return }
+                    if nearBottom { pendingLatestJump = false }
+                    else { scheduleLatestJumpCorrection(reader) }
                 }
             ))
             .scrollDismissesKeyboard(.interactively)
@@ -550,6 +561,7 @@ struct ConversationView: View {
                     // for viewport-only (keyboard/split) resizing below.
                     reader.scrollTo("latest", anchor: .bottom)
                 }
+                if pendingLatestJump { scheduleLatestJumpCorrection(reader) }
                 requestEarlierHistoryIfNeeded(reader)
             }
             .onPreferenceChange(TimelineViewportSizeKey.self) { size in
@@ -587,8 +599,7 @@ struct ConversationView: View {
                 }
             }
             .onChange(of: workspace.scrollRequest) {
-                viewportState.jumpToLatest()
-                reader.scrollTo("latest", anchor: .bottom)
+                jumpToLatest(reader)
             }
             .onChange(of: workspace.before) {
                 requestEarlierHistoryIfNeeded(reader)
@@ -620,13 +631,14 @@ struct ConversationView: View {
                 historyAutoLoadGate = PadHistoryAutoLoadGate()
                 initialTimelinePlacementScheduled = false
                 didPlaceInitialTimeline = false
+                latestJumpGeneration &+= 1
+                pendingLatestJump = false
+                latestJumpCorrectionScheduled = false
             }
             .overlay(alignment: .bottomTrailing) {
-                if viewportState.showsJumpToLatest {
+                if viewportState.showsJumpToLatest || pendingLatestJump {
                     Button {
-                        pendingHistoryViewport = nil
-                        viewportState.jumpToLatest()
-                        reader.scrollTo("latest", anchor: .bottom)
+                        jumpToLatest(reader)
                     } label: {
                         Image(systemName: "arrow.down")
                             .font(.system(size: 14, weight: .bold))
@@ -676,6 +688,53 @@ struct ConversationView: View {
             get: { viewportState.followsLatest },
             set: { viewportState.setFollowsLatest($0) }
         )
+    }
+
+    /// A lazy timeline can change its measured height after ScrollViewReader
+    /// resolves the tail. Keep the explicit jump visible until a post-layout
+    /// correction has reached the physical bottom.
+    private func jumpToLatest(_ reader: ScrollViewProxy) {
+        latestJumpGeneration &+= 1
+        latestJumpCorrectionScheduled = false
+        pendingHistoryViewport = nil
+        deferredHistoryLoad = false
+        viewportState.jumpToLatest()
+        pendingLatestJump = true
+        withTransaction(Transaction(animation: nil)) {
+            reader.scrollTo("latest", anchor: .bottom)
+        }
+        scheduleLatestJumpCorrection(reader)
+    }
+
+    private func scheduleLatestJumpCorrection(_ reader: ScrollViewProxy) {
+        guard pendingLatestJump, !latestJumpCorrectionScheduled else { return }
+        let generation = latestJumpGeneration
+        latestJumpCorrectionScheduled = true
+        DispatchQueue.main.async {
+            guard generation == latestJumpGeneration else { return }
+            latestJumpCorrectionScheduled = false
+            guard pendingLatestJump, !isUserInteractingWithTimeline else { return }
+            withTransaction(Transaction(animation: nil)) {
+                reader.scrollTo("latest", anchor: .bottom)
+            }
+            DispatchQueue.main.async {
+                guard generation == latestJumpGeneration,
+                      pendingLatestJump, !isUserInteractingWithTimeline else { return }
+                if pinTimelineToLatestIfReady(), isTimelineAtLatest() {
+                    pendingLatestJump = false
+                }
+            }
+        }
+    }
+
+    private func isTimelineAtLatest() -> Bool {
+        guard let timelineScrollView else { return false }
+        let maximumY = max(
+            -timelineScrollView.adjustedContentInset.top,
+            timelineScrollView.contentSize.height - timelineScrollView.bounds.height
+                + timelineScrollView.adjustedContentInset.bottom
+        )
+        return maximumY - timelineScrollView.contentOffset.y <= 8
     }
 
     /// ScrollViewReader cannot reliably resolve the lazy tail marker before
@@ -869,6 +928,7 @@ struct ConversationView: View {
         HStack(spacing: 8) {
             PadThreadMetaView(session: workspace.sessionsByID[sessionID],
                               capabilities: workspace.capabilities, usage: workspace.usage,
+                              refreshAccount: { await workspace.refreshFreshAccountUsage(connection, sessionID: sessionID) },
                               compactUsage: UIDevice.current.userInterfaceIdiom == .phone)
             Spacer(minLength: 0)
             if UIDevice.current.userInterfaceIdiom != .phone {
@@ -1340,6 +1400,7 @@ private struct TimelineViewportSizeKey: PreferenceKey {
 private struct TimelineFollowLatestModifier: ViewModifier {
     @Binding var followLatest: Bool
     let onUserInteractionChange: (Bool) -> Void
+    let onBottomProximityChange: (Bool) -> Void
     @State private var isUserScrolling = false
 
     func body(content: Content) -> some View {
@@ -1351,6 +1412,7 @@ private struct TimelineFollowLatestModifier: ViewModifier {
                     // Content growth can move the bottom without any user scroll.
                     // Only a user-driven phase may change the follow preference.
                     if isUserScrolling { followLatest = nearBottom }
+                    onBottomProximityChange(nearBottom)
                 }
                 .onScrollPhaseChange { _, newPhase, context in
                     if newPhase == .interacting {

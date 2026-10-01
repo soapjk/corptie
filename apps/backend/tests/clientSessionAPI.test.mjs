@@ -549,6 +549,21 @@ test("capabilities carry Session readiness and usage is a sanitized read-only pr
   } finally { await f.close(); }
 });
 
+test("paired-client quota verification requires a fresh provider-neutral account read", async () => {
+  const f = await fixture();
+  try {
+    const reads = [];
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks,
+      usage: async (_sessionId, options) => {
+        reads.push(options);
+        return { accountFresh: true, account: { available: true, provider: "codex" } };
+      } });
+    const result = await api.usage(identity, "session:test", { freshAccount: true });
+    assert.equal(result.accountFresh, true);
+    assert.deepEqual(reads, [{ requireFreshAccount: true }]);
+  } finally { await f.close(); }
+});
+
 test("uncertain dispatch is never automatically replayed; reads project only public message fields", async () => {
   const f = await fixture();
   try {

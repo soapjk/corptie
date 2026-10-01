@@ -137,7 +137,7 @@ test("appendSessionEvent：surface 按类型推导（user/message → true）", 
   }
 });
 
-test("listLatestSessionMessageTimes：只按消息事件返回每个 Session 的最新时间", async () => {
+test("listLatestSessionMessageTimes ignores streamed progress and keeps user/final reply activity", async () => {
   const { store, directory } = await createStore();
   try {
     store.upsertSession({ id: "s1", title: "t", agent: "a", provider: "codex-app-server", status: "complete" });
@@ -151,10 +151,28 @@ test("listLatestSessionMessageTimes：只按消息事件返回每个 Session 的
     });
     store.appendSessionEvent({
       eventId: "message-2", sessionId: "s1", type: "CodexThreadCompleted", surface: false,
-      payload: {}, createdAt: "2026-08-20T02:00:00Z"
+      payload: { hasAgentMessage: true }, createdAt: "2026-08-20T02:00:00Z"
+    });
+    store.appendSessionEvent({
+      eventId: "chunk", sessionId: "s1", type: "assistant/chunk", surface: true,
+      payload: { text: "still streaming" }, createdAt: "2026-08-20T04:00:00Z"
+    });
+    store.appendSessionEvent({
+      eventId: "intermediate-assistant", sessionId: "s1", type: "assistant.message.completed", surface: true,
+      payload: { text: "Claude commentary before a tool call" }, createdAt: "2026-08-20T04:30:00Z"
+    });
+    store.appendSessionEvent({
+      eventId: "empty-completion", sessionId: "s1", type: "CodexThreadCompleted",
+      payload: { hasAgentMessage: false }, createdAt: "2026-08-20T05:00:00Z"
     });
 
     assert.equal(store.listLatestSessionMessageTimes().get("s1"), "2026-08-20T02:00:00Z");
+    assert.equal(store.listLatestSessionMessageTimes(["s1"]).get("s1"), "2026-08-20T02:00:00Z");
+    store.appendSessionEvent({
+      eventId: "new-user", sessionId: "s1", type: "SessionUserMessageCreated",
+      payload: { text: "follow-up" }, createdAt: "2026-08-20T06:00:00Z"
+    });
+    assert.equal(store.listLatestSessionMessageTimes(["s1"]).get("s1"), "2026-08-20T06:00:00Z");
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -191,7 +209,7 @@ test("Session 列表消息聚合使用稀疏索引且不创建临时排序 B-tre
     const plans = capturedSQL.map((sql) => originalSelectAll(`EXPLAIN QUERY PLAN ${sql}`)
       .map((row) => row.detail)
       .join("\n"));
-    assert.match(plans[0], /idx_session_events_latest_message/);
+    assert.match(plans[0], /idx_session_events_conversation_activity/);
     assert.match(plans[1], /idx_session_events_agent_message/);
     assert.doesNotMatch(plans.join("\n"), /USE TEMP B-TREE/);
   } finally {
@@ -565,6 +583,7 @@ test("legacy schema migrates the cursor column without creating a full database 
     const legacy = new DatabaseSync(dbPath);
     legacy.exec(`
       DROP INDEX IF EXISTS idx_session_events_agent_message;
+      DROP INDEX IF EXISTS idx_session_events_conversation_activity;
       DROP TRIGGER IF EXISTS state_sync_session_events_agent_message_insert;
       DELETE FROM data_migrations WHERE migration_id = 'session-events-has-agent-message-v1';
       ALTER TABLE session_events DROP COLUMN has_agent_message;
