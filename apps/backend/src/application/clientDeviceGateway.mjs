@@ -130,7 +130,7 @@ export class ClientDeviceGateway {
         const authenticate = () => this.authority.authenticate(bearer(request));
         this.sessionAPI.inspector.scope(id, identity);
         if (request.method === "GET" && inspector[2] === "events") {
-          return this.inspectorEvents.attach(response, authenticate, id);
+          return this.inspectorEvents.attach(response, authenticate, id, request);
         }
         if (request.method === "GET" && !inspector[2]) {
           const result = await this.sessionAPI.inspector.snapshot(identity, id);

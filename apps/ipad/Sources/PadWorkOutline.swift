@@ -77,6 +77,7 @@ struct PadWorkOutline: View {
         .onChange(of: workspace.works, initial: true) { _, _ in rebuildOrder() }
         .onChange(of: workspace.tasks) { _, _ in rebuildOrder() }
         .onChange(of: sortRaw) { _, _ in rebuildOrder() }
+        .onChange(of: viewMode) { _, _ in rebuildOrder() }
         .onChange(of: workspace.latestSessionActivityByWork) { _, activity in
             guard sort == .updated else { return }
             orderedWorks = sort.works(workspace.works, latestSessionActivity: activity)
@@ -149,9 +150,9 @@ struct PadWorkOutline: View {
 
     private var chatGroup: some View {
         VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 0) {
-                disclosureButton(isExpanded: isChatExpanded) { toggleChat() }
-                Button(action: toggleChat) {
+            Button(action: toggleChat) {
+                HStack(spacing: 0) {
+                    WorkOutlineDisclosureChevron(isExpanded: isChatExpanded)
                     HStack(spacing: 7) {
                         ChatGroupIcon()
                         Text("聊天")
@@ -163,14 +164,14 @@ struct PadWorkOutline: View {
                             UnreadSessionDot()
                         }
                     }
-                    .padding(.vertical, headerPadding)
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("聊天")
-                .accessibilityValue(isChatExpanded ? "已展开" : "已折叠")
-                .accessibilityIdentifier("outline-chat-header")
+                .padding(.vertical, headerPadding)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("聊天")
+            .accessibilityValue(isChatExpanded ? "已展开" : "已折叠")
+            .accessibilityIdentifier("outline-chat-header")
             if isChatExpanded {
                 if workspace.independentSessions.isEmpty {
                     emptyRow("暂无独立聊天")
@@ -236,18 +237,27 @@ struct PadWorkOutline: View {
     private func workHeader(_ work: ClientWork, isExpanded: Bool) -> some View {
         let toggle = { toggleWork(work.id) }
         let isSelected = selectedWorkID == work.id
+        let discussions = workspace.discussionsByWork[work.id] ?? []
         return HStack(spacing: 0) {
-            disclosureButton(isExpanded: isExpanded, action: toggle)
             Button(action: toggle) {
-                HStack(spacing: 7) {
-                    PadWorkAvatar(work: work, size: isPhone ? 28 : WorkOutlineMetrics.headerIconSize,
-                        image: workAvatars.image(for: work))
-                    ConsoleWorkTitle(title: work.name,
-                        isWorking: workspace.processingWorkIDs.contains(work.id),
-                        isActive: isActive)
-                        .font(headerFont)
-                        .foregroundStyle(isSelected ? Color.primary : Color.secondary)
-                        .lineLimit(1)
+                HStack(spacing: 0) {
+                    WorkOutlineDisclosureChevron(isExpanded: isExpanded)
+                    HStack(spacing: 7) {
+                        PadWorkAvatar(work: work, size: isPhone ? 28 : WorkOutlineMetrics.headerIconSize,
+                            image: workAvatars.image(for: work))
+                        ConsoleWorkTitle(title: work.name,
+                            isWorking: workspace.processingWorkIDs.contains(work.id),
+                            isActive: isActive)
+                            .font(headerFont)
+                            .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                            .lineLimit(1)
+                    }
+                    if discussions.isEmpty {
+                        Spacer(minLength: 4)
+                        if !isExpanded, workspace.unreadWorkIDs.contains(work.id) {
+                            UnreadSessionDot()
+                        }
+                    }
                 }
                 .padding(.vertical, headerPadding)
                 .contentShape(Rectangle())
@@ -257,26 +267,34 @@ struct PadWorkOutline: View {
             .accessibilityValue(isExpanded ? "已展开" : "已折叠")
             .accessibilityIdentifier("work-header-\(work.id)")
 
-            ForEach(workspace.discussionsByWork[work.id] ?? []) { discussion in
-                WorkDiscussionButton(isSelected: workspace.selection == discussion.id,
-                    isRunning: SessionExecutionState(executionStatus: discussion.executionStatus) == .running,
-                    isActive: isActive,
-                    hasUnread: workspace.unreadSessionIDs.contains(discussion.id),
-                    accessibilityState: workspace.selection == discussion.id ? "已选中"
-                        : workspace.unreadSessionIDs.contains(discussion.id) ? "未读会话" : "",
-                    minimumHitHeight: WorkOutlineMetrics.headerIconSize + WorkOutlineMetrics.headerPadding * 2) {
-                        onOpenSession(discussion.id)
+            if !discussions.isEmpty {
+                ForEach(discussions) { discussion in
+                    WorkDiscussionButton(isSelected: workspace.selection == discussion.id,
+                        isRunning: SessionExecutionState(executionStatus: discussion.executionStatus) == .running,
+                        isActive: isActive,
+                        hasUnread: workspace.unreadSessionIDs.contains(discussion.id),
+                        accessibilityState: workspace.selection == discussion.id ? "已选中"
+                            : workspace.unreadSessionIDs.contains(discussion.id) ? "未读会话" : "",
+                        minimumHitHeight: WorkOutlineMetrics.headerIconSize + WorkOutlineMetrics.headerPadding * 2) {
+                            onOpenSession(discussion.id)
+                        }
+                        .padding(.leading, 6)
+                        .accessibilityIdentifier("work-discussion-\(discussion.id)")
+                }
+
+                Button(action: toggle) {
+                    HStack(spacing: 0) {
+                        Spacer(minLength: 4)
+                        if !isExpanded, workspace.unreadWorkIDs.contains(work.id) {
+                            UnreadSessionDot()
+                        }
                     }
-                    .padding(.leading, 6)
-                    .accessibilityIdentifier("work-discussion-\(discussion.id)")
+                    .padding(.vertical, headerPadding)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityHidden(true)
             }
-
-            Spacer(minLength: 4)
-
-            if !isExpanded, workspace.unreadWorkIDs.contains(work.id) {
-                UnreadSessionDot()
-            }
-
         }
         .contextMenu {
             Button {
@@ -393,14 +411,6 @@ struct PadWorkOutline: View {
     }
 
     // MARK: Shared pieces
-
-    private func disclosureButton(isExpanded: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            WorkOutlineDisclosureChevron(isExpanded: isExpanded)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(isExpanded ? "折叠分组" : "展开分组")
-    }
 
     private func emptyRow(_ title: String) -> some View {
         Text(title)

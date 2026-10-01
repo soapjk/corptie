@@ -526,8 +526,11 @@ struct ConversationView: View {
                 },
                 onBottomProximityChange: { nearBottom in
                     guard pendingLatestJump else { return }
-                    if nearBottom { pendingLatestJump = false }
-                    else { scheduleLatestJumpCorrection(reader) }
+                    if nearBottom {
+                        pendingLatestJump = false
+                    } else {
+                        scheduleLatestJumpCorrection(reader)
+                    }
                 }
             ))
             .scrollDismissesKeyboard(.interactively)
@@ -576,13 +579,11 @@ struct ConversationView: View {
                 historyViewport.viewportHeight = roundedHeight
                 placeInitialTimelineIfReady(reader)
                 // Keyboard safe-area changes resize the timeline and composer
-                // in the same animation. Pin a followed conversation to its
-                // bottom on every distinct viewport step so the last message
-                // travels with the composer instead of catching up afterward.
+                // in the same animation. Follow the stable SwiftUI tail identity
+                // so the last message travels with the composer without bypassing
+                // the lazy row virtualization pipeline.
                 if didPlaceInitialTimeline && viewportState.followsLatest {
-                    if !pinTimelineToLatestIfReady() {
-                        reader.scrollTo("latest", anchor: .bottom)
-                    }
+                    reader.scrollTo("latest", anchor: .bottom)
                 }
                 requestEarlierHistoryIfNeeded(reader)
             }
@@ -660,6 +661,7 @@ struct ConversationView: View {
                     .accessibilityIdentifier("conversation-jump-to-latest")
                     .padding(.trailing, 14)
                     .padding(.bottom, 12)
+                    .transition(.opacity.combined(with: .scale(scale: 0.85)))
                 }
             }
         }
@@ -702,7 +704,9 @@ struct ConversationView: View {
         latestJumpCorrectionScheduled = false
         pendingHistoryViewport = nil
         deferredHistoryLoad = false
-        viewportState.jumpToLatest()
+        withAnimation(.easeInOut(duration: 0.2)) {
+            viewportState.jumpToLatest()
+        }
         pendingLatestJump = true
         withTransaction(Transaction(animation: nil)) {
             reader.scrollTo("latest", anchor: .bottom)
@@ -724,7 +728,10 @@ struct ConversationView: View {
             DispatchQueue.main.async {
                 guard generation == latestJumpGeneration,
                       pendingLatestJump, !isUserInteractingWithTimeline else { return }
-                if pinTimelineToLatestIfReady(), isTimelineAtLatest() {
+                withTransaction(Transaction(animation: nil)) {
+                    reader.scrollTo("latest", anchor: .bottom)
+                }
+                withAnimation(.easeInOut(duration: 0.2)) {
                     pendingLatestJump = false
                 }
             }
@@ -738,7 +745,7 @@ struct ConversationView: View {
             timelineScrollView.contentSize.height - timelineScrollView.bounds.height
                 + timelineScrollView.adjustedContentInset.bottom
         )
-        return maximumY - timelineScrollView.contentOffset.y <= 8
+        return maximumY - timelineScrollView.contentOffset.y <= 24
     }
 
     /// ScrollViewReader cannot reliably resolve the lazy tail marker before
@@ -808,27 +815,6 @@ struct ConversationView: View {
             await workspace.loadEarlierMessagesIfNeeded(connection)
             restoreHistoryViewportIfReady(reader)
         }
-    }
-
-    /// The native scroll view owns physical geometry just as AppKit does on
-    /// macOS. Correcting its bottom offset synchronously avoids queueing a
-    /// second SwiftUI `scrollTo` transaction during keyboard and row reflow.
-    @discardableResult
-    private func pinTimelineToLatestIfReady() -> Bool {
-        guard let timelineScrollView else { return false }
-        timelineScrollView.layoutIfNeeded()
-        let minimumY = -timelineScrollView.adjustedContentInset.top
-        let maximumY = max(
-            minimumY,
-            timelineScrollView.contentSize.height - timelineScrollView.bounds.height
-                + timelineScrollView.adjustedContentInset.bottom
-        )
-        if abs(timelineScrollView.contentOffset.y - maximumY) >= 0.5 {
-            timelineScrollView.setContentOffset(
-                CGPoint(x: timelineScrollView.contentOffset.x, y: maximumY), animated: false
-            )
-        }
-        return true
     }
 
     private func restoreHistoryViewportIfReady(_ reader: ScrollViewProxy) {
@@ -1450,7 +1436,10 @@ private struct TimelineFollowLatestModifier: ViewModifier {
 
     @available(iOS 18.0, *)
     private static func isNearBottom(_ geometry: ScrollGeometry) -> Bool {
-        geometry.visibleRect.maxY >= geometry.contentSize.height - 40
+        if geometry.contentSize.height <= geometry.visibleRect.height {
+            return true
+        }
+        return geometry.visibleRect.maxY >= geometry.contentSize.height - 40
     }
 }
 
@@ -1487,18 +1476,41 @@ private struct TimelineScrollViewResolver: UIViewRepresentable {
                 onResolve?(resolvedScrollView)
                 return
             }
+            if let scrollView = findScrollView() {
+                resolvedScrollView = scrollView
+                onResolve?(scrollView)
+                return
+            }
+            guard resolutionAttempts < 6 else { return }
+            resolutionAttempts += 1
+            DispatchQueue.main.async { [weak self] in self?.resolve() }
+        }
+
+        private func findScrollView() -> UIScrollView? {
             var candidate = superview
             while let view = candidate {
                 if let scrollView = view as? UIScrollView {
-                    resolvedScrollView = scrollView
-                    onResolve?(scrollView)
-                    return
+                    return scrollView
+                }
+                if let scrollView = findScrollView(in: view) {
+                    return scrollView
                 }
                 candidate = view.superview
             }
-            guard resolutionAttempts < 4 else { return }
-            resolutionAttempts += 1
-            DispatchQueue.main.async { [weak self] in self?.resolve() }
+            return nil
+        }
+
+        private func findScrollView(in root: UIView) -> UIScrollView? {
+            for subview in root.subviews {
+                if subview === self { continue }
+                if let scrollView = subview as? UIScrollView {
+                    return scrollView
+                }
+                if let found = findScrollView(in: subview) {
+                    return found
+                }
+            }
+            return nil
         }
     }
 }

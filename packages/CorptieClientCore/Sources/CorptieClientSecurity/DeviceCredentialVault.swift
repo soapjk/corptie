@@ -31,7 +31,7 @@ public actor DeviceCredentialVault {
         guard credentials.serverId == expectedServerId else { throw CredentialVaultError.invalidIdentity }
         let query = try query(endpoint: endpoint, serverId: expectedServerId)
         let attributes: [String: Any] = [kSecValueData as String: try JSONEncoder().encode(credentials),
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly]
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
         let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
             let added = SecItemAdd(query.merging(attributes, uniquingKeysWith: { _, new in new }) as CFDictionary, nil)
