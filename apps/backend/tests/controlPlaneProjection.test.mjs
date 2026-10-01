@@ -60,6 +60,14 @@ test("snapshot and incremental session reads use the same projection", () => {
   assert.deepEqual(f.projection.readControlPlaneEntity("task", f.task.id), snapshot.tasks[0]);
 });
 
+test("streamed Provider output cannot outrank the durable conversation activity time", () => {
+  const f = fixture();
+  f.session.lastOutputAt = "2026-12-01T00:00:00Z";
+  f.session.rawStatus = { lastMessageAt: "2026-12-02T00:00:00Z" };
+  const snapshot = f.projection.controlPlaneSnapshot();
+  assert.equal(snapshot.sessions[0].lastMessageAt, "2026-01-02T00:00:00Z");
+});
+
 test("archived sessions and completed tasks leave the resident incremental projection", () => {
   const f = fixture();
   f.session.archived = true;

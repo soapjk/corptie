@@ -13,17 +13,9 @@ export function sortSessionsForList(sessions = []) {
 }
 
 export function withLastMessageTimestamp(session, persistedMessageAt = null) {
-  const candidates = [
-    session.lastMessageAt,
-    session.lastInputAt,
-    session.lastOutputAt,
-    session.rawStatus?.lastMessageAt,
-    session.rawStatus?.lastInputAt,
-    session.rawStatus?.lastOutputAt,
-    persistedMessageAt
-  ].filter((value) => typeof value === "string" && value.trim());
-  const lastMessageAt = candidates.sort((a, b) => b.localeCompare(a))[0] ?? null;
-  return { ...session, lastMessageAt };
+  // Provider output timestamps can advance for every streamed chunk. Only the
+  // durable user/final-assistant activity projection is a sorting signal.
+  return { ...session, lastMessageAt: persistedMessageAt ?? null };
 }
 
 export function withSessionMessageCursors(session, cursors = null, timelineRevision = 0) {

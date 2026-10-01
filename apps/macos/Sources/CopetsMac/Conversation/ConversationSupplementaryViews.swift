@@ -178,56 +178,34 @@ struct ChatUsageBar: View {
         }
     }
 
-    @ViewBuilder
     private func resetNoticePopover(
         usage: SessionUsageResponse,
         window: CodexRateLimitWindow
     ) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            if bankedResetState == .loading {
-                Label(L10n("Updating banked resets; showing the last known value…"), systemImage: "arrow.clockwise")
-                    .foregroundStyle(.secondary)
-            } else if bankedResetState == .failed {
-                Label(L10n("Banked resets could not be verified; showing the last known value."),
-                      systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
-            }
-            Label(
-                L10nFormat("Plan reset: %@", formattedResetDate(window.resetsAt)),
-                systemImage: "clock"
-            )
-            .lineLimit(1)
-
-            if let bankedResets = displayedBankedResets(fallback: usage.account.rateLimitResetCredits) {
-                Label(
-                    L10nFormat("Banked resets remaining: %lld", Int64(max(0, bankedResets.availableCount))),
-                    systemImage: "arrow.counterclockwise.circle"
-                )
-                .lineLimit(1)
-
-                if bankedResets.availableCount > 0 {
-                    let expirationDates = bankedResets.availableExpirationDates()
-                    if let firstExpiration = expirationDates.first {
-                        Label(
-                            L10nFormat("Earliest banked reset expiry: %@", formattedBankedResetDate(firstExpiration)),
-                            systemImage: "calendar.badge.clock"
-                        )
-                        .lineLimit(1)
-                        .help(expirationDates.map(formattedBankedResetDate).joined(separator: "\n"))
-                    } else {
-                        Label(
-                            L10n("Banked reset expiry unavailable"),
-                            systemImage: "calendar.badge.clock"
-                        )
-                        .lineLimit(1)
-                    }
-                }
-            }
+        let bankedResets = displayedBankedResets(fallback: usage.account.rateLimitResetCredits)
+        let expirationDates = bankedResets?.availableExpirationDates() ?? []
+        let verification: SessionQuotaResetDetails.Verification = switch bankedResetState {
+        case .loading: .loading
+        case .failed: .failed
+        case .idle, .ready: .idle
         }
-        .font(.system(size: 11, weight: .medium))
+        return SessionQuotaResetDetails(
+            verification: verification,
+            loadingText: L10n("Updating banked resets; showing the last known value…"),
+            failureText: L10n("Banked resets could not be verified; showing the last known value."),
+            resetText: L10nFormat("Plan reset: %@", formattedResetDate(window.resetsAt)),
+            bankedText: bankedResets.map {
+                L10nFormat("Banked resets remaining: %lld", Int64(max(0, $0.availableCount)))
+            },
+            expiryText: bankedResets.flatMap { resets in
+                guard resets.availableCount > 0 else { return nil }
+                return expirationDates.first.map {
+                    L10nFormat("Earliest banked reset expiry: %@", formattedBankedResetDate($0))
+                } ?? L10n("Banked reset expiry unavailable")
+            },
+            expiryHelp: expirationDates.map(formattedBankedResetDate).joined(separator: "\n")
+        )
         .foregroundStyle(CorptiePalette.primaryText)
-        .padding(10)
-        .fixedSize(horizontal: true, vertical: true)
     }
 
     private func formattedResetDate(_ epochSeconds: Double?) -> String {

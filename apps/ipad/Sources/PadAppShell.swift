@@ -13,6 +13,8 @@ struct PadAppShell: View {
     @State private var tab = PadTab.workspace
     @State private var sheet: Sheet?
     @State private var isKeyboardVisible = false
+    @State private var compactWorkspaceIsRoot = true
+    @State private var compactOpenSessionRequest = 0
     private let notificationManager = PadNotificationManager.shared
     @AppStorage("corptie.mobile.navigationRailExpanded") private var navigationRailExpanded = true
     private enum Sheet: String, Identifiable { case settings; var id: String { rawValue } }
@@ -37,7 +39,9 @@ struct PadAppShell: View {
             }
 
             ZStack {
-                WorkspaceView(connection: connection, workspace: workspace)
+                WorkspaceView(connection: connection, workspace: workspace,
+                    compactOpenSessionRequest: compactOpenSessionRequest,
+                    onCompactRootChange: { compactWorkspaceIsRoot = $0 })
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .opacity(tab == .workspace ? 1 : 0)
                     .allowsHitTesting(tab == .workspace)
@@ -45,6 +49,7 @@ struct PadAppShell: View {
                 ForEach([PadTab.automations, .worktrees, .agents]) { page in
                     PadControlView(tab: page, connection: connection, store: controls, openSession: { id in
                         workspace.selection = id
+                        compactOpenSessionRequest &+= 1
                         tab = .workspace
                     })
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -57,7 +62,8 @@ struct PadAppShell: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if !usesNavigationRail, !isKeyboardVisible {
+            if !usesNavigationRail, !isKeyboardVisible,
+               (tab != .workspace || compactWorkspaceIsRoot) {
                 PadBottomTabBar(selection: $tab, settings: { sheet = .settings })
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
@@ -156,6 +162,7 @@ struct PadAppShell: View {
     private func navigateFromNotification(_ userInfo: [AnyHashable: Any]) {
         if let sessionID = userInfo["sessionId"] as? String, !sessionID.isEmpty {
             workspace.selection = sessionID
+            compactOpenSessionRequest &+= 1
             tab = .workspace
         } else if userInfo["destination"] as? String == "automation" {
             if let automationID = userInfo["automationId"] as? String {

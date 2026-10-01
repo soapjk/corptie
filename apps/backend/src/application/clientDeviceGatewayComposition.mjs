@@ -141,7 +141,8 @@ export function startClientDeviceGateway({
         const presented = decorateSessionForClient(session);
         return { readiness: presented.readiness ?? null, notReadyReason: presented.notReadyReason ?? null };
       },
-      usage: sessionId => readSessionUsage(sessionId),
+      usage: (sessionId, { requireFreshAccount = false } = {}) =>
+        readSessionUsage(sessionId, undefined, { requireFreshAccount }),
       // Same services the desktop entity routes call; the device layer adds permission, DTO and receipt boundaries.
       entityCommands: {
         createWork: input => workService.createWork(input),

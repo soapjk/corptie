@@ -373,12 +373,12 @@ export class ClientSessionAPI {
   }
 
   /** Context window and account quota of a Session: the desktop ChatUsageBar data, read-only. */
-  async usage(identity, id, { cached = false } = {}) {
+  async usage(identity, id, { cached = false, freshAccount = false } = {}) {
     const { sessionId } = this.session(id);
     if (!cached && !this.usageReader) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
     const snapshot = cached
       ? this.store.getSessionUsageSnapshot(sessionId)
-      : await this.usageReader(sessionId);
+      : await this.usageReader(sessionId, { requireFreshAccount: freshAccount });
     const number = value => (typeof value === "number" && Number.isFinite(value) ? value : null);
     const window = value => value && typeof value === "object"
       ? { usedPercent: number(value.usedPercent), windowDurationMins: number(value.windowDurationMins), resetsAt: number(value.resetsAt) }

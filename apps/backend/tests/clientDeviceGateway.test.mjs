@@ -102,6 +102,7 @@ test("real TLS route boundary and authenticated local approval", async () => {
   const f = await fixture();
   const approvalCalls = [];
   const worktreeCalls = [];
+  const usageReads = [];
   const avatarPath = join(f.dir, "avatar.png");
   await writeFile(avatarPath, Buffer.from("89504e470d0a1a0a", "hex"));
   const gateway = new ClientDeviceGateway(f.authority, { readAPI: {
@@ -170,7 +171,8 @@ test("real TLS route boundary and authenticated local approval", async () => {
       if (query.get("path") !== "chat-resources/session/a.png") throw Object.assign(new Error("IMAGE_NOT_AVAILABLE"), { code: "IMAGE_NOT_AVAILABLE", status: 404 });
       return { data: Buffer.from("png-bytes"), contentType: "image/png", byteLength: 9 };
     },
-    async usage(identity, sessionId) {
+    async usage(identity, sessionId, options) {
+      usageReads.push(options);
       return { schemaVersion: 1, sessionId, context: { usedTokens: 10, contextWindow: 100, remainingTokens: 90, usedPercent: 10 }, account: null };
     },
     entityCommands: {},
@@ -306,7 +308,11 @@ test("real TLS route boundary and authenticated local approval", async () => {
     const usage = await call(usagePath, { token: creds.accessToken });
     assert.equal(usage.status, 200);
     assert.equal(usage.body.context.usedTokens, 10);
+    assert.equal((await call(`${usagePath}?freshAccount=1`, { token: creds.accessToken })).status, 200);
+    assert.deepEqual(usageReads, [{ freshAccount: false }, { freshAccount: true }]);
     assert.equal((await call(`${usagePath}?x=1`, { token: creds.accessToken })).status, 403);
+    assert.equal((await call(`${usagePath}?freshAccount=0`, { token: creds.accessToken })).status, 403);
+    assert.equal((await call(`${usagePath}?freshAccount=1&freshAccount=1`, { token: creds.accessToken })).status, 403);
     assert.equal((await call(usagePath, { token: creds.accessToken, method: "POST", value: {} })).status, 404);
     const commandsPath = "/client/v1/sessions/session%3Atest/conversation-commands";
     assert.equal((await call(commandsPath, { token: creds.accessToken })).body.commands[0].name, "goal");
