@@ -97,7 +97,7 @@ struct WorktreeManagementView: View {
                 unchangedPolls = await client.pollJob() ? 0 : unchangedPolls + 1
             }
         }
-        .sheet(isPresented: $showingPlan) {
+        .sheet(isPresented: $showingPlan, onDismiss: client.discardCandidateReview) {
             WorktreeIntegrationFlowSheet(client: client, isPresented: $showingPlan)
         }
         .sheet(item: $batchOperationDraft) { draft in
@@ -1573,7 +1573,7 @@ private struct WorktreeBatchOperationFlowSheet: View {
                 configuration
             }
         }
-        .interactiveDismissDisabled(client.isPreparingPlan)
+        .interactiveDismissDisabled(client.isPreparingPlan || client.isMutating)
         .onChange(of: synchronizationMode) { _, mode in
             if mode == "converge", !sourceWorktreeIds.contains(targetWorktreeId) {
                 targetWorktreeId = sourceWorktreeIds.first ?? ""
@@ -1716,26 +1716,105 @@ private struct WorktreeIntegrationFlowSheet: View {
                     .accessibilityIdentifier("worktree.integrate.preparing.cancel")
                 }
                 .frame(width: 520, height: 260)
-            } else if let job = client.job, job.status == "awaiting_confirmation" {
-                WorktreeIntegrationPlanReview(job: job, client: client, isPresented: $isPresented)
+            } else if let candidate = client.candidate {
+                if candidate.noWorkRequired {
+                    WorktreeIntegrationNoWorkReview(candidate: candidate, client: client, isPresented: $isPresented)
+                } else {
+                    WorktreeIntegrationPlanReview(candidate: candidate, client: client, isPresented: $isPresented)
+                }
+            } else if let preparationError = client.candidatePreparationError {
+                VStack(spacing: 14) {
+                    ContentUnavailableView(
+                        L10n("Could not generate the integration plan."),
+                        systemImage: "exclamationmark.triangle",
+                        description: Text(preparationError)
+                    )
+                    HStack {
+                        Button(L10n("Close")) { isPresented = false }
+                            .keyboardShortcut(.cancelAction)
+                        Button(L10n("Retry")) {
+                            Task { await client.retryCandidatePreparation() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+                .frame(width: 520, height: 300)
+                .accessibilityIdentifier("worktree.integrate.preparation-failed")
             } else {
                 VStack(spacing: 18) {
-                    ContentUnavailableView(
-                        L10n("No Worktree changes require integration."),
-                        systemImage: "checkmark.circle"
-                    )
-                    Button(L10n("Close")) { isPresented = false }
-                        .keyboardShortcut(.cancelAction)
+                    ProgressView()
+                    Text(L10n("Preparing Worktree merge…"))
+                        .font(.headline)
+                    Button(L10n("Cancel"), role: .cancel) {
+                        client.cancelPlanPreparation()
+                        isPresented = false
+                    }
+                    .keyboardShortcut(.cancelAction)
                 }
                 .frame(width: 520, height: 300)
             }
         }
         .interactiveDismissDisabled()
+        .onDisappear { client.discardCandidateReview() }
+    }
+}
+
+private struct WorktreeIntegrationNoWorkReview: View {
+    let candidate: WorktreeIntegrationCandidate
+    @ObservedObject var client: WorktreeManagementClient
+    @Binding var isPresented: Bool
+
+    var body: some View {
+        VStack(spacing: 18) {
+            ContentUnavailableView(
+                L10n("No Worktree changes require integration."),
+                systemImage: "checkmark.circle",
+                description: Text(L10n("Confirm the recheck to record an up-to-date no-work integration result."))
+            )
+            Text(L10nFormat("Generated: %@", candidate.generatedAt))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            if client.candidateReview.wasRefreshed {
+                Label(
+                    L10n("The repository changed. Review this refreshed plan before confirming again."),
+                    systemImage: "arrow.triangle.2.circlepath"
+                )
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.orange)
+            }
+            HStack {
+                Button(L10n("Close")) {
+                    client.discardCandidateReview()
+                    isPresented = false
+                }
+                .keyboardShortcut(.cancelAction)
+                .disabled(client.isMutating)
+                Button {
+                    Task {
+                        if await client.confirmPlan() { isPresented = false }
+                    }
+                } label: {
+                    if client.isMutating {
+                        HStack(spacing: 7) {
+                            ProgressView().controlSize(.small)
+                            Text(L10n("Rechecking repository…"))
+                        }
+                    } else {
+                        Text(L10n("Confirm No Changes"))
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(client.isMutating)
+            }
+        }
+        .padding(20)
+        .frame(width: 520, height: 320)
+        .accessibilityIdentifier("worktree.integrate.no-work-review")
     }
 }
 
 private struct WorktreeIntegrationPlanReview: View {
-    let job: WorktreeIntegrationJob
+    let candidate: WorktreeIntegrationCandidate
     @ObservedObject var client: WorktreeManagementClient
     @Binding var isPresented: Bool
     @State private var protectionDecisions: [String: String] = [:]
@@ -1746,10 +1825,14 @@ private struct WorktreeIntegrationPlanReview: View {
             Text(reviewTitle).font(.title2.weight(.semibold))
             Text(reviewExplanation)
                 .foregroundStyle(.secondary)
+            candidateSafety
+            if client.candidateReview.wasRefreshed {
+                candidateRefreshNotice(client.candidateRefreshDiff)
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     preflightStatus
-                    if !job.plan.blockingRisks.isEmpty {
+                    if !candidate.plan.blockingRisks.isEmpty {
                         blockingRiskDetails
                     }
                     if reviewItems.isEmpty {
@@ -1805,14 +1888,25 @@ private struct WorktreeIntegrationPlanReview: View {
             .frame(maxHeight: 420)
             HStack {
                 Button(L10n("Cancel"), role: .cancel) {
+                    client.discardCandidateReview()
                     isPresented = false
-                    Task { await client.cancelIntegration() }
                 }
                 .keyboardShortcut(.cancelAction)
+                .disabled(client.isMutating)
                 Spacer()
-                if job.plan.blockingRisks.isEmpty {
-                    Button(confirmLabel) {
+                if candidate.plan.blockingRisks.isEmpty {
+                    Button {
                         confirmAndDismiss()
+                    } label: {
+                        if client.isMutating {
+                            HStack(spacing: 7) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text(L10n("Rechecking repository…"))
+                            }
+                        } else {
+                            Text(confirmLabel)
+                        }
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(client.isMutating || hasMissingProtectionDecisions)
@@ -1822,10 +1916,77 @@ private struct WorktreeIntegrationPlanReview: View {
         }
         .padding(20)
         .frame(width: 680, height: 620)
+        .onChange(of: candidate.reviewIdentity) { _, _ in
+            protectionDecisions.removeAll(keepingCapacity: true)
+            neverRemindWorktrees.removeAll(keepingCapacity: true)
+        }
+    }
+
+    private var candidateSafety: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 12) {
+                Text(L10nFormat("Generated: %@", candidate.generatedAt))
+                Text(L10nFormat("Expires: %@", candidate.expiresAt))
+            }
+            .font(.caption.monospacedDigit())
+            Text(L10n("Corptie will recheck the repository before creating a durable Job. If anything changed, nothing runs until you review the updated plan."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .background(Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityIdentifier("worktree.integrate.candidate-safety")
+    }
+
+    private func candidateRefreshNotice(_ diff: WorktreeIntegrationCandidateDiff?) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Label(L10n("The repository changed. Review this refreshed plan before confirming again."), systemImage: "arrow.triangle.2.circlepath")
+                .fontWeight(.semibold)
+            if let diff, !diff.isEmpty {
+                HStack(spacing: 10) {
+                    if !diff.addedWorktreeIds.isEmpty {
+                        Text(L10nFormat("Added: %@", labels(for: diff.addedWorktreeIds)))
+                    }
+                    if !diff.removedWorktreeIds.isEmpty {
+                        Text(L10nFormat("Removed: %@", labels(for: diff.removedWorktreeIds)))
+                    }
+                    if !diff.changedWorktrees.isEmpty {
+                        Text(L10nFormat("Changed: %@", labels(for: diff.changedWorktrees.map(\.worktreeId))))
+                    }
+                }
+                .lineLimit(2)
+                if diff.risks.changed || diff.mergeOrder.changed {
+                    Text(L10nFormat(
+                        "Risks: %d → %d%@",
+                        diff.risks.before.count,
+                        diff.risks.after.count,
+                        diff.mergeOrder.changed ? L10n(" · order changed") : ""
+                    ))
+                }
+                if let contextChanges = diff.contextChanges, !contextChanges.isEmpty {
+                    Text(L10nFormat(
+                        "Context changed: %@",
+                        contextChanges.map(\.field).joined(separator: ", ")
+                    ))
+                } else if diff.reason == "plan_changed" {
+                    Text(L10n("Other plan details changed."))
+                }
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.orange)
+        .padding(10)
+        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityIdentifier("worktree.integrate.candidate-diff")
+    }
+
+    private func labels(for worktreeIds: [String]) -> String {
+        let items = Dictionary(uniqueKeysWithValues: candidate.plan.items.map { ($0.worktreeId, $0) })
+        return worktreeIds.map { items[$0]?.branchName ?? $0 }.joined(separator: ", ")
     }
 
     private var reviewTitle: String {
-        switch job.plan.operationType {
+        switch candidate.plan.operationType {
         case "merge": L10n("Review Batch Merge Plan")
         case "sync": L10n("Review Synchronization Plan")
         case "converge": L10n("Review Branch Convergence Plan")
@@ -1835,7 +1996,7 @@ private struct WorktreeIntegrationPlanReview: View {
 
     private var reviewExplanation: String {
         let safety = L10n("Nothing is pushed, deleted, reset, or force-cleaned.")
-        switch job.plan.operationType {
+        switch candidate.plan.operationType {
         case "sync": return L10n("Each source will be rebased independently onto the target. The target remains unchanged. ") + safety
         case "converge": return L10n("A unified commit will be created, then every selected branch will be fast-forwarded to the same HEAD. ") + safety
         case "merge": return L10n("The selected branches will be merged into the target in the reviewed order. ") + safety
@@ -1844,17 +2005,17 @@ private struct WorktreeIntegrationPlanReview: View {
     }
 
     private var confirmLabel: String {
-        switch job.plan.operationType {
-        case "sync": L10nFormat("Confirm and Synchronize %d Worktrees", job.plan.sourceWorktreeIds?.count ?? 0)
-        case "converge": L10nFormat("Confirm and Unify %d Branches", (job.plan.sourceWorktreeIds?.count ?? 0) + 1)
-        case "merge": L10nFormat("Confirm Merge into %@", job.plan.targetBranchName ?? L10n("Target"))
+        switch candidate.plan.operationType {
+        case "sync": L10nFormat("Confirm and Synchronize %d Worktrees", candidate.plan.sourceWorktreeIds?.count ?? 0)
+        case "converge": L10nFormat("Confirm and Unify %d Branches", (candidate.plan.sourceWorktreeIds?.count ?? 0) + 1)
+        case "merge": L10nFormat("Confirm Merge into %@", candidate.plan.targetBranchName ?? L10n("Target"))
         default: L10n("Confirm")
         }
     }
 
     @ViewBuilder
     private var preflightStatus: some View {
-        switch job.plan.preflightState {
+        switch candidate.plan.preflightState {
         case .ready:
             Label(L10n("Preflight passed. The reviewed local-only plan can be started."), systemImage: "checkmark.shield.fill")
                 .foregroundStyle(.green)
@@ -1885,7 +2046,7 @@ private struct WorktreeIntegrationPlanReview: View {
                 .fontWeight(.semibold)
             Text(L10n("Impact: integration is blocked. Corptie will not switch main, commit it, clean it, or overwrite any file."))
                 .font(.caption)
-            if let main = job.plan.items.first(where: \.isMain) {
+            if let main = candidate.plan.items.first(where: \.isMain) {
                 Text(main.path).font(.caption.monospaced()).textSelection(.enabled)
                 Button(L10n("Show main in Finder")) { reveal(main.path) }
                     .buttonStyle(.link)
@@ -1926,15 +2087,15 @@ private struct WorktreeIntegrationPlanReview: View {
     }
 
     private var blockingRiskDetails: some View {
-        let itemsByWorktreeId = job.plan.items.reduce(into: [String: WorktreeIntegrationItem]()) {
+        let itemsByWorktreeId = candidate.plan.items.reduce(into: [String: WorktreeIntegrationItem]()) {
             $0[$1.worktreeId] = $1
         }
         return VStack(alignment: .leading, spacing: 8) {
             Label(L10n("Blocking risk details"), systemImage: "exclamationmark.octagon.fill")
                 .font(.headline)
                 .foregroundStyle(.orange)
-            ForEach(job.plan.blockingRisks.indices, id: \.self) { index in
-                let risk = job.plan.blockingRisks[index]
+            ForEach(candidate.plan.blockingRisks.indices, id: \.self) { index in
+                let risk = candidate.plan.blockingRisks[index]
                 blockingRiskRow(risk, item: risk.worktreeId.flatMap { itemsByWorktreeId[$0] })
             }
         }
@@ -1984,10 +2145,10 @@ private struct WorktreeIntegrationPlanReview: View {
     }
 
     private var conflictedTaskItems: [WorktreeIntegrationItem] {
-        let ids = Set(job.plan.blockingRisks.compactMap { risk in
+        let ids = Set(candidate.plan.blockingRisks.compactMap { risk in
             risk.code == "UNRESOLVED_CONFLICTS" ? risk.worktreeId : nil
         })
-        return job.plan.items.filter { !$0.isMain && ids.contains($0.worktreeId) }
+        return candidate.plan.items.filter { !$0.isMain && ids.contains($0.worktreeId) }
     }
 
     private func reveal(_ path: String) {
@@ -1995,7 +2156,7 @@ private struct WorktreeIntegrationPlanReview: View {
     }
 
     private var reviewItems: [WorktreeIntegrationItem] {
-        job.plan.items.filter {
+        candidate.plan.items.filter {
             $0.commitStatus != "not_needed" || $0.mergeStatus != "not_needed"
         }
     }
@@ -2025,11 +2186,14 @@ private struct WorktreeIntegrationPlanReview: View {
     }
 
     private func confirmAndDismiss() {
+        let itemsByWorktreeId = Dictionary(uniqueKeysWithValues: candidate.plan.items.map { ($0.worktreeId, $0) })
         let decisions = protectionDecisions.map { worktreeId, decision in
             WorktreeCommitProtectionDecision(
                 worktreeId: worktreeId,
                 decision: decision,
-                neverRemind: neverRemindWorktrees.contains(worktreeId)
+                neverRemind: neverRemindWorktrees.contains(worktreeId),
+                candidateFingerprint: candidate.planFingerprint,
+                protectedPathsDigest: itemsByWorktreeId[worktreeId]?.commitProtection?.protectedPathsDigest
             )
         }
         Task {

@@ -9,6 +9,8 @@ function fixture(overrides = {}) {
     listTasks: () => [],
     getTask: () => ({ id: "task", work_id: "work", title: "Conflict" }),
     getSession: () => ({ id: "session", title: "Session", cwd: "/integration" }),
+    getWorktreeIntegrationJobByIdempotencyKey: () => null,
+    createWorktreeIntegrationJobIdempotently: (input) => input,
     getAgent: () => ({ agentId: "agent", name: "Agent" }),
     getWork: () => ({ id: "work" })
   };
@@ -17,6 +19,10 @@ function fixture(overrides = {}) {
     projectApplicationService: { requireProject: async () => ({ id: "project", mainPath: "/main" }) },
     gitWorkspaces: {
       projectStatusForPath: (...args) => calls.push(["inspect", ...args]),
+      integrationInspectionForProject: (...args) => {
+        calls.push(["integration-inspect", ...args]);
+        return { worktrees: [] };
+      },
       mergeWorktreeIntoMainForProject: (input) => calls.push(["merge", input])
     },
     gitHubPushes: {}, gitCommitProtection: {},
@@ -49,9 +55,19 @@ test("composition preserves shared Store and explicit integration Git options", 
   assert.equal(jobs.store, store);
   assert.deepEqual(calls, []);
   await project.inspectProject("project");
+  await jobs.inspectRepository("repository", {
+    forceFresh: true,
+    reason: "integration_candidate_confirmation",
+    cacheTtlMs: 0
+  });
   await project.mergeWorktree({ projectId: "project", mainPath: "/main", worktreeId: "source" });
   assert.deepEqual(calls, [
     ["inspect", "/main", "project", { inspectionLevel: "integration", reason: "integration_status" }],
+    ["integration-inspect", "/main", "repository", {
+      forceFresh: true,
+      reason: "integration_candidate_confirmation",
+      cacheTtlMs: 0
+    }],
     ["merge", { repositoryId: "project", workingDirectory: "/main", sourceWorktreeId: "source", synchronizeSource: false }]
   ]);
 });

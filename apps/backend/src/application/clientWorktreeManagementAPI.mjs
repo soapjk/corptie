@@ -45,6 +45,14 @@ export class ClientWorktreeManagementAPI {
     return { job: await this.worktrees.preflight(validId(repositoryId, "INVALID_REPOSITORY_ID"), input) };
   }
 
+  async createCandidate(repositoryId, input) {
+    return { candidate: await this.worktrees.createCandidate(validId(repositoryId, "INVALID_REPOSITORY_ID"), input) };
+  }
+
+  async startCandidate(repositoryId, input) {
+    return { job: await this.worktrees.startCandidate(validId(repositoryId, "INVALID_REPOSITORY_ID"), input) };
+  }
+
   async deleteWorktree(repositoryId, worktreeId) {
     repositoryId = validId(repositoryId, "INVALID_REPOSITORY_ID");
     worktreeId = validId(worktreeId, "INVALID_WORKTREE_ID");

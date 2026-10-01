@@ -251,10 +251,12 @@ export class GitWorkspaceManager {
     this.inspectionsInFlight.set(cacheKey, scan);
     try {
       const value = await scan;
-      this.inspectionCache.set(cacheKey, {
-        value,
-        expiresAt: this.now() + (options.cacheTtlMs ?? this.inspectionCacheTtlMs)
-      });
+      if (this.inspectionsInFlight.get(cacheKey) === scan) {
+        this.inspectionCache.set(cacheKey, {
+          value,
+          expiresAt: this.now() + (options.cacheTtlMs ?? this.inspectionCacheTtlMs)
+        });
+      }
       return value;
     } finally {
       if (this.inspectionsInFlight.get(cacheKey) === scan) this.inspectionsInFlight.delete(cacheKey);
@@ -423,12 +425,14 @@ export class GitWorkspaceManager {
     });
   }
 
-  async integrationInspectionForProject(workingDirectory, expectedRepositoryId = null) {
+  async integrationInspectionForProject(workingDirectory, expectedRepositoryId = null, options = {}) {
     const startedAt = performance.now();
     const status = await this.projectStatusForPath(workingDirectory, expectedRepositoryId, {
       includeDiffStat: false,
       inspectionLevel: "integration",
-      reason: "integration_preflight"
+      reason: options.reason ?? "integration_preflight",
+      forceFresh: options.forceFresh === true,
+      cacheTtlMs: options.cacheTtlMs
     });
     const enrichmentStartedAt = performance.now();
     const worktrees = await mapConcurrentOrdered(status.worktrees, this.inspectionConcurrency, async (worktree) => {

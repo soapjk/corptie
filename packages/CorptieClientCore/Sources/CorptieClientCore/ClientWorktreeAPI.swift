@@ -187,7 +187,7 @@ public struct ClientWorktreePlan: Decodable, Equatable, Sendable {
     public let executionPath: String?
     public let mainWorktreeId: String
     public let mainPath: String
-    public let mainHeadBefore: String
+    public let mainHeadBefore: String?
     public let inventoryVersion: String
     public let mergeOrder: [String]
     public let blockingRisks: [ClientWorktreeRisk]
