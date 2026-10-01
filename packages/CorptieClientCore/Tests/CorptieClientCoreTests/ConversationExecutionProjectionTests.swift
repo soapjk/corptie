@@ -45,7 +45,8 @@ struct ConversationExecutionProjectionTests {
         let item = try JSONDecoder().decode(ClientMessage.self, from: JSONSerialization.data(withJSONObject: source))
         let entries = ConversationTimeline.makeEntries(from: [item])
         #expect(entries.count == 1)
-        #expect(entries[0].isProcessGroup)
+        #expect(!entries[0].isProcessGroup)
+        #expect(entries[0].id == "message:plan:one")
         let step = try #require(ConversationExecutionProjection.steps(for: [item]).first)
         #expect(step.title == "Plan 1/2")
         #expect(step.plan?.steps.map(\.stepId) == ["step:1", "step:2"])
@@ -68,7 +69,7 @@ struct ConversationExecutionProjectionTests {
         ]
         let item = try JSONDecoder().decode(ClientMessage.self,
             from: JSONSerialization.data(withJSONObject: source))
-        #expect(ConversationTimeline.makeEntries(from: [item]).map(\.id) == ["process:turn:test"])
+        #expect(ConversationTimeline.makeEntries(from: [item]).map(\.id) == ["message:execution-plan:binding:test:turn:test:claude-tasks"])
         let step = try #require(ConversationExecutionProjection.steps(for: [item]).first)
         #expect(step.state == .failed)
         #expect(step.plan?.lifecycle == "failed")
@@ -92,8 +93,9 @@ struct ConversationExecutionProjectionTests {
         let updated = ConversationTimeline.makeEntries(from: [try item(revision: 2, status: "completed")])
         #expect(first.map(\.id) == updated.map(\.id))
         #expect(first.count == 1)
-        #expect(first[0].displayWeight == 0)
-        #expect(updated[0].displayWeight == 0)
+        #expect(first[0].id == "message:plan:one")
+        #expect(first[0].displayWeight == 1)
+        #expect(updated[0].displayWeight == 1)
     }
 
     @Test func toolSummariesStayBoundedAndPreserveIdentityAndState() throws {

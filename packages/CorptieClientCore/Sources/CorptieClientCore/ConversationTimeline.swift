@@ -52,43 +52,92 @@ public struct ConversationEntry<Item: ConversationTimelineItem>: Identifiable, S
 }
 
 public enum ConversationTimeline {
+    private struct TurnBucket<Item: ConversationTimelineItem> {
+        let sourceTurnId: String
+        var items: [Item] = []
+        var hasNonUserMessage: Bool = false
+        var isTerminal: Bool = false
+    }
+
 public static func makeEntries<Item: ConversationTimelineItem>(from items: [Item]) -> [ConversationEntry<Item>] {
+    let ordered = orderedItems(items)
+    guard !ordered.isEmpty else { return [] }
+
+    var buckets: [TurnBucket<Item>] = []
+    var openBucketIndexByTurnId: [String: Int] = [:]
+
+    for item in ordered {
+        let turnId = item.timelineTurnID
+        let isUserMessage = item.type == "userMessage"
+        let isTerminalItem = isTerminalTurnStatus(item.timelineTurnStatus)
+            || item.presentationRole?.lowercased() == "final_answer"
+
+        if isUserMessage {
+            // A new user message starts a new conversational turn if:
+            // 1. turnId is empty, OR
+            // 2. The active bucket for this turnId already emitted non-user content or reached terminal state.
+            if !turnId.isEmpty,
+               let bucketIndex = openBucketIndexByTurnId[turnId],
+               !buckets[bucketIndex].hasNonUserMessage,
+               !buckets[bucketIndex].isTerminal {
+                buckets[bucketIndex].items.append(item)
+            } else {
+                let newIndex = buckets.count
+                buckets.append(TurnBucket(
+                    sourceTurnId: turnId,
+                    items: [item],
+                    hasNonUserMessage: false,
+                    isTerminal: isTerminalItem
+                ))
+                if !turnId.isEmpty {
+                    openBucketIndexByTurnId[turnId] = newIndex
+                }
+            }
+        } else {
+            // Non-user item (agent message, tool call, plan, interaction, etc.)
+            if !turnId.isEmpty, let bucketIndex = openBucketIndexByTurnId[turnId] {
+                buckets[bucketIndex].items.append(item)
+                buckets[bucketIndex].hasNonUserMessage = true
+                if isTerminalItem {
+                    buckets[bucketIndex].isTerminal = true
+                }
+            } else if let lastIndex = buckets.indices.last, turnId.isEmpty || buckets[lastIndex].sourceTurnId.isEmpty {
+                // Item without turnId, or matching empty turnId of last bucket
+                buckets[lastIndex].items.append(item)
+                buckets[lastIndex].hasNonUserMessage = true
+                if isTerminalItem {
+                    buckets[lastIndex].isTerminal = true
+                }
+            } else {
+                // Orphan non-user item with unseen turnId: start a new bucket
+                let newIndex = buckets.count
+                buckets.append(TurnBucket(
+                    sourceTurnId: turnId,
+                    items: [item],
+                    hasNonUserMessage: true,
+                    isTerminal: isTerminalItem
+                ))
+                if !turnId.isEmpty {
+                    openBucketIndexByTurnId[turnId] = newIndex
+                }
+            }
+        }
+    }
+
     var entries: [ConversationEntry<Item>] = []
-    var currentItems: [Item] = []
-    var currentSegmentHasNonUserMessage = false
     var segmentCountsByTurnId: [String: Int] = [:]
-    let orderedItems = orderedItems(items)
-    func appendCurrentSegment() {
-        guard let sourceTurnId = currentItems.first?.timelineTurnID else { return }
+    for bucket in buckets {
+        let sourceTurnId = bucket.sourceTurnId
         let segmentIndex = segmentCountsByTurnId[sourceTurnId, default: 0]
         segmentCountsByTurnId[sourceTurnId] = segmentIndex + 1
         let displayTurnId = segmentIndex == 0
-            ? sourceTurnId
+            ? (sourceTurnId.isEmpty ? nil : sourceTurnId)
             : "\(sourceTurnId):display-segment:\(segmentIndex)"
         entries.append(contentsOf: entriesForTurn(
-            currentItems,
+            bucket.items,
             displayTurnId: displayTurnId
         ))
-        currentItems.removeAll(keepingCapacity: true)
-        currentSegmentHasNonUserMessage = false
     }
-
-    for item in orderedItems {
-        let startsNewSourceTurn = currentItems.last.map { $0.timelineTurnID != item.timelineTurnID } ?? false
-        // Some provider histories omit turn_id or reuse one value for the
-        // complete Session. Once a turn has emitted non-user content, the next
-        // authored user message is the only reliable boundary. Segmenting here
-        // preserves provider order and prevents all user cards from being
-        // projected ahead of every assistant/process card in the Session.
-        let startsRecoveredTurn = item.type == "userMessage"
-            && currentSegmentHasNonUserMessage
-        if startsNewSourceTurn || startsRecoveredTurn {
-            appendCurrentSegment()
-        }
-        currentItems.append(item)
-        currentSegmentHasNonUserMessage = currentSegmentHasNonUserMessage || item.type != "userMessage"
-    }
-    appendCurrentSegment()
     return entries
 }
 
@@ -222,60 +271,64 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
         return userMessages.map { ConversationEntry<Item>(kind: .message($0)) }
             + [ConversationEntry<Item>(kind: .message(confirmation))]
     }
-    let agentMessages = items.filter {
-        $0.type == "agentMessage" && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-    let presentedAgentMessage = preferredPresentedAgentMessage(from: agentMessages)
-    // An unclassified Assistant item is not execution progress. Keep it as a
-    // visible message so an Adapter contract defect cannot hide the model's
-    // response inside the process disclosure. New Provider events are expected
-    // to carry commentary/final_answer explicitly.
-    let unclassifiedAgentMessages = agentMessages.filter {
-        $0.presentationRole?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
-    }
-    let separatelyPresentedAgentIDs = Set(
-        unclassifiedAgentMessages.map(\.id) + [presentedAgentMessage?.id].compactMap { $0 }
-    )
-    let progressAgentMessages = agentMessages.filter { !separatelyPresentedAgentIDs.contains($0.id) }
-    let progressAgentMessageIds = Set(progressAgentMessages.map(\.id))
-    var processItems = items.filter { item in
-        isDetailProcessItem(item) || progressAgentMessageIds.contains(item.id)
-    }
-    let trailingItems = items.filter { item in
-        item.type != "userMessage" && item.type != "agentMessage" && !isDetailProcessItem(item)
-    }
 
-    var entries = userMessages.map { ConversationEntry<Item>(kind: .message($0)) }
-    if !processItems.isEmpty,
-       let sourceTurnId = items.first?.timelineTurnID {
-        let turnStartedAt = userMessages.compactMap(\.createdAt).first
-            ?? items.compactMap(\.createdAt).first
-        let turnEndedAt = items.reversed().compactMap(\.createdAt).first
-        processItems[0].processStartedAt = turnStartedAt
-        if items.contains(where: { isTerminalTurnStatus($0.timelineTurnStatus) }) {
-            processItems[0].processEndedAt = turnEndedAt
+    var entries: [ConversationEntry<Item>] = []
+    var processBuffer: [Item] = []
+    var processSegmentIndex = 0
+
+    let baseTurnId = displayTurnId ?? items.first?.timelineTurnID ?? ""
+    let turnStartedAt = userMessages.compactMap(\.createdAt).first
+        ?? items.compactMap(\.createdAt).first
+    let isTerminalTurn = items.contains(where: { isTerminalTurnStatus($0.timelineTurnStatus) })
+    let turnEndedAt = items.reversed().compactMap(\.createdAt).first
+
+    func flushProcessBuffer(isLastInTurn: Bool) {
+        guard !processBuffer.isEmpty else { return }
+        var segmentItems = processBuffer
+        processBuffer.removeAll(keepingCapacity: true)
+
+        let segmentTurnId = processSegmentIndex == 0
+            ? baseTurnId
+            : "\(baseTurnId):process-segment:\(processSegmentIndex)"
+        processSegmentIndex += 1
+
+        let segStartedAt = (processSegmentIndex == 1)
+            ? turnStartedAt
+            : segmentItems.compactMap(\.createdAt).first
+        segmentItems[0].processStartedAt = segStartedAt
+
+        if isTerminalTurn {
+            segmentItems[0].processEndedAt = isLastInTurn
+                ? turnEndedAt
+                : (segmentItems.reversed().compactMap(\.createdAt).first ?? turnEndedAt)
+        } else if !isLastInTurn {
+            segmentItems[0].processEndedAt = segmentItems.reversed().compactMap(\.createdAt).first
         }
-        // Keep execution lifecycle independent from the user's authored message.
-        // The process row owns its disclosure state and remains a separate bubble
-        // even for the common one-message turn.
-        entries.append(ConversationEntry<Item>(kind: .process(
-            turnId: displayTurnId ?? sourceTurnId,
-            items: processItems
-        )))
-    }
-    entries.append(contentsOf: unclassifiedAgentMessages.map { ConversationEntry<Item>(kind: .message($0)) })
-    if let presentedAgentMessage,
-       !unclassifiedAgentMessages.contains(where: { $0.id == presentedAgentMessage.id }) {
-        entries.append(ConversationEntry<Item>(kind: .message(presentedAgentMessage)))
-    }
-    entries.append(contentsOf: trailingItems.map { ConversationEntry<Item>(kind: .message($0)) })
-    return entries
-}
 
-private static func preferredPresentedAgentMessage<Item: ConversationTimelineItem>(from messages: [Item]) -> Item? {
-    messages.last(where: {
-        $0.presentationRole?.lowercased() == "final_answer"
-    })
+        entries.append(ConversationEntry<Item>(
+            kind: .process(turnId: segmentTurnId, items: segmentItems)
+        ))
+    }
+
+    for (index, item) in items.enumerated() {
+        if isDetailProcessItem(item) {
+            processBuffer.append(item)
+        } else if item.type == "agentMessage" {
+            if item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                continue
+            }
+            let hasMoreProcessItems = items[(index + 1)...].contains(where: { isDetailProcessItem($0) })
+            flushProcessBuffer(isLastInTurn: !hasMoreProcessItems)
+            entries.append(ConversationEntry<Item>(kind: .message(item)))
+        } else {
+            // userMessage, plan, executionPlan, userInput, choice, approval, etc.
+            let hasMoreProcessItems = items[(index + 1)...].contains(where: { isDetailProcessItem($0) })
+            flushProcessBuffer(isLastInTurn: !hasMoreProcessItems)
+            entries.append(ConversationEntry<Item>(kind: .message(item)))
+        }
+    }
+    flushProcessBuffer(isLastInTurn: true)
+    return entries
 }
 
 private static func isTerminalTurnStatus(_ status: String) -> Bool {
@@ -286,12 +339,13 @@ private static func isTerminalTurnStatus(_ status: String) -> Bool {
         return false
     }
 }
+
 private static func isDetailProcessItem<Item: ConversationTimelineItem>(_ item: Item) -> Bool {
     switch item.type {
     // These are provider execution events, not authored conversation replies.
     // Keep the mapping explicit: an unfamiliar event (or an interaction/error)
     // must remain visible until its presentation semantics are understood.
-    case "reasoning", "plan", "executionPlan", "commandExecution", "fileChange",
+    case "reasoning", "commandExecution", "fileChange",
          "mcpToolCall", "dynamicToolCall", "webSearch", "warning", "contextCompaction",
          "sleep", "imageView", "collabAgentToolCall", "collabToolCall",
          "functionCallOutput", "enteredReviewMode", "exitedReviewMode":
