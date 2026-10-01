@@ -81,11 +81,16 @@ struct PadWorkOutline: View {
             guard sort == .updated else { return }
             orderedWorks = sort.works(workspace.works, latestSessionActivity: activity)
         }
+        .onChange(of: workspace.latestSessionActivityByTask) { _, activity in
+            guard sort == .updated else { return }
+            orderedTasks = sort.tasks(workspace.tasks, latestSessionActivity: activity)
+            tasksByWork = Dictionary(grouping: orderedTasks, by: \.workId)
+        }
     }
 
     private func rebuildOrder() {
         orderedWorks = sort.works(workspace.works, latestSessionActivity: workspace.latestSessionActivityByWork)
-        orderedTasks = sort.tasks(workspace.tasks)
+        orderedTasks = sort.tasks(workspace.tasks, latestSessionActivity: workspace.latestSessionActivityByTask)
         tasksByWork = Dictionary(grouping: orderedTasks, by: \.workId)
         workNames = Dictionary(workspace.works.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
     }

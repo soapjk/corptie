@@ -36,19 +36,23 @@ struct PadControlTests {
          {"id":"b","name":"B","status":"active","updatedAt":"2026-09-01"},
          {"id":"c","name":"C","status":"active","updatedAt":"2026-09-03"}]
         """.utf8))
-        func sessions(_ latest: String) throws -> [ClientSession] {
+        func sessions(_ latest: String, progressUpdate: String = "2026-10-01") throws -> [ClientSession] {
             try JSONDecoder().decode([ClientSession].self, from: Data("""
-            [{"id":"a1","title":"A","workId":"a","taskId":"task:a","executionStatus":"complete","updatedAt":"2026-09-02"},
-             {"id":"b1","title":"B","workId":"b","taskId":"task:b","executionStatus":"complete","updatedAt":"2026-09-01"},
-             {"id":"b2","title":"Discussion","workId":"b","sessionKind":"workChat","executionStatus":"complete","updatedAt":"\(latest)"},
+            [{"id":"a1","title":"A","workId":"a","taskId":"task:a","executionStatus":"complete","lastMessageAt":"2026-09-02","updatedAt":"\(progressUpdate)"},
+             {"id":"b1","title":"B","workId":"b","taskId":"task:b","executionStatus":"complete","lastMessageAt":"2026-09-01","updatedAt":"2026-09-01"},
+             {"id":"b2","title":"Discussion","workId":"b","sessionKind":"workChat","executionStatus":"complete","lastMessageAt":"\(latest)","updatedAt":"2026-10-01"},
              {"id":"chat","title":"Chat","executionStatus":"complete","updatedAt":"2026-10-01"}]
             """.utf8))
         }
         workspace.sessions = try sessions("2026-09-04")
         workspace.rebuildGroups()
         #expect(workspace.latestSessionActivityByWork == ["a": "2026-09-02", "b": "2026-09-04"])
+        #expect(workspace.latestSessionActivityByTask == ["task:a": "2026-09-02", "task:b": "2026-09-01"])
         #expect(PadOutlineSort.updated.works(workspace.works,
             latestSessionActivity: workspace.latestSessionActivityByWork).map(\.id) == ["b", "c", "a"])
+        workspace.sessions = try sessions("2026-09-04", progressUpdate: "2026-10-08")
+        workspace.rebuildGroups()
+        #expect(workspace.latestSessionActivityByWork == ["a": "2026-09-02", "b": "2026-09-04"])
         workspace.sessions = try sessions("2026-09-01")
         workspace.rebuildGroups()
         #expect(PadOutlineSort.updated.works(workspace.works,
@@ -73,6 +77,7 @@ struct PadControlTests {
         """.utf8))
         #expect(PadOutlineSort.standard.tasks(tasks).map(\.id) == ["b", "a"])
         #expect(PadOutlineSort.updated.tasks(tasks).map(\.id) == ["a", "b"])
+        #expect(PadOutlineSort.updated.tasks(tasks, latestSessionActivity: ["b": "2026-02-01"]).map(\.id) == ["b", "a"])
         #expect(PadOutlineSort.name.tasks(tasks).map(\.id) == ["a", "b"])
     }
     private func fixture() throws -> (PadConnection, PadControlStore) {

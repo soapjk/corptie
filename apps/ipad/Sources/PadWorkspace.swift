@@ -36,11 +36,15 @@ enum PadOutlineSort: String, CaseIterable {
             return $0.id < $1.id
         }
     }
-    func tasks(_ items: [ClientTask]) -> [ClientTask] {
+    func tasks(_ items: [ClientTask], latestSessionActivity: [String: String] = [:]) -> [ClientTask] {
         let visible = items.filter { !$0.archived }
         guard self != .standard else { return visible }
         return visible.sorted {
-            if self == .updated, $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
+            if self == .updated {
+                let left = latestSessionActivity[$0.id] ?? $0.updatedAt
+                let right = latestSessionActivity[$1.id] ?? $1.updatedAt
+                if left != right { return left > right }
+            }
             if self == .name {
                 let order = $0.title.localizedStandardCompare($1.title)
                 if order != .orderedSame { return order == .orderedAscending }
@@ -185,6 +189,7 @@ final class PadWorkspace {
     private(set) var independentSessions: [ClientSession] = []
     var sessionsByID: [String: ClientSession] = [:]
     private(set) var latestSessionActivityByWork: [String: String] = [:]
+    private(set) var latestSessionActivityByTask: [String: String] = [:]
     private(set) var processingWorkIDs: Set<String> = []
     private(set) var executionByTaskID: [String: String] = [:]
     private(set) var activityByTaskID: [String: TaskSessionActivity] = [:]
@@ -670,10 +675,16 @@ final class PadWorkspace {
         // Device inventory contains only live Sessions. Index once, never scan per rendered row.
         var latestByTask: [String: ClientSession] = [:]
         var latestByWork: [String: String] = [:]
+        var latestActivityByTask: [String: String] = [:]
         for session in sessions {
             // Includes Work discussions, even though they have no Task binding.
-            if let workID = session.workId, !session.updatedAt.isEmpty {
-                latestByWork[workID] = max(latestByWork[workID] ?? "", session.updatedAt)
+            if let messageAt = session.lastMessageAt, !messageAt.isEmpty {
+                if let workID = session.workId {
+                    latestByWork[workID] = max(latestByWork[workID] ?? "", messageAt)
+                }
+                if let taskID = session.taskId {
+                    latestActivityByTask[taskID] = max(latestActivityByTask[taskID] ?? "", messageAt)
+                }
             }
             guard let taskID = session.taskId else { continue }
             if latestByTask[taskID].map({ $0.updatedAt < session.updatedAt }) ?? true {
@@ -696,6 +707,7 @@ final class PadWorkspace {
             }
         }
         if latestSessionActivityByWork != latestByWork { latestSessionActivityByWork = latestByWork }
+        if latestSessionActivityByTask != latestActivityByTask { latestSessionActivityByTask = latestActivityByTask }
         if executionByTaskID != execution { executionByTaskID = execution }
         if activityByTaskID != activity { activityByTaskID = activity }
         if sessionIDByTaskID != resolvedSessionIDs { sessionIDByTaskID = resolvedSessionIDs }
@@ -874,6 +886,20 @@ final class PadWorkspace {
         } catch {
             guard selection == sessionID, generation == timelineGeneration else { return }
             // Keep the last valid value on transient failures; a later push repairs it.
+        }
+    }
+
+    /// Match desktop's tap-to-verify quota read without introducing periodic polling.
+    func refreshFreshAccountUsage(_ connection: PadConnection, sessionID: String) async -> ClientSessionUsage? {
+        guard selection == sessionID else { return nil }
+        do {
+            let api = ClientSessionAPI(transport: try await connection.transport())
+            let snapshot = try await api.usage(sessionId: capabilities?.sessionId ?? sessionID, freshAccount: true)
+            guard !Task.isCancelled, selection == sessionID, snapshot.accountFresh == true else { return nil }
+            applyUsage(snapshot, authoritative: true)
+            return snapshot
+        } catch {
+            return nil
         }
     }
 

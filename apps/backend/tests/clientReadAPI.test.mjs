@@ -126,16 +126,21 @@ test("tasks expose pending scheduled wake and deletion presentation flags withou
 
 test("sessions carry the desktop read-receipt cursors from one batched query", () => {
   let cursorCalls = 0;
+  let activityCalls = 0;
   const api = new ClientReadAPI({
     listSessionPage: () => ({ items: [
       { id: "s1", title: "A", executionStatus: "complete", updatedAt: "1" },
       { id: "s2", title: "B", executionStatus: "complete", updatedAt: "1" }
     ], hasMore: false }),
     listSessionMessageCursors: ids => { cursorCalls += 1; assert.deepEqual(ids, ["s1", "s2"]);
-      return new Map([["s1", { lastAgentMessageSequence: 9, lastReadMessageSequence: 4 }]]); }
+      return new Map([["s1", { lastAgentMessageSequence: 9, lastReadMessageSequence: 4 }]]); },
+    listLatestSessionMessageTimes: ids => { activityCalls += 1; assert.deepEqual(ids, ["s1", "s2"]);
+      return new Map([["s1", "2026-09-30T10:00:00Z"]]); }
   });
   const items = api.list("sessions", new URLSearchParams()).items;
   assert.equal(cursorCalls, 1);
+  assert.equal(activityCalls, 1);
   assert.deepEqual(items.map(item => [item.id, item.lastAgentMessageSequence, item.lastReadMessageSequence]),
     [["s1", 9, 4], ["s2", 0, 0]]);
+  assert.deepEqual(items.map(item => item.lastMessageAt), ["2026-09-30T10:00:00Z", null]);
 });
