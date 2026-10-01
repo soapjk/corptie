@@ -7,8 +7,11 @@ export class ClientInspectorStream {
     Object.assign(this, { snapshot, coalesceMs, heartbeatMs });
     this.clients = new Set();
   }
-  attach(response, authenticate, sessionId) {
+  attach(response, authenticate, sessionId, request = null) {
     const identity = authenticate();
+    for (const client of [...this.clients]) {
+      if (client.closed || client.response.destroyed) client.close();
+    }
     if (this.clients.size >= 8 || [...this.clients].some(c => c.deviceId === identity.deviceId)) {
       throw deviceError("INSPECTOR_STREAM_LIMIT", 429);
     }
@@ -20,6 +23,7 @@ export class ClientInspectorStream {
       this.clients.delete(client); if (!response.destroyed) response.destroy();
     };
     response.once("close", client.close);
+    request?.once("close", client.close);
     client.heartbeat = setInterval(() => this.write(client, "heartbeat", {}), this.heartbeatMs);
     client.heartbeat.unref?.();
     this.clients.add(client);

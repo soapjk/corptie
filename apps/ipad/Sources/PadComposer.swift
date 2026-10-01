@@ -26,8 +26,22 @@ struct PadComposer<Header: View>: View {
     @State private var showPhotos = false
     @State private var showFiles = false
     @State private var importing = false
+    @State private var isKeyboardVisible = false
 
     private var isPhone: Bool { UIDevice.current.userInterfaceIdiom == .phone }
+    private var phoneBottomOffset: CGFloat {
+        guard isPhone, !isKeyboardVisible else { return 0 }
+        let bottomInset = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?.safeAreaInsets.bottom
+            ?? UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first?.safeAreaInsets.bottom
+            ?? 34
+        return bottomInset > 0 ? 10 : 0
+    }
 
     private var draft: Binding<String> {
         Binding(get: { workspace.drafts[sessionID] ?? "" }, set: { workspace.drafts[sessionID] = $0 })
@@ -70,6 +84,15 @@ struct PadComposer<Header: View>: View {
             }
         } content: {
             editorRow
+        }
+        .offset(y: phoneBottomOffset)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            guard isPhone else { return }
+            withAnimation(.easeInOut(duration: 0.2)) { isKeyboardVisible = true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            guard isPhone else { return }
+            withAnimation(.easeInOut(duration: 0.2)) { isKeyboardVisible = false }
         }
         // Outside the glass and above the entire module, without presenting a
         // controller or stealing first responder from the editor.

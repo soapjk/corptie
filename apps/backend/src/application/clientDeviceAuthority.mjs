@@ -9,9 +9,10 @@ export const deviceError = (code, status = 401) => Object.assign(new Error(code)
 
 /** Device credentials authorize client access, never impersonate a Session or Agent. */
 export class ClientDeviceAuthority {
-  constructor(directory, { now = Date.now } = {}) {
+  constructor(directory, { now = Date.now, rotationGraceMs = 30_000 } = {}) {
     this.directory = directory;
     this.now = now;
+    this.rotationGraceMs = rotationGraceMs;
     this.pending = new Map();
     this.tail = Promise.resolve();
     this.listeners = new Set();
@@ -129,9 +130,13 @@ export class ClientDeviceAuthority {
     } catch (error) { item.status = "approved"; throw error; }
   }
 
-  issue(device, serverId) {
+  issue(device, serverId, { preserveGrace = false } = {}) {
     const accessToken = token();
     const refreshToken = token();
+    if (!preserveGrace && this.rotationGraceMs > 0 && device.refreshHash) {
+      device.previousRefreshHash = device.refreshHash;
+      device.previousRefreshExpiresAt = this.now() + this.rotationGraceMs;
+    }
     device.accessHash = hash(accessToken);
     device.refreshHash = hash(refreshToken);
     device.accessExpiresAt = this.now() + 15 * 60_000;
@@ -142,9 +147,16 @@ export class ClientDeviceAuthority {
   refresh({ refreshToken }) {
     if (!validToken(refreshToken)) throw deviceError("INVALID_CREDENTIAL");
     return this.change(state => {
-      const device = state.devices.find(d => d.refreshHash === hash(refreshToken));
-      if (!device || device.revoked || device.refreshExpiresAt <= this.now()) throw deviceError("INVALID_CREDENTIAL");
-      return this.issue(device, state.serverId);
+      const now = this.now();
+      const tokenHash = hash(refreshToken);
+      let isGrace = false;
+      let device = state.devices.find(d => d.refreshHash === tokenHash);
+      if (!device && this.rotationGraceMs > 0) {
+        device = state.devices.find(d => d.previousRefreshHash === tokenHash && (d.previousRefreshExpiresAt ?? 0) > now);
+        if (device) isGrace = true;
+      }
+      if (!device || device.revoked || device.refreshExpiresAt <= now) throw deviceError("INVALID_CREDENTIAL");
+      return this.issue(device, state.serverId, { preserveGrace: isGrace });
     });
   }
 
@@ -167,6 +179,8 @@ export class ClientDeviceAuthority {
       device.revoked = true;
       delete device.accessHash;
       delete device.refreshHash;
+      delete device.previousRefreshHash;
+      delete device.previousRefreshExpiresAt;
     });
     for (const listener of this.listeners) listener(id);
   }
