@@ -271,6 +271,63 @@ final class ChatDisplayOrderTests: XCTestCase {
         ])
     }
 
+    func testDisplayEntryDeduplicationPreservesFirstPositionAndLatestValue() {
+        let stale = ChatDisplayEntry(kind: .message(
+            item(id: "message:duplicate", type: "userMessage", turnId: "delivery", text: "queued")
+        ))
+        let other = ChatDisplayEntry(kind: .message(
+            item(id: "other", type: "userMessage", turnId: "other")
+        ))
+        let latest = ChatDisplayEntry(kind: .message(
+            item(id: "message:duplicate", type: "userMessage", turnId: "delivery", text: "consumed")
+        ))
+
+        let unique = uniquedChatDisplayEntries([stale, other, latest])
+
+        XCTAssertEqual(unique.map(\.id), ["message:message:duplicate", "message:other"])
+        guard case .message(let retained) = unique[0].kind else {
+            return XCTFail("Expected the duplicate identity to remain a message row")
+        }
+        XCTAssertEqual(retained.text, "consumed")
+    }
+
+    func testIncrementalAppendRejectsCachedOrCrossBoundaryDuplicateIdentity() {
+        let cached = [
+            ChatDisplayEntry(kind: .message(
+                item(id: "message:duplicate", type: "userMessage", turnId: "delivery")
+            ))
+        ]
+        let authoritative = [
+            ChatDisplayEntry(kind: .message(
+                item(id: "message:duplicate", type: "userMessage", turnId: "delivery")
+            ))
+        ]
+
+        XCTAssertFalse(canIncrementallyAppendChatDisplayEntries(cached: cached, appended: authoritative))
+        XCTAssertFalse(canIncrementallyAppendChatDisplayEntries(cached: cached + cached, appended: []))
+        XCTAssertTrue(canIncrementallyAppendChatDisplayEntries(
+            cached: cached,
+            appended: [ChatDisplayEntry(kind: .message(
+                item(id: "new", type: "userMessage", turnId: "new-turn")
+            ))]
+        ))
+    }
+
+    func testDetailDisplayCacheCollapsesDuplicateSourceMessageIDs() {
+        let cache = makeDetailDisplayCache(
+            for: detail(items: [
+                item(id: "message:duplicate", type: "userMessage", turnId: "turn-1", text: "queued"),
+                item(id: "other", type: "agentMessage", turnId: "turn-1"),
+                item(id: "message:duplicate", type: "userMessage", turnId: "turn-2", text: "consumed")
+            ]),
+            sessionId: "session",
+            visibleMessageLimit: 100
+        )
+
+        XCTAssertEqual(cache.displayEntries.filter { $0.id == "message:message:duplicate" }.count, 1)
+        XCTAssertEqual(cache.totalDisplayEntryCount, 2)
+    }
+
     private func item(
         id: String,
         type: String,

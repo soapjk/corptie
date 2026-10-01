@@ -63,13 +63,28 @@ test("result settlement publishes once and clears deferred work", () => {
   assert.equal(session.items[0].presentationRole, "final_answer");
 });
 
-test("foreground result waits for blocking background work to terminate", () => {
+test("foreground result waits for the continuation result after blocking background work terminates", () => {
   const { handler, session, settled } = fixture();
   session.activeTaskIds.add("background");
   handler.handleSdkMessage(session, { type: "result", subtype: "success", result: "done" });
   assert.equal(session.turnState, "running");
   assert.equal(settled.length, 0);
   handler.handleSdkMessage(session, { type: "task_complete", task_id: "background" });
+  assert.equal(session.turnState, "running");
+  assert.equal(settled.length, 0);
+  handler.handleSdkMessage(session, { type: "result", subtype: "success", result: "continued" });
   assert.equal(session.turnState, "idle");
   assert.equal(settled.length, 1);
+});
+
+test("subagent assistant text cannot become the parent Turn final answer", () => {
+  const { handler, session } = fixture();
+  handler.handleSdkMessage(session, {
+    type: "assistant",
+    uuid: "child-message",
+    parent_tool_use_id: "agent-call",
+    message: { content: [{ type: "text", text: "Child report" }] }
+  });
+  handler.handleSdkMessage(session, { type: "result", subtype: "success", result: "done" });
+  assert.equal(session.items[0].presentationRole, "commentary");
 });

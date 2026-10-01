@@ -95,6 +95,8 @@ export function createClaudeSdkMessageHandler({
         session.phase = "working";
       }
       const items = claudeAssistantContentItems(message.message, structuredPlanEvents());
+      const belongsToSubagent = typeof message.parent_tool_use_id === "string"
+        && message.parent_tool_use_id.trim().length > 0;
       if (items.length > 0) {
         session.lastOutputAt = session.updatedAt;
         const finalText = items.filter((item) => item.type === "agentMessage")
@@ -102,11 +104,22 @@ export function createClaudeSdkMessageHandler({
           .join("\n\n")
           .trim();
         if (session.streamingAssistant && finalText) {
-          updateStreamingAssistant(session, finalText, { completed: true, providerMessageId: message.uuid });
+          updateStreamingAssistant(session, finalText, {
+            completed: true,
+            providerMessageId: message.uuid,
+            excludeFromFinal: belongsToSubagent
+          });
         } else {
           for (const item of items.filter((item) => item.type === "agentMessage")) {
-            appendItem(session, { ...item, presentationRole: "commentary",
-              rawMetadataJSON: JSON.stringify({ forkPoint: { messageId: message.uuid } }) });
+            const appended = appendItem(session, { ...item, presentationRole: "commentary",
+              rawMetadataJSON: JSON.stringify({
+                forkPoint: { messageId: message.uuid },
+                ...(belongsToSubagent ? { parentToolUseId: message.parent_tool_use_id } : {})
+              }) });
+            if (belongsToSubagent) {
+              session.toolContinuationItemIds ??= new Set();
+              session.toolContinuationItemIds.add(appended.id);
+            }
           }
         }
         for (const item of items.filter((item) => item.type !== "agentMessage")) {
@@ -147,11 +160,6 @@ export function createClaudeSdkMessageHandler({
         notified: false
       };
       session.lastResult = result;
-      finalizeClaudeTurnItems(
-        session,
-        session.currentTurnId,
-        result.succeeded ? "complete" : "failed"
-      );
       if (text && !result.succeeded) {
         session.lastOutputAt = session.updatedAt;
         appendItem(session, {
@@ -208,9 +216,13 @@ export function createClaudeSdkMessageHandler({
         upsertTaskProgressItem(session, message, taskId, terminal);
       }
       if (terminal) session.hiddenTaskIds.delete(taskId);
-      if (terminal && session.activeTaskIds.size === 0 && session.deferredResult) {
-        settleClaudeResult(session, session.deferredResult);
-      } else {
+      if (terminal && session.deferredResult) {
+        // A task notification is fed back into Claude's primary loop. The SDK
+        // can emit more assistant/tool activity before the continuation result,
+        // so the last task ending is not a product Turn terminal boundary.
+        session.turnState = "running";
+        session.status = "running";
+        session.phase = "working";
       }
       return;
     }
@@ -263,7 +275,10 @@ export function createClaudeSdkMessageHandler({
       const delta = typeof event.delta.text === "string" ? event.delta.text : "";
       if (!delta) return;
       const nextText = `${session.streamingAssistant?.text ?? ""}${delta}`;
-      updateStreamingAssistant(session, nextText);
+      updateStreamingAssistant(session, nextText, {
+        excludeFromFinal: typeof message.parent_tool_use_id === "string"
+          && message.parent_tool_use_id.trim().length > 0
+      });
     }
   }
 
@@ -283,6 +298,10 @@ export function createClaudeSdkMessageHandler({
         presentationRole: "commentary"
       });
       session.streamingAssistant = options.completed === true ? null : { itemId: item.id, text: value };
+      if (options.excludeFromFinal === true) {
+        session.toolContinuationItemIds ??= new Set();
+        session.toolContinuationItemIds.add(item.id);
+      }
       return item;
     }
     const index = session.items.findIndex((item) => item.id === existing.itemId);
@@ -302,6 +321,10 @@ export function createClaudeSdkMessageHandler({
       presentationRole: "commentary"
     };
     session.items[index] = item;
+    if (options.excludeFromFinal === true) {
+      session.toolContinuationItemIds ??= new Set();
+      session.toolContinuationItemIds.add(item.id);
+    }
     session.streamingAssistant = options.completed === true
       ? null
       : { itemId: item.id, text: value };
