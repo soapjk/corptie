@@ -301,6 +301,57 @@ public struct ConversationComposerUsageSlot<Content: View>: View {
     }
 }
 
+/// The quota popover body shared by desktop and paired mobile clients. Hosts
+/// supply localized values and decide how to refresh the account snapshot.
+public struct SessionQuotaResetDetails: View {
+    public enum Verification: Equatable { case idle, loading, failed }
+
+    private let verification: Verification
+    private let loadingText: String
+    private let failureText: String
+    private let resetText: String
+    private let bankedText: String?
+    private let expiryText: String?
+    private let expiryHelp: String?
+
+    public init(verification: Verification, loadingText: String, failureText: String,
+                resetText: String, bankedText: String?, expiryText: String?, expiryHelp: String? = nil) {
+        self.verification = verification
+        self.loadingText = loadingText
+        self.failureText = failureText
+        self.resetText = resetText
+        self.bankedText = bankedText
+        self.expiryText = expiryText
+        self.expiryHelp = expiryHelp
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            if verification == .loading {
+                Label(loadingText, systemImage: "arrow.clockwise")
+                    .foregroundStyle(.secondary)
+            } else if verification == .failed {
+                Label(failureText, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            }
+            Label(resetText, systemImage: "clock")
+                .lineLimit(1)
+            if let bankedText {
+                Label(bankedText, systemImage: "arrow.counterclockwise.circle")
+                    .lineLimit(1)
+            }
+            if let expiryText {
+                Label(expiryText, systemImage: "calendar.badge.clock")
+                    .lineLimit(1)
+                    .help(expiryHelp ?? expiryText)
+            }
+        }
+        .font(.system(size: 11, weight: .medium))
+        .padding(10)
+        .fixedSize(horizontal: true, vertical: true)
+    }
+}
+
 /// Compact readiness, execution and usage strip above the editor on both platforms.
 public struct ConversationComposerStatusRow<Usage: View>: View {
     public let isReady: Bool

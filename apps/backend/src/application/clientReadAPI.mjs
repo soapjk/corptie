@@ -42,6 +42,7 @@ const projectors = {
     // Same read-receipt inputs the desktop unread policy consumes; the device applies the identical rule.
     lastAgentMessageSequence: context.messageCursors.get(row.id)?.lastAgentMessageSequence ?? 0,
     lastReadMessageSequence: context.messageCursors.get(row.id)?.lastReadMessageSequence ?? 0,
+    lastMessageAt: context.messageTimes.get(row.id) ?? null,
     updatedAt: row.updatedAt }),
 };
 
@@ -74,12 +75,15 @@ export class ClientReadAPI {
       : kind === "tasks" ? this.store.listTaskPage({ limit, cursor, includeCompleted: true })
         : this.store.listSessionPage({ limit, cursor, archived: false });
     // One wake / read-cursor query per page instead of one per row.
-    const context = { pendingWakeTaskIds: new Set(), messageCursors: new Map() };
+    const context = { pendingWakeTaskIds: new Set(), messageCursors: new Map(), messageTimes: new Map() };
     if (kind === "tasks" && page.items.length > 0 && typeof this.store.listTaskIdsWithPendingScheduledWake === "function") {
       context.pendingWakeTaskIds = new Set(this.store.listTaskIdsWithPendingScheduledWake());
     }
     if (kind === "sessions" && page.items.length > 0 && typeof this.store.listSessionMessageCursors === "function") {
       context.messageCursors = this.store.listSessionMessageCursors(page.items.map(row => row.id));
+    }
+    if (kind === "sessions" && page.items.length > 0 && typeof this.store.listLatestSessionMessageTimes === "function") {
+      context.messageTimes = this.store.listLatestSessionMessageTimes(page.items.map(row => row.id));
     }
     return { schemaVersion: 1, items: page.items.map(row => projectors[kind](row, this.store, context)), hasMore: page.hasMore,
       nextCursor: page.nextCursor ? Buffer.from(JSON.stringify({ version: 1, kind, position: page.nextCursor })).toString("base64url") : null };

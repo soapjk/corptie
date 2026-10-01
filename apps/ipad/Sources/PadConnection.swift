@@ -11,6 +11,7 @@ final class PadConnection {
     var secret = ""
     var claim: DevicePairingClaim?
     var connected = false
+    var hasSavedPairing = false
     var restoringConnection = true
     private var attemptedStartupConnection = false
     var busy = false
@@ -92,7 +93,7 @@ final class PadConnection {
     func requestPairing() async {
         await perform {
             let endpoint = try configuredEndpoint()
-            claim = try await DevicePairingClient(endpoint: endpoint, certificate: pairingCertificate).claim(pairingId: pairingID, pairingSecret: secret, name: "Corptie iPad")
+            claim = try await DevicePairingClient(endpoint: endpoint, certificate: pairingCertificate).claim(pairingId: pairingID, pairingSecret: secret, name: "Corptie Mobile")
             self.endpoint = endpoint
             secret = ""
             notice = "请在 Mac 的设备设置中批准，然后点击完成配对。"
@@ -106,6 +107,7 @@ final class PadConnection {
         address = code.address; serverID = code.serverId
         pairingID = code.pairingId; secret = code.pairingSecret
         pairingCertificate = code.certificate
+        hasSavedPairing = false
         notice = "已识别 Mac，正在申请配对。"
     }
 
@@ -114,6 +116,7 @@ final class PadConnection {
             guard let endpoint, let claim else { return }
             credentials = try await vault.exchangeAndStore(claim: claim, endpoint: endpoint, expectedServerId: serverID, certificate: pairingCertificate)
             self.claim = nil
+            hasSavedPairing = true
             remember(endpoint)
             connected = true
         }
@@ -132,6 +135,7 @@ final class PadConnection {
                 defer { busy = false }
                 credentials = try await vault.exchangeAndStore(claim: pending, endpoint: endpoint,
                     expectedServerId: serverID, certificate: pairingCertificate)
+                hasSavedPairing = true
                 remember(endpoint)
                 claim = nil; connected = true
                 return
@@ -160,9 +164,11 @@ final class PadConnection {
         await perform {
             let endpoint = try configuredEndpoint()
             guard let saved = try await vault.load(endpoint: endpoint, serverId: serverID) else {
+                hasSavedPairing = false
                 notice = "此 Mac 没有已保存的配对，请先配对。"
                 return
             }
+            hasSavedPairing = true
             self.endpoint = endpoint
             credentials = saved
             let transport = try await transport()

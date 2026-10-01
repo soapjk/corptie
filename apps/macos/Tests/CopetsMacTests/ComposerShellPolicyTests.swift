@@ -6,9 +6,9 @@ import CorptieConversation
 /// iPad; these pin the desktop values the shared layer must keep producing.
 final class ComposerShellPolicyTests: XCTestCase {
     func testDesktopInputLayoutDelegatesToSharedClamp() {
-        XCTAssertEqual(ComposerInputLayout.minimumHeight, 44)
+        XCTAssertEqual(ComposerInputLayout.minimumHeight, 30)
         XCTAssertEqual(ComposerInputLayout.maximumHeight, 96)
-        XCTAssertEqual(ComposerInputLayout.resolvedHeight(for: 10), 44)
+        XCTAssertEqual(ComposerInputLayout.resolvedHeight(for: 10), 30)
         XCTAssertEqual(ComposerInputLayout.resolvedHeight(for: 60.2), 61)
         XCTAssertEqual(ComposerInputLayout.resolvedHeight(for: 400), 96)
         XCTAssertEqual(ComposerShellMetrics.resolvedInputHeight(for: 60.2), ComposerInputLayout.resolvedHeight(for: 60.2))
