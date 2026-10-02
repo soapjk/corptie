@@ -66,7 +66,7 @@ export class ClientInspectorAPI {
         .map(row => {
           const summary = parseSummary(row.user_summary_json);
           const current = summary?.state === "ready" && summary?.content?.schemaVersion === 1 && summary?.content?.basis?.taskRevision === row.revision;
-          return { id: row.id, title: row.title, updatedAt: row.updated_at,
+          return { id: row.id, title: row.title, taskRevision: row.revision, updatedAt: row.updated_at,
             needsIntervention: current && summary.content.intervention === "required", summary };
         }).sort((a, b) => Number(b.needsIntervention) - Number(a.needsIntervention) || b.updatedAt.localeCompare(a.updatedAt));
       sections.focusTasks = focus.slice(0, 3);
@@ -75,7 +75,7 @@ export class ClientInspectorAPI {
       workId, taskId: task?.id ?? null, taskDefinition: task ? {
         description: task.description ?? "", acceptanceCriteria: task.acceptance_criteria ?? "",
         verificationCriteria: task.verification_criteria ?? "", summary: parseSummary(task.user_summary_json),
-        title: task.title, priority: task.priority, mainAgentId: task.main_agent_id, lifecycleState: task.lifecycle_state,
+        title: task.title, revision: task.revision, priority: task.priority, mainAgentId: task.main_agent_id, lifecycleState: task.lifecycle_state,
         agents: (this.store.getWork(workId)?.contributorAgentIds ?? []).map(id => {
           const agent = this.store.getAgent(id); return { id, name: agent?.name ?? id };
         })

@@ -1508,6 +1508,8 @@
 "Updating banked resets; showing the last known value…" = "正在刷新已存额度重置；以下为上次记录…";
 "Banked resets could not be verified; showing the last known value." = "无法核实当前已存额度重置；以下为上次记录。";
 "Task 信息" = "Task 信息";
+"Artifact 引用" = "Artifact 引用";
+"Task 记忆" = "Task 记忆";
 "验证所需证据" = "验证所需证据";
 
 /* Worktree integration candidate review */
