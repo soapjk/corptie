@@ -879,14 +879,41 @@ export class ClaudeAgentManager {
   }
 
   async consumeQuery(session) {
+    const query = session.query;
     try {
-      for await (const message of session.query) {
+      for await (const message of query) {
         this.handleSdkMessage(session, message);
       }
       console.log(`[claude-sdk] query ended id=${session.id} status=${session.status} turnState=${session.turnState}`);
-      if (!session.queryClosed) {
+      if (!session.queryClosed && session.query === query) {
         session.query = null;
         session.queryTask = null;
+        if (session.currentTurnId && session.status === "running" && session.turnState !== "idle") {
+          const failure = {
+            code: "CLAUDE_STREAM_ENDED",
+            message: "Claude Provider stream ended before returning a result.",
+            retryable: true
+          };
+          this.resolveAllPendingChoices(session, failure.message);
+          session.pendingChoice = null;
+          session.pendingDecision = null;
+          session.activeTaskIds.clear();
+          session.hiddenTaskIds.clear();
+          this.appendItem(session, {
+            type: "system",
+            title: "Claude Code",
+            text: failure.message,
+            status: "failed"
+          });
+          this.settleClaudeResult(session, {
+            turnId: session.currentTurnId,
+            succeeded: false,
+            text: failure.message,
+            failure,
+            notified: false
+          });
+          return;
+        }
         session.turnState = "idle";
         session.phase = session.status === "failed" ? "failed" : "ready";
         session.updatedAt = new Date().toISOString();
