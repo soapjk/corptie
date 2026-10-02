@@ -9,14 +9,16 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
     let connection: PadConnection
     let sessionID: String
     @Bindable var workspace: PadWorkspace
+    let kind: ConversationInspectorKind
     let primary: Primary
     let secondary: Secondary
-    init(store: PadInspectorStore, connection: PadConnection, sessionID: String, workspace: PadWorkspace,
+    init(store: PadInspectorStore, connection: PadConnection, sessionID: String, workspace: PadWorkspace, kind: ConversationInspectorKind,
          @ViewBuilder primary: () -> Primary, @ViewBuilder secondary: () -> Secondary) {
         self.store = store
         self.connection = connection
         self.sessionID = sessionID
         self.workspace = workspace
+        self.kind = kind
         self.primary = primary()
         self.secondary = secondary()
     }
@@ -123,12 +125,11 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
         }
     }
     private func referenceRow(_ reference: ClientInspectorValue) -> some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(reference["displayName"].text ?? "引用").font(.callout)
-                Text(reference["status"].text ?? "").font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 4)
+        ConversationReferenceRow(title: reference["displayName"].text ?? "引用",
+            status: ConversationReferenceStatus.label(for: reference["status"].text ?? ""),
+            systemImage: ConversationReferenceSymbol.symbol(for: reference["targetType"].text ?? ""),
+            enabled: reference["enabled"].flag,
+            statusAvailable: reference["status"].text == "available") {
             Toggle("启用引用", isOn: Binding(get: { reference["enabled"].flag }, set: { enabled in
                 Task { await store.command("reference.update", fields: ["id": reference["referenceId"], "enabled": .bool(enabled)],
                     sessionID: sessionID, connection: connection) }
@@ -184,15 +185,17 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
             Button("导入本地文档", systemImage: "square.and.arrow.down") { importAsArtifact = true; importing = true }.disabled(locked)
             let values = section("artifacts")["items"].items + moreArtifacts
             ForEach(allArtifacts ? values : Array(values.prefix(2)), id: \.inspectorID) { artifact in
+                let references = artifact["references"].items.filter { $0["revokedAt"] == .null }
                 Button {
                     document = .init(title: artifact["title"].text ?? "Artifact", resource: "artifact", value: artifact,
                         parameters: artifactReadParameters(artifact, taskID: store.snapshot?.taskId))
                 } label: {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(artifact["title"].text ?? "Artifact")
-                        Text(artifact["summary"].text ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                        Text(artifact["visibility"].text ?? "").font(.caption2).foregroundStyle(.secondary)
-                    }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    ConversationArtifactRow(title: artifact["title"].text ?? "Artifact",
+                        summary: artifact["summary"].text ?? "", visibility: artifact["visibility"].text ?? "",
+                        version: Int(artifactReadParameters(artifact, taskID: store.snapshot?.taskId)["version"]?.number ?? 1),
+                        revoked: artifact["status"].text == "revoked",
+                        required: references.contains { $0["required"].flag },
+                        pendingVersion: references.contains { $0["pendingVersion"] != .null })
                 }.buttonStyle(.plain)
             }
             if values.count > 2 || section("artifacts")["hasMore"].flag {
@@ -221,9 +224,10 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
                     .init(key: "content", label: "内容", multiline: true), .init(key: "tags", label: "标签（逗号分隔）")])
             }.disabled(locked)
             ForEach(section("memories")["items"].items + moreMemories, id: \.inspectorID) { memory in
-                DisclosureGroup(memory["kind"].text ?? "记忆") {
-                    ConversationDetailText(text: memory["content"].text ?? "")
-                    Text("\(memory["sourceType"].text ?? "") · \(memory["trustLevel"].text ?? "")").font(.caption).foregroundStyle(.secondary)
+                ConversationMemoryRow(kind: memory["kind"].text ?? "记忆",
+                    content: memory["content"].text ?? "",
+                    sourceType: memory["sourceType"].text ?? "",
+                    trustLevel: memory["trustLevel"].text ?? "") {
                     Button("查看审计") { document = .init(title: "记忆审计", resource: "memory-audit", value: memory, parameters: ["id": memory["id"]]) }
                     Button("编辑记忆") {
                         editor = .init(title: "编辑记忆", action: "memory.update", fields: ["id": memory["id"], "expectedVersion": memory["version"],
@@ -252,23 +256,33 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
         } catch { store.error = PadWorktreeFailure.describe(error, stage: "加载更多记忆") }
     }
     @ViewBuilder private var taskControls: some View {
-        if let definition = store.snapshot?.taskDefinition {
-            ConversationDetailModuleCard(title: "Task 摘要与设置", systemImage: "checklist") {
-                let summary = definition["summary"]["content"]
-                ForEach(["messageSummary", "focus", "progress", "nextAction"], id: \.self) { key in
-                    if let text = summary[key].text, !text.isEmpty { ConversationDetailText(text: text) }
+        if kind == .task {
+            let definition = store.snapshot?.taskDefinition
+            let task = workspace.tasks.first { $0.id == workspace.sessionsByID[sessionID]?.taskId }
+            let description = definition?["description"].text ?? task?.description ?? ""
+            let acceptance = definition?["acceptanceCriteria"].text ?? task?.acceptanceCriteria ?? ""
+            let verification = definition?["verificationCriteria"].text ?? task?.verificationCriteria ?? ""
+            let hasDefinition = ConversationTaskDefinition.hasContent(description: description, acceptance: acceptance, verification: verification)
+            if definition != nil || hasDefinition {
+                let summary = definition.flatMap {
+                    ConversationTaskSummary(inspectorValue: $0["summary"], taskRevision: $0["revision"].number.map(Int.init))
                 }
-                Button("编辑 Task 定义与执行 Agent") {
-                    editor = .init(title: "编辑 Task", action: "task.update", fields: definition.fields,
-                        inputs: [.init(key: "title", label: "标题"), .init(key: "description", label: "描述", multiline: true),
-                                 .init(key: "acceptanceCriteria", label: "验收标准", multiline: true), .init(key: "verificationCriteria", label: "验证标准", multiline: true),
-                                 .init(key: "priority", label: "优先级", choices: ["low", "medium", "high", "urgent"].map { ($0, $0) }),
-                                 .init(key: "mainAgentId", label: "Agent", choices: definition["agents"].items.compactMap {
-                                     guard let id = $0["id"].text else { return nil }; return (id, $0["name"].text ?? id)
-                                 })])
-                    editor?.fields.removeValue(forKey: "summary"); editor?.fields.removeValue(forKey: "agents")
-                    editor?.fields.removeValue(forKey: "lifecycleState")
-                }.disabled(locked)
+                ConversationTaskInformationCard(summary: summary, description: description,
+                    acceptance: acceptance, verification: verification, showsWhenEmpty: definition != nil) {
+                    if let definition {
+                        Button("编辑 Task 定义与执行 Agent") {
+                            editor = .init(title: "编辑 Task", action: "task.update", fields: definition.fields,
+                                inputs: [.init(key: "title", label: "标题"), .init(key: "description", label: "描述", multiline: true),
+                                         .init(key: "acceptanceCriteria", label: "验收标准", multiline: true), .init(key: "verificationCriteria", label: "验证标准", multiline: true),
+                                         .init(key: "priority", label: "优先级", choices: ["low", "medium", "high", "urgent"].map { ($0, $0) }),
+                                         .init(key: "mainAgentId", label: "Agent", choices: definition["agents"].items.compactMap {
+                                             guard let id = $0["id"].text else { return nil }; return (id, $0["name"].text ?? id)
+                                         })])
+                            editor?.fields.removeValue(forKey: "summary"); editor?.fields.removeValue(forKey: "agents")
+                            editor?.fields.removeValue(forKey: "lifecycleState")
+                        }.disabled(locked)
+                    }
+                }
             }
         }
     }
@@ -340,19 +354,14 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
         }
     }
     private var environment: some View {
-        ConversationDetailModuleCard(title: "工作空间与 Provider", systemImage: "cpu") {
-            if workspace.selection == sessionID {
-                if let provider = store.snapshot?.environment["provider"].text {
-                    LabeledContent("Provider", value: provider)
-                }
-                if let model = workspace.composerConfiguration?.currentModel ?? workspace.selectedSessionUsage?.route?.modelId {
-                    LabeledContent("模型", value: model)
-                }
-                if let reasoning = workspace.composerConfiguration?.currentReasoningLevel {
-                    LabeledContent("推理强度", value: reasoning)
-                }
-            }
-            if let cwd = store.snapshot?.environment["cwd"].text { Text(cwd).font(.caption.monospaced()).textSelection(.enabled); ShareLink("分享工作空间路径", item: cwd) }
+        let agentID = store.snapshot?.environment["agentId"].text
+        let agentName = workspace.directControlSnapshot?.agents.first { $0.id == agentID }?.name ?? agentID
+        return ConversationEnvironmentCard(provider: store.snapshot?.environment["provider"].text,
+            agent: agentName,
+            model: workspace.selection == sessionID ? (workspace.composerConfiguration?.currentModel ?? workspace.selectedSessionUsage?.route?.modelId) : nil,
+            reasoning: workspace.selection == sessionID ? workspace.composerConfiguration?.currentReasoningLevel : nil,
+            workspacePath: store.snapshot?.environment["cwd"].text) {
+            if let cwd = store.snapshot?.environment["cwd"].text { ShareLink("分享工作空间路径", item: cwd) }
             Menu("切换 Provider") {
                 ForEach(section("providers").items, id: \.inspectorID) { provider in
                     Button(provider["name"].text ?? provider["id"].text ?? "Provider") {

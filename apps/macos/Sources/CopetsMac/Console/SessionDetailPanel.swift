@@ -79,9 +79,8 @@ struct SessionDetailPanel: View {
 
     private var sessionDetailContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            detailSection(title: "会话信息", systemImage: "info.circle") {
-                Text(session.id).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
-            }
+            ConversationSessionInformationCard(sessionID: session.id,
+                workName: entityClient.works.first(where: { $0.id == session.workId })?.name)
             if detailKind == .taskDetail, let taskId = session.taskId, !taskId.isEmpty {
                 SessionCorptieTaskDetailCard(
                     taskId: taskId,
@@ -91,11 +90,8 @@ struct SessionDetailPanel: View {
                 )
             }
 
-            if detailKind == .chatDetail,
-               let summary = ConversationDetailKind.nonempty(session.summary) {
-                detailSection(title: "会话摘要", systemImage: "text.alignleft") {
-                    CollapsibleDetailText(text: summary, color: .secondary)
-                }
+            if detailKind == .chatDetail {
+                ConversationChatSummaryCard(summary: session.summary)
             }
 
             if detailKind == .workDetail { workDetailContent }
@@ -125,11 +121,11 @@ struct SessionDetailPanel: View {
             SessionTurnObservabilityView(sessionId: session.id)
                 .modifier(ConversationDetailModuleSurface())
 
-            detailSection(title: "运行环境", systemImage: "cpu") {
+            ConversationEnvironmentCard(provider: currentProviderDisplayName,
+                agent: agentDisplayName, model: session.external?.currentModel,
+                reasoning: session.external?.currentReasoningLevel,
+                workspacePath: session.external?.cwd) {
                 compactProviderPicker
-                if let cwd = session.external?.cwd, !cwd.isEmpty {
-                    detailFields([("工作空间", compactPath(cwd))])
-                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -155,11 +151,7 @@ struct SessionDetailPanel: View {
     @ViewBuilder
     private var workDetailContent: some View {
         if let work = entityClient.works.first(where: { $0.id == session.workId }) {
-            if let description = ConversationDetailKind.nonempty(work.description) {
-                detailSection(title: "Work 概述", systemImage: "scope") {
-                    CollapsibleDetailText(text: description, color: .secondary)
-                }
-            }
+            ConversationWorkOverviewCard(description: work.description)
             let relevantTasks = entityClient.tasks.filter {
                 $0.workId == work.id && $0.archived != true && $0.deletionStatus == nil
                     && $0.lifecycleState != "done"
@@ -169,26 +161,12 @@ struct SessionDetailPanel: View {
                 }
                 return $0.updatedAt > $1.updatedAt
             }
-            if !relevantTasks.isEmpty {
-                detailSection(title: "重点 Task", systemImage: "checklist") {
-                    ForEach(Array(relevantTasks.prefix(3))) { task in
-                        VStack(alignment: .leading, spacing: 4) {
-                            if let sessionID = task.currentSessionId {
-                                Button {
-                                    AppTabRouter.shared.openTaskSession(taskId: task.id, sessionId: sessionID, source: .userSelection)
-                                } label: {
-                                    Text(task.title).font(.system(size: 11, weight: .medium))
-                                }.buttonStyle(.plain)
-                            } else {
-                                Text(task.title).font(.system(size: 11, weight: .medium))
-                            }
-                            if task.userSummary?.content != nil {
-                                TaskSummaryView(task: task, compact: true)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
+            let focusTasks = relevantTasks.prefix(3).map { task in
+                ConversationFocusTask(id: task.id, title: task.title,
+                    sessionID: task.currentSessionId, summary: task.conversationDetailSummary)
+            }
+            ConversationFocusTasksCard(tasks: focusTasks) { taskID, sessionID in
+                AppTabRouter.shared.openTaskSession(taskId: taskID, sessionId: sessionID, source: .userSelection)
             }
             ArtifactSectionView(workId: work.id, taskId: nil)
                 .id(work.id)
@@ -257,21 +235,11 @@ struct SessionDetailPanel: View {
     }
 
     private func contextReferenceRow(_ reference: SessionContextReference) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: reference.targetType.systemImage)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(reference.enabled ? Color.accentColor : Color.secondary)
-                .frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(reference.displayName)
-                    .font(.system(size: 11, weight: .medium))
-                    .lineLimit(1)
-                Text(reference.status.contextReferenceStatusLabel)
-                    .font(.system(size: 9))
-                    .foregroundStyle(reference.status == "available" ? Color.secondary.opacity(0.65) : Color.orange)
-            }
-            Spacer(minLength: 2)
-            Toggle("", isOn: Binding(
+        ConversationReferenceRow(title: reference.displayName,
+            status: ConversationReferenceStatus.label(for: reference.status),
+            systemImage: reference.targetType.systemImage,
+            enabled: reference.enabled, statusAvailable: reference.status == "available") {
+            Toggle("启用引用", isOn: Binding(
                 get: { reference.enabled },
                 set: { enabled in Task { await backendClient.setContextReferenceEnabled(reference, enabled: enabled) } }
             ))
@@ -302,9 +270,9 @@ struct SessionDetailPanel: View {
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
+            .accessibilityLabel("引用操作")
         }
         .detailRailReferenceRowStyle()
-        .opacity(reference.enabled ? 1 : 0.55)
     }
 
     private func chooseLocalFile() {
@@ -326,28 +294,6 @@ struct SessionDetailPanel: View {
         ConversationDetailModuleCard(title: title, systemImage: systemImage, content: content)
     }
 
-    private func detailFields(_ fields: [(String, String)]) -> some View {
-        LazyVGrid(
-            columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)],
-            alignment: .leading,
-            spacing: 9
-        ) {
-            ForEach(fields, id: \.0) { label, value in
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(label)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                    Text(value)
-                        .font(.system(size: 12, weight: .medium))
-                        .textSelection(.enabled)
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-    }
-
     private var compactProviderPicker: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 4) {
@@ -360,14 +306,12 @@ struct SessionDetailPanel: View {
                         }
                     }
                 } label: {
-                    Text("Provider: \(currentProviderDisplayName)")
-                        .lineLimit(1)
+                    Text(L10n("切换 Provider"))
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .disabled(isSwitchingProvider || session.external?.providerSwitchInFlight == true)
                 .accessibilityLabel(L10n("切换 Provider"))
-                Text("· Agent: \(agentDisplayName)").lineLimit(1)
             }
             .font(.system(size: 10))
             .foregroundStyle(.secondary)

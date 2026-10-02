@@ -176,17 +176,13 @@ struct CorptieTaskDetailView: View {
 
     private var detailContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if task.userSummary?.content != nil || hasTaskDefinitionContent {
-                ConversationDetailModuleCard(title: L10n("Task 信息"), systemImage: "checklist") {
-                    VStack(alignment: .leading, spacing: 14) {
-                        if task.userSummary?.content != nil {
-                            TaskSummaryView(task: task)
-                        }
-                        if hasTaskDefinitionContent {
-                            taskDefinitionSection
-                        }
-                    }
-                }
+            ConversationTaskInformationCard(summary: task.conversationDetailSummary,
+                description: task.description, acceptance: task.acceptanceCriteria,
+                verification: task.verificationCriteria, title: L10n("Task 信息"),
+                descriptionTitle: L10n("Description"), acceptanceTitle: L10n("Acceptance Criteria"),
+                verificationTitle: L10n("验证所需证据"), expandLabel: L10n("Expand"),
+                collapseLabel: L10n("Collapse"), showsWhenEmpty: true) {
+                Button(L10n("编辑工作项")) { showEdit = true }
             }
 
             if isCompleted {
@@ -203,15 +199,6 @@ struct CorptieTaskDetailView: View {
     private var detailHeader: some View {
         HStack(spacing: 8) {
             Spacer()
-            Button {
-                showEdit = true
-            } label: {
-                Image(systemName: "square.and.pencil")
-                    .font(.system(size: 12, weight: .medium))
-                    .frame(width: 24, height: 24)
-            }
-            .buttonStyle(.plain)
-            .help(L10n("编辑工作项"))
             Menu {
                 if let currentSession,
                    let liveSession = backendClient.sessions.first(where: { $0.id == currentSession.id }) {
@@ -294,19 +281,6 @@ struct CorptieTaskDetailView: View {
                 EmptyView()
             }
         }
-    }
-
-    private var taskDefinitionSection: some View {
-        ConversationTaskDefinition(description: task.description,
-            acceptance: task.acceptanceCriteria, verification: task.verificationCriteria,
-            descriptionTitle: L10n("Description"), acceptanceTitle: L10n("Acceptance Criteria"),
-            verificationTitle: L10n("验证所需证据"),
-            expandLabel: L10n("Expand"), collapseLabel: L10n("Collapse"))
-    }
-
-    private var hasTaskDefinitionContent: Bool {
-        ConversationTaskDefinition.hasContent(description: task.description,
-            acceptance: task.acceptanceCriteria, verification: task.verificationCriteria)
     }
 
     private var executionAndWorkspaceSection: some View {
@@ -419,7 +393,7 @@ struct CorptieTaskDetailView: View {
     private var memorySection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Label(L10n("工作项记忆"), systemImage: "brain.head.profile")
+                Label(L10n("Task 记忆"), systemImage: "brain")
                     .detailRailSectionLabelStyle()
                 Spacer()
                 if !memories.isEmpty {
@@ -434,21 +408,12 @@ struct CorptieTaskDetailView: View {
                 }
                 .buttonStyle(.borderless)
                 .help(L10n("Open Memory Inspector"))
+                .accessibilityLabel(L10n("Open Memory Inspector"))
             }
             if !memories.isEmpty {
                 ForEach(memories) { memory in
-                    VStack(alignment: .leading, spacing: 3) {
-                        CollapsibleDetailText(
-                            text: memory.content,
-                            font: .system(size: 11),
-                            color: .primary,
-                            lineSpacing: 1
-                        )
-                        Text(kindLabel(memory.kind))
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .padding(.vertical, 2)
+                    ConversationMemoryRow(kind: kindLabel(memory.kind), content: memory.content,
+                        sourceType: memory.sourceType, trustLevel: memory.trustLevel ?? "") { EmptyView() }
                 }
             }
         }
