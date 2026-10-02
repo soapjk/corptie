@@ -364,6 +364,7 @@ struct UnifiedConsoleControlSurfaceTests {
         let sessionSource = try source(named: "Console/SessionDetailPanel.swift")
         let artifactSource = try source(named: "ArtifactViews.swift")
         let styleSource = try source(named: "DetailRailStyles.swift")
+        let warRoomSource = try source(named: "WarRoomView.swift")
 
         #expect(taskSource.contains("if hasTaskDefinitionContent"))
         #expect(taskSource.contains("ConversationTaskDefinition(description: task.description,"))
@@ -384,6 +385,14 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(artifactSource.contains(".detailRailSectionLabelStyle()"))
         #expect(artifactSource.contains(".detailRailReferenceRowStyle()"))
         #expect(styleSource.contains("cornerRadius: 8, style: .continuous"))
+
+        let detailCardStart = try #require(warRoomSource.range(of: "private var taskDetailCard: some View"))
+        let detailCardEnd = try #require(warRoomSource.range(
+            of: "// MARK: - Sidebar",
+            range: detailCardStart.upperBound..<warRoomSource.endIndex
+        ))
+        let detailCard = warRoomSource[detailCardStart.lowerBound..<detailCardEnd.lowerBound]
+        #expect(!detailCard.contains(".shadow("))
     }
 
     @Test

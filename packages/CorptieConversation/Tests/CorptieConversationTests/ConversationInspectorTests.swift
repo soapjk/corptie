@@ -58,6 +58,7 @@ struct ConversationInspectorTests {
         #expect(source.contains(".platformGlassSurface(in: shape)"))
         #expect(source.contains(".clipShape(shape)"))
         #expect(!source.contains(".background(Color.primary.opacity(0.055)"))
+        #expect(!source.contains(".shadow("))
     }
 
     @Test func navigationRailSharesOneGlassCapsuleAcrossPlatforms() throws {

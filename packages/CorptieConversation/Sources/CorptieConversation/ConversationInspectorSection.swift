@@ -107,8 +107,6 @@ public struct ConversationDetailCardSurface: ViewModifier {
                     shape.strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
                 }
             }
-            .shadow(color: Color.black.opacity(enabled ? 0.055 : 0),
-                    radius: enabled ? 9 : 0, x: 0, y: enabled ? 3 : 0)
     }
 }
 
