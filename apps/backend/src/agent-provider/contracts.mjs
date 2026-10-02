@@ -35,6 +35,12 @@ export const AGENT_PROVIDER_CAPABILITIES = Object.freeze({
   TURN_CHANGES_MANAGE: "turn.changes.manage"
 });
 
+export const AGENT_PROVIDER_HEARTBEAT_RELIABILITY = Object.freeze({
+  RELIABLE: "reliable",
+  BEST_EFFORT: "best_effort",
+  UNAVAILABLE: "unavailable"
+});
+
 // EXECUTION_PLAN_EVENTS is an output/projection capability, not a callable
 // Provider method. SESSION_FAILED_BINDING_RECOVERY、SKILL_LAZY_LOAD、SKILL_MCP_DEPENDENCIES 与 TURN_CHANGES_MANAGE
 // 是「会话编排/上下文组装」型能力，
@@ -163,6 +169,10 @@ export function normalizeAgentProviderDescriptor(input) {
   const capabilities = Array.isArray(input?.capabilities)
     ? [...new Set(input.capabilities.map((value) => normalizedRequiredString(value, "descriptor.capabilities[]")))].sort()
     : [];
+  const metadata = isPlainObject(input?.metadata) ? { ...input.metadata } : {};
+  if (metadata.turnLiveness != null) {
+    metadata.turnLiveness = normalizeTurnLivenessDescriptor(metadata.turnLiveness);
+  }
   return {
     id,
     displayName,
@@ -172,8 +182,34 @@ export function normalizeAgentProviderDescriptor(input) {
     capabilities,
     runtime: normalizeRuntimeDescriptor(input?.runtime),
     configuration: normalizeConfigurationDescriptor(input?.configuration),
-    metadata: isPlainObject(input?.metadata) ? { ...input.metadata } : {}
+    metadata
   };
+}
+
+export function normalizeTurnLivenessDescriptor(input) {
+  if (!isPlainObject(input)) {
+    throw new AgentProviderContractError("descriptor.metadata.turnLiveness must be an object.", {
+      field: "descriptor.metadata.turnLiveness"
+    });
+  }
+  const heartbeat = normalizedOptionalString(input.heartbeat)
+    ?? AGENT_PROVIDER_HEARTBEAT_RELIABILITY.UNAVAILABLE;
+  if (!Object.values(AGENT_PROVIDER_HEARTBEAT_RELIABILITY).includes(heartbeat)) {
+    throw new AgentProviderContractError(
+      "descriptor.metadata.turnLiveness.heartbeat must be reliable, best_effort, or unavailable.",
+      { field: "descriptor.metadata.turnLiveness.heartbeat", heartbeat }
+    );
+  }
+  if (input.supportsStatusProbe != null && typeof input.supportsStatusProbe !== "boolean") {
+    throw new AgentProviderContractError(
+      "descriptor.metadata.turnLiveness.supportsStatusProbe must be a boolean.",
+      { field: "descriptor.metadata.turnLiveness.supportsStatusProbe" }
+    );
+  }
+  return Object.freeze({
+    heartbeat,
+    supportsStatusProbe: input.supportsStatusProbe === true
+  });
 }
 
 export function providerSupports(providerOrDescriptor, capability) {

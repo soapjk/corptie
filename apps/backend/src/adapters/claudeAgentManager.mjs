@@ -23,6 +23,7 @@ export { normalizeClaudeEffortLevel, normalizeClaudeRuntimeOptions } from "./cla
 import { buildToolChoice, optionResolution, advanceAskUserChoice } from "./claudeChoiceProtocol.mjs";
 import {
   claudeConnectionTestOptions,
+  claudeProviderErrorDiagnostic,
   claudeRuntimeEnvironment,
   claudeSdkResultError,
   normalizeClaudeProviderError
@@ -889,8 +890,7 @@ export class ClaudeAgentManager {
         const incompleteTurn = Boolean(session.currentTurnId)
           && session.status === "running"
           && ["running", "requires_action"].includes(session.turnState);
-        session.query = null;
-        session.queryTask = null;
+        this.releaseQueryInput(session, query);
         session.updatedAt = new Date().toISOString();
         if (incompleteTurn) {
           const failure = {
@@ -922,13 +922,21 @@ export class ClaudeAgentManager {
         }
       }
     } catch (error) {
+      const secretValues = [this.environment()?.ANTHROPIC_API_KEY].filter(Boolean);
       const failure = normalizeClaudeProviderError(error, {
-        secretValues: [this.environment()?.ANTHROPIC_API_KEY].filter(Boolean)
+        secretValues
       });
-      console.error(`[claude-sdk] query failed id=${session.id} code=${failure.code} retryable=${failure.retryable}`);
+      console.error("[claude-sdk] query failed", JSON.stringify({
+        sessionId: session.id,
+        code: failure.code,
+        retryable: failure.retryable,
+        diagnostic: claudeProviderErrorDiagnostic(error, { secretValues })
+      }));
       const wasInterrupted = session.interruptRequested === true;
-      session.query = null;
-      session.queryTask = null;
+      if (!this.releaseQueryInput(session, query)) {
+        console.warn(`[claude-sdk] ignored stale query failure id=${session.id}`);
+        return;
+      }
       this.resolveAllPendingChoices(session, wasInterrupted
         ? "Claude Code turn interrupted in Corptie."
         : "Claude Code query failed before the permission request was answered.");
@@ -957,6 +965,20 @@ export class ClaudeAgentManager {
         }
       });
     }
+  }
+
+  releaseQueryInput(session, query) {
+    if (session.query !== query) return false;
+    // A failed/ended SDK query may leave its prompt iterator suspended in
+    // ClaudeQueryInput. Release those readers before a replacement query is
+    // allowed to start, otherwise the next user message can be consumed by
+    // the dead query instead of the new one.
+    session.queryClosed = true;
+    session.queryInput.reset();
+    session.query = null;
+    session.queryTask = null;
+    session.queryClosed = false;
+    return true;
   }
 
   async runBackgroundPrompt(input = {}) {

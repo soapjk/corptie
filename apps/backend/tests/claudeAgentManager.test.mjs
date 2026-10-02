@@ -1230,6 +1230,53 @@ test("Claude query ending without a result fails the active Turn immediately", a
   assert.equal(settled[0].error.code, "PROVIDER_STREAM_ENDED_INCOMPLETE");
 });
 
+test("Claude failed or prematurely ended queries release stale input readers before the next Turn", async () => {
+  for (const failureMode of ["throw", "end"]) {
+    const settled = [];
+    const received = [];
+    let queryCount = 0;
+    const manager = new ClaudeAgentManager({
+      onTurnSettled: (event) => settled.push(event),
+      query: ({ prompt }) => {
+        const queryNumber = ++queryCount;
+        return {
+          async *[Symbol.asyncIterator]() {
+            const input = prompt[Symbol.asyncIterator]();
+            const first = await input.next();
+            received.push(first.value.message.content[0].text);
+            if (queryNumber === 1) {
+              // Model the SDK keeping a pending prompt read when its output
+              // iterator fails or ends. Without reset(), the next Turn goes to
+              // this dead reader instead of the replacement query.
+              void input.next();
+              if (failureMode === "throw") {
+                throw Object.assign(new Error("socket closed"), { code: "ECONNRESET" });
+              }
+              return;
+            }
+            yield { type: "result", subtype: "success", is_error: false, result: "Recovered." };
+          }
+        };
+      }
+    });
+    const sessionId = `claude-query-recovery-${failureMode}`;
+    manager.start({ id: sessionId, cwd: "/tmp" });
+
+    await manager.send(sessionId, "first", { turnId: `turn:${failureMode}:first` });
+    await waitUntil(() => settled.length === 1);
+    assert.equal(settled[0].error.code, failureMode === "throw"
+      ? "NETWORK_ERROR"
+      : "PROVIDER_STREAM_ENDED_INCOMPLETE");
+
+    await manager.send(sessionId, "second", { turnId: `turn:${failureMode}:second` });
+    await waitUntil(() => settled.length === 2);
+
+    assert.deepEqual(received, ["first", "second"]);
+    assert.equal(settled[1].status, "completed");
+    assert.equal(settled[1].turnId, `turn:${failureMode}:second`);
+  }
+});
+
 test("Claude clear forgets the SDK context while preserving the Corptie session", async () => {
   const manager = new ClaudeAgentManager();
   const original = manager.start({
@@ -1477,6 +1524,14 @@ function letAgentRoles(manager, expected) {
 
 function sdkUser(content) {
   return { type: "user", message: { role: "user", content } };
+}
+
+async function waitUntil(predicate, attempts = 50) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail("Timed out waiting for asynchronous Claude test state");
 }
 
 function sdkAssistant(content) {

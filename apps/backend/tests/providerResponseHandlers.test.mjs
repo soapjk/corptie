@@ -41,6 +41,30 @@ test("delay warning is a retryable provider event and does not interrupt executi
   assert.equal(event.routingVersion, 2);
 });
 
+test("stream-idle warning explains that execution continues without reliable heartbeats", () => {
+  const f = fixture();
+  f.handlers.handleProviderResponseDelayed({ ...f.entry, warningKind: "stream_idle" });
+  const event = f.calls[0][1];
+  assert.equal(event.payload.error.code, "PROVIDER_RESPONSE_DELAYED");
+  assert.match(event.payload.error.message, /无法确认模型是否仍在执行/);
+  assert.equal(event.payload.willRetry, true);
+});
+
+test("retry timeout reports a model-network failure instead of generic stream silence", async () => {
+  const f = fixture();
+  await f.handlers.handleProviderResponseTimeout({
+    ...f.entry,
+    timeoutKind: "provider_retry",
+    lastFailureAt: "2026-01-01T00:00:01Z",
+    lastProviderError: { code: "PROVIDER_REQUEST_RETRY", message: "connection refused", retryable: true }
+  });
+  const event = f.calls[0][1];
+  assert.equal(event.payload.error.code, "PROVIDER_RETRY_TIMEOUT");
+  assert.equal(event.payload.items[0].title, "模型连接失败");
+  assert.match(event.payload.items[0].text, /检查模型网络/);
+  assert.match(event.payload.items[0].text, /connection refused/);
+});
+
 test("timeout persists a visible failed item before terminal handling and interruption", async () => {
   const f = fixture();
   await f.handlers.handleProviderResponseTimeout(f.entry);

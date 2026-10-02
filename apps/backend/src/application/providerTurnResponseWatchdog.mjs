@@ -1,6 +1,7 @@
 const DEFAULT_WARNING_AFTER_MS = 20_000;
 const DEFAULT_TIMEOUT_AFTER_MS = 120_000;
 const DEFAULT_ABSOLUTE_TIMEOUT_AFTER_MS = 30 * 60_000;
+const RELIABLE_HEARTBEAT = "reliable";
 
 const SUBSTANTIVE_EVENT_TYPES = new Set([
   "assistant.message.started",
@@ -27,9 +28,10 @@ const ACTIVITY_EVENT_TYPES = new Set([
 /**
  * Provider-neutral response-activity watchdog.
  *
- * The warning covers a silent start, the rolling timeout covers a stalled
- * stream, and the absolute timeout prevents retries or heartbeats from keeping
- * a Turn alive forever.
+ * The warning and first-activity timeout cover a silent start. A rolling hard
+ * timeout is armed only when the Provider explicitly guarantees reliable
+ * heartbeats. Other Providers receive a one-shot stalled-stream warning while
+ * the absolute timeout remains the final safety boundary.
  */
 export class ProviderTurnResponseWatchdog {
   constructor(options = {}) {
@@ -49,6 +51,7 @@ export class ProviderTurnResponseWatchdog {
     this.cancel = options.cancel ?? ((handle) => clearTimeout(handle));
     this.onDelayed = options.onDelayed ?? (() => {});
     this.onTimeout = options.onTimeout ?? (() => {});
+    this.resolveTurnLiveness = options.resolveTurnLiveness ?? (() => null);
     this.pending = new Map();
     this.resolved = new Set();
     this.maximumResolvedKeys = options.maximumResolvedKeys ?? 4_096;
@@ -58,6 +61,7 @@ export class ProviderTurnResponseWatchdog {
     const entry = normalizedEntry(input);
     const key = turnKey(entry);
     if (this.resolved.has(key) || this.pending.has(key)) return false;
+    const turnLiveness = normalizedTurnLiveness(this.resolveTurnLiveness(entry.providerId));
 
     const warningTimer = this.schedule(() => {
       const current = this.pending.get(key);
@@ -74,8 +78,16 @@ export class ProviderTurnResponseWatchdog {
     warningTimer?.unref?.();
     timeoutTimer?.unref?.();
     absoluteTimeoutTimer?.unref?.();
-    this.pending.set(key, { ...entry, warningTimer, timeoutTimer, absoluteTimeoutTimer,
-      hasActivity: false, lastActivityAt: null });
+    this.pending.set(key, {
+      ...entry,
+      turnLiveness,
+      warningTimer,
+      stallWarningTimer: null,
+      timeoutTimer,
+      absoluteTimeoutTimer,
+      hasActivity: false,
+      lastActivityAt: null
+    });
     return true;
   }
 
@@ -97,7 +109,7 @@ export class ProviderTurnResponseWatchdog {
     if (event.type === "provider.error" && event.payload?.willRetry === true) {
       const current = this.pending.get(key);
       if (event.payload?.error?.code === "PROVIDER_RESPONSE_DELAYED") return Boolean(current);
-      return current ? this.#recordActivity(key, current, event) : false;
+      return current ? this.#recordRetryFailure(key, current, event) : false;
     }
     if (TERMINAL_EVENT_TYPES.has(event.type)) return this.resolve(entry);
     if (ACTIVITY_EVENT_TYPES.has(event.type)) {
@@ -113,6 +125,7 @@ export class ProviderTurnResponseWatchdog {
     const current = this.pending.get(key);
     if (current) {
       if (current.warningTimer) this.cancel(current.warningTimer);
+      if (current.stallWarningTimer) this.cancel(current.stallWarningTimer);
       if (current.timeoutTimer) this.cancel(current.timeoutTimer);
       if (current.absoluteTimeoutTimer) this.cancel(current.absoluteTimeoutTimer);
       this.pending.delete(key);
@@ -124,6 +137,7 @@ export class ProviderTurnResponseWatchdog {
   close() {
     for (const current of this.pending.values()) {
       if (current.warningTimer) this.cancel(current.warningTimer);
+      if (current.stallWarningTimer) this.cancel(current.stallWarningTimer);
       if (current.timeoutTimer) this.cancel(current.timeoutTimer);
       if (current.absoluteTimeoutTimer) this.cancel(current.absoluteTimeoutTimer);
     }
@@ -138,8 +152,8 @@ export class ProviderTurnResponseWatchdog {
     }
   }
 
-  #invoke(callback, entry) {
-    queueMicrotask(() => Promise.resolve(callback(publicEntry(entry))).catch((error) => {
+  #invoke(callback, entry, additions = {}) {
+    queueMicrotask(() => Promise.resolve(callback({ ...publicEntry(entry), ...additions })).catch((error) => {
       console.error(`[provider-response-watchdog] callback failed: ${error?.message ?? error}`);
     }));
   }
@@ -150,14 +164,51 @@ export class ProviderTurnResponseWatchdog {
       current.warningTimer = null;
     }
     if (current.timeoutTimer) this.cancel(current.timeoutTimer);
+    if (current.stallWarningTimer) {
+      this.cancel(current.stallWarningTimer);
+      current.stallWarningTimer = null;
+    }
     current.hasActivity = true;
     current.lastActivityAt = event.occurredAt ?? event.receivedAt ?? new Date().toISOString();
     const retryAfterMs = Number(event.payload?.retryAfterMs);
     const inactivityDelay = Number.isFinite(retryAfterMs) && retryAfterMs >= 0
       ? Math.max(this.timeoutAfterMs, Math.min(this.absoluteTimeoutAfterMs, retryAfterMs + 5_000))
       : this.timeoutAfterMs;
-    current.timeoutTimer = this.#scheduleTimeout(key, inactivityDelay, "inactivity");
-    current.timeoutTimer?.unref?.();
+    if (current.turnLiveness.heartbeat === RELIABLE_HEARTBEAT) {
+      current.timeoutTimer = this.#scheduleTimeout(key, inactivityDelay, "inactivity");
+      current.timeoutTimer?.unref?.();
+    } else {
+      current.timeoutTimer = null;
+      current.stallWarningTimer = this.schedule(() => {
+        const latest = this.pending.get(key);
+        if (!latest) return;
+        latest.stallWarningTimer = null;
+        this.#invoke(this.onDelayed, latest, { warningKind: "stream_idle" });
+      }, inactivityDelay);
+      current.stallWarningTimer?.unref?.();
+    }
+    return true;
+  }
+
+  // A Provider retry is evidence that the model request is not healthy. It
+  // must never be treated as a heartbeat: doing so lets SDK-local retries keep
+  // a Turn looking active while the model network is unavailable. Keep the
+  // first retry deadline stable so a retry loop cannot extend it forever.
+  #recordRetryFailure(key, current, event) {
+    if (current.warningTimer) {
+      this.cancel(current.warningTimer);
+      current.warningTimer = null;
+    }
+    if (current.stallWarningTimer) {
+      this.cancel(current.stallWarningTimer);
+      current.stallWarningTimer = null;
+    }
+    current.lastProviderError = normalizedProviderError(event.payload?.error);
+    current.lastFailureAt ??= event.occurredAt ?? event.receivedAt ?? new Date().toISOString();
+    if (!current.timeoutTimer) {
+      current.timeoutTimer = this.#scheduleTimeout(key, this.timeoutAfterMs, "provider_retry");
+      current.timeoutTimer?.unref?.();
+    }
     return true;
   }
 
@@ -167,9 +218,11 @@ export class ProviderTurnResponseWatchdog {
       if (!current) return;
       this.pending.delete(key);
       if (current.warningTimer) this.cancel(current.warningTimer);
+      if (current.stallWarningTimer) this.cancel(current.stallWarningTimer);
       if (current.timeoutTimer) this.cancel(current.timeoutTimer);
       if (current.absoluteTimeoutTimer) this.cancel(current.absoluteTimeoutTimer);
       current.warningTimer = null;
+      current.stallWarningTimer = null;
       current.timeoutTimer = null;
       current.absoluteTimeoutTimer = null;
       current.timeoutKind = timeoutKind;
@@ -207,8 +260,17 @@ function publicEntry(entry) {
     turnId: entry.turnId,
     startedAt: entry.startedAt,
     ...(entry.timeoutKind ? { timeoutKind: entry.timeoutKind } : {}),
-    ...(entry.lastActivityAt ? { lastActivityAt: entry.lastActivityAt } : {})
+    ...(entry.lastActivityAt ? { lastActivityAt: entry.lastActivityAt } : {}),
+    ...(entry.lastFailureAt ? { lastFailureAt: entry.lastFailureAt } : {}),
+    ...(entry.lastProviderError ? { lastProviderError: entry.lastProviderError } : {})
   };
+}
+
+function normalizedProviderError(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const code = optionalText(value.code) ?? "PROVIDER_REQUEST_RETRY";
+  const message = optionalText(value.message) ?? "模型请求失败，正在重试。";
+  return { code, message, retryable: value.retryable !== false };
 }
 
 function turnKey(entry) {
@@ -231,4 +293,14 @@ function positiveDelay(value, fallback) {
   const result = value == null ? fallback : Number(value);
   if (!Number.isFinite(result) || result <= 0) throw new TypeError("Watchdog delays must be positive numbers.");
   return result;
+}
+
+function normalizedTurnLiveness(input) {
+  const heartbeat = input?.heartbeat;
+  return {
+    heartbeat: ["reliable", "best_effort", "unavailable"].includes(heartbeat)
+      ? heartbeat
+      : "unavailable",
+    supportsStatusProbe: input?.supportsStatusProbe === true
+  };
 }
