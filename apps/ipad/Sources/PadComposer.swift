@@ -27,6 +27,9 @@ struct PadComposer<Header: View>: View {
     @State private var showFiles = false
     @State private var importing = false
     @State private var isKeyboardVisible = false
+    @State private var quickMessages = ClientQuickMessage.defaults
+    @State private var quickMessageRefresh = 0
+    @State private var quickMessageScope = ""
 
     private var isPhone: Bool { UIDevice.current.userInterfaceIdiom == .phone }
     private var phoneBottomOffset: CGFloat {
@@ -68,6 +71,16 @@ struct PadComposer<Header: View>: View {
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ConversationQuickMessages(items: quickMessages,
+                enabled: !connection.busy && workspace.pending == nil
+                    && workspace.capabilities?.send.available == true
+                    && workspace.importingImagesForSession != sessionID) { text in
+                Task {
+                    await workspace.sendSuggestedReply(connection, sessionID: sessionID, text: text)
+                    quickMessageRefresh += 1
+                }
+            }
         ConversationComposerChrome(verticalPadding: isPhone ? 3 : 6,
                                    contentSpacing: isPhone ? 1 : 2) {
             if isPhone {
@@ -84,6 +97,22 @@ struct PadComposer<Header: View>: View {
             }
         } content: {
             editorRow
+        }
+        }
+        .task(id: "\(sessionID):\(connection.serverID):\(quickMessageRefresh)") {
+            let scope = "\(sessionID):\(connection.serverID)"
+            if quickMessageScope != scope {
+                quickMessages = ClientQuickMessage.defaults
+                quickMessageScope = scope
+            }
+            do {
+                let api = ClientSessionAPI(transport: try await connection.transport())
+                let result = try await api.quickMessages(sessionId: workspace.capabilities?.sessionId ?? sessionID)
+                guard !Task.isCancelled else { return }
+                quickMessages = result.items
+            } catch {
+                // Read-only recommendation failure must not block the composer.
+            }
         }
         .offset(y: phoneBottomOffset)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
@@ -245,7 +274,7 @@ struct PadComposer<Header: View>: View {
                       matching: .images)
         .task(id: photos) { await importPhotos() }
         .fileImporter(isPresented: $showFiles, allowedContentTypes: [.image], allowsMultipleSelection: true, onCompletion: importFiles)
-        .task {
+        .task(id: "\(sessionID)|\(workspace.capabilities?.composer == true)") {
             guard workspace.composerConfiguration == nil, workspace.capabilities?.composer == true else { return }
             await workspace.configureComposer(connection)
         }

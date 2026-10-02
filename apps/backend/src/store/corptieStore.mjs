@@ -619,6 +619,14 @@ export class CorptieStore {
     return this.sessionReadRepository.listSessions(options);
   }
 
+  readContextConversationPage(sessionId, options = {}) {
+    return this.timelineReadRepository.readContextConversationPage(sessionId, options);
+  }
+
+  readContextMessageChunk(sessionId, itemId, offset = 0, length = 2000) {
+    return this.timelineReadRepository.readContextMessageChunk(sessionId, itemId, offset, length);
+  }
+
   listSessionTitleIdentities() {
     return this.sessionReadRepository.listSessionTitleIdentities();
   }

@@ -113,7 +113,8 @@ function publicClientMessage(item) {
 
 /** v1 text messaging + stop commands. Provider-neutral callbacks, durable at-most-once dispatch. */
 export class ClientSessionAPI {
-  constructor({ store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null, respondToApproval = null, respondToUserInput = null, respondToCollaborationConfirmation = null, respondToSessionChannelRequest = null, onReceiptChanged = null, inspector = null }) {
+  constructor({ quickMessages = null, store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null, respondToApproval = null, respondToUserInput = null, respondToCollaborationConfirmation = null, respondToSessionChannelRequest = null, onReceiptChanged = null, inspector = null }) {
+    this.quickMessageReader = quickMessages;
     this.inspector = inspector;
     Object.assign(this, { store, readWindow, send, stop, actions, resolveSession, composer, images, schedule, conversationCommands });
     // Optional host projections: Session readiness (desktop ThreadMetaView light) and usage (context / quota).
@@ -184,6 +185,12 @@ export class ClientSessionAPI {
     const limit = Number(rawLimit), anchor = query.get("before");
     if (anchor != null && (!anchor || anchor.length > 1024)) throw deviceError("INVALID_ANCHOR", 400);
     return this.messageWindow(sessionId, { limit, anchor });
+  }
+
+  async quickMessages(identity, sessionId) {
+    const resolved = this.session(sessionId);
+    if (!this.quickMessageReader) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
+    return this.quickMessageReader(resolved.sessionId);
   }
 
   async messageWindow(sessionId, { limit, anchor = null }) {

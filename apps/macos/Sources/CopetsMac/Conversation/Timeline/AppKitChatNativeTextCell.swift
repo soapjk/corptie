@@ -723,11 +723,6 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             copy.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.copy")
             menu.addItem(copy)
         }
-        let selectTextItem = NSMenuItem(title: L10n("Select Text"), action: #selector(selectText), keyEquivalent: "")
-        selectTextItem.target = self
-        selectTextItem.image = NSImage(systemSymbolName: "text.cursor", accessibilityDescription: nil)
-        selectTextItem.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.select-text")
-        menu.addItem(selectTextItem)
         if forkItemID != nil {
             let fork = NSMenuItem(title: L10n("Create Branch"), action: #selector(forkMessage), keyEquivalent: "")
             fork.target = self

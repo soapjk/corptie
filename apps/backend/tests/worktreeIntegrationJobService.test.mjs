@@ -1230,6 +1230,38 @@ test("Markdown policy rejection pauses once for a user decision and resumes afte
   assert.equal(completed.commitPolicyBlocker, undefined);
 });
 
+test("a persisted legacy Markdown failure is upgraded into an actionable blocker", async () => {
+  const { service, store, calls } = memoryFixture();
+  const plan = await service.preflight("repository:1");
+  const stored = store.getWorktreeIntegrationJob(plan.id);
+  store.updateWorktreeIntegrationJob(plan.id, {
+    status: "paused",
+    phase: "failed",
+    error: [
+      "Conflict handling failed during worktree_commit after 3 attempt(s).",
+      "GIT_ARTIFACT_POLICY_REJECTED: Artifact Markdown commit policy rejected the staged tree.",
+      "GIT_MARKDOWN_PROMOTION_REQUIRED: \"backtest_viewer/README.md\"."
+    ].join(" "),
+    details: { ...stored.details, currentWorktreeId: "wt:feature" }
+  });
+
+  const upgraded = await service.prepareCommitPolicyResolution(plan.id);
+
+  assert.equal(upgraded.status, "paused");
+  assert.equal(upgraded.phase, "awaiting_commit_policy_resolution");
+  assert.equal(upgraded.commitPolicyBlocker.files[0].path, "backtest_viewer/README.md");
+  assert.equal(calls.filter((call) => call.startsWith("commit:")).length, 0);
+
+  await service.resolveCommitPolicy(plan.id, {
+    blockerId: upgraded.commitPolicyBlocker.id,
+    version: upgraded.commitPolicyBlocker.version,
+    decisions: [{ path: "backtest_viewer/README.md", action: "ignore" }]
+  });
+  const completed = await waitForJob(service, plan.id, "completed");
+  assert.ok(calls.includes("ignore:backtest_viewer/README.md"));
+  assert.equal(completed.commitPolicyBlocker, undefined);
+});
+
 test("recoverable commit retry revalidates the protected-path digest", async () => {
   const commitFailure = Object.assign(new Error("transient commit hook failure"), {
     code: "WORKTREE_COMMIT_FAILED"

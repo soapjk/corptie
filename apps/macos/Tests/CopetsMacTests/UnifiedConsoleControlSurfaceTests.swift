@@ -78,8 +78,14 @@ struct UnifiedConsoleControlSurfaceTests {
 
         let togglePosition = try #require(controls.range(of: "navigationModeToggle"))
         let searchPosition = try #require(controls.range(of: "searchToggleButton"))
+        let sortPosition = try #require(controls.range(of: "outlineSortMenu"))
+        let archivePosition = try #require(controls.range(of: "taskArchiveToggle"))
+        let createPosition = try #require(controls.range(of: "outlineCreationMenu"))
+        #expect(sortPosition.lowerBound < togglePosition.lowerBound)
         #expect(togglePosition.lowerBound < searchPosition.lowerBound)
-        #expect(source.contains("Menu {\n            navigationModeOption(.workRail, title: \"经典\")"))
+        #expect(searchPosition.lowerBound < archivePosition.lowerBound)
+        #expect(archivePosition.lowerBound < createPosition.lowerBound)
+        #expect(source.contains("Menu {\n            navigationModeOption(.workOutline, title: \"分组\")"))
         #expect(source.contains(".buttonStyle(.plain)\n        .menuIndicator(.hidden)"))
         #expect(source.contains(".modifier(ConsoleTopEdgeEffectModifier())"))
         #expect(controls.contains(".platformGlassSurface(in: Circle(), interactive: true)"))
@@ -248,7 +254,7 @@ struct UnifiedConsoleControlSurfaceTests {
     func workRailAndTaskToolbarExposeTheCorrectCreationFlows() throws {
         let unifiedSource = try source(named: "UnifiedConsoleView.swift")
 
-        #expect(unifiedSource.contains("floatingCreationMenu"))
+        #expect(unifiedSource.contains("outlineCreationMenu"))
         #expect(unifiedSource.contains("isCreatingWork = true"))
         #expect(unifiedSource.contains("WorkCreateView()"))
         #expect(unifiedSource.contains("presentTaskCreation(for: selectedWorkId)"))
@@ -264,7 +270,7 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(unifiedSource.contains("accessibilityLabel: L10n(\"New Assistant Session\")"))
         #expect(unifiedSource.contains("action: { showNewSessionCreation = true }"))
         #expect(unifiedSource.contains("Create Task in %@"))
-        #expect(unifiedSource.contains(".overlay(alignment: .bottomTrailing)"))
+        #expect(!unifiedSource.contains(".overlay(alignment: .bottomTrailing)"))
         #expect(unifiedSource.contains("FloatingCreationButtonGlassModifier"))
         #expect(!unifiedSource.contains("Completed Tasks remain available until archived."))
 
@@ -364,6 +370,7 @@ struct UnifiedConsoleControlSurfaceTests {
         let artifactSource = try source(named: "ArtifactViews.swift")
         let styleSource = try source(named: "DetailRailStyles.swift")
         let warRoomSource = try source(named: "WarRoomView.swift")
+        let conversationHeaderSource = try source(named: "Conversation/ConversationHeader.swift")
 
         #expect(taskSource.contains("ConversationTaskInformationCard(summary: task.conversationDetailSummary"))
         #expect(taskSource.contains("verification: task.verificationCriteria"))
@@ -389,7 +396,11 @@ struct UnifiedConsoleControlSurfaceTests {
             range: detailCardStart.upperBound..<warRoomSource.endIndex
         ))
         let detailCard = warRoomSource[detailCardStart.lowerBound..<detailCardEnd.lowerBound]
+        #expect(conversationHeaderSource.contains(".platformGlassSurface(in: Capsule())"))
+        #expect(detailCard.contains(".modifier(ConversationDetailGlassSurface("))
         #expect(!detailCard.contains(".shadow("))
+        #expect(!detailCard.contains("Material"))
+        #expect(!detailCard.contains(".overlay"))
     }
 
     @Test
@@ -420,14 +431,15 @@ struct UnifiedConsoleControlSurfaceTests {
 
 
     @Test
-    func navigationCanSwitchBetweenWorkRailAndExpandedWorkOutline() throws {
-        #expect(ConsoleNavigationMode.resolved("workRail") == .workRail)
+    func navigationRemovesClassicAndMigratesItsSavedPreference() throws {
+        #expect(ConsoleNavigationMode.allCases == [.workOutline, .taskCards])
+        #expect(ConsoleNavigationMode.resolved("workRail") == .workOutline)
         #expect(ConsoleNavigationMode.resolved("workOutline") == .workOutline)
-        #expect(ConsoleNavigationMode.resolved("unknown") == .workRail)
+        #expect(ConsoleNavigationMode.resolved("unknown") == .workOutline)
 
         let source = try source(named: "UnifiedConsoleView.swift")
         #expect(source.contains("console.navigationCard.navigationMode"))
-        #expect(source.contains("if navigationMode == .workRail"))
+        #expect(!source.contains("if navigationMode == .workRail"))
         #expect(source.contains("unifiedWorkOutlineSidebar"))
         #expect(source.contains("workOutlineList"))
         #expect(source.contains("outlineChatHeader"))
@@ -436,7 +448,7 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains("outlineExpansionPreferences.collapsedWorkIDs"))
         #expect(source.contains("workChatRow(row)"))
         #expect(source.contains("taskRow(task)"))
-        #expect(source.contains("navigationModeOption(.workRail, title: \"经典\")"))
+        #expect(!source.contains("navigationModeOption(.workRail"))
         #expect(source.contains("navigationModeOption(.workOutline, title: \"分组\")"))
         #expect(source.contains("navigationModeOption(.taskCards, title: \"卡片 · 实验\")"))
         #expect(source.contains(".menuStyle(.button)"))
@@ -638,7 +650,8 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains("session.archived != true"))
         #expect(rail.contains("unreadSummary.hasUnreadAssistantSessions"))
         #expect(rail.contains("unreadSummary.workIDs.contains(work.id)"))
-        #expect(host.contains("ConsoleWorkRail("))
+        #expect(!host.contains("ConsoleWorkRail("))
+        #expect(host.contains("unifiedWorkOutlineSidebar"))
         #expect(host.contains("sessions: sessionIndexStore.rows.map(\\.session)"))
     }
 

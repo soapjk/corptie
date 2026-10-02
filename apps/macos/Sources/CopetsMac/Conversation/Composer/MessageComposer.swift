@@ -72,6 +72,8 @@ struct MessageComposer: View {
     @State private var mentionAnchorPoint = ComposerMentionAnchorPolicy.fallback
     @State private var mentionSelectionIndex = 0
     @State private var selectedMentions: [ConversationMention] = []
+    @State private var quickMessages = ClientQuickMessage.defaults
+    @State private var quickMessageRefresh = 0
 
     init(
         sessionId: String,
@@ -100,6 +102,13 @@ struct MessageComposer: View {
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ConversationQuickMessages(items: quickMessages,
+                enabled: canSend && !backendClient.isSendingMessage && session?.archived != true) { text in
+                guard canSend, !backendClient.isSendingMessage, let session, session.archived != true else { return }
+                // Independent send: never clear or attach the editor's draft.
+                backendClient.sendMessage(text, to: session, onSuccess: { quickMessageRefresh += 1 })
+            }
         ConversationComposerChrome {
             HStack(spacing: 0) {
                 ThreadMetaView(sessionID: sessionId, status: status, isReady: isReady,
@@ -109,6 +118,16 @@ struct MessageComposer: View {
             }
         } content: {
             editorRow
+        }
+        }
+        .task(id: "\(session?.taskId ?? sessionId):\(quickMessageRefresh)") {
+            do {
+                let result = try await backendClient.quickMessages(for: sessionId)
+                guard !Task.isCancelled else { return }
+                quickMessages = result.items
+            } catch {
+                // Older hosts and transient disconnects retain the safe defaults.
+            }
         }
         .background(
             GeometryReader { proxy in

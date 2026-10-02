@@ -63,7 +63,9 @@ struct UnifiedConsoleView: View {
     @AppStorage(
         "console.navigationCard.navigationMode",
         store: CorptieAppEnvironment.userDefaults
-    ) var navigationModeRawValue = ConsoleNavigationMode.workRail.rawValue
+    ) var navigationModeRawValue = ConsoleNavigationMode.workOutline.rawValue
+    @AppStorage("console.workOutline.sort", store: CorptieAppEnvironment.userDefaults)
+    var outlineSortRaw = WorkOutlineSort.standard.rawValue
     @StateObject var outlineExpansionPreferences = ConsoleOutlineExpansionPreferences()
     @State var cardAttentionCount = 0
     @State var cardSelectionExplicitlyCleared = false
@@ -262,13 +264,7 @@ struct UnifiedConsoleView: View {
 
     var consoleNavigationContent: some View {
         HStack(spacing: 0) {
-            if navigationMode == .workRail {
-                workRail
-                    .frame(width: 64)
-
-                unifiedTaskSidebar
-                    .frame(maxWidth: .infinity)
-            } else if navigationMode == .workOutline {
+            if navigationMode == .workOutline {
                 unifiedWorkOutlineSidebar
                     .frame(maxWidth: .infinity)
             }
@@ -283,14 +279,18 @@ struct UnifiedConsoleView: View {
         .modifier(ConsoleTopEdgeEffectModifier())
         .overlay(alignment: .topLeading) {
             HStack(spacing: 6) {
-                navigationModeToggle.labelsHidden().frame(width: 108)
-                    .platformGlassSurface(in: Capsule(), interactive: true)
+                outlineSortMenu
+                    .platformGlassSurface(in: Circle(), interactive: true)
+                navigationModeToggle.labelsHidden()
+                    .platformGlassSurface(in: Circle(), interactive: true)
                 searchToggleButton
                     .platformGlassSurface(in: Circle(), interactive: true)
                 taskArchiveToggle
                     .platformGlassSurface(in: Circle(), interactive: true)
+                outlineCreationMenu
+                    .platformGlassSurface(in: Circle(), interactive: true)
             }
-            .padding(.leading, navigationMode == .workRail ? 72 : 8)
+            .padding(.leading, 8)
             .padding(.top, 3)
         }
     }
@@ -299,41 +299,47 @@ struct UnifiedConsoleView: View {
         ConsoleNavigationMode.resolved(navigationModeRawValue)
     }
 
-    var usesWorkOutlineBinding: Binding<Bool> {
-        Binding(
-            get: { navigationMode == .workOutline },
-            set: { navigationModeRawValue = $0
-                ? ConsoleNavigationMode.workOutline.rawValue
-                : ConsoleNavigationMode.workRail.rawValue }
-        )
+    var outlineSort: WorkOutlineSort {
+        WorkOutlineSort(rawValue: outlineSortRaw) ?? .standard
+    }
+
+    var outlineSortMenu: some View {
+        Menu {
+            Picker("排序方式", selection: $outlineSortRaw) {
+                ForEach(WorkOutlineSort.allCases, id: \.rawValue) { mode in
+                    Text(mode.title).tag(mode.rawValue)
+                }
+            }
+        } label: {
+            Image(systemName: "arrow.up.arrow.down").frame(width: 24, height: 24)
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden)
+        .accessibilityLabel("排序方式").accessibilityValue(outlineSort.title)
+        .accessibilityIdentifier("work-outline-sort")
+        .help("排序方式")
     }
 
     var navigationModeToggle: some View {
         Menu {
-            navigationModeOption(.workRail, title: "经典")
             navigationModeOption(.workOutline, title: "分组")
             navigationModeOption(.taskCards, title: "卡片 · 实验")
         } label: {
-            HStack(spacing: 5) {
-                Text(navigationModeTitle)
-                    .lineLimit(1)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-            }
+            Image(systemName: navigationMode == .taskCards ? "rectangle.grid.2x2" : "rectangle.3.group")
             .font(.system(size: 11, weight: .medium))
-            .frame(width: 108, height: 24)
-            .contentShape(Capsule())
+            .frame(width: 24, height: 24)
+            .contentShape(Circle())
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .accessibilityLabel("视图")
         .accessibilityValue(navigationMode.accessibilityValue)
+        .accessibilityIdentifier("work-outline-view")
+        .help(navigationModeTitle)
     }
 
     private var navigationModeTitle: String {
         switch navigationMode {
-        case .workRail: "经典"
         case .workOutline: "分组"
         case .taskCards: "卡片 · 实验"
         }
@@ -361,16 +367,12 @@ struct UnifiedConsoleView: View {
                 Spacer()
                 Button("刷新", systemImage: "arrow.clockwise") { cardRefreshRevision &+= 1 }
                     .labelStyle(.iconOnly).help("刷新重点 Task")
-                Menu {
-                    Button("新建聊天") { showNewSessionCreation = true }
-                    Button("新建 Work") { isCreatingWork = true }
-                    Button("新建 Task") { presentTaskCreation(for: selectedWorkId) }
-                } label: { Image(systemName: "plus") }
             }.padding(10)
             if isSearching { sessionSearchBar.padding(.horizontal, 10) }
             ConsoleCardWorkspace(isActive: navigationMode == .taskCards, works: entityClient.works, tasks: entityClient.tasks,
                 sessions: sessionIndexStore.rows.map(\.session), selectedTaskID: selectedTaskId,
                 selectedSessionID: selectionController.selectedSessionID, query: searchText,
+                sortMode: outlineSort, showsArchive: isShowingWorkerArchive,
                 attentionCount: $cardAttentionCount, refreshRevision: cardRefreshRevision,
                 openChat: { selectSessionAfterHighlight($0) }, createChat: { showNewSessionCreation = true },
                 openTask: { task, session in
@@ -403,18 +405,6 @@ struct UnifiedConsoleView: View {
         )) { NewSessionCreationSheet(fixedKind: .assistantChat) }
     }
 
-
-    var workRail: some View {
-        ConsoleWorkRail(
-            works: entityClient.works,
-            sessions: sessionIndexStore.rows.map(\.session),
-            selectedWorkId: selectedWorkId,
-            selectAssistantSpace: selectAssistantSpace,
-            selectWorkSpace: selectWorkSpace,
-            editWork: { workPendingEdit = $0 },
-            deleteWork: { workPendingDeletion = $0 }
-        )
-    }
 
 
 
@@ -717,6 +707,7 @@ struct UnifiedConsoleView: View {
         }
         .buttonStyle(.plain)
         .help(L10n("Search sessions"))
+        .accessibilityLabel("搜索").accessibilityIdentifier("work-outline-search")
     }
 
     var sessionSearchBar: some View {
@@ -815,7 +806,7 @@ struct UnifiedConsoleView: View {
         backendClient.select(session: session)
     }
 
-    var floatingCreationMenu: some View {
+    var outlineCreationMenu: some View {
         Menu {
             if selectedWork == nil {
                 Button(L10n("New Assistant Session"), systemImage: "bubble.left.and.bubble.right") {
@@ -833,16 +824,16 @@ struct UnifiedConsoleView: View {
             }
         } label: {
             Image(systemName: "plus")
-                .font(.system(size: 17, weight: .semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.primary)
-                .frame(width: 42, height: 42)
+                .frame(width: 24, height: 24)
                 .contentShape(Circle())
-                .modifier(FloatingCreationButtonGlassModifier())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
         .help(L10n("Create"))
+        .accessibilityLabel("新增 Work 或 Task").accessibilityIdentifier("work-outline-create")
     }
 
     func presentTaskCreation(for workID: String?) {
@@ -860,6 +851,7 @@ struct UnifiedConsoleView: View {
         .buttonStyle(.plain)
         .help(isShowingWorkerArchive ? L10n("返回活动 Task") : L10n("查看归档 Task"))
         .accessibilityLabel(isShowingWorkerArchive ? L10n("返回活动 Task") : L10n("查看归档 Task"))
+        .accessibilityIdentifier("work-outline-archive")
     }
 
     var workerSessionFunctionBar: some View {

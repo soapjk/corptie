@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import CorptieClientCore
 @testable import CorptieMac
 
 @Suite("Automation terminal notifications")
@@ -67,6 +68,23 @@ struct AutomationNotificationTests {
         #expect(router.pendingAutomationId == "scheduled_task:target")
         router.consumeAutomation("scheduled_task:target")
         #expect(router.pendingAutomationId == nil)
+    }
+
+    @Test @MainActor func notificationBodyIdentifiesOwningWorkAndTask() throws {
+        let event = try #require(AutomationTerminalNotificationEvent.decode(
+            eventName: "ScheduledSessionRunCompleted",
+            data: envelope(eventID: "event:context", scheduleType: "once")
+        ))
+        let body = AutomationNotificationContent.body(
+            for: event,
+            resourceContext: NotificationResourceContext(
+                workName: "BTC 五分钟反转策略",
+                taskTitle: "实盘全链路本地开发"
+            )
+        )
+
+        #expect(body.contains("Work：BTC 五分钟反转策略 · Task：实盘全链路本地开发"))
+        #expect(body.contains("计划任务：Nightly review"))
     }
 
     @Test func backgroundSessionActivationNeverBecomesForegroundNavigation() throws {

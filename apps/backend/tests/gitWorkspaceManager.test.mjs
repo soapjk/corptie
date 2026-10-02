@@ -1133,6 +1133,70 @@ test("ensures one deterministic Task Worktree and reuses it on retry", async () 
   }
 });
 
+test("uses the shortest available UUID prefix for Task Worktrees and preserves ownership on retry", async () => {
+  const fixture = await createFixture("task-worktree-short-uuid");
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  const root = join(fixture.directory, `.corptie-worktrees-${fixture.repositoryId.split(":").at(-1)}`);
+  try {
+    const firstTaskId = "task:983714ea-d464-4023-b76f-e716d560e2cd";
+    const secondTaskId = "task:983714eb-d464-4023-b76f-e716d560e2cd";
+    const first = await manager.ensureTaskWorktreeForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      taskId: firstTaskId
+    });
+    const retried = await manager.ensureTaskWorktreeForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      taskId: firstTaskId
+    });
+    const second = await manager.ensureTaskWorktreeForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      taskId: secondTaskId
+    });
+
+    assert.equal(first.path, await realpath(join(root, "9837")));
+    assert.equal(first.branchName, "task/9837");
+    assert.equal(retried.worktreeId, first.worktreeId);
+    assert.equal(retried.reused, true);
+    assert.equal(second.path, await realpath(join(root, "98371")));
+    assert.equal(second.branchName, "task/98371");
+    assert.notEqual(second.worktreeId, first.worktreeId);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("reuses an existing legacy full-UUID Task Worktree without renaming it", async () => {
+  const fixture = await createFixture("task-worktree-legacy-uuid");
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  const identifier = "983714ea-d464-4023-b76f-e716d560e2cd";
+  const root = join(fixture.directory, `.corptie-worktrees-${fixture.repositoryId.split(":").at(-1)}`);
+  const legacyPath = join(root, identifier);
+  try {
+    await git(["worktree", "add", "-b", `task/${identifier}`, legacyPath, "HEAD"], fixture.repository);
+
+    const reused = await manager.ensureTaskWorktreeForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      taskId: `task:${identifier}`
+    });
+
+    assert.equal(reused.path, await realpath(legacyPath));
+    assert.equal(reused.branchName, `task/${identifier}`);
+    assert.equal(reused.reused, true);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("an unborn repository starts its first Task in the main checkout without inventing a commit", async () => {
   const fixture = await createFixture("task-unborn", { initialCommit: false });
   const manager = new GitWorkspaceManager({
