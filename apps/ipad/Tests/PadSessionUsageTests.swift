@@ -24,8 +24,8 @@ struct PadSessionUsageTests {
         let generation = workspace.timelineGeneration
         await workspace.loadUsage(api, sessionID: "session:a", routedID: "session:a", generation: generation)
         #expect(UsageProtocol.count == 1)
-        #expect(workspace.usage?.context?.usedTokens == 10)
-        #expect(workspace.usage?.account?.rateLimits?.primary?.usedPercent == 25)
+        #expect(workspace.selectedSessionUsage?.context?.usedTokens == 10)
+        #expect(workspace.selectedSessionUsage?.account?.rateLimits?.primary?.usedPercent == 25)
 
         await workspace.loadUsage(api, sessionID: "session:a", routedID: "session:a", generation: generation)
         #expect(UsageProtocol.count == 1, "unchanged timeline must not re-read usage")
@@ -40,21 +40,21 @@ struct PadSessionUsageTests {
         let generation = workspace.timelineGeneration
         workspace.selection = "session:other"
         await workspace.loadUsage(api, sessionID: "session:a", routedID: "session:a", generation: generation)
-        #expect(workspace.usage == nil)
+        #expect(workspace.selectedSessionUsage == nil)
 
         workspace.selection = "session:a"
         workspace.clearSelectionState()
         await workspace.loadUsage(api, sessionID: "session:a", routedID: "session:a", generation: workspace.timelineGeneration)
-        #expect(workspace.usage != nil)
+        #expect(workspace.selectedSessionUsage != nil)
         workspace.applyLatestWindow([ClientMessage(id: "m2", text: "x")], cursor: nil, revision: 3)
         UsageProtocol.unsupported = true
         await workspace.loadUsage(api, sessionID: "session:a", routedID: "session:a", generation: workspace.timelineGeneration)
-        #expect(workspace.usage == nil)
+        #expect(workspace.selectedSessionUsage == nil)
         let reads = UsageProtocol.count
         await workspace.loadUsage(api, sessionID: "session:a", routedID: "session:a", generation: workspace.timelineGeneration)
         #expect(UsageProtocol.count == reads, "a 409 is remembered for this revision")
         workspace.clearSelectionState()
-        #expect(workspace.usage == nil)
+        #expect(workspace.selectedSessionUsage == nil)
     }
 
     @Test func sharedQuotaDoesNotRevertWhenSwitchingBetweenSessions() throws {
@@ -78,19 +78,38 @@ struct PadSessionUsageTests {
         workspace.saveResidentState(for: "session:b")
 
         workspace.selectSession(from: "session:b", to: "session:a")
-        #expect(workspace.usage?.context?.usedTokens == 10)
-        #expect(workspace.usage?.account?.rateLimits?.primary?.usedPercent == 50)
+        #expect(workspace.selectedSessionUsage?.context?.usedTokens == 10)
+        #expect(workspace.selectedSessionUsage?.account?.rateLimits?.primary?.usedPercent == 50)
         workspace.applyUsage(oldA) // A delayed resident push must not revert the account quota.
-        #expect(workspace.usage?.account?.rateLimits?.primary?.usedPercent == 50)
+        #expect(workspace.selectedSessionUsage?.account?.rateLimits?.primary?.usedPercent == 50)
         workspace.selectSession(from: "session:a", to: "session:b")
-        #expect(workspace.usage?.context?.usedTokens == 40)
-        #expect(workspace.usage?.account?.rateLimits?.primary?.usedPercent == 50)
+        #expect(workspace.selectedSessionUsage?.context?.usedTokens == 40)
+        #expect(workspace.selectedSessionUsage?.account?.rateLimits?.primary?.usedPercent == 50)
 
         workspace.applyUsage(snapshot("session:b", used: 40, quotaUsed: 70, model: "other"), authoritative: true)
-        #expect(workspace.usage?.account?.rateLimits?.primary?.usedPercent == 70)
+        #expect(workspace.selectedSessionUsage?.account?.rateLimits?.primary?.usedPercent == 70)
         workspace.selectSession(from: "session:b", to: "session:a")
-        #expect(workspace.usage?.account?.rateLimits?.primary?.usedPercent == 50,
+        #expect(workspace.selectedSessionUsage?.account?.rateLimits?.primary?.usedPercent == 50,
             "a different model must not replace core-x quota")
+    }
+
+    @Test func routeIdentityRejectsAnAccountFromThePreviousProvider() throws {
+        let (workspace, _) = try fixture()
+        let oldAccount = ClientSessionUsage.Account(available: true, provider: "claude-agent-sdk", model: "claude-opus",
+            rateLimits: nil, rateLimitsByLimitId: nil)
+        workspace.applyUsage(ClientSessionUsage(sessionId: "session:a",
+            route: .init(providerId: "claude-agent-sdk", modelId: "claude-opus",
+                bindingId: "binding:old", routingVersion: 1),
+            context: nil, account: oldAccount), authoritative: true)
+        #expect(workspace.selectedSessionUsage?.account?.provider == "claude-agent-sdk")
+
+        workspace.applyUsage(ClientSessionUsage(sessionId: "session:a",
+            route: .init(providerId: "codex-app-server", modelId: "gpt-6.1-sol",
+                bindingId: "binding:new", routingVersion: 2),
+            context: nil, account: oldAccount), authoritative: true)
+        #expect(workspace.selectedSessionUsage?.route?.providerId == "codex-app-server")
+        #expect(workspace.selectedSessionUsage?.account == nil,
+            "a new route must never display quota from the previous Provider/model")
     }
 }
 

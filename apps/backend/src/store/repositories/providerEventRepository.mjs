@@ -222,51 +222,87 @@ export class ProviderEventRepository {
     ));
   }
 
-  upsertSessionUsageSnapshot({
-    sessionId,
-    providerId,
-    model = null,
-    context = null,
-    account = null,
-    updatedAt = null
-  }) {
+  upsertSessionContextUsage({ sessionId, bindingId = null, routingVersion = null,
+    providerId, model = null, context, updatedAt = null }) {
     const timestamp = updatedAt ?? createdAtFromOrNow();
     this.db.run(
-      `INSERT INTO session_usage_snapshots (
-        session_id, provider_id, model, context_json, account_json, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO session_context_usage_snapshots (
+        session_id, binding_id, routing_version, provider_id, model_id, context_json, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(session_id) DO UPDATE SET
+        binding_id=excluded.binding_id,
+        routing_version=excluded.routing_version,
         provider_id=excluded.provider_id,
-        model=COALESCE(excluded.model, session_usage_snapshots.model),
-        context_json=COALESCE(excluded.context_json, session_usage_snapshots.context_json),
-        account_json=COALESCE(excluded.account_json, session_usage_snapshots.account_json),
+        model_id=excluded.model_id,
+        context_json=excluded.context_json,
         updated_at=excluded.updated_at`,
-      [
-        sessionId,
-        providerId,
-        model,
-        context == null ? null : JSON.stringify(context),
-        account == null ? null : JSON.stringify(account),
-        timestamp
-      ]
+      [sessionId, bindingId, routingVersion, providerId, model,
+        JSON.stringify(context), timestamp]
     );
-    return this.getSessionUsageSnapshot(sessionId);
+    return this.getSessionContextUsage(sessionId);
   }
 
-  getSessionUsageSnapshot(sessionId) {
+  getSessionContextUsage(sessionId) {
     const row = this.selectOne(
-      "SELECT * FROM session_usage_snapshots WHERE session_id = ?",
+      "SELECT * FROM session_context_usage_snapshots WHERE session_id = ?",
       [sessionId]
     );
     if (!row) return null;
     return {
       sessionId: row.session_id,
+      bindingId: row.binding_id ?? null,
+      routingVersion: row.routing_version ?? null,
       providerId: row.provider_id,
-      model: row.model ?? null,
+      model: row.model_id ?? null,
       context: parseJson(row.context_json, null),
-      account: parseJson(row.account_json, null),
       updatedAt: row.updated_at
     };
+  }
+
+  upsertProviderModelUsage({ providerId, model = null, account, observedAt = null, updatedAt = null }) {
+    const timestamp = updatedAt ?? createdAtFromOrNow();
+    const observation = observedAt ?? timestamp;
+    this.db.run(
+      `INSERT INTO provider_model_usage_snapshots (
+        provider_id, model_id, account_json, observed_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(provider_id, model_id) DO UPDATE SET
+        account_json=excluded.account_json,
+        observed_at=excluded.observed_at,
+        updated_at=excluded.updated_at`,
+      [providerId, model ?? "", JSON.stringify(account), observation, timestamp]
+    );
+    return this.getProviderModelUsage(providerId, model);
+  }
+
+  getProviderModelUsage(providerId, model = null) {
+    const row = this.selectOne(
+      "SELECT * FROM provider_model_usage_snapshots WHERE provider_id = ? AND model_id = ?",
+      [providerId, model ?? ""]
+    );
+    if (!row) return null;
+    return { providerId: row.provider_id, model: row.model_id || null,
+      account: parseJson(row.account_json, null), observedAt: row.observed_at, updatedAt: row.updated_at };
+  }
+
+  // Compatibility projection for older callers. Account fallback is deliberately
+  // resolved by the context's exact provider/model key, never by Session ownership.
+  upsertSessionUsageSnapshot({ sessionId, providerId, model = null, context = null,
+    account = null, updatedAt = null }) {
+    if (context != null) this.upsertSessionContextUsage({
+      sessionId, providerId, model, context, updatedAt
+    });
+    if (account != null) this.upsertProviderModelUsage({
+      providerId, model: account.model ?? model, account, updatedAt
+    });
+    return this.getSessionUsageSnapshot(sessionId);
+  }
+
+  getSessionUsageSnapshot(sessionId) {
+    const context = this.getSessionContextUsage(sessionId);
+    if (!context) return null;
+    const providerModel = this.getProviderModelUsage(context.providerId, context.model);
+    return { ...context, account: providerModel?.account ?? null };
   }
 
   listUnsettledSessionTurns(sessionId) {

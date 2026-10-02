@@ -789,10 +789,10 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
 private enum NativeTimelineCardPalette {
     static let secondaryText = NSColor(calibratedRed: 0.24, green: 0.27, blue: 0.29, alpha: 1)
     static let mutedText = NSColor(calibratedRed: 0.38, green: 0.41, blue: 0.43, alpha: 1)
-    static let userText = NSColor(calibratedRed: 0.22, green: 0.35, blue: 0.62, alpha: 1)
+    static let userText = MessageTextCardPalette.userNativeForeground
     static let agentText = NSColor(calibratedRed: 0.18, green: 0.48, blue: 0.27, alpha: 1)
     static let collaborationText = NSColor(calibratedRed: 0.30, green: 0.34, blue: 0.68, alpha: 1)
-    static let userBackground = NSColor(calibratedRed: 0.945, green: 0.965, blue: 0.988, alpha: 1)
+    static let userBackground = MessageTextCardPalette.userNativeBackground
     static let agentBackground = NSColor(calibratedRed: 0.952, green: 0.961, blue: 0.941, alpha: 1)
     static let userBorder = NSColor(calibratedRed: 0.45, green: 0.58, blue: 0.76, alpha: 0.22)
 }

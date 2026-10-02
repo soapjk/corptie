@@ -423,7 +423,19 @@ struct ConversationView: View {
                         Group {
                         switch entry.kind {
                         case .message(let message):
-                            if message.type == "userInput" {
+                            if message.presentationKind == .collaborationMessage
+                                || message.presentationKind == .collaborationConfirmation {
+                                PadCollaborationCard(message: message, connection: connection, sessionID: sessionID,
+                                    canRespond: workspace.capabilities?.collaborationConfirmation?.available == true,
+                                    onSubmitted: {
+                                        let revision = workspace.lastTimelineRevision
+                                        await workspace.waitForRealtimeTimelineOrFallback(connection, after: revision)
+                                    }).id(message.id)
+                            } else if message.presentationKind == .automationEvent
+                                        || message.presentationKind == .systemEvent
+                                        || message.presentationKind == .unknown {
+                                PadSpecialEventCard(message: message).id(message.id)
+                            } else if message.type == "userInput" {
                                 PadUserInputCard(message: message, connection: connection, sessionID: sessionID,
                                     onSubmitted: {
                                         let revision = workspace.lastTimelineRevision
@@ -917,7 +929,7 @@ struct ConversationView: View {
     private var conversationStatusRow: some View {
         HStack(spacing: 8) {
             PadThreadMetaView(session: workspace.sessionsByID[sessionID],
-                              capabilities: workspace.capabilities, usage: workspace.usage,
+                              capabilities: workspace.capabilities, usage: workspace.selectedSessionUsage,
                               refreshAccount: { await workspace.refreshFreshAccountUsage(connection, sessionID: sessionID) },
                               compactUsage: UIDevice.current.userInterfaceIdiom == .phone)
             Spacer(minLength: 0)
@@ -1618,6 +1630,199 @@ private struct PadApprovalCard: View {
     }
 }
 
+private struct PadCollaborationCard: View {
+    let message: ClientMessage
+    let connection: PadConnection
+    let sessionID: String
+    let canRespond: Bool
+    let onSubmitted: () async -> Void
+    @State private var isExpanded = false
+    @State private var submitting = false
+    @State private var resolvedStatus: String?
+    @State private var errorText: String?
+
+    private var presentation: ClientCollaborationPresentation? { message.collaborationPresentation }
+    private var status: String { resolvedStatus ?? presentation?.status ?? "queued" }
+    private var isPending: Bool {
+        presentation?.isConfirmation == true && status.lowercased() == "pending"
+    }
+    private var title: String {
+        if presentation?.isChannelAuthorization == true { return "授权 Session 通信渠道" }
+        if presentation?.isConfirmation == true { return "确认发送协作任务" }
+        return "跨会话协作 · \(kindLabel)"
+    }
+    private var kindLabel: String {
+        switch presentation?.messageKind.lowercased() {
+        case "change_request": return "修改请求"
+        case "needs_information": return "澄清请求"
+        case "update_ready": return "结果"
+        case "verification_result": return "验收结果"
+        case "question": return "请求"
+        default: return "协作消息"
+        }
+    }
+    private var statusLabel: String {
+        switch status.lowercased() {
+        case "sent", "delivered": return "已发送"
+        case "confirmed": return presentation?.isChannelAuthorization == true ? "已授权" : "已确认"
+        case "completed", "complete": return "已处理"
+        case "running", "processing": return "处理中"
+        case "failed": return "处理失败"
+        case "rejected", "cancelled", "canceled": return "已取消"
+        default: return presentation?.isConfirmation == true ? "等待确认" : "等待处理"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 7) {
+                Image(systemName: presentation?.isChannelAuthorization == true
+                      ? "bubble.left.and.bubble.right.fill" : "arrow.triangle.branch")
+                    .foregroundStyle(.orange)
+                    .accessibilityHidden(true)
+                Text(title).font(.headline)
+                Spacer(minLength: 8)
+                Text(statusLabel).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            }
+            if let source = presentation?.sourceSession, let target = presentation?.targetSession {
+                Text("\(source) → \(target)")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    .accessibilityLabel("来源 Session：\(source)，目标 Session：\(target)")
+            }
+            if let body = presentation?.body, !body.isEmpty {
+                PadMessageText(text: body, fromUser: false, isTextSelectionEnabled: .constant(true))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if hasDetails {
+                DisclosureGroup(isExpanded: $isExpanded) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        detail("来源 Work", presentation?.sourceWork)
+                        detail("目标 Work", presentation?.targetWork)
+                        detail("来源 Task", presentation?.sourceTaskID)
+                        detail("目标 Task", presentation?.targetTaskID)
+                        detail("Channel", presentation?.channelID)
+                        if let criteria = presentation?.acceptanceCriteria, !criteria.isEmpty {
+                            Text("验收标准").font(.caption.weight(.semibold)).padding(.top, 2)
+                            ForEach(Array(criteria.enumerated()), id: \.offset) { _, criterion in
+                                Text("• \(criterion)").font(.caption).textSelection(.enabled)
+                            }
+                        }
+                    }
+                    .padding(.top, 6)
+                } label: {
+                    Text("路由详情").font(.caption.weight(.semibold))
+                }
+            }
+            if isPending {
+                if canRespond {
+                    HStack(spacing: 10) {
+                        Button(presentation?.isChannelAuthorization == true ? "授权" : "确认发送") {
+                            Task { await respond(approve: true) }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(submitting)
+                        .accessibilityIdentifier("collaboration-confirm")
+                        Button("取消", role: .cancel) { Task { await respond(approve: false) } }
+                            .buttonStyle(.bordered)
+                            .disabled(submitting)
+                            .accessibilityIdentifier("collaboration-reject")
+                    }
+                    .frame(minHeight: 44)
+                } else {
+                    Text("当前连接不支持处理此协作确认。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if submitting { Text("正在提交，等待会话同步…").font(.caption).foregroundStyle(.secondary) }
+            if let errorText { Text(errorText).font(.caption).foregroundStyle(.red) }
+        }
+        .padding(14)
+        .frame(maxWidth: 560, alignment: .leading)
+        .background(Color.orange.opacity(0.065), in: RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(Color.orange.opacity(0.34), lineWidth: 1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(presentation?.isConfirmation == true
+            ? "conversation-collaboration-confirmation" : "conversation-collaboration-message")
+    }
+
+    private var hasDetails: Bool {
+        [presentation?.sourceWork, presentation?.targetWork, presentation?.sourceTaskID,
+         presentation?.targetTaskID, presentation?.channelID].contains { $0 != nil }
+        || !(presentation?.acceptanceCriteria.isEmpty ?? true)
+    }
+
+    @ViewBuilder private func detail(_ label: String, _ value: String?) -> some View {
+        if let value, !value.isEmpty {
+            LabeledContent(label, value: value).font(.caption).textSelection(.enabled)
+        }
+    }
+
+    private func respond(approve: Bool) async {
+        guard !submitting, isPending else { return }
+        submitting = true
+        errorText = nil
+        defer { submitting = false }
+        do {
+            let api = ClientSessionAPI(transport: try await connection.transport())
+            let response = try await api.respondToCollaborationConfirmation(
+                sessionId: sessionID, itemId: message.id, approve: approve)
+            resolvedStatus = response.status
+            await onSubmitted()
+        } catch {
+            errorText = PadConnection.explain(error)
+        }
+    }
+}
+
+private struct PadSpecialEventCard: View {
+    let message: ClientMessage
+
+    private var isSystemEvent: Bool { message.presentationKind == .systemEvent }
+    private var title: String {
+        if message.presentationKind == .automationEvent { return message.automationName ?? "自动化事件" }
+        if isSystemEvent { return "System Event · \(message.systemEventKind ?? "diagnostic")" }
+        return message.title ?? "Timeline 事件"
+    }
+    private var bodyText: String {
+        ConversationMessageDisplayText.resolve(text: message.text,
+            presentationText: message.presentationText, title: message.title, type: message.type)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: isSystemEvent ? "exclamationmark.triangle" : "clock.arrow.circlepath")
+                    .foregroundStyle(isSystemEvent ? .orange : .secondary)
+                    .accessibilityHidden(true)
+                Text(title).font(.headline)
+            }
+            if let eventType = message.automationEventType {
+                Text(eventType).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            }
+            if !bodyText.isEmpty {
+                PadMessageText(text: bodyText, fromUser: false, isTextSelectionEnabled: .constant(true))
+            }
+            if let reason = message.systemEventReason {
+                LabeledContent("Reason", value: reason).font(.caption).textSelection(.enabled)
+            }
+            if isSystemEvent {
+                Text("此事件不可作为协作请求执行。").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: 560, alignment: .leading)
+        .background(Color.secondary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14))
+        .overlay { RoundedRectangle(cornerRadius: 14).strokeBorder(Color.secondary.opacity(0.14)) }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(isSystemEvent ? "conversation-system-event" : "conversation-special-event")
+    }
+}
+
 private struct PadUserInputCard: View {
     let message: ClientMessage
     let connection: PadConnection
@@ -1691,7 +1896,7 @@ private struct MobileMessageBubble: View {
     let canSendSuggestedReply: Bool
     let sendSuggestedReply: (String) -> Void
 
-    private var fromUser: Bool { message.type == "userMessage" }
+    private var fromUser: Bool { message.presentationKind == .userMessage }
     private var displayText: String {
         ConversationMessageDisplayText.resolve(text: message.text,
             presentationText: message.presentationText, title: message.title, type: message.type)

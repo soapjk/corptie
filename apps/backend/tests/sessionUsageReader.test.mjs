@@ -4,13 +4,17 @@ import { createSessionUsageReader } from "../src/application/sessionUsageReader.
 
 function fixture() {
   const calls = [];
-  const stored = { account: { available: true, model: "model", remaining: 10 }, context: { tokens: 5 } };
+  const stored = { account: { available: true, provider: "test-provider", model: "model", remaining: 10 }, context: { tokens: 5 } };
   const service = { readAccountUsage: async () => stored.account };
   const reader = createSessionUsageReader({
     store: {
       getSession: (id) => id === "one" ? { external: { provider: "test-provider", currentModel: "model" } } : null,
-      getSessionUsageSnapshot: () => stored,
-      upsertSessionUsageSnapshot: (value) => { calls.push(["persist", value]); return value; }
+      getLogicalSessionByLegacySessionId: (id) => id === "one" ? { activeBinding: {
+        bindingId: "binding:one", providerId: "test-provider", routingVersion: 3
+      } } : null,
+      getSessionContextUsage: () => ({ providerId: "test-provider", bindingId: "binding:one", context: stored.context }),
+      getProviderModelUsage: () => ({ account: stored.account }),
+      upsertProviderModelUsage: (value) => { calls.push(["persist", value]); return value; }
     },
     sessionApplicationService: service,
     publishTimeline: (id) => calls.push(["publish", id]),
@@ -29,6 +33,7 @@ test("account refresh preserves stored context and publishes only a changed acco
   await f.reader.readSessionUsage("one");
   assert.deepEqual(f.calls.map(([name]) => name), ["persist", "publish"]);
   assert.equal(f.calls[0][1].providerId, "test-provider");
+  assert.equal(f.calls[0][1].model, "model");
   assert.deepEqual(f.calls[1], ["publish", "one"]);
 });
 
@@ -36,7 +41,8 @@ test("failed account refresh returns stored quota without writing or publishing"
   const f = fixture();
   f.service.readAccountUsage = async () => { throw new Error("offline"); };
   assert.deepEqual(await f.reader.readSessionUsage("one"), {
-    account: f.stored.account, accountFresh: false, context: f.stored.context, resetForecast: null
+    account: f.stored.account, accountFresh: false, context: f.stored.context, resetForecast: null,
+    route: { providerId: "test-provider", model: "model", bindingId: "binding:one", routingVersion: 3 }
   });
   assert.deepEqual(f.calls, []);
   await assert.rejects(

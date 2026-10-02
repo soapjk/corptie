@@ -255,7 +255,8 @@ struct ThreadItemView: View {
     }
 
     private var isCollaborationConfirmationItem: Bool {
-        item.presentationRole == "collaboration_confirmation" || item.type == "collaborationConfirmation"
+        ConversationPresentationKind.resolve(
+            type: item.type, presentationRole: item.presentationRole) == .collaborationConfirmation
     }
 
     private var collaborationConfirmationStatus: String {
@@ -441,8 +442,8 @@ struct ThreadItemView: View {
     }
 
     private var isCollaborationItem: Bool {
-        item.type == "userMessage"
-            && item.presentationRole == "collaboration"
+        ConversationPresentationKind.resolve(
+            type: item.type, presentationRole: item.presentationRole) == .collaborationMessage
     }
 
     private var collaborationPresentationText: String {
@@ -941,7 +942,7 @@ struct ThreadItemView: View {
         // 会话页（Sessions Tab）：用户消息右侧、Agent 消息左侧的气泡
         if !isLiquidGlass {
             if item.type == "userMessage" {
-                return CorptiePalette.softBlue.opacity(0.16)
+                return MessageTextCardPalette.userBackground
             }
             if item.type == "agentMessage" {
                 return Color(red: 0.952, green: 0.961, blue: 0.941)
@@ -964,7 +965,7 @@ struct ThreadItemView: View {
         // 会话页：用户/Agent 消息气泡的细边框
         if !isLiquidGlass {
             if item.type == "userMessage" {
-                return CorptiePalette.softBlue.opacity(0.18)
+                return .clear
             }
             if item.type == "agentMessage" {
                 return .clear
@@ -986,7 +987,7 @@ struct ThreadItemView: View {
             return CorptiePalette.periwinkle
         }
         return switch item.type {
-        case "userMessage": CorptiePalette.userText
+        case "userMessage": MessageTextCardPalette.userForeground
         case "approval", "choice": CorptiePalette.amber
         case "agentMessage": CorptiePalette.agentText
         case "commandExecution": CorptiePalette.amber

@@ -125,6 +125,50 @@ export function ensureProviderEventPipelineTables({ db, ensureColumn }) {
       updated_at TEXT NOT NULL,
       FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS session_context_usage_snapshots (
+      session_id TEXT PRIMARY KEY,
+      binding_id TEXT,
+      routing_version INTEGER,
+      provider_id TEXT NOT NULL,
+      model_id TEXT,
+      context_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS provider_model_usage_snapshots (
+      provider_id TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      account_json TEXT NOT NULL,
+      observed_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (provider_id, model_id)
+    );
+  `);
+  // Preserve legacy snapshots while moving ownership to the two actual domains.
+  // The old table remains read-only compatibility data for one release.
+  db.run(`
+    INSERT OR IGNORE INTO session_context_usage_snapshots (
+      session_id, binding_id, routing_version, provider_id, model_id, context_json, updated_at
+    )
+    SELECT session_id, NULL, NULL, provider_id, model, context_json, updated_at
+    FROM session_usage_snapshots
+    WHERE context_json IS NOT NULL;
+
+    INSERT OR IGNORE INTO provider_model_usage_snapshots (
+      provider_id, model_id, account_json, observed_at, updated_at
+    )
+    SELECT provider_id, COALESCE(model, ''), account_json, updated_at, updated_at
+    FROM (
+      SELECT *, ROW_NUMBER() OVER (
+        PARTITION BY provider_id, COALESCE(model, '')
+        ORDER BY updated_at DESC, session_id DESC
+      ) AS usage_rank
+      FROM session_usage_snapshots
+      WHERE account_json IS NOT NULL
+    )
+    WHERE usage_rank = 1;
   `);
   ensureColumn("provider_event_inbox", "event_fingerprint", "TEXT");
   ensureColumn(
