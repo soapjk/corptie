@@ -645,6 +645,27 @@ final class WorktreeManagementClient: ObservableObject {
     }
 
     @discardableResult
+    func prepareCommitPolicyResolution() async -> Bool {
+        guard let job, job.canHandleCommitPolicy else { return false }
+        if job.isWaitingForCommitPolicyDecision { return true }
+        isMutating = true
+        defer { isMutating = false }
+        do {
+            let envelope: WorktreeIntegrationJobEnvelope = try await post(
+                "worktree-management/jobs/\(job.id)/commit-policy-prepare",
+                body: [:]
+            )
+            self.job = envelope.job
+            errorMessage = nil
+            return envelope.job.isWaitingForCommitPolicyDecision
+        } catch {
+            errorMessage = error.localizedDescription
+            await refreshSelected()
+            return false
+        }
+    }
+
+    @discardableResult
     func ignoreBlockedMarkdownAndContinue() async -> Bool {
         guard let job, let blocker = job.commitPolicyBlocker,
               job.isWaitingForCommitPolicyDecision else { return false }

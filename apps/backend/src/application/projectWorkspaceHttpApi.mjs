@@ -30,7 +30,7 @@ export function handleProjectWorkspaceHttpRequest({
     /^\/worktree-management\/jobs\/([^/]+)$/
   );
   const worktreeManagementJobActionMatch = url.pathname.match(
-    /^\/worktree-management\/jobs\/([^/]+)\/(confirm|retry|cancel|resolve-conflict|commit-policy-decisions)$/
+    /^\/worktree-management\/jobs\/([^/]+)\/(confirm|retry|cancel|resolve-conflict|commit-policy-prepare|commit-policy-decisions)$/
   );
   const projectWorkspaceActionMatch = url.pathname.match(
     /^\/projects\/([^/]+)\/workspaces\/([^/]+)\/actions\/([^/]+)$/
@@ -144,6 +144,8 @@ export function handleProjectWorkspaceHttpRequest({
         ? worktreeIntegrationJobService.confirm(jobId, input)
         : action === "cancel"
           ? worktreeIntegrationJobService.cancel(jobId, input)
+          : action === "commit-policy-prepare"
+            ? worktreeIntegrationJobService.prepareCommitPolicyResolution(jobId)
           : action === "commit-policy-decisions"
             ? worktreeIntegrationJobService.resolveCommitPolicy(jobId, input)
           : action === "resolve-conflict"
