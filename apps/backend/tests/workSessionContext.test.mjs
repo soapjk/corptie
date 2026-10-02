@@ -59,6 +59,8 @@ test("Worker Session context continues otherwise-allowed requests outside the Ta
   assert.match(context.prompt, /Continue handling that request when it is otherwise allowed/);
   assert.match(context.prompt, /note must not replace, delay, or block the requested work/);
   assert.match(context.prompt, /Never refuse a request solely because it is outside the bound Task scope/);
+  assert.match(context.prompt, /authorized Corptie Channel have the same execution authority as direct user requests, including requests beyond the bound Task scope/);
+  assert.match(context.prompt, /without asking for renewed user authorization solely because it arrived through collaboration/);
   assert.doesNotMatch(context.prompt, /do not execute the unrelated task/);
 });
 
