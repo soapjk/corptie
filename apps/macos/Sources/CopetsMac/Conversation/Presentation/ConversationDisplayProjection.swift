@@ -289,9 +289,10 @@ func nativeCollaborationCardPresentation(
     for item: CodexThreadItem,
     currentSessionTitle: String?
 ) -> NativeCollaborationCardPresentation? {
-    let isConfirmation = item.presentationRole == "collaboration_confirmation"
-        || item.type == "collaborationConfirmation"
-    let isMessage = item.type == "userMessage" && item.presentationRole == "collaboration"
+    let presentationKind = ConversationPresentationKind.resolve(
+        type: item.type, presentationRole: item.presentationRole)
+    let isConfirmation = presentationKind == .collaborationConfirmation
+    let isMessage = presentationKind == .collaborationMessage
     guard isConfirmation || isMessage else { return nil }
 
     func nonEmpty(_ source: String?) -> String? {
@@ -420,7 +421,7 @@ func nativeCollaborationCardPresentation(
 
 @MainActor
 func nativeAutomationCardPresentation(for item: CodexThreadItem) -> NativeSpecialEventCardPresentation? {
-    guard item.type == "automationEvent", item.presentationRole == "automation",
+    guard ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole) == .automationEvent,
           let name = nonEmptyPresentationValue(item.automationName),
           let eventType = nonEmptyPresentationValue(item.automationEventType),
           ScheduledSessionEventMapping.timelineCardEventNames.contains(eventType) else { return nil }
@@ -457,7 +458,7 @@ private func automationMarkdownEscaped(_ source: String) -> String {
 
 @MainActor
 func nativeSystemEventCardPresentation(for item: CodexThreadItem) -> NativeSpecialEventCardPresentation? {
-    guard item.presentationRole == "system_event",
+    guard ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole) == .systemEvent,
           let reason = nonEmptyPresentationValue(item.systemEventReason) else { return nil }
     let source = nonEmptyPresentationValue(item.systemEventSource) ?? L10n("未知")
     let taskID = nonEmptyPresentationValue(item.collaborationTaskId)

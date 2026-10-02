@@ -8,7 +8,7 @@ function fixture() {
   const publisher = createProviderEventPublisher({
     store: {
       markEventOutboxPublished: (id) => calls.push(["published", id]),
-      getSessionUsageSnapshot: () => ({ context: { tokens: 12 } })
+      getSessionContextUsage: () => ({ context: { tokens: 12 } })
     },
     eventLog: { append: (event) => { calls.push(["event", event]); return { id: calls.length, ...event }; } },
     sseClients: new Set([{ write: (frame) => frames.push(frame) }]),
