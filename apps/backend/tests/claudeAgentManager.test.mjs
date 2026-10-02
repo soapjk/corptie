@@ -1472,3 +1472,24 @@ test("Claude uses the configured executable for ordinary Session queries", async
   await manager.ensureQueryStarted(manager.get("configured-binary"));
   assert.equal(options.pathToClaudeCodeExecutable, "/custom path/claude");
 });
+
+test("Claude fails an active Turn when the SDK query ends without a result", async () => {
+  const settled = [];
+  const manager = new ClaudeAgentManager({
+    onTurnSettled: event => settled.push(event),
+    query: ({ prompt }) => (async function* () {
+      for await (const _message of prompt) break;
+    })()
+  });
+  manager.start({ id: "claude-query-ended", cwd: "/tmp" });
+
+  await manager.send("claude-query-ended", "Continue", { turnId: "turn:query-ended" });
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(settled.length, 1);
+  assert.equal(settled[0].status, "failed");
+  assert.equal(settled[0].turnId, "turn:query-ended");
+  assert.equal(settled[0].error.code, "CLAUDE_STREAM_ENDED");
+  assert.equal(settled[0].error.retryable, true);
+  assert.equal(manager.detail("claude-query-ended").status, "failed");
+});
