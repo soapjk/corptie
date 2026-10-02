@@ -879,13 +879,15 @@ export class ClaudeAgentManager {
   }
 
   async consumeQuery(session) {
+    const query = session.query;
     try {
-      for await (const message of session.query) {
+      for await (const message of query) {
         this.handleSdkMessage(session, message);
       }
       console.log(`[claude-sdk] query ended id=${session.id} status=${session.status} turnState=${session.turnState}`);
-      if (!session.queryClosed) {
+      if (!session.queryClosed && session.query === query) {
         const incompleteTurn = Boolean(session.currentTurnId)
+          && session.status === "running"
           && ["running", "requires_action"].includes(session.turnState);
         session.query = null;
         session.queryTask = null;
@@ -899,19 +901,20 @@ export class ClaudeAgentManager {
           this.resolveAllPendingChoices(session, failure.message);
           session.pendingChoice = null;
           session.pendingDecision = null;
-          session.turnState = "idle";
-          session.status = "failed";
-          session.phase = "failed";
+          session.activeTaskIds.clear();
+          session.hiddenTaskIds.clear();
           this.appendItem(session, {
             type: "system",
             title: "模型连接中断",
             text: failure.message,
             status: "failed"
           });
-          this.notifyTurnSettled(session, {
+          this.settleClaudeResult(session, {
             turnId: session.currentTurnId,
-            status: "failed",
-            error: failure
+            succeeded: false,
+            text: failure.message,
+            failure,
+            notified: false
           });
         } else {
           session.turnState = "idle";
