@@ -107,12 +107,21 @@ export class SessionReadRepository {
     const sessionId = typeof options.sessionId === "string" && options.sessionId
       ? options.sessionId
       : null;
+    const workId = typeof options.workId === "string" && options.workId ? options.workId : null;
+    const taskId = typeof options.taskId === "string" && options.taskId ? options.taskId : null;
+    const includeArchived = options.includeArchived === true;
+    const queryTerms = typeof options.query === "string"
+      ? options.query.trim().split(/\s+/u).filter(Boolean).slice(0, 8)
+        .map((term) => `%${term.replaceAll("%", "\\%").replaceAll("_", "\\_")}%`) : [];
     const hasCursor = typeof cursor?.updatedAt === "string" && typeof cursor?.id === "string";
     const rows = this.selectAll(
       `${sessionProjectionSelectSQL()}
        WHERE sessions.deleted_at IS NULL
-         AND ${effectiveSessionArchivedSQL()} = ?
+         ${includeArchived ? "" : `AND ${effectiveSessionArchivedSQL()} = ?`}
          ${sessionId ? "AND sessions.id = ?" : ""}
+         ${workId ? "AND sessions.work_id = ?" : ""}
+         ${taskId ? "AND sessions.task_id = ?" : ""}
+         ${queryTerms.length ? `AND (${queryTerms.map(() => "sessions.title LIKE ? ESCAPE '\\' OR sessions.summary LIKE ? ESCAPE '\\'").join(" OR ")})` : ""}
          ${sessionKind ? "AND sessions.session_kind = ?" : ""}
          ${hasCursor ? `AND (
            sessions.updated_at < ?
@@ -121,8 +130,11 @@ export class SessionReadRepository {
        ORDER BY sessions.updated_at DESC, sessions.id DESC
        LIMIT ?`,
       [
-        archived,
+        ...(includeArchived ? [] : [archived]),
         ...(sessionId ? [sessionId] : []),
+        ...(workId ? [workId] : []),
+        ...(taskId ? [taskId] : []),
+        ...queryTerms.flatMap((term) => [term, term]),
         ...(sessionKind ? [sessionKind] : []),
         ...(hasCursor ? [cursor.updatedAt, cursor.updatedAt, cursor.id] : []),
         limit + 1

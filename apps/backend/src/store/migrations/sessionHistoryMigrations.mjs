@@ -162,6 +162,10 @@ export function migrateSessionItemIdentity({ selectAll, db }) {
     // The composite-aware process must remove it before accepting writes so
     // unrelated Sessions can finally retain the same Provider item id.
     db.run("DROP INDEX IF EXISTS idx_session_items_legacy_global_id_compat");
+    db.run(`CREATE INDEX IF NOT EXISTS idx_session_items_context_messages
+      ON session_items(session_id, created_at DESC, id DESC)
+      WHERE type IN ('userMessage', 'agentMessage')
+        AND COALESCE(presentation_role, '') NOT IN ('commentary', 'reasoning')`);
     return;
   }
 
@@ -207,6 +211,10 @@ export function migrateSessionItemIdentity({ selectAll, db }) {
     db.run("CREATE INDEX idx_session_items_session_id ON session_items(session_id, created_at)");
     db.run("CREATE INDEX idx_session_items_latest ON session_items(session_id, created_at DESC, id DESC)");
     db.run("CREATE INDEX idx_session_items_turn_window ON session_items(session_id, turn_id, created_at, id)");
+    db.run(`CREATE INDEX idx_session_items_context_messages
+      ON session_items(session_id, created_at DESC, id DESC)
+      WHERE type IN ('userMessage', 'agentMessage')
+        AND COALESCE(presentation_role, '') NOT IN ('commentary', 'reasoning')`);
     db.run("COMMIT");
   } catch (error) {
     db.run("ROLLBACK");
