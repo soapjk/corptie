@@ -67,7 +67,7 @@ export function createProviderEventPublisher({
     if (providerEvent.type === "usage.updated") {
       const sessionId = resolveProviderEventBinding(providerEvent)?.sessionId ?? null;
       if (sessionId) publishDeviceTimeline(sessionId);
-      const usage = sessionId ? store.getSessionUsageSnapshot(sessionId) : null;
+      const usage = sessionId ? store.getSessionContextUsage(sessionId) : null;
       if (usage?.context) {
         const usageEvent = eventLog.append({
           type: "SessionUsageUpdated",

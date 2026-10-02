@@ -24,7 +24,7 @@ public enum MessageMarkdown {
         case .user, .agent: .systemFont(ofSize: 11, weight: .medium)
         case .process: .systemFont(ofSize: 10.5, weight: .semibold)
         }
-        let color = secondaryText
+        let color = style == .user ? MessageTextCardPalette.userNativeForeground : secondaryText
         guard style != .process else {
             return NSAttributedString(string: text, attributes: [.font: baseFont, .foregroundColor: color])
         }
@@ -219,4 +219,3 @@ public enum MessageMarkdown {
     }
     #endif
 }
-

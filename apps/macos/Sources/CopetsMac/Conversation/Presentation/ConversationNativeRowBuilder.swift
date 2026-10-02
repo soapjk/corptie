@@ -279,8 +279,8 @@ struct ConversationNativeRowBuilder {
     }
 
     private func nativeTimelineActions(for item: CodexThreadItem) -> [AppKitChatTimelineRow.Action] {
-        if item.presentationRole == "collaboration_confirmation"
-            || item.type == "collaborationConfirmation",
+        if ConversationPresentationKind.resolve(
+            type: item.type, presentationRole: item.presentationRole) == .collaborationConfirmation,
            (item.collaborationConfirmationStatus ?? item.status ?? "pending").lowercased() == "pending",
            let confirmationID = item.collaborationConfirmationId {
             return [

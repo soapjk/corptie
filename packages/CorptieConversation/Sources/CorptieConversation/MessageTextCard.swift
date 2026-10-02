@@ -6,6 +6,70 @@ import AppKit
 import UIKit
 #endif
 
+/// Adaptive, fully opaque user-message colors shared by SwiftUI cards,
+/// attributed Markdown, and native compatibility renderers.
+public enum MessageTextCardPalette {
+    struct RGB: Sendable, Equatable {
+        let red: Double
+        let green: Double
+        let blue: Double
+
+        var relativeLuminance: Double {
+            func linearized(_ component: Double) -> Double {
+                component <= 0.04045
+                    ? component / 12.92
+                    : pow((component + 0.055) / 1.055, 2.4)
+            }
+            return 0.2126 * linearized(red)
+                + 0.7152 * linearized(green)
+                + 0.0722 * linearized(blue)
+        }
+    }
+
+    static let lightUserBackground = RGB(red: 0.90, green: 0.94, blue: 0.99)
+    static let darkUserBackground = RGB(red: 0.15, green: 0.20, blue: 0.29)
+    static let lightUserForeground = RGB(red: 0.16, green: 0.24, blue: 0.40)
+    static let darkUserForeground = RGB(red: 0.90, green: 0.94, blue: 0.99)
+
+    static func contrastRatio(foreground: RGB, background: RGB) -> Double {
+        let lighter = max(foreground.relativeLuminance, background.relativeLuminance)
+        let darker = min(foreground.relativeLuminance, background.relativeLuminance)
+        return (lighter + 0.05) / (darker + 0.05)
+    }
+
+    #if canImport(AppKit)
+    public static let userNativeBackground = NSColor(name: nil) { appearance in
+        nativeColor(for: appearance, light: lightUserBackground, dark: darkUserBackground)
+    }
+    public static let userNativeForeground = NSColor(name: nil) { appearance in
+        nativeColor(for: appearance, light: lightUserForeground, dark: darkUserForeground)
+    }
+
+    private static func nativeColor(for appearance: NSAppearance, light: RGB, dark: RGB) -> NSColor {
+        let rgb = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+        return NSColor(calibratedRed: rgb.red, green: rgb.green, blue: rgb.blue, alpha: 1)
+    }
+
+    public static let userBackground = Color(nsColor: userNativeBackground)
+    public static let userForeground = Color(nsColor: userNativeForeground)
+    #else
+    public static let userNativeBackground = UIColor { traits in
+        nativeColor(for: traits, light: lightUserBackground, dark: darkUserBackground)
+    }
+    public static let userNativeForeground = UIColor { traits in
+        nativeColor(for: traits, light: lightUserForeground, dark: darkUserForeground)
+    }
+
+    private static func nativeColor(for traits: UITraitCollection, light: RGB, dark: RGB) -> UIColor {
+        let rgb = traits.userInterfaceStyle == .dark ? dark : light
+        return UIColor(red: rgb.red, green: rgb.green, blue: rgb.blue, alpha: 1)
+    }
+
+    public static let userBackground = Color(uiColor: userNativeBackground)
+    public static let userForeground = Color(uiColor: userNativeForeground)
+    #endif
+}
+
 /// Platform-neutral labels and availability for the product-owned message menu.
 /// The platform decides how that menu is invoked (right-click on macOS, long-press on iPadOS).
 public struct MessageTextCardMenuConfiguration {
@@ -182,7 +246,7 @@ public struct MessageTextCard<Content: View>: View {
     }
 
     private var background: Color {
-        role == .user ? Color.accentColor.opacity(0.1)
+        role == .user ? MessageTextCardPalette.userBackground
             : Color(red: 0.952, green: 0.961, blue: 0.941)
     }
     private func statusColor(_ tone: UserMessageStatusPresentation.Tone) -> Color {

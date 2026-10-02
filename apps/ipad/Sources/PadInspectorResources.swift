@@ -342,8 +342,10 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
     private var environment: some View {
         ConversationDetailModuleCard(title: "工作空间与 Provider", systemImage: "cpu") {
             if workspace.selection == sessionID {
-                if let provider = workspace.usage?.account?.provider { LabeledContent("Provider", value: provider) }
-                if let model = workspace.composerConfiguration?.currentModel ?? workspace.usage?.account?.model {
+                if let provider = store.snapshot?.environment["provider"].text {
+                    LabeledContent("Provider", value: provider)
+                }
+                if let model = workspace.composerConfiguration?.currentModel ?? workspace.selectedSessionUsage?.route?.modelId {
                     LabeledContent("模型", value: model)
                 }
                 if let reasoning = workspace.composerConfiguration?.currentReasoningLevel {

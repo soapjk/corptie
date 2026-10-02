@@ -15,7 +15,8 @@ export function startClientDeviceGateway({
   artifactService, scheduledSessionTaskService, turnObservability, agentProviderRegistry,
   switchSessionProvider, workService, inspectTaskWorktree, reclaimTaskWorktree,
   sendUnifiedSessionMessage, interruptUnifiedSession, respondUnifiedSessionApproval,
-  respondUnifiedSessionUserInput, publishStateChangesIfNeeded, workDiscussionService,
+  respondUnifiedSessionUserInput, resolveCollaborationConfirmation, resolveSessionChannelRequest,
+  publishStateChangesIfNeeded, workDiscussionService,
   sessionApplicationService, workSessionStartApplicationService, chatResourceService,
   decorateSessionForClient, readSessionUsage, setTaskArchivedForEntityRoutes,
   restartTaskForEntityRoutes, taskDeletionService, clearWorkAvatarFile,
@@ -48,6 +49,8 @@ export function startClientDeviceGateway({
       send: sendUnifiedSessionMessage, stop: interruptUnifiedSession,
       respondToApproval: respondUnifiedSessionApproval,
       respondToUserInput: respondUnifiedSessionUserInput,
+      respondToCollaborationConfirmation: resolveCollaborationConfirmation,
+      respondToSessionChannelRequest: resolveSessionChannelRequest,
       onReceiptChanged: (deviceId, receipt) => getClientDeviceGateway()?.events.publishReceipt(deviceId, receipt),
       markRead: (sessionId, throughSequence) => {
         const receipt = store.markSessionMessagesRead(sessionId, throughSequence);

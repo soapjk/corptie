@@ -239,6 +239,37 @@ struct SessionAPITests {
         #expect(try await api.messages(sessionId: "session:test", before: "item:1").items.isEmpty)
         #expect(try await api.capabilities(sessionId: "session:test").send.available)
     }
+
+    @Test func collaborationPresentationOverridesUserMessageVisualMeaning() throws {
+        let message = try JSONDecoder().decode(ClientMessage.self, from: Data(#"""
+        {
+          "id":"work:1","type":"userMessage","text":"trusted capsule",
+          "presentationRole":"collaboration","presentationText":"Please review",
+          "status":"running","collaborationDirection":"inbound",
+          "collaborationInitiatorSessionId":"session:source","collaborationInitiatorSessionTitle":"Source",
+          "collaborationRecipientSessionId":"session:target","collaborationRecipientSessionTitle":"Target",
+          "collaborationSourceWorkName":"Work A","collaborationTargetWorkName":"Work B",
+          "collaborationMessageKind":"change_request"
+        }
+        """#.utf8))
+        #expect(message.presentationKind == .collaborationMessage)
+        #expect(message.collaborationPresentation?.body == "Please review")
+        #expect(message.collaborationPresentation?.sourceSession == "Source")
+        #expect(message.collaborationPresentation?.targetSession == "Target")
+        #expect(message.collaborationPresentation?.messageKind == "change_request")
+        #expect(ConversationPresentationKind.resolve(type: "userMessage", presentationRole: nil) == .userMessage)
+        #expect(ConversationPresentationKind.resolve(type: "future", presentationRole: nil) == .unknown)
+    }
+
+    @Test func collaborationConfirmationUsesClosedClientRoute() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SessionProtocol.self]
+        let transport = try BackendTransport(endpoint: BackendEndpoint(URL(string: "https://unit-test.invalid")!),
+            bearerToken: "test-only", configuration: config)
+        let response = try await ClientSessionAPI(transport: transport).respondToCollaborationConfirmation(
+            sessionId: "session:test", itemId: "confirmation:item", approve: true)
+        #expect(response.status == "confirmed")
+    }
 }
 
 private final class SessionProtocol: URLProtocol, @unchecked Sendable {
@@ -344,6 +375,12 @@ private final class SessionProtocol: URLProtocol, @unchecked Sendable {
             #expect(answers?["route"] == ["A"])
             #expect(answers?["token"] == ["secret-value"])
             json = #"{"schemaVersion":1,"sessionId":"session:test","itemId":"input:one","status":"submitted"}"#
+        } else if path.hasSuffix("/collaboration-confirmation") {
+            #expect(request.httpMethod == "POST")
+            let body = (try? JSONSerialization.jsonObject(with: Self.body(of: request))) as? [String: Any]
+            #expect(body?["itemId"] as? String == "confirmation:item")
+            #expect(body?["decision"] as? String == "confirm")
+            json = #"{"schemaVersion":1,"sessionId":"session:test","itemId":"confirmation:item","status":"confirmed"}"#
         } else if path.hasSuffix("messages") && request.httpMethod == "GET" {
             #expect(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.contains(URLQueryItem(name: "before", value: "item:1")) == true)
             json = #"{"schemaVersion":1,"sessionId":"session:test","items":[],"hasEarlier":false}"#
