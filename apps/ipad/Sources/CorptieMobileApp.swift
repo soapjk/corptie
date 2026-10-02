@@ -145,9 +145,16 @@ struct WorkspaceView: View {
         GeometryReader { geometry in
             // 312 Work + 440 conversation + 320 Detail. Narrower windows
             // present the same pages one at a time instead of squeezing cards.
-            if horizontalSizeClass == .regular && geometry.size.width >= 1_072 {
+            if PadWorkspaceLayoutPolicy.showsPersistentOutlineSelection(
+                isRegularWidth: horizontalSizeClass == .regular,
+                width: geometry.size.width
+            ) {
                 HStack(spacing: 0) {
-                    workColumn(commands, onOpenSession: { workspace.selection = $0 })
+                    workColumn(
+                        commands,
+                        showsPersistentSelection: true,
+                        onOpenSession: { workspace.selection = $0 }
+                    )
                         .frame(width: 312)
                     conversationColumn
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -214,7 +221,7 @@ struct WorkspaceView: View {
 
     private func compactWorkspace(_ commands: PadEntityCommandState) -> some View {
         NavigationStack(path: $compactPath) {
-            workColumn(commands, onOpenSession: openCompactSession)
+            workColumn(commands, showsPersistentSelection: false, onOpenSession: openCompactSession)
                 .navigationDestination(for: CompactWorkspacePage.self) { page in
                     switch page {
                     case .conversation(let id):
@@ -279,10 +286,12 @@ struct WorkspaceView: View {
     }
 
     private func workColumn(_ commands: PadEntityCommandState,
+                            showsPersistentSelection: Bool,
                             onOpenSession: @escaping (String) -> Void) -> some View {
         PadWorkOutline(connection: connection, workspace: workspace, workAvatars: workAvatars,
             entityCommands: commands, isActive: scenePhase == .active, expandedWorkIDs: $expandedWorkIDs,
-            isChatExpanded: $isChatExpanded, onOpenSession: onOpenSession,
+            isChatExpanded: $isChatExpanded, showsPersistentSelection: showsPersistentSelection,
+            onOpenSession: onOpenSession,
             createTask: openTaskCreation, onEntityRoute: { route in
                 entityRoute = route
         })

@@ -245,7 +245,7 @@ struct PadComposer<Header: View>: View {
                       matching: .images)
         .task(id: photos) { await importPhotos() }
         .fileImporter(isPresented: $showFiles, allowedContentTypes: [.image], allowsMultipleSelection: true, onCompletion: importFiles)
-        .task {
+        .task(id: "\(sessionID)|\(workspace.capabilities?.composer == true)") {
             guard workspace.composerConfiguration == nil, workspace.capabilities?.composer == true else { return }
             await workspace.configureComposer(connection)
         }
