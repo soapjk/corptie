@@ -47,6 +47,10 @@ const DOMAIN_PROFILES = Object.freeze({
   "work-chat": profile(
     ["work chat", "work context", "work agents", "工作对话", "工作上下文", "工作成员"],
     "corptie_work_context"
+  ),
+  "context-read": profile(
+    ["context read", "cross work reference", "reference work", "read session", "跨 Work 参考", "跨会话参考", "读取资料", "参考资料"],
+    "corptie_context_search"
   )
 });
 

@@ -50,12 +50,16 @@ export class ArtifactRepository {
     ).map(artifactFromRow);
   }
 
-  listArtifactsByWork(workId, { includeRevoked = false, limit = null, offset = 0 } = {}) {
+  listArtifactsByWork(workId, { includeRevoked = false, limit = null, offset = 0, query = null } = {}) {
     const pagination = limit == null ? "" : "LIMIT ? OFFSET ?";
+    const patterns = typeof query === "string"
+      ? query.trim().split(/\s+/u).filter(Boolean).slice(0, 8)
+        .map((term) => `%${term.replaceAll("%", "\\%").replaceAll("_", "\\_")}%`) : [];
     return this.selectAll(
       `SELECT * FROM artifacts WHERE work_id = ? ${includeRevoked ? "" : "AND status <> 'revoked'"}
+       ${patterns.length ? `AND (${patterns.map(() => "title LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\'").join(" OR ")})` : ""}
        ORDER BY updated_at DESC, artifact_id ${pagination}`,
-      limit == null ? [workId] : [workId, limit, offset]
+      [workId, ...patterns.flatMap((pattern) => [pattern, pattern]), ...(limit == null ? [] : [limit, offset])]
     ).map(artifactFromRow);
   }
 
