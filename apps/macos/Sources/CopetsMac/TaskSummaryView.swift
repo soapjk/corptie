@@ -1,4 +1,5 @@
 import SwiftUI
+import CorptieConversation
 
 struct TaskUserSummary: Codable, Hashable {
     let state: String
@@ -61,6 +62,19 @@ extension CorptieTask {
     var summaryNeedsIntervention: Bool {
         userSummary?.isCurrent(for: self) == true && userSummary?.content?.intervention == "required"
     }
+
+    var conversationDetailSummary: ConversationTaskSummary? {
+        guard let summary = userSummary else { return nil }
+        let content = summary.content
+        return ConversationTaskSummary(state: summary.state, errorCode: summary.errorCode,
+            focus: content?.focus ?? "", progress: content?.progress ?? "",
+            messageSummary: content?.messageSummary, intervention: content?.intervention ?? "",
+            reason: content?.reason ?? "", nextAction: content?.nextAction ?? "",
+            retainedReason: content?.retainedAttention?.reason,
+            generatedAt: content?.generatedAt ?? "", sourceRefs: content?.sourceRefs ?? [],
+            contentSchemaVersion: content?.schemaVersion,
+            basisTaskRevision: content?.basis.taskRevision, taskRevision: revision)
+    }
 }
 
 /// Same persisted projection for the compact card and the information rail.
@@ -71,42 +85,7 @@ struct TaskSummaryView: View {
     var expandsWidth = true
 
     var body: some View {
-        VStack(alignment: .leading, spacing: compact ? 3 : 7) {
-            if !compact {
-                Label("当前摘要", systemImage: "text.alignleft").detailRailSectionLabelStyle()
-            }
-            if let summary = task.userSummary, let content = summary.content, content.schemaVersion == 1 {
-                if compact {
-                    Text(task.summaryNeedsIntervention ? content.nextAction : content.focus)
-                        .font(.system(size: 11)).lineLimit(2)
-                        .foregroundStyle(task.summaryNeedsIntervention ? Color.orange : Color.secondary)
-                } else {
-                    Text(content.focus).font(.system(size: 12, weight: .medium))
-                    Text(content.messageSummary?.isEmpty == false ? content.messageSummary! : content.progress)
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
-                    if task.summaryNeedsIntervention {
-                        Text("需要你：\(content.nextAction)").font(.system(size: 11, weight: .medium)).foregroundStyle(.orange)
-                        Text(content.reason).font(.system(size: 10)).foregroundStyle(.secondary)
-                    } else if summary.isCurrent(for: task) {
-                        Text(content.intervention == "attention" ? "只需关注，无需操作" : content.intervention == "not_required" ? "无需操作" : "是否需要介入尚未明确")
-                            .font(.system(size: 10)).foregroundStyle(.secondary)
-                    }
-                    if let retained = content.retainedAttention, content.basis.taskRevision == task.revision {
-                        Text("上次关注尚未确认解决：\(retained.reason)")
-                            .font(.system(size: 10)).foregroundStyle(.secondary)
-                    }
-                    Text("更新：\(content.generatedAt)")
-                        .font(.system(size: 9)).foregroundStyle(.tertiary).lineLimit(1)
-                        .help("来源：\(content.sourceRefs.joined(separator: "\n"))")
-                }
-                if !summary.stateLabel(for: task).isEmpty {
-                    Text(summary.stateLabel(for: task)).font(.system(size: 9)).foregroundStyle(.secondary)
-                }
-            } else if !compact {
-                Text(task.userSummary?.stateLabel(for: task) ?? "尚未生成摘要")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: expandsWidth ? .infinity : nil, alignment: .leading)
+        ConversationTaskSummaryView(summary: task.conversationDetailSummary,
+            compact: compact, expandsWidth: expandsWidth)
     }
 }

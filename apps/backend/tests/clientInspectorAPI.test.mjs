@@ -45,6 +45,10 @@ test("task Detail snapshot carries the same definition fields as desktop", async
     assert.equal(snapshot.taskDefinition.description, "Scope");
     assert.equal(snapshot.taskDefinition.acceptanceCriteria, "Accepted");
     assert.equal(snapshot.taskDefinition.verificationCriteria, "Verified");
+    assert.equal(snapshot.taskDefinition.revision, task.revision);
+    const workSnapshot = await f.inspector.snapshot(identity, "s");
+    assert.equal(workSnapshot.sections.focusTasks[0].id, task.id);
+    assert.equal(workSnapshot.sections.focusTasks[0].taskRevision, task.revision);
   } finally { await f.close(); }
 });
 test("commands share durable receipts, reject field injection and never replay side effects", async () => {

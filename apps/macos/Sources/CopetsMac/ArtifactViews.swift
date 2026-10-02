@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import CorptieClientCore
+import CorptieConversation
 
 struct ArtifactSectionView: View {
     @ObservedObject private var client = ArtifactAPIClient.shared
@@ -22,8 +23,8 @@ struct ArtifactSectionView: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
                 Label(
-                    taskId == nil ? L10n("Artifacts") : L10n("引用内容"),
-                    systemImage: taskId == nil ? "doc.on.doc" : "link"
+                    taskId == nil ? L10n("Artifacts") : L10n("Artifact 引用"),
+                    systemImage: "doc.on.doc"
                 )
                 .detailRailSectionLabelStyle()
                 Text("\(CorptieAppEnvironment.displayName) · :\(CorptieAppEnvironment.backendPort)")
@@ -125,31 +126,13 @@ struct ArtifactSectionView: View {
             }
             ForEach(showsAllReferences ? artifacts : Array(artifacts.prefix(2))) { artifact in
                 Button { selection = artifact } label: {
-                    HStack(spacing: 7) {
-                        if artifact.visibility == .repositoryTracked {
-                            Image(systemName: "point.3.connected.trianglepath.dotted")
-                                .foregroundStyle(artifact.status == "revoked" ? Color.red : Color.accentColor)
-                        } else {
-                            Image(systemName: "lock.doc")
-                                .foregroundStyle(artifact.status == "revoked" ? Color.red : Color.accentColor)
-                        }
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(artifact.title).font(.system(size: 11, weight: .medium)).lineLimit(1)
-                            Text("v\(ArtifactVersionSelectionPolicy.preferredVersion(for: artifact, taskId: taskId)) · \(artifact.visibility.rawValue)")
-                                .font(.system(size: 9)).foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 2)
-                        if artifact.references.contains(where: { $0.required && $0.revokedAt == nil }) {
-                            Text(L10n("Required")).font(.system(size: 8, weight: .semibold)).foregroundStyle(.orange)
-                        }
-                        if artifact.references.contains(where: { $0.pendingVersion != nil && $0.revokedAt == nil }) {
-                            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                        }
-                    }
-                    .font(.system(size: 11, weight: .medium))
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    ConversationArtifactRow(title: artifact.title, summary: artifact.summary,
+                        visibility: artifact.visibility.rawValue,
+                        version: ArtifactVersionSelectionPolicy.preferredVersion(for: artifact, taskId: taskId),
+                        revoked: artifact.status == "revoked",
+                        required: artifact.references.contains { $0.required && $0.revokedAt == nil },
+                        pendingVersion: artifact.references.contains { $0.pendingVersion != nil && $0.revokedAt == nil })
                     .detailRailReferenceRowStyle()
-                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
