@@ -35,6 +35,44 @@ export class TimelineReadRepository {
     return items;
   }
 
+  // Product conversation only: no Provider transcript, tool payload, or raw metadata.
+  readContextConversationPage(sessionId, { before = null, limit = 10, query = null } = {}) {
+    const pageLimit = Math.max(1, Math.min(20, Number(limit) || 10));
+    const terms = typeof query === "string" ? query.trim().split(/\s+/u).filter(Boolean).slice(0, 8)
+      .map((term) => `%${term.replaceAll("%", "\\%").replaceAll("_", "\\_")}%`) : [];
+    const rows = this.selectAll(
+      `SELECT id, turn_id, type, presentation_role, substr(text, 1, 6001) AS text, created_at
+       FROM session_items
+       WHERE session_id = ? AND type IN ('userMessage', 'agentMessage')
+         AND COALESCE(presentation_role, '') NOT IN ('commentary', 'reasoning')
+         ${terms.length ? `AND (${terms.map(() => "text LIKE ? ESCAPE '\\'").join(" OR ")})` : ""}
+         ${before ? "AND (created_at < ? OR (created_at = ? AND id < ?))" : ""}
+       ORDER BY created_at DESC, id DESC LIMIT ?`,
+      [sessionId, ...terms, ...(before ? [before.createdAt, before.createdAt, before.id] : []), pageLimit + 1]
+    );
+    const items = rows.slice(0, pageLimit).map((row) => ({
+      id: row.id, turnId: row.turn_id, type: row.type,
+      text: row.text ?? "", textTruncated: (row.text?.length ?? 0) > 6000,
+      createdAt: row.created_at
+    }));
+    const tail = items.at(-1);
+    return { items, hasMore: rows.length > pageLimit,
+      nextCursor: rows.length > pageLimit && tail ? { createdAt: tail.createdAt, id: tail.id } : null };
+  }
+
+  readContextMessageChunk(sessionId, itemId, offset = 0, length = 2000) {
+    const row = this.selectOne(
+      `SELECT id, turn_id, type, created_at, length(text) AS text_length,
+              substr(text, ?, ?) AS text
+       FROM session_items WHERE session_id = ? AND id = ?
+         AND type IN ('userMessage', 'agentMessage')
+         AND COALESCE(presentation_role, '') NOT IN ('commentary', 'reasoning')`,
+      [offset + 1, length, sessionId, itemId]
+    );
+    return row ? { id: row.id, turnId: row.turn_id, type: row.type,
+      createdAt: row.created_at, text: row.text ?? "", totalCharacters: Number(row.text_length ?? 0) } : null;
+  }
+
   getItemsForTurn(sessionId, turnId, provider = "") {
     const rows = this.selectAll(
       `SELECT id, turn_id, turn_status, type, title, text, options_json,
