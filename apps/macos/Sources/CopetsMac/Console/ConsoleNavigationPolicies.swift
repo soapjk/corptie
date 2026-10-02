@@ -18,18 +18,16 @@ enum ConsoleNavigationCardWidthPolicy {
 }
 
 enum ConsoleNavigationMode: String, CaseIterable {
-    case workRail
     case workOutline
     case taskCards
 
     static func resolved(_ rawValue: String) -> Self {
-        Self(rawValue: rawValue) ?? .workRail
+        Self(rawValue: rawValue) ?? .workOutline
     }
 
     @MainActor
     var accessibilityValue: String {
         switch self {
-        case .workRail: L10n("Work icons and Task list")
         case .workOutline: L10n("Expanded Work list")
         case .taskCards: "卡片 · 实验"
         }

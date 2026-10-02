@@ -34,6 +34,10 @@ export class TimelineReadPool {
     return this.#singleFlight("timelineChanges", input);
   }
 
+  readQuickMessages(input) {
+    return this.#singleFlight("quickMessages", input);
+  }
+
   async close() {
     if (this.closing) return;
     this.closing = true;

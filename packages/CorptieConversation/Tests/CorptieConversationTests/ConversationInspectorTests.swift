@@ -1,6 +1,10 @@
 import Testing
 import Foundation
 import CorptieClientCore
+import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 @testable import CorptieConversation
 
 struct ConversationInspectorTests {
@@ -46,20 +50,39 @@ struct ConversationInspectorTests {
         #expect(ConversationTaskDefinition.hasContent(description: "描述", acceptance: "", verification: ""))
     }
 
-    @Test func detailModulesUseGroupedNativeGlassWithoutNestedCardFills() throws {
-        let sourceURL = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Sources/CorptieConversation/ConversationInspectorSection.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
-        #expect(source.contains("GlassEffectContainer(spacing: 0) { content }"))
-        #expect(source.contains("let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)"))
-        #expect(source.contains(".platformGlassSurface(in: shape)"))
-        #expect(source.contains(".clipShape(shape)"))
-        #expect(!source.contains(".background(Color.primary.opacity(0.055)"))
-        #expect(!source.contains(".shadow("))
+    #if os(macOS)
+    @MainActor @Test func detailGlassIsClippedAfterNativeComposition() throws {
+        guard #available(macOS 26.0, *) else { return }
+        _ = NSApplication.shared
+
+        // Control: clipping inside the shared container leaves the native
+        // backdrop outside the card's clip. This reproduces the original bug.
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        let control = GlassEffectContainer(spacing: 0) {
+            Text("Detail").frame(width: 280, height: 140)
+                .platformGlassSurface(in: shape).clipShape(shape)
+        }
+        .padding(40)
+        let controlResult = try inspectGlassLayers(control)
+        #expect(!controlResult.clipped.isEmpty)
+        #expect(controlResult.clipped.allSatisfy { !$0 })
+
+        let modules = ConversationDetailDashboard {
+            VStack(spacing: 12) {
+                ForEach(0..<3) { index in
+                    Text("Detail \(index)").frame(height: 108)
+                        .modifier(ConversationDetailModuleSurface())
+                        .frame(width: 280)
+                }
+            }
+        }
+        .frame(width: 360, height: 560)
+        let result = try inspectGlassLayers(modules)
+        #expect(result.clipped.count == 3)
+        #expect(result.clipped.allSatisfy { $0 })
+        #expect(result.layerCountAfterLayout == result.layerCount)
     }
+    #endif
 
     @Test func navigationRailSharesOneGlassCapsuleAcrossPlatforms() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
@@ -74,3 +97,47 @@ struct ConversationInspectorTests {
         #expect(source.contains(".accessibilityValue(selected ? \"selected\" : \"not-selected\")"))
     }
 }
+
+#if os(macOS)
+@MainActor private func inspectGlassLayers<V: View>(_ view: V) throws
+    -> (clipped: [Bool], layerCount: Int, layerCountAfterLayout: Int) {
+    let host = NSHostingView(rootView: view)
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 560),
+                          styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    window.hasShadow = false
+    window.orderFront(nil)
+    defer { window.close() }
+    host.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+    let root = try #require(host.layer)
+    var clipped: [Bool] = []
+    var count = 0
+    func inspect(_ layer: CALayer, cardClip: Bool) {
+        count += 1
+        let clipsCard = cardClip || (
+            (layer.masksToBounds || layer.mask != nil)
+            && (layer.cornerRadius >= 18 || layer.mask != nil)
+            && abs(layer.bounds.width - 280) < 1
+            && abs(layer.bounds.height - 140) < 1
+        )
+        // Observe the compositor layer type without invoking private API.
+        if String(describing: type(of: layer)).contains("BackdropLayer") {
+            clipped.append(clipsCard)
+        }
+        for child in layer.sublayers ?? [] { inspect(child, cardClip: clipsCard) }
+    }
+    inspect(root, cardClip: false)
+    let initialCount = count
+    let initialClipped = clipped
+    for _ in 0..<20 {
+        host.needsLayout = true
+        host.layoutSubtreeIfNeeded()
+    }
+    count = 0
+    clipped = []
+    inspect(root, cardClip: false)
+    return (initialClipped, initialCount, count)
+}
+#endif

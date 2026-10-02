@@ -1,4 +1,5 @@
 import { parentPort, workerData } from "node:worker_threads";
+import { readQuickMessages } from "../application/quickMessageRecommendations.mjs";
 
 const { CorptieStore } = await import("./corptieStore.mjs");
 
@@ -40,6 +41,8 @@ parentPort?.on("message", (message) => {
 
 function execute(operation, input) {
   switch (operation) {
+    case "quickMessages":
+      return readQuickMessages(store, input.sessionId);
     case "storedTimelineSnapshot": {
       const window = store.getLatestTimelineItemWindow(input.sessionId, {
         limit: input.limit,

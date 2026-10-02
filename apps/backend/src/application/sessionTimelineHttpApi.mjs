@@ -7,6 +7,14 @@ export function handleSessionTimelineHttpRequest({
   readSessionHistory, readSessionTimelineWindow, publishStateChangesIfNeeded,
   readJson, sendJson, unifiedErrorStatus
 }) {
+  const quickMessagesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/quick-messages$/);
+  if (request.method === "GET" && quickMessagesMatch) {
+    sessionApplicationService.referenceFor(decodeURIComponent(quickMessagesMatch[1]))
+      .then(reference => getTimelineReadPool().readQuickMessages({ sessionId: reference.sessionId }))
+      .then(result => sendJson(response, 200, result))
+      .catch(error => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
+    return true;
+  }
   if (request.method === "GET" && url.pathname === "/session-timelines/revisions") {
     const activeSessionIds = activeStoredSessionProjections(store).map((session) => session.id);
     sendJson(response, 200, {

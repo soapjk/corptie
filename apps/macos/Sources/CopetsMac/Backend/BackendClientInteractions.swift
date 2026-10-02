@@ -1,7 +1,18 @@
 import CorptieConversation
+import CorptieClientCore
 import Foundation
 
 extension BackendClient {
+    func quickMessages(for sessionID: String) async throws -> ClientQuickMessageRecommendations {
+        let (data, response) = try await URLSession.shared.data(for: URLRequest(
+            url: baseURL.appending(path: "sessions/\(sessionID)/quick-messages")))
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw ClientConnectionError.invalidResponse
+        }
+        let result = try JSONDecoder().decode(ClientQuickMessageRecommendations.self, from: data)
+        guard result.schemaVersion == 1, result.items.count <= 6 else { throw ClientConnectionError.invalidResponse }
+        return result
+    }
     func sendMessage(
         _ text: String,
         images: [ChatImageReference] = [],

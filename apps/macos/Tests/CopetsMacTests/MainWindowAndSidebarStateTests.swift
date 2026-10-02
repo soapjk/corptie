@@ -179,8 +179,8 @@ struct MainWindowAndSidebarStateTests {
             encoding: .utf8
         )
         #expect(unifiedConsole.contains("HStack(spacing: 0)"))
-        #expect(unifiedConsole.contains("workRail"))
-        #expect(unifiedConsole.contains("unifiedTaskSidebar"))
+        #expect(unifiedConsole.contains("unifiedWorkOutlineSidebar"))
+        #expect(unifiedConsole.contains("cardWorkspaceSidebar"))
 
         let agents = try String(
             contentsOf: sourceRoot.appendingPathComponent("AgentManagementView.swift"),
