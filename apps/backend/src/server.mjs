@@ -88,6 +88,7 @@ import { ArtifactService } from "./application/artifactService.mjs";
 import { ChatResourceService } from "./application/chatResourceService.mjs";
 import { migrateStoreOffMainThread } from "./store/storeMigrationRunner.mjs";
 import { createSessionTimelineReader } from "./application/sessionTimelineReader.mjs";
+import { ContextReadService } from "./application/contextReadService.mjs";
 import { createBenchmarkControlPlaneComposition } from "./application/benchmarkControlPlaneComposition.mjs";
 import { handleBenchmarkHttpRequest } from "./benchmark/httpApi.mjs";
 import { handleArtifactHttpRequest } from "./application/artifactHttpApi.mjs";
@@ -447,6 +448,7 @@ const {
   presentTaskForClient: (task) => presentTaskForClient(task)
 });
 const artifactService = new ArtifactService({ store });
+const contextReadService = new ContextReadService({ store });
 const chatResourceService = new ChatResourceService({ store });
 const sceneService = new SceneApplicationService({ store });
 let benchmarkControlPlane = null;
@@ -665,7 +667,8 @@ const hostToolCatalog = createHostToolCatalog({
   reviseTaskForSession, sceneService,
   getToolMaterializationPort: () => toolMaterializationPort,
   getPlatformOperationService: () => platformOperationService,
-  getWorkChatOperationService: () => workChatOperationService
+  getWorkChatOperationService: () => workChatOperationService,
+  contextReadService
 });
 let toolHostService = null;
 const codexAppServerCommand = () => firstRunSetup.command("codex-app-server", resolveCodexCommand);
@@ -2132,7 +2135,7 @@ function startBackendRuntime() {
   taskSummaryService.start();
   startClientDeviceGateway({
     store, environmentName, developmentPreview, worktreeIntegrationJobService, projectApplicationService,
-    emitEvent, readSessionTimelineWindow, requireSessionReference,
+    emitEvent, readSessionTimelineWindow, getTimelineReadPool, requireSessionReference,
     sessionContextReferenceService, artifactService, scheduledSessionTaskService,
     turnObservability, agentProviderRegistry, switchSessionProvider, workService,
     inspectTaskWorktree, reclaimTaskWorktree, sendUnifiedSessionMessage,

@@ -11,7 +11,7 @@ import { ClientSessionAPI } from "./clientSessionAPI.mjs";
 
 export function startClientDeviceGateway({
   store, environmentName, developmentPreview, worktreeIntegrationJobService, projectApplicationService, emitEvent,
-  readSessionTimelineWindow, requireSessionReference, sessionContextReferenceService,
+  readSessionTimelineWindow, getTimelineReadPool, requireSessionReference, sessionContextReferenceService,
   artifactService, scheduledSessionTaskService, turnObservability, agentProviderRegistry,
   switchSessionProvider, workService, inspectTaskWorktree, reclaimTaskWorktree,
   sendUnifiedSessionMessage, interruptUnifiedSession, respondUnifiedSessionApproval,
@@ -37,6 +37,7 @@ export function startClientDeviceGateway({
       emit: emitEvent
     }),
     sessionAPIFactory: () => new ClientSessionAPI({ store, readWindow: readSessionTimelineWindow,
+      quickMessages: sessionId => getTimelineReadPool().readQuickMessages({ sessionId }),
       inspector: new ClientInspectorAPI({ store, resolveSession: requireSessionReference,
         references: sessionContextReferenceService, artifacts: artifactService,
         schedules: scheduledSessionTaskService, observability: turnObservability,

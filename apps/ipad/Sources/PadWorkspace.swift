@@ -1,6 +1,13 @@
 import Foundation
 import Observation
 import CorptieClientCore
+import CorptieConversation
+
+enum PadWorkspaceLayoutPolicy {
+    static func showsPersistentOutlineSelection(isRegularWidth: Bool, width: CGFloat) -> Bool {
+        isRegularWidth && width >= 1_072
+    }
+}
 
 /// Pure geometry: menu stays above the module and inside the conversation's
 /// visible top edge, including after the keyboard or split view changes size.
@@ -16,48 +23,18 @@ struct PadMentionMenuPlacement {
     }
 }
 
-enum PadOutlineSort: String, CaseIterable {
-    case standard, updated, name
-    var title: String {
-        switch self { case .standard: "默认顺序"; case .updated: "最近更新"; case .name: "名称" }
-    }
+typealias PadOutlineSort = WorkOutlineSort
+
+extension WorkOutlineSort {
     func works(_ items: [ClientWork], latestSessionActivity: [String: String] = [:]) -> [ClientWork] {
-        guard self != .standard else { return items }
-        return items.sorted {
-            if self == .updated {
-                let left = latestSessionActivity[$0.id] ?? $0.updatedAt
-                let right = latestSessionActivity[$1.id] ?? $1.updatedAt
-                if left != right { return left > right }
-            }
-            if self == .name {
-                let order = $0.name.localizedStandardCompare($1.name)
-                if order != .orderedSame { return order == .orderedAscending }
-            }
-            return $0.id < $1.id
-        }
+        ordered(items, id: { $0.id }, title: { $0.name }, updatedAt: { $0.updatedAt },
+                activityAt: { latestSessionActivity[$0.id] })
     }
-    func tasks(_ items: [ClientTask], latestSessionActivity: [String: String] = [:]) -> [ClientTask] {
-        let visible = items.filter { !$0.archived }
-        guard self != .standard else { return visible }
-        return visible.sorted {
-            if self == .updated {
-                let leftActivity = latestSessionActivity[$0.id] ?? ""
-                let rightActivity = latestSessionActivity[$1.id] ?? ""
-                if !leftActivity.isEmpty || !rightActivity.isEmpty {
-                    if leftActivity != rightActivity {
-                        if leftActivity.isEmpty { return false }
-                        if rightActivity.isEmpty { return true }
-                        return leftActivity > rightActivity
-                    }
-                }
-                if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
-            }
-            if self == .name {
-                let order = $0.title.localizedStandardCompare($1.title)
-                if order != .orderedSame { return order == .orderedAscending }
-            }
-            return $0.id < $1.id
-        }
+    func tasks(_ items: [ClientTask], latestSessionActivity: [String: String] = [:],
+               showingArchived: Bool = false) -> [ClientTask] {
+        let visible = items.filter { $0.archived == showingArchived }
+        return ordered(visible, id: { $0.id }, title: { $0.title }, updatedAt: { $0.updatedAt },
+                       activityAt: { latestSessionActivity[$0.id] }, prioritizesActivity: true)
     }
 }
 
@@ -707,11 +684,25 @@ final class PadWorkspace {
         }
         capabilities = snapshot.capabilities
         if let incoming = snapshot.usage { applyUsage(incoming) }
-        composerConfiguration = snapshot.composer
+        mergeComposerConfiguration(snapshot.composer, capabilities: snapshot.capabilities)
         applyLatestWindow(snapshot.messages.items, cursor: snapshot.messages.nextBefore, revision: snapshot.revision)
         if let selection { saveResidentState(for: selection) }
         isLoadingDetail = false
         liveStatus = "实时连接正常"
+    }
+
+    /// A timeline snapshot may omit composer data after a transient catalog
+    /// failure. Keep a separately loaded configuration unless the capability
+    /// is authoritatively unsupported.
+    func mergeComposerConfiguration(
+        _ incoming: ClientComposerConfiguration?,
+        capabilities: ClientSessionCapabilities
+    ) {
+        if capabilities.composer != true {
+            composerConfiguration = nil
+        } else if let incoming {
+            composerConfiguration = incoming
+        }
     }
 
     @discardableResult

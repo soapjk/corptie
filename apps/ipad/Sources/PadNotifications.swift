@@ -23,8 +23,9 @@ struct PadSessionNotificationSnapshot: Equatable {
     let updatedAt: String
     let lastAgentMessageSequence: Int
     let lastReadMessageSequence: Int
+    let resourceContext: NotificationResourceContext
 
-    init?(_ session: ClientSession) {
+    init?(_ session: ClientSession, resourceContext: NotificationResourceContext = .init()) {
         guard let status = SessionExecutionState(executionStatus: session.executionStatus) else { return nil }
         id = session.id
         title = session.title
@@ -32,6 +33,7 @@ struct PadSessionNotificationSnapshot: Equatable {
         updatedAt = session.updatedAt
         lastAgentMessageSequence = session.lastAgentMessageSequence
         lastReadMessageSequence = session.lastReadMessageSequence
+        self.resourceContext = resourceContext
     }
 
     init(
@@ -40,7 +42,8 @@ struct PadSessionNotificationSnapshot: Equatable {
         status: SessionExecutionState,
         updatedAt: String,
         lastAgentMessageSequence: Int = 0,
-        lastReadMessageSequence: Int = 0
+        lastReadMessageSequence: Int = 0,
+        resourceContext: NotificationResourceContext = .init()
     ) {
         self.id = id
         self.title = title
@@ -48,6 +51,7 @@ struct PadSessionNotificationSnapshot: Equatable {
         self.updatedAt = updatedAt
         self.lastAgentMessageSequence = lastAgentMessageSequence
         self.lastReadMessageSequence = lastReadMessageSequence
+        self.resourceContext = resourceContext
     }
 
     var needsUserAttention: Bool {
@@ -186,6 +190,7 @@ struct PadAutomationNotificationEvent: Equatable {
     let automationID: String
     let logicalSessionID: String?
     let name: String
+    let resourceContext: NotificationResourceContext
 }
 
 /// Device clients receive the provider-neutral Automation projection rather
@@ -195,7 +200,10 @@ struct PadAutomationNotificationReducer {
     private var fingerprintsByID: [String: String] = [:]
     private var hasObservedInitialSnapshot = false
 
-    mutating func events(for items: [ClientControlItem]) -> [PadAutomationNotificationEvent] {
+    mutating func events(
+        for items: [ClientControlItem],
+        resourceIndex: NotificationResourceIndex = .init()
+    ) -> [PadAutomationNotificationEvent] {
         let current = Dictionary(uniqueKeysWithValues: items.map { item in
             (item.id, "\(item.lastRunStatus ?? ""):\(item.updatedAt ?? "")")
         })
@@ -218,7 +226,8 @@ struct PadAutomationNotificationReducer {
                 kind: kind,
                 automationID: item.id,
                 logicalSessionID: item.logicalSessionId,
-                name: item.name
+                name: item.name,
+                resourceContext: resourceIndex.context(forSessionID: item.logicalSessionId)
             )
         }
     }
@@ -235,6 +244,20 @@ struct PadAutomationNotificationReducer {
             default: nil
             }
         }
+    }
+}
+
+enum PadNotificationContent {
+    static func sessionBody(_ session: PadSessionNotificationSnapshot) -> String {
+        [session.resourceContext.displayLine(), "会话：\(session.title)"]
+            .compactMap { $0 }
+            .joined(separator: "\n")
+    }
+
+    static func automationBody(_ event: PadAutomationNotificationEvent) -> String {
+        [event.resourceContext.displayLine(), "计划任务：\(event.name)"]
+            .compactMap { $0 }
+            .joined(separator: "\n")
     }
 }
 
@@ -354,15 +377,24 @@ final class PadNotificationManager {
         _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
     }
 
-    func syncSessions(_ sessions: [ClientSession]) {
-        let snapshots = sessions.compactMap(PadSessionNotificationSnapshot.init)
+    func syncSessions(_ sessions: [ClientSession], works: [ClientWork], tasks: [ClientTask]) {
+        let resourceIndex = NotificationResourceIndex(works: works, tasks: tasks, sessions: sessions)
+        let snapshots = sessions.compactMap {
+            PadSessionNotificationSnapshot($0, resourceContext: resourceIndex.context(forSessionID: $0.id))
+        }
         for event in sessionReducer.events(for: snapshots, configuration: preferences.configuration) {
             enqueue(event)
         }
     }
 
-    func syncAutomations(_ items: [ClientControlItem]) {
-        let events = automationReducer.events(for: items)
+    func syncAutomations(
+        _ items: [ClientControlItem],
+        works: [ClientWork],
+        tasks: [ClientTask],
+        sessions: [ClientSession]
+    ) {
+        let resourceIndex = NotificationResourceIndex(works: works, tasks: tasks, sessions: sessions)
+        let events = automationReducer.events(for: items, resourceIndex: resourceIndex)
         guard preferences.notifyOnAutomations else { return }
         for event in events { enqueue(event) }
     }
@@ -426,7 +458,7 @@ final class PadNotificationManager {
             case .allSessionsWaiting: content.title = "所有会话已结束处理"
             }
             if let session = event.session {
-                content.body = session.title
+                content.body = PadNotificationContent.sessionBody(session)
                 content.userInfo = ["sessionId": session.id, "destination": "session"]
             } else {
                 content.body = "所有会话均已结束处理。需要你查看的会话：\(event.counts?.pendingUserAttention ?? 0)。"
@@ -455,7 +487,7 @@ final class PadNotificationManager {
             case .cancelled: content.title = "计划任务已取消"
             case .expired: content.title = "计划任务已过期"
             }
-            content.body = event.name
+            content.body = PadNotificationContent.automationBody(event)
             var info = ["destination": "automation", "automationId": event.automationID]
             if let logicalSessionID = event.logicalSessionID { info["logicalSessionId"] = logicalSessionID }
             content.userInfo = info

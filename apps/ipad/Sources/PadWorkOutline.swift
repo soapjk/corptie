@@ -4,7 +4,7 @@ import CorptieConversation
 
 /// Sidebar outline of the iPad workbench. Structure, metrics and leaf views are the
 /// macOS `workOutlineList` (Chat group card → Work group cards); only the data source
-/// (device inventory) and the touch affordances (always-visible "+", larger hit
+/// (device inventory) and the touch affordances (larger hit
 /// shapes) differ. Rows read pre-indexed sets from `PadWorkspace` so a render never
 /// scans the inventory.
 struct PadWorkOutline: View {
@@ -15,6 +15,7 @@ struct PadWorkOutline: View {
     let isActive: Bool
     @Binding var expandedWorkIDs: Set<String>
     @Binding var isChatExpanded: Bool
+    let showsPersistentSelection: Bool
     let onOpenSession: (String) -> Void
     let createTask: (ClientWork) -> Void
     let onEntityRoute: (PadEntityRoute) -> Void
@@ -24,6 +25,12 @@ struct PadWorkOutline: View {
     @State private var orderedTasks: [ClientTask] = []
     @State private var tasksByWork: [String: [ClientTask]] = [:]
     @State private var workNames: [String: String] = [:]
+    @State private var visibleChats: [ClientSession] = []
+    @State private var isSearching = false
+    @State private var searchText = ""
+    @State private var showingArchived = false
+    @State private var selectedArchivedTask: ClientTask?
+    @FocusState private var searchFocused: Bool
     private var sort: PadOutlineSort { PadOutlineSort(rawValue: sortRaw) ?? .standard }
     private var isPhone: Bool { UIDevice.current.userInterfaceIdiom == .phone }
     private var headerFont: Font { isPhone ? .system(size: 16, weight: .semibold) : WorkOutlineMetrics.headerTitleFont }
@@ -38,7 +45,12 @@ struct PadWorkOutline: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 8) {
-                chatGroup
+                if !showingArchived { chatGroup }
+                if showingArchived && orderedTasks.isEmpty {
+                    Text("没有归档 Task")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity).padding()
+                }
                 if viewMode == "tasks" {
                     ForEach(orderedTasks) { task in
                         VStack(alignment: .leading, spacing: 2) {
@@ -49,7 +61,8 @@ struct PadWorkOutline: View {
                         .padding(8)
                         .modifier(WorkGroupCardSurface())
                         .background(WorkOutlineSelectionBackground(isSelected:
-                            workspace.sessionIDByTaskID[task.id].map { $0 == workspace.selection } ?? false))
+                            showsPersistentSelection
+                                && (workspace.sessionIDByTaskID[task.id].map { $0 == workspace.selection } ?? false)))
                     }
                 } else {
                     ForEach(orderedWorks) { work in workGroup(work) }
@@ -78,25 +91,51 @@ struct PadWorkOutline: View {
         .onChange(of: workspace.tasks) { _, _ in rebuildOrder() }
         .onChange(of: sortRaw) { _, _ in rebuildOrder() }
         .onChange(of: viewMode) { _, _ in rebuildOrder() }
+        .onChange(of: searchText) { _, _ in rebuildOrder() }
+        .onChange(of: showingArchived) { _, _ in rebuildOrder() }
+        .onChange(of: workspace.independentSessions) { _, _ in rebuildOrder() }
         .onChange(of: workspace.latestSessionActivityByWork) { _, activity in
             guard sort == .updated else { return }
-            orderedWorks = sort.works(workspace.works, latestSessionActivity: activity)
+            rebuildOrder()
         }
         .onChange(of: workspace.latestSessionActivityByTask) { _, activity in
             guard sort == .updated else { return }
-            orderedTasks = sort.tasks(workspace.tasks, latestSessionActivity: activity)
-            tasksByWork = Dictionary(grouping: orderedTasks, by: \.workId)
+            rebuildOrder()
+        }
+        .confirmationDialog("归档 Task", isPresented: Binding(
+            get: { selectedArchivedTask != nil },
+            set: { if !$0 { selectedArchivedTask = nil } }
+        ), titleVisibility: .visible, presenting: selectedArchivedTask) { task in
+            Button("恢复 Task") { toggleTaskArchive(task) }
+            Button("编辑 Task") { onEntityRoute(.editTask(task)) }
+        } message: { task in
+            Text(task.title)
         }
     }
 
     private func rebuildOrder() {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         orderedWorks = sort.works(workspace.works, latestSessionActivity: workspace.latestSessionActivityByWork)
-        orderedTasks = sort.tasks(workspace.tasks, latestSessionActivity: workspace.latestSessionActivityByTask)
-        tasksByWork = Dictionary(grouping: orderedTasks, by: \.workId)
         workNames = Dictionary(workspace.works.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        orderedTasks = sort.tasks(workspace.tasks, latestSessionActivity: workspace.latestSessionActivityByTask,
+                                 showingArchived: showingArchived).filter {
+            query.isEmpty || $0.title.localizedCaseInsensitiveContains(query)
+                    || ($0.description ?? "").localizedCaseInsensitiveContains(query)
+                    || (workNames[$0.workId] ?? "").localizedCaseInsensitiveContains(query)
+        }
+        tasksByWork = Dictionary(grouping: orderedTasks, by: \.workId)
+        if !query.isEmpty || showingArchived {
+            orderedWorks = orderedWorks.filter {
+                tasksByWork[$0.id] != nil || (!showingArchived && $0.name.localizedCaseInsensitiveContains(query))
+            }
+        }
+        visibleChats = showingArchived ? [] : workspace.independentSessions.filter {
+            query.isEmpty || $0.title.localizedCaseInsensitiveContains(query)
+        }
     }
 
     private var outlineToolbar: some View {
+        VStack(spacing: 4) {
         HStack(spacing: 8) {
             Menu {
                 Picker("排序方式", selection: $sortRaw) {
@@ -111,12 +150,23 @@ struct PadWorkOutline: View {
             Menu {
                 Picker("视图", selection: $viewMode) {
                     Text("Work 分组").tag("groups")
-                    Text("Task 列表").tag("tasks")
+                    Text("卡片").tag("tasks")
                 }
-            } label: { toolbarGlyph(viewMode == "tasks" ? "list.bullet" : "rectangle.3.group") }
+            } label: { toolbarGlyph(viewMode == "tasks" ? "rectangle.grid.2x2" : "rectangle.3.group") }
             .accessibilityLabel("切换视图")
-            .accessibilityValue(viewMode == "tasks" ? "Task 列表" : "Work 分组")
+            .accessibilityValue(viewMode == "tasks" ? "卡片" : "Work 分组")
             .accessibilityIdentifier("work-outline-view")
+            Button {
+                isSearching = true
+                searchFocused = true
+            } label: { toolbarGlyph("magnifyingglass") }
+            .accessibilityLabel("搜索").accessibilityIdentifier("work-outline-search")
+            Button {
+                showingArchived.toggle()
+            } label: { toolbarGlyph(showingArchived ? "archivebox.fill" : "archivebox") }
+            .foregroundStyle(showingArchived ? Color.accentColor : Color.primary)
+            .accessibilityLabel(showingArchived ? "返回活动 Task" : "查看归档 Task")
+            .accessibilityIdentifier("work-outline-archive")
             Spacer(minLength: 0)
             Menu {
                 Button("新增 Work", systemImage: "folder.badge.plus") { onEntityRoute(.createWork) }
@@ -132,9 +182,27 @@ struct PadWorkOutline: View {
             .accessibilityLabel("新增 Work 或 Task")
             .accessibilityIdentifier("work-outline-create")
         }
+        if isSearching {
+            HStack {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("搜索 Work、Task 和聊天", text: $searchText)
+                    .textFieldStyle(.plain).focused($searchFocused)
+                    .submitLabel(.search)
+                Button {
+                    searchText = ""
+                    isSearching = false
+                    searchFocused = false
+                } label: { Image(systemName: "xmark.circle.fill") }
+                .accessibilityLabel("关闭搜索")
+            }
+            .padding(8)
+            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+        }
+        }
         .buttonStyle(.plain)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
+        .environment(\.layoutDirection, .leftToRight)
     }
 
     private func toolbarGlyph(_ symbol: String) -> some View {
@@ -172,14 +240,15 @@ struct PadWorkOutline: View {
             .accessibilityLabel("聊天")
             .accessibilityValue(isChatExpanded ? "已展开" : "已折叠")
             .accessibilityIdentifier("outline-chat-header")
-            if isChatExpanded {
-                if workspace.independentSessions.isEmpty {
-                    emptyRow("暂无独立聊天")
+            if isChatExpanded || !searchText.isEmpty {
+                if visibleChats.isEmpty {
+                    emptyRow(showingArchived ? "归档 Task 显示在 Work 分组中" : "暂无匹配聊天")
                 } else {
-                    ForEach(workspace.independentSessions) { session in
+                    ForEach(visibleChats) { session in
                         sessionRow(session)
                             .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                            .background(WorkOutlineSelectionBackground(isSelected: workspace.selection == session.id))
+                            .background(WorkOutlineSelectionBackground(
+                                isSelected: showsPersistentSelection && workspace.selection == session.id))
                     }
                 }
             }
@@ -209,14 +278,14 @@ struct PadWorkOutline: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityValue(workspace.selection == session.id ? "已选中" : "")
+        .accessibilityValue(showsPersistentSelection && workspace.selection == session.id ? "已选中" : "")
         .accessibilityIdentifier("outline-session-\(session.id)")
     }
 
     // MARK: Work group
 
     private func workGroup(_ work: ClientWork) -> some View {
-        let isExpanded = expandedWorkIDs.contains(work.id)
+        let isExpanded = expandedWorkIDs.contains(work.id) || !searchText.isEmpty || showingArchived
         return VStack(alignment: .leading, spacing: 2) {
             workHeader(work, isExpanded: isExpanded)
             if isExpanded {
@@ -225,7 +294,8 @@ struct PadWorkOutline: View {
                     taskRow(task, sessionID: sessionID)
                         .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
                         .background(WorkOutlineSelectionBackground(
-                            isSelected: sessionID != nil && workspace.selection == sessionID))
+                            isSelected: showsPersistentSelection
+                                && sessionID != nil && workspace.selection == sessionID))
                 }
             }
         }
@@ -269,11 +339,11 @@ struct PadWorkOutline: View {
 
             if !discussions.isEmpty {
                 ForEach(discussions) { discussion in
-                    WorkDiscussionButton(isSelected: workspace.selection == discussion.id,
+                    WorkDiscussionButton(isSelected: showsPersistentSelection && workspace.selection == discussion.id,
                         isRunning: SessionExecutionState(executionStatus: discussion.executionStatus) == .running,
                         isActive: isActive,
                         hasUnread: workspace.unreadSessionIDs.contains(discussion.id),
-                        accessibilityState: workspace.selection == discussion.id ? "已选中"
+                        accessibilityState: showsPersistentSelection && workspace.selection == discussion.id ? "已选中"
                             : workspace.unreadSessionIDs.contains(discussion.id) ? "未读会话" : "",
                         minimumHitHeight: WorkOutlineMetrics.headerIconSize + WorkOutlineMetrics.headerPadding * 2) {
                             onOpenSession(discussion.id)
@@ -332,7 +402,9 @@ struct PadWorkOutline: View {
                         taskExecutionStatus: task.executionStatus)
         let isDeleting = task.deletionStatus == "deleting"
         return Button {
-            if let sessionID, !workspace.sessionIsKnownUnavailable(sessionID) {
+            if showingArchived {
+                selectedArchivedTask = task
+            } else if let sessionID, !workspace.sessionIsKnownUnavailable(sessionID) {
                 onOpenSession(sessionID)
             }
         } label: {
@@ -388,12 +460,7 @@ struct PadWorkOutline: View {
             .disabled(isDeleting || entityCommands.isBusy || sessionID == nil)
 
             Button {
-                let willArchive = !task.archived
-                Task {
-                    _ = await entityCommands.run(connection, target: .task(task.id), kind: "task_archive", label: willArchive ? "归档 Task" : "恢复 Task") { api, requestID in
-                        try await api.taskCommand(taskId: task.id, command: .archive, body: ClientTaskArchive(requestId: requestID, archived: willArchive))
-                    }
-                }
+                toggleTaskArchive(task)
             } label: {
                 Label(task.archived ? "恢复 Task" : "归档 Task", systemImage: "archivebox")
             }
@@ -411,6 +478,18 @@ struct PadWorkOutline: View {
     }
 
     // MARK: Shared pieces
+
+    private func toggleTaskArchive(_ task: ClientTask) {
+        guard !entityCommands.isBusy, task.deletionStatus != "deleting" else { return }
+        let willArchive = !task.archived
+        Task {
+            _ = await entityCommands.run(connection, target: .task(task.id), kind: "task_archive",
+                                          label: willArchive ? "归档 Task" : "恢复 Task") { api, requestID in
+                try await api.taskCommand(taskId: task.id, command: .archive,
+                    body: ClientTaskArchive(requestId: requestID, archived: willArchive))
+            }
+        }
+    }
 
     private func emptyRow(_ title: String) -> some View {
         Text(title)

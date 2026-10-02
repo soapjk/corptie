@@ -12,6 +12,7 @@ import { taskAcceptanceDynamicTools, callTaskAcceptanceDynamicTool } from "./tas
 import { platformDynamicTools, callPlatformDynamicTool } from "./platformDynamicTools.mjs";
 import { workChatDynamicTools, callWorkChatDynamicTool } from "./workChatDynamicTools.mjs";
 import { sceneDynamicTools, callSceneDynamicTool } from "../scenes/sceneDynamicTools.mjs";
+import { contextReadDynamicTools, callContextReadDynamicTool } from "./contextReadDynamicTools.mjs";
 
 export function createHostToolCatalog({
   memoryOperationService, artifactService, callWorkspaceDynamicTool,
@@ -21,7 +22,7 @@ export function createHostToolCatalog({
   reportTaskAcceptanceForAgent, completeTaskForSession,
   reviseTaskForSession, sceneService,
   getToolMaterializationPort, getPlatformOperationService,
-  getWorkChatOperationService
+  getWorkChatOperationService, contextReadService
 }) {
   return new HostToolCatalog([
     {
@@ -110,6 +111,12 @@ export function createHostToolCatalog({
       tools: workChatDynamicTools,
       authorize: ({ metadata }) => Boolean(metadata?.sessionId),
       execute: (input) => callWorkChatDynamicTool(getWorkChatOperationService(), input)
+    },
+    {
+      id: "context-read",
+      tools: contextReadDynamicTools,
+      authorize: ({ metadata }) => Boolean(metadata?.sessionId),
+      execute: (input) => callContextReadDynamicTool(contextReadService, input)
     },
     {
       id: "scenes",

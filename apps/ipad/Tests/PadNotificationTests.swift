@@ -102,6 +102,31 @@ struct PadNotificationTests {
         #expect(!reloaded.waitingSoundEnabled)
     }
 
+    @Test func notificationBodiesIdentifyOwningWorkAndTask() {
+        let context = NotificationResourceContext(
+            workName: "BTC 五分钟反转策略",
+            taskTitle: "实盘全链路本地开发"
+        )
+        let session = PadSessionNotificationSnapshot(
+            id: "session:one",
+            title: "修复首次加载",
+            status: .complete,
+            updatedAt: "now",
+            resourceContext: context
+        )
+        let automation = PadAutomationNotificationEvent(
+            id: "event:one",
+            kind: .completed,
+            automationID: "automation:one",
+            logicalSessionID: "session:one",
+            name: "检查生产服务",
+            resourceContext: context
+        )
+
+        #expect(PadNotificationContent.sessionBody(session).contains("Work：BTC 五分钟反转策略 · Task：实盘全链路本地开发"))
+        #expect(PadNotificationContent.automationBody(automation) == "Work：BTC 五分钟反转策略 · Task：实盘全链路本地开发\n计划任务：检查生产服务")
+    }
+
     private func snapshot(
         _ id: String,
         status: SessionExecutionState,

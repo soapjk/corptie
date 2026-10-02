@@ -79,6 +79,7 @@ struct PadControlTests {
         #expect(PadOutlineSort.updated.tasks(tasks).map(\.id) == ["a", "b"])
         #expect(PadOutlineSort.updated.tasks(tasks, latestSessionActivity: ["b": "2026-02-01"]).map(\.id) == ["b", "a"])
         #expect(PadOutlineSort.name.tasks(tasks).map(\.id) == ["a", "b"])
+        #expect(PadOutlineSort.standard.tasks(tasks, showingArchived: true).map(\.id) == ["c"])
     }
     private func fixture() throws -> (PadConnection, PadControlStore) {
         let config = URLSessionConfiguration.ephemeral

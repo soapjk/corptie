@@ -206,7 +206,11 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
     }
 
     private func handleSessionsUpdate(_ sessions: [TaskSession]) {
-        let activeSnapshots = SessionNotificationScope.activeSnapshots(from: sessions)
+        let activeSnapshots = SessionNotificationScope.activeSnapshots(
+            from: sessions,
+            works: client.appState.works,
+            tasks: client.appState.tasks
+        )
         for sessionID in soundTransitionTracker.completedSessionIDs(for: activeSnapshots) {
             guard let soundId = Self.enabledSoundId(for: sessionID, defaults: defaults) else {
                 continue
@@ -329,7 +333,11 @@ enum SessionNotificationContent {
         if let session = event.session {
             let summary = session.summary.trimmingCharacters(in: .whitespacesAndNewlines)
             let detail = summary.isEmpty ? session.title : String(summary.prefix(180))
-            return "\(session.agent) · \(session.title)\n\(detail)"
+            return [
+                session.resourceContext.displayLine(),
+                "\(session.agent) · \(session.title)",
+                detail
+            ].compactMap { $0 }.joined(separator: "\n")
         }
         guard let counts = event.counts else { return "" }
         return L10nFormat(

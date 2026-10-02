@@ -5,6 +5,21 @@ import CorptieClientCore
 
 @MainActor
 struct PadStateTests {
+    @Test func persistentOutlineSelectionOnlyAppearsInTheThreeColumnLayout() {
+        #expect(!PadWorkspaceLayoutPolicy.showsPersistentOutlineSelection(
+            isRegularWidth: false,
+            width: 1_200
+        ))
+        #expect(!PadWorkspaceLayoutPolicy.showsPersistentOutlineSelection(
+            isRegularWidth: true,
+            width: 1_071
+        ))
+        #expect(PadWorkspaceLayoutPolicy.showsPersistentOutlineSelection(
+            isRegularWidth: true,
+            width: 1_072
+        ))
+    }
+
     @Test func originalResponseArrivingAfterReceiptSettlementDoesNotReportMismatch() async throws {
         let name = "corptie-ipad-command-tests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
@@ -363,6 +378,20 @@ struct PadStateTests {
         #expect(!workspace.configuringComposer)
         #expect(workspace.composerConfiguration == nil)
         #expect(workspace.composerGeneration > composerGeneration)
+    }
+
+    @Test func emptyRealtimeComposerDoesNotEraseAConfigurationLoadedSeparately() throws {
+        let workspace = PadWorkspace()
+        let supported = try JSONDecoder().decode(ClientSessionCapabilities.self, from: Data(#"{"schemaVersion":1,"sessionId":"session:a","readMessages":true,"send":{"available":true},"stop":{"available":true},"composer":true}"#.utf8))
+        let unsupported = try JSONDecoder().decode(ClientSessionCapabilities.self, from: Data(#"{"schemaVersion":1,"sessionId":"session:a","readMessages":true,"send":{"available":true},"stop":{"available":true},"composer":false}"#.utf8))
+        let configuration = try JSONDecoder().decode(ClientComposerConfiguration.self, from: Data(#"{"schemaVersion":1,"sessionId":"session:a","currentModel":"gpt-6.1-sol","currentReasoningLevel":"high","models":[{"id":"gpt-6.1-sol","name":"GPT-6.1 Sol","reasoningLevels":["high"],"defaultReasoningLevel":"high"}],"switchModel":{"available":true},"switchReasoning":{"available":true}}"#.utf8))
+
+        workspace.mergeComposerConfiguration(configuration, capabilities: supported)
+        workspace.mergeComposerConfiguration(nil, capabilities: supported)
+        #expect(workspace.composerConfiguration?.currentModel == "gpt-6.1-sol")
+
+        workspace.mergeComposerConfiguration(nil, capabilities: unsupported)
+        #expect(workspace.composerConfiguration == nil)
     }
 
     @Test func structuredNotFoundDoesNotClaimAnActiveSessionWasArchived() {
