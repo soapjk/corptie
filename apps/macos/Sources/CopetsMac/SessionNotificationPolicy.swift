@@ -1,4 +1,5 @@
 import Foundation
+import CorptieClientCore
 
 func sessionNeedsUserAttention(
     status: TaskStatus,
@@ -31,6 +32,7 @@ struct SessionNotificationSnapshot: Equatable {
     let updatedAt: String
     let lastAgentMessageSequence: Int
     let lastReadMessageSequence: Int
+    let resourceContext: NotificationResourceContext
 
     init(
         id: String,
@@ -40,7 +42,8 @@ struct SessionNotificationSnapshot: Equatable {
         summary: String,
         updatedAt: String,
         lastAgentMessageSequence: Int = 0,
-        lastReadMessageSequence: Int = 0
+        lastReadMessageSequence: Int = 0,
+        resourceContext: NotificationResourceContext = .init()
     ) {
         self.id = id
         self.title = title
@@ -50,9 +53,10 @@ struct SessionNotificationSnapshot: Equatable {
         self.updatedAt = updatedAt
         self.lastAgentMessageSequence = lastAgentMessageSequence
         self.lastReadMessageSequence = lastReadMessageSequence
+        self.resourceContext = resourceContext
     }
 
-    init(session: TaskSession) {
+    init(session: TaskSession, resourceContext: NotificationResourceContext = .init()) {
         id = session.id
         title = session.title
         agent = session.agent
@@ -61,6 +65,7 @@ struct SessionNotificationSnapshot: Equatable {
         updatedAt = session.updatedAt
         lastAgentMessageSequence = session.lastAgentMessageSequence ?? 0
         lastReadMessageSequence = session.lastReadMessageSequence ?? 0
+        self.resourceContext = resourceContext
     }
 
     var needsUserAttention: Bool {
@@ -73,10 +78,24 @@ struct SessionNotificationSnapshot: Equatable {
 }
 
 enum SessionNotificationScope {
-    static func activeSnapshots(from sessions: [TaskSession]) -> [SessionNotificationSnapshot] {
-        sessions
+    static func activeSnapshots(
+        from sessions: [TaskSession],
+        works: [Work] = [],
+        tasks: [CorptieTask] = []
+    ) -> [SessionNotificationSnapshot] {
+        let resourceIndex = NotificationResourceIndex(
+            works: works.map { .init(id: $0.id, name: $0.name) },
+            tasks: tasks.map { .init(id: $0.id, title: $0.title, workID: $0.workId) },
+            sessions: sessions.map { .init(id: $0.id, workID: $0.workId, taskID: $0.taskId) }
+        )
+        return sessions
             .filter { $0.archived != true }
-            .map(SessionNotificationSnapshot.init(session:))
+            .map {
+                SessionNotificationSnapshot(
+                    session: $0,
+                    resourceContext: resourceIndex.context(forSessionID: $0.id)
+                )
+            }
     }
 }
 

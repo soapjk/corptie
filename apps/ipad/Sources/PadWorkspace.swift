@@ -2,6 +2,12 @@ import Foundation
 import Observation
 import CorptieClientCore
 
+enum PadWorkspaceLayoutPolicy {
+    static func showsPersistentOutlineSelection(isRegularWidth: Bool, width: CGFloat) -> Bool {
+        isRegularWidth && width >= 1_072
+    }
+}
+
 /// Pure geometry: menu stays above the module and inside the conversation's
 /// visible top edge, including after the keyboard or split view changes size.
 struct PadMentionMenuPlacement {
@@ -707,11 +713,25 @@ final class PadWorkspace {
         }
         capabilities = snapshot.capabilities
         if let incoming = snapshot.usage { applyUsage(incoming) }
-        composerConfiguration = snapshot.composer
+        mergeComposerConfiguration(snapshot.composer, capabilities: snapshot.capabilities)
         applyLatestWindow(snapshot.messages.items, cursor: snapshot.messages.nextBefore, revision: snapshot.revision)
         if let selection { saveResidentState(for: selection) }
         isLoadingDetail = false
         liveStatus = "实时连接正常"
+    }
+
+    /// A timeline snapshot may omit composer data after a transient catalog
+    /// failure. Keep a separately loaded configuration unless the capability
+    /// is authoritatively unsupported.
+    func mergeComposerConfiguration(
+        _ incoming: ClientComposerConfiguration?,
+        capabilities: ClientSessionCapabilities
+    ) {
+        if capabilities.composer != true {
+            composerConfiguration = nil
+        } else if let incoming {
+            composerConfiguration = incoming
+        }
     }
 
     @discardableResult

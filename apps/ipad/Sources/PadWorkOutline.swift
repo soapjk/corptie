@@ -15,6 +15,7 @@ struct PadWorkOutline: View {
     let isActive: Bool
     @Binding var expandedWorkIDs: Set<String>
     @Binding var isChatExpanded: Bool
+    let showsPersistentSelection: Bool
     let onOpenSession: (String) -> Void
     let createTask: (ClientWork) -> Void
     let onEntityRoute: (PadEntityRoute) -> Void
@@ -49,7 +50,8 @@ struct PadWorkOutline: View {
                         .padding(8)
                         .modifier(WorkGroupCardSurface())
                         .background(WorkOutlineSelectionBackground(isSelected:
-                            workspace.sessionIDByTaskID[task.id].map { $0 == workspace.selection } ?? false))
+                            showsPersistentSelection
+                                && (workspace.sessionIDByTaskID[task.id].map { $0 == workspace.selection } ?? false)))
                     }
                 } else {
                     ForEach(orderedWorks) { work in workGroup(work) }
@@ -179,7 +181,8 @@ struct PadWorkOutline: View {
                     ForEach(workspace.independentSessions) { session in
                         sessionRow(session)
                             .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                            .background(WorkOutlineSelectionBackground(isSelected: workspace.selection == session.id))
+                            .background(WorkOutlineSelectionBackground(
+                                isSelected: showsPersistentSelection && workspace.selection == session.id))
                     }
                 }
             }
@@ -209,7 +212,7 @@ struct PadWorkOutline: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityValue(workspace.selection == session.id ? "已选中" : "")
+        .accessibilityValue(showsPersistentSelection && workspace.selection == session.id ? "已选中" : "")
         .accessibilityIdentifier("outline-session-\(session.id)")
     }
 
@@ -225,7 +228,8 @@ struct PadWorkOutline: View {
                     taskRow(task, sessionID: sessionID)
                         .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
                         .background(WorkOutlineSelectionBackground(
-                            isSelected: sessionID != nil && workspace.selection == sessionID))
+                            isSelected: showsPersistentSelection
+                                && sessionID != nil && workspace.selection == sessionID))
                 }
             }
         }
@@ -269,11 +273,11 @@ struct PadWorkOutline: View {
 
             if !discussions.isEmpty {
                 ForEach(discussions) { discussion in
-                    WorkDiscussionButton(isSelected: workspace.selection == discussion.id,
+                    WorkDiscussionButton(isSelected: showsPersistentSelection && workspace.selection == discussion.id,
                         isRunning: SessionExecutionState(executionStatus: discussion.executionStatus) == .running,
                         isActive: isActive,
                         hasUnread: workspace.unreadSessionIDs.contains(discussion.id),
-                        accessibilityState: workspace.selection == discussion.id ? "已选中"
+                        accessibilityState: showsPersistentSelection && workspace.selection == discussion.id ? "已选中"
                             : workspace.unreadSessionIDs.contains(discussion.id) ? "未读会话" : "",
                         minimumHitHeight: WorkOutlineMetrics.headerIconSize + WorkOutlineMetrics.headerPadding * 2) {
                             onOpenSession(discussion.id)
