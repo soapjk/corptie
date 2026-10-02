@@ -115,6 +115,10 @@ export class TaskRepository {
     const workId = typeof options.workId === "string" && options.workId
       ? options.workId
       : null;
+    const queryTerms = typeof options.query === "string"
+      ? options.query.trim().split(/\s+/u).filter(Boolean).slice(0, 8)
+        .map((term) => `%${term.replaceAll("%", "\\%").replaceAll("_", "\\_")}%`)
+      : [];
     const includeCompleted = options.includeCompleted !== false;
     const limit = Math.max(1, Math.min(100, Number(options.limit) || 50));
     const cursor = options.cursor ?? null;
@@ -127,6 +131,7 @@ export class TaskRepository {
        FROM tasks
        WHERE COALESCE(tasks.deletion_status, '') <> 'deleted'
          ${workId ? "AND tasks.work_id = ?" : ""}
+         ${queryTerms.length ? `AND (${queryTerms.map(() => "tasks.title LIKE ? ESCAPE '\\' OR tasks.description LIKE ? ESCAPE '\\'").join(" OR ")})` : ""}
          ${includeCompleted ? "" : "AND tasks.lifecycle_state <> 'done'"}
          ${hasCursor ? `AND (
            ${completionRankSQL} > ?
@@ -137,6 +142,7 @@ export class TaskRepository {
        LIMIT ?`,
       [
         ...(workId ? [workId] : []),
+        ...queryTerms.flatMap((term) => [term, term]),
         ...(hasCursor ? [
           cursor.completionRank,
           cursor.completionRank, cursor.updatedAt,
