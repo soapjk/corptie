@@ -72,7 +72,7 @@ private struct PadUsageBar: View {
                 .accessibilityIdentifier("conversation-usage-context")
             }
             if let quota {
-                if usage.account?.provider == "codex" {
+                if usage.route?.providerId == "codex-app-server" || usage.account?.provider == "codex" {
                     Button { isResetNoticePresented.toggle() } label: {
                         quotaSlot(remaining: quota.remaining)
                     }

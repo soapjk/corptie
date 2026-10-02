@@ -362,33 +362,59 @@ final class PadWorkspace {
     var before: String?
     var capabilities: ClientSessionCapabilities?
     /// Usage of the selected Session; re-read once per timeline change, never per frame.
-    var usage: ClientSessionUsage?
+    /// Transient display projection for the selected Session. This is not
+    /// Workspace-owned persistence; context and provider/model quota retain
+    /// their separate identities in the payload and caches below.
+    var selectedSessionUsage: ClientSessionUsage?
     @ObservationIgnored private var usageRevision: Int?
     /// Account quota belongs to the provider/model, not to a Session timeline.
     /// Context remains Session-scoped. Keep this small and outside observation;
     /// only the selected usage projection invalidates the status row.
     @ObservationIgnored private var accountUsageByProviderModel: [String: ClientSessionUsage.Account] = [:]
+    @ObservationIgnored private var accountUsageKeyOrder: [String] = []
+    private static let accountUsageCacheCapacity = 24
 
-    private func accountKey(_ account: ClientSessionUsage.Account?) -> String? {
-        guard let provider = account?.provider, !provider.isEmpty else { return nil }
-        return provider + "\u{1f}" + (account?.model ?? "")
+    private func cacheAccount(_ account: ClientSessionUsage.Account, for key: String) {
+        accountUsageByProviderModel[key] = account
+        accountUsageKeyOrder.removeAll { $0 == key }
+        accountUsageKeyOrder.append(key)
+        while accountUsageKeyOrder.count > Self.accountUsageCacheCapacity {
+            accountUsageByProviderModel.removeValue(forKey: accountUsageKeyOrder.removeFirst())
+        }
+    }
+
+    private func accountKey(_ usage: ClientSessionUsage) -> String? {
+        if let route = usage.route {
+            guard !route.providerId.isEmpty else { return nil }
+            return route.providerId + "\u{1f}" + (route.modelId ?? "")
+        }
+        guard let provider = usage.account?.provider, !provider.isEmpty else { return nil }
+        return provider + "\u{1f}" + (usage.account?.model ?? "")
     }
 
     /// A direct usage read is authoritative. Resident timeline snapshots may
     /// carry older account data, so they only seed an empty shared cache.
     func applyUsage(_ incoming: ClientSessionUsage?, authoritative: Bool = false) {
-        guard let incoming else { usage = nil; return }
-        guard let key = accountKey(incoming.account) else { usage = incoming; return }
-        if let account = incoming.account,
+        guard let incoming else { selectedSessionUsage = nil; return }
+        guard let key = accountKey(incoming) else { selectedSessionUsage = incoming; return }
+        let matchingAccount: ClientSessionUsage.Account?
+        if let route = incoming.route, let account = incoming.account,
+           account.provider != route.providerId || account.model != route.modelId {
+            matchingAccount = nil
+        } else {
+            matchingAccount = incoming.account
+        }
+        if let account = matchingAccount,
            (authoritative && incoming.accountFresh != false)
             || (account.available == true && accountUsageByProviderModel[key] == nil) {
-            accountUsageByProviderModel[key] = account
+            cacheAccount(account, for: key)
         }
-        let sharedAccount = accountUsageByProviderModel[key] ?? incoming.account
+        let sharedAccount = accountUsageByProviderModel[key] ?? matchingAccount
         let projected = ClientSessionUsage(
             schemaVersion: incoming.schemaVersion, sessionId: incoming.sessionId,
+            route: incoming.route,
             context: incoming.context, account: sharedAccount, accountFresh: incoming.accountFresh)
-        if usage != projected { usage = projected }
+        if selectedSessionUsage != projected { selectedSessionUsage = projected }
     }
     var composerConfiguration: ClientComposerConfiguration?
     var commandCatalog: ClientConversationCommandCatalog?
@@ -409,7 +435,7 @@ final class PadWorkspace {
             before: before,
             revision: lastTimelineRevision,
             capabilities: capabilities,
-            usage: usage,
+            usage: selectedSessionUsage,
             composer: composerConfiguration
         ), for: sessionID)
     }
@@ -575,7 +601,7 @@ final class PadWorkspace {
             before = nil
             lastTimelineRevision = nil
             capabilities = nil
-            usage = nil
+            selectedSessionUsage = nil
             composerConfiguration = nil
             isLoadingDetail = (newID != nil)
             refreshDisplayEntries()
@@ -952,7 +978,7 @@ final class PadWorkspace {
         lastTimelineRevision = nil
         before = nil
         capabilities = nil
-        usage = nil
+        selectedSessionUsage = nil
         usageRevision = nil
         composerConfiguration = nil
         commandCatalog = nil
@@ -968,7 +994,7 @@ final class PadWorkspace {
     /// Compatibility repair for hosts whose resident snapshots omit usage.
     /// Never refresh an already populated value or start a polling loop.
     func repairMissingUsage(_ connection: PadConnection) async {
-        guard usage == nil, let id = selection else { return }
+        guard selectedSessionUsage == nil, let id = selection else { return }
         let generation = timelineGeneration
         do {
             let api = ClientSessionAPI(transport: try await connection.transport())
@@ -993,7 +1019,7 @@ final class PadWorkspace {
         } catch let failure as ClientServiceFailure where failure.code == "CAPABILITY_UNSUPPORTED" {
             guard selection == sessionID, generation == timelineGeneration else { return }
             usageRevision = revision
-            usage = nil
+            selectedSessionUsage = nil
         } catch {
             guard selection == sessionID, generation == timelineGeneration else { return }
             // Keep the last valid value on transient failures; a later push repairs it.

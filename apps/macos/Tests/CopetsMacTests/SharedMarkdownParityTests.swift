@@ -42,7 +42,9 @@ private enum FrozenPreExtractionMarkdown {
         case .user, .agent: .systemFont(ofSize: 11, weight: .medium)
         case .process: .systemFont(ofSize: 10.5, weight: .semibold)
         }
-        let color = NSColor(calibratedRed: 0.24, green: 0.27, blue: 0.29, alpha: 1)
+        let color = style == .user
+            ? MessageTextCardPalette.userNativeForeground
+            : NSColor(calibratedRed: 0.24, green: 0.27, blue: 0.29, alpha: 1)
         guard style != .process else {
             return NSAttributedString(string: text, attributes: [.font: baseFont, .foregroundColor: color])
         }

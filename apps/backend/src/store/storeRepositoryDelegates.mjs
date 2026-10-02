@@ -106,7 +106,8 @@ const foundationalDelegates = Object.freeze({
     "providerInboxEvent", "insertProviderInboxEvent", "markProviderInboxEvent",
     "providerBindingCursor", "markProviderBindingCursorDegraded",
     "upsertProviderBindingCursor", "upsertSessionTurn", "getSessionTurn",
-    "hasSessionTurnForBinding", "upsertSessionUsageSnapshot",
+    "hasSessionTurnForBinding", "upsertSessionContextUsage", "getSessionContextUsage",
+    "upsertProviderModelUsage", "getProviderModelUsage", "upsertSessionUsageSnapshot",
     "getSessionUsageSnapshot", "listUnsettledSessionTurns",
     "latestCompletedSessionTurn", "enqueueEventOutbox",
     "listPendingEventOutbox", "markEventOutboxPublished"

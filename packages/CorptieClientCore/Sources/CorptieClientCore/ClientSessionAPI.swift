@@ -18,6 +18,43 @@ public struct ClientMessage: Decodable, Sendable, Identifiable, Equatable {
     public let sourceType: String?
     public let localVisibility: String?
     public let processingError: String?
+    public let collaborationDirection: String?
+    public let collaborationSenderAgentId: String?
+    public let collaborationSenderName: String?
+    public let collaborationRecipientAgentId: String?
+    public let collaborationRecipientName: String?
+    public let collaborationInitiatorSessionId: String?
+    public let collaborationInitiatorSessionTitle: String?
+    public let collaborationInitiatorSessionKind: String?
+    public let collaborationRecipientSessionId: String?
+    public let collaborationRecipientSessionTitle: String?
+    public let collaborationRecipientSessionKind: String?
+    public let collaborationSourceWorkId: String?
+    public let collaborationSourceWorkName: String?
+    public let collaborationTargetWorkId: String?
+    public let collaborationTargetWorkName: String?
+    public let collaborationSourceTaskId: String?
+    public let collaborationTargetTaskId: String?
+    public let collaborationRelation: String?
+    public let collaborationRouteStatus: String?
+    public let collaborationRoutingVersion: Int?
+    public let collaborationRequestTitle: String?
+    public let collaborationMessageKind: String?
+    public let collaborationProcessingStatus: String?
+    public let collaborationConfirmationId: String?
+    public let collaborationConfirmationStatus: String?
+    public let collaborationAuthorizationKind: String?
+    public let collaborationChannelId: String?
+    public let collaborationAcceptanceCriteria: [String]?
+    public let automationName: String?
+    public let automationEventType: String?
+    public let automationEventOccurredAt: String?
+    public let automationRunAt: String?
+    public let automationNextRunAt: String?
+    public let automationExpiresAt: String?
+    public let systemEventKind: String?
+    public let systemEventReason: String?
+    public let systemEventSource: String?
     public var processStartedAt: String?
     public var processEndedAt: String?
     /// Managed attachments (additive; older backends omit them). Bytes come from `ClientSessionAPI.image`.
@@ -31,6 +68,17 @@ public struct ClientMessage: Decodable, Sendable, Identifiable, Equatable {
     enum CodingKeys: String, CodingKey {
         case id, turnId, type, text, status, createdAt, userMessageStatus, queuePosition
         case turnStatus, title, presentationRole, presentationText, sourceType, localVisibility, processingError
+        case collaborationDirection, collaborationSenderAgentId, collaborationSenderName
+        case collaborationRecipientAgentId, collaborationRecipientName
+        case collaborationInitiatorSessionId, collaborationInitiatorSessionTitle, collaborationInitiatorSessionKind
+        case collaborationRecipientSessionId, collaborationRecipientSessionTitle, collaborationRecipientSessionKind
+        case collaborationSourceWorkId, collaborationSourceWorkName, collaborationTargetWorkId, collaborationTargetWorkName
+        case collaborationSourceTaskId, collaborationTargetTaskId, collaborationRelation, collaborationRouteStatus
+        case collaborationRoutingVersion, collaborationRequestTitle, collaborationMessageKind
+        case collaborationProcessingStatus, collaborationConfirmationId, collaborationConfirmationStatus
+        case collaborationAuthorizationKind, collaborationChannelId, collaborationAcceptanceCriteria
+        case automationName, automationEventType, automationEventOccurredAt, automationRunAt, automationNextRunAt
+        case automationExpiresAt, systemEventKind, systemEventReason, systemEventSource
         case processStartedAt, processEndedAt, images, executionPlan, toolExecution, changeSet, userInput, options
     }
     public init(from decoder: Decoder) throws {
@@ -50,6 +98,43 @@ public struct ClientMessage: Decodable, Sendable, Identifiable, Equatable {
         sourceType = try container.decodeIfPresent(String.self, forKey: .sourceType)
         localVisibility = try container.decodeIfPresent(String.self, forKey: .localVisibility)
         processingError = try container.decodeIfPresent(String.self, forKey: .processingError)
+        collaborationDirection = try container.decodeIfPresent(String.self, forKey: .collaborationDirection)
+        collaborationSenderAgentId = try container.decodeIfPresent(String.self, forKey: .collaborationSenderAgentId)
+        collaborationSenderName = try container.decodeIfPresent(String.self, forKey: .collaborationSenderName)
+        collaborationRecipientAgentId = try container.decodeIfPresent(String.self, forKey: .collaborationRecipientAgentId)
+        collaborationRecipientName = try container.decodeIfPresent(String.self, forKey: .collaborationRecipientName)
+        collaborationInitiatorSessionId = try container.decodeIfPresent(String.self, forKey: .collaborationInitiatorSessionId)
+        collaborationInitiatorSessionTitle = try container.decodeIfPresent(String.self, forKey: .collaborationInitiatorSessionTitle)
+        collaborationInitiatorSessionKind = try container.decodeIfPresent(String.self, forKey: .collaborationInitiatorSessionKind)
+        collaborationRecipientSessionId = try container.decodeIfPresent(String.self, forKey: .collaborationRecipientSessionId)
+        collaborationRecipientSessionTitle = try container.decodeIfPresent(String.self, forKey: .collaborationRecipientSessionTitle)
+        collaborationRecipientSessionKind = try container.decodeIfPresent(String.self, forKey: .collaborationRecipientSessionKind)
+        collaborationSourceWorkId = try container.decodeIfPresent(String.self, forKey: .collaborationSourceWorkId)
+        collaborationSourceWorkName = try container.decodeIfPresent(String.self, forKey: .collaborationSourceWorkName)
+        collaborationTargetWorkId = try container.decodeIfPresent(String.self, forKey: .collaborationTargetWorkId)
+        collaborationTargetWorkName = try container.decodeIfPresent(String.self, forKey: .collaborationTargetWorkName)
+        collaborationSourceTaskId = try container.decodeIfPresent(String.self, forKey: .collaborationSourceTaskId)
+        collaborationTargetTaskId = try container.decodeIfPresent(String.self, forKey: .collaborationTargetTaskId)
+        collaborationRelation = try container.decodeIfPresent(String.self, forKey: .collaborationRelation)
+        collaborationRouteStatus = try container.decodeIfPresent(String.self, forKey: .collaborationRouteStatus)
+        collaborationRoutingVersion = try container.decodeIfPresent(Int.self, forKey: .collaborationRoutingVersion)
+        collaborationRequestTitle = try container.decodeIfPresent(String.self, forKey: .collaborationRequestTitle)
+        collaborationMessageKind = try container.decodeIfPresent(String.self, forKey: .collaborationMessageKind)
+        collaborationProcessingStatus = try container.decodeIfPresent(String.self, forKey: .collaborationProcessingStatus)
+        collaborationConfirmationId = try container.decodeIfPresent(String.self, forKey: .collaborationConfirmationId)
+        collaborationConfirmationStatus = try container.decodeIfPresent(String.self, forKey: .collaborationConfirmationStatus)
+        collaborationAuthorizationKind = try container.decodeIfPresent(String.self, forKey: .collaborationAuthorizationKind)
+        collaborationChannelId = try container.decodeIfPresent(String.self, forKey: .collaborationChannelId)
+        collaborationAcceptanceCriteria = try container.decodeIfPresent([String].self, forKey: .collaborationAcceptanceCriteria)
+        automationName = try container.decodeIfPresent(String.self, forKey: .automationName)
+        automationEventType = try container.decodeIfPresent(String.self, forKey: .automationEventType)
+        automationEventOccurredAt = try container.decodeIfPresent(String.self, forKey: .automationEventOccurredAt)
+        automationRunAt = try container.decodeIfPresent(String.self, forKey: .automationRunAt)
+        automationNextRunAt = try container.decodeIfPresent(String.self, forKey: .automationNextRunAt)
+        automationExpiresAt = try container.decodeIfPresent(String.self, forKey: .automationExpiresAt)
+        systemEventKind = try container.decodeIfPresent(String.self, forKey: .systemEventKind)
+        systemEventReason = try container.decodeIfPresent(String.self, forKey: .systemEventReason)
+        systemEventSource = try container.decodeIfPresent(String.self, forKey: .systemEventSource)
         processStartedAt = try container.decodeIfPresent(String.self, forKey: .processStartedAt)
         processEndedAt = try container.decodeIfPresent(String.self, forKey: .processEndedAt)
         images = try container.decodeIfPresent([ClientMessageImage].self, forKey: .images) ?? []
@@ -65,6 +150,17 @@ public struct ClientMessage: Decodable, Sendable, Identifiable, Equatable {
         turnId = nil; status = nil; createdAt = nil; userMessageStatus = nil; queuePosition = nil
         turnStatus = nil; title = nil; presentationRole = nil; presentationText = nil
         sourceType = nil; localVisibility = nil; processingError = nil
+        collaborationDirection = nil; collaborationSenderAgentId = nil; collaborationSenderName = nil
+        collaborationRecipientAgentId = nil; collaborationRecipientName = nil
+        collaborationInitiatorSessionId = nil; collaborationInitiatorSessionTitle = nil; collaborationInitiatorSessionKind = nil
+        collaborationRecipientSessionId = nil; collaborationRecipientSessionTitle = nil; collaborationRecipientSessionKind = nil
+        collaborationSourceWorkId = nil; collaborationSourceWorkName = nil; collaborationTargetWorkId = nil; collaborationTargetWorkName = nil
+        collaborationSourceTaskId = nil; collaborationTargetTaskId = nil; collaborationRelation = nil; collaborationRouteStatus = nil
+        collaborationRoutingVersion = nil; collaborationRequestTitle = nil; collaborationMessageKind = nil
+        collaborationProcessingStatus = nil; collaborationConfirmationId = nil; collaborationConfirmationStatus = nil
+        collaborationAuthorizationKind = nil; collaborationChannelId = nil; collaborationAcceptanceCriteria = nil
+        automationName = nil; automationEventType = nil; automationEventOccurredAt = nil; automationRunAt = nil
+        automationNextRunAt = nil; automationExpiresAt = nil; systemEventKind = nil; systemEventReason = nil; systemEventSource = nil
         processStartedAt = nil; processEndedAt = nil; images = []; executionPlan = nil; toolExecution = nil; changeSet = nil; userInput = nil; options = nil
     }
     public init(commandMessageID: String, result: ClientConversationCommandResult) {
@@ -73,6 +169,17 @@ public struct ClientMessage: Decodable, Sendable, Identifiable, Equatable {
         userMessageStatus = nil; queuePosition = nil
         turnStatus = nil; title = nil; presentationRole = nil; presentationText = nil
         sourceType = nil; localVisibility = nil; processingError = nil
+        collaborationDirection = nil; collaborationSenderAgentId = nil; collaborationSenderName = nil
+        collaborationRecipientAgentId = nil; collaborationRecipientName = nil
+        collaborationInitiatorSessionId = nil; collaborationInitiatorSessionTitle = nil; collaborationInitiatorSessionKind = nil
+        collaborationRecipientSessionId = nil; collaborationRecipientSessionTitle = nil; collaborationRecipientSessionKind = nil
+        collaborationSourceWorkId = nil; collaborationSourceWorkName = nil; collaborationTargetWorkId = nil; collaborationTargetWorkName = nil
+        collaborationSourceTaskId = nil; collaborationTargetTaskId = nil; collaborationRelation = nil; collaborationRouteStatus = nil
+        collaborationRoutingVersion = nil; collaborationRequestTitle = nil; collaborationMessageKind = nil
+        collaborationProcessingStatus = nil; collaborationConfirmationId = nil; collaborationConfirmationStatus = nil
+        collaborationAuthorizationKind = nil; collaborationChannelId = nil; collaborationAcceptanceCriteria = nil
+        automationName = nil; automationEventType = nil; automationEventOccurredAt = nil; automationRunAt = nil
+        automationNextRunAt = nil; automationExpiresAt = nil; systemEventKind = nil; systemEventReason = nil; systemEventSource = nil
         processStartedAt = nil; processEndedAt = nil; images = []; executionPlan = nil; toolExecution = nil; changeSet = nil; userInput = nil; options = nil
     }
 }
@@ -84,6 +191,12 @@ public struct ClientApprovalOption: Decodable, Sendable, Equatable, Identifiable
 }
 
 public struct ClientApprovalResponse: Decodable, Sendable {
+    public let schemaVersion: Int
+    public let sessionId: String
+    public let itemId: String
+    public let status: String
+}
+public struct ClientCollaborationConfirmationResponse: Decodable, Sendable {
     public let schemaVersion: Int
     public let sessionId: String
     public let itemId: String
@@ -147,6 +260,7 @@ public struct ClientSessionCapabilities: Decodable, Sendable {
     public let sendMentions: Bool?
     public let scheduleMessage: Bool?
     public let createTask: Action?
+    public let collaborationConfirmation: Action?
     public let currentModel: String?
     public let currentReasoningLevel: String?
     /// Host readiness of the Session ("ready" / "not_ready"); absent on older hosts.
@@ -167,6 +281,16 @@ public struct ClientSessionNotReadyReason: Decodable, Equatable, Sendable {
 
 /// Read-only usage projection of one Session (context window plus provider rate limits).
 public struct ClientSessionUsage: Decodable, Equatable, Sendable {
+    public struct Route: Decodable, Equatable, Sendable {
+        public let providerId: String
+        public let modelId: String?
+        public let bindingId: String?
+        public let routingVersion: Int?
+        public init(providerId: String, modelId: String?, bindingId: String?, routingVersion: Int?) {
+            self.providerId = providerId; self.modelId = modelId
+            self.bindingId = bindingId; self.routingVersion = routingVersion
+        }
+    }
     public struct Context: Decodable, Equatable, Sendable {
         public let usedTokens: Int?
         public let contextWindow: Int?
@@ -222,12 +346,16 @@ public struct ClientSessionUsage: Decodable, Equatable, Sendable {
     }
     public let schemaVersion: Int
     public let sessionId: String
+    /// Authoritative active Binding identity. Account usage is valid only when
+    /// its provider/model matches this route.
+    public let route: Route?
     public let accountFresh: Bool?
     public let context: Context?
     public let account: Account?
-    public init(schemaVersion: Int = 1, sessionId: String, context: Context?, account: Account?, accountFresh: Bool? = nil) {
+    public init(schemaVersion: Int = 1, sessionId: String, route: Route? = nil,
+                context: Context?, account: Account?, accountFresh: Bool? = nil) {
         self.schemaVersion = schemaVersion; self.sessionId = sessionId; self.accountFresh = accountFresh
-        self.context = context; self.account = account
+        self.route = route; self.context = context; self.account = account
     }
 }
 
@@ -358,6 +486,17 @@ public struct ClientSessionAPI: Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(Body(itemId: itemId, answers: answers, action: action))
+        return try await read(request)
+    }
+    public func respondToCollaborationConfirmation(sessionId: String, itemId: String,
+                                                   approve: Bool) async throws -> ClientCollaborationConfirmationResponse {
+        struct Body: Encodable { let itemId: String; let decision: String }
+        var request = try transport.endpoint.request(
+            path: ["client", "v1", "sessions", sessionId, "collaboration-confirmation"])
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(Body(
+            itemId: itemId, decision: approve ? "confirm" : "reject"))
         return try await read(request)
     }
     /// Acknowledges agent messages through `throughSequence` (same host receipt macOS submits on open).

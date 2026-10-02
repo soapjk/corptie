@@ -54,8 +54,10 @@ export class ProviderEventProjector {
     if (event.type === "usage.updated") {
       const context = normalizeContextUsage(event.payload?.tokenUsage ?? event.payload?.usage);
       if (context) {
-        usage = this.store.upsertSessionUsageSnapshot({
+        usage = this.store.upsertSessionContextUsage({
           sessionId,
+          bindingId: event.bindingId,
+          routingVersion: event.routingVersion,
           providerId: event.providerId,
           model: session.external?.currentModel ?? null,
           context,

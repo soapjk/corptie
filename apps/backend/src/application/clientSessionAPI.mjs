@@ -49,17 +49,49 @@ function publicExecutionPlan(value) {
   };
 }
 
+const PUBLIC_PRESENTATION_STRING_FIELDS = [
+  "turnStatus", "title", "presentationRole", "presentationText",
+  "sourceType", "localVisibility", "processingError",
+  "processStartedAt", "processEndedAt",
+  "collaborationDirection", "collaborationSenderAgentId", "collaborationSenderName",
+  "collaborationRecipientAgentId", "collaborationRecipientName",
+  "collaborationInitiatorSessionId", "collaborationInitiatorSessionTitle",
+  "collaborationInitiatorSessionKind", "collaborationRecipientSessionId",
+  "collaborationRecipientSessionTitle", "collaborationRecipientSessionKind",
+  "collaborationSourceWorkId", "collaborationSourceWorkName",
+  "collaborationTargetWorkId", "collaborationTargetWorkName",
+  "collaborationSourceTaskId", "collaborationTargetTaskId",
+  "collaborationRelation", "collaborationRouteStatus", "collaborationRequestTitle",
+  "collaborationMessageKind", "collaborationProcessingStatus",
+  "collaborationConfirmationId", "collaborationConfirmationStatus",
+  "collaborationAuthorizationKind", "collaborationChannelId",
+  "automationId", "automationName", "automationTriggerType", "automationEventType",
+  "automationEventSource", "automationRunId", "automationEventOccurredAt",
+  "automationScheduleType", "automationRunAt", "automationNextRunAt", "automationExpiresAt",
+  "systemEventKind", "systemEventReason", "systemEventSource"
+];
+
+function publicPresentationString(value, maximumLength = 4_000) {
+  return typeof value === "string" ? value.slice(0, maximumLength) : null;
+}
+
 function publicClientMessage(item) {
   return {
     id: item.id, turnId: item.turnId ?? null, type: item.type,
     text: typeof item.text === "string" ? item.text : "", status: item.status ?? null,
     createdAt: item.createdAt ?? null,
     userMessageStatus: item.userMessageStatus ?? null, queuePosition: item.queuePosition ?? null,
+    ...Object.fromEntries(PUBLIC_PRESENTATION_STRING_FIELDS.map(key => [key,
+      publicPresentationString(item[key], key === "presentationText" ? 200_000 : 4_000)])),
+    collaborationRoutingVersion: Number.isSafeInteger(item.collaborationRoutingVersion)
+      ? item.collaborationRoutingVersion : null,
+    collaborationAcceptanceCriteria: Array.isArray(item.collaborationAcceptanceCriteria)
+      ? item.collaborationAcceptanceCriteria.filter(value => typeof value === "string")
+        .slice(0, 50).map(value => value.slice(0, 4_000)) : null,
     ...Object.fromEntries([
-      "turnStatus", "title", "presentationRole", "presentationText",
-      "sourceType", "localVisibility", "processingError",
-      "processStartedAt", "processEndedAt",
-    ].map(key => [key, typeof item[key] === "string" ? item[key] : null])),
+      "automationIntervalSeconds", "automationConditionCheckIntervalSeconds",
+      "automationProcessPollIntervalSeconds"
+    ].map(key => [key, typeof item[key] === "number" && Number.isFinite(item[key]) ? item[key] : null])),
     images: Array.isArray(item.images) ? item.images
       .filter(image => image && typeof image.managedPath === "string" && image.managedPath)
       .slice(0, 8)
@@ -81,7 +113,7 @@ function publicClientMessage(item) {
 
 /** v1 text messaging + stop commands. Provider-neutral callbacks, durable at-most-once dispatch. */
 export class ClientSessionAPI {
-  constructor({ store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null, respondToApproval = null, respondToUserInput = null, onReceiptChanged = null, inspector = null }) {
+  constructor({ store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null, respondToApproval = null, respondToUserInput = null, respondToCollaborationConfirmation = null, respondToSessionChannelRequest = null, onReceiptChanged = null, inspector = null }) {
     this.inspector = inspector;
     Object.assign(this, { store, readWindow, send, stop, actions, resolveSession, composer, images, schedule, conversationCommands });
     // Optional host projections: Session readiness (desktop ThreadMetaView light) and usage (context / quota).
@@ -95,6 +127,8 @@ export class ClientSessionAPI {
     this.entityCommands = entityCommands;
     this.respondToApproval = respondToApproval;
     this.respondToUserInput = respondToUserInput;
+    this.respondToCollaborationConfirmation = respondToCollaborationConfirmation;
+    this.respondToSessionChannelRequest = respondToSessionChannelRequest;
     this.onReceiptChanged = onReceiptChanged;
     store.db.run(`CREATE TABLE IF NOT EXISTS client_command_receipts (
       device_id TEXT NOT NULL, request_id TEXT NOT NULL, session_id TEXT NOT NULL,
@@ -107,6 +141,7 @@ export class ClientSessionAPI {
     this.inFlight = new Set();
     this.approvalsInFlight = new Set();
     this.userInputInFlight = new Set();
+    this.collaborationConfirmationsInFlight = new Set();
   }
 
   session(id) {
@@ -310,6 +345,49 @@ export class ClientSessionAPI {
     return { schemaVersion: 1, sessionId, itemId: item.id, status: input.action === "cancel" ? "cancelled" : "submitted" };
   }
 
+  async collaborationConfirmation(identity, id, input, revalidateIdentity = null) {
+    if (!input || typeof input !== "object" || Array.isArray(input)
+      || Object.keys(input).some(key => !["itemId", "decision"].includes(key))
+      || typeof input.itemId !== "string" || !input.itemId || input.itemId.length > 300
+      || !["confirm", "reject"].includes(input.decision)) {
+      throw deviceError("INVALID_COLLABORATION_CONFIRMATION", 400);
+    }
+    const { sessionId } = this.session(id);
+    const item = this.store.getSessionItem(sessionId, input.itemId);
+    if (!item || (item.type !== "collaborationConfirmation"
+      && item.presentationRole !== "collaboration_confirmation")) {
+      throw deviceError("COLLABORATION_CONFIRMATION_NOT_PENDING", 409);
+    }
+    const existingStatus = item.collaborationConfirmationStatus ?? item.status;
+    if (["confirmed", "rejected"].includes(existingStatus)) {
+      return { schemaVersion: 1, sessionId, itemId: item.id, status: existingStatus };
+    }
+    if (existingStatus !== "pending" || typeof item.collaborationConfirmationId !== "string"
+      || !item.collaborationConfirmationId) {
+      throw deviceError("COLLABORATION_CONFIRMATION_NOT_PENDING", 409);
+    }
+    const responder = item.collaborationAuthorizationKind === "session_channel"
+      ? this.respondToSessionChannelRequest : this.respondToCollaborationConfirmation;
+    if (!responder) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
+    if (revalidateIdentity) {
+      const current = revalidateIdentity();
+      if (current.deviceId !== identity.deviceId) throw deviceError("INVALID_CREDENTIAL", 401);
+    }
+    const key = `${sessionId}:${item.collaborationConfirmationId}`;
+    if (this.collaborationConfirmationsInFlight.has(key)) {
+      throw deviceError("COLLABORATION_CONFIRMATION_IN_PROGRESS", 409);
+    }
+    this.collaborationConfirmationsInFlight.add(key);
+    try {
+      const result = await responder(item.collaborationConfirmationId, input.decision === "confirm",
+        { type: "remote-client", deviceId: identity.deviceId, sessionId });
+      const status = result?.status ?? (input.decision === "confirm" ? "confirmed" : "rejected");
+      return { schemaVersion: 1, sessionId, itemId: item.id, status };
+    } finally {
+      this.collaborationConfirmationsInFlight.delete(key);
+    }
+  }
+
   /** Bytes of one managed attachment of this Session. Same ownership check as the desktop image route. */
   async image(identity, id, query) {
     const { sessionId } = this.session(id);
@@ -365,6 +443,11 @@ export class ClientSessionAPI {
       scheduleMessage: Boolean(this.schedule),
       createTask: { available: Boolean(this.taskCreation) && Boolean(resolved.session.workId),
         reason: !this.taskCreation ? "CAPABILITY_UNSUPPORTED" : !resolved.session.workId ? "WORK_REQUIRED" : null },
+      collaborationConfirmation: {
+        available: Boolean(this.respondToCollaborationConfirmation || this.respondToSessionChannelRequest),
+        reason: this.respondToCollaborationConfirmation || this.respondToSessionChannelRequest
+          ? null : "CAPABILITY_UNSUPPORTED"
+      },
       currentModel: resolved.session.external?.currentModel ?? null,
       currentReasoningLevel: resolved.session.external?.currentReasoningLevel ?? null,
       readMessages: true,
@@ -374,10 +457,22 @@ export class ClientSessionAPI {
 
   /** Context window and account quota of a Session: the desktop ChatUsageBar data, read-only. */
   async usage(identity, id, { cached = false, freshAccount = false } = {}) {
-    const { sessionId } = this.session(id);
+    const { sessionId, session } = this.session(id);
     if (!cached && !this.usageReader) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
-    const snapshot = cached
-      ? this.store.getSessionUsageSnapshot(sessionId)
+    const logical = this.store.getLogicalSessionByLegacySessionId?.(sessionId);
+    const binding = logical?.activeBinding ?? null;
+    const providerId = binding?.providerId ?? session.external?.provider ?? "unknown";
+    const modelId = session.external?.currentModel ?? null;
+    const storedContext = this.store.getSessionContextUsage?.(sessionId);
+    const cachedSnapshot = {
+      route: { providerId, model: modelId, bindingId: binding?.bindingId ?? null,
+        routingVersion: binding?.routingVersion ?? logical?.routingVersion ?? null },
+      context: storedContext?.providerId === providerId
+        && (!storedContext.bindingId || !binding?.bindingId || storedContext.bindingId === binding.bindingId)
+        ? storedContext.context : null,
+      account: this.store.getProviderModelUsage?.(providerId, modelId)?.account ?? null
+    };
+    const snapshot = cached ? cachedSnapshot
       : await this.usageReader(sessionId, { requireFreshAccount: freshAccount });
     const number = value => (typeof value === "number" && Number.isFinite(value) ? value : null);
     const window = value => value && typeof value === "object"
@@ -400,7 +495,11 @@ export class ClientSessionAPI {
       : null;
     const account = snapshot?.account && typeof snapshot.account === "object" ? snapshot.account : null;
     const context = snapshot?.context && typeof snapshot.context === "object" ? snapshot.context : null;
+    const route = snapshot?.route ?? cachedSnapshot.route;
     return { schemaVersion: 1, sessionId,
+      route: { providerId: String(route.providerId), modelId: route.model == null ? null : String(route.model),
+        bindingId: route.bindingId == null ? null : String(route.bindingId),
+        routingVersion: Number.isSafeInteger(route.routingVersion) ? route.routingVersion : null },
       accountFresh: cached ? false : snapshot?.accountFresh ?? null,
       context: context ? { usedTokens: number(context.usedTokens), contextWindow: number(context.contextWindow),
         remainingTokens: number(context.remainingTokens), usedPercent: number(context.usedPercent) } : null,

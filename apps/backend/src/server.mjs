@@ -1080,7 +1080,7 @@ openClackyManager.onProbe = () => {
     attachTools: async (attachment) => openClackyToolHostAttachment(attachment),
     applyToolPlanAtTurnBoundary: applyOpenClackyToolPlanAtTurnBoundary,
     prepareWorkspaceTransition: (reference, input = {}) => switchOpenClackyProviderWorkspace(reference, input),
-    readSessionUsage: async (reference) => store.getSessionUsageSnapshot(reference.sessionId)?.context ?? null,
+    readSessionUsage: async (reference) => store.getSessionContextUsage(reference.sessionId)?.context ?? null,
     bindWorkspace: (input) => persistedProviderWorkspaceProof(store, input),
     inspectWorkspaceBinding: (input) => persistedProviderWorkspaceProof(store, input)
   }));
@@ -2135,6 +2135,7 @@ function startBackendRuntime() {
     turnObservability, agentProviderRegistry, switchSessionProvider, workService,
     inspectTaskWorktree, reclaimTaskWorktree, sendUnifiedSessionMessage,
     interruptUnifiedSession, respondUnifiedSessionApproval, respondUnifiedSessionUserInput,
+    resolveCollaborationConfirmation, resolveSessionChannelRequest,
     publishStateChangesIfNeeded, workDiscussionService, sessionApplicationService,
     workSessionStartApplicationService, chatResourceService, decorateSessionForClient,
     readSessionUsage, setTaskArchivedForEntityRoutes, restartTaskForEntityRoutes,

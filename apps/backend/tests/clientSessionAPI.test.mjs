@@ -21,6 +21,14 @@ test("device history preserves typed timeline presentation without leaking provi
           rawMetadataJSON: "private", rawEventEnvelope: "private", providerCredentials: { token: "private" } },
         { id: "old", type: "agentMessage", text: "old backend" },
         { id: "malformed", type: "agentMessage", text: "invalid metadata", title: { secret: "private" }, turnStatus: 42 },
+        { id: "collaboration", type: "userMessage", text: "trusted capsule",
+          presentationRole: "collaboration", presentationText: "Please review",
+          collaborationDirection: "inbound", collaborationSenderName: "Peer",
+          collaborationInitiatorSessionId: "session:source", collaborationInitiatorSessionTitle: "Source",
+          collaborationRecipientSessionId: "session:target", collaborationRecipientSessionTitle: "Target",
+          collaborationSourceWorkName: "Work A", collaborationTargetWorkName: "Work B",
+          collaborationMessageKind: "change_request", collaborationAcceptanceCriteria: ["One", 2],
+          collaborationRoutingVersion: 4, rawEventEnvelope: "private" },
       ] }) });
     const { items } = await api.messages(identity, "session:test", new URLSearchParams());
     for (const [key, value] of Object.entries(presentation)) {
@@ -30,6 +38,12 @@ test("device history preserves typed timeline presentation without leaking provi
     assert.equal(items[0].turnId, "turn:1");
     assert.equal(items[2].title, null);
     assert.equal(items[2].turnStatus, null);
+    assert.equal(items[3].presentationRole, "collaboration");
+    assert.equal(items[3].collaborationDirection, "inbound");
+    assert.equal(items[3].collaborationInitiatorSessionTitle, "Source");
+    assert.equal(items[3].collaborationTargetWorkName, "Work B");
+    assert.deepEqual(items[3].collaborationAcceptanceCriteria, ["One"]);
+    assert.equal(items[3].collaborationRoutingVersion, 4);
     for (const key of ["rawMetadataJSON", "rawEventEnvelope", "providerCredentials"]) {
       assert.equal(Object.hasOwn(items[0], key), false);
     }
@@ -47,7 +61,7 @@ test("background snapshots and usage-only deltas carry durable usage without Pro
       } });
     let usageReads = 0, composerReads = 0;
     api.usageReader = async () => { usageReads += 1; return {}; };
-    f.store.upsertSessionUsageSnapshot({ sessionId: "session:test", providerId: "test",
+    f.store.upsertSessionUsageSnapshot({ sessionId: "session:test", providerId: "codex-app-server",
       context: { usedTokens: 10, contextWindow: 100, remainingTokens: 90 },
       account: { available: true, provider: "test", rateLimits: { primary: { usedPercent: 20 } } } });
     api.configuration = async () => { composerReads += 1; return { schemaVersion: 1 }; };
@@ -63,7 +77,7 @@ test("background snapshots and usage-only deltas carry durable usage without Pro
 
     api.store.sessionTimelineChangesAfter = () => ({ snapshotRequired: false, baseRevision: 3,
       revision: 3, currentRevision: 3, hasMore: false, changes: [] });
-    f.store.upsertSessionUsageSnapshot({ sessionId: "session:test", providerId: "test",
+    f.store.upsertSessionUsageSnapshot({ sessionId: "session:test", providerId: "codex-app-server",
       context: { usedTokens: 30, contextWindow: 100, remainingTokens: 70 } });
     const delta = await api.realtimeTimeline(identity, "session:test", 3, { includeDetail: false });
     assert.equal(delta.kind, "delta");
@@ -169,6 +183,35 @@ test("unified approval guard allows only the exact mobile dispatching option", (
   assert.equal(approvalRequestIsCurrent(item, "binding:new", { optionId: "allow" }, { type: "desktop" }), false);
   assert.equal(approvalRequestIsCurrent({ ...item, status: "submitted" }, "binding:new", { optionId: "allow" }, source), false);
   assert.equal(approvalRequestIsCurrent({ ...item, status: "pending" }, "binding:new", { optionId: "allow" }, { type: "desktop" }), true);
+});
+
+test("device resolves only a pending collaboration confirmation owned by the Session", async () => {
+  const f = await fixture();
+  try {
+    const metadata = {
+      collaborationConfirmationId: "confirmation:one",
+      collaborationConfirmationStatus: "pending",
+      collaborationAuthorizationKind: "session_channel"
+    };
+    const item = { id: "collaboration-confirmation:one", type: "collaborationConfirmation",
+      text: "", status: "pending", presentationRole: "collaboration_confirmation",
+      rawMetadataJSON: JSON.stringify(metadata) };
+    f.store.upsertTimelineItemProjection("session:test", item);
+    const calls = [];
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks,
+      respondToSessionChannelRequest: async (...args) => {
+        calls.push(args);
+        return { status: args[1] ? "confirmed" : "rejected" };
+      } });
+    assert.equal(api.capabilities(identity, "session:test").collaborationConfirmation.available, true);
+    const response = await api.collaborationConfirmation(identity, "session:test",
+      { itemId: item.id, decision: "confirm" });
+    assert.equal(response.status, "confirmed");
+    assert.deepEqual(calls[0].slice(0, 2), ["confirmation:one", true]);
+    assert.equal(calls[0][2].type, "remote-client");
+    await assert.rejects(api.collaborationConfirmation(identity, "session:test",
+      { itemId: "missing", decision: "confirm" }), { code: "COLLABORATION_CONFIRMATION_NOT_PENDING" });
+  } finally { await f.close(); }
 });
 
 test("uncertain approval outcome remains non-replayable after service recreation", async () => {
@@ -534,7 +577,9 @@ test("capabilities carry Session readiness and usage is a sanitized read-only pr
     assert.equal(ready.capabilities(identity, "session:test").notReadyReason, null);
 
     const usage = await api.usage(identity, "session:test");
-    assert.deepEqual(usage, { schemaVersion: 1, sessionId: "session:test", accountFresh: null,
+    assert.deepEqual(usage, { schemaVersion: 1, sessionId: "session:test",
+      route: { providerId: "codex-app-server", modelId: null, bindingId: null, routingVersion: null },
+      accountFresh: null,
       context: { usedTokens: 1200, contextWindow: 4000, remainingTokens: 2800, usedPercent: 30 },
       account: { available: true, provider: "codex", model: "gpt-5",
         rateLimitResetCredits: { availableCount: 2, credits: [
