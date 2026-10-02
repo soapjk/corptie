@@ -1161,6 +1161,7 @@ const { handleProviderResponseDelayed, handleProviderResponseTimeout } = createP
 providerTurnResponseWatchdog = new ProviderTurnResponseWatchdog({
   warningAfterMs: configuredProviderResponseDelay("CORPTIE_PROVIDER_RESPONSE_WARNING_MS", 20_000),
   timeoutAfterMs: configuredProviderResponseDelay("CORPTIE_PROVIDER_RESPONSE_TIMEOUT_MS", 120_000),
+  absoluteTimeoutAfterMs: configuredProviderResponseDelay("CORPTIE_PROVIDER_ABSOLUTE_TIMEOUT_MS", 30 * 60_000),
   onDelayed: handleProviderResponseDelayed,
   onTimeout: handleProviderResponseTimeout
 });

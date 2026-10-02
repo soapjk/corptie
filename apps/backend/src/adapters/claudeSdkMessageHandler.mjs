@@ -57,6 +57,37 @@ export function createClaudeSdkMessageHandler({
       return;
     }
 
+    if (message?.type === "system" && message?.subtype === "api_retry") {
+      const error = claudeRetryError(message);
+      const attempt = positiveInteger(message.attempt);
+      const maxAttempts = positiveInteger(message.max_retries);
+      emitProviderEvent(session, {
+        type: "provider.error",
+        turnId: session.currentTurnId,
+        error,
+        // The SDK emits api_retry only after deciding that another attempt will run.
+        willRetry: true,
+        attempt,
+        maxAttempts,
+        retryAfterMs: nonNegativeNumber(message.retry_delay_ms),
+        httpStatus: error.httpStatus,
+        occurredAt: message.timestamp ?? session.updatedAt,
+        nativeType: "system.api_retry"
+      });
+      session.phase = "retrying";
+      session.turnState = "running";
+      return;
+    }
+
+    if (message?.type === "system" && message?.subtype === "status") {
+      session.phase = message.status || session.phase;
+      if (message.status === "requesting" || message.status === "compacting") {
+        session.turnState = "running";
+      }
+      emitProviderActivity(session, message.status ?? "status", message.timestamp);
+      return;
+    }
+
     if (message?.type === "stream_event") {
       handleStreamEvent(session, message);
       return;
@@ -271,6 +302,7 @@ export function createClaudeSdkMessageHandler({
 
   function handleStreamEvent(session, message) {
     const event = message?.event;
+    emitProviderActivity(session, event?.type ?? "stream", message.timestamp);
     if (event?.type === "content_block_delta" && event?.delta?.type === "text_delta") {
       const delta = typeof event.delta.text === "string" ? event.delta.text : "";
       if (!delta) return;
@@ -280,6 +312,19 @@ export function createClaudeSdkMessageHandler({
           && message.parent_tool_use_id.trim().length > 0
       });
     }
+  }
+
+  function emitProviderActivity(session, kind, occurredAt = null) {
+    const now = Date.now();
+    if (now - Number(session.lastProviderActivityEventAt ?? 0) < 1_000) return;
+    session.lastProviderActivityEventAt = now;
+    emitProviderEvent(session, {
+      type: "provider.activity",
+      providerEventId: `claude-activity:${session.currentTurnId ?? "session"}:${now}`,
+      turnId: session.currentTurnId,
+      activityKind: String(kind || "activity"),
+      occurredAt: occurredAt ?? session.updatedAt
+    });
   }
 
   function updateStreamingAssistant(session, text, options = {}) {
@@ -339,4 +384,34 @@ export function createClaudeSdkMessageHandler({
   }
 
   return { handleSdkMessage, settleClaudeResult, handleStreamEvent, updateStreamingAssistant };
+}
+
+function claudeRetryError(message) {
+  const status = Number(message?.error_status);
+  const httpStatus = Number.isInteger(status) && status >= 100 ? status : null;
+  const raw = providerSafeToolText(String(message?.error ?? "")).slice(0, 2_000);
+  const quotaExhausted = httpStatus === 429 && /quota|credit|balance|额度|余额/i.test(raw);
+  const code = quotaExhausted ? "PROVIDER_QUOTA_EXHAUSTED"
+    : httpStatus === 429 ? "PROVIDER_RATE_LIMITED"
+      : httpStatus === 401 ? "PROVIDER_AUTHENTICATION_FAILED"
+        : httpStatus === 403 ? "PROVIDER_PERMISSION_DENIED"
+          : httpStatus != null && httpStatus >= 500 ? "PROVIDER_SERVICE_UNAVAILABLE"
+            : "PROVIDER_REQUEST_RETRY";
+  const fallback = quotaExhausted ? "模型服务额度已用尽。"
+    : httpStatus === 429 ? "模型服务请求受限，正在等待重试。"
+      : httpStatus === 401 ? "模型服务认证失败。"
+        : httpStatus === 403 ? "当前凭据无权访问模型服务。"
+          : httpStatus != null && httpStatus >= 500 ? "模型服务暂时不可用。"
+            : "模型请求失败，正在重试。";
+  return { code, message: raw || fallback, retryable: ![401, 403].includes(httpStatus), httpStatus };
+}
+
+function positiveInteger(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
+function nonNegativeNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
 }

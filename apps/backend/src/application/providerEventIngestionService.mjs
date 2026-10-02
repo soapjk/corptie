@@ -22,6 +22,7 @@ export const PROVIDER_EVENT_TYPES = new Set([
   "interaction.submitted",
   "interaction.resolved",
   "usage.updated",
+  "provider.activity",
   "provider.error",
   "provider.connection.changed"
 ]);
@@ -336,6 +337,7 @@ export function deterministicProviderEventId(event) {
     "tool.progress",
     "usage.updated",
     "plan.updated",
+    "provider.activity",
     "provider.error",
     "provider.connection.changed"
   ].includes(event.type);

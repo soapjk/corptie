@@ -88,3 +88,45 @@ test("subagent assistant text cannot become the parent Turn final answer", () =>
   handler.handleSdkMessage(session, { type: "result", subtype: "success", result: "done" });
   assert.equal(session.items[0].presentationRole, "commentary");
 });
+
+test("Claude api_retry becomes a typed retryable Provider error", () => {
+  const { handler, session, events } = fixture();
+  handler.handleSdkMessage(session, {
+    type: "system",
+    subtype: "api_retry",
+    attempt: 3,
+    max_retries: 8,
+    retry_delay_ms: 4_000,
+    error_status: 429,
+    error: "quota exhausted",
+    session_id: "sdk-session"
+  });
+  assert.deepEqual(events.at(-1), {
+    type: "provider.error",
+    turnId: "turn",
+    error: {
+      code: "PROVIDER_QUOTA_EXHAUSTED",
+      message: "quota exhausted",
+      retryable: true,
+      httpStatus: 429
+    },
+    willRetry: true,
+    attempt: 3,
+    maxAttempts: 8,
+    retryAfterMs: 4_000,
+    httpStatus: 429,
+    occurredAt: session.updatedAt,
+    nativeType: "system.api_retry"
+  });
+  assert.equal(session.phase, "retrying");
+});
+
+test("Claude system status and stream metadata publish throttled Provider activity", () => {
+  const { handler, session, events } = fixture();
+  handler.handleSdkMessage(session, { type: "system", subtype: "status", status: "requesting" });
+  handler.handleStreamEvent(session, { event: { type: "message_start" } });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "provider.activity");
+  assert.equal(events[0].activityKind, "requesting");
+  assert.equal(session.turnState, "running");
+});

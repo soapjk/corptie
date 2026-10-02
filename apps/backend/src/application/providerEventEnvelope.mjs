@@ -141,6 +141,11 @@ export function mapClaudeProviderEvent({ event, binding, receivedAt }) {
       error: event.error ?? null,
       failureScope: event.type === "provider.error" ? providerFailureScope(turnId) : undefined,
       willRetry: event.willRetry,
+      attempt: event.attempt,
+      maxAttempts: event.maxAttempts,
+      retryAfterMs: event.retryAfterMs,
+      httpStatus: event.httpStatus,
+      activityKind: event.activityKind,
       connectionStatus: event.connectionStatus,
       plan: event.type === "plan.updated" ? event.plan : undefined
     }),

@@ -47,10 +47,22 @@ test("timeout persists a visible failed item before terminal handling and interr
   assert.deepEqual(f.calls.map(([name]) => name), ["ingest", "terminal", "interrupt"]);
   const event = f.calls[0][1];
   assert.equal(event.type, "turn.failed");
-  assert.equal(event.payload.error.code, "PROVIDER_RESPONSE_TIMEOUT");
+  assert.equal(event.payload.error.code, "PROVIDER_FIRST_ACTIVITY_TIMEOUT");
   assert.equal(event.payload.items[0].status, "failed");
   assert.equal(f.calls[2][2].summary.external.activeTurnId, "turn");
   assert.equal(f.calls[2][2].summary.external.currentModel, "model");
+});
+
+test("timeout after Provider activity reports a stream idle failure", async () => {
+  const f = fixture();
+  await f.handlers.handleProviderResponseTimeout({
+    ...f.entry,
+    timeoutKind: "inactivity",
+    lastActivityAt: "2026-01-01T00:00:01Z"
+  });
+  const event = f.calls[0][1];
+  assert.equal(event.payload.error.code, "PROVIDER_STREAM_IDLE_TIMEOUT");
+  assert.equal(event.payload.items[0].title, "模型流中断");
 });
 
 test("settled turns and unapplied timeout events cannot trigger interruption", async () => {
