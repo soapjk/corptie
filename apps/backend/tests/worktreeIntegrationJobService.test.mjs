@@ -151,6 +151,10 @@ function memoryFixture({
       warningEnabled: true,
       requiresDecision: path === "/repo-feature" && protectedPaths.length > 0
     })),
+    inspectCommitPolicyFiles: async ({ relativePaths }) => relativePaths.map((path) => ({
+      path, contentHash: createHash("sha256").update(`content:${path}`).digest("hex"), byteLength: path.length
+    })),
+    ignoreCommitPolicyFile: async (input) => { calls.push(`ignore:${input.relativePath}`); },
     isSessionActive: (session) => session.status === "running",
     commitChanges: async (input) => {
       calls.push(`commit:${input.path}`);
@@ -1196,6 +1200,34 @@ test("a recoverable commit failure re-detects state and retries without manual i
   assert.ok(completed.audit.some((entry) => entry.event === "integration_stage_retry"
     && entry.failureStage === "worktree_commit"
     && entry.retryCount === 1));
+});
+
+test("Markdown policy rejection pauses once for a user decision and resumes after ignore", async () => {
+  const policy = Object.assign(new Error("Markdown approval required"), {
+    code: "GIT_ARTIFACT_POLICY_REJECTED",
+    recoverable: false,
+    violations: [{ code: "GIT_MARKDOWN_PROMOTION_REQUIRED", path: "docs/new-report.md" }]
+  });
+  const { service, calls } = memoryFixture({ commitErrors: [policy] });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  const paused = await waitForJob(service, plan.id, "paused");
+
+  assert.equal(paused.phase, "awaiting_commit_policy_resolution");
+  assert.equal(paused.commitPolicyBlocker.files[0].path, "docs/new-report.md");
+  assert.equal(calls.filter((call) => call === "commit:/repo-feature").length, 1);
+  assert.equal(paused.audit.filter((entry) => entry.event === "integration_stage_retry").length, 0);
+  assert.throws(() => service.retry(plan.id), { code: "COMMIT_POLICY_DECISION_REQUIRED" });
+
+  await service.resolveCommitPolicy(plan.id, {
+    blockerId: paused.commitPolicyBlocker.id,
+    version: paused.commitPolicyBlocker.version,
+    decisions: [{ path: "docs/new-report.md", action: "ignore" }]
+  });
+  const completed = await waitForJob(service, plan.id, "completed");
+  assert.ok(calls.includes("ignore:docs/new-report.md"));
+  assert.equal(calls.filter((call) => call === "commit:/repo-feature").length, 2);
+  assert.equal(completed.commitPolicyBlocker, undefined);
 });
 
 test("recoverable commit retry revalidates the protected-path digest", async () => {

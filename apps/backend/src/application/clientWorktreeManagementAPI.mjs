@@ -4,7 +4,7 @@ const WORKSPACE_ACTIONS = new Set([
   "commit", "commit-message", "commit-prepare", "merge", "push", "restart", "synchronize"
 ]);
 const SERVICE_ACTIONS = new Set(["initialize", "update", "profile", "start", "restart", "stop"]);
-const JOB_ACTIONS = new Set(["cancel", "confirm", "resolve-conflict", "retry"]);
+const JOB_ACTIONS = new Set(["cancel", "confirm", "resolve-conflict", "retry", "commit-policy-decisions"]);
 
 /**
  * Provider-neutral Worktree management facade for paired devices. It invokes the
@@ -85,6 +85,8 @@ export class ClientWorktreeManagementAPI {
       ? await this.worktrees.confirm(jobId, input)
       : action === "cancel"
         ? await this.worktrees.cancel(jobId, input)
+        : action === "commit-policy-decisions"
+          ? await this.worktrees.resolveCommitPolicy(jobId, input)
         : action === "resolve-conflict"
           ? await this.worktrees.resolveConflictWithAgent(jobId)
           : await this.worktrees.retry(jobId);
