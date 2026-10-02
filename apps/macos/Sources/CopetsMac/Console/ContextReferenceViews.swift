@@ -192,15 +192,3 @@ extension SessionContextReferenceType {
         }
     }
 }
-
-extension String {
-    var contextReferenceStatusLabel: String {
-        switch self {
-        case "available": "可用"
-        case "changed": "内容已变更"
-        case "missing": "文件不存在"
-        case "unavailable": "暂不可用"
-        default: self
-        }
-    }
-}

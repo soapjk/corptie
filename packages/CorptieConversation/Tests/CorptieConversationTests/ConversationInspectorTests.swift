@@ -46,6 +46,27 @@ struct ConversationInspectorTests {
         #expect(ConversationTaskDefinition.hasContent(description: "描述", acceptance: "", verification: ""))
     }
 
+    @Test func taskSummaryUsesRevisionAndInterventionConsistently() {
+        let value: ClientInspectorValue = .object([
+            "state": .string("ready"),
+            "content": .object([
+                "schemaVersion": .number(1),
+                "focus": .string("当前重点"), "progress": .string("已完成"),
+                "intervention": .string("required"), "reason": .string("等待确认"),
+                "nextAction": .string("确认结果"), "generatedAt": .string("2026-10-02"),
+                "basis": .object(["taskRevision": .number(7)])
+            ])
+        ])
+        let current = ConversationTaskSummary(inspectorValue: value, taskRevision: 7)
+        let stale = ConversationTaskSummary(inspectorValue: value, taskRevision: 8)
+        #expect(current?.isCurrent == true)
+        #expect(current?.needsIntervention == true)
+        #expect(current?.stateLabel == "")
+        #expect(stale?.isCurrent == false)
+        #expect(stale?.needsIntervention == false)
+        #expect(stale?.stateLabel == "旧摘要 · 待更新")
+    }
+
     @Test func detailModulesUseGroupedNativeGlassWithoutNestedCardFills() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
