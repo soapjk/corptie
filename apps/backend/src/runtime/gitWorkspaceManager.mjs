@@ -1014,15 +1014,19 @@ export class GitWorkspaceManager {
       return presentEnsuredTaskWorkspace(main, true, null, "unborn-main");
     }
 
-    const suffix = taskWorkspaceSuffix(taskId);
-    const branchName = `task/${suffix}`;
     const configuredRoot = typeof this.taskWorktreesRoot === "function"
       ? this.taskWorktreesRoot({ repositoryId, taskId, mainPath: main.path })
       : this.taskWorktreesRoot;
     const worktreesRoot = configuredRoot
       ? absolutePath(configuredRoot)
       : resolve(dirname(main.path), `.corptie-worktrees-${repositoryId.split(":").at(-1)}`);
-    const targetPath = resolve(worktreesRoot, suffix);
+    const identity = await this.allocateTaskWorkspaceIdentity({
+      taskId,
+      mainPath: main.path,
+      worktreesRoot,
+      worktrees: snapshot.worktrees
+    });
+    const { suffix, branchName, targetPath } = identity;
     const canonicalTargetPath = await canonicalFuturePath(targetPath);
     if (snapshot.worktrees.some((worktree) => {
       const registeredPath = resolve(worktree.canonicalPath || worktree.path);
@@ -1082,12 +1086,54 @@ export class GitWorkspaceManager {
     if (!created || created.availability !== "available") {
       throw new Error("The Task Worktree was created but could not be inventoried.");
     }
+    if (identity.compact) {
+      await this.runGit(main.path, ["config", taskWorkspaceOwnerKey(suffix), taskId]);
+    }
     const sharedAgentConfiguration = await linkSharedAgentConfiguration({
       mainPath: main.canonicalPath || main.path,
       targetPath: created.canonicalPath || created.path,
       commonGitDir: updated.repository.commonGitDirCanonicalPath
     });
     return presentEnsuredTaskWorkspace(created, false, sharedAgentConfiguration);
+  }
+
+  async allocateTaskWorkspaceIdentity({ taskId, mainPath, worktreesRoot, worktrees }) {
+    const legacySuffix = taskWorkspaceSuffix(taskId);
+    const legacyBranch = `task/${legacySuffix}`;
+    const legacyPath = resolve(worktreesRoot, legacySuffix);
+    if (worktrees.some((worktree) =>
+      worktree.branchName === legacyBranch || resolve(worktree.path) === legacyPath)) {
+      return { suffix: legacySuffix, branchName: legacyBranch, targetPath: legacyPath, compact: false };
+    }
+
+    const compactCandidates = compactTaskWorkspaceSuffixes(taskId);
+    if (compactCandidates.length === 0) {
+      return { suffix: legacySuffix, branchName: legacyBranch, targetPath: legacyPath, compact: false };
+    }
+    for (const suffix of compactCandidates) {
+      const branchName = `task/${suffix}`;
+      const targetPath = resolve(worktreesRoot, suffix);
+      const byBranch = worktrees.find((worktree) => worktree.branchName === branchName);
+      const byPath = worktrees.find((worktree) => resolve(worktree.path) === targetPath);
+      if (byBranch && byPath && byBranch.worktreeId !== byPath.worktreeId) continue;
+      const existing = byBranch ?? byPath;
+      const configuredOwner = await this.gitOptionalOutput(mainPath, [
+        "config", "--get", taskWorkspaceOwnerKey(suffix)
+      ]);
+      if (existing) {
+        if (configuredOwner === taskId) {
+          return { suffix, branchName, targetPath, compact: true };
+        }
+        continue;
+      }
+      if (await pathExists(targetPath)) continue;
+      const branchExists = await this.gitSucceeds(mainPath, [
+        "show-ref", "--verify", `refs/heads/${branchName}`
+      ]);
+      if (branchExists && configuredOwner !== taskId) continue;
+      return { suffix, branchName, targetPath, compact: true };
+    }
+    throw new Error("Could not allocate a unique compact Task Worktree name.");
   }
 
   async prepareIntegrationConflictResolutionForProject(input) {
@@ -1766,6 +1812,15 @@ export class GitWorkspaceManager {
     }
   }
 
+  async gitOptionalOutput(cwd, arguments_) {
+    try {
+      const result = await this.runGit(cwd, arguments_);
+      return String(result?.stdout ?? "").trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
   async gitSucceeds(cwd, arguments_) {
     try {
       await this.runGit(cwd, arguments_);
@@ -1812,6 +1867,19 @@ function taskWorkspaceSuffix(taskId) {
   const digest = createHash("sha256").update(identifier).digest("hex").slice(0, 10);
   const readable = normalized.slice(0, 37) || "work";
   return `${readable}-${digest}`;
+}
+
+function compactTaskWorkspaceSuffixes(taskId) {
+  const identifier = String(taskId).replace(/^task:/i, "");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(identifier)) {
+    return [];
+  }
+  const compact = identifier.replace(/-/gu, "").toLowerCase();
+  return Array.from({ length: compact.length - 3 }, (_, index) => compact.slice(0, index + 4));
+}
+
+function taskWorkspaceOwnerKey(suffix) {
+  return `corptie-task-worktree.${suffix}.task-id`;
 }
 
 function presentEnsuredTaskWorkspace(

@@ -681,6 +681,7 @@ final class WorktreeManagementNavigationTests: XCTestCase {
 
         XCTAssertTrue(contents.contains("job.isWaitingForCommitPolicyDecision"))
         XCTAssertTrue(contents.contains("worktree.integrate.handle-markdown-policy"))
+        XCTAssertTrue(contents.contains("prepareCommitPolicyResolution"))
         XCTAssertTrue(contents.contains("worktree.commit-policy.ignore-and-continue"))
         XCTAssertTrue(contents.contains("Ignore keeps the local file"))
     }
