@@ -735,7 +735,14 @@ function eventToReplayEntries(event) {
     return [normalizeReplayEntry({ kind: "user_message", sequence, turnId: payload.turnId ?? payload.message?.turnId, role: "user", content, metadata: { executable: false } })];
   }
   if (isDirectAssistantMessageType(type)) {
-    const content = recoveryMessageText(payload.item?.text, payload.text, payload.message, payload.summary);
+    const content = recoveryMessageText(
+      payload.item?.text,
+      payload.itemReference?.text,
+      payload.itemReference?.summary,
+      payload.text,
+      payload.message,
+      payload.summary
+    );
     // Codex can persist a structurally complete, completed agentMessage with an
     // explicit empty text body when a Turn produces no user-visible assistant
     // content. It is an empty Provider placeholder, not a missing historical
@@ -839,11 +846,13 @@ function isTurnCompletionType(type) {
 }
 
 function recoveryFinalAssistantItem(payload) {
-  const items = Array.isArray(payload?.items) ? payload.items : [];
-  const targetTurnId = optionalString(payload?.turnId);
+  const items = Array.isArray(payload?.items)
+    ? payload.items
+    : (Array.isArray(payload?.turn?.items) ? payload.turn.items : []);
+  const targetTurnId = optionalString(payload?.turnId ?? payload?.turn?.id);
   return [...items].reverse().find((item) =>
     item?.type === "agentMessage"
-    && item?.presentationRole === "final_answer"
+    && (item?.presentationRole === "final_answer" || item?.phase === "final_answer")
     && (!targetTurnId || item?.turnId === targetTurnId)
     && recoveryMessageText(item?.text) != null
   ) ?? null;

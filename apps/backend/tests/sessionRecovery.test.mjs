@@ -351,6 +351,57 @@ test("planner ignores message-free completion envelopes and explicit empty Provi
   }), { code: "RECOVERY_TIMELINE_MESSAGE_INVALID" });
 });
 
+test("planner replays legacy assistant summaries and nested turn items", () => {
+  const plan = planReplay({
+    attempt: attemptFixture({ boundarySequence: 2 }),
+    timelineEvents: [
+      {
+        sequence: 1,
+        type: "assistant.message.completed",
+        payload: {
+          turnId: "turn:legacy-commentary",
+          itemReference: {
+            id: "message:legacy-commentary",
+            type: "agentMessage",
+            turnId: "turn:legacy-commentary",
+            status: "completed",
+            presentationRole: "commentary",
+            summary: "legacy persisted commentary"
+          }
+        }
+      },
+      {
+        sequence: 2,
+        type: "turn.completed",
+        payload: {
+          turnId: "turn:legacy-final",
+          hasAgentMessage: true,
+          turn: {
+            id: "turn:legacy-final",
+            items: [{
+              id: "message:legacy-final",
+              type: "agentMessage",
+              turnId: "turn:legacy-final",
+              phase: "final_answer",
+              text: "legacy persisted final answer"
+            }]
+          }
+        }
+      }
+    ],
+    capabilities: recoveryCapabilities()
+  });
+
+  assert.deepEqual(plan.manifest.entries.map((entry) => ({
+    kind: entry.kind,
+    turnId: entry.turnId,
+    content: entry.content
+  })), [
+    { kind: "assistant_message", turnId: "turn:legacy-commentary", content: "legacy persisted commentary" },
+    { kind: "assistant_message", turnId: "turn:legacy-final", content: "legacy persisted final answer" }
+  ]);
+});
+
 test("planner fails closed instead of silently replaying a missing message body", () => {
   assert.throws(() => planReplay({
     attempt: attemptFixture({ boundarySequence: 1 }),
