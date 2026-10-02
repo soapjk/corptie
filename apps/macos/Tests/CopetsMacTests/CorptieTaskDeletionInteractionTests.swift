@@ -34,7 +34,7 @@ struct CorptieTaskDeletionInteractionTests {
     func productionConsoleWorkAvatarsAndTaskRowsExposeContextActions() throws {
         let source = try unifiedConsoleSource()
 
-        #expect(source.contains("var workRail: some View"))
+        #expect(source.contains("var workOutlineList: some View"))
         #expect(source.contains("workPendingEdit = work"))
         #expect(source.contains("workPendingDeletion = work"))
         #expect(source.contains("func taskRow(_ task: CorptieTask, ownsContextMenu: Bool = true) -> some View"))

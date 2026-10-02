@@ -202,26 +202,7 @@ struct WarRoomView: View {
         taskDetail
             .frame(width: TwoPaneLayoutMetrics.detailCardWidth)
             .frame(maxHeight: .infinity)
-        .clipShape(
-            RoundedRectangle(
-                cornerRadius: TwoPaneLayoutMetrics.cardCornerRadius,
-                style: .continuous
-            )
-        )
-        .background(
-            .regularMaterial,
-            in: RoundedRectangle(
-                cornerRadius: TwoPaneLayoutMetrics.cardCornerRadius,
-                style: .continuous
-            )
-        )
-        .overlay {
-            RoundedRectangle(
-                cornerRadius: TwoPaneLayoutMetrics.cardCornerRadius,
-                style: .continuous
-            )
-            .stroke(Color(nsColor: .separatorColor).opacity(0.42), lineWidth: 1)
-        }
+        .modifier(ConversationDetailGlassSurface(cornerRadius: TwoPaneLayoutMetrics.cardCornerRadius))
         .padding(.vertical, TwoPaneLayoutMetrics.contentPadding)
     }
 

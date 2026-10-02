@@ -13,6 +13,7 @@ struct MacSharedMessageTextCard: View {
     var toggle: () -> Void = {}
     var performAction: (AppKitChatTimelineRow.Action) -> Void = { _ in }
     var selectText: () -> Void = {}
+    var contextMenu: NSMenu? = nil
 
     var presentedMessageStatus: UserMessageStatusPresentation? {
         row.nativeStyle == .user ? row.messageStatus : nil
@@ -141,7 +142,7 @@ struct MacSharedMessageTextCard: View {
                 if layout.richBlocks.isEmpty {
                     MeasuredMessageText(text: layout.attributedText,
                         size: CGSize(width: layout.cardWidth - 20, height: layout.textHeight),
-                        baseDirectory: baseDirectory)
+                        baseDirectory: baseDirectory, contextMenu: contextMenu)
                         .frame(width: layout.cardWidth - 20, height: layout.textHeight)
                 } else {
                     VStack(alignment: .leading, spacing: 0) {
@@ -150,7 +151,7 @@ struct MacSharedMessageTextCard: View {
                             case .markdown(_, let text, let height):
                                 MeasuredMessageText(text: text,
                                     size: CGSize(width: layout.cardWidth - 20, height: height),
-                                    baseDirectory: baseDirectory)
+                                    baseDirectory: baseDirectory, contextMenu: contextMenu)
                                     .frame(width: layout.cardWidth - 20, height: height)
                             case .chart(_, let spec, let height):
                                 ConversationChartView(spec: spec)
@@ -359,7 +360,6 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
     private var baseDirectory: String?
     private var measuredWidth: CGFloat?
     private var elapsedSummary: String?
-    private var usesNativeTextMenu = false
     var displayedProcessSummary: String? { elapsedSummary }
     private var onToggleExpansion: (String) -> Void = { _ in }
     private var onAction: (AppKitChatTimelineRow.Action) -> Void = { _ in }
@@ -388,7 +388,6 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
                     onToggleExpansion: @escaping (String) -> Void,
                     onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in }) {
         precondition(MacSharedMessageTextCard.supports(row))
-        usesNativeTextMenu = false
         self.row = row; self.baseDirectory = baseDirectory
         elapsedSummary = nil
         self.onToggleExpansion = onToggleExpansion
@@ -397,7 +396,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         measuredWidth = availableWidth
         contentConfigurationCount += 1
         configureContextMenu(for: row)
-        updateHost()
+        updateHost(resetTextSelection: true)
     }
 
     @discardableResult
@@ -412,14 +411,14 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         return true
     }
 
-    private func updateHost(needsLayout: Bool = true) {
+    private func updateHost(needsLayout: Bool = true, resetTextSelection: Bool = false) {
         guard let row, let measuredLayout else { return }
         let root = MacSharedMessageTextCard(row: row, layout: measuredLayout,
             processSummaryOverride: elapsedSummary, baseDirectory: baseDirectory,
             copy: { [weak self] in self?.copyRepresentedMessage() },
             toggle: { [weak self] in self?.toggleRepresentedProcess() },
             performAction: { [weak self] action in self?.onAction(action) },
-            selectText: { [weak self] in self?.beginTextSelection() })
+            selectText: { [weak self] in self?.beginTextSelection() }, contextMenu: menu)
         if let host { host.rootView = root }
         else {
             let host = NSHostingView(rootView: root)
@@ -430,8 +429,10 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
             self.host = host
         }
         self.host?.menu = menu
-        configureHostedTextViews()
-        DispatchQueue.main.async { [weak self] in self?.configureHostedTextViews() }
+        configureHostedTextViews(resetTextSelection: resetTextSelection)
+        DispatchQueue.main.async { [weak self] in
+            self?.configureHostedTextViews(resetTextSelection: resetTextSelection)
+        }
         if needsLayout { self.needsLayout = true }
     }
 
@@ -463,11 +464,15 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
 
     @objc private func beginTextSelection() {
         guard row?.nativeStyle != .process else { return }
-        usesNativeTextMenu = true
-        configureHostedTextViews()
+        guard let host else { return }
+        func firstTextView(in view: NSView) -> NativeTimelineTextView? {
+            if let textView = view as? NativeTimelineTextView { return textView }
+            return view.subviews.lazy.compactMap(firstTextView).first
+        }
+        firstTextView(in: host)?.beginTextSelection()
     }
 
-    private func configureHostedTextViews() {
+    private func configureHostedTextViews(resetTextSelection: Bool = false) {
         guard let host else { return }
         func textViews(in view: NSView) -> [NativeTimelineTextView] {
             (view as? NativeTimelineTextView).map { [$0] }
@@ -475,16 +480,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         }
         for textView in textViews(in: host) {
             textView.cardContextMenu = menu
-            textView.onTextSelectionEnded = { [weak self] in
-                guard self?.usesNativeTextMenu == true else { return }
-                self?.usesNativeTextMenu = false
-                self?.configureHostedTextViews()
-            }
-            if usesNativeTextMenu, !textView.usesNativeTextMenu {
-                textView.beginTextSelection()
-            } else if !usesNativeTextMenu, textView.usesNativeTextMenu {
-                textView.endTextSelection()
-            }
+            if resetTextSelection { textView.endTextSelection() }
         }
     }
 
@@ -510,13 +506,6 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
             copy.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)
             copy.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.copy")
             menu.addItem(copy)
-        }
-        if row.userInput == nil {
-            let selectText = NSMenuItem(title: L10n("Select Text"), action: #selector(beginTextSelection), keyEquivalent: "")
-            selectText.target = self
-            selectText.image = NSImage(systemSymbolName: "text.cursor", accessibilityDescription: nil)
-            selectText.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.select-text")
-            menu.addItem(selectText)
         }
         if row.forkItemID != nil {
             let fork = NSMenuItem(title: L10n("Create Branch"), action: #selector(forkRepresentedMessage), keyEquivalent: "")
@@ -594,11 +583,13 @@ private struct MeasuredMessageText: NSViewRepresentable {
     let text: NSAttributedString
     let size: CGSize
     let baseDirectory: String?
+    var contextMenu: NSMenu? = nil
     final class Coordinator { var text: NSAttributedString? }
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NativeTimelineTextView { NativeTimelineTextView() }
     func updateNSView(_ view: NativeTimelineTextView, context: Context) {
         view.linkBaseDirectory = baseDirectory
+        view.cardContextMenu = contextMenu
         if context.coordinator.text !== text {
             view.textStorage?.setAttributedString(text)
             context.coordinator.text = text

@@ -76,7 +76,7 @@ struct ConsoleWindowSplitViewTests {
         _ = controller.view
         let original = controller.splitViewItems.map(\.viewController)
         controller.update(mode: .taskCards, isActive: true, sidebar: Text("Cards"), detail: Text("Draft"))
-        controller.update(mode: .workRail, isActive: true, sidebar: Text("Rail"), detail: Text("Draft"))
+        controller.update(mode: .workOutline, isActive: true, sidebar: Text("Groups"), detail: Text("Draft"))
         #expect(controller.splitViewItems.count == 2)
         #expect(controller.splitViewItems[0].viewController === original[0])
         #expect(controller.splitViewItems[1].viewController === original[1])

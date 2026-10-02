@@ -29,11 +29,11 @@ extension UnifiedConsoleView {
         }
     }
 
-    func archivedTasks(for workID: String) -> [CorptieTask] {
-        entityClient.tasks.filter {
+    func archivedTasks(for workID: String, activity: [String: String]? = nil) -> [CorptieTask] {
+        sortedOutlineTasks(entityClient.tasks.filter {
             $0.workId == workID && $0.archived == true
                 && (searchText.isEmpty || $0.title.localizedCaseInsensitiveContains(searchText))
-        }
+        }, activity: activity)
     }
 
     func archivedWorkerSessionList(_ work: Work) -> some View {
