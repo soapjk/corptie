@@ -222,7 +222,6 @@ struct WarRoomView: View {
             )
             .stroke(Color(nsColor: .separatorColor).opacity(0.42), lineWidth: 1)
         }
-        .shadow(color: Color.black.opacity(0.055), radius: 9, x: 0, y: 3)
         .padding(.vertical, TwoPaneLayoutMetrics.contentPadding)
     }
 
