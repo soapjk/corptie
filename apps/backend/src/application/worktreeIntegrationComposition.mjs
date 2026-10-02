@@ -104,6 +104,8 @@ export function createWorktreeIntegrationServices({
       return gitWorkspaces.integrationInspectionForProject(path, repositoryId, options);
     },
     inspectCommitProtection: (path) => gitCommitProtection.inspect(path),
+    inspectCommitPolicyFiles: (input) => gitWorkspaces.inspectIntegrationMarkdownFiles(input),
+    ignoreCommitPolicyFile: (input) => gitWorkspaces.ignoreIntegrationMarkdownFile(input),
     commitChanges: (input) => gitWorkspaces.commitIntegrationChanges({
       ...input,
       prepare: () => gitCommitProtection.resolve(input.path, {

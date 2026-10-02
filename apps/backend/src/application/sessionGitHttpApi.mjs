@@ -50,7 +50,11 @@ export function handleSessionGitHttpRequest({
             ? operateProjectWorktree(sessionId, sourceWorktreeId, input)
             : restartProjectWorktree(sessionId, sourceWorktreeId))
       .then((result) => sendJson(response, 200, result))
-      .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
+      .catch((error) => sendJson(response, errorStatus(error, 400), {
+        error: error.message,
+        code: error.code ?? null,
+        ...(error.violations ? { details: { violations: error.violations } } : {})
+      }));
     return true;
   }
   return false;

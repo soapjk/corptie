@@ -414,6 +414,7 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
     let conflictResolution: WorktreeConflictResolution?
     let conflictAutomation: WorktreeConflictAutomation?
     let commitProtectionDecisions: [String: WorktreePersistedCommitProtectionDecision]?
+    let commitPolicyBlocker: WorktreeCommitPolicyBlocker?
 
     var currentConflictResolution: WorktreeConflictResolution? {
         guard let currentWorktreeId,
@@ -437,6 +438,27 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
         status == "paused" && plan.operationType != "sync"
             && plan.items.contains { $0.worktreeId == currentWorktreeId && $0.mergeStatus == "conflict" }
     }
+    var isWaitingForCommitPolicyDecision: Bool {
+        status == "paused" && phase == "awaiting_commit_policy_resolution" && commitPolicyBlocker != nil
+    }
+}
+
+struct WorktreeCommitPolicyBlocker: Identifiable, Decodable, Equatable, Sendable {
+    let id: String
+    let version: Int
+    let worktreeId: String
+    let branchName: String?
+    let checkedAt: String
+    let files: [WorktreeCommitPolicyFile]
+}
+
+struct WorktreeCommitPolicyFile: Identifiable, Decodable, Equatable, Sendable {
+    var id: String { path }
+    let path: String
+    let contentHash: String
+    let byteLength: Int
+    let code: String
+    let supportedActions: [String]
 }
 
 struct WorktreeConflictAutomation: Decodable, Equatable, Sendable {
