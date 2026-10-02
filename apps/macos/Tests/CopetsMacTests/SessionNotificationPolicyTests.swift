@@ -1,4 +1,5 @@
 import XCTest
+import CorptieClientCore
 @testable import CorptieMac
 
 @MainActor
@@ -165,6 +166,31 @@ final class SessionNotificationPolicyTests: XCTestCase {
             SessionNotificationContent.body(for: event),
             "All sessions have finished processing. Sessions needing your attention: 1."
         )
+    }
+
+    func testIndividualNotificationBodyIdentifiesOwningWorkAndTask() {
+        let event = SessionNotificationEvent(
+            id: "session:one:complete:2",
+            kind: .completed,
+            session: SessionNotificationSnapshot(
+                id: "session:one",
+                title: "修复首次加载",
+                agent: "Codex",
+                status: .complete,
+                summary: "已完成",
+                updatedAt: "now",
+                lastAgentMessageSequence: 2,
+                resourceContext: NotificationResourceContext(
+                    workName: "BTC 五分钟反转策略",
+                    taskTitle: "实盘全链路本地开发"
+                )
+            ),
+            counts: nil
+        )
+
+        XCTAssertTrue(SessionNotificationContent.body(for: event).hasPrefix(
+            "Work：BTC 五分钟反转策略 · Task：实盘全链路本地开发\n"
+        ))
     }
 
     func testAggregateNotificationReplacesFinalIndividualNotification() {
