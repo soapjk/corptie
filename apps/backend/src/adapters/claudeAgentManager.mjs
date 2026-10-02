@@ -885,11 +885,38 @@ export class ClaudeAgentManager {
       }
       console.log(`[claude-sdk] query ended id=${session.id} status=${session.status} turnState=${session.turnState}`);
       if (!session.queryClosed) {
+        const incompleteTurn = Boolean(session.currentTurnId)
+          && ["running", "requires_action"].includes(session.turnState);
         session.query = null;
         session.queryTask = null;
-        session.turnState = "idle";
-        session.phase = session.status === "failed" ? "failed" : "ready";
         session.updatedAt = new Date().toISOString();
+        if (incompleteTurn) {
+          const failure = {
+            code: "PROVIDER_STREAM_ENDED_INCOMPLETE",
+            message: "模型流式连接在返回完成事件前结束，请重试本轮消息。",
+            retryable: true
+          };
+          this.resolveAllPendingChoices(session, failure.message);
+          session.pendingChoice = null;
+          session.pendingDecision = null;
+          session.turnState = "idle";
+          session.status = "failed";
+          session.phase = "failed";
+          this.appendItem(session, {
+            type: "system",
+            title: "模型连接中断",
+            text: failure.message,
+            status: "failed"
+          });
+          this.notifyTurnSettled(session, {
+            turnId: session.currentTurnId,
+            status: "failed",
+            error: failure
+          });
+        } else {
+          session.turnState = "idle";
+          session.phase = session.status === "failed" ? "failed" : "ready";
+        }
       }
     } catch (error) {
       const failure = normalizeClaudeProviderError(error, {

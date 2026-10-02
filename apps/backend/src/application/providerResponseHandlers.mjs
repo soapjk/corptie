@@ -48,16 +48,25 @@ export function createProviderResponseHandlers({
     const turn = store.getSessionTurn(entry.sessionId, entry.bindingId, entry.turnId);
     if (!turn || !["running", "blocked"].includes(turn.execution_status)) return;
     const timestamp = now();
-    const message = "模型服务长时间未返回任何执行信息。本次执行已自动结束；您可以重试或切换模型。";
+    const absolute = entry.timeoutKind === "absolute";
+    const hadActivity = Boolean(entry.lastActivityAt);
+    const code = absolute ? "PROVIDER_TURN_DEADLINE_EXCEEDED"
+      : hadActivity ? "PROVIDER_STREAM_IDLE_TIMEOUT"
+        : "PROVIDER_FIRST_ACTIVITY_TIMEOUT";
+    const message = absolute
+      ? "模型执行超过允许的最长时间，本次执行已自动结束；您可以重试或切换模型。"
+      : hadActivity
+        ? "模型流式连接长时间没有新数据，本次执行已自动结束；您可以重试或切换模型。"
+        : "模型服务长时间未返回任何执行信息。本次执行已自动结束；您可以重试或切换模型。";
     const ingestion = providerEventIngestion.ingest(providerResponseWatchdogEnvelope(entry, {
       type: "turn.failed",
-      error: { code: "PROVIDER_RESPONSE_TIMEOUT", message, retryable: true },
+      error: { code, message, retryable: true },
       items: [{
         id: `provider-response-timeout:${entry.bindingId}:${entry.turnId}`,
         turnId: entry.turnId,
         turnStatus: "failed",
         type: "system",
-        title: "模型响应超时",
+        title: absolute ? "模型执行超时" : hadActivity ? "模型流中断" : "模型响应超时",
         text: message,
         status: "failed",
         createdAt: timestamp

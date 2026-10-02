@@ -737,6 +737,18 @@ test("a non-retryable Provider error persists an actionable send failure", async
 test("a turn-scoped Provider error fails only the Turn and keeps the Session retryable", async () => {
   const { directory, store, projector } = await fixture();
   try {
+    store.createUserMessageDelivery({
+      deliveryId: "delivery:turn-error",
+      messageId: "message:turn-error",
+      sessionId: binding.sessionId,
+      binding,
+      agentId: "agent:one",
+      text: "Trigger a provider error"
+    });
+    store.updateMessageDelivery("delivery:turn-error", {
+      status: "accepted",
+      providerTurnId: "turn:one"
+    });
     projector.project({ event: event("turn.started"), binding });
     const providerError = projector.project({
       event: event("provider.error", {
@@ -780,6 +792,7 @@ test("a turn-scoped Provider error fails only the Turn and keeps the Session ret
       store.getSessionTurn(binding.sessionId, binding.bindingId, "turn:one").execution_status,
       "failed"
     );
+    assert.equal(store.getMessageDelivery("delivery:turn-error").status, "failed");
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });

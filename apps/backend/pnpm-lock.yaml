@@ -9,7 +9,7 @@ importers:
   .:
     dependencies:
       '@anthropic-ai/claude-agent-sdk':
-        specifier: ^0.3.199
+        specifier: 0.3.285
         version: 0.3.285(@anthropic-ai/sdk@0.129.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))(zod@4.6.5)
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0

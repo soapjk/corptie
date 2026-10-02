@@ -1209,6 +1209,27 @@ test("Claude reports a normalized turn-settled event to product orchestration", 
   });
 });
 
+test("Claude query ending without a result fails the active Turn immediately", async () => {
+  const settled = [];
+  const manager = new ClaudeAgentManager({ onTurnSettled: (event) => settled.push(event) });
+  manager.start({ id: "claude-incomplete-stream", cwd: "/tmp", prompt: "" });
+  const session = manager.get("claude-incomplete-stream");
+  session.currentTurnId = "claude-incomplete-stream:turn:1";
+  session.status = "running";
+  session.turnState = "running";
+  session.query = { async *[Symbol.asyncIterator]() {
+    yield { type: "system", subtype: "status", status: "requesting" };
+  } };
+
+  await manager.consumeQuery(session);
+
+  assert.equal(session.status, "failed");
+  assert.equal(session.turnState, "idle");
+  assert.equal(settled.length, 1);
+  assert.equal(settled[0].status, "failed");
+  assert.equal(settled[0].error.code, "PROVIDER_STREAM_ENDED_INCOMPLETE");
+});
+
 test("Claude clear forgets the SDK context while preserving the Corptie session", async () => {
   const manager = new ClaudeAgentManager();
   const original = manager.start({

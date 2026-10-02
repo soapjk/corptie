@@ -235,7 +235,12 @@ test("Provider errors distinguish a failed Turn from an unavailable Session", ()
     event: {
       type: "provider.error",
       turnId: "claude-turn:capacity",
-      error: "Selected model is at capacity."
+      error: "Selected model is at capacity.",
+      willRetry: true,
+      attempt: 3,
+      maxAttempts: 8,
+      retryAfterMs: 4_000,
+      httpStatus: 429
     },
     receivedAt: "2026-08-31T07:09:01.000Z"
   });
@@ -254,6 +259,11 @@ test("Provider errors distinguish a failed Turn from an unavailable Session", ()
   assert.equal(turnError.payload.failureScope, "turn");
   assert.equal(sessionError.payload.failureScope, "session");
   assert.equal(claudeTurnError.payload.failureScope, "turn");
+  assert.equal(claudeTurnError.payload.willRetry, true);
+  assert.equal(claudeTurnError.payload.attempt, 3);
+  assert.equal(claudeTurnError.payload.maxAttempts, 8);
+  assert.equal(claudeTurnError.payload.retryAfterMs, 4_000);
+  assert.equal(claudeTurnError.payload.httpStatus, 429);
   assert.equal(openClackyTurnError.payload.failureScope, "turn");
 });
 
