@@ -1,4 +1,7 @@
-import { AGENT_PROVIDER_CAPABILITIES } from "../contracts.mjs";
+import {
+  AGENT_PROVIDER_CAPABILITIES,
+  AGENT_PROVIDER_HEARTBEAT_RELIABILITY
+} from "../contracts.mjs";
 import { CallbackAgentProvider } from "../callbackAgentProvider.mjs";
 
 export const OPENCLACKY_PROVIDER_ID = "openclacky";
@@ -56,6 +59,10 @@ export function createOpenClackyProvider(manager, options = {}) {
     runtime: { lifecycle: "managed" },
     metadata: {
       ...(options.metadata ?? {}),
+      turnLiveness: {
+        heartbeat: AGENT_PROVIDER_HEARTBEAT_RELIABILITY.BEST_EFFORT,
+        supportsStatusProbe: false
+      },
       toolSchemaCapabilities: openClackyToolSchemaCapabilities(manager),
       sessionRecovery: {
         revision: `openclacky:session-recovery:1:${manager?.probe?.protocolVersion ?? "unprobed"}`,

@@ -134,6 +134,24 @@ export function normalizeClaudeProviderError(error, options = {}) {
   });
 }
 
+export function claudeProviderErrorDiagnostic(error, options = {}) {
+  const secretValues = Array.isArray(options.secretValues) ? options.secretValues : [];
+  const source = error && typeof error === "object" ? error : {};
+  const cause = source.cause && typeof source.cause === "object" ? source.cause : null;
+  return compactObject({
+    name: diagnosticValue(source.name ?? source.constructor?.name, secretValues, 120),
+    code: diagnosticValue(source.code, secretValues, 160),
+    statusCode: httpStatus(source) || null,
+    exitCode: finiteDiagnosticNumber(source.exitCode ?? source.exit_code),
+    signal: diagnosticValue(source.signal, secretValues, 80),
+    message: diagnosticValue(errorMessages(source).join(" "), secretValues, 1_200),
+    stderr: diagnosticValue(source.stderr, secretValues, 1_200),
+    causeName: diagnosticValue(cause?.name ?? cause?.constructor?.name, secretValues, 120),
+    causeCode: diagnosticValue(cause?.code, secretValues, 160),
+    causeMessage: diagnosticValue(errorMessages(cause).join(" "), secretValues, 1_200)
+  });
+}
+
 export function redactClaudeSecrets(value, secretValues = []) {
   let result = String(value ?? "");
   for (const secret of secretValues) {
@@ -194,6 +212,30 @@ function httpStatus(error) {
     if (Number.isInteger(number)) return number;
   }
   return 0;
+}
+
+function diagnosticValue(value, secretValues, limit) {
+  if (value == null) return null;
+  const raw = Array.isArray(value)
+    ? value.filter((item) => typeof item === "string").join("\n")
+    : typeof value === "string" || typeof value === "number"
+      ? String(value)
+      : "";
+  if (!raw.trim()) return null;
+  const safe = redactClaudeSecrets(raw, secretValues)
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return safe.length > limit ? `${safe.slice(0, limit)}…` : safe;
+}
+
+function finiteDiagnosticNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function compactObject(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item != null));
 }
 
 function validationError(field, code, message) {

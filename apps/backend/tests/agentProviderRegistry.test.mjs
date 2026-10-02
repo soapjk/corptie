@@ -3,9 +3,11 @@ import test from "node:test";
 import { AgentProviderRegistry } from "../src/agent-provider/agentProviderRegistry.mjs";
 import {
   AGENT_PROVIDER_CAPABILITIES,
+  AGENT_PROVIDER_HEARTBEAT_RELIABILITY,
   AgentProviderCapabilityError,
   AgentProviderContractError,
-  AgentProviderNotFoundError
+  AgentProviderNotFoundError,
+  normalizeAgentProviderDescriptor
 } from "../src/agent-provider/contracts.mjs";
 
 function fakeProvider(overrides = {}) {
@@ -93,6 +95,26 @@ test("Provider descriptors expose normalized runtime and configuration metadata"
   assert.equal(descriptor.runtime.lifecycle, "hybrid");
   assert.equal(descriptor.runtime.healthPath, "/health");
   assert.deepEqual(descriptor.configuration.fields.map((field) => field.id), ["baseUrl", "accessKey"]);
+});
+
+test("Provider descriptors validate turn-liveness heartbeat reliability", () => {
+  const descriptor = normalizeAgentProviderDescriptor({
+    id: "provider.live",
+    displayName: "Live Provider",
+    transport: "stream",
+    metadata: { turnLiveness: { heartbeat: AGENT_PROVIDER_HEARTBEAT_RELIABILITY.RELIABLE } }
+  });
+  assert.deepEqual(descriptor.metadata.turnLiveness, {
+    heartbeat: "reliable",
+    supportsStatusProbe: false
+  });
+  assert.throws(() => normalizeAgentProviderDescriptor({
+    id: "provider.invalid",
+    displayName: "Invalid Provider",
+    transport: "stream",
+    metadata: { turnLiveness: { heartbeat: "sometimes" } }
+  }), (error) => error instanceof AgentProviderContractError
+    && error.details.field === "descriptor.metadata.turnLiveness.heartbeat");
 });
 
 test("registry invokes declared capabilities through the common contract", async () => {

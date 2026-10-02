@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   claudeConnectionTestOptions,
+  claudeProviderErrorDiagnostic,
   claudeSdkResultError,
   normalizeClaudeProviderError,
   redactClaudeSecrets,
@@ -106,6 +107,27 @@ test("Claude SDK error results are safe and secrets are redacted from arbitrary 
   assert.equal(error.code, "AUTHENTICATION_FAILED");
   assert.equal(error.message.includes(apiKey), false);
   assert.equal(redactClaudeSecrets(`Authorization: Bearer ${apiKey}`, [apiKey]).includes(apiKey), false);
+});
+
+test("Claude query diagnostics preserve bounded process evidence without secrets", () => {
+  const apiKey = "sk-ant-secret-value-12345678901234567890";
+  const error = Object.assign(new Error(`socket closed token=${apiKey}`), {
+    code: "ECONNRESET",
+    exitCode: 7,
+    signal: "SIGTERM",
+    stderr: [`gateway failed Authorization: Bearer ${apiKey}`, "retry exhausted"]
+  });
+
+  const diagnostic = claudeProviderErrorDiagnostic(error, { secretValues: [apiKey] });
+
+  assert.equal(diagnostic.name, "Error");
+  assert.equal(diagnostic.code, "ECONNRESET");
+  assert.equal(diagnostic.exitCode, 7);
+  assert.equal(diagnostic.signal, "SIGTERM");
+  assert.match(diagnostic.message, /socket closed/);
+  assert.match(diagnostic.stderr, /gateway failed/);
+  assert.match(diagnostic.stderr, /retry exhausted/);
+  assert.equal(JSON.stringify(diagnostic).includes(apiKey), false);
 });
 
 test("Claude gateway availability failures keep an actionable safe classification", () => {

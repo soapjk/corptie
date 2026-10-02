@@ -1,5 +1,8 @@
 import { CallbackAgentProvider } from "../callbackAgentProvider.mjs";
-import { AGENT_PROVIDER_CAPABILITIES } from "../contracts.mjs";
+import {
+  AGENT_PROVIDER_CAPABILITIES,
+  AGENT_PROVIDER_HEARTBEAT_RELIABILITY
+} from "../contracts.mjs";
 import { validateClaudeProviderConfiguration } from "./claudeProviderConfiguration.mjs";
 
 export const CLAUDE_AGENT_SDK_PROVIDER_ID = "claude-sdk";
@@ -49,6 +52,10 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     metadata: {
       backgroundPermissionProfiles: ["read-only"],
       backgroundExecutionPolicies: ["no-tools"],
+      turnLiveness: {
+        heartbeat: AGENT_PROVIDER_HEARTBEAT_RELIABILITY.BEST_EFFORT,
+        supportsStatusProbe: false
+      },
       toolSchemaCapabilities: CLAUDE_TOOL_SCHEMA_CAPABILITIES,
       sessionRecovery: {
         revision: "claude-sdk:session-recovery:1",

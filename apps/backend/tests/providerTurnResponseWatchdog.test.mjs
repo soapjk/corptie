@@ -20,7 +20,8 @@ function scheduler() {
       }
     },
     get size() { return timers.size; },
-    hasDelay(delay) { return [...timers.values()].some((timer) => timer.handle.delay === delay); }
+    hasDelay(delay) { return [...timers.values()].some((timer) => timer.handle.delay === delay); },
+    countDelay(delay) { return [...timers.values()].filter((timer) => timer.handle.delay === delay).length; }
   };
 }
 
@@ -64,6 +65,7 @@ test("Provider activity resets inactivity timeout but keeps the absolute deadlin
   const watchdog = new ProviderTurnResponseWatchdog({
     warningAfterMs: 20,
     timeoutAfterMs: 120,
+    resolveTurnLiveness: () => ({ heartbeat: "reliable" }),
     schedule: timers.schedule,
     cancel: timers.cancel,
     onTimeout: () => { timedOut = true; }
@@ -81,13 +83,14 @@ test("Provider activity resets inactivity timeout but keeps the absolute deadlin
   assert.equal(timedOut, true);
 });
 
-test("a retry event suppresses the generic delay warning but keeps the hard timeout", async () => {
+test("a retry event suppresses the generic delay warning and keeps a hard timeout without reliable heartbeats", async () => {
   const timers = scheduler();
   let delayed = false;
   let timedOut = false;
   const watchdog = new ProviderTurnResponseWatchdog({
     warningAfterMs: 20,
     timeoutAfterMs: 120,
+    resolveTurnLiveness: () => ({ heartbeat: "best_effort" }),
     schedule: timers.schedule,
     cancel: timers.cancel,
     onDelayed: () => { delayed = true; },
@@ -130,12 +133,13 @@ test("the watchdog delay notice does not count as Provider activity", async () =
   assert.equal(timedOut, true);
 });
 
-test("a Provider retry delay extends only the rolling inactivity timer", () => {
+test("Provider retry backoff cannot extend the first failure deadline", () => {
   const timers = scheduler();
   const watchdog = new ProviderTurnResponseWatchdog({
     warningAfterMs: 20,
     timeoutAfterMs: 120,
     absoluteTimeoutAfterMs: 10_000,
+    resolveTurnLiveness: () => ({ heartbeat: "best_effort" }),
     schedule: timers.schedule,
     cancel: timers.cancel
   });
@@ -148,7 +152,15 @@ test("a Provider retry delay extends only the rolling inactivity timer", () => {
     binding: turn
   });
   assert.equal(timers.hasDelay(10_000), true, "absolute deadline remains armed");
-  assert.equal(timers.hasDelay(5_500), true, "retry backoff extends the inactivity window with grace");
+  assert.equal(timers.hasDelay(120), true, "the first retry keeps a bounded failure deadline");
+  watchdog.observe({
+    event: { ...turn, type: "provider.error", payload: {
+      willRetry: true,
+      retryAfterMs: 5_000
+    } },
+    binding: turn
+  });
+  assert.equal(timers.countDelay(120), 1, "repeated retries do not postpone the first deadline");
 });
 
 test("terminal events disarm the watchdog", () => {
@@ -184,4 +196,61 @@ test("Provider activity cannot extend a Turn beyond the absolute deadline", asyn
   await Promise.resolve();
   assert.equal(timedOut[0].timeoutKind, "absolute");
   assert.equal(timedOut[0].lastActivityAt, "2026-10-02T00:00:00.000Z");
+});
+
+test("Provider without reliable heartbeats warns on stream silence but is not failed early", async () => {
+  const timers = scheduler();
+  const delayed = [];
+  const timedOut = [];
+  const watchdog = new ProviderTurnResponseWatchdog({
+    warningAfterMs: 20,
+    timeoutAfterMs: 120,
+    absoluteTimeoutAfterMs: 500,
+    resolveTurnLiveness: () => ({ heartbeat: "best_effort" }),
+    schedule: timers.schedule,
+    cancel: timers.cancel,
+    onDelayed: (entry) => delayed.push(entry),
+    onTimeout: (entry) => timedOut.push(entry)
+  });
+  watchdog.watch(turn);
+  watchdog.observe({
+    event: { ...turn, type: "assistant.message.started", occurredAt: "2026-10-02T00:00:00.000Z" },
+    binding: turn
+  });
+
+  assert.equal(timers.hasDelay(120), true, "stream silence gets a one-shot warning timer");
+  timers.run(120);
+  await Promise.resolve();
+  assert.deepEqual(delayed, [{
+    ...turn,
+    startedAt: null,
+    lastActivityAt: "2026-10-02T00:00:00.000Z",
+    warningKind: "stream_idle"
+  }]);
+  assert.deepEqual(timedOut, [], "stream silence is not proof of failure without reliable heartbeats");
+
+  timers.run(500);
+  await Promise.resolve();
+  assert.equal(timedOut[0].timeoutKind, "absolute");
+});
+
+test("a long-running tool on a Provider without reliable heartbeats remains active", async () => {
+  const timers = scheduler();
+  const timedOut = [];
+  const watchdog = new ProviderTurnResponseWatchdog({
+    warningAfterMs: 20,
+    timeoutAfterMs: 120,
+    absoluteTimeoutAfterMs: 500,
+    schedule: timers.schedule,
+    cancel: timers.cancel,
+    onTimeout: (entry) => timedOut.push(entry)
+  });
+  watchdog.watch(turn);
+  watchdog.observe({ event: { ...turn, type: "tool.started" }, binding: turn });
+  timers.run(120);
+  await Promise.resolve();
+  assert.deepEqual(timedOut, []);
+  watchdog.observe({ event: { ...turn, type: "tool.completed" }, binding: turn });
+  watchdog.observe({ event: { ...turn, type: "turn.completed" }, binding: turn });
+  assert.equal(timers.size, 0);
 });

@@ -1,5 +1,8 @@
 import { CallbackAgentProvider } from "../callbackAgentProvider.mjs";
-import { AGENT_PROVIDER_CAPABILITIES } from "../contracts.mjs";
+import {
+  AGENT_PROVIDER_CAPABILITIES,
+  AGENT_PROVIDER_HEARTBEAT_RELIABILITY
+} from "../contracts.mjs";
 
 export const CODEX_APP_SERVER_PROVIDER_ID = "codex-app-server";
 export const CODEX_TOOL_SCHEMA_CAPABILITIES = Object.freeze({
@@ -26,6 +29,10 @@ export function createCodexAppServerProvider(operations, options = {}) {
       ...(options.metadata ?? {}),
       conversationCommands: ["goal", "compact", "review", "ps", "stop", "clean"],
       backgroundExecutionPolicies: ["no-tools"],
+      turnLiveness: {
+        heartbeat: AGENT_PROVIDER_HEARTBEAT_RELIABILITY.UNAVAILABLE,
+        supportsStatusProbe: false
+      },
       toolSchemaCapabilities: CODEX_TOOL_SCHEMA_CAPABILITIES,
       sessionRecovery: {
         revision: "codex-app-server:session-recovery:1",
