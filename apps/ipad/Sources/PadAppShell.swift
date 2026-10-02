@@ -113,10 +113,15 @@ struct PadAppShell: View {
             else { controls.invalidate(connection) }
         }
         .onChange(of: workspace.sessions) { _, sessions in
-            notificationManager.syncSessions(sessions)
+            notificationManager.syncSessions(sessions, works: workspace.works, tasks: workspace.tasks)
         }
         .onChange(of: controls.items[.automations] ?? []) { _, automations in
-            notificationManager.syncAutomations(automations)
+            notificationManager.syncAutomations(
+                automations,
+                works: workspace.works,
+                tasks: workspace.tasks,
+                sessions: workspace.sessions
+            )
         }
         .onChange(of: workspace.selection) { _, sessionID in
             updateNotificationVisibility(sessionID: sessionID)
@@ -134,8 +139,13 @@ struct PadAppShell: View {
                 tab: tab,
                 sceneIsActive: scenePhase == .active
             )
-            notificationManager.syncSessions(workspace.sessions)
-            notificationManager.syncAutomations(controls.items[.automations] ?? [])
+            notificationManager.syncSessions(workspace.sessions, works: workspace.works, tasks: workspace.tasks)
+            notificationManager.syncAutomations(
+                controls.items[.automations] ?? [],
+                works: workspace.works,
+                tasks: workspace.tasks,
+                sessions: workspace.sessions
+            )
             if let pending = notificationManager.takePendingNavigation() {
                 navigateFromNotification(pending)
             }

@@ -1,4 +1,5 @@
 import Combine
+import CorptieClientCore
 import Foundation
 import OSLog
 @preconcurrency import UserNotifications
@@ -120,11 +121,12 @@ final class AutomationNotificationManager {
         guard preferences.notifyOnAutomations,
               !history.contains(event.eventID),
               inFlight.insert(event.eventID).inserted else { return }
+        let resourceContext = notificationResourceIndex().context(forSessionID: event.logicalSessionID)
         Task { [weak self] in
             guard let self else { return }
             defer { self.inFlight.remove(event.eventID) }
             do {
-                try await self.deliver(event)
+                try await self.deliver(event, resourceContext: resourceContext)
                 guard !Task.isCancelled else { return }
                 self.history.recordDelivered(event.eventID)
             } catch {
@@ -133,7 +135,10 @@ final class AutomationNotificationManager {
         }
     }
 
-    private func deliver(_ event: AutomationTerminalNotificationEvent) async throws {
+    private func deliver(
+        _ event: AutomationTerminalNotificationEvent,
+        resourceContext: NotificationResourceContext
+    ) async throws {
         guard let notificationCenter else {
             throw SessionNotificationDeliveryError.notificationCenterUnavailable
         }
@@ -149,7 +154,7 @@ final class AutomationNotificationManager {
         }
         let content = UNMutableNotificationContent()
         content.title = AutomationNotificationContent.title(for: event)
-        content.body = AutomationNotificationContent.body(for: event)
+        content.body = AutomationNotificationContent.body(for: event, resourceContext: resourceContext)
         content.userInfo = [
             "destination": "automation",
             "automationId": event.automationID,
@@ -160,6 +165,14 @@ final class AutomationNotificationManager {
             content: content,
             trigger: nil
         ))
+    }
+
+    private func notificationResourceIndex() -> NotificationResourceIndex {
+        NotificationResourceIndex(
+            works: client.appState.works.map { .init(id: $0.id, name: $0.name) },
+            tasks: client.appState.tasks.map { .init(id: $0.id, title: $0.title, workID: $0.workId) },
+            sessions: client.sessions.map { .init(id: $0.id, workID: $0.workId, taskID: $0.taskId) }
+        )
     }
 }
 
@@ -174,8 +187,15 @@ enum AutomationNotificationContent {
         }
     }
 
-    static func body(for event: AutomationTerminalNotificationEvent) -> String {
+    static func body(
+        for event: AutomationTerminalNotificationEvent,
+        resourceContext: NotificationResourceContext = .init()
+    ) -> String {
         let message = event.message.trimmingCharacters(in: .whitespacesAndNewlines)
-        return message.isEmpty ? event.name : "\(event.name)\n\(String(message.prefix(180)))"
+        return [
+            resourceContext.displayLine(),
+            "\(L10n("计划任务"))：\(event.name)",
+            message.isEmpty ? nil : String(message.prefix(180))
+        ].compactMap { $0 }.joined(separator: "\n")
     }
 }
