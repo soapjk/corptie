@@ -671,6 +671,20 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertEqual(WorktreeJobPollingPolicy.delaySeconds(afterUnchangedPolls: 100), 5)
     }
 
+    func testMarkdownCommitPolicyBlockerHasAnExplicitInPageResolutionFlow() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac/WorktreeManagementView.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        XCTAssertTrue(contents.contains("job.isWaitingForCommitPolicyDecision"))
+        XCTAssertTrue(contents.contains("worktree.integrate.handle-markdown-policy"))
+        XCTAssertTrue(contents.contains("worktree.commit-policy.ignore-and-continue"))
+        XCTAssertTrue(contents.contains("Ignore keeps the local file"))
+    }
+
     private func repository(_ id: String) -> ManagedRepository {
         ManagedRepository(
             id: id, path: "/repo/.git", name: id, discoveredAt: "now", lastValidatedAt: "now",

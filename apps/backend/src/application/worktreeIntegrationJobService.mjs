@@ -29,6 +29,8 @@ export class WorktreeIntegrationJobService {
     this.inspectRepositorySummary = options.inspectRepositorySummary ?? options.inspectRepository;
     this.inspectGitHubPushStatus = options.inspectGitHubPushStatus ?? null;
     this.commitChanges = options.commitChanges;
+    this.inspectCommitPolicyFiles = options.inspectCommitPolicyFiles;
+    this.ignoreCommitPolicyFile = options.ignoreCommitPolicyFile;
     this.inspectCommitProtection = options.inspectCommitProtection;
     this.mergeSource = options.mergeSource;
     this.abortMerge = options.abortMerge;
@@ -57,6 +59,8 @@ export class WorktreeIntegrationJobService {
       "inspectRepository",
       "inspectCommitProtection",
       "commitChanges",
+      "inspectCommitPolicyFiles",
+      "ignoreCommitPolicyFile",
       "mergeSource",
       "abortMerge",
       "prepareConflictResolution",
@@ -916,11 +920,79 @@ export class WorktreeIntegrationJobService {
         409
       );
     }
+    if (job.details.commitPolicyBlocker) {
+      throw new WorktreeIntegrationJobError(
+        "COMMIT_POLICY_DECISION_REQUIRED",
+        "Choose how to handle every blocked Markdown file before continuing.",
+        409
+      );
+    }
     const updated = this.#update(job, {
       status: "queued", phase: "retry_queued", error: null, auditEvent: "retry_requested"
     });
     this.#schedule(updated.id);
     return presentJob(updated);
+  }
+
+  async resolveCommitPolicy(jobId, input = {}) {
+    let job = this.#requireJob(jobId);
+    const blocker = job.details.commitPolicyBlocker;
+    if (job.status !== "paused" || job.phase !== "awaiting_commit_policy_resolution" || !blocker) {
+      throw new WorktreeIntegrationJobError(
+        "COMMIT_POLICY_BLOCKER_NOT_ACTIVE",
+        "This integration task is not waiting for a Markdown decision.",
+        409
+      );
+    }
+    if (input.blockerId !== blocker.id || input.version !== blocker.version) {
+      throw new WorktreeIntegrationJobError(
+        "COMMIT_POLICY_BLOCKER_CHANGED",
+        "The blocked Markdown set changed. Review the latest files before continuing.",
+        409
+      );
+    }
+    const entries = Array.isArray(input.decisions) ? input.decisions : [];
+    const decisions = new Map(entries.map((entry) => [entry?.path, entry?.action]));
+    if (decisions.size !== blocker.files.length || blocker.files.some((file) => !decisions.has(file.path))) {
+      throw new WorktreeIntegrationJobError(
+        "COMMIT_POLICY_DECISION_INCOMPLETE",
+        "Choose an action for every blocked Markdown file.",
+        400
+      );
+    }
+    const item = job.details.plan.items.find((candidate) => candidate.worktreeId === blocker.worktreeId);
+    if (!item) throw new WorktreeIntegrationJobError("WORKTREE_NOT_FOUND", "The blocked Worktree no longer exists.", 404);
+    for (const file of blocker.files) {
+      if (decisions.get(file.path) !== "ignore") {
+        throw new WorktreeIntegrationJobError(
+          "COMMIT_POLICY_ACTION_UNSUPPORTED",
+          "Git tracking requires an exact Artifact promotion first. Promote the document through its owning Session, then reopen this task.",
+          409
+        );
+      }
+      await this.ignoreCommitPolicyFile({
+        repositoryId: job.repositoryId,
+        path: item.path,
+        relativePath: file.path,
+        expectedContentHash: file.contentHash
+      });
+    }
+    const refreshed = await this.#refreshWorktreeItem(job, blocker.worktreeId);
+    job = this.#item(refreshed.job, blocker.worktreeId, {
+      commitStatus: "pending",
+      error: null
+    }, "commit_policy_resolved", "commit_policy_decisions_applied", {
+      auditData: { blockerId: blocker.id, ignoredPaths: blocker.files.map((file) => file.path) }
+    });
+    const { commitPolicyBlocker: _resolved, ...details } = job.details;
+    job = this.#update(job, {
+      status: "queued",
+      phase: "commit_policy_resume_queued",
+      error: null,
+      details
+    });
+    this.#schedule(job.id);
+    return presentJob(job);
   }
 
   async resolveConflictWithAgent(jobId) {
@@ -1259,6 +1331,10 @@ export class WorktreeIntegrationJobService {
             });
             break;
           } catch (error) {
+            if (error?.code === "GIT_ARTIFACT_POLICY_REJECTED") {
+              await this.#pauseForCommitPolicy(job, commitInputItem, error);
+              return;
+            }
             if (!isRecoverableConflictFallbackError(error) || attempt + 1 >= this.maxConflictFallbackAttempts) {
               throw conflictFallbackFailure(error, "worktree_commit", attempt + 1);
             }
@@ -1649,6 +1725,41 @@ export class WorktreeIntegrationJobService {
       } : job.details,
       auditEvent: "execution_paused",
       auditData: { code: error.code ?? "INTEGRATION_FAILED" }
+    });
+    this.onEvent("WorktreeIntegrationJobPaused", { job: presentJob(updated) });
+    return updated;
+  }
+
+  async #pauseForCommitPolicy(job, item, error) {
+    const paths = [...new Set((error.violations ?? [])
+      .filter((entry) => entry?.code === "GIT_MARKDOWN_PROMOTION_REQUIRED" && typeof entry.path === "string")
+      .map((entry) => entry.path))].sort();
+    const inspected = await this.inspectCommitPolicyFiles({ path: item.path, relativePaths: paths });
+    const files = inspected.map((file) => ({
+      ...file,
+      code: "GIT_MARKDOWN_PROMOTION_REQUIRED",
+      supportedActions: ["ignore"]
+    }));
+    const version = Number(job.details.commitPolicyBlocker?.version ?? 0) + 1;
+    const blocker = {
+      id: `commit_policy:${fingerprintValue({ jobId: job.id, worktreeId: item.worktreeId, files })}`,
+      version,
+      worktreeId: item.worktreeId,
+      branchName: item.branchName,
+      checkedAt: new Date().toISOString(),
+      files
+    };
+    job = this.#item(job, item.worktreeId, {
+      commitStatus: "blocked",
+      error: "New Markdown files require a decision."
+    }, "awaiting_commit_policy_resolution", "commit_policy_blocked", {
+      auditData: { code: error.code, blockerId: blocker.id, paths }
+    });
+    const updated = this.#update(job, {
+      status: "paused",
+      phase: "awaiting_commit_policy_resolution",
+      error: "New Markdown files require a decision before integration can continue.",
+      details: { ...job.details, commitPolicyBlocker: blocker }
     });
     this.onEvent("WorktreeIntegrationJobPaused", { job: presentJob(updated) });
     return updated;

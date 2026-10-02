@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdir, realpath } from "node:fs/promises";
+import { access, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { createGitWorkspaceSnapshot } from "../utils/gitWorktreeInventory.mjs";
@@ -14,6 +14,41 @@ const execFileAsync = promisify(execFile);
 function pathContains(parent, candidate) {
   const relation = relative(resolve(parent), resolve(candidate));
   return relation === "" || (!relation.startsWith(`..${sep}`) && relation !== ".." && !isAbsolute(relation));
+}
+
+function artifactMarkdownPolicyError(error) {
+  const output = [error?.stderr, error?.stdout, error?.message]
+    .map((value) => String(value ?? "")).join("\n");
+  if (!output.includes("GIT_ARTIFACT_POLICY_REJECTED")
+    && !output.includes("GIT_MARKDOWN_PROMOTION_REQUIRED")) return null;
+  const violations = [];
+  for (const line of output.split(/\r?\n/u)) {
+    const match = line.match(/^(GIT_[A-Z_]+):\s*(.*)$/u);
+    if (!match || match[1] === "GIT_ARTIFACT_POLICY_REJECTED") continue;
+    let path = null;
+    try { path = JSON.parse(match[2]); } catch {}
+    violations.push({ code: match[1], ...(typeof path === "string" && path ? { path } : {}) });
+  }
+  const policy = integrationGitError(
+    "GIT_ARTIFACT_POLICY_REJECTED",
+    "New Markdown files require a decision before integration can continue."
+  );
+  policy.recoverable = false;
+  policy.violations = violations;
+  return policy;
+}
+
+function safeRepositoryRelativePath(value) {
+  const path = String(value ?? "");
+  if (!path || path.startsWith("/") || path.includes("\\") || /[\0\r\n]/u.test(path)
+    || path.split("/").some((part) => !part || part === "." || part === "..")) {
+    throw integrationGitError("COMMIT_POLICY_PATH_INVALID", "The Markdown path is invalid.");
+  }
+  return path;
+}
+
+function gitignoreExactRule(path) {
+  return `/${path.replace(/([!#*?\[\]\\])/gu, "\\$1").replace(/ /gu, "\\ ")}`;
 }
 
 async function canonicalFuturePath(path) {
@@ -527,10 +562,59 @@ export class GitWorkspaceManager {
       await this.runGit(input.path, ["add", "--all"]);
       await this.runGit(input.path, ["commit", "-m", input.commitMessage, "-m", marker]);
     } catch (error) {
+      const policyError = artifactMarkdownPolicyError(error);
+      if (policyError) throw policyError;
       throw integrationGitError("WORKTREE_COMMIT_FAILED", safeGitError(error, "Could not commit Worktree changes"));
     }
     const headOid = (await this.gitOutput(input.path, ["rev-parse", "--verify", "HEAD"])).trim();
     return { committed: true, recovered: false, headOid };
+  }
+
+  async ignoreIntegrationMarkdownFile(input) {
+    const repositoryRoot = await realpath((await this.gitOutput(input.path, ["rev-parse", "--show-toplevel"])).trim());
+    const relativePath = safeRepositoryRelativePath(input.relativePath);
+    const absolute = resolve(repositoryRoot, relativePath);
+    if (!pathContains(repositoryRoot, absolute)) {
+      throw integrationGitError("COMMIT_POLICY_PATH_INVALID", "The Markdown path is outside the repository.");
+    }
+    const bytes = await readFile(absolute);
+    const contentHash = createHash("sha256").update(bytes).digest("hex");
+    if (contentHash !== input.expectedContentHash) {
+      throw integrationGitError("COMMIT_POLICY_FILE_CHANGED", `${relativePath} changed after the decision panel was opened.`);
+    }
+    if (await this.gitSucceeds(repositoryRoot, ["cat-file", "-e", `HEAD:${relativePath}`])) {
+      throw integrationGitError("COMMIT_POLICY_FILE_TRACKED", `${relativePath} is already tracked and cannot be ignored by this action.`);
+    }
+    const ignorePath = resolve(repositoryRoot, ".gitignore");
+    let current = "";
+    try { current = await readFile(ignorePath, "utf8"); }
+    catch (error) { if (error?.code !== "ENOENT") throw error; }
+    const rule = gitignoreExactRule(relativePath);
+    const existing = new Set(current.split(/\r?\n/u));
+    if (!existing.has(rule)) {
+      const separator = current && !current.endsWith("\n") ? "\n" : "";
+      await writeFile(ignorePath, `${current}${separator}${rule}\n`, "utf8");
+    }
+    await this.runGit(repositoryRoot, ["reset", "--quiet", "HEAD", "--", relativePath]).catch(() => {});
+    this.invalidateInspectionCache(input.repositoryId, "commit_policy_ignore");
+    return { relativePath, contentHash, ignoreRule: rule };
+  }
+
+  async inspectIntegrationMarkdownFiles(input) {
+    const repositoryRoot = await realpath((await this.gitOutput(input.path, ["rev-parse", "--show-toplevel"])).trim());
+    const files = [];
+    for (const value of input.relativePaths ?? []) {
+      const relativePath = safeRepositoryRelativePath(value);
+      const absolute = resolve(repositoryRoot, relativePath);
+      if (!pathContains(repositoryRoot, absolute)) continue;
+      const bytes = await readFile(absolute);
+      files.push({
+        path: relativePath,
+        contentHash: createHash("sha256").update(bytes).digest("hex"),
+        byteLength: bytes.byteLength
+      });
+    }
+    return files;
   }
 
   async mergeIntegrationSource(input) {
@@ -1172,6 +1256,8 @@ export class GitWorkspaceManager {
         await this.runGit(source.path, ["commit", "-m", commitMessage]);
         committed = true;
       } catch (error) {
+        const policyError = artifactMarkdownPolicyError(error);
+        if (policyError) throw policyError;
         throw new Error(safeGitError(error, "Could not commit the worktree changes"));
       }
     }
@@ -1311,6 +1397,8 @@ export class GitWorkspaceManager {
       await this.runGit(source.path, ["add", "--all"]);
       await this.runGit(source.path, ["commit", "-m", commitMessage]);
     } catch (error) {
+      const policyError = artifactMarkdownPolicyError(error);
+      if (policyError) throw policyError;
       throw new Error(safeGitError(error, "Could not commit the worktree changes"));
     }
     const headOid = (await this.gitOutput(source.path, ["rev-parse", "--verify", "HEAD"])).trim();

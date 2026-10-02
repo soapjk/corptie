@@ -1528,3 +1528,11 @@
 "Context changed: %@" = "上下文已变化：%@";
 "Other plan details changed." = "计划的其他细节已变化。";
 " · order changed" = " · 顺序已变化";
+"Handle Markdown Files" = "处理 Markdown 文件";
+"Document commit needs confirmation" = "文档提交需要确认";
+"Document commit needs confirmation · %d file(s). Choose how to handle them before integration continues." = "文档提交需要确认 · %d 个文件。请选择处理方式后继续集成。";
+"These new Markdown files are not authorized for Git history yet." = "这些新增 Markdown 尚未获准纳入 Git 历史。";
+"Ignore keeps the local file, adds its exact path to .gitignore, and excludes it from this commit." = "忽略会保留本地文件，将精确路径加入 .gitignore，并从本次提交中排除。";
+"To allow Git tracking instead, use the owning Session to promote the exact document version as an Artifact, then return and retry. This permission does not include pushing to a remote." = "如需允许 Git 追踪，请在所属 Session 中将该文档的确定版本提升为 Artifact，然后返回重试。此授权不包含推送远端。";
+"Later" = "稍后处理";
+"Ignore Files and Continue" = "忽略文件并继续";

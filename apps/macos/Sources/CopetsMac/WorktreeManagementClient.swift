@@ -644,6 +644,31 @@ final class WorktreeManagementClient: ObservableObject {
         }
     }
 
+    @discardableResult
+    func ignoreBlockedMarkdownAndContinue() async -> Bool {
+        guard let job, let blocker = job.commitPolicyBlocker,
+              job.isWaitingForCommitPolicyDecision else { return false }
+        isMutating = true
+        defer { isMutating = false }
+        do {
+            let envelope: WorktreeIntegrationJobEnvelope = try await post(
+                "worktree-management/jobs/\(job.id)/commit-policy-decisions",
+                body: [
+                    "blockerId": blocker.id,
+                    "version": blocker.version,
+                    "decisions": blocker.files.map { ["path": $0.path, "action": "ignore"] }
+                ]
+            )
+            self.job = envelope.job
+            errorMessage = nil
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            await refreshSelected()
+            return false
+        }
+    }
+
     func resolveConflictWithAgent() async {
         guard let job, job.hasMergeConflict,
               job.currentConflictResolution?.status != "running" else { return }

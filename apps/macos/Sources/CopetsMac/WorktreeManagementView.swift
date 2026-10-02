@@ -15,6 +15,66 @@ enum WorktreeAutomaticLoadPolicy {
     }
 }
 
+private struct WorktreeCommitPolicyResolutionSheet: View {
+    @ObservedObject var client: WorktreeManagementClient
+    @Binding var isPresented: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "doc.badge.exclamationmark")
+                    .font(.title2)
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(L10n("Document commit needs confirmation"))
+                        .font(.headline)
+                    Text(L10n("These new Markdown files are not authorized for Git history yet."))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if let blocker = client.job?.commitPolicyBlocker {
+                List(blocker.files) { file in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(file.path)
+                            .font(.body.monospaced())
+                            .textSelection(.enabled)
+                        Text(L10n("Ignore keeps the local file, adds its exact path to .gitignore, and excludes it from this commit."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 3)
+                }
+                .frame(minHeight: 150, maxHeight: 320)
+            }
+
+            Text(L10n("To allow Git tracking instead, use the owning Session to promote the exact document version as an Artifact, then return and retry. This permission does not include pushing to a remote."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Button(L10n("Later")) { isPresented = false }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                if client.isMutating { ProgressView().controlSize(.small) }
+                Button(L10n("Ignore Files and Continue")) {
+                    Task {
+                        if await client.ignoreBlockedMarkdownAndContinue() {
+                            isPresented = false
+                        }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(client.isMutating || client.job?.commitPolicyBlocker?.files.isEmpty != false)
+                .accessibilityIdentifier("worktree.commit-policy.ignore-and-continue")
+            }
+        }
+        .padding(20)
+        .frame(width: 560)
+    }
+}
+
 struct WorktreeNavigationTaskTrigger: Equatable {
     let requestId: UUID?
     let isBackendOnline: Bool
@@ -40,6 +100,7 @@ struct WorktreeManagementView: View {
     @State private var isBatchSelecting = false
     @State private var selectedWorktreeIds: [String] = []
     @State private var batchOperationDraft: WorktreeBatchOperationDraft?
+    @State private var showingCommitPolicyResolution = false
 
     var body: some View {
         NavigationSplitView(columnVisibility: $sidebarState.visibility) {
@@ -113,6 +174,12 @@ struct WorktreeManagementView: View {
                 worktree: worktree,
                 client: client,
                 onClose: { pendingOperation = nil }
+            )
+        }
+        .sheet(isPresented: $showingCommitPolicyResolution) {
+            WorktreeCommitPolicyResolutionSheet(
+                client: client,
+                isPresented: $showingCommitPolicyResolution
             )
         }
         .confirmationDialog(
@@ -667,6 +734,12 @@ struct WorktreeManagementView: View {
                         agentConflictRetryButton()
                         manualConflictRetryButton()
                     }
+                } else if job.isWaitingForCommitPolicyDecision {
+                    Button(L10n("Handle Markdown Files")) {
+                        showingCommitPolicyResolution = true
+                    }
+                    .controlSize(.small)
+                    .accessibilityIdentifier("worktree.integrate.handle-markdown-policy")
                 } else if job.hasMergeConflict {
                     if let sessionId = job.conflictAutomation?.sessionId {
                         Button(L10n("View Agent Session")) {
@@ -703,7 +776,14 @@ struct WorktreeManagementView: View {
                let item = job.plan.items.first(where: { $0.worktreeId == current }) {
                 Text(item.branchName ?? item.path).font(.caption).foregroundStyle(.secondary)
             }
-            if job.requiresPlanRegeneration {
+            if job.isWaitingForCommitPolicyDecision, let blocker = job.commitPolicyBlocker {
+                Text(L10nFormat(
+                    "Document commit needs confirmation · %d file(s). Choose how to handle them before integration continues.",
+                    blocker.files.count
+                ))
+                .font(.caption)
+                .foregroundStyle(.orange)
+            } else if job.requiresPlanRegeneration {
                 Text(L10n("The integration state changed. Cancel this operation and start again."))
                     .font(.caption)
                     .foregroundStyle(.orange)
