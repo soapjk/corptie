@@ -734,11 +734,16 @@ struct WorktreeManagementView: View {
                         agentConflictRetryButton()
                         manualConflictRetryButton()
                     }
-                } else if job.isWaitingForCommitPolicyDecision {
+                } else if job.canHandleCommitPolicy {
                     Button(L10n("Handle Markdown Files")) {
-                        showingCommitPolicyResolution = true
+                        Task {
+                            if await client.prepareCommitPolicyResolution() {
+                                showingCommitPolicyResolution = true
+                            }
+                        }
                     }
                     .controlSize(.small)
+                    .disabled(client.isMutating)
                     .accessibilityIdentifier("worktree.integrate.handle-markdown-policy")
                 } else if job.hasMergeConflict {
                     if let sessionId = job.conflictAutomation?.sessionId {

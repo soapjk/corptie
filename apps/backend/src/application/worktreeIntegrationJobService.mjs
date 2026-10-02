@@ -934,6 +934,42 @@ export class WorktreeIntegrationJobService {
     return presentJob(updated);
   }
 
+  async prepareCommitPolicyResolution(jobId) {
+    const job = this.#requireJob(jobId);
+    if (job.details.commitPolicyBlocker) return presentJob(job);
+    if (job.status !== "paused") {
+      throw new WorktreeIntegrationJobError(
+        "JOB_NOT_PAUSED",
+        "Only a paused task can prepare Markdown recovery.",
+        409
+      );
+    }
+    const paths = legacyCommitPolicyPaths(job.error);
+    if (paths.length === 0) {
+      throw new WorktreeIntegrationJobError(
+        "COMMIT_POLICY_BLOCKER_NOT_ACTIVE",
+        "This integration task is not blocked by the Markdown commit policy.",
+        409
+      );
+    }
+    const item = job.details.plan.items.find((candidate) =>
+      candidate.worktreeId === job.details.currentWorktreeId);
+    if (!item) {
+      throw new WorktreeIntegrationJobError(
+        "WORKTREE_NOT_FOUND",
+        "The blocked Worktree no longer exists in this integration task.",
+        404
+      );
+    }
+    const error = new WorktreeIntegrationJobError(
+      "GIT_ARTIFACT_POLICY_REJECTED",
+      "New Markdown files require a decision before integration can continue.",
+      409,
+      { violations: paths.map((path) => ({ code: "GIT_MARKDOWN_PROMOTION_REQUIRED", path })) }
+    );
+    return presentJob(await this.#pauseForCommitPolicy(job, item, error));
+  }
+
   async resolveCommitPolicy(jobId, input = {}) {
     let job = this.#requireJob(jobId);
     const blocker = job.details.commitPolicyBlocker;
@@ -2480,6 +2516,14 @@ function conflictFallbackFailure(cause, failureStage, retryCount) {
   error.retryCount = retryCount;
   error.rootCauseCode = cause?.code ?? "UNKNOWN";
   return error;
+}
+
+function legacyCommitPolicyPaths(errorMessage) {
+  const message = String(errorMessage ?? "");
+  if (!message.includes("GIT_ARTIFACT_POLICY_REJECTED")) return [];
+  return [...message.matchAll(/GIT_MARKDOWN_PROMOTION_REQUIRED:\s*"([^"]+)"/g)]
+    .map((match) => match[1])
+    .filter(Boolean);
 }
 
 export function presentJob(job) {

@@ -4,7 +4,9 @@ const WORKSPACE_ACTIONS = new Set([
   "commit", "commit-message", "commit-prepare", "merge", "push", "restart", "synchronize"
 ]);
 const SERVICE_ACTIONS = new Set(["initialize", "update", "profile", "start", "restart", "stop"]);
-const JOB_ACTIONS = new Set(["cancel", "confirm", "resolve-conflict", "retry", "commit-policy-decisions"]);
+const JOB_ACTIONS = new Set([
+  "cancel", "confirm", "resolve-conflict", "retry", "commit-policy-prepare", "commit-policy-decisions"
+]);
 
 /**
  * Provider-neutral Worktree management facade for paired devices. It invokes the
