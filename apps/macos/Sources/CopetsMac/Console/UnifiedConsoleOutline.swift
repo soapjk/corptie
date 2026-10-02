@@ -24,10 +24,6 @@ extension UnifiedConsoleView {
                 archivedWorkerPaginationBar
             }
         }
-        .overlay(alignment: .bottomTrailing) {
-            floatingCreationMenu
-                .padding(12)
-        }
         .sheet(isPresented: $showNewSessionCreation) {
             NewSessionCreationSheet(fixedKind: .assistantChat)
         }
@@ -50,10 +46,6 @@ extension UnifiedConsoleView {
                 archivedWorkerPaginationBar
             }
         }
-        .overlay(alignment: .bottomTrailing) {
-            floatingCreationMenu
-                .padding(12)
-        }
         .sheet(isPresented: $showNewSessionCreation) {
             NewSessionCreationSheet(fixedKind: .assistantChat)
         }
@@ -64,6 +56,7 @@ extension UnifiedConsoleView {
             sessions: sessionIndexStore.rows.map(\.session)
         )
         let tasksByWorkID = outlineTasksByWorkID
+        let taskActivity = isShowingWorkerArchive ? outlineTaskActivity : [:]
         let archivedRowsByWorkID = outlineArchivedRowsByWorkID
         let processingWorkIDs = ConsoleWorkActivityPolicy.processingWorkIDs(
             tasks: entityClient.tasks,
@@ -94,13 +87,13 @@ extension UnifiedConsoleView {
                 .disclosureGroupStyle(ConsoleWorkOutlineDisclosureStyle())
                 .consoleWorkOutlineGroupCard()
 
-                ForEach(entityClient.works) { work in
+                ForEach(orderedOutlineWorks) { work in
                     let tasks = tasksByWorkID[work.id] ?? []
 
                     DisclosureGroup(isExpanded: outlineWorkExpandedBinding(work.id)) {
                         VStack(alignment: .leading, spacing: 2) {
                             if isShowingWorkerArchive {
-                                let archivedTasks = archivedTasks(for: work.id)
+                                let archivedTasks = archivedTasks(for: work.id, activity: taskActivity)
                                 let taskIDs = Set(archivedTasks.map(\.id))
                                 let rows = (archivedRowsByWorkID[work.id] ?? []).filter {
                                     !taskIDs.contains($0.session.taskId ?? "")
@@ -150,6 +143,7 @@ extension UnifiedConsoleView {
             .background(ConsoleOverlayScroller(placeOnLeadingEdge: true))
         }
         .contentMargins(.top, 40, for: .scrollContent)
+        .contentMargins(.leading, ConsoleOverlayScroller.leadingContentInset, for: .scrollContent)
     }
 
     func outlineChatHeader(hasUnread: Bool) -> some View {
@@ -273,18 +267,41 @@ extension UnifiedConsoleView {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let activeTasks = entityClient.tasks.filter { $0.lifecycleState != "done" && $0.archived != true }
         let grouped = Dictionary(grouping: activeTasks, by: \.workId)
+        let activity = outlineTaskActivity
         return grouped.mapValues { tasks in
-            tasks
+            let filtered = tasks
                 .filter { task in
                     query.isEmpty
                         || task.title.localizedCaseInsensitiveContains(query)
                         || task.description.localizedCaseInsensitiveContains(query)
                 }
-                .sorted { lhs, rhs in
-                    if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
-                    return lhs.id < rhs.id
-                }
+            return sortedOutlineTasks(filtered, activity: activity)
         }
+    }
+
+    var orderedOutlineWorks: [Work] {
+        guard outlineSort != .standard else { return entityClient.works }
+        let activity = outlineSort == .updated
+            ? Dictionary(grouping: backendClient.sessions, by: { $0.workId ?? "" })
+                .mapValues { $0.compactMap(\.lastMessageAt).max() ?? "" } : [:]
+        return outlineSort.ordered(entityClient.works, id: { $0.id }, title: { $0.name },
+                                   updatedAt: { $0.updatedAt },
+                                   activityAt: { activity[$0.id].flatMap { $0.isEmpty ? nil : $0 } })
+    }
+
+    var outlineTaskActivity: [String: String] {
+        outlineSort == .updated
+            ? Dictionary(grouping: backendClient.sessions, by: { $0.taskId ?? "" })
+                .mapValues { $0.compactMap(\.lastMessageAt).max() ?? "" } : [:]
+    }
+
+    func sortedOutlineTasks(_ tasks: [CorptieTask], activity: [String: String]? = nil) -> [CorptieTask] {
+        guard outlineSort != .standard else { return tasks }
+        let activity = activity ?? outlineTaskActivity
+        return outlineSort.ordered(tasks, id: { $0.id }, title: { $0.title },
+                                   updatedAt: { $0.updatedAt },
+                                   activityAt: { activity[$0.id].flatMap { $0.isEmpty ? nil : $0 } },
+                                   prioritizesActivity: true)
     }
 
     var outlineArchivedRowsByWorkID: [String: [SessionRowModel]] {

@@ -1,5 +1,6 @@
 import SwiftUI
 import Flow
+import CorptieConversation
 
 /// No transcript reads or per-card observers. Index on collection changes,
 /// derive attention membership without changing the selected conversation.
@@ -12,6 +13,8 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     let selectedTaskID: String?
     var selectedSessionID: String? = nil
     let query: String
+    var sortMode: WorkOutlineSort = .standard
+    var showsArchive = false
     @Binding var attentionCount: Int
     let refreshRevision: Int
     let openChat: (TaskSession) -> Void
@@ -56,6 +59,8 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     @State private var counts: [String: (attention: Int, running: Int)] = [:]
     @State private var residentTaskIDs = Set<String>()
     @State private var tasksByWork: [String: [CorptieTask]] = [:]
+    @State private var latestActivityByWork: [String: String] = [:]
+    @State private var latestActivityByTask: [String: String] = [:]
     @State private var deferred: [String: ConsoleAttentionPolicy.Receipt] = Self.loadDeferred()
     private static var deferredKey: String { "console.taskCards.deferred.v1" }
 
@@ -90,7 +95,9 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                                 }
                                 if isLoading { ProgressView().controlSize(.small) }
                                }.padding(10)
+                                .background(ConsoleOverlayScroller(placeOnLeadingEdge: true))
                               }
+                              .contentMargins(.leading, ConsoleOverlayScroller.leadingContentInset, for: .scrollContent)
                             } else {
                               InfiniteWorkCanvasViewport(origin: canvasOrigin, isActive: isActive,
                                                          cardDragging: canvasDrag.activeID != nil) {
@@ -101,6 +108,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                                     frozenFrames: canvasDrag.snapshot,
                                     snapshot: layoutSnapshot
                                 ) {
+                                    if !showsArchive {
                                     ConsoleChatCanvasCard(sessions: chatSessions, selectedSessionID: selectedSessionID,
                                         isActive: isActive, openChat: openChat, createChat: createChat)
                                         .modifier(groupInteraction(for: Self.chatCardID))
@@ -108,6 +116,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                                             frozenSize: canvasDrag.snapshot[Self.chatCardID]?.size))
                                         .zIndex(frontWorkID == Self.chatCardID ? 1 : 0)
                                         .layoutValue(key: WorkPackingID.self, value: Self.chatCardID).id(Self.chatCardID)
+                                    }
                                     ForEach(orderedWorks) { work in
                                         group(work)
                                             .modifier(WorkCanvasMotionModifier(motion: canvasDrag.motion(for: work.id),
@@ -138,6 +147,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in canvasDrag.cancel() }
         .onChange(of: orderedWorks.map(\.id)) { _, _ in canvasDrag.cancel() }
         .onChange(of: refreshRevision) { _, _ in if isActive { rebuild(reset: true) } }
+        .onChange(of: showsArchive) { _, _ in if isActive { rebuild(reset: false) } }
         .onChange(of: isActive) { _, active in
             if active { rebuild(reset: false) } else { canvasDrag.cancel() }
         }
@@ -162,7 +172,10 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
 
     private var orderedWorks: [Work] {
         let index = Dictionary(uniqueKeysWithValues: works.map { ($0.id, $0) })
-        return workOrder.compactMap { index[$0] }.filter { !displayedTasks(for: $0).isEmpty }
+        let visible = workOrder.compactMap { index[$0] }.filter { !displayedTasks(for: $0).isEmpty }
+        guard sortMode != .standard else { return visible }
+        return sortMode.ordered(visible, id: { $0.id }, title: { $0.name }, updatedAt: { $0.updatedAt },
+                                activityAt: { latestActivityByWork[$0.id] })
     }
 
     // Animate structural changes, not streaming messages, hover or container width.
@@ -173,6 +186,12 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     }
 
     private func rebuild(reset: Bool) {
+        latestActivityByWork = Dictionary(grouping: sessions.filter { $0.lastMessageAt != nil },
+                                         by: { $0.workId ?? "" })
+            .mapValues { $0.compactMap(\.lastMessageAt).max() ?? "" }
+        latestActivityByTask = Dictionary(grouping: sessions.filter { $0.lastMessageAt != nil },
+                                         by: { $0.taskId ?? "" })
+            .mapValues { $0.compactMap(\.lastMessageAt).max() ?? "" }
         runningDiscussionWorkIDs = Set(sessions.compactMap { session in
             session.archived != true && session.resolvedSessionKind == .workChat
                 && session.executionTaskStatus == .running ? session.workId : nil
@@ -221,6 +240,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
             let candidates = grouped[work.id] ?? []
             for task in candidates { retainedTasks[task.id] = task }
             let wanted = candidates.filter { task in
+                if showsArchive { return task.archived == true }
                 let session = bindings[task.id]
                 let receipt = ConsoleAttentionPolicy.receipt(task, session: session)
                 var input = ConsoleAttentionPolicy.input(task, session: session,
@@ -245,9 +265,12 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     }
 
     private func displayedTasks(for work: Work) -> [CorptieTask] {
-        (members[work.id] ?? []).compactMap { retainedTasks[$0] }.filter {
-            query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) || work.name.localizedCaseInsensitiveContains(query)
+        let visible = (members[work.id] ?? []).compactMap { retainedTasks[$0] }.filter {
+            ($0.archived == true) == showsArchive
+                && (query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) || work.name.localizedCaseInsensitiveContains(query))
         }
+        return sortMode.ordered(visible, id: { $0.id }, title: { $0.title }, updatedAt: { $0.updatedAt },
+                                activityAt: { latestActivityByTask[$0.id] }, prioritizesActivity: true)
     }
 
     private func group(_ work: Work) -> some View {
@@ -514,6 +537,7 @@ private struct CardSessionKey: Equatable {
     let received: Int?
     let read: Int?
     let timelineRevision: Int?
+    let lastMessageAt: String?
 
     init(_ session: TaskSession) {
         id = session.id
@@ -526,5 +550,6 @@ private struct CardSessionKey: Equatable {
         received = session.lastAgentMessageSequence
         read = session.lastReadMessageSequence
         timelineRevision = session.timelineRevision
+        lastMessageAt = session.lastMessageAt
     }
 }

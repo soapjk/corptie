@@ -39,7 +39,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertNil(menuItem(in: cell.menu, identifier: "chat.timeline.context.fork"))
     }
 
-    func testMessageBodyUsesCardMenuUntilSelectTextEnablesNativeMenu() throws {
+    func testMessageBodyUsesSystemMenuForDirectTextSelection() throws {
         let first = AppKitChatTimelineRow(
             id: "answer", contentRevision: 1, nativeText: "Selectable answer", copyText: "Selectable answer",
             nativeStyle: .agent, title: "", metadata: "", expandableTurnId: nil,
@@ -58,18 +58,22 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertTrue(body.cardContextMenu === cell.menu)
         XCTAssertTrue(body.menu(for: rightClick) === cell.menu)
         XCTAssertFalse(body.usesNativeTextMenu)
-        let select = try XCTUnwrap(menuItem(in: cell.menu, identifier: "chat.timeline.context.select-text"))
-        NSApp.sendAction(try XCTUnwrap(select.action), to: select.target, from: select)
-        XCTAssertTrue(body.usesNativeTextMenu)
-        XCTAssertFalse(body.menu(for: rightClick) === cell.menu)
+        XCTAssertNil(menuItem(in: cell.menu, identifier: "chat.timeline.context.select-text"))
         body.setSelectedRange(NSRange(location: 0, length: 10))
+        XCTAssertTrue(body.usesNativeTextMenu)
+        let systemMenu = try XCTUnwrap(body.menu(for: rightClick))
+        XCTAssertFalse(systemMenu === cell.menu)
+        XCTAssertTrue(systemMenu.items.contains { $0.action == NSSelectorFromString("copy:") })
         body.copy(nil)
         XCTAssertEqual(NSPasteboard.general.string(forType: .string), "Selectable")
         body.cancelOperation(nil)
         XCTAssertFalse(body.usesNativeTextMenu)
         XCTAssertTrue(body.menu(for: rightClick) === cell.menu)
-        NSApp.sendAction(try XCTUnwrap(select.action), to: select.target, from: select)
+        body.setSelectedRange(NSRange(location: 4, length: 6))
         XCTAssertTrue(body.usesNativeTextMenu)
+        body.setSelectedRange(NSRange(location: 4, length: 0))
+        XCTAssertTrue(body.menu(for: rightClick) === cell.menu)
+        body.setSelectedRange(NSRange(location: 0, length: 10))
 
         let reused = AppKitChatTimelineRow(
             id: "answer", contentRevision: 2, nativeText: "Updated answer", copyText: "Updated answer",

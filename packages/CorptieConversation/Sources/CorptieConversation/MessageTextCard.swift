@@ -237,12 +237,14 @@ public struct MessageTextCard<Content: View>: View {
             }
             .accessibilityIdentifier("chat.timeline.context.copy")
         }
+        #if !os(macOS)
         Button {
             selectingText = true
         } label: {
             Label(configuration.selectTextTitle, systemImage: "text.cursor")
         }
         .accessibilityIdentifier("chat.timeline.context.select-text")
+        #endif
     }
 
     private var background: Color {

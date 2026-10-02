@@ -17,7 +17,7 @@ test("preview permits only the existing read surfaces and denies writes even on 
   for (const path of ["/health", "/settings", "/first-run", "/events", "/sessions", "/state/snapshot", "/state/changes", "/state/events",
     "/session-timelines/revisions", "/works", "/tasks", "/agents", "/workspaces", "/repositories", "/artifacts", "/memories",
     "/automations", "/scheduled-tasks", "/scheduled-session-tasks", "/scene-templates", "/scenes",
-    "/sessions/id/stored-snapshot", "/sessions/id/timeline/window", "/sessions/id/fork", "/sessions/id/images",
+    "/sessions/id/stored-snapshot", "/sessions/id/timeline/window", "/sessions/id/fork", "/sessions/id/images", "/sessions/id/quick-messages",
     "/works/id/tasks", "/tasks/id/snapshots", "/artifacts/id", "/scenes/id/views/view", "/scenes/id/changes"]) {
     assert.equal(check(rejectDevelopmentPreviewWrite, path).blocked, false, path);
     for (const method of ["POST", "PUT", "PATCH", "DELETE", "HEAD"]) {
