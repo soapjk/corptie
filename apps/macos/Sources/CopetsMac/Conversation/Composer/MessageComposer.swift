@@ -43,6 +43,8 @@ enum ComposerMentionAnchorPolicy {
 }
 
 struct MessageComposer: View {
+    private static let sendControlEdge: CGFloat = 22
+
     @ObservedObject private var archivedSessionState = BackendClient.shared.archivedSessionController
     @ObservedObject private var modelCatalog: ProviderCatalogStore
     @EnvironmentObject private var backendClient: BackendClient
@@ -201,11 +203,15 @@ struct MessageComposer: View {
             Button { sendCurrentDraft() } label: {
                 ComposerActionGlyph(systemName: "paperplane.fill", tint: ComposerPalette.softBlue,
                                     isBusy: backendClient.isSendingMessage, showsSurface: false)
+                    .frame(width: Self.sendControlEdge, height: Self.sendControlEdge)
+                    .clipped()
                     .overlay {
                         Circle().strokeBorder(ComposerPalette.softBlue.opacity(0.4), lineWidth: 1)
                             .allowsHitTesting(false)
                     }
                     .conversationGlassControl(tint: ComposerPalette.softBlue)
+                    .frame(width: ComposerShellMetrics.actionHitEdge,
+                           height: ComposerShellMetrics.actionHitEdge)
                     .contentShape(Circle().inset(by: -8))
             }
             .buttonStyle(.plain)
