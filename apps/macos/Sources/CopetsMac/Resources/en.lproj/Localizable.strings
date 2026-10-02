@@ -1122,3 +1122,11 @@
 "Banked resets could not be verified; showing the last known value." = "Banked resets could not be verified; showing the last known value.";
 "Task 信息" = "Task Information";
 "验证所需证据" = "Verification Evidence";
+"Handle Markdown Files" = "Handle Markdown Files";
+"Document commit needs confirmation" = "Document commit needs confirmation";
+"Document commit needs confirmation · %d file(s). Choose how to handle them before integration continues." = "Document commit needs confirmation · %d file(s). Choose how to handle them before integration continues.";
+"These new Markdown files are not authorized for Git history yet." = "These new Markdown files are not authorized for Git history yet.";
+"Ignore keeps the local file, adds its exact path to .gitignore, and excludes it from this commit." = "Ignore keeps the local file, adds its exact path to .gitignore, and excludes it from this commit.";
+"To allow Git tracking instead, use the owning Session to promote the exact document version as an Artifact, then return and retry. This permission does not include pushing to a remote." = "To allow Git tracking instead, use the owning Session to promote the exact document version as an Artifact, then return and retry. This permission does not include pushing to a remote.";
+"Later" = "Later";
+"Ignore Files and Continue" = "Ignore Files and Continue";
