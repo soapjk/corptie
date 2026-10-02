@@ -441,6 +441,15 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
     var isWaitingForCommitPolicyDecision: Bool {
         status == "paused" && phase == "awaiting_commit_policy_resolution" && commitPolicyBlocker != nil
     }
+    var hasLegacyCommitPolicyFailure: Bool {
+        status == "paused"
+            && commitPolicyBlocker == nil
+            && error?.contains("GIT_ARTIFACT_POLICY_REJECTED") == true
+            && error?.contains("GIT_MARKDOWN_PROMOTION_REQUIRED") == true
+    }
+    var canHandleCommitPolicy: Bool {
+        isWaitingForCommitPolicyDecision || hasLegacyCommitPolicyFailure
+    }
 }
 
 struct WorktreeCommitPolicyBlocker: Identifiable, Decodable, Equatable, Sendable {
