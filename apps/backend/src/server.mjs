@@ -2132,7 +2132,7 @@ function startBackendRuntime() {
   taskSummaryService.start();
   startClientDeviceGateway({
     store, environmentName, developmentPreview, worktreeIntegrationJobService, projectApplicationService,
-    emitEvent, readSessionTimelineWindow, requireSessionReference,
+    emitEvent, readSessionTimelineWindow, getTimelineReadPool, requireSessionReference,
     sessionContextReferenceService, artifactService, scheduledSessionTaskService,
     turnObservability, agentProviderRegistry, switchSessionProvider, workService,
     inspectTaskWorktree, reclaimTaskWorktree, sendUnifiedSessionMessage,

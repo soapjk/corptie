@@ -15,6 +15,8 @@ class ConsoleThinScroller: NSScroller {
 /// Install on scroll content, so only its enclosing scroll view is configured.
 /// AppKit owns showing/fading the overlay; no timers or scroll observations.
 struct ConsoleOverlayScroller: NSViewRepresentable {
+    // Indicator spans x=8...16; leave a dedicated gutter before card padding.
+    static let leadingContentInset: CGFloat = 20
     var placeOnLeadingEdge = false
 
     func makeNSView(context: Context) -> Probe { Probe(placeOnLeadingEdge: placeOnLeadingEdge) }

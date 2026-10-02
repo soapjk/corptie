@@ -132,22 +132,20 @@ final class MessageTextCardMigrationTests: XCTestCase {
         XCTAssertTrue(body.cardContextMenu === cell.menu)
         XCTAssertTrue(body.menu(for: rightClick) === cell.menu)
         XCTAssertFalse(body.usesNativeTextMenu)
-        let select = try XCTUnwrap(cell.menu?.items.first {
+        XCTAssertNil(cell.menu?.items.first {
             $0.identifier?.rawValue == "chat.timeline.context.select-text"
         })
-        NSApp.sendAction(try XCTUnwrap(select.action), to: select.target, from: select)
-        cell.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.01))
-        XCTAssertTrue(body.usesNativeTextMenu)
-        XCTAssertFalse(body.menu(for: rightClick) === cell.menu)
         body.setSelectedRange(NSRange(location: 0, length: 6))
+        XCTAssertTrue(body.usesNativeTextMenu)
+        let systemMenu = try XCTUnwrap(body.menu(for: rightClick))
+        XCTAssertFalse(systemMenu === cell.menu)
+        XCTAssertTrue(systemMenu.items.contains { $0.action == NSSelectorFromString("copy:") })
         body.copy(nil)
         XCTAssertEqual(NSPasteboard.general.string(forType: .string), "Shared")
         body.cancelOperation(nil)
         XCTAssertFalse(body.usesNativeTextMenu)
         XCTAssertTrue(body.menu(for: rightClick) === cell.menu)
-        NSApp.sendAction(try XCTUnwrap(select.action), to: select.target, from: select)
-        cell.layoutSubtreeIfNeeded()
+        body.setSelectedRange(NSRange(location: 0, length: 6))
         XCTAssertTrue(body.usesNativeTextMenu)
 
         let second = row("Reused message", revision: 2)

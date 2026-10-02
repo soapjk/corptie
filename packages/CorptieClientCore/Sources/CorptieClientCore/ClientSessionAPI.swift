@@ -424,6 +424,12 @@ public struct ClientSessionAPI: Sendable {
     public func capabilities(sessionId: String) async throws -> ClientSessionCapabilities {
         try await read(transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "capabilities"]))
     }
+    public func quickMessages(sessionId: String) async throws -> ClientQuickMessageRecommendations {
+        let result: ClientQuickMessageRecommendations = try await read(
+            transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "quick-messages"]))
+        guard result.schemaVersion == 1, result.items.count <= 6 else { throw ClientConnectionError.invalidResponse }
+        return result
+    }
     /// Usage snapshot behind `messages.read`; hosts without a usage reader answer 409 `CAPABILITY_UNSUPPORTED`.
     public func usage(sessionId: String, freshAccount: Bool = false) async throws -> ClientSessionUsage {
         let query = freshAccount ? [URLQueryItem(name: "freshAccount", value: "1")] : []

@@ -7,8 +7,9 @@ import CorptieClientCore
 final class NativeTimelineTextView: NSTextView, NSTextViewDelegate {
     var linkBaseDirectory: String?
     var cardContextMenu: NSMenu?
-    var onTextSelectionEnded: (() -> Void)?
-    private(set) var usesNativeTextMenu = false
+    // Read AppKit's selection only when routing a menu; no selection observer or
+    // extra view invalidation is needed for ordinary mouse/keyboard selection.
+    var usesNativeTextMenu: Bool { selectedRanges.contains { $0.rangeValue.length > 0 } }
     var linkHandler: @MainActor (URL, String?) -> Bool = { url, baseDirectory in
         MessageLinkOpener.handle(url, baseDirectory: baseDirectory)
     }
@@ -48,19 +49,22 @@ final class NativeTimelineTextView: NSTextView, NSTextViewDelegate {
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        usesNativeTextMenu ? super.menu(for: event) : cardContextMenu
+        guard usesNativeTextMenu else { return cardContextMenu }
+        // AppKit may select the word under the click while constructing its
+        // menu. Keep the user's existing range so Copy copies that selection.
+        let selection = selectedRanges
+        let menu = super.menu(for: event)
+        if selectedRanges != selection { selectedRanges = selection }
+        return menu
     }
 
     func beginTextSelection() {
-        usesNativeTextMenu = true
         window?.makeFirstResponder(self)
     }
 
     func endTextSelection() {
-        let wasUsingNativeTextMenu = usesNativeTextMenu
-        usesNativeTextMenu = false
+        guard usesNativeTextMenu else { return }
         setSelectedRange(NSRange(location: 0, length: 0))
-        if wasUsingNativeTextMenu { onTextSelectionEnded?() }
     }
 
     override func cancelOperation(_ sender: Any?) {

@@ -11,11 +11,7 @@ public struct ConversationDetailDashboard<Content: View>: View {
     public var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
-                if #available(macOS 26.0, iOS 26.0, *) {
-                    GlassEffectContainer(spacing: 0) { content }
-                } else {
-                    content
-                }
+                content
             }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(12)
@@ -49,20 +45,39 @@ public struct ConversationDetailCompactPair<Leading: View, Trailing: View>: View
     }
 }
 
-/// One native glass surface per Detail module; the dashboard groups them for
-/// efficient rendering without merging adjacent cards at rest.
+/// Keep the native glass, but clip its final composited output to the card.
+/// Clipping a descendant inside a shared GlassEffectContainer does not clip
+/// the glass that the container lifts into its own rendering layer.
+public struct ConversationDetailGlassSurface: ViewModifier {
+    private let cornerRadius: CGFloat
+
+    public init(cornerRadius: CGFloat) {
+        self.cornerRadius = cornerRadius
+    }
+
+    @ViewBuilder public func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if #available(macOS 26.0, iOS 26.0, *) {
+            GlassEffectContainer(spacing: 0) {
+                content.platformGlassSurface(in: shape)
+            }
+            .clipShape(shape)
+        } else {
+            content.platformGlassSurface(in: shape)
+                .clipShape(shape)
+        }
+    }
+}
+
+/// A locally composited glass surface for each Detail module.
 public struct ConversationDetailModuleSurface: ViewModifier {
     public init() {}
 
     public func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
         content
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .platformGlassSurface(in: shape)
-            // Native glass draws beyond its bounds. Keep the glass itself, but
-            // trim its outer halo so neighboring Detail cards cast no shadow.
-            .clipShape(shape)
+            .modifier(ConversationDetailGlassSurface(cornerRadius: 18))
     }
 }
 
