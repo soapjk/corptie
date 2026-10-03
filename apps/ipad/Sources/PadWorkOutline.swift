@@ -147,6 +147,7 @@ struct PadWorkOutline: View {
                     }
                 }
             } label: { toolbarGlyph("arrow.up.arrow.down") }
+            .modifier(PadOutlineToolbarControlStyle())
             .accessibilityLabel("排序方式")
             .accessibilityValue(sort.title)
             .accessibilityIdentifier("work-outline-sort")
@@ -156,6 +157,7 @@ struct PadWorkOutline: View {
                     Text("卡片").tag("tasks")
                 }
             } label: { toolbarGlyph(viewMode == "tasks" ? "rectangle.grid.2x2" : "rectangle.3.group") }
+            .modifier(PadOutlineToolbarControlStyle())
             .accessibilityLabel("切换视图")
             .accessibilityValue(viewMode == "tasks" ? "卡片" : "Work 分组")
             .accessibilityIdentifier("work-outline-view")
@@ -163,11 +165,15 @@ struct PadWorkOutline: View {
                 isSearching = true
                 searchFocused = true
             } label: { toolbarGlyph("magnifyingglass") }
+            .modifier(PadOutlineToolbarControlStyle())
             .accessibilityLabel("搜索").accessibilityIdentifier("work-outline-search")
             Button {
                 showingArchived.toggle()
-            } label: { toolbarGlyph(showingArchived ? "archivebox.fill" : "archivebox") }
-            .foregroundStyle(showingArchived ? Color.accentColor : Color.primary)
+            } label: {
+                toolbarGlyph(showingArchived ? "archivebox.fill" : "archivebox",
+                             color: showingArchived ? .accentColor : .primary)
+            }
+            .modifier(PadOutlineToolbarControlStyle())
             .accessibilityLabel(showingArchived ? "返回活动 Task" : "查看归档 Task")
             .accessibilityIdentifier("work-outline-archive")
             Spacer(minLength: 0)
@@ -181,6 +187,7 @@ struct PadWorkOutline: View {
                 }
                 .disabled(orderedWorks.isEmpty)
             } label: { toolbarGlyph("plus") }
+            .modifier(PadOutlineToolbarControlStyle())
             .disabled(entityCommands.isBusy)
             .accessibilityLabel("新增 Work 或 Task")
             .accessibilityIdentifier("work-outline-create")
@@ -208,13 +215,11 @@ struct PadWorkOutline: View {
         .environment(\.layoutDirection, .leftToRight)
     }
 
-    private func toolbarGlyph(_ symbol: String) -> some View {
+    private func toolbarGlyph(_ symbol: String, color: Color = .primary) -> some View {
         Image(systemName: symbol)
             .font(.system(size: 16, weight: .medium))
+            .foregroundStyle(color)
             .frame(width: 36, height: 36)
-            .padGlassSurface(in: Circle())
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
     }
 
     // MARK: Chat group (independent Sessions)
@@ -502,5 +507,22 @@ struct PadWorkOutline: View {
             .foregroundStyle(.secondary)
             .padding(.leading, ConsoleWorkOutlineMetrics.childIndent + 24)
             .padding(.vertical, WorkOutlineMetrics.rowPadding)
+    }
+}
+
+/// Draw outside the label so Menu and Button cannot size the glass differently.
+private struct PadOutlineToolbarControlStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .menuStyle(.borderlessButton)
+            .buttonStyle(.plain)
+            .frame(width: 44, height: 44)
+            .background {
+                Color.clear
+                    .frame(width: 36, height: 36)
+                    .padGlassSurface(in: Circle())
+                    .allowsHitTesting(false)
+            }
+            .contentShape(Rectangle())
     }
 }
