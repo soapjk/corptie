@@ -53,7 +53,13 @@ struct ThreadItemView: View {
                         .font(.system(size: 8.5, weight: .bold))
                         .frame(width: 10)
                         .foregroundStyle(CorptiePalette.secondaryText)
-                    Image(systemName: isSessionChannelAuthorization ? "bubble.left.and.bubble.right.fill" : "paperplane.fill")
+                    Group {
+                        if isSessionChannelAuthorization {
+                            Image(systemName: "bubble.left.and.bubble.right.fill")
+                        } else {
+                            CollaborationHandshakeIcon().frame(width: 12, height: 12)
+                        }
+                    }
                         .font(.system(size: 10.5, weight: .bold))
                         .foregroundStyle(CorptiePalette.softBlue)
                     Text(L10n(isSessionChannelAuthorization ? "授权 Session 通信渠道" : "确认发送协作任务"))
@@ -296,7 +302,7 @@ struct ThreadItemView: View {
                         .frame(width: 10)
                         .foregroundStyle(CorptiePalette.secondaryText)
                         .rotationEffect(.degrees(isCollaborationExpanded ? 90 : 0))
-                    Image(systemName: "rectangle.2.swap")
+                    CollaborationHandshakeIcon().frame(width: 12, height: 12)
                         .font(.system(size: 10.5, weight: .bold))
                         .foregroundStyle(CorptiePalette.softBlue)
                     Text(L10n("跨会话协作"))
