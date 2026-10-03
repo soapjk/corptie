@@ -31,7 +31,8 @@ export function prepareClaudeProviderSessionInput(input = {}, {
 // The startup coordinator supplies an already verified ExecutionSpace.
 // This port checks inventory ownership; it does not create or switch a Workspace.
 export async function startPreparedWorkSession({
-  taskId, assigneeAgentId, providerId, title, workspace, idempotencyKey, sourceSessionId
+  taskId, assigneeAgentId, providerId, title, workspace, idempotencyKey, sourceSessionId,
+  dispatchInitialTurn = true
 }, { store, workService, workSessionStartApplicationService }) {
   const task = workService.getTask(taskId);
   const taskRepositoryId = store.getTaskWorkspaceContext(task)?.repository?.id;
@@ -70,7 +71,8 @@ export async function startPreparedWorkSession({
     providerId,
     title,
     idempotencyKey,
-    sourceSessionId
+    sourceSessionId,
+    dispatchInitialTurn
   });
   return started.session;
 }
