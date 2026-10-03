@@ -6,6 +6,7 @@
   <string>com.corptie.cloud</string>
   <key>ProgramArguments</key>
   <array>
+    <string>/bin/sh</string>
     <string>/Volumes/T9/data/corptie-cloud/current/ops/run-cloud.sh</string>
   </array>
   <key>RunAtLoad</key>
