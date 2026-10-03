@@ -115,6 +115,7 @@ export function createSessionApplicationComposition({
         referenceContext = await resolveContextReferences(reference.sessionId, { characterBudget: 4_096 });
       }
       let memoryContext = null;
+      let recallDecision = null;
       if (session?.agentId) {
         const recall = await memoryRecallService.turn(conversationMessageText(messageContext.message), {
           sessionId: session.id,
@@ -122,6 +123,7 @@ export function createSessionApplicationComposition({
           workId: session.workId ?? null,
           taskId: session.taskId ?? null
         }, { deepRecall: messageContext.deepRecall === true });
+        recallDecision = recall;
         if (recall.memories.length > 0) {
           const lines = recall.memories.map((memory) => `- [${memory.kind}] ${memory.content}`);
           memoryContext = {
@@ -139,9 +141,18 @@ export function createSessionApplicationComposition({
       );
       const contexts = [baseContext, skillRoutingContext, mentionContext, directUserIntentContext, memoryContext]
         .filter((item) => item?.prompt);
-      if (contexts.length === 0) return null;
+      const recordInjection = (included) => {
+        if (!recallDecision) return;
+        const status = recallDecision.memories.length === 0 ? "not_selected"
+          : included ? "context_included" : "budget_omitted";
+        memoryRecallService.markInjection?.(recallDecision, status);
+      };
+      if (contexts.length === 0) {
+        recordInjection(false);
+        return null;
+      }
       if (session?.sessionKind === "worker") {
-        return mergeWorkerSessionContexts({
+        const result = mergeWorkerSessionContexts({
           baseContext,
           directUserIntentContext,
           memoryContext,
@@ -149,7 +160,10 @@ export function createSessionApplicationComposition({
           referenceContext,
           requiredContexts: [skillRoutingContext].filter(Boolean)
         });
+        recordInjection(Boolean(result.memoryRecall));
+        return result;
       }
+      recordInjection(Boolean(memoryContext));
       if (contexts.length === 1) return contexts[0];
       return {
         ...baseContext,

@@ -76,7 +76,7 @@ test("Task memory lifecycle starts empty, upserts from execution context, reload
     assert.equal(created[0].source_event_sequence, 1);
 
     extractedContent = "Implementation and verification context updated";
-    const updated = await extractor.extractFromSession("session:one");
+    const updated = await extractor.extractFromSession("session:one", {}, { reprocess: true });
     assert.equal(updated.length, 1);
     assert.equal(updated[0].id, created[0].id);
     assert.equal(updated[0].content, extractedContent);

@@ -55,16 +55,23 @@ struct CorptieTaskMemoryPresentationTests {
         let recall = try decoder.decode(MemoryRecallAudit.self, from: Data("""
         {"id":"memory-recall:1","sessionId":"session:one","phase":"turn","mode":"lightweight",
          "reason":"task_context_cue","candidateIds":["memory:audit"],"selectedIds":["memory:audit"],
+         "injectionStatus":"context_included",
+         "selectedEntries":[{"id":"memory:audit","kind":"procedure","content":"Use the shared contract",
+           "ownerType":"agent","ownerId":"agent:one","snapshotAtRecall":true}],
          "createdAt":"2026-08-23T00:00:00Z"}
         """.utf8))
         #expect(recall.mode == "lightweight")
         #expect(recall.selectedIds.count == 1)
+        #expect(recall.selectedEntries?.first?.content == "Use the shared contract")
+        #expect(recall.selectedEntries?.first?.snapshotAtRecall == true)
+        #expect(recall.injectionStatus == "context_included")
     }
 
     @MainActor
     @Test func layeredInspectorDistinguishesUserAgentSystemAndInactiveMemory() throws {
         #expect(MemoryOriginLayer.classify(try memory(source: "user", trust: "trusted", status: "active")) == .userKept)
         #expect(MemoryOriginLayer.classify(try memory(source: "extracted", trust: "untrusted", status: "candidate")) == .agentCandidate)
+        #expect(MemoryOriginLayer.classify(try memory(source: "extracted", trust: "trusted", status: "active")) == .agentDurable)
         #expect(MemoryOriginLayer.classify(try memory(source: "promoted", trust: "trusted", status: "active")) == .agentDurable)
         #expect(MemoryOriginLayer.classify(try memory(source: "pre_compaction", trust: "trusted", status: "active")) == .systemManaged)
         #expect(MemoryOriginLayer.classify(try memory(source: "user", trust: "trusted", status: "active", revokedAt: "2026-08-24T00:00:00Z")) == .inactive)

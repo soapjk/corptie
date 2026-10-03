@@ -84,6 +84,24 @@ export class MemorySkillRepository {
     );
   }
 
+  getMemoryExtractionProgress(sessionId) {
+    return Number(this.selectOne(
+      "SELECT last_event_sequence FROM memory_extraction_progress WHERE session_id = ?", [sessionId]
+    )?.last_event_sequence ?? 0);
+  }
+
+  setMemoryExtractionProgress(sessionId, sequence) {
+    this.db.run(
+      `INSERT INTO memory_extraction_progress (session_id, last_event_sequence, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET
+         last_event_sequence = MAX(memory_extraction_progress.last_event_sequence, excluded.last_event_sequence),
+         updated_at = excluded.updated_at`,
+      [sessionId, sequence, createdAtFromOrNow()]
+    );
+    this.scheduleSave();
+  }
+
   getMemoryRememberOperation(sessionId, idempotencyKey) {
     return this.selectOne(
       `SELECT * FROM memory_remember_operations WHERE session_id = ? AND idempotency_key = ?`,
@@ -213,7 +231,7 @@ export class MemorySkillRepository {
     if (!current) return null;
     this.db.run(
       `UPDATE memories SET
-        content=?, structured_json=?, tags_json=?, confidence=?, recency_score=?,
+        content=?, structured_json=?, tags_json=?, base_confidence=?, confidence=?, recency_score=?,
         usage_count=?, last_accessed_at=?, promotion_status=?, promoted_skill_id=?,
         access_policy=?, trust_level=?, expires_at=?, replaces_memory_id=?, version=?, auto_applied=?, applied_at=?, revoked_at=?, updated_at=?
        WHERE id=?`,
@@ -221,6 +239,7 @@ export class MemorySkillRepository {
         patch.content ?? current.content,
         JSON.stringify(patch.structuredJson ?? JSON.parse(current.structured_json || "{}")),
         JSON.stringify(patch.tags ?? JSON.parse(current.tags_json || "[]")),
+        patch.baseConfidence ?? current.base_confidence,
         patch.confidence ?? current.confidence,
         patch.recencyScore ?? current.recency_score,
         patch.usageCount ?? current.usage_count,
@@ -239,6 +258,9 @@ export class MemorySkillRepository {
         id
       ]
     );
+    if (patch.content != null && patch.content !== current.content) {
+      this.db.run("DELETE FROM memory_embeddings WHERE memory_id = ?", [id]);
+    }
     this.scheduleSave();
     return this.getMemory(id);
   }
@@ -330,6 +352,17 @@ export class MemorySkillRepository {
       selectedIds: safeJsonValue(row.selected_ids_json, []), diagnostics: safeJsonValue(row.diagnostics_json, {}),
       createdAt: row.created_at
     }));
+  }
+
+  updateMemoryRecallAuditInjection(id, status) {
+    const row = this.selectOne("SELECT diagnostics_json FROM memory_recall_audit WHERE id = ?", [id]);
+    if (!row) return false;
+    const diagnostics = safeJsonValue(row.diagnostics_json, {});
+    this.db.run("UPDATE memory_recall_audit SET diagnostics_json = ? WHERE id = ?", [
+      JSON.stringify({ ...diagnostics, injection: { status } }), id
+    ]);
+    this.scheduleSave();
+    return true;
   }
 
   // 置信度衰减（13）：按 factor 下调某 owner 下所有记忆的 confidence

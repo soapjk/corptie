@@ -836,7 +836,18 @@ struct MemoryRecallAudit: Identifiable, Codable, Hashable {
     let reason: String
     let candidateIds: [String]
     let selectedIds: [String]
+    let selectedEntries: [MemoryRecallEntry]?
+    let injectionStatus: String?
     let createdAt: String
+}
+
+struct MemoryRecallEntry: Identifiable, Codable, Hashable {
+    let id: String
+    let kind: String?
+    let content: String?
+    let ownerType: String?
+    let ownerId: String?
+    let snapshotAtRecall: Bool
 }
 
 struct MemoryRecallListEnvelope: Codable {

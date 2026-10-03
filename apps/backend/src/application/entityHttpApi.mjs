@@ -13,7 +13,8 @@ import {
 } from "../runtime/agentAvatar.mjs";
 import { assertPlatformAssistantPatch, isPlatformAssistant } from "../utils/platformAssistantIdentity.mjs";
 import { presentTaskAcceptance } from "./taskAcceptance.mjs";
-import { presentMemory, createUserMemory } from "./memoryOperationService.mjs";
+import { presentMemory, createUserMemory, reviewExtractedMemory } from "./memoryOperationService.mjs";
+import { presentMemoryRecallAudit } from "./memoryRecallService.mjs";
 import { validateEntityName, validateWorkInput } from "../domain/workTaskValidation.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
@@ -1197,6 +1198,17 @@ export function handleEntityHttpRequest({
         });
         return sendJson(response, 200, { memory: presentMemory(updated), alreadyActive: false });
       }
+      const reviewMatch = path.match(/^\/memories\/([^/]+)\/(confirm|reject)$/);
+      if (request.method === "POST" && reviewMatch) {
+        const input = await readJson(request);
+        rejectUnknownFields(input, new Set(["content", "expectedVersion", "reason"]));
+        const updated = reviewExtractedMemory(hubService.store, decodeURIComponent(reviewMatch[1]), {
+          action: reviewMatch[2], content: input.content,
+          expectedVersion: input.expectedVersion, reason: input.reason,
+          actorId: "user:local-macos"
+        });
+        return sendJson(response, 200, { memory: presentMemory(updated) });
+      }
       if (request.method === "GET" && path === "/memory-audit") {
         return sendJson(response, 200, {
           audit: hubService.store.listMemoryAudit({ memoryId: url.searchParams.get("memoryId") })
@@ -1209,8 +1221,12 @@ export function handleEntityHttpRequest({
         return sendJson(response, 200, { memory: presentMemory(restored) });
       }
       if (request.method === "GET" && path === "/memory-recall-audit") {
+        const requestedLimit = Number(url.searchParams.get("limit"));
+        const limit = Number.isSafeInteger(requestedLimit) && requestedLimit > 0
+          ? Math.min(requestedLimit, 200) : 200;
         return sendJson(response, 200, {
-          recalls: hubService.store.listMemoryRecallAudit({ sessionId: url.searchParams.get("sessionId") })
+          recalls: hubService.store.listMemoryRecallAudit({ sessionId: url.searchParams.get("sessionId"), limit })
+            .map((audit) => presentMemoryRecallAudit(hubService.store, audit))
         });
       }
       if (request.method === "GET" && path === "/memory-recall") {
@@ -1239,17 +1255,20 @@ export function handleEntityHttpRequest({
         const memory = createUserMemory(hubService.store, input, "user:local-macos");
         return sendJson(response, 201, memory);
       }
-      // 从 Session 事件流提炼记忆（13 主路径）：MemoryExtractor 提取 + kind→owner 分流 + 乐观应用。
+      // Explicit reprocess permits a scoped historical backfill; it preserves reviewed memories.
       if (request.method === "POST" && path === "/memories/extract") {
         const input = await readJson(request);
-        rejectUnknownFields(input, new Set(["sessionId", "workId", "taskId", "agentId"]));
+        rejectUnknownFields(input, new Set(["sessionId", "workId", "taskId", "agentId", "reprocess"]));
         const sessionId = String(input.sessionId ?? "").trim();
         if (!sessionId) throw apiError("INVALID_INPUT", "sessionId is required.", 400);
+        if (input.reprocess != null && typeof input.reprocess !== "boolean") {
+          throw apiError("INVALID_INPUT", "reprocess must be a boolean.", 400);
+        }
         const memories = await memoryExtractor.extractFromSession(sessionId, {
           workId: input.workId,
           taskId: input.taskId,
           agentId: input.agentId
-        });
+        }, { reprocess: input.reprocess === true });
         return sendJson(response, 201, { memories });
       }
 
@@ -1318,7 +1337,8 @@ function statusForCode(code) {
   if ([
     "CYCLE_DETECTED", "AGENT_HAS_RUNNING_SESSIONS", "SKILL_HAS_ACTIVE_SESSIONS", "ASSISTANT_WORKSPACE_CONFLICT",
     "ASSOCIATION_OUT_OF_SCOPE", "WORK_SCOPE_CONFLICT", "ASSOCIATION_INTEGRITY_ERROR",
-    "IDEMPOTENCY_CONFLICT", "IDEMPOTENCY_RESOURCE_GONE", "MEMORY_REVOKED", "MEMORY_AUDIT_NOT_ROLLBACKABLE"
+    "IDEMPOTENCY_CONFLICT", "IDEMPOTENCY_RESOURCE_GONE", "MEMORY_REVOKED", "MEMORY_AUDIT_NOT_ROLLBACKABLE",
+    "MEMORY_REVIEW_CONFLICT", "MEMORY_VERSION_CONFLICT"
   ].includes(code)) return 409;
   if (["SYSTEM_AGENT_PROTECTED", "PLATFORM_ADMIN_REQUIRED", "AGENT_TOOL_FORBIDDEN", "SKILL_DELETE_CONFIRMATION_REQUIRED"].includes(code)) return 403;
   return 400;

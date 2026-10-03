@@ -1,6 +1,7 @@
 import { deviceError } from "./clientDeviceAuthority.mjs";
 import { executeClientCommand } from "./clientEntityCommands.mjs";
-import { presentMemory, createUserMemory } from "./memoryOperationService.mjs";
+import { presentMemory, createUserMemory, reviewExtractedMemory } from "./memoryOperationService.mjs";
+import { presentMemoryRecallAudit } from "./memoryRecallService.mjs";
 import { validateMemoryInput } from "./entityHttpApi.mjs";
 
 const ACTION_FIELDS = {
@@ -20,6 +21,8 @@ const ACTION_FIELDS = {
   "memory.revoke": ["id", "reason", "confirmed", "expectedVersion"],
   "memory.restore": ["id", "reason", "confirmed", "expectedVersion"],
   "memory.rollback": ["id", "auditId", "confirmed", "expectedVersion"],
+  "memory.confirm": ["id", "content", "confirmed", "expectedVersion"],
+  "memory.reject": ["id", "reason", "confirmed", "expectedVersion"],
   "task.update": ["title", "description", "acceptanceCriteria", "verificationCriteria", "priority", "mainAgentId"],
   "task.reclaimWorktree": ["confirmed"],
 };
@@ -56,7 +59,8 @@ export class ClientInspectorAPI {
       read("references", () => this.references.list(sessionId)),
       read("artifacts", () => workId ? this.artifactPage(scope, 0) : { items: [], hasMore: false }),
       read("memories", () => this.memoryPage(scope)),
-      read("recalls", () => this.store.listMemoryRecallAudit({ sessionId }).slice(0, 8)),
+      read("recalls", () => this.store.listMemoryRecallAudit({ sessionId, limit: 8 })
+        .map((audit) => presentMemoryRecallAudit(this.store, audit))),
       read("schedules", () => this.schedules.list({ logicalSessionId: scope.logicalSessionId, status: "active" }, scope.actor)),
       read("turn", () => this.observability.latestSummary(scope.logicalSessionId ?? sessionId, { kind: "local_user" })),
       read("providers", () => this.providers(sessionId))
@@ -240,6 +244,15 @@ export class ClientInspectorAPI {
         const restored = this.store.rollbackMemoryAudit(fields.auditId, scope.actor.id);
         if (!restored) throw deviceError("MEMORY_AUDIT_NOT_ROLLBACKABLE", 409);
         return presentMemory(restored);
+      }
+      case "memory.confirm": case "memory.reject": {
+        this.memory(scope, fields.id);
+        if (fields.confirmed !== true) throw deviceError("CONFIRMATION_REQUIRED", 409);
+        return presentMemory(reviewExtractedMemory(this.store, fields.id, {
+          action: action === "memory.confirm" ? "confirm" : "reject",
+          content: fields.content, expectedVersion: fields.expectedVersion,
+          reason: fields.reason, actorId: scope.actor.id
+        }));
       }
       case "memory.update": case "memory.revoke": case "memory.restore": {
         const memory = this.memory(scope, fields.id);

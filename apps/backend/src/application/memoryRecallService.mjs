@@ -13,14 +13,13 @@ export class MemoryRecallService {
 
   async startup(scope = {}, options = {}) {
     const limit = boundedLimit(options.limit, DEFAULT_STARTUP_LIMIT, 12);
-    const candidates = this.#visibleActive(scope).filter(isTrustedMemory)
-      .filter((memory) => Number(memory.confidence ?? 0) >= 0.7);
+    const candidates = this.#visibleActive(scope).filter(isTrustedMemory);
     const ranked = await this.hubService.rankMemory("", candidates, { allowEmbedding: false });
     return this.#record({
       sessionId: scope.sessionId,
       phase: "startup",
       mode: "bounded_trusted",
-      reason: ranked.length ? "trusted_high_confidence" : "no_trusted_high_confidence_memory",
+      reason: ranked.length ? "trusted_active_memory" : "no_trusted_active_memory",
       candidates,
       selected: ranked.slice(0, limit).map((entry) => entry.memory),
       scope,
@@ -77,6 +76,11 @@ export class MemoryRecallService {
     });
   }
 
+  markInjection(recall, status) {
+    if (!recall?.id) return false;
+    return this.store.updateMemoryRecallAuditInjection(recall.id, status);
+  }
+
   #visibleActive(scope) {
     const now = Date.parse(this.clock());
     const memories = [];
@@ -92,6 +96,7 @@ export class MemoryRecallService {
     if (touch) {
       for (const memory of selected) this.store.touchMemory(memory.id);
     }
+    const selectedEntries = selected.map((memory) => memoryRecallEntry(memory, true));
     const record = this.store.createMemoryRecallAudit({
       sessionId: sessionId ?? null,
       phase,
@@ -100,10 +105,38 @@ export class MemoryRecallService {
       scope,
       candidateIds: candidates.map((memory) => memory.id),
       selectedIds: selected.map((memory) => memory.id),
-      diagnostics
+      diagnostics: { ...diagnostics, selectedEntries }
     });
     return { ...record, memories: selected.map((memory) => this.store.getMemory(memory.id) ?? memory) };
   }
+}
+
+export function presentMemoryRecallAudit(store, audit) {
+  const snapshots = Array.isArray(audit.diagnostics?.selectedEntries)
+    ? new Map(audit.diagnostics.selectedEntries.map((entry) => [entry.id, entry]))
+    : new Map();
+  return {
+    ...audit,
+    injectionStatus: audit.diagnostics?.injection?.status ?? "not_recorded",
+    selectedEntries: audit.selectedIds.map((id) => {
+      const snapshot = snapshots.get(id);
+      if (snapshot) return snapshot;
+      const current = store.getMemory(id);
+      return current ? memoryRecallEntry(current, false)
+        : { id, kind: null, content: null, ownerType: null, ownerId: null, snapshotAtRecall: false };
+    })
+  };
+}
+
+function memoryRecallEntry(memory, snapshotAtRecall) {
+  return {
+    id: memory.id,
+    kind: memory.kind,
+    content: memory.content,
+    ownerType: memory.owner_type,
+    ownerId: memory.owner_id,
+    snapshotAtRecall
+  };
 }
 
 export function isTrustedMemory(memory) {
@@ -118,10 +151,11 @@ export function lightweightTrigger(message) {
   const terms = text.toLocaleLowerCase().match(/[\p{L}\p{N}_-]{2,}/gu) ?? [];
   const recallCue = /\b(remember|recall|again|previous|preference|convention|before)\b|记得|回忆|之前|上次|偏好|惯例|约定/u.test(text);
   const taskCue = /\b(how|why|fix|implement|build|test|debug|continue|resume)\b|如何|为什么|修复|实现|测试|调试|继续|恢复/u.test(text);
-  const score = Math.min(1, (recallCue ? 0.65 : 0) + (taskCue ? 0.25 : 0) + (terms.length >= 4 ? 0.15 : 0));
+  const routine = text.length >= 4;
+  const score = Math.min(1, (recallCue ? 0.65 : 0) + (taskCue ? 0.25 : 0) + (routine ? 0.15 : 0));
   return {
-    triggered: recallCue || (taskCue && terms.length >= 4),
-    reason: recallCue ? "explicit_recall_cue" : taskCue && terms.length >= 4 ? "task_context_cue" : "no_recall_cue",
+    triggered: routine || recallCue,
+    reason: recallCue ? "explicit_recall_cue" : taskCue ? "task_context_cue" : routine ? "routine_context" : "no_recall_cue",
     score,
     termCount: terms.length
   };

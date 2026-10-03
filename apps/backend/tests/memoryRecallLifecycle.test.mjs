@@ -6,7 +6,7 @@ import test from "node:test";
 import { HubService } from "../src/application/hubService.mjs";
 import { MemoryExtractor } from "../src/application/memoryExtractor.mjs";
 import { MemoryLifecycleService } from "../src/application/memoryLifecycleService.mjs";
-import { MemoryRecallService, lightweightTrigger } from "../src/application/memoryRecallService.mjs";
+import { MemoryRecallService, lightweightTrigger, presentMemoryRecallAudit } from "../src/application/memoryRecallService.mjs";
 import { memoryDynamicTools } from "../src/application/memoryDynamicTools.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
@@ -78,7 +78,7 @@ test("per-turn trigger is model-free, diagnostic, and Deep Recall degrades expli
     let embeddingCalls = 0;
     const hub = new HubService({ store: f.store, embedder: async () => { embeddingCalls += 1; return [1, 0]; } });
     const recall = new MemoryRecallService({ store: f.store, hubService: hub });
-    const skipped = await recall.turn("hello", f.scope);
+    const skipped = await recall.turn("hi", f.scope);
     assert.equal(skipped.mode, "skipped");
     assert.equal(embeddingCalls, 0);
     const light = await recall.turn("How should I implement Memory tools again?", f.scope);
@@ -93,9 +93,52 @@ test("per-turn trigger is model-free, diagnostic, and Deep Recall degrades expli
     }).explicitSearch("Memory Provider", f.scope, { deepRecall: true });
     assert.equal(degraded.reason, "deep_recall_unavailable_fell_back_to_lexical");
     assert.equal(degraded.diagnostics.degraded, true);
-    assert.deepEqual(lightweightTrigger("hello"), {
+    assert.deepEqual(lightweightTrigger("hi"), {
       triggered: false, reason: "no_recall_cue", score: 0, termCount: 1
     });
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("low-confidence trusted Memory starts up and Chinese paraphrases recall without a cue", async () => {
+  const f = await fixture();
+  try {
+    const retained = memory(f.store, { content: "提交代码之前先运行本地测试", confidence: 0.5 });
+    const service = new MemoryRecallService({ store: f.store, hubService: new HubService({ store: f.store }) });
+    assert.equal((await service.startup(f.scope)).memories[0].id, retained.id);
+    const recall = await service.turn("代码提交前需要运行测试吗", f.scope);
+    assert.deepEqual(recall.selectedIds, [retained.id]);
+    service.markInjection(recall, "context_included");
+    const [audit] = f.store.listMemoryRecallAudit({ sessionId: f.scope.sessionId });
+    assert.equal(presentMemoryRecallAudit(f.store, audit).injectionStatus, "context_included");
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("recall audit keeps the selected memory content at recall time and labels legacy fallback", async () => {
+  const f = await fixture();
+  try {
+    const selected = memory(f.store, { content: "Remember the original workflow" });
+    await new MemoryRecallService({ store: f.store, hubService: new HubService({ store: f.store }) })
+      .explicitSearch("original workflow", f.scope);
+    f.store.updateMemory(selected.id, { content: "Updated workflow" });
+    const [audit] = f.store.listMemoryRecallAudit({ sessionId: f.scope.sessionId });
+    const presented = presentMemoryRecallAudit(f.store, audit);
+    assert.deepEqual(presented.selectedEntries.map((entry) => [entry.content, entry.snapshotAtRecall]), [
+      ["Remember the original workflow", true]
+    ]);
+
+    const legacy = f.store.createMemoryRecallAudit({
+      sessionId: f.scope.sessionId, phase: "turn", mode: "lightweight", reason: "legacy",
+      selectedIds: [selected.id], candidateIds: [selected.id]
+    });
+    assert.deepEqual(presentMemoryRecallAudit(f.store, legacy).selectedEntries.map((entry) => [entry.content, entry.snapshotAtRecall]), [
+      ["Updated workflow", false]
+    ]);
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });
