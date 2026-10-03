@@ -15,12 +15,25 @@ public struct ClientServiceFailure: Error, Equatable, Sendable {
     }
 }
 
+public struct BackendByteStream: AsyncSequence, Sendable {
+    public typealias Element = UInt8
+    private let stream: AsyncThrowingStream<UInt8, Error>
+
+    public init(_ stream: AsyncThrowingStream<UInt8, Error>) { self.stream = stream }
+    public func makeAsyncIterator() -> AsyncThrowingStream<UInt8, Error>.Iterator { stream.makeAsyncIterator() }
+}
+
 /// Explicit endpoint ownership: no global URLSession overrides or automatic mutation retries.
 public final class BackendTransport: Sendable {
+    public typealias DataHandler = @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
+    public typealias ByteHandler = @Sendable (URLRequest) async throws -> (BackendByteStream, HTTPURLResponse)
+
     public let endpoint: BackendEndpoint
-    private let session: URLSession
+    private let session: URLSession?
     private let bearerToken: String?
     private let pairingOnly: Bool
+    private let dataHandler: DataHandler?
+    private let byteHandler: ByteHandler?
 
     public init(endpoint: BackendEndpoint, bearerToken: String? = nil, pairingOnly: Bool = false,
                 configuration: URLSessionConfiguration = .ephemeral, certificate: String? = nil) throws {
@@ -47,9 +60,22 @@ public final class BackendTransport: Sendable {
         }
         self.session = URLSession(configuration: config,
             delegate: NoRedirects(host: endpoint.baseURL.host!, certificate: pin), delegateQueue: nil)
+        dataHandler = nil
+        byteHandler = nil
     }
 
-    deinit { session.invalidateAndCancel() }
+    /// Provider-neutral request seam used by a secure relay. The caller still
+    /// receives a normal BackendTransport and every URL remains origin-bound.
+    public init(endpoint: BackendEndpoint, data: @escaping DataHandler, bytes: @escaping ByteHandler) {
+        self.endpoint = endpoint
+        self.session = nil
+        self.bearerToken = nil
+        self.pairingOnly = false
+        self.dataHandler = data
+        self.byteHandler = bytes
+    }
+
+    deinit { session?.invalidateAndCancel() }
 
     public func prepare(_ request: URLRequest) throws -> URLRequest {
         guard let url = request.url, endpoint.contains(url) else { throw ClientConnectionError.outsideEndpoint }
@@ -67,7 +93,18 @@ public final class BackendTransport: Sendable {
     }
 
     public func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        let (data, response) = try await session.data(for: prepare(request))
+        let prepared = try prepare(request)
+        if let dataHandler {
+            let (data, response) = try await dataHandler(prepared)
+            if !(200..<300).contains(response.statusCode),
+               let body = try? JSONDecoder().decode([String: String].self, from: data), let code = body["code"] {
+                throw ClientServiceFailure(statusCode: response.statusCode, code: code)
+            }
+            guard (200..<300).contains(response.statusCode) else { throw ClientConnectionError.httpStatus(response.statusCode) }
+            return (data, response)
+        }
+        guard let session else { throw ClientConnectionError.invalidResponse }
+        let (data, response) = try await session.data(for: prepared)
         if pairingOnly, let response = response as? HTTPURLResponse, !(200..<300).contains(response.statusCode),
            let body = try? JSONDecoder().decode([String: String].self, from: data), let code = body["code"] {
             throw DevicePairingFailure(code: code)
@@ -79,9 +116,26 @@ public final class BackendTransport: Sendable {
         return (data, try Self.requireSuccess(response))
     }
 
-    public func bytes(for request: URLRequest) async throws -> (URLSession.AsyncBytes, HTTPURLResponse) {
-        let (bytes, response) = try await session.bytes(for: prepare(request))
-        return (bytes, try Self.requireSuccess(response))
+    public func bytes(for request: URLRequest) async throws -> (BackendByteStream, HTTPURLResponse) {
+        let prepared = try prepare(request)
+        if let byteHandler {
+            let (bytes, response) = try await byteHandler(prepared)
+            guard (200..<300).contains(response.statusCode) else { throw ClientConnectionError.httpStatus(response.statusCode) }
+            return (bytes, response)
+        }
+        guard let session else { throw ClientConnectionError.invalidResponse }
+        let (bytes, response) = try await session.bytes(for: prepared)
+        let http = try Self.requireSuccess(response)
+        let stream = AsyncThrowingStream<UInt8, Error> { continuation in
+            let task = Task {
+                do {
+                    for try await byte in bytes { continuation.yield(byte) }
+                    continuation.finish()
+                } catch { continuation.finish(throwing: error) }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+        return (BackendByteStream(stream), http)
     }
 
     private static func requireSuccess(_ response: URLResponse) throws -> HTTPURLResponse {

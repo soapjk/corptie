@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { rejectDevelopmentPreviewWrite, rejectUnavailableStoreRequest } from "../src/application/backendHttpGuards.mjs";
+import { routeBackendHttpRequest } from "../src/application/backendHttpRouter.mjs";
 
 function check(guard, path, method = "GET", overrides = {}) {
   const responses = [];
@@ -64,4 +65,17 @@ test("main router retains foundation-model exception between preview and Store g
   const store = route.indexOf("if (rejectUnavailableStoreRequest(");
   const scene = route.indexOf("if (handleSceneHttpRequest(");
   assert.ok(preview >= 0 && preview < model && model < store && store < scene);
+});
+
+test("main loopback router delegates the closed client surface to the device gateway", () => {
+  const calls = [];
+  const request = { method: "GET", url: "/client/v1/me", headers: { host: "127.0.0.1:48065" } };
+  const response = {};
+  routeBackendHttpRequest(request, response, {
+    clientDeviceGateway: { handle: (receivedRequest, receivedResponse) => {
+      calls.push({ receivedRequest, receivedResponse });
+    } },
+    sendJson: () => assert.fail("gateway is available")
+  });
+  assert.deepEqual(calls, [{ receivedRequest: request, receivedResponse: response }]);
 });

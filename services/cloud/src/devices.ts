@@ -42,6 +42,7 @@ interface DeviceRow {
   updated_at: string;
   last_seen_at: string;
   revoked_at: string | null;
+  authorization_session_id: string | null;
 }
 
 function mapDevice(row: DeviceRow): CloudDevice {
@@ -62,7 +63,7 @@ function mapDevice(row: DeviceRow): CloudDevice {
 }
 
 export class DeviceConflictError extends Error {
-  readonly code = "DEVICE_OWNED_BY_ANOTHER_ACCOUNT";
+  readonly code = "DEVICE_CONFLICT";
 }
 
 export class DeviceNotFoundError extends Error {
@@ -75,27 +76,44 @@ export class CloudDeviceService {
     private readonly now: () => Date = () => new Date()
   ) {}
 
-  register(accountId: string, uncheckedInput: RegisterDeviceInput): CloudDevice {
+  register(accountId: string, authorizationSessionId: string, uncheckedInput: RegisterDeviceInput): CloudDevice {
     const input = registerDeviceInputSchema.parse(uncheckedInput);
+    if (!authorizationSessionId || authorizationSessionId.length > 255) {
+      throw new DeviceConflictError("Device authorization session is invalid");
+    }
     const timestamp = this.now().toISOString();
-    const existing = this.database.prepare("SELECT account_id FROM cloud_devices WHERE id = ?").get(input.id) as
-      | { account_id: string }
+    const existing = this.database.prepare(`
+      SELECT account_id, authorization_session_id FROM cloud_devices WHERE id = ?
+    `).get(input.id) as
+      | { account_id: string; authorization_session_id: string | null }
       | undefined;
     if (existing && existing.account_id !== accountId) {
       throw new DeviceConflictError("Device identifier is already registered to another account");
+    }
+    if (existing?.authorization_session_id && existing.authorization_session_id !== authorizationSessionId) {
+      throw new DeviceConflictError("Device is bound to another authorization session");
+    }
+    const sessionOwner = this.database.prepare(`
+      SELECT id FROM cloud_devices
+      WHERE authorization_session_id = ? AND revoked_at IS NULL AND id <> ?
+    `).get(authorizationSessionId, input.id) as { id: string } | undefined;
+    if (sessionOwner) {
+      throw new DeviceConflictError("Authorization session is already bound to another active device");
     }
 
     this.ensureAccountState(accountId, timestamp);
     this.database.prepare(`
       INSERT INTO cloud_devices(
         id, account_id, kind, display_name, public_key_algorithm, public_key,
-        auth_source, auth_epoch, created_at, updated_at, last_seen_at, revoked_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'cloud_account', 1, ?, ?, ?, NULL)
+        auth_source, auth_epoch, created_at, updated_at, last_seen_at, revoked_at,
+        authorization_session_id
+      ) VALUES (?, ?, ?, ?, ?, ?, 'cloud_account', 1, ?, ?, ?, NULL, ?)
       ON CONFLICT(id) DO UPDATE SET
         kind = excluded.kind,
         display_name = excluded.display_name,
         public_key_algorithm = excluded.public_key_algorithm,
         public_key = excluded.public_key,
+        authorization_session_id = excluded.authorization_session_id,
         updated_at = excluded.updated_at,
         last_seen_at = excluded.last_seen_at
       WHERE cloud_devices.account_id = excluded.account_id
@@ -109,7 +127,8 @@ export class CloudDeviceService {
       input.publicKey,
       timestamp,
       timestamp,
-      timestamp
+      timestamp,
+      authorizationSessionId
     );
 
     const device = this.getForAccount(accountId, input.id);
@@ -134,6 +153,23 @@ export class CloudDeviceService {
     return row ? mapDevice(row) : null;
   }
 
+  getAuthorizedForAccount(accountId: string, deviceId: string, authorizationSessionId: string): CloudDevice | null {
+    const row = this.database.prepare(`
+      SELECT * FROM cloud_devices
+      WHERE account_id = ? AND id = ? AND authorization_session_id = ?
+    `).get(accountId, deviceId, authorizationSessionId) as DeviceRow | undefined;
+    return row ? mapDevice(row) : null;
+  }
+
+  revokeAuthorizationDevice(accountId: string, authorizationSessionId: string): CloudDevice {
+    const row = this.database.prepare(`
+      SELECT id FROM cloud_devices
+      WHERE account_id = ? AND authorization_session_id = ? AND revoked_at IS NULL
+    `).get(accountId, authorizationSessionId) as { id: string } | undefined;
+    if (!row) throw new DeviceNotFoundError("No active device is bound to this authorization session");
+    return this.revokeDevice(accountId, row.id, "sign_out");
+  }
+
   revokeDevice(accountId: string, deviceId: string, reason = "user_requested"): CloudDevice {
     const timestamp = this.now().toISOString();
     this.database.exec("BEGIN IMMEDIATE");
@@ -141,6 +177,10 @@ export class CloudDeviceService {
       const current = this.getForAccount(accountId, deviceId);
       if (!current) throw new DeviceNotFoundError("Device does not exist for this account");
       if (!current.revokedAt) {
+        const binding = this.database.prepare(`
+          SELECT authorization_session_id FROM cloud_devices
+          WHERE account_id = ? AND id = ?
+        `).get(accountId, deviceId) as { authorization_session_id: string | null };
         const nextEpoch = current.authEpoch + 1;
         this.database.prepare(`
           UPDATE cloud_devices
@@ -151,6 +191,9 @@ export class CloudDeviceService {
           INSERT INTO cloud_revocations(account_id, device_id, reason, auth_epoch, revoked_at)
           VALUES (?, ?, ?, ?, ?)
         `).run(accountId, deviceId, reason, nextEpoch, timestamp);
+        if (binding.authorization_session_id) {
+          this.revokeAuthorizationSession(accountId, binding.authorization_session_id, timestamp);
+        }
       }
       this.database.exec("COMMIT");
     } catch (error) {
@@ -182,6 +225,10 @@ export class CloudDeviceService {
         INSERT INTO cloud_revocations(account_id, device_id, reason, auth_epoch, revoked_at)
         VALUES (?, NULL, ?, ?, ?)
       `).run(accountId, reason, state.auth_epoch, timestamp);
+      this.database.prepare(`UPDATE oauthAccessToken SET revoked = ? WHERE userId = ? AND revoked IS NULL`)
+        .run(timestamp, accountId);
+      this.database.prepare(`UPDATE oauthRefreshToken SET revoked = ? WHERE userId = ? AND revoked IS NULL`)
+        .run(timestamp, accountId);
       this.database.exec("COMMIT");
       return state.auth_epoch;
     } catch (error) {
@@ -195,6 +242,19 @@ export class CloudDeviceService {
       INSERT OR IGNORE INTO cloud_account_security_state(account_id, auth_epoch, updated_at)
       VALUES (?, 1, ?)
     `).run(accountId, timestamp);
+  }
+
+  private revokeAuthorizationSession(accountId: string, sessionId: string, timestamp: string): void {
+    this.database.prepare(`
+      UPDATE oauthAccessToken SET revoked = ?
+      WHERE userId = ? AND sessionId = ? AND revoked IS NULL
+    `).run(timestamp, accountId, sessionId);
+    this.database.prepare(`
+      UPDATE oauthRefreshToken SET revoked = ?
+      WHERE userId = ? AND sessionId = ? AND revoked IS NULL
+    `).run(timestamp, accountId, sessionId);
+    // Delete only after token rows are revoked; their FK otherwise clears sessionId.
+    this.database.prepare(`DELETE FROM session WHERE id = ? AND userId = ?`).run(sessionId, accountId);
   }
 }
 

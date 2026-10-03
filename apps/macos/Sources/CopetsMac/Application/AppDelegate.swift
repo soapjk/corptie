@@ -43,6 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         // Start the backend immediately; the main content hosts first-run setup.
         CorptieBackendSupervisor.ensureBackendStarted()
+        Task { await CloudRemoteAccessController.shared.restore() }
 
         // The production backend is started alongside the app, so the first
         // Entity request can legitimately race its launch. Refresh the Entity

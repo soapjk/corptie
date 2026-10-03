@@ -82,6 +82,16 @@ export class ClientDeviceGateway {
     if (++bucket.count > (read ? 600 : 60)) throw deviceError("RATE_LIMITED", 429);
   }
 
+  authenticateRequest(request) {
+    const value = bearer(request);
+    const address = request.socket.remoteAddress;
+    if (["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(address)
+        && this.authority.checkAdmin(value)) {
+      return { deviceId: "cloud-relay-connector", name: "Corptie Cloud Relay", serverId: this.authority.state.serverId };
+    }
+    return this.authority.authenticate(value);
+  }
+
   async handle(request, response) {
     try {
       this.limit(request);
@@ -124,12 +134,12 @@ export class ClientDeviceGateway {
       if (request.method === "POST" && path === "/client/v1/auth/refresh") {
         return reply(response, 200, await this.authority.refresh(await body(request)));
       }
-      const identity = this.authority.authenticate(bearer(request));
+      const identity = this.authenticateRequest(request);
       this.sockets.set(request.socket, identity.deviceId);
       const inspector = /^\/client\/v1\/sessions\/([^/]+)\/inspector(?:\/(events|read|commands))?$/.exec(path);
       if (inspector && this.sessionAPI?.inspector) {
         const id = decode(inspector[1], "INVALID_SESSION_ID");
-        const authenticate = () => this.authority.authenticate(bearer(request));
+        const authenticate = () => this.authenticateRequest(request);
         this.sessionAPI.inspector.scope(id, identity);
         if (request.method === "GET" && inspector[2] === "events") {
           return this.inspectorEvents.attach(response, authenticate, id, request);
@@ -154,13 +164,13 @@ export class ClientDeviceGateway {
       if (path === "/client/v1/works/create" && this.sessionAPI) {
         if (request.method === "GET") {
           const result = this.sessionAPI.workCreationOptions();
-          this.authority.authenticate(bearer(request));
+          this.authenticateRequest(request);
           return reply(response, 200, result);
         }
         if (request.method === "POST") {
           const input = await body(request, 64 * 1024);
-          return reply(response, 202, await this.sessionAPI.createWork(this.authority.authenticate(bearer(request)),
-            input, () => this.authority.authenticate(bearer(request))));
+          return reply(response, 202, await this.sessionAPI.createWork(this.authenticateRequest(request),
+            input, () => this.authenticateRequest(request)));
         }
         throw deviceError("ROUTE_NOT_AVAILABLE", 404);
       }
@@ -169,12 +179,12 @@ export class ClientDeviceGateway {
         try { workId = decodeURIComponent(discussion[1]); } catch { throw deviceError("INVALID_WORK_ID", 400); }
         if (request.method === "GET") {
           const result = await this.sessionAPI.discussionOptions(identity, workId);
-          this.authority.authenticate(bearer(request));
+          this.authenticateRequest(request);
           return reply(response, 200, result);
         }
         const input = await body(request);
-        return reply(response, 202, await this.sessionAPI.openDiscussion(this.authority.authenticate(bearer(request)), workId,
-          input, () => this.authority.authenticate(bearer(request))));
+        return reply(response, 202, await this.sessionAPI.openDiscussion(this.authenticateRequest(request), workId,
+          input, () => this.authenticateRequest(request)));
       }
       if ((taskEntity || workEntity) && this.sessionAPI) {
         let entityId;
@@ -184,13 +194,13 @@ export class ClientDeviceGateway {
         if (request.method === "GET" && isRead) {
           const result = route === "deletion" ? await this.sessionAPI.taskDeletionPlan(identity, entityId)
             : taskEntity ? this.sessionAPI.taskManagement(identity, entityId) : this.sessionAPI.workManagement(identity, entityId);
-          this.authority.authenticate(bearer(request));
+          this.authenticateRequest(request);
           return reply(response, 200, result);
         }
         if (request.method === "POST" && !isRead) {
           const input = await body(request, 64 * 1024);
-          const current = this.authority.authenticate(bearer(request));
-          const revalidate = () => this.authority.authenticate(bearer(request));
+          const current = this.authenticateRequest(request);
+          const revalidate = () => this.authenticateRequest(request);
           return reply(response, 202, await (taskEntity
             ? this.sessionAPI.taskCommand(current, entityId, route, input, revalidate)
             : this.sessionAPI.workCommand(current, entityId, route, input, revalidate)));
@@ -205,7 +215,7 @@ export class ClientDeviceGateway {
           try { id = decodeURIComponent(repository[1]); } catch { throw deviceError("INVALID_REPOSITORY_ID", 400); }
           result = await this.controlAPI.repository(id);
         }
-        this.authority.authenticate(bearer(request));
+        this.authenticateRequest(request);
         return reply(response, 200, result);
       }
       if (this.worktreeAPI && (worktreeRepository || worktreePushStatus || worktreeDelete
@@ -233,7 +243,7 @@ export class ClientDeviceGateway {
           result = this.worktreeAPI.job(decode(worktreeJob[1], "INVALID_JOB_ID"));
         } else if (request.method === "POST") {
           const input = await body(request, 64 * 1024);
-          this.authority.authenticate(bearer(request));
+          this.authenticateRequest(request);
           if (worktreeDelete) result = await this.worktreeAPI.deleteWorktree(
             decode(worktreeDelete[1], "INVALID_REPOSITORY_ID"), decode(worktreeDelete[2], "INVALID_WORKTREE_ID")
           );
@@ -261,11 +271,11 @@ export class ClientDeviceGateway {
           );
           else throw deviceError("ROUTE_NOT_AVAILABLE", 404);
         } else throw deviceError("ROUTE_NOT_AVAILABLE", 404);
-        this.authority.authenticate(bearer(request));
+        this.authenticateRequest(request);
         return reply(response, 200, result);
       }
       if (request.method === "GET" && path === "/client/v1/events") {
-        return this.events.attach(response, () => this.authority.authenticate(bearer(request)));
+        return this.events.attach(response, () => this.authenticateRequest(request));
       }
       if (request.method === "GET" && eventV2) {
         const sessionId = url.searchParams.get("sessionId");
@@ -275,7 +285,7 @@ export class ClientDeviceGateway {
         if (![stateRevision, timelineRevision].every(value => Number.isSafeInteger(value) && value >= 0)) {
           throw deviceError("INVALID_QUERY", 400);
         }
-        return this.events.attachV2(response, () => this.authority.authenticate(bearer(request)), {
+        return this.events.attachV2(response, () => this.authenticateRequest(request), {
           sessionId, stateRevision, timelineRevision
         });
       }
@@ -284,62 +294,62 @@ export class ClientDeviceGateway {
         try { sessionId = decodeURIComponent(conversation[1]); } catch { throw deviceError("INVALID_SESSION_ID", 400); }
         if (conversation[2] === "tasks" && request.method === "GET") {
           const result = await this.sessionAPI.taskCreationOptions(identity, sessionId, url.searchParams);
-          this.authority.authenticate(bearer(request));
+          this.authenticateRequest(request);
           return reply(response, 200, result);
         }
         if (conversation[2] === "tasks" && request.method === "POST") {
           const input = await body(request, 160 * 1024);
-          return reply(response, 202, await this.sessionAPI.createTask(this.authority.authenticate(bearer(request)),
-            sessionId, input, () => this.authority.authenticate(bearer(request))));
+          return reply(response, 202, await this.sessionAPI.createTask(this.authenticateRequest(request),
+            sessionId, input, () => this.authenticateRequest(request)));
         }
         if (conversation[2] === "conversation-commands" && request.method === "GET") {
           const result = await this.sessionAPI.commandCatalog(identity, sessionId);
-          this.authority.authenticate(bearer(request));
+          this.authenticateRequest(request);
           return reply(response, 200, result);
         }
         if (conversation[2] === "conversation-commands" && request.method === "POST") {
           const input = await body(request, 70 * 1024);
-          const current = this.authority.authenticate(bearer(request));
+          const current = this.authenticateRequest(request);
           return reply(response, 202, await this.sessionAPI.conversationCommand(current, sessionId, input,
-            () => this.authority.authenticate(bearer(request))));
+            () => this.authenticateRequest(request)));
         }
         if (conversation[2] === "approval" && request.method === "POST") {
           const input = await body(request, 4096);
           return reply(response, 202, await this.sessionAPI.approval(
-            this.authority.authenticate(bearer(request)), sessionId, input,
-            () => this.authority.authenticate(bearer(request))));
+            this.authenticateRequest(request), sessionId, input,
+            () => this.authenticateRequest(request)));
         }
         if (conversation[2] === "user-input" && request.method === "POST") {
           const input = await body(request, 64 * 1024);
           return reply(response, 202, await this.sessionAPI.userInput(
-            this.authority.authenticate(bearer(request)), sessionId, input,
-            () => this.authority.authenticate(bearer(request))));
+            this.authenticateRequest(request), sessionId, input,
+            () => this.authenticateRequest(request)));
         }
         if (conversation[2] === "collaboration-confirmation" && request.method === "POST") {
           const input = await body(request, 4096);
           return reply(response, 202, await this.sessionAPI.collaborationConfirmation(
-            this.authority.authenticate(bearer(request)), sessionId, input,
-            () => this.authority.authenticate(bearer(request))));
+            this.authenticateRequest(request), sessionId, input,
+            () => this.authenticateRequest(request)));
         }
         if (conversation[2] === "composer" && ["GET", "POST"].includes(request.method)) {
           const input = request.method === "POST" ? await body(request, 4096) : null;
-          const result = await this.sessionAPI.configuration(this.authority.authenticate(bearer(request)), sessionId, input);
-          this.authority.authenticate(bearer(request));
+          const result = await this.sessionAPI.configuration(this.authenticateRequest(request), sessionId, input);
+          this.authenticateRequest(request);
           return reply(response, 200, result);
         }
         if (request.method === "GET" && conversation[2] === "quick-messages") {
           const result = await this.sessionAPI.quickMessages(identity, sessionId);
-          this.authority.authenticate(bearer(request));
+          this.authenticateRequest(request);
           return reply(response, 200, result);
         }
         if (request.method === "GET" && conversation[2] === "messages") {
           const result = await this.sessionAPI.messages(identity, sessionId, url.searchParams);
-          this.authority.authenticate(bearer(request));
+          this.authenticateRequest(request);
           return reply(response, 200, result);
         }
         if (request.method === "GET" && conversation[2] === "images") {
           const image = await this.sessionAPI.image(identity, sessionId, url.searchParams);
-          this.authority.authenticate(bearer(request));
+          this.authenticateRequest(request);
           response.writeHead(200, { "content-type": image.contentType, "content-length": image.byteLength,
             "cache-control": "private, max-age=31536000, immutable", "x-content-type-options": "nosniff" });
           return response.end(image.data);
@@ -347,7 +357,7 @@ export class ClientDeviceGateway {
         if (conversation[2] === "images") throw deviceError("ROUTE_NOT_AVAILABLE", 404);
         if (request.method === "POST" && conversation[2] === "read-receipt") {
           const input = await body(request, 1024);
-          return reply(response, 200, this.sessionAPI.readReceipt(this.authority.authenticate(bearer(request)), sessionId, input));
+          return reply(response, 200, this.sessionAPI.readReceipt(this.authenticateRequest(request), sessionId, input));
         }
         if (request.method === "GET" && conversation[2] === "capabilities") {
           return reply(response, 200, this.sessionAPI.capabilities(identity, sessionId));
@@ -361,14 +371,14 @@ export class ClientDeviceGateway {
           }
           const result = await this.sessionAPI.usage(identity, sessionId,
             { freshAccount: freshAccountValues[0] === "1" });
-          this.authority.authenticate(bearer(request));
+          this.authenticateRequest(request);
           return reply(response, 200, result);
         }
         if (conversation[2] === "usage") throw deviceError("ROUTE_NOT_AVAILABLE", 404);
         if (request.method === "POST" && ["messages", "stop"].includes(conversation[2])) {
           const input = await body(request, conversation[2] === "messages" ? 29 * 1024 * 1024 : 4096);
           // Recheck after reading the body: the device may have been revoked meanwhile.
-          const current = this.authority.authenticate(bearer(request));
+          const current = this.authenticateRequest(request);
           return reply(response, 202, await this.sessionAPI.command(current, sessionId,
             conversation[2] === "messages" ? "send" : "stop", input));
         }
@@ -383,7 +393,7 @@ export class ClientDeviceGateway {
         let workId;
         try { workId = decodeURIComponent(workAvatar[1]); } catch { throw deviceError("INVALID_WORK_ID", 400); }
         const avatar = await this.readAPI.workAvatar(workId);
-        this.authority.authenticate(bearer(request));
+        this.authenticateRequest(request);
         if (request.headers["if-none-match"] === avatar.etag) { response.writeHead(304, { etag: avatar.etag }); return response.end(); }
         return streamFile(response, avatar);
       }

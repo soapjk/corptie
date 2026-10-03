@@ -16,6 +16,23 @@ public struct DeviceCredentials: Codable, Sendable {
     public let refreshToken: String
     public let accessExpiresAt: Double
     public let refreshExpiresAt: Double
+    public var cloudValidatedAt: Double?
+    public var cloudValidationUptime: Double?
+
+    public init(certificate: String? = nil, serverId: String, deviceId: String,
+                accessToken: String, refreshToken: String, accessExpiresAt: Double,
+                refreshExpiresAt: Double, cloudValidatedAt: Double? = nil,
+                cloudValidationUptime: Double? = nil) {
+        self.certificate = certificate
+        self.serverId = serverId
+        self.deviceId = deviceId
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+        self.accessExpiresAt = accessExpiresAt
+        self.refreshExpiresAt = refreshExpiresAt
+        self.cloudValidatedAt = cloudValidatedAt
+        self.cloudValidationUptime = cloudValidationUptime
+    }
 }
 
 public struct DevicePairingClient: Sendable {

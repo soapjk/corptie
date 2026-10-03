@@ -49,6 +49,19 @@ export class NativeOAuthClientRegistry {
     private readonly now: () => Date = () => new Date()
   ) {}
 
+  ensureFirstPartyClients(): void {
+    this.register({
+      clientId: "corptie-ios",
+      name: "Corptie for iPhone and iPad",
+      redirectUris: ["corptie://oauth/callback"]
+    });
+    this.register({
+      clientId: "corptie-macos",
+      name: "Corptie for macOS",
+      redirectUris: ["corptie://oauth/callback"]
+    });
+  }
+
   register(unchecked: NativeOAuthClientInput): NativeOAuthClient {
     const input = nativeOAuthClientInputSchema.parse(unchecked);
     const redirectUris = [...new Set(input.redirectUris)].sort();

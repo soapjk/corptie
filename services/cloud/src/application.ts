@@ -61,6 +61,7 @@ export function createCloudApplication(dependencies: ApplicationDependencies) {
     `${dependencies.config.publicBaseUrl}/v1`,
     dependencies.now
   );
+  oauthClients.ensureFirstPartyClients();
   let relay: RelayHub;
   const server = createServer(async (incoming, outgoing) => {
     try {
@@ -152,7 +153,13 @@ async function dispatch(
   if (url.pathname === "/v1/devices" && request.method === "POST") {
     const principal = await dependencies.resolvePrincipal(request, ["devices:write"]);
     const input = registerDeviceInputSchema.parse(await request.json());
-    return json(201, { device: devices.register(principal.accountId, input) });
+    return json(201, { device: devices.register(principal.accountId, principal.authorizationSessionId, input) });
+  }
+  if (url.pathname === "/v1/devices/current" && request.method === "DELETE") {
+    const principal = await dependencies.resolvePrincipal(request, ["devices:write"]);
+    const device = devices.revokeAuthorizationDevice(principal.accountId, principal.authorizationSessionId);
+    relay.revokeDevice(principal.accountId, device.id);
+    return json(200, { device });
   }
 
   const deviceMatch = /^\/v1\/devices\/([0-9a-f-]+)$/i.exec(url.pathname);
