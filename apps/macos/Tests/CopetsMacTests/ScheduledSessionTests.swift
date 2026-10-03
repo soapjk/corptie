@@ -587,4 +587,16 @@ final class ScheduledSessionUITests: XCTestCase {
         XCTAssertGreaterThan(scheduleRange.lowerBound, detailCardStart.lowerBound)
         XCTAssertFalse(conversationView.contains("ScheduledSessionStrip(session: session)"))
     }
+
+    func testScheduledDetailTitleTogglesTheVisibleTaskList() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac/ScheduledSessionViews.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        XCTAssertTrue(source.contains("Button { isExpanded.toggle() } label:"))
+        XCTAssertTrue(source.contains(".contentShape(Rectangle())"))
+        XCTAssertTrue(source.contains(".accessibilityIdentifier(\"scheduled-session.detail.expand\")"))
+    }
 }

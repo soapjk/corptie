@@ -1122,6 +1122,9 @@
 "Banked resets could not be verified; showing the last known value." = "Banked resets could not be verified; showing the last known value.";
 "Task 信息" = "Task Information";
 "Artifact 引用" = "Artifact References";
+"Add Artifact" = "Add Artifact";
+"Check Worktree status" = "Check Worktree status";
+"Checking Worktree" = "Checking Worktree";
 "Task 记忆" = "Task Memories";
 "验证所需证据" = "Verification Evidence";
 "Handle Markdown Files" = "Handle Markdown Files";

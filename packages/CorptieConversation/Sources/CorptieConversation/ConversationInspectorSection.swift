@@ -81,20 +81,49 @@ public struct ConversationDetailModuleSurface: ViewModifier {
     }
 }
 
-public struct ConversationDetailModuleCard<Content: View>: View {
+public struct ConversationDetailModuleCard<Content: View, HeaderActions: View>: View {
     private let title: String
     private let systemImage: String
+    private let headerActions: HeaderActions
     private let content: Content
 
-    public init(title: String, systemImage: String, @ViewBuilder content: () -> Content) {
+    public init(title: String, systemImage: String,
+                @ViewBuilder headerActions: () -> HeaderActions,
+                @ViewBuilder content: () -> Content) {
         self.title = title
         self.systemImage = systemImage
+        self.headerActions = headerActions()
         self.content = content()
     }
 
     public var body: some View {
-        ConversationInspectorSection(title: title, systemImage: systemImage) { content }
+        ConversationInspectorSection(title: title, systemImage: systemImage,
+            headerActions: { headerActions }) { content }
             .modifier(ConversationDetailModuleSurface())
+    }
+}
+
+public extension ConversationDetailModuleCard where HeaderActions == EmptyView {
+    init(title: String, systemImage: String, @ViewBuilder content: () -> Content) {
+        self.init(title: title, systemImage: systemImage, headerActions: { EmptyView() }, content: content)
+    }
+}
+
+/// The icon has a full native hit target; the owning Button or Menu supplies its accessible name.
+public struct ConversationDetailHeaderIcon: View {
+    public let systemName: String
+
+    public init(systemName: String) { self.systemName = systemName }
+
+    public var body: some View {
+        Image(systemName: systemName)
+            .font(.system(size: 12, weight: .semibold))
+            #if os(macOS)
+            .frame(width: 28, height: 28)
+            #else
+            .frame(width: 44, height: 44)
+            #endif
+            .contentShape(Rectangle())
     }
 }
 
@@ -126,20 +155,80 @@ public struct ConversationDetailCardSurface: ViewModifier {
 }
 
 /// Shared Detail rail content. Ownership, requests and navigation stay in the host.
-public struct ConversationInspectorSection<Content: View>: View {
+public struct ConversationInspectorSection<Content: View, HeaderActions: View>: View {
     private let title: String
     private let systemImage: String
+    private let headerActions: HeaderActions
     private let content: Content
-    public init(title: String, systemImage: String, @ViewBuilder content: () -> Content) {
-        self.title = title; self.systemImage = systemImage; self.content = content()
+    public init(title: String, systemImage: String,
+                @ViewBuilder headerActions: () -> HeaderActions,
+                @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.systemImage = systemImage
+        self.headerActions = headerActions()
+        self.content = content()
     }
     public var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Label(title, systemImage: systemImage)
-                .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                .accessibilityAddTraits(.isHeader)
+            HStack(spacing: 6) {
+                Label(title, systemImage: systemImage)
+                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityAddTraits(.isHeader)
+                HStack(spacing: 2) { headerActions }
+                    .fixedSize(horizontal: true, vertical: false)
+            }
             content
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+public extension ConversationInspectorSection where HeaderActions == EmptyView {
+    init(title: String, systemImage: String, @ViewBuilder content: () -> Content) {
+        self.init(title: title, systemImage: systemImage, headerActions: { EmptyView() }, content: content)
+    }
+}
+
+/// A single native button makes the disclosure arrow and the entire title row one hit target.
+public struct ConversationDetailDisclosure<Header: View, Content: View>: View {
+    @Binding private var isExpanded: Bool
+    private let header: Header
+    private let content: Content
+
+    public init(isExpanded: Binding<Bool>, @ViewBuilder header: () -> Header,
+                @ViewBuilder content: () -> Content) {
+        _isExpanded = isExpanded
+        self.header = header()
+        self.content = content()
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Button { isExpanded.toggle() } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .accessibilityHidden(true)
+                    header.frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxWidth: .infinity, minHeight: headerHeight, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(isExpanded ? "已展开" : "已收起")
+            if isExpanded { content }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var headerHeight: CGFloat {
+        #if os(iOS)
+        44
+        #else
+        28
+        #endif
     }
 }
 

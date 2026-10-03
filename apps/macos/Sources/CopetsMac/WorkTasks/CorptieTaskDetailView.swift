@@ -182,7 +182,10 @@ struct CorptieTaskDetailView: View {
                 descriptionTitle: L10n("Description"), acceptanceTitle: L10n("Acceptance Criteria"),
                 verificationTitle: L10n("验证所需证据"), expandLabel: L10n("Expand"),
                 collapseLabel: L10n("Collapse"), showsWhenEmpty: true) {
-                Button(L10n("编辑工作项")) { showEdit = true }
+                Button { showEdit = true } label: { ConversationDetailHeaderIcon(systemName: "pencil") }
+                    .buttonStyle(.plain)
+                    .help(L10n("编辑工作项"))
+                    .accessibilityLabel(L10n("编辑工作项"))
             }
 
             if isCompleted {
@@ -391,11 +394,7 @@ struct CorptieTaskDetailView: View {
     }
 
     private var memorySection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label(L10n("Task 记忆"), systemImage: "brain")
-                    .detailRailSectionLabelStyle()
-                Spacer()
+        ConversationInspectorSection(title: L10n("Task 记忆"), systemImage: "brain", headerActions: {
                 if !memories.isEmpty {
                     Text("\(memories.count)")
                         .font(.system(size: 9, weight: .semibold))
@@ -403,13 +402,11 @@ struct CorptieTaskDetailView: View {
                 }
                 Button {
                     TaskMemoryWindowManager.shared.show(taskID: task.id, title: task.title)
-                } label: {
-                    Image(systemName: "arrow.up.right.square")
-                }
+                } label: { ConversationDetailHeaderIcon(systemName: "arrow.up.right.square") }
                 .buttonStyle(.borderless)
                 .help(L10n("Open Memory Inspector"))
                 .accessibilityLabel(L10n("Open Memory Inspector"))
-            }
+        }) {
             if !memories.isEmpty {
                 ForEach(memories) { memory in
                     ConversationMemoryRow(kind: kindLabel(memory.kind), content: memory.content,
@@ -502,18 +499,20 @@ struct CorptieTaskDetailView: View {
 
     @ViewBuilder
     private var worktreeSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label(L10n("Worktree"), systemImage: "arrow.triangle.branch")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if isLoadingWorktree || isReclaimingWorktree {
-                    ProgressView()
-                        .controlSize(.small)
+        ConversationInspectorSection(title: L10n("Worktree"), systemImage: "arrow.triangle.branch", headerActions: {
+            if isLoadingWorktree || isReclaimingWorktree {
+                ProgressView().controlSize(.small)
+                    .frame(width: 28, height: 28)
+                    .accessibilityLabel(L10n("Checking Worktree"))
+            } else {
+                Button { Task { await refreshWorktree() } } label: {
+                    ConversationDetailHeaderIcon(systemName: "arrow.clockwise")
                 }
+                .buttonStyle(.plain)
+                .help(L10n("Check Worktree status"))
+                .accessibilityLabel(L10n("Check Worktree status"))
             }
-
+        }) {
             if let status = worktreeStatus {
                 switch status.status {
                 case "retired":
