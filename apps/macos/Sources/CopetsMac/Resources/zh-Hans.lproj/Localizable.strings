@@ -1538,3 +1538,13 @@
 "To allow Git tracking instead, use the owning Session to promote the exact document version as an Artifact, then return and retry. This permission does not include pushing to a remote." = "如需允许 Git 追踪，请在所属 Session 中将该文档的确定版本提升为 Artifact，然后返回重试。此授权不包含推送远端。";
 "Later" = "稍后处理";
 "Ignore Files and Continue" = "忽略文件并继续";
+"Add to Ignore" = "加入 Ignore";
+"Delete File" = "删除";
+"Convert to Artifact" = "转为 Artifact";
+"Allow Git Tracking" = "允许 Git 追踪";
+"Action" = "操作";
+"Action for %@" = "%@ 的操作";
+"Applied: %@" = "已执行：%@";
+"Confirm and Continue" = "确定并继续";
+"Choose an action for every Markdown file." = "请为每个 Markdown 文件选择操作。";
+"Choose one action for each file. Converting creates an Artifact and removes the Worktree file; allowing Git tracking records exact-version approval. No action pushes to a remote." = "请为每个文件选择一个操作。转为 Artifact 会创建 Artifact 并删除 Worktree 中的文件；允许 Git 追踪会记录精确版本授权。所有操作都不会推送远端。";

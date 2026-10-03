@@ -1132,3 +1132,13 @@
 "To allow Git tracking instead, use the owning Session to promote the exact document version as an Artifact, then return and retry. This permission does not include pushing to a remote." = "To allow Git tracking instead, use the owning Session to promote the exact document version as an Artifact, then return and retry. This permission does not include pushing to a remote.";
 "Later" = "Later";
 "Ignore Files and Continue" = "Ignore Files and Continue";
+"Add to Ignore" = "Add to Ignore";
+"Delete File" = "Delete";
+"Convert to Artifact" = "Convert to Artifact";
+"Allow Git Tracking" = "Allow Git Tracking";
+"Action" = "Action";
+"Action for %@" = "Action for %@";
+"Applied: %@" = "Applied: %@";
+"Confirm and Continue" = "Confirm and Continue";
+"Choose an action for every Markdown file." = "Choose an action for every Markdown file.";
+"Choose one action for each file. Converting creates an Artifact and removes the Worktree file; allowing Git tracking records exact-version approval. No action pushes to a remote." = "Choose one action for each file. Converting creates an Artifact and removes the Worktree file; allowing Git tracking records exact-version approval. No action pushes to a remote.";
