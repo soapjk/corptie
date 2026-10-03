@@ -7,7 +7,7 @@ function fixture(overrides = {}) {
   const store = {
     resolveWorkspacePath: () => "/main",
     listTasks: () => [],
-    getTask: () => ({ id: "task", work_id: "work", title: "Conflict" }),
+    getTask: () => ({ id: "task", work_id: "work", title: "Conflict", main_agent_id: "agent" }),
     getSession: () => ({ id: "session", title: "Session", cwd: "/integration" }),
     getWorktreeIntegrationJobByIdempotencyKey: () => null,
     createWorktreeIntegrationJobIdempotently: (input) => input,
@@ -83,6 +83,33 @@ test("an existing plan reuses its Session and sends through the common execution
   assert.ok(prompt.includes("source-head"));
   assert.deepEqual(source, { type: "worktree-integration", localVisibility: "normal" });
   assert.deepEqual(options, { fromAgentWorkQueue: true });
+});
+
+test("a new plan Session suppresses the generic Task prompt and sends one conflict prompt", async () => {
+  const { worktreeIntegrationJobService: jobs, calls } = fixture();
+  const item = {
+    worktreeId: "source",
+    branchName: "feature/source",
+    conflictFiles: ["source.swift"],
+    associations: [{ taskId: "task" }]
+  };
+  const result = await jobs.launchConflictResolution({
+    job: { id: "worktree_integration:new-plan", plan: { items: [item] } },
+    item,
+    workspace: { path: "/integration" },
+    sourceHead: "source-head",
+    expectedMainHead: "main-head"
+  });
+
+  assert.equal(result.reused, false);
+  assert.deepEqual(calls.map(([kind]) => kind), ["start", "send"]);
+  assert.equal(calls[0][1].dispatchInitialTurn, false);
+  assert.equal(calls.filter(([kind]) => kind === "send").length, 1);
+  assert.ok(calls[1][2].includes("source-head"));
+  assert.deepEqual(calls[1][3], {
+    type: "session-initialization",
+    origin: "worktree-integration"
+  });
 });
 
 test("a recorded plan with a missing Session never creates a duplicate Task", async () => {
