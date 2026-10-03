@@ -151,6 +151,43 @@ check_production_sessions() {
   echo "Production has no unfinished sessions."
 }
 
+wait_for_production_sessions() {
+  local active="" last_reported="" unavailable_reports=0
+
+  echo "Production build is ready; waiting for all unfinished sessions before installation..."
+  while true; do
+    if ! production_is_running; then
+      echo "Production stopped while the build was running; proceeding with installation."
+      return 0
+    fi
+
+    if active="$(unfinished_sessions)"; then
+      unavailable_reports=0
+      if [[ -z "${active}" ]]; then
+        echo "All production sessions are finished; installing the update now."
+        return 0
+      fi
+      if [[ "${active}" != "${last_reported}" ]]; then
+        echo "Production still has unfinished sessions; installation is waiting:" >&2
+        while IFS=$'\t' read -r id title status activity; do
+          printf '  - %s [%s%s] %s\n' \
+            "${title}" \
+            "${status}" \
+            "${activity:+ / ${activity}}" \
+            "${id}" >&2
+        done <<<"${active}"
+        last_reported="${active}"
+      fi
+    else
+      unavailable_reports=$((unavailable_reports + 1))
+      if (( unavailable_reports == 1 || unavailable_reports % 30 == 0 )); then
+        echo "Cannot inspect production sessions at ${BACKEND_URL}; installation remains paused and will retry." >&2
+      fi
+    fi
+    sleep 1
+  done
+}
+
 production_data_root() {
   local pointer_file="${HOME}/Library/Application Support/Corptie/data-root.json"
   local configured_root=""
@@ -341,30 +378,24 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-if production_is_running; then
-  if [[ "${RESET_PRODUCTION_DATABASE}" != true ]]; then
-    check_production_sessions
-  else
-    echo "Production database reset was explicitly requested; skipping unfinished-session inspection."
-  fi
-  if [[ "${CHECK_ONLY}" == true ]]; then
-    exit 0
-  fi
-  if [[ "${RESET_PRODUCTION_DATABASE}" != true ]]; then
-    # Close the small race between the first check and shutdown.
-    sleep 1
-    check_production_sessions
-  fi
-  stop_production
-else
+if ! production_is_running; then
   echo "Production is not running."
+  [[ "${CHECK_ONLY}" != true ]] || exit 0
+elif [[ "${RESET_PRODUCTION_DATABASE}" == true ]]; then
+  echo "Production database reset was explicitly requested; skipping unfinished-session inspection."
+  [[ "${CHECK_ONLY}" != true ]] || exit 0
+elif check_production_sessions; then
+  [[ "${CHECK_ONLY}" != true ]] || exit 0
+else
+  inspection_status=$?
   if [[ "${CHECK_ONLY}" == true ]]; then
-    exit 0
+    exit "${inspection_status}"
   fi
-fi
-
-if [[ "${RESET_PRODUCTION_DATABASE}" == true ]]; then
-  reset_production_database
+  if (( inspection_status == 2 )); then
+    echo "The production app will remain available while the update is built."
+  else
+    echo "Initial session inspection was unavailable; building now and checking again before installation." >&2
+  fi
 fi
 
 echo "Building production installers from the current checkout..."
@@ -378,6 +409,17 @@ DMG_PATH="$(sed -n 's/^Built production dmg: //p' "${BUILD_LOG}" | tail -1)"
 if [[ ! -f "${PKG_PATH}" || ! -f "${DMG_PATH}" ]]; then
   echo "The production installer script did not produce the expected PKG and DMG." >&2
   exit 1
+fi
+
+if production_is_running; then
+  if [[ "${RESET_PRODUCTION_DATABASE}" != true ]]; then
+    wait_for_production_sessions
+  fi
+  stop_production
+fi
+
+if [[ "${RESET_PRODUCTION_DATABASE}" == true ]]; then
+  reset_production_database
 fi
 
 echo "Mounting ${DMG_PATH}..."
