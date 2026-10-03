@@ -110,6 +110,9 @@ test("scheduled backup path creates a checksummed encrypted secondary-volume cop
     const encrypted = execFileSync("sh", [control, "backup-and-copy", "encrypted-test"], {
       cwd: cloudDirectory, env, encoding: "utf8"
     }).trim();
+    const backup = join(root, "shared", "backups", "cloud-encrypted-test.sqlite");
+    assert.equal(existsSync(`${backup}-wal`), false);
+    assert.equal(existsSync(`${backup}-shm`), false);
     assert.equal(encrypted, join(secondary, "cloud-encrypted-test.sqlite.enc"));
     assert.equal(readFileSync(`${encrypted}.sha256`, "utf8").includes("cloud-encrypted-test.sqlite.enc"), true);
     const decrypted = join(root, "decrypted.sqlite");
