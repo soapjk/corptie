@@ -96,7 +96,7 @@ struct ChatUsageBar: View {
     private enum BankedResetState: Equatable {
         case idle
         case loading
-        case ready(CodexRateLimitResetCredits)
+        case ready(CodexRateLimitResetCredits?)
         case failed
     }
 
@@ -125,41 +125,10 @@ struct ChatUsageBar: View {
                 }
                 if let window = SessionUsagePresentation.preferredRateLimitWindow(usage.account),
                    let remainingPercent = SessionUsagePresentation.remainingRateLimitPercent(window) {
-                    if usage.account.provider == "codex" {
-                        Button {
-                            isResetNoticePresented.toggle()
-                        } label: {
-                            ConversationComposerUsageSlot {
-                                SessionUsageItem(
-                                    icon: "bolt.fill",
-                                    value: "\(SessionUsagePolicy.percent(remainingPercent))%",
-                                    progress: remainingPercent / 100,
-                                    color: SessionMetaPalette.color(for: SessionUsagePolicy.quotaTone(remainingPercent: remainingPercent))
-                                )
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .help("\(L10n(SessionUsagePolicy.quotaLabel(provider: usage.account.provider))): \(SessionUsagePolicy.percent(remainingPercent, maximumFractionDigits: 2))% remaining")
-                        .accessibilityLabel("\(L10n(SessionUsagePolicy.quotaLabel(provider: usage.account.provider))): \(SessionUsagePolicy.percent(remainingPercent, maximumFractionDigits: 2))% remaining")
-                        .accessibilityIdentifier("conversation-usage-quota")
-                        .popover(isPresented: $isResetNoticePresented, arrowEdge: .bottom) {
-                            resetNoticePopover(usage: usage, window: window)
-                        }
-                        .task(id: "\(sessionID):\(isResetNoticePresented)") {
-                            guard isResetNoticePresented else {
-                                bankedResetState = .idle
-                                return
-                            }
-                            bankedResetState = .loading
-                            let refreshed = await BackendClient.shared.usageController.refreshFreshAccount(for: sessionID)
-                            guard !Task.isCancelled else { return }
-                            if let resets = refreshed?.account.rateLimitResetCredits {
-                                bankedResetState = .ready(resets)
-                            } else {
-                                bankedResetState = .failed
-                            }
-                        }
-                    } else {
+                    // Quota details are supported by the usage data, not a Provider identifier.
+                    Button {
+                        isResetNoticePresented.toggle()
+                    } label: {
                         ConversationComposerUsageSlot {
                             SessionUsageItem(
                                 icon: "bolt.fill",
@@ -168,8 +137,27 @@ struct ChatUsageBar: View {
                                 color: SessionMetaPalette.color(for: SessionUsagePolicy.quotaTone(remainingPercent: remainingPercent))
                             )
                         }
-                        .help("\(L10n(SessionUsagePolicy.quotaLabel(provider: usage.account.provider))): \(SessionUsagePolicy.percent(remainingPercent, maximumFractionDigits: 2))% remaining")
-                        .accessibilityIdentifier("conversation-usage-quota")
+                    }
+                    .buttonStyle(.plain)
+                    .help("\(L10n(SessionUsagePolicy.quotaLabel(provider: usage.account.provider))): \(SessionUsagePolicy.percent(remainingPercent, maximumFractionDigits: 2))% remaining")
+                    .accessibilityLabel("\(L10n(SessionUsagePolicy.quotaLabel(provider: usage.account.provider))): \(SessionUsagePolicy.percent(remainingPercent, maximumFractionDigits: 2))% remaining")
+                    .accessibilityIdentifier("conversation-usage-quota")
+                    .popover(isPresented: $isResetNoticePresented, arrowEdge: .bottom) {
+                        resetNoticePopover(usage: usage, window: window)
+                    }
+                    .task(id: "\(sessionID):\(isResetNoticePresented)") {
+                        guard isResetNoticePresented else {
+                            bankedResetState = .idle
+                            return
+                        }
+                        bankedResetState = .loading
+                        let refreshed = await BackendClient.shared.usageController.refreshFreshAccount(for: sessionID)
+                        guard !Task.isCancelled else { return }
+                        if let refreshed {
+                            bankedResetState = .ready(refreshed.account.rateLimitResetCredits)
+                        } else {
+                            bankedResetState = .failed
+                        }
                     }
                 }
             }
