@@ -468,6 +468,26 @@ struct WorktreeCommitPolicyFile: Identifiable, Decodable, Equatable, Sendable {
     let byteLength: Int
     let code: String
     let supportedActions: [String]
+    let appliedAction: String?
+    let artifactId: String?
+}
+
+enum WorktreeCommitPolicyAction: String, CaseIterable, Identifiable, Sendable {
+    case ignore
+    case delete
+    case artifact
+    case track
+
+    var id: String { rawValue }
+
+    @MainActor var title: String {
+        switch self {
+        case .ignore: L10n("Add to Ignore")
+        case .delete: L10n("Delete File")
+        case .artifact: L10n("Convert to Artifact")
+        case .track: L10n("Allow Git Tracking")
+        }
+    }
 }
 
 struct WorktreeConflictAutomation: Decodable, Equatable, Sendable {

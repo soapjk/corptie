@@ -1146,3 +1146,13 @@
 "Included in context" = "Included in context";
 "Omitted by context budget" = "Omitted by context budget";
 "Context inclusion not recorded" = "Context inclusion not recorded";
+"Add to Ignore" = "Add to Ignore";
+"Delete File" = "Delete";
+"Convert to Artifact" = "Convert to Artifact";
+"Allow Git Tracking" = "Allow Git Tracking";
+"Action" = "Action";
+"Action for %@" = "Action for %@";
+"Applied: %@" = "Applied: %@";
+"Confirm and Continue" = "Confirm and Continue";
+"Choose an action for every Markdown file." = "Choose an action for every Markdown file.";
+"Choose one action for each file. Converting creates an Artifact and removes the Worktree file; allowing Git tracking records exact-version approval. No action pushes to a remote." = "Choose one action for each file. Converting creates an Artifact and removes the Worktree file; allowing Git tracking records exact-version approval. No action pushes to a remote.";

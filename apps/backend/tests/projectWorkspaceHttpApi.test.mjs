@@ -10,7 +10,7 @@ function fixture() {
     (...args) => { calls.push([name, ...args]); return sync.includes(name) ? result : Promise.resolve(result); }
   ]));
   const dependencies = {
-    worktreeIntegrationJobService: service("repositories repository worktreeGitHubPushStatus preflight createCandidate startCandidate cleanupMergedWorktrees deleteWorktree get confirm cancel resolveConflictWithAgent retry prepareCommitPolicyResolution", ["repositories", "get"]),
+    worktreeIntegrationJobService: service("repositories repository worktreeGitHubPushStatus preflight createCandidate startCandidate cleanupMergedWorktrees deleteWorktree get confirm cancel resolveConflictWithAgent retry prepareCommitPolicyResolution resolveCommitPolicy", ["repositories", "get"]),
     projectWorktreeIntegrationService: service("status integrateCompleted createConflictTask"),
     projectApplicationService: service("listWorkspaces runWorkspaceAction readDevelopmentService runDevelopmentServiceAction readProject")
   };
@@ -45,6 +45,7 @@ const cases = [
   ["/worktree-management/jobs/job/cancel", "POST", ["cancel", "job", input], 202, "job"],
   ["/worktree-management/jobs/job/retry", "POST", ["retry", "job"], 202, "job"],
   ["/worktree-management/jobs/job/commit-policy-prepare", "POST", ["prepareCommitPolicyResolution", "job"], 202, "job"],
+  ["/worktree-management/jobs/job/commit-policy-decisions", "POST", ["resolveCommitPolicy", "job", input], 202, "job"],
   ["/worktree-management/jobs/job/resolve-conflict", "POST", ["resolveConflictWithAgent", "job"], 202, "job"],
   ["/projects/project/works/work/integrations", "GET", ["status", "project", "work"], 200],
   ["/projects/project/works/work/integrations", "POST", ["integrateCompleted", "project", "work"], 200],
