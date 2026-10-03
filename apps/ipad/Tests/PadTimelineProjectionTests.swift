@@ -12,6 +12,11 @@ struct PadTimelineProjectionTests {
         let store = PadWorkExpansionStore(defaults: defaults)
 
         #expect(store.load().isEmpty)
+        #expect(!store.loadChat())
+        store.saveChat(true)
+        #expect(PadWorkExpansionStore(defaults: defaults).loadChat())
+        store.saveChat(false)
+        #expect(!PadWorkExpansionStore(defaults: defaults).loadChat())
         store.save(["work:b", "work:a"])
         #expect(store.load() == ["work:a", "work:b"])
         store.save(["work:b"])

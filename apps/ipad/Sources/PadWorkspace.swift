@@ -38,22 +38,7 @@ extension WorkOutlineSort {
     }
 }
 
-struct PadWorkExpansionStore {
-    private static let key = "corptie.mobile.expandedWorkIDs.v1"
-    private let defaults: UserDefaults
-
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-    }
-
-    func load() -> Set<String> {
-        Set(defaults.stringArray(forKey: Self.key) ?? [])
-    }
-
-    func save(_ workIDs: Set<String>) {
-        defaults.set(workIDs.sorted(), forKey: Self.key)
-    }
-}
+typealias PadWorkExpansionStore = WorkOutlineExpansionStore
 
 enum PadProcessClockPolicy {
     static func canAdvance(

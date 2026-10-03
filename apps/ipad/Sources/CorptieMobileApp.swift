@@ -122,7 +122,7 @@ struct WorkspaceView: View {
     let compactOpenSessionRequest: Int
     let onCompactRootChange: (Bool) -> Void
     @State private var expandedWorkIDs = PadWorkExpansionStore().load()
-    @State private var isChatExpanded = true
+    @State private var isChatExpanded = PadWorkExpansionStore().loadChat()
     @State private var taskCreationRoute: PadTaskCreationRoute?
     @State private var taskCreationStates: [String: PadTaskCreationState] = [:]
     @State private var compactPath: [CompactWorkspacePage] = []
@@ -207,6 +207,9 @@ struct WorkspaceView: View {
         }
         .onChange(of: expandedWorkIDs) { _, workIDs in
             PadWorkExpansionStore().save(workIDs)
+        }
+        .onChange(of: isChatExpanded) { _, expanded in
+            PadWorkExpansionStore().saveChat(expanded)
         }
         .task(id: "\(commands.pending?.requestID ?? ""):active=\(scenePhase == .active)") {
             guard scenePhase == .active, commands.pending != nil else { return }
@@ -1685,8 +1688,13 @@ private struct PadCollaborationCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 7) {
-                Image(systemName: presentation?.isChannelAuthorization == true
-                      ? "bubble.left.and.bubble.right.fill" : "arrow.triangle.branch")
+                Group {
+                    if presentation?.isChannelAuthorization == true {
+                        Image(systemName: "bubble.left.and.bubble.right.fill")
+                    } else {
+                        CollaborationHandshakeIcon().frame(width: 18, height: 18)
+                    }
+                }
                     .foregroundStyle(.orange)
                     .accessibilityHidden(true)
                 Text(title).font(.headline)

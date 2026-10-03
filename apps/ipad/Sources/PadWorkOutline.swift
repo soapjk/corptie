@@ -32,6 +32,7 @@ struct PadWorkOutline: View {
     @State private var selectedArchivedTask: ClientTask?
     @FocusState private var searchFocused: Bool
     private var sort: PadOutlineSort { PadOutlineSort(rawValue: sortRaw) ?? .standard }
+    private var hasSearch: Bool { !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var isPhone: Bool { UIDevice.current.userInterfaceIdiom == .phone }
     private var headerFont: Font { isPhone ? .system(size: 16, weight: .semibold) : WorkOutlineMetrics.headerTitleFont }
     private var rowFont: Font { isPhone ? .system(size: 15, weight: .semibold) : WorkOutlineMetrics.rowTitleFont }
@@ -129,9 +130,11 @@ struct PadWorkOutline: View {
                 tasksByWork[$0.id] != nil || (!showingArchived && $0.name.localizedCaseInsensitiveContains(query))
             }
         }
-        visibleChats = showingArchived ? [] : workspace.independentSessions.filter {
+        let chats = showingArchived ? [] : workspace.independentSessions.filter {
             query.isEmpty || $0.title.localizedCaseInsensitiveContains(query)
         }
+        visibleChats = sort.ordered(chats, id: { $0.id }, title: { $0.title },
+                                   updatedAt: { $0.updatedAt }, activityAt: { $0.lastMessageAt })
     }
 
     private var outlineToolbar: some View {
@@ -220,7 +223,7 @@ struct PadWorkOutline: View {
         VStack(alignment: .leading, spacing: 2) {
             Button(action: toggleChat) {
                 HStack(spacing: 0) {
-                    WorkOutlineDisclosureChevron(isExpanded: isChatExpanded)
+                    WorkOutlineDisclosureChevron(isExpanded: isChatExpanded || hasSearch)
                     HStack(spacing: 7) {
                         ChatGroupIcon()
                         Text("聊天")
@@ -238,9 +241,9 @@ struct PadWorkOutline: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("聊天")
-            .accessibilityValue(isChatExpanded ? "已展开" : "已折叠")
+            .accessibilityValue(isChatExpanded || hasSearch ? "已展开" : "已折叠")
             .accessibilityIdentifier("outline-chat-header")
-            if isChatExpanded || !searchText.isEmpty {
+            if isChatExpanded || hasSearch {
                 if visibleChats.isEmpty {
                     emptyRow(showingArchived ? "归档 Task 显示在 Work 分组中" : "暂无匹配聊天")
                 } else {
@@ -257,6 +260,7 @@ struct PadWorkOutline: View {
     }
 
     private func toggleChat() {
+        guard !hasSearch else { return }
         withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation) { isChatExpanded.toggle() }
     }
 
@@ -285,7 +289,7 @@ struct PadWorkOutline: View {
     // MARK: Work group
 
     private func workGroup(_ work: ClientWork) -> some View {
-        let isExpanded = expandedWorkIDs.contains(work.id) || !searchText.isEmpty || showingArchived
+        let isExpanded = expandedWorkIDs.contains(work.id) || hasSearch
         return VStack(alignment: .leading, spacing: 2) {
             workHeader(work, isExpanded: isExpanded)
             if isExpanded {
@@ -391,6 +395,7 @@ struct PadWorkOutline: View {
     }
 
     private func toggleWork(_ id: String) {
+        guard !hasSearch else { return }
         withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation) {
             if expandedWorkIDs.contains(id) { expandedWorkIDs.remove(id) } else { expandedWorkIDs.insert(id) }
         }

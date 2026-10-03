@@ -147,13 +147,13 @@ extension UnifiedConsoleView {
     }
 
     func outlineChatHeader(hasUnread: Bool) -> some View {
-        let isExpanded = !outlineExpansionPreferences.isAssistantCollapsed || !searchText.isEmpty
+        let isExpanded = !outlineExpansionPreferences.isAssistantCollapsed || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return HoverRevealHeaderAction(
             accessibilityLabel: L10n("New Assistant Session"),
             action: { showNewSessionCreation = true }
         ) {
             Button {
-                if searchText.isEmpty {
+                if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation) {
                         outlineExpansionPreferences.toggleAssistant()
                     }
@@ -197,15 +197,15 @@ extension UnifiedConsoleView {
     }
 
     func outlineWorkIsExpanded(_ workID: String) -> Bool {
-        !outlineExpansionPreferences.collapsedWorkIDs.contains(workID)
+        outlineExpansionPreferences.expandedWorkIDs.contains(workID)
             || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var outlineAssistantExpandedBinding: Binding<Bool> {
         Binding(
-            get: { !outlineExpansionPreferences.isAssistantCollapsed || !searchText.isEmpty },
+            get: { !outlineExpansionPreferences.isAssistantCollapsed || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty },
             set: { isExpanded in
-                guard searchText.isEmpty else { return }
+                guard searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
                 outlineExpansionPreferences.setAssistantExpanded(isExpanded)
             }
         )
@@ -240,6 +240,7 @@ extension UnifiedConsoleView {
             isChatRunning: workChat?.executionTaskStatus == .running,
             hasUnreadChat: workChat.map(isSessionUnread) ?? false,
             toggleExpanded: {
+                guard searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
                 withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation) {
                     outlineExpansionPreferences.toggleWork(workID: work.id)
                 }
@@ -358,9 +359,9 @@ extension UnifiedConsoleView {
 
     var assistantSessionRows: [SessionRowModel] {
         let rows = searchFilteredRows.filter { $0.session.resolvedSessionKind == .assistantChat }
-        // Stable partition: keep the built-in product help Chat easy to find.
-        return rows.filter { $0.session.agentId == "assistant" }
-            + rows.filter { $0.session.agentId != "assistant" }
+        return outlineSort.ordered(rows, id: { $0.session.id }, title: { $0.session.title },
+                                   updatedAt: { $0.session.updatedAt },
+                                   activityAt: { $0.session.lastMessageAt })
     }
 
     var workChatRows: [SessionRowModel] {

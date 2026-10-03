@@ -166,8 +166,10 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
 
     private static var chatCardID: String { "canvas:assistant-chats" }
     private var chatSessions: [TaskSession] {
-        sessions.filter { $0.resolvedSessionKind == .assistantChat && $0.archived != true
+        let visible = sessions.filter { $0.resolvedSessionKind == .assistantChat && $0.archived != true
             && (query.isEmpty || $0.title.localizedCaseInsensitiveContains(query)) }
+        return sortMode.ordered(visible, id: { $0.id }, title: { $0.title },
+                                updatedAt: { $0.updatedAt }, activityAt: { $0.lastMessageAt })
     }
 
     private var orderedWorks: [Work] {
