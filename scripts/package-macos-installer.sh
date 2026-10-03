@@ -213,9 +213,11 @@ if [[ "${APP_SIGNING_IDENTITY}" == "-" ]]; then
   echo "Warning: building an ad-hoc signed app; macOS privacy permissions may need to be granted again after upgrades." >&2
 else
   echo "Signing app and bundled backend with: ${APP_SIGNING_IDENTITY}"
-  # A secure timestamp preserves the signing-time validity of the available
-  # Apple Development certificate. This does not imply notarization.
-  SIGN_FLAGS+=(--options runtime --timestamp)
+  # This installer is built and installed locally. Requiring Apple's timestamp
+  # service makes an otherwise valid local upgrade fail whenever that service
+  # or the network is unavailable. Keep the hardened runtime and the stable
+  # signing identity, but make the local build explicitly network-independent.
+  SIGN_FLAGS+=(--options runtime --timestamp=none)
 fi
 # Sign nested Mach-O code explicitly, before sealing the outer bundle. Native
 # addons share the app's identity, so Node does not need disabled library validation.
