@@ -232,6 +232,7 @@ struct WorkspaceView: View {
                             messageImages: messageImages,
                             onBack: { if compactPath.last == .conversation(id) { compactPath.removeLast() } },
                             onOpenDetail: { if compactPath.last == .conversation(id) { compactPath.append(.detail(id)) } })
+                            .id(id)
                     case .detail(let id):
                         PadConversationInspector(workspace: workspace, connection: connection, sessionID: id)
                             .safeAreaInset(edge: .top, spacing: 0) { compactDetailHeader }
@@ -383,10 +384,10 @@ struct ConversationView: View {
     /// Rounded whole-point lane width prevents sub-pixel geometry changes from
     /// invalidating every realized message row during keyboard/split resizing.
     @State private var laneWidth: CGFloat = 0
-    @State private var initialTimelinePlacementScheduled = false
+    @State private var latestPlacementTask: Task<Void, Never>?
+    @State private var historyRestorationTask: Task<Void, Never>?
     @State private var didPlaceInitialTimeline = false
     @State private var pendingLatestJump = false
-    @State private var latestJumpCorrectionScheduled = false
     @State private var latestJumpGeneration: UInt64 = 0
     @State private var attachmentPreview: PadAttachmentPreview?
     @State private var composerSheet: ComposerSheet?
@@ -538,9 +539,8 @@ struct ConversationView: View {
                 onUserInteractionChange: { interacting in
                     isUserInteractingWithTimeline = interacting
                     if interacting {
-                        latestJumpGeneration &+= 1
+                        cancelPendingTimelinePlacement()
                         pendingLatestJump = false
-                        latestJumpCorrectionScheduled = false
                         pendingHistoryViewport = nil
                         requestEarlierHistoryIfNeeded(reader, userInitiated: true)
                     } else {
@@ -552,8 +552,6 @@ struct ConversationView: View {
                     guard pendingLatestJump else { return }
                     if nearBottom {
                         pendingLatestJump = false
-                    } else {
-                        scheduleLatestJumpCorrection(reader)
                     }
                 }
             ))
@@ -585,14 +583,9 @@ struct ConversationView: View {
                 guard height != historyViewport.contentHeight else { return }
                 historyViewport.contentHeight = height
                 placeInitialTimelineIfReady(reader)
-                if pendingHistoryViewport == nil && didPlaceInitialTimeline && viewportState.followsLatest {
-                    // Lazy rows can temporarily report an estimated UIKit
-                    // contentSize. Follow the stable SwiftUI tail identity for
-                    // content changes; native offset correction is reserved
-                    // for viewport-only (keyboard/split) resizing below.
-                    reader.scrollTo("latest", anchor: .bottom)
-                }
-                if pendingLatestJump { scheduleLatestJumpCorrection(reader) }
+                // Measuring lazy rows is not a new scroll intent. Scrolling
+                // here can change the estimate and recursively request another
+                // jump. Tail revisions and viewport changes schedule placement.
                 requestEarlierHistoryIfNeeded(reader)
             }
             .onPreferenceChange(TimelineViewportSizeKey.self) { size in
@@ -607,14 +600,14 @@ struct ConversationView: View {
                 // so the last message travels with the composer without bypassing
                 // the lazy row virtualization pipeline.
                 if didPlaceInitialTimeline && viewportState.followsLatest {
-                    reader.scrollTo("latest", anchor: .bottom)
+                    scheduleLatestPlacement(reader)
                 }
                 requestEarlierHistoryIfNeeded(reader)
             }
             .accessibilityIdentifier("conversation-timeline")
             .modifier(CompactPageSwipe(onBack: onBack, onOpenDetail: onOpenDetail,
                 viewportWidth: viewport.size.width))
-            .task {
+            .task(id: sessionID) {
                 let hadCachedCapabilities = workspace.capabilities != nil
                 await workspace.waitForRealtimeTimelineOrFallback(connection)
                 guard !Task.isCancelled else { return }
@@ -623,7 +616,7 @@ struct ConversationView: View {
             }
             .onChange(of: workspace.messageRevision) {
                 if viewportState.timelineTailDidChange() {
-                    if didPlaceInitialTimeline { reader.scrollTo("latest", anchor: .bottom) }
+                    if didPlaceInitialTimeline { scheduleLatestPlacement(reader) }
                     else { placeInitialTimelineIfReady(reader) }
                 }
             }
@@ -638,7 +631,7 @@ struct ConversationView: View {
                     if pendingHistoryViewport != nil {
                         restoreHistoryViewportIfReady(reader)
                     } else if viewportState.followsLatest {
-                        reader.scrollTo("latest", anchor: .bottom)
+                        scheduleLatestPlacement(reader)
                     }
                     requestEarlierHistoryIfNeeded(reader)
                 }
@@ -658,12 +651,11 @@ struct ConversationView: View {
                 timelineScrollView = nil
                 historyViewport = TimelineHistoryViewportState()
                 historyAutoLoadGate = PadHistoryAutoLoadGate()
-                initialTimelinePlacementScheduled = false
                 didPlaceInitialTimeline = false
-                latestJumpGeneration &+= 1
+                cancelPendingTimelinePlacement()
                 pendingLatestJump = false
-                latestJumpCorrectionScheduled = false
             }
+            .onDisappear { cancelPendingTimelinePlacement() }
             .overlay(alignment: .bottomTrailing) {
                 if viewportState.showsJumpToLatest || pendingLatestJump {
                     Button {
@@ -720,46 +712,51 @@ struct ConversationView: View {
         )
     }
 
-    /// A lazy timeline can change its measured height after ScrollViewReader
-    /// resolves the tail. Keep the explicit jump visible until a post-layout
-    /// correction has reached the physical bottom.
+    /// Explicit intent shares the same coalesced placement as tail updates.
     private func jumpToLatest(_ reader: ScrollViewProxy) {
-        latestJumpGeneration &+= 1
-        latestJumpCorrectionScheduled = false
+        historyRestorationTask?.cancel()
+        historyRestorationTask = nil
         pendingHistoryViewport = nil
         deferredHistoryLoad = false
         withAnimation(.easeInOut(duration: 0.2)) {
             viewportState.jumpToLatest()
         }
         pendingLatestJump = true
-        withTransaction(Transaction(animation: nil)) {
-            reader.scrollTo("latest", anchor: .bottom)
-        }
-        scheduleLatestJumpCorrection(reader)
+        scheduleLatestPlacement(reader)
     }
 
-    private func scheduleLatestJumpCorrection(_ reader: ScrollViewProxy) {
-        guard pendingLatestJump, !latestJumpCorrectionScheduled else { return }
+    /// Coalesce tail, send/receipt and keyboard requests into one placement
+    /// after the current layout transaction. Never drive this from row heights.
+    private func scheduleLatestPlacement(_ reader: ScrollViewProxy) {
+        guard latestPlacementTask == nil, !isUserInteractingWithTimeline,
+              viewportState.followsLatest, pendingHistoryViewport == nil,
+              !workspace.displayEntries.isEmpty,
+              historyViewport.viewportHeight > 1, laneWidth > 0 else { return }
         let generation = latestJumpGeneration
-        latestJumpCorrectionScheduled = true
-        DispatchQueue.main.async {
-            guard generation == latestJumpGeneration else { return }
-            latestJumpCorrectionScheduled = false
-            guard pendingLatestJump, !isUserInteractingWithTimeline else { return }
+        let targetSessionID = sessionID
+        latestPlacementTask = Task { @MainActor in
+            defer {
+                if generation == latestJumpGeneration { latestPlacementTask = nil }
+            }
+            do { try await Task.sleep(for: .milliseconds(16)) } catch { return }
+            guard !Task.isCancelled, generation == latestJumpGeneration,
+                  workspace.selection == targetSessionID,
+                  !isUserInteractingWithTimeline, viewportState.followsLatest,
+                  pendingHistoryViewport == nil, !workspace.displayEntries.isEmpty else { return }
             withTransaction(Transaction(animation: nil)) {
                 reader.scrollTo("latest", anchor: .bottom)
             }
-            DispatchQueue.main.async {
-                guard generation == latestJumpGeneration,
-                      pendingLatestJump, !isUserInteractingWithTimeline else { return }
-                withTransaction(Transaction(animation: nil)) {
-                    reader.scrollTo("latest", anchor: .bottom)
-                }
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    pendingLatestJump = false
-                }
-            }
+            didPlaceInitialTimeline = true
+            pendingLatestJump = false
         }
+    }
+
+    private func cancelPendingTimelinePlacement() {
+        latestJumpGeneration &+= 1
+        latestPlacementTask?.cancel()
+        latestPlacementTask = nil
+        historyRestorationTask?.cancel()
+        historyRestorationTask = nil
     }
 
     private func isTimelineAtLatest() -> Bool {
@@ -776,18 +773,8 @@ struct ConversationView: View {
     /// the first message rows and viewport have both completed layout. Wait
     /// one UI turn, then perform the initial semantic jump exactly once.
     private func placeInitialTimelineIfReady(_ reader: ScrollViewProxy) {
-        guard !didPlaceInitialTimeline, !initialTimelinePlacementScheduled,
-              !workspace.displayEntries.isEmpty, historyViewport.viewportHeight > 1,
-              laneWidth > 0, viewportState.followsLatest else { return }
-        initialTimelinePlacementScheduled = true
-        Task { @MainActor in
-            await Task.yield()
-            initialTimelinePlacementScheduled = false
-            guard !Task.isCancelled, !isUserInteractingWithTimeline,
-                  viewportState.followsLatest, !workspace.displayEntries.isEmpty else { return }
-            reader.scrollTo("latest", anchor: .bottom)
-            didPlaceInitialTimeline = true
-        }
+        guard !didPlaceInitialTimeline else { return }
+        scheduleLatestPlacement(reader)
     }
 
     private func requestEarlierHistoryIfNeeded(_ reader: ScrollViewProxy, userInitiated: Bool = false) {
@@ -835,8 +822,12 @@ struct ConversationView: View {
                 minY: position.minY
             )
         }
+        let generation = latestJumpGeneration
+        let targetSessionID = sessionID
         Task {
             await workspace.loadEarlierMessagesIfNeeded(connection)
+            guard !Task.isCancelled, generation == latestJumpGeneration,
+                  workspace.selection == targetSessionID else { return }
             restoreHistoryViewportIfReady(reader)
         }
     }
@@ -852,9 +843,17 @@ struct ConversationView: View {
         }
         pending.isRestorationScheduled = true
         pendingHistoryViewport = pending
-        Task { @MainActor in
+        let generation = latestJumpGeneration
+        let targetSessionID = sessionID
+        historyRestorationTask?.cancel()
+        historyRestorationTask = Task { @MainActor in
+            defer {
+                if generation == latestJumpGeneration { historyRestorationTask = nil }
+            }
             await Task.yield()
-            guard pendingHistoryViewport?.entryID == pending.entryID else { return }
+            guard !Task.isCancelled, generation == latestJumpGeneration,
+                  workspace.selection == targetSessionID,
+                  pendingHistoryViewport?.entryID == pending.entryID else { return }
             guard !isUserInteractingWithTimeline else {
                 pendingHistoryViewport?.isRestorationScheduled = false
                 return
@@ -865,6 +864,8 @@ struct ConversationView: View {
                 reader.scrollTo(pending.entryID, anchor: .top)
             }
             await Task.yield()
+            guard !Task.isCancelled, generation == latestJumpGeneration,
+                  workspace.selection == targetSessionID else { return }
             correctHistoryAnchorIfReady(historyAnchorGeometry.latest)
         }
     }
