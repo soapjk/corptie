@@ -32,6 +32,7 @@ struct PadComposer<Header: View>: View {
     @State private var quickMessageScope = ""
 
     private var isPhone: Bool { UIDevice.current.userInterfaceIdiom == .phone }
+    private var quickMessageTaskID: String? { workspace.sessionsByID[sessionID]?.taskId }
     private var phoneBottomOffset: CGFloat {
         guard isPhone, !isKeyboardVisible else { return 0 }
         let bottomInset = UIApplication.shared.connectedScenes
@@ -99,17 +100,24 @@ struct PadComposer<Header: View>: View {
             editorRow
         }
         }
-        .task(id: "\(sessionID):\(connection.serverID):\(quickMessageRefresh)") {
-            let scope = "\(sessionID):\(connection.serverID)"
+        .task(id: "\(sessionID):\(quickMessageTaskID ?? ""):\(connection.serverID):\(quickMessageRefresh)") {
+            let taskID = quickMessageTaskID
+            let scope = ClientQuickMessageCache.scope(host: connection.serverID,
+                taskID: taskID, sessionID: sessionID)
             if quickMessageScope != scope {
-                quickMessages = ClientQuickMessage.defaults
+                quickMessages = ClientQuickMessageCache.shared.items(for: scope)
                 quickMessageScope = scope
             }
             do {
                 let api = ClientSessionAPI(transport: try await connection.transport())
                 let result = try await api.quickMessages(sessionId: workspace.capabilities?.sessionId ?? sessionID)
-                guard !Task.isCancelled else { return }
-                quickMessages = result.items
+                guard !Task.isCancelled, quickMessageScope == scope,
+                      taskID == nil || result.taskId == taskID else { return }
+                let resolvedScope = ClientQuickMessageCache.scope(host: connection.serverID,
+                    taskID: result.taskId, sessionID: sessionID)
+                let items = ClientQuickMessageCache.shared.remember(result.items, for: resolvedScope)
+                if resolvedScope != scope { ClientQuickMessageCache.shared.remember(items, for: scope) }
+                if quickMessages != items { quickMessages = items }
             } catch {
                 // Read-only recommendation failure must not block the composer.
             }
@@ -304,7 +312,10 @@ struct PadComposer<Header: View>: View {
     private func submit() {
         mentionQuery = nil
         guard !isSendDisabled else { return }
-        Task { await workspace.command(connection, stop: false) }
+        Task {
+            await workspace.command(connection, stop: false)
+            quickMessageRefresh += 1
+        }
     }
 
     private func handleKey(_ key: ComposerKeyPolicy.Key, shift: Bool, hasMarkedText: Bool) -> Bool {

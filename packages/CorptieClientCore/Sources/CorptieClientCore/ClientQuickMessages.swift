@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 public struct ClientQuickMessage: Codable, Equatable, Identifiable, Sendable {
     public let id: String
@@ -10,8 +11,78 @@ public struct ClientQuickMessage: Codable, Equatable, Identifiable, Sendable {
         self.id = id; self.text = text; self.scope = scope; self.count = count
     }
 
-    public static let defaults: [Self] = ["继续", "开始开发", "给我一个完整方案", "检查并运行测试"].map {
+    public static let defaults: [Self] = ["继续", "开始开发", "给我一个完整方案"].map {
         Self(id: "default:\($0)", text: $0, scope: "default", count: 0)
+    }
+}
+
+/// A small, non-observed last-good snapshot, isolated by host and Task. Reads
+/// use bounded snapshots rather than transcript scans or per-chip observation.
+@MainActor
+public final class ClientQuickMessageCache {
+    public static let shared = ClientQuickMessageCache()
+    private let defaults: UserDefaults
+    private let maximumScopes: Int
+    private let indexKey = "quickMessageSnapshots.v1.index"
+    private var keys: [String]
+    private var resident: [String: [ClientQuickMessage]] = [:]
+
+    public init(defaults: UserDefaults = .standard, maximumScopes: Int = 128) {
+        self.defaults = defaults
+        self.maximumScopes = max(1, maximumScopes)
+        keys = defaults.stringArray(forKey: indexKey) ?? []
+        while keys.count > self.maximumScopes {
+            defaults.removeObject(forKey: keys.removeFirst())
+        }
+    }
+
+    public static func scope(host: String, taskID: String?, sessionID: String) -> String {
+        let identity = [host, taskID == nil ? "session" : "task", taskID ?? sessionID]
+        let encoded = (try? JSONEncoder().encode(identity)) ?? Data()
+        return "quickMessageSnapshots.v1." + SHA256.hash(data: encoded).map { String(format: "%02x", $0) }.joined()
+    }
+
+    public func items(for scope: String) -> [ClientQuickMessage] {
+        if let items = resident[scope] { return items }
+        guard keys.contains(scope), let data = defaults.data(forKey: scope),
+              let items = try? JSONDecoder().decode([ClientQuickMessage].self, from: data) else {
+            return ClientQuickMessage.defaults
+        }
+        let normalized = Self.normalized(items)
+        resident[scope] = normalized
+        return normalized
+    }
+
+    @discardableResult
+    public func remember(_ items: [ClientQuickMessage], for scope: String) -> [ClientQuickMessage] {
+        // A temporarily empty response is not a request to clear the row.
+        guard !items.isEmpty else { return self.items(for: scope) }
+        // Backfill an incomplete refresh from the last good learned commands.
+        // New high-frequency recommendations still take precedence, bounded to three.
+        let previous = self.items(for: scope).filter { $0.scope != "default" }
+        let normalized = Self.normalized(items + previous)
+        let changed = resident[scope] != normalized
+        resident[scope] = normalized
+        if changed, let data = try? JSONEncoder().encode(normalized) { defaults.set(data, forKey: scope) }
+        keys.removeAll { $0 == scope }
+        keys.append(scope)
+        while keys.count > maximumScopes {
+            let evicted = keys.removeFirst()
+            resident.removeValue(forKey: evicted)
+            defaults.removeObject(forKey: evicted)
+        }
+        defaults.set(keys, forKey: indexKey)
+        return normalized
+    }
+
+    private static func normalized(_ items: [ClientQuickMessage]) -> [ClientQuickMessage] {
+        let defaultTexts = Set(ClientQuickMessage.defaults.map(\.text))
+        var seen = Set<String>()
+        let learned = items.filter { item in
+            item.scope != "default" && !defaultTexts.contains(item.text)
+                && seen.insert(item.text.lowercased()).inserted
+        }
+        return Array(learned.prefix(3)) + ClientQuickMessage.defaults
     }
 }
 
