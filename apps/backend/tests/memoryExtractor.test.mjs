@@ -4,282 +4,205 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
-import {
-  MemoryExtractor,
-  ownerForKind,
-  defaultClassify
-} from "../src/application/memoryExtractor.mjs";
+import { MemoryExtractor, ownerForKind } from "../src/application/memoryExtractor.mjs";
+import { createMemoryModelClassifier, parseMemoryModelOutput } from "../src/application/memoryModelClassifier.mjs";
+import { MemoryExtractionScheduler } from "../src/application/memoryExtractionScheduler.mjs";
+import { MemoryRecallService } from "../src/application/memoryRecallService.mjs";
+import { HubService } from "../src/application/hubService.mjs";
 
-async function createStore() {
-  const directory = await mkdtemp(join(tmpdir(), "corptie-memory-"));
-  const store = new CorptieStore({
-    dbPath: join(directory, "corptie.sqlite"),
-    configPath: join(directory, "config.json")
-  });
+async function fixture() {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-memory-model-"));
+  const store = new CorptieStore({ dbPath: join(directory, "store.sqlite"),
+    configPath: join(directory, "config.json") });
   await store.initialize();
-  return { store, directory };
+  store.createAgent({ id: "agent:a", name: "A", role: "independentContributor" });
+  store.createWork({ id: "work:a", name: "A", contributorAgentIds: ["agent:a"] });
+  store.createTask({ id: "task:a", workId: "work:a", title: "A" });
+  store.createSession({ id: "session:a", title: "A", provider: "test-provider", status: "running",
+    sessionKind: "worker", agentId: "agent:a", workId: "work:a", taskId: "task:a" });
+  return { store, directory, close: async () => {
+    await store.close(); await rm(directory, { recursive: true, force: true });
+  } };
 }
 
-function createStartedExecution(store, {
-  workId = "o1",
-  taskId = "wi1",
-  sessionId = "s1",
-  agentId = "a1"
-} = {}) {
-  if (agentId && !store.getAgent(agentId)) {
-    store.createAgent({ id: agentId, name: agentId, role: "independentContributor" });
-  }
-  const contributorAgentId = agentId ?? `agent:${workId}`;
-  if (!store.getAgent(contributorAgentId)) {
-    store.createAgent({ id: contributorAgentId, name: contributorAgentId, role: "independentContributor" });
-  }
-  if (!store.getWork(workId)) {
-    store.createWork({ id: workId, name: workId, contributorAgentIds: [contributorAgentId] });
-  }
-  store.createTask({ id: taskId, workId, title: taskId });
-  store.createSession({
-    id: sessionId,
-    title: sessionId,
-    provider: "codex-app-server",
-    status: "running",
-    workId,
-    taskId,
-    agentId
-  });
+function userEvent(store, eventId, text) {
+  return store.appendSessionEvent({ eventId, sessionId: "session:a", type: "SessionUserMessageCreated",
+    payload: { message: { text } } });
 }
 
-test("memories CRUD + 置信度衰减", async () => {
-  const { store, directory } = await createStore();
+function proposal(event, overrides = {}) {
+  return { eventSequence: event.sequence, evidence: event.text, content: event.text,
+    kind: "preference", scope: "global", scopeRationale: "Across all projects",
+    rationale: "Durable user preference", confidence: 0.99, conflict: false, ...overrides };
+}
+
+test("model extraction ignores tool records and can auto-activate a grounded Global preference", async () => {
+  const f = await fixture();
   try {
-    createStartedExecution(store);
-    const memory = store.createMemory({
-      ownerType: "task",
-      ownerId: "wi1",
-      taskId: "wi1",
-      sourceSessionId: "s1",
-      kind: "lesson",
-      content: "SQLite 外键要手动开"
-    });
+    f.store.appendSessionEvent({ eventId: "tool", sessionId: "session:a", type: "tool.completed",
+      payload: { text: "Run 500 instructions" } });
+    userEvent(f.store, "user", "I prefer short answers across all projects.");
+    const seen = [];
+    const extractor = new MemoryExtractor({ store: f.store, classifyMany: async (events) => {
+      seen.push(...events);
+      return [proposal(events[0])];
+    } });
+    const [memory] = await extractor.extractFromSession("session:a");
+    assert.deepEqual(seen.map((item) => item.role), ["user"]);
+    assert.equal(memory.owner_type, "global");
+    assert.equal(memory.owner_id, "user:local");
     assert.equal(memory.promotion_status, "active");
-    assert.equal(store.listMemoriesByOwner("task", "wi1").length, 1);
-
-    const updated = store.updateMemory(memory.id, { confidence: 0.8 });
-    assert.equal(updated.confidence, 0.8);
-
-    store.decayMemories("task", "wi1", 0.5);
-    assert.equal(store.getMemory(memory.id).confidence, 0.4);
-
-    store.deleteMemory(memory.id);
-    assert.equal(store.getMemory(memory.id), null);
-  } finally {
-    await store.close();
-    await rm(directory, { recursive: true, force: true });
-  }
+    assert.equal(memory.trust_level, "trusted");
+    assert.equal(memory.auto_applied, 1);
+    assert.equal(JSON.parse(memory.structured_json).extraction.evidence, seen[0].text);
+    assert.equal((await extractor.extractFromSession("session:a")).length, 0);
+  } finally { await f.close(); }
 });
 
-test("MemoryExtractor 提取 + 分类 + kind→owner 分流", async () => {
-  const { store, directory } = await createStore();
+test("model can return zero or uncertain candidates; no keyword fallback advances cursor", async () => {
+  const f = await fixture();
   try {
-    createStartedExecution(store);
-    store.appendSessionEvent({ eventId: "e1", sessionId: "s1", type: "error", payload: { message: "端口被占用" } });
-    store.appendSessionEvent({ eventId: "e2", sessionId: "s1", type: "tool_call", payload: { text: "git commit 流程" } });
-    store.appendSessionEvent({ eventId: "e3", sessionId: "s1", type: "summary", payload: { summary: "完成了实体层" } });
-
-    const extractor = new MemoryExtractor({ store });
-    const memories = await extractor.extractFromSession("s1", {
-      workId: "o1",
-      taskId: "wi1",
-      agentId: "a1"
-    });
-
-    assert.equal(memories.length, 3);
-    const lesson = memories.find((m) => m.kind === "lesson");
-    const procedure = memories.find((m) => m.kind === "procedure");
-    const fact = memories.find((m) => m.kind === "fact");
-
-    // 能力类（procedure）→ Agent 进化记忆
-    assert.equal(procedure.owner_type, "agent");
-    assert.equal(procedure.owner_id, "a1");
-    // 其余 → task 工作记忆
-    assert.equal(lesson.owner_type, "task");
-    assert.equal(lesson.owner_id, "wi1");
-    assert.equal(fact.owner_type, "task");
-    assert.equal(lesson.source_type, "extracted");
-    assert.equal(lesson.source_session_id, "s1");
-  } finally {
-    await store.close();
-    await rm(directory, { recursive: true, force: true });
-  }
+    userEvent(f.store, "user", "Please remember this preference.");
+    const unavailable = new MemoryExtractor({ store: f.store });
+    await assert.rejects(unavailable.extractFromSession("session:a"), { code: "MEMORY_MODEL_UNAVAILABLE" });
+    assert.equal(f.store.getMemoryExtractionProgress("session:a"), 0);
+    const zero = new MemoryExtractor({ store: f.store, classifyMany: async () => [] });
+    assert.deepEqual(await zero.extractFromSession("session:a"), []);
+    assert.equal(f.store.getMemoryExtractionProgress("session:a"), 1);
+    userEvent(f.store, "second", "I prefer concise replies.");
+    const review = new MemoryExtractor({ store: f.store, classifyMany: async (events) => [
+      proposal(events[0], { scope: "task", confidence: 0.8 })
+    ] });
+    const [candidate] = await review.extractFromSession("session:a");
+    assert.equal(candidate.owner_type, "task");
+    assert.equal(candidate.promotion_status, "candidate");
+    assert.equal(candidate.trust_level, "untrusted");
+  } finally { await f.close(); }
 });
 
-test("real nested events after the first page are extracted once and progress resumes", async () => {
-  const { store, directory } = await createStore();
+test("unsupported model evidence leaves cursor unchanged for a retry", async () => {
+  const f = await fixture();
   try {
-    createStartedExecution(store);
-    for (let index = 0; index < 205; index += 1) {
-      store.appendSessionEvent({ eventId: `noise:${index}`, sessionId: "s1", type: "usage.updated", payload: {} });
+    userEvent(f.store, "user", "Keep the response concise.");
+    const bad = new MemoryExtractor({ store: f.store, classifyMany: async (events) => [
+      proposal(events[0], { evidence: "text absent from source" })
+    ] });
+    await assert.rejects(bad.extractFromSession("session:a"), { code: "MEMORY_MODEL_INVALID_OUTPUT" });
+    assert.equal(f.store.getMemoryExtractionProgress("session:a"), 0);
+    assert.equal(f.store.listMemoriesByOwner("global", "user:local").length, 0);
+  } finally { await f.close(); }
+});
+
+test("one user message can yield separate atomic memories with the same evidence event", async () => {
+  const f = await fixture();
+  try {
+    userEvent(f.store, "user", "Keep answers short and use Chinese.");
+    const extractor = new MemoryExtractor({ store: f.store, classifyMany: async (events) => [
+      proposal(events[0], { content: "Prefer concise answers.", confidence: 0.8 }),
+      proposal(events[0], { content: "Prefer Chinese replies.", confidence: 0.8 })
+    ] });
+    const created = await extractor.extractFromSession("session:a");
+    assert.equal(created.length, 2);
+    assert.deepEqual(created.map((item) => JSON.parse(item.source_event_seqs_json)), [[1], [1]]);
+  } finally { await f.close(); }
+});
+
+test("explicit scope is independent of kind and Global is available without a Work", () => {
+  assert.deepEqual(ownerForKind("procedure", { taskId: "task:a" }, "task"),
+    { ownerType: "task", ownerId: "task:a" });
+  assert.deepEqual(ownerForKind("fact", {}, "global"),
+    { ownerType: "global", ownerId: "user:local" });
+  assert.equal(ownerForKind("preference", {}, "work"), null);
+});
+
+test("model output must be bounded JSON", () => {
+  assert.deepEqual(parseMemoryModelOutput('{"memories":[]}'), []);
+  assert.throws(() => parseMemoryModelOutput("not JSON"), { code: "MEMORY_MODEL_INVALID_OUTPUT" });
+});
+
+test("model extraction uses the Session Provider through the common hidden background contract", async () => {
+  let request;
+  const classify = createMemoryModelClassifier({ backgroundAgent: {
+    async run(input) {
+      request = input;
+      return { validatedOutput: [] };
     }
-    store.appendSessionEvent({
-      eventId: "user:preference", sessionId: "s1", type: "SessionUserMessageCreated",
-      payload: { message: { text: "以后记住这个项目要先运行本地测试" } }
-    });
-    store.upsertTimelineItemProjection("s1", {
-      id: "item:final", type: "agentMessage", text: "已修复数据库迁移的重复执行问题"
-    });
-    store.appendSessionEvent({
-      eventId: "assistant:final", sessionId: "s1", type: "assistant.message.completed",
-      payload: { itemReference: { id: "item:final" } }
-    });
-    const extractor = new MemoryExtractor({ store });
-    const first = await extractor.extractFromSession("s1");
-    assert.deepEqual(first.map((item) => item.kind), ["preference", "fact"]);
-    assert.ok(first.every((item) => item.promotion_status === "candidate"));
-    assert.equal(store.getMemoryExtractionProgress("s1"), 207);
-    assert.deepEqual(await extractor.extractFromSession("s1"), []);
-    store.appendSessionEvent({ eventId: "later", sessionId: "s1", type: "summary", payload: { summary: "完成后续验证" } });
-    assert.equal((await extractor.extractFromSession("s1")).length, 1);
-  } finally {
-    await store.close();
-    await rm(directory, { recursive: true, force: true });
-  }
+  }, cwd: "/tmp" });
+  assert.deepEqual(await classify([{ sequence: 1, role: "user", text: "Preference" }], {
+    scope: { providerId: "test-provider", taskId: "task:a" }, existing: []
+  }), []);
+  assert.equal(request.executionPolicy, "no-tools");
+  assert.equal(request.preferredProviderId, "test-provider");
+  assert.equal(request.allowProviderFallback, false);
+  assert.deepEqual(request.allowedRoots, []);
 });
 
-test("migration baselines legacy events while an explicit reprocess can review them", async () => {
-  const { store, directory } = await createStore();
-  const dbPath = join(directory, "corptie.sqlite");
-  const configPath = join(directory, "config.json");
-  let reopened;
+test("durable scheduler coalesces Session requests and processes them with one worker", async () => {
+  const f = await fixture();
   try {
-    createStartedExecution(store);
-    store.appendSessionEvent({ eventId: "legacy", sessionId: "s1", type: "SessionUserMessageCreated",
-      payload: { message: { text: "以后先验证数据库迁移" } } });
-    store.db.run("DELETE FROM memory_extraction_metadata WHERE key = 'initial_baseline'");
-    await store.close();
-    reopened = new CorptieStore({ dbPath, configPath });
-    await reopened.initialize();
-    assert.equal(reopened.getMemoryExtractionProgress("s1"), 1);
-    const extractor = new MemoryExtractor({ store: reopened });
-    assert.deepEqual(await extractor.extractFromSession("s1"), []);
-    reopened.appendSessionEvent({ eventId: "new", sessionId: "s1", type: "SessionUserMessageCreated",
-      payload: { message: { text: "以后先运行本地测试" } } });
-    assert.equal((await extractor.extractFromSession("s1")).length, 1);
-    const [old] = await extractor.extractFromSession("s1", {}, { reprocess: true });
-    assert.equal(old.source_event_sequence, 1);
-    assert.equal(reopened.getMemoryExtractionProgress("s1"), 2);
-  } finally {
-    await reopened?.close();
-    if (!reopened) await store.close();
-    await rm(directory, { recursive: true, force: true });
-  }
+    let runs = 0;
+    const scheduler = new MemoryExtractionScheduler({ store: f.store,
+      extractor: { async extractPageFromSession() { runs += 1; return { memories: [], hasMore: false }; } } });
+    scheduler.request("session:a");
+    scheduler.request("session:a");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(runs, 1);
+    assert.equal(f.store.listMemoryExtractionJobs()[0].state, "done");
+    scheduler.close();
+  } finally { await f.close(); }
 });
 
-test("Work Chat extracts candidates into its bound Work", async () => {
-  const { store, directory } = await createStore();
+test("ordinary Turn completion waits for the low-frequency idle window", async () => {
+  const f = await fixture();
   try {
-    store.createAgent({ id: "agent:chat", name: "Chat" });
-    store.createWork({ id: "work:chat", name: "Chat", contributorAgentIds: ["agent:chat"] });
-    store.createSession({ id: "session:chat", title: "Chat", provider: "codex-app-server",
-      status: "running", sessionKind: "workChat", workId: "work:chat", agentId: "agent:chat" });
-    store.appendSessionEvent({ eventId: "chat:user", sessionId: "session:chat", type: "SessionUserMessageCreated",
-      payload: { message: { text: "以后这个 Work 的提交必须先测试" } } });
-    const [candidate] = await new MemoryExtractor({ store }).extractFromSession("session:chat");
-    assert.equal(candidate.owner_type, "work");
-    assert.equal(candidate.owner_id, "work:chat");
-  } finally {
-    await store.close();
-    await rm(directory, { recursive: true, force: true });
-  }
+    userEvent(f.store, "user", "Please keep this in mind.");
+    let runs = 0;
+    const scheduler = new MemoryExtractionScheduler({ store: f.store,
+      extractor: { async extractPageFromSession() { runs += 1; return { memories: [], hasMore: false }; } } });
+    scheduler.requestForTurn("session:a");
+    assert.equal(f.store.listMemoryExtractionJobs()[0].reason, "idle_window");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(runs, 0);
+    await scheduler.close();
+  } finally { await f.close(); }
 });
 
-test("two Sessions can append memories to one Agent concurrently without lost writes", async () => {
-  const { store, directory } = await createStore();
+test("auto-activated Global Memory is recalled in a different Work Session", async () => {
+  const f = await fixture();
   try {
-    for (const [index, sessionId] of ["s1", "s2"].entries()) {
-      createStartedExecution(store, {
-        workId: `o${index + 1}`,
-        taskId: `wi${index + 1}`,
-        sessionId,
-        agentId: "agent:shared"
-      });
-      store.appendSessionEvent({
-        eventId: `event:${sessionId}`,
-        sessionId,
-        type: "tool_call",
-        payload: { text: `procedure learned by ${sessionId}` }
-      });
-    }
-
-    const extractor = new MemoryExtractor({
-      store,
-      classifyMany: async (events) => {
-        await Promise.resolve();
-        return events.map((event) => ({
-          kind: "procedure",
-          content: event.payload.text
-        }));
-      }
+    userEvent(f.store, "user", "I prefer short answers across all projects.");
+    await new MemoryExtractor({ store: f.store, classifyMany: async (events) => [proposal(events[0])] })
+      .extractFromSession("session:a");
+    f.store.createWork({ id: "work:b", name: "B", contributorAgentIds: ["agent:a"] });
+    f.store.createSession({ id: "session:b", title: "B", provider: "test-provider", status: "running",
+      sessionKind: "workChat", workId: "work:b", agentId: "agent:a" });
+    const recall = await new MemoryRecallService({ store: f.store,
+      hubService: new HubService({ store: f.store }) }).startup({
+      sessionId: "session:b", workId: "work:b", agentId: "agent:a"
     });
-    const [first, second] = await Promise.all([
-      extractor.extractFromSession("s1"),
-      extractor.extractFromSession("s2")
-    ]);
-
-    assert.equal(first.length, 1);
-    assert.equal(second.length, 1);
-    assert.deepEqual(
-      store.listMemoriesByOwner("agent", "agent:shared")
-        .map((memory) => memory.source_session_id)
-        .sort(),
-      ["s1", "s2"]
-    );
-  } finally {
-    await store.close();
-    await rm(directory, { recursive: true, force: true });
-  }
+    assert.equal(recall.memories.length, 1);
+    assert.equal(recall.memories[0].owner_type, "global");
+    assert.equal(recall.diagnostics.selectedEntries[0].content, "I prefer short answers across all projects.");
+  } finally { await f.close(); }
 });
 
-test("ownerForKind 归属规则", () => {
-  assert.deepEqual(ownerForKind("procedure", { agentId: "a" }), { ownerType: "agent", ownerId: "a" });
-  assert.deepEqual(ownerForKind("fact", { taskId: "w", workId: "o" }), {
-    ownerType: "task",
-    ownerId: "w"
-  });
-  assert.deepEqual(ownerForKind("lesson", { workId: "o" }), {
-    ownerType: "work",
-    ownerId: "o"
-  });
-});
-
-test("defaultClassify 类型映射", () => {
-  assert.equal(defaultClassify({ type: "error", payload: { message: "x" } }).kind, "lesson");
-  assert.equal(defaultClassify({ type: "tool_call", payload: { text: "x" } }).kind, "procedure");
-  assert.equal(defaultClassify({ type: "summary", payload: { summary: "x" } }).kind, "fact");
-  assert.equal(defaultClassify({ type: "other", payload: {} }), null);
-});
-
-test("ownerForKind 缺失 agentId 时能力类返回 null（不再写 owner_id=null）", () => {
-  // 能力类记忆必须归属到 Agent；缺失 agentId → null
-  assert.equal(ownerForKind("procedure", { workId: "o", taskId: "w" }), null);
-  assert.equal(ownerForKind("skill", {}), null);
-  // 非能力类缺失 task/work/agent → null
-  assert.equal(ownerForKind("lesson", {}), null);
-});
-
-test("extractFromSession 缺失 agentId 时跳过能力类事件（不撞 NOT NULL）", async () => {
-  const { store, directory } = await createStore();
+test("migration quarantines old extracted candidates and keeps a rollback audit", async () => {
+  const f = await fixture();
   try {
-    createStartedExecution(store, { agentId: null });
-    store.appendSessionEvent({ eventId: "e1", sessionId: "s1", type: "tool_call", payload: { text: "git commit 流程" } });
-    store.appendSessionEvent({ eventId: "e2", sessionId: "s1", type: "summary", payload: { summary: "完成" } });
-
-    const extractor = new MemoryExtractor({ store });
-    // scope 无 agentId：procedure（能力类）应被跳过，summary（fact）落到 task
-    const memories = await extractor.extractFromSession("s1", { workId: "o1", taskId: "wi1" });
-    assert.equal(memories.length, 1);
-    assert.equal(memories[0].kind, "fact");
-    assert.equal(memories[0].owner_type, "task");
+    const old = f.store.createMemory({ ownerType: "task", ownerId: "task:a", taskId: "task:a",
+      kind: "fact", content: "Old heuristic claim", sourceType: "extracted",
+      sourceSessionId: "session:a", promotionStatus: "candidate", trustLevel: "untrusted" });
+    f.store.db.run("DELETE FROM data_migrations WHERE migration_id = ?",
+      ["memory-model-extraction-quarantine-v2"]);
+    await f.store.close();
+    f.store = new CorptieStore({ dbPath: join(f.directory, "store.sqlite"),
+      configPath: join(f.directory, "config.json") });
+    await f.store.initialize();
+    assert.equal(f.store.getMemory(old.id).promotion_status, "archived");
+    assert.ok(f.store.listMemoryAudit({ memoryId: old.id })
+      .some((audit) => audit.action === "quarantine_pre_model_extraction"));
   } finally {
-    await store.close();
-    await rm(directory, { recursive: true, force: true });
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
   }
 });

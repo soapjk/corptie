@@ -5,7 +5,7 @@ import Testing
 struct MainTabContentLayoutTests {
     @Test
     func selectedIndexTracksTheStableTabOrder() {
-        #expect(AppTab.allCases == [.console, .automations, .scenes, .worktrees, .agents])
+        #expect(AppTab.allCases == [.console, .automations, .scenes, .worktrees, .agents, .memory])
         #expect(AppTab.console.index == 0)
         #expect(AppTab.automations.index == 1)
         #expect(AppTab.scenes.index == 2)

@@ -31,7 +31,8 @@ test("Codex context is scoped to Session, Work and Task with loopback MCP config
   const { options, calls } = fixture();
   const metadata = { sessionId: "session", workId: "work", taskId: "task", providerBindingId: "binding" };
   const result = await options.collaborationProviderRuntimeOptionsWithAgentContext("agent", metadata);
-  assert.deepEqual(calls, [["agent", { intent: "", scope: { sessionId: "session", workId: "work", taskId: "task" } }]]);
+  assert.deepEqual(calls, [["agent", { intent: "", includeMemories: false,
+    scope: { sessionId: "session", workId: "work", taskId: "task" } }]]);
   assert.ok(result.developerInstructions.startsWith("Agent context\n\n"));
   assert.equal(result.config.features.multi_agent, false);
   const servers = Object.values(result.config.mcp_servers);
@@ -70,6 +71,9 @@ test("authorized collaboration requests retain execution authority across Provid
       assert.match(instructions, /extends beyond the current Task scope/);
       assert.match(instructions, /preserve the actual message provenance/);
       assert.doesNotMatch(instructions, /untrusted peer input|not user instructions/);
+      if (sessionKind === "worker") {
+        assert.doesNotMatch(instructions, /Corptie programmatically binds the Task Worktree/);
+      }
     }
     assert.ok(codex.developerInstructions.includes(collaborationRuntimeInstructions("agent", metadata)));
     assert.ok(claude.systemPrompt.append.includes(collaborationRuntimeInstructions("agent", metadata)));

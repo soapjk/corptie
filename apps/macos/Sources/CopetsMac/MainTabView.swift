@@ -73,6 +73,7 @@ enum AppTab: String, CaseIterable, Identifiable {
     case scenes
     case worktrees
     case agents
+    case memory
 
     var id: String { rawValue }
 
@@ -84,6 +85,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .scenes: 2
         case .worktrees: 3
         case .agents: 4
+        case .memory: 5
         }
     }
 
@@ -94,6 +96,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .scenes: L10n("Scenes")
         case .worktrees: L10n("Worktrees")
         case .agents: L10n("Agents")
+        case .memory: L10n("Memory")
         }
     }
 
@@ -104,6 +107,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .scenes: "square.grid.2x2"
         case .worktrees: "arrow.triangle.branch"
         case .agents: "person.2"
+        case .memory: "brain.head.profile"
         }
     }
 }
@@ -395,6 +399,9 @@ private struct MainTabPageHost: NSViewRepresentable {
                 root = AnyView(WorktreeManagementView())
             case .agents:
                 root = AnyView(AgentManagementView())
+            case .memory:
+                root = AnyView(MemoryCenterPage(navigation: router.memoryNavigation)
+                    .padding(16).mainWindowPageCard())
             }
             let hostingView = NSHostingView(
                 rootView: root
@@ -417,6 +424,28 @@ private struct MainTabPageHost: NSViewRepresentable {
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: MainTabPageContainer, context: Context) -> CGSize? {
         CGSize(width: proposal.width ?? 1000, height: proposal.height ?? 700)
+    }
+}
+
+struct MemoryFocus: Equatable {
+    let ownerType: String
+    let ownerId: String
+}
+
+@MainActor
+final class MemoryNavigationState: ObservableObject {
+    @Published var focus: MemoryFocus?
+}
+
+private struct MemoryCenterPage: View {
+    @ObservedObject var navigation: MemoryNavigationState
+
+    var body: some View {
+        if let focus = navigation.focus {
+            MemoryManagementView(scope: .owner(type: focus.ownerType, id: focus.ownerId))
+        } else {
+            MemoryManagementView(scope: .global)
+        }
     }
 }
 
@@ -676,6 +705,7 @@ final class AppTabRouter: ObservableObject {
     static let shared = AppTabRouter()
 
     let selectionState = AppTabSelectionState()
+    let memoryNavigation = MemoryNavigationState()
     var selectedTab: AppTab { selectionState.selectedTab }
     // 待选中的 session id：Sessions Tab 出现后消费它并清空。
     @Published var pendingSessionId: String?
@@ -701,6 +731,7 @@ final class AppTabRouter: ObservableObject {
     }
 
     func selectTab(_ tab: AppTab) {
+        if tab == .memory { memoryNavigation.focus = nil }
         guard tab != selectedTab else { return }
         sidebarState(for: selectedTab).setSelected(false)
         sidebarState(for: tab).setSelected(true)
@@ -739,6 +770,11 @@ final class AppTabRouter: ObservableObject {
         navigationError = nil
         pendingAutomationId = automationId
         selectTab(.automations)
+    }
+
+    func openMemory(ownerType: String, ownerId: String) {
+        selectTab(.memory)
+        memoryNavigation.focus = MemoryFocus(ownerType: ownerType, ownerId: ownerId)
     }
 
     func consumeAutomation(_ automationId: String) {

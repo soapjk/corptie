@@ -117,12 +117,16 @@ export function createSessionApplicationComposition({
       let memoryContext = null;
       let recallDecision = null;
       if (session?.agentId) {
-        const recall = await memoryRecallService.turn(conversationMessageText(messageContext.message), {
+        const recallScope = {
           sessionId: session.id,
           agentId: session.agentId,
           workId: session.workId ?? null,
           taskId: session.taskId ?? null
-        }, { deepRecall: messageContext.deepRecall === true });
+        };
+        const recall = memoryRecallService.hasStartupRecall?.(session.id) === false
+          ? await memoryRecallService.startup(recallScope)
+          : await memoryRecallService.turn(conversationMessageText(messageContext.message), recallScope,
+            { deepRecall: messageContext.deepRecall === true });
         recallDecision = recall;
         if (recall.memories.length > 0) {
           const lines = recall.memories.map((memory) => `- [${memory.kind}] ${memory.content}`);
@@ -171,6 +175,7 @@ export function createSessionApplicationComposition({
         memoryRecall: memoryContext?.memoryRecall ?? null
       };
     },
+    observeMemoryDispatch: (recall, status) => memoryRecallService.markInjection?.(recall, status),
     bindCreatedSession: async ({ providerId, session, input, context }) => {
       persistProviderSessionProjection(store, session, {
         providerId,

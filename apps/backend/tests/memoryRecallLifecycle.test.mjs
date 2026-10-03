@@ -9,6 +9,13 @@ import { MemoryLifecycleService } from "../src/application/memoryLifecycleServic
 import { MemoryRecallService, lightweightTrigger, presentMemoryRecallAudit } from "../src/application/memoryRecallService.mjs";
 import { memoryDynamicTools } from "../src/application/memoryDynamicTools.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
+import { createSessionApplicationComposition } from "../src/application/sessionApplicationComposition.mjs";
+import { AgentProviderRegistry } from "../src/agent-provider/agentProviderRegistry.mjs";
+import { CallbackAgentProvider } from "../src/agent-provider/callbackAgentProvider.mjs";
+import { AGENT_PROVIDER_CAPABILITIES } from "../src/agent-provider/contracts.mjs";
+import { reviewExtractedMemory } from "../src/application/memoryOperationService.mjs";
+import { AgentContextService } from "../src/application/agentContextService.mjs";
+import { createCollaborationProviderOptions } from "../src/adapters/collaborationProviderOptions.mjs";
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "corptie-memory-recall-"));
@@ -65,6 +72,10 @@ test("startup recall is bounded, trusted, high-confidence and respects Task→Wo
     assert.deepEqual(recall.memories.slice(0, 3).map((item) => item.owner_type), ["task", "work", "agent"]);
     assert.ok(recall.memories.every((item) => item.trust_level === "trusted" && item.confidence >= 0.7));
     assert.equal(recall.mode, "bounded_trusted");
+    const presented = presentMemoryRecallAudit(f.store, recall);
+    assert.equal(presented.candidateEntries.length, recall.candidateIds.length);
+    assert.equal(presented.candidateEntries[0].content, "same work item");
+    assert.equal(presented.candidateEntries[0].snapshotAtRecall, true);
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });
@@ -119,6 +130,32 @@ test("low-confidence trusted Memory starts up and Chinese paraphrases recall wit
   }
 });
 
+test("startup is complete only after Provider acceptance or an empty selection", async () => {
+  const f = await fixture();
+  try {
+    const service = new MemoryRecallService({ store: f.store, hubService: new HubService({ store: f.store }) });
+    const empty = await service.startup(f.scope);
+    assert.equal(service.hasStartupRecall(f.scope.sessionId), false);
+    service.markInjection(empty, "not_selected");
+    assert.equal(service.hasStartupRecall(f.scope.sessionId), true);
+
+    const sessionId = "session:startup-status";
+    f.store.createSession({ id: sessionId, title: "Status", provider: "test-provider",
+      status: "running", sessionKind: "assistantChat", agentId: f.scope.agentId });
+    memory(f.store, { content: "Preferred durable rule" });
+    const selected = await service.startup({ sessionId, agentId: f.scope.agentId });
+    service.markInjection(selected, "context_included");
+    assert.equal(service.hasStartupRecall(sessionId), false);
+    service.markInjection(selected, "provider_rejected");
+    assert.equal(service.hasStartupRecall(sessionId), false);
+    service.markInjection(selected, "provider_accepted");
+    assert.equal(service.hasStartupRecall(sessionId), true);
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
 test("recall audit keeps the selected memory content at recall time and labels legacy fallback", async () => {
   const f = await fixture();
   try {
@@ -127,6 +164,7 @@ test("recall audit keeps the selected memory content at recall time and labels l
       .explicitSearch("original workflow", f.scope);
     f.store.updateMemory(selected.id, { content: "Updated workflow" });
     const [audit] = f.store.listMemoryRecallAudit({ sessionId: f.scope.sessionId });
+    assert.deepEqual(f.store.listMemoryRecallAudit({ memoryId: selected.id }).map((entry) => entry.id), [audit.id]);
     const presented = presentMemoryRecallAudit(f.store, audit);
     assert.deepEqual(presented.selectedEntries.map((entry) => [entry.content, entry.snapshotAtRecall]), [
       ["Remember the original workflow", true]
@@ -153,15 +191,102 @@ test("extraction creates untrusted candidates and never relearns injected recall
       producer: "memory", source: { type: "memory-recall" }, payload: { text: "do not relearn" }
     });
     f.store.appendSessionEvent({
-      eventId: "event:summary", sessionId: "session:recall", type: "summary",
-      payload: { summary: "candidate only" }
+      eventId: "event:user-preference", sessionId: "session:recall", type: "SessionUserMessageCreated",
+      payload: { message: { text: "以后先运行本地测试" } }
     });
-    const extracted = await new MemoryExtractor({ store: f.store }).extractFromSession("session:recall");
+    const extracted = await new MemoryExtractor({ store: f.store, classifyMany: async (events) => [{
+      eventSequence: events[0].sequence, evidence: events[0].text, content: events[0].text,
+      kind: "preference", scope: "task", scopeRationale: "Task-specific",
+      rationale: "User preference", confidence: 0.8, conflict: false
+    }] }).extractFromSession("session:recall");
     assert.equal(extracted.length, 1);
-    assert.equal(extracted[0].content, "candidate only");
+    assert.equal(extracted[0].content, "以后先运行本地测试");
     assert.equal(extracted[0].promotion_status, "candidate");
     assert.equal(extracted[0].trust_level, "untrusted");
     assert.equal(extracted[0].auto_applied, 0);
+    const recall = await new MemoryRecallService({ store: f.store, hubService: new HubService({ store: f.store }) })
+      .startup(f.scope);
+    assert.equal(recall.memories.length, 0);
+    const audit = f.store.listMemoryRecallAudit({ sessionId: f.scope.sessionId })
+      .find((entry) => entry.id === recall.id);
+    assert.equal(presentMemoryRecallAudit(f.store, audit).pendingReviewCount, 1);
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("confirmed Memory reaches a Provider turn and its Session Detail audit", async () => {
+  const f = await fixture();
+  try {
+    const sourceSessionId = "session:memory-source";
+    const sessionId = "session:memory-target";
+    f.store.createSession({ id: sourceSessionId, title: "Memory Source", provider: "test-provider",
+      status: "running", sessionKind: "assistantChat", agentId: f.scope.agentId });
+    f.store.createSession({ id: sessionId, title: "Memory Target", provider: "test-provider",
+      status: "running", sessionKind: "workChat", workId: f.scope.workId, agentId: f.scope.agentId });
+    f.store.appendSessionEvent({ eventId: "preference:source", sessionId: sourceSessionId,
+      type: "SessionUserMessageCreated", payload: { message: { id: "item:preference",
+        text: "以后提交代码前先运行本地测试" } } });
+    const [candidate] = await new MemoryExtractor({ store: f.store, classifyMany: async (events) => [{
+      eventSequence: events[0].sequence, evidence: events[0].text, content: events[0].text,
+      kind: "preference", scope: "global", scopeRationale: "Across sessions",
+      rationale: "User preference", confidence: 0.8, conflict: false
+    }] }).extractFromSession(sourceSessionId);
+    assert.equal(candidate.promotion_status, "candidate");
+    reviewExtractedMemory(f.store, candidate.id, {
+      action: "confirm", expectedVersion: candidate.version, actorId: "user:test"
+    });
+    const staticOptions = createCollaborationProviderOptions({
+      agentContextService: new AgentContextService({ store: f.store,
+        hubService: new HubService({ store: f.store }),
+        recallService: new MemoryRecallService({ store: f.store,
+          hubService: new HubService({ store: f.store }) }) }),
+      collaborationMcpServerPath: "/runtime/mcp.mjs", port: 12345,
+      environmentName: "development"
+    });
+    const bootstrap = await staticOptions.collaborationProviderRuntimeOptionsWithAgentContext(
+      f.scope.agentId, { sessionId, workId: f.scope.workId }
+    );
+    assert.doesNotMatch(bootstrap.developerInstructions, /以后提交代码前先运行本地测试/);
+    assert.deepEqual(f.store.listMemoryRecallAudit({ sessionId }), []);
+    let providerContext;
+    const registry = new AgentProviderRegistry([new CallbackAgentProvider({
+      id: "test-provider", displayName: "Test Provider", transport: "test",
+      capabilities: [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND]
+    }, {
+      send: async (_reference, _message, context) => {
+        providerContext = context.sessionContext;
+        return { accepted: true };
+      }
+    })]);
+    const reference = { sessionId, providerId: "test-provider",
+      providerSessionId: "provider:recall", logicalSessionId: "logical:recall",
+      bindingId: "binding:recall", routingVersion: 1 };
+    const recallService = new MemoryRecallService({ store: f.store,
+      hubService: new HubService({ store: f.store }) });
+    const service = createSessionApplicationComposition({
+      store: f.store, agentProviderRegistry: registry,
+      sessionBindingRepository: { resolve: () => reference },
+      assertForkDispatchAllowed: () => {},
+      assertSessionRecoveryMessageBoundary: () => {},
+      memoryRecallService: recallService,
+      workChatContextService: { build: () => ({ prompt: "Work context" }) },
+      resolveContextReferences: async () => null,
+      mcpAssignmentRevisionForAgent: () => null,
+      emitEvent: () => {}
+    });
+    await service.sendMessage(sessionId, { text: "提交之前怎么验证？" });
+    assert.match(providerContext.prompt, /以后提交代码前先运行本地测试/);
+    const audit = f.store.listMemoryRecallAudit({ sessionId })[0];
+    const presented = presentMemoryRecallAudit(f.store, audit);
+    assert.equal(presented.phase, "startup");
+    assert.equal(presented.injectionStatus, "provider_accepted");
+    assert.equal(presented.selectedEntries[0].content, "以后提交代码前先运行本地测试");
+    await service.sendMessage(sessionId, { text: "提交之前怎么验证？" });
+    const nextAudit = f.store.listMemoryRecallAudit({ sessionId })[0];
+    assert.equal(nextAudit.phase, "turn");
+    assert.equal(presentMemoryRecallAudit(f.store, nextAudit).injectionStatus, "provider_accepted");
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });
@@ -187,9 +312,13 @@ test("pre-compaction preservation, consolidation audit/rollback, and recall audi
     assert.equal(f.store.getMemory(checkpoint.id).promotion_status, "active");
     assert.equal(f.store.getMemory(consolidated.memory.id).promotion_status, "rolled_back");
 
-    const untrusted = memory(f.store, { content: "untrusted", sourceType: "extracted", trustLevel: "untrusted" });
+    const untrusted = memory(f.store, {
+      ownerType: "task", ownerId: "task:recall", taskId: "task:recall",
+      sourceSessionId: "session:recall", content: "untrusted",
+      sourceType: "extracted", trustLevel: "untrusted"
+    });
     assert.throws(
-      () => lifecycle.consolidate({ memoryIds: [untrusted.id], content: "must fail" }),
+      () => lifecycle.consolidate({ memoryIds: [untrusted.id, second.id], content: "must fail" }),
       { code: "UNTRUSTED_MEMORY_PROMOTION_FORBIDDEN" }
     );
 

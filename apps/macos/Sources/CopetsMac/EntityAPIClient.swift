@@ -789,27 +789,41 @@ final class EntityAPIClient: ObservableObject {
     }
 
     // 查某 owner（如 task）的记忆：GET /memories?ownerType=&ownerId= → { memories }
-    func memories(ownerType: String, ownerId: String, includeRevoked: Bool = false) async -> [MemoryItem]? {
+    func memories(ownerType: String, ownerId: String, includeRevoked: Bool = false, status: String? = nil) async -> [MemoryItem]? {
         var components = URLComponents(url: baseURL.appending(path: "memories"), resolvingAgainstBaseURL: false)
         components?.queryItems = [
             URLQueryItem(name: "ownerType", value: ownerType),
             URLQueryItem(name: "ownerId", value: ownerId),
             URLQueryItem(name: "includeRevoked", value: includeRevoked ? "true" : "false"),
+            URLQueryItem(name: "status", value: status),
             URLQueryItem(name: "limit", value: "50")
         ]
         guard let url = components?.url else { return nil }
         return await loadMemories(url: url, reset: true)
     }
 
-    func allMemories(includeRevoked: Bool = true) async -> [MemoryItem]? {
+    func allMemories(includeRevoked: Bool = true, status: String? = nil) async -> [MemoryItem]? {
         var components = URLComponents(url: baseURL.appending(path: "memories"), resolvingAgainstBaseURL: false)
         components?.queryItems = [
             URLQueryItem(name: "global", value: "true"),
             URLQueryItem(name: "includeRevoked", value: includeRevoked ? "true" : "false"),
+            URLQueryItem(name: "status", value: status),
             URLQueryItem(name: "limit", value: "50")
         ]
         guard let url = components?.url else { return nil }
         return await loadMemories(url: url, reset: true)
+    }
+
+    func memoryExtractionJobs() async -> [MemoryExtractionJob]? {
+        do {
+            let url = baseURL.appending(path: "memory-extraction-jobs")
+            let (data, response) = try await URLSession.shared.data(from: url)
+            try validateMemoryResponse(response, data: data)
+            return try decoder.decode(MemoryExtractionJobsEnvelope.self, from: data).jobs
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
     }
 
     func loadMoreMemories() async -> [MemoryItem]? {
@@ -820,11 +834,11 @@ final class EntityAPIClient: ObservableObject {
         return await loadMemories(url: components.url!, reset: false)
     }
 
-    func updateMemory(memoryId: String, tags: [String]) async -> MemoryItem? {
+    func updateMemory(memoryId: String, content: String, tags: [String]) async -> MemoryItem? {
         var request = URLRequest(url: baseURL.appending(path: "memories/\(memoryId)"))
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["tags": tags])
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["content": content, "tags": tags])
         return await mutateMemory(request)
     }
 
@@ -857,6 +871,16 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = error.localizedDescription
             return nil
         }
+    }
+
+    func consolidateMemories(memoryIds: [String], content: String) async -> MemoryItem? {
+        var request = URLRequest(url: baseURL.appending(path: "memories/consolidate"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "memoryIds": memoryIds, "content": content
+        ])
+        return await mutateMemory(request)
     }
 
     func revokeMemory(memoryId: String, reason: String) async -> MemoryItem? {
@@ -896,6 +920,41 @@ final class EntityAPIClient: ObservableObject {
             let (data, response) = try await URLSession.shared.data(from: url)
             try validateMemoryResponse(response, data: data)
             return try decoder.decode(MemoryRecallListEnvelope.self, from: data).recalls
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    func memoryRecalls(memoryId: String) async -> [MemoryRecallAudit]? {
+        var components = URLComponents(url: baseURL.appending(path: "memory-recall-audit"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [
+            URLQueryItem(name: "memoryId", value: memoryId),
+            URLQueryItem(name: "limit", value: "50")
+        ]
+        guard let url = components?.url else { return nil }
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            try validateMemoryResponse(response, data: data)
+            return try decoder.decode(MemoryRecallListEnvelope.self, from: data).recalls
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    func backfillSessionMemories(sessionId: String) async -> MemoryBackfillProgress? {
+        var request = URLRequest(url: baseURL.appending(path: "memories/backfill"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "sessionId": sessionId, "maxEvents": 500
+        ])
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try validateMemoryResponse(response, data: data)
+            errorMessage = nil
+            return try decoder.decode(MemoryBackfillProgress.self, from: data)
         } catch {
             errorMessage = error.localizedDescription
             return nil

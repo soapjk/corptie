@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
-import { TASK_WORKSPACE_INSTRUCTIONS } from "./sessionResponsibilityInstructions.mjs";
+
+export const TASK_WORKSPACE_INSTRUCTIONS = "Corptie programmatically binds the Task Worktree. Stay in it; create or switch Worktrees only when the direct user explicitly requests it. Ordinary development is not authorization, and shell cd or command workdir never changes the logical Workspace.";
 
 export const WORKER_SESSION_CONTEXT_LIMITS = Object.freeze({
   baseMaxUtf8Bytes: 16_384,

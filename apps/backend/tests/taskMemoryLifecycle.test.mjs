@@ -60,14 +60,16 @@ test("Task memory lifecycle starts empty, upserts from execution context, reload
     f.store.appendSessionEvent({
       eventId: "event:one",
       sessionId: "session:one",
-      type: "summary",
-      payload: { summary: "Initial implementation context" }
+      type: "SessionUserMessageCreated",
+      payload: { message: { text: "记住 Initial implementation context" } }
     });
 
-    let extractedContent = "Initial implementation context";
     const extractor = new MemoryExtractor({
       store: f.store,
-      classify: () => ({ kind: "fact", content: extractedContent, baseConfidence: 0.8 })
+      classifyMany: async (events) => [{ eventSequence: events[0].sequence,
+        evidence: events[0].text, content: "Initial implementation context", kind: "fact",
+        scope: "task", scopeRationale: "Task context", rationale: "Durable context",
+        confidence: 0.8, conflict: false }]
     });
     const created = await extractor.extractFromSession("session:one");
     assert.equal(created.length, 1);
@@ -75,12 +77,10 @@ test("Task memory lifecycle starts empty, upserts from execution context, reload
     assert.equal(created[0].source_session_id, "session:one");
     assert.equal(created[0].source_event_sequence, 1);
 
-    extractedContent = "Implementation and verification context updated";
     const updated = await extractor.extractFromSession("session:one", {}, { reprocess: true });
-    assert.equal(updated.length, 1);
-    assert.equal(updated[0].id, created[0].id);
-    assert.equal(updated[0].content, extractedContent);
-    assert.equal(updated[0].version, 2);
+    assert.equal(updated.length, 0);
+    assert.equal(f.store.getMemory(created[0].id).content, "Initial implementation context");
+    assert.equal(f.store.getMemory(created[0].id).version, 1);
     assert.equal(f.store.listMemoriesByOwner("task", "task:one").length, 1);
     assert.deepEqual(f.store.listMemoriesByOwner("task", "task:two"), []);
     assert.deepEqual(
@@ -106,7 +106,7 @@ test("Task memory lifecycle starts empty, upserts from execution context, reload
     await f.store.initialize();
     const reloaded = f.store.listMemoriesByOwner("task", "task:one");
     assert.equal(reloaded.length, 1);
-    assert.equal(reloaded[0].content, extractedContent);
+    assert.equal(reloaded[0].content, "Initial implementation context");
     assert.equal(reloaded[0].task_id, "task:one");
     assert.deepEqual(f.store.listMemoriesByOwner("task", "task:two"), []);
     assert.deepEqual(

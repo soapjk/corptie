@@ -2,7 +2,8 @@ import { taskExecutionPatch } from "./taskAcceptance.mjs";
 
 // Projects execution status only; Task completion stays behind acceptance and
 // explicit completion commands. Owns per-Session memory extraction ordering.
-export function createTaskSessionProjection({ store, memoryExtractor, emitEvent, sessionWithLogicalWorkspace }) {
+export function createTaskSessionProjection({ store, memoryExtractor, memoryScheduler = null,
+  emitEvent, sessionWithLogicalWorkspace }) {
   const taskMemoryExtractions = new Map();
 
   // Session 生命周期只投影到 Task.execution_status。Task.lifecycle_state
@@ -32,6 +33,10 @@ export function createTaskSessionProjection({ store, memoryExtractor, emitEvent,
 
   function scheduleTaskMemoryExtraction(session, task) {
     if (session.sessionKind && !["worker", "workChat", "assistantChat"].includes(session.sessionKind)) return;
+    if (memoryScheduler) {
+      memoryScheduler.requestForTurn(session.id);
+      return;
+    }
     const previous = taskMemoryExtractions.get(session.id) ?? Promise.resolve();
     const operation = previous.catch(() => {}).then(() => memoryExtractor.extractFromSession(session.id)).then((memories) => {
       if (memories.length === 0 || !task) return;
@@ -78,6 +83,7 @@ export function createTaskSessionProjection({ store, memoryExtractor, emitEvent,
 
   return {
     settleEntityTaskFromSession, settleTaskForWorkspaceContinuation, reconcileEntityTasksAtStartup,
-    get pendingMemoryCount() { return taskMemoryExtractions.size; }
+    // Queued extraction is durable and must not block runtime migration/shutdown.
+    get pendingMemoryCount() { return memoryScheduler ? Number(memoryScheduler.running) : taskMemoryExtractions.size; }
   };
 }

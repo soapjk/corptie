@@ -144,6 +144,8 @@ import { CollaborationRouter } from "./application/collaborationRouter.mjs";
 import { SceneApplicationService } from "./scenes/sceneApplicationService.mjs";
 import { handleSceneHttpRequest } from "./scenes/sceneHttpApi.mjs";
 import { MemoryExtractor } from "./application/memoryExtractor.mjs";
+import { MemoryExtractionScheduler } from "./application/memoryExtractionScheduler.mjs";
+import { createMemoryModelClassifier } from "./application/memoryModelClassifier.mjs";
 import { AssistantService, createAssistantIntentResolver } from "./application/assistantService.mjs";
 import { createEntityHttpRoutes } from "./application/entityHttpComposition.mjs";
 import { handleSshWorkspaceHttpRequest } from "./application/sshWorkspaceHttpApi.mjs";
@@ -493,8 +495,17 @@ const memoryOperationService = new MemoryOperationService({
 });
 const collaborationRouter = new CollaborationRouter({ store });
 const memoryExtractor = new MemoryExtractor({ store });
+const memoryExtractionScheduler = new MemoryExtractionScheduler({ store, extractor: memoryExtractor,
+  onMemories: (sessionId, memories) => {
+    const task = store.getTaskBySessionId(sessionId);
+    if (!task || !memories.length) return;
+    const updated = store.updateTask(task.id, {});
+    emitEvent("TaskChanged", { action: "memory-updated", entity: updated,
+      memoryIds: memories.map((memory) => memory.id) });
+  } });
 const taskSessionProjection = createTaskSessionProjection({
-  store, memoryExtractor, emitEvent, sessionWithLogicalWorkspace
+  store, memoryExtractor, memoryScheduler: memoryExtractionScheduler,
+  emitEvent, sessionWithLogicalWorkspace
 });
 const { settleEntityTaskFromSession, settleTaskForWorkspaceContinuation, reconcileEntityTasksAtStartup } = taskSessionProjection;
 const handleCommittedProviderTerminalLifecycle = createProviderTerminalLifecycle({
@@ -1213,6 +1224,9 @@ const backgroundAgentService = new BackgroundAgentService({
     }
   }
 });
+memoryExtractor.classifyMany = createMemoryModelClassifier({ backgroundAgent: backgroundAgentService,
+  claimBudget: () => store.claimMemoryExtractionDailyCall(new Date().toISOString().slice(0, 10), 24) });
+if (!developmentPreview) memoryExtractionScheduler.start();
 const taskSummaryService = new TaskSummaryService({ store, backgroundAgent: backgroundAgentService,
   isEnabled: () => !developmentPreview });
 skillRegistryService.setDiscoveryAssistant(createSkillPackageDiscoveryAssistant({
@@ -1710,7 +1724,8 @@ const sessionMessageOperation = createSessionMessageOperation({
   sessionBindingReadinessProbe, sessionApplicationService, emitEvent, now,
   decorateSessionForClient, chatResourceService, providerTurnResponseWatchdog,
   ensureCollaborationAgentForSession, registerRuntimeQueuedWork,
-  runtimeQueuePosition, publishProviderEventOutbox, scheduleAgentWorkDrain
+  runtimeQueuePosition, publishProviderEventOutbox, scheduleAgentWorkDrain,
+  scheduleMemoryExtraction: (sessionId, reason) => memoryExtractionScheduler.request(sessionId, reason)
 });
 
 async function sendUnifiedSessionMessage(sessionId, input, source = { type: "desktop" }, options = {}) {
@@ -2179,7 +2194,7 @@ startBackendRuntime();
 
 
 const shutdownBackend = createBackendShutdown({
-  backgroundAgentService, getClientDeviceGateway: () => clientDeviceGateway,
+  backgroundAgentService, memoryExtractionScheduler, getClientDeviceGateway: () => clientDeviceGateway,
   taskSummaryService, turnObservability, runtimeActivity, mcpCleanupInterval,
   stateSyncPublisher, scheduledSessionTaskService,
   getResetForecastMonitor: () => codexResetForecastMonitor,

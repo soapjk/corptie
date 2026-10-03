@@ -15,8 +15,8 @@ function tool(name, description, properties = {}, required = []) {
 
 const scope = {
   type: "string",
-  enum: ["agent", "work", "task"],
-  description: "Memory scope. Owner identity is derived from the authenticated current Session. When omitted for remember, the narrowest bound scope is used: Task, then Work, then Agent."
+  enum: ["global", "agent", "work", "task"],
+  description: "Memory scope. Global applies to the local user across all Works and Tasks. Owner identity is derived from the authenticated current Session. When omitted for remember, the narrowest bound scope is used: Task, then Work, then Agent."
 };
 
 export const memoryDynamicTools = Object.freeze([

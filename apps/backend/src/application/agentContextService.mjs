@@ -3,7 +3,8 @@
 //
 // 设计边界：
 // - 不依赖任何具体 Provider 适配器（不 import codex/claude 具体实现），只消费 store + hubService。
-// - 交互式会话启动与后台生成共用本入口，保证「指定 Agent 即自动加载其记忆」的语义一致。
+// - 交互式会话创建只取 Agent 身份；记忆在绑定 Session 的首轮统一召回。
+//   后台生成仍可通过本入口加载记忆。
 // - per-agent 记忆来自三层记忆的 owner_type='agent' 作用域，经 HubService.retrieveMemory 语义召回。
 
 export class AgentContextService {
@@ -21,16 +22,16 @@ export class AgentContextService {
 
   // 组装指定 Agent 的完整上下文。intent 用于记忆语义召回（可为空，此时取全部 active 记忆）。
   // 返回 { agent, systemPrompt, description, memories, skills, instructions }。
-  async buildAgentContext(agentId, { intent = "", scope = {} } = {}) {
+  async buildAgentContext(agentId, { intent = "", scope = {}, includeMemories = true } = {}) {
     const agent = this.store.getAgent(agentId);
     if (!agent) return null;
 
     const recallScope = { ...scope, agentId };
-    const recall = this.recallService
+    const recall = includeMemories && this.recallService
       ? await this.recallService.startup(recallScope)
       : null;
-    const memories = recall?.memories
-      ?? await this.hubService.retrieveMemory(intent, recallScope, { limit: 8, allowEmbedding: false });
+    const memories = !includeMemories ? [] : (recall?.memories
+      ?? await this.hubService.retrieveMemory(intent, recallScope, { limit: 8, allowEmbedding: false }));
 
     let skills = [];
     if (typeof this.resolveAgentSkills === "function") {
@@ -45,6 +46,9 @@ export class AgentContextService {
     const description = String(agent.description ?? "").trim();
 
     const instructions = this.#renderInstructions({ agent, systemPrompt, description, memories, skills });
+    if (recall && scope.sessionId) {
+      this.recallService.markInjection?.(recall, memories.length > 0 ? "context_included" : "not_selected");
+    }
 
     return { agent, systemPrompt, description, memories, skills, instructions, recall };
   }
