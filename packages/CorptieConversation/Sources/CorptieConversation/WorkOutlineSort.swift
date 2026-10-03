@@ -37,3 +37,33 @@ public enum WorkOutlineSort: String, CaseIterable, Sendable {
         }.map(\.item)
     }
 }
+
+/// Both clients persist only explicit expansion: newly discovered groups stay folded.
+public struct WorkOutlineExpansionStore {
+    private static let worksKey = "corptie.workOutline.expandedWorkIDs.v2"
+    private static let chatKey = "corptie.workOutline.chatExpanded.v2"
+    private let defaults: UserDefaults
+
+    public init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+
+    public func load() -> Set<String> {
+        if let saved = defaults.stringArray(forKey: Self.worksKey) { return Set(saved) }
+        // Mobile already recorded explicit expansions; desktop's old inverse
+        // preference cannot distinguish untouched groups from user expansions.
+        return Set(defaults.stringArray(forKey: "corptie.mobile.expandedWorkIDs.v1") ?? [])
+    }
+
+    public func save(_ ids: Set<String>) {
+        defaults.set(ids.sorted(), forKey: Self.worksKey)
+    }
+
+    public func loadChat() -> Bool {
+        if defaults.object(forKey: Self.chatKey) != nil { return defaults.bool(forKey: Self.chatKey) }
+        if defaults.object(forKey: "console.workOutline.assistantCollapsed.v1") != nil {
+            return !defaults.bool(forKey: "console.workOutline.assistantCollapsed.v1")
+        }
+        return false
+    }
+
+    public func saveChat(_ expanded: Bool) { defaults.set(expanded, forKey: Self.chatKey) }
+}
