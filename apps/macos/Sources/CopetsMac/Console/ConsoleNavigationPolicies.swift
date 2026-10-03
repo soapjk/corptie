@@ -54,38 +54,35 @@ enum ConsoleWorkActivityPolicy {
 /// Local disclosure preference for the grouped console outline.
 @MainActor
 final class ConsoleOutlineExpansionPreferences: ObservableObject {
-    static let collapsedWorkIDsKey = "console.workOutline.collapsedWorkIDs.v1"
-    static let assistantCollapsedKey = "console.workOutline.assistantCollapsed.v1"
-
-    @Published private(set) var collapsedWorkIDs: Set<String>
+    @Published private(set) var expandedWorkIDs: Set<String>
     @Published private(set) var isAssistantCollapsed: Bool
-    private let defaults: UserDefaults
+    private let store: WorkOutlineExpansionStore
 
     init(defaults: UserDefaults = CorptieAppEnvironment.userDefaults) {
-        self.defaults = defaults
-        collapsedWorkIDs = Set(defaults.stringArray(forKey: Self.collapsedWorkIDsKey) ?? [])
-        isAssistantCollapsed = defaults.bool(forKey: Self.assistantCollapsedKey)
+        store = WorkOutlineExpansionStore(defaults: defaults)
+        expandedWorkIDs = store.load()
+        isAssistantCollapsed = !store.loadChat()
     }
 
     func setWorkExpanded(_ isExpanded: Bool, workID: String) {
-        guard collapsedWorkIDs.contains(workID) == isExpanded else { return }
+        guard expandedWorkIDs.contains(workID) != isExpanded else { return }
         if isExpanded {
-            collapsedWorkIDs.remove(workID)
+            expandedWorkIDs.insert(workID)
         } else {
-            collapsedWorkIDs.insert(workID)
+            expandedWorkIDs.remove(workID)
         }
-        defaults.set(collapsedWorkIDs.sorted(), forKey: Self.collapsedWorkIDsKey)
+        store.save(expandedWorkIDs)
     }
 
     func toggleWork(workID: String) {
-        setWorkExpanded(collapsedWorkIDs.contains(workID), workID: workID)
+        setWorkExpanded(!expandedWorkIDs.contains(workID), workID: workID)
     }
 
     func setAssistantExpanded(_ isExpanded: Bool) {
         let isCollapsed = !isExpanded
         guard isAssistantCollapsed != isCollapsed else { return }
         isAssistantCollapsed = isCollapsed
-        defaults.set(isCollapsed, forKey: Self.assistantCollapsedKey)
+        store.saveChat(isExpanded)
     }
 
     func toggleAssistant() {
@@ -93,8 +90,8 @@ final class ConsoleOutlineExpansionPreferences: ObservableObject {
     }
 
     func removeWork(_ workID: String) {
-        guard collapsedWorkIDs.remove(workID) != nil else { return }
-        defaults.set(collapsedWorkIDs.sorted(), forKey: Self.collapsedWorkIDsKey)
+        guard expandedWorkIDs.remove(workID) != nil else { return }
+        store.save(expandedWorkIDs)
     }
 }
 

@@ -449,7 +449,7 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains("outlineChatHeader"))
         #expect(source.contains("ForEach(assistantSessionRows)"))
         #expect(source.contains("ConsoleOutlineExpansionPreferences"))
-        #expect(source.contains("outlineExpansionPreferences.collapsedWorkIDs"))
+        #expect(source.contains("outlineExpansionPreferences.expandedWorkIDs"))
         #expect(source.contains("workChatRow(row)"))
         #expect(source.contains("taskRow(task)"))
         #expect(!source.contains("navigationModeOption(.workRail"))
@@ -467,21 +467,24 @@ struct UnifiedConsoleControlSurfaceTests {
         defer { defaults.removePersistentDomain(forName: suite) }
 
         let preferences = ConsoleOutlineExpansionPreferences(defaults: defaults)
-        preferences.setWorkExpanded(false, workID: "work:a")
-        preferences.setWorkExpanded(false, workID: "work:b")
-        preferences.setAssistantExpanded(false)
+        #expect(preferences.expandedWorkIDs.isEmpty)
+        #expect(preferences.isAssistantCollapsed)
+        preferences.setWorkExpanded(true, workID: "work:a")
+        preferences.setWorkExpanded(true, workID: "work:b")
+        preferences.setAssistantExpanded(true)
 
         let restored = ConsoleOutlineExpansionPreferences(defaults: defaults)
-        #expect(restored.collapsedWorkIDs == ["work:a", "work:b"])
-        #expect(restored.isAssistantCollapsed)
+        #expect(restored.expandedWorkIDs == ["work:a", "work:b"])
+        #expect(!restored.isAssistantCollapsed)
+        #expect(!restored.expandedWorkIDs.contains("work:new"))
 
         restored.toggleWork(workID: "work:a")
         restored.removeWork("work:b")
         restored.toggleAssistant()
 
         let updated = ConsoleOutlineExpansionPreferences(defaults: defaults)
-        #expect(updated.collapsedWorkIDs.isEmpty)
-        #expect(!updated.isAssistantCollapsed)
+        #expect(updated.expandedWorkIDs.isEmpty)
+        #expect(updated.isAssistantCollapsed)
     }
 
     @Test
