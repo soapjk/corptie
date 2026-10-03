@@ -197,6 +197,13 @@ struct PadRealtimeTests {
         let original = RealtimeProtocol.stream
         original?.finishFromServer()
         RealtimeProtocol.phase = 1 // no invalidation sent: reset must repair this gap
+        for _ in 0..<25 {
+            if !workspace.realtimeConnected && workspace.realtimePausedAt != nil { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(PadServerConnectionStatus.resolve(hasPairing: connection.connected,
+            realtimeConnected: workspace.realtimeConnected,
+            hasInterrupted: workspace.realtimePausedAt != nil) == .disconnected)
         for _ in 0..<100 {
             if workspace.messages.first?.text == "completed response" { break }
             try await Task.sleep(for: .milliseconds(50))
@@ -204,6 +211,9 @@ struct PadRealtimeTests {
         #expect(RealtimeProtocol.stream !== original)
         #expect(workspace.messages.first?.text == "completed response")
         #expect(workspace.selection == "session:test")
+        #expect(PadServerConnectionStatus.resolve(hasPairing: connection.connected,
+            realtimeConnected: workspace.realtimeConnected,
+            hasInterrupted: workspace.realtimePausedAt != nil) == .connected)
         live.cancel(); await live.value
     }
 

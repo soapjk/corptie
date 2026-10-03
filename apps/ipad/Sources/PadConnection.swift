@@ -230,6 +230,6 @@ final class PadConnection {
         cachedToken = nil
         endpoint = nil
         claim = nil
-        notice = "已断开；配对凭据保留在钥匙串中。撤销设备请在 Mac 上操作。"
+        notice = "现在已经断开连接。配对凭据保留在钥匙串中，可点击连接重新连接 Mac。"
     }
 }
