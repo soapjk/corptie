@@ -155,6 +155,15 @@ function memoryFixture({
       path, contentHash: createHash("sha256").update(`content:${path}`).digest("hex"), byteLength: path.length
     })),
     ignoreCommitPolicyFile: async (input) => { calls.push(`ignore:${input.relativePath}`); },
+    deleteCommitPolicyFile: async (input) => { calls.push(`delete:${input.relativePath}`); },
+    convertCommitPolicyFileToArtifact: async (input) => {
+      calls.push(`artifact:${input.relativePath}`);
+      return { artifactId: `artifact:${input.relativePath}` };
+    },
+    allowCommitPolicyFileTracking: async (input) => {
+      calls.push(`track:${input.relativePath}`);
+      return { artifactId: `artifact:${input.relativePath}` };
+    },
     isSessionActive: (session) => session.status === "running",
     commitChanges: async (input) => {
       calls.push(`commit:${input.path}`);
@@ -1228,6 +1237,53 @@ test("Markdown policy rejection pauses once for a user decision and resumes afte
   assert.ok(calls.includes("ignore:docs/new-report.md"));
   assert.equal(calls.filter((call) => call === "commit:/repo-feature").length, 2);
   assert.equal(completed.commitPolicyBlocker, undefined);
+});
+
+test("Markdown policy decisions apply a different supported action to every file", async () => {
+  const paths = ["docs/keep.md", "docs/remove.md", "docs/archive.md", "docs/track.md"];
+  const policy = Object.assign(new Error("Markdown approval required"), {
+    code: "GIT_ARTIFACT_POLICY_REJECTED",
+    recoverable: false,
+    violations: paths.map((path) => ({ code: "GIT_MARKDOWN_PROMOTION_REQUIRED", path }))
+  });
+  const { service, calls, store } = memoryFixture({ commitErrors: [policy] });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  const paused = await waitForJob(service, plan.id, "paused");
+
+  assert.deepEqual(paused.commitPolicyBlocker.files[0].supportedActions, [
+    "ignore", "delete", "artifact", "track"
+  ]);
+  const stored = store.getWorktreeIntegrationJob(plan.id);
+  store.updateWorktreeIntegrationJob(plan.id, {
+    details: {
+      ...stored.details,
+      commitPolicyBlocker: {
+        ...stored.details.commitPolicyBlocker,
+        files: stored.details.commitPolicyBlocker.files.map((file) => ({
+          ...file,
+          supportedActions: ["ignore"]
+        }))
+      }
+    }
+  });
+  await service.resolveCommitPolicy(plan.id, {
+    blockerId: paused.commitPolicyBlocker.id,
+    version: paused.commitPolicyBlocker.version,
+    decisions: [
+      { path: paths[0], action: "ignore" },
+      { path: paths[1], action: "delete" },
+      { path: paths[2], action: "artifact" },
+      { path: paths[3], action: "track" }
+    ]
+  });
+  const completed = await waitForJob(service, plan.id, "completed");
+
+  assert.ok(calls.includes(`ignore:${paths[0]}`));
+  assert.ok(calls.includes(`delete:${paths[1]}`));
+  assert.ok(calls.includes(`artifact:${paths[2]}`));
+  assert.ok(calls.includes(`track:${paths[3]}`));
+  assert.equal(completed.audit.filter((entry) => entry.event === "commit_policy_file_resolved").length, 4);
 });
 
 test("a persisted legacy Markdown failure is upgraded into an actionable blocker", async () => {
