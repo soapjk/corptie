@@ -377,16 +377,17 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(!taskSource.contains("text.isEmpty ? L10n(\"No Content\")"))
         #expect(!taskSource.contains("Text(L10n(\"暂无记忆\"))"))
 
-        #expect(sessionSource.contains("Label(L10n(\"引用内容\"), systemImage: \"link\")"))
+        #expect(sessionSource.contains("ConversationDetailModuleCard(title: L10n(\"引用内容\"), systemImage: \"link\", headerActions:"))
         #expect(!sessionSource.contains("detailSection(title: \"执行状态\""))
         #expect(sessionSource.contains("ConversationSessionInformationCard(sessionID: session.id"))
         #expect(artifactSource.contains("taskId == nil ? L10n(\"Artifacts\") : L10n(\"Artifact 引用\")"))
         #expect(!sessionSource.contains("添加文件、网页或 Corptie 对象，作为这个会话的持续上下文。"))
         #expect(!artifactSource.contains("Text(L10n(\"No private Artifacts are referenced.\"))"))
 
-        #expect(sessionSource.contains(".detailRailSectionLabelStyle()"))
+        #expect(sessionSource.contains("ConversationDetailHeaderIcon(systemName: \"plus\")"))
         #expect(sessionSource.contains(".detailRailReferenceRowStyle()"))
-        #expect(artifactSource.contains(".detailRailSectionLabelStyle()"))
+        #expect(artifactSource.contains("ConversationInspectorSection(title: taskId == nil"))
+        #expect(artifactSource.contains("ConversationDetailHeaderIcon(systemName: \"plus\")"))
         #expect(artifactSource.contains(".detailRailReferenceRowStyle()"))
         #expect(styleSource.contains("cornerRadius: 8, style: .continuous"))
 
@@ -401,6 +402,13 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(!detailCard.contains(".shadow("))
         #expect(!detailCard.contains("Material"))
         #expect(!detailCard.contains(".overlay"))
+    }
+
+    @Test
+    func memoryRecallUsesTheSharedFullRowDisclosure() throws {
+        let source = try source(named: "MemoryManagementView.swift")
+        #expect(source.contains("ConversationDetailDisclosure(isExpanded: $isExpanded"))
+        #expect(source.contains("Label(L10n(\"Memory recall\")"))
     }
 
     @Test
@@ -420,7 +428,7 @@ struct UnifiedConsoleControlSurfaceTests {
         let fields = source[fieldsStart.lowerBound..<fieldsEnd.lowerBound]
 
         #expect(content.contains("ConversationEnvironmentCard(provider: currentProviderDisplayName"))
-        #expect(content.contains("compactProviderPicker"))
+        #expect(content.contains("actions: { compactProviderMenu }, statusContent: { providerSwitchStatus }"))
         #expect(content.contains("workspacePath: session.external?.cwd"))
         #expect(fields.contains("(\"Agent\", agentDisplayName)"))
         #expect(fields.contains("(\"工作空间\", compactPath(cwd))"))

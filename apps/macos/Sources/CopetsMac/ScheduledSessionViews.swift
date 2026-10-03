@@ -44,15 +44,12 @@ struct ScheduledSessionStrip: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         } else if !activeTasks.isEmpty || backendClient.scheduledTaskError != nil {
             VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Label(L10n("定时任务"), systemImage: "clock.badge")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    if activeTasks.count > 2 {
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.16)) { isExpanded.toggle() }
-                        } label: {
+                if activeTasks.count > 2 {
+                    Button { isExpanded.toggle() } label: {
+                        HStack {
+                            Label(L10n("定时任务"), systemImage: "clock.badge")
+                                .foregroundStyle(.secondary)
+                            Spacer()
                             Label(
                                 isExpanded
                                     ? L10n("Collapse")
@@ -62,12 +59,19 @@ struct ScheduledSessionStrip: View {
                                     ),
                                 systemImage: isExpanded ? "chevron.up" : "chevron.down"
                             )
+                            .foregroundStyle(Color.accentColor)
                         }
-                        .accessibilityIdentifier("scheduled-session.detail.expand")
-                        .buttonStyle(.plain)
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Color.accentColor)
+                        .frame(maxWidth: .infinity, minHeight: 28)
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("scheduled-session.detail.expand")
+                    .accessibilityValue(isExpanded ? "已展开" : "已收起")
+                } else {
+                    Label(L10n("定时任务"), systemImage: "clock.badge")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
                 }
 
                 ForEach(visibleTasks) { task in

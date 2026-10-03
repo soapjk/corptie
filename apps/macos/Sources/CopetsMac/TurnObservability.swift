@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import CorptieClientCore
+import CorptieConversation
 
 struct TurnTimeCategory: Decodable, Equatable {
     let inclusiveMs: Double?
@@ -188,20 +189,7 @@ struct SessionTurnObservabilityView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            DisclosureGroup(isExpanded: $isAnalysisExpanded) {
-                Group {
-                    if model.isLoadingSummary {
-                        ProgressView().controlSize(.small)
-                    } else if let summary = model.summary {
-                        summaryContent(summary)
-                    } else {
-                        Text("暂无已完成 Turn 的时间摘要")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                .padding(.top, 4)
-            } label: {
+            ConversationDetailDisclosure(isExpanded: $isAnalysisExpanded, header: {
                 HStack(spacing: 6) {
                     Label("Turn 时间分析", systemImage: "point.3.connected.trianglepath.dotted")
                     Spacer(minLength: 6)
@@ -216,7 +204,20 @@ struct SessionTurnObservabilityView: View {
                 }
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.tertiary)
-            }
+            }, content: {
+                Group {
+                    if model.isLoadingSummary {
+                        ProgressView().controlSize(.small)
+                    } else if let summary = model.summary {
+                        summaryContent(summary)
+                    } else {
+                        Text("暂无已完成 Turn 的时间摘要")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .padding(.top, 4)
+            })
         }
         .task(id: sessionId) {
             isAnalysisExpanded = false
@@ -244,13 +245,13 @@ struct SessionTurnObservabilityView: View {
                 .foregroundStyle(.tertiary)
             operationRows(operations)
         }
-        DisclosureGroup(isExpanded: $isTraceExpanded) {
-            traceContent(summary)
-                .task(id: isTraceExpanded) { if isTraceExpanded { await model.loadTraceIfNeeded() } }
-        } label: {
+        ConversationDetailDisclosure(isExpanded: $isTraceExpanded, header: {
             Text("详细 Trace（按需加载）")
                 .font(.system(size: 10, weight: .medium))
-        }
+        }, content: {
+            traceContent(summary)
+                .task(id: isTraceExpanded) { if isTraceExpanded { await model.loadTraceIfNeeded() } }
+        })
     }
 
     private func metric(_ label: String, _ milliseconds: Double?) -> some View {

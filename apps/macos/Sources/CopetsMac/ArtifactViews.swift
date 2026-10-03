@@ -19,26 +19,39 @@ struct ArtifactSectionView: View {
         return client.workLoadStates[workId] ?? .idle
     }
 
+    private var canExpand: Bool {
+        let count: Int
+        switch loadState {
+        case .idle: count = 0
+        case .loading(let previous), .failed(_, let previous): count = previous?.count ?? 0
+        case .loaded(let artifacts): count = artifacts.count
+        }
+        return count > 2 || client.hasMore(workId: workId, taskId: taskId)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack {
-                Label(
-                    taskId == nil ? L10n("Artifacts") : L10n("Artifact 引用"),
-                    systemImage: "doc.on.doc"
-                )
-                .detailRailSectionLabelStyle()
+        ConversationInspectorSection(title: taskId == nil ? L10n("Artifacts") : L10n("Artifact 引用"),
+            systemImage: "doc.on.doc", headerActions: {
                 Text("\(CorptieAppEnvironment.displayName) · :\(CorptieAppEnvironment.backendPort)")
                     .font(.system(size: 8, weight: .medium))
                     .foregroundStyle(CorptieAppEnvironment.isDevelopment ? Color.orange : Color.secondary)
-                Spacer()
-                Button { importDocument() } label: { Image(systemName: "square.and.arrow.down") }
+                Menu {
+                    Button(L10n("Create Artifact")) { showCreate = true }
+                    Button(L10n("Import Local Document")) { importDocument() }.disabled(isImporting)
+                } label: { ConversationDetailHeaderIcon(systemName: "plus") }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .help(L10n("Add Artifact"))
+                .accessibilityLabel(L10n("Add Artifact"))
+                if canExpand {
+                    Button { showsAllReferences.toggle() } label: {
+                        ConversationDetailHeaderIcon(systemName: showsAllReferences ? "chevron.up" : "chevron.down")
+                    }
                     .buttonStyle(.plain)
-                    .help(L10n("Import Local Document"))
-                    .disabled(isImporting)
-                Button { showCreate = true } label: { Image(systemName: "plus") }
-                    .buttonStyle(.plain)
-                    .help(L10n("Create Artifact"))
-            }
+                    .help(showsAllReferences ? "收起 Artifact" : "展开全部 Artifact")
+                    .accessibilityLabel(showsAllReferences ? "收起 Artifact" : "展开全部 Artifact")
+                }
+        }) {
 
             artifactLoadContent
 
@@ -120,10 +133,6 @@ struct ArtifactSectionView: View {
 
     private func artifactRows(_ artifacts: [WorkArtifact]) -> some View {
         LazyVStack(spacing: 6) {
-            if artifacts.count > 2 || client.hasMore(workId: workId, taskId: taskId) {
-                Button(showsAllReferences ? "收起" : "展开全部") { showsAllReferences.toggle() }
-                    .buttonStyle(.borderless).font(.caption)
-            }
             ForEach(showsAllReferences ? artifacts : Array(artifacts.prefix(2))) { artifact in
                 Button { selection = artifact } label: {
                     ConversationArtifactRow(title: artifact.title, summary: artifact.summary,

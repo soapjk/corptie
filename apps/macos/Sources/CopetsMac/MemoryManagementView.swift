@@ -1,4 +1,5 @@
 import SwiftUI
+import CorptieConversation
 
 @MainActor
 enum MemoryScopeLayer: String, CaseIterable {
@@ -580,9 +581,13 @@ private struct MemoryTagEditor: View {
 struct SessionMemoryDiagnosticsView: View {
     let session: TaskSession
     @State private var recalls: [MemoryRecallAudit] = []
+    @State private var isExpanded = false
 
     var body: some View {
-        DisclosureGroup {
+        ConversationDetailDisclosure(isExpanded: $isExpanded, header: {
+            Label(L10n("Memory recall"), systemImage: "brain.head.profile")
+                .font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
+        }, content: {
             if recalls.isEmpty {
                 Text(L10n("No recall decisions recorded yet.")).font(.caption).foregroundStyle(.tertiary)
             } else {
@@ -598,11 +603,9 @@ struct SessionMemoryDiagnosticsView: View {
                     }
                 }
             }
-        } label: {
-            Label(L10n("Memory recall"), systemImage: "brain.head.profile")
-                .font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
-        }
+        })
         .task(id: session.id) {
+            isExpanded = false
             recalls = await EntityAPIClient.shared.memoryRecalls(sessionId: session.id) ?? []
         }
     }
