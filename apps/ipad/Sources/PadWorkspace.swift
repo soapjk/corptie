@@ -1,7 +1,34 @@
 import Foundation
 import Observation
 import CorptieClientCore
+
+enum PadTimelineJumpPolicy {
+    /// A lazy content-size estimate alone is not proof that the latest row is visible.
+    static func isAtLatest(tailMinY: CGFloat?, viewportHeight: CGFloat, distanceToBottom: CGFloat) -> Bool {
+        guard let tailMinY, tailMinY.isFinite, viewportHeight.isFinite,
+              viewportHeight > 1, distanceToBottom.isFinite else { return false }
+        return tailMinY >= -1 && tailMinY <= viewportHeight + 1 && distanceToBottom <= 24
+    }
+}
 import CorptieConversation
+
+enum PadServerConnectionStatus: Equatable {
+    case connecting, connected, disconnected
+
+    static func resolve(hasPairing: Bool, realtimeConnected: Bool, hasInterrupted: Bool) -> Self {
+        guard hasPairing else { return .disconnected }
+        if realtimeConnected { return .connected }
+        return hasInterrupted ? .disconnected : .connecting
+    }
+
+    var title: String {
+        switch self {
+        case .connecting: "正在连接服务器"
+        case .connected: "已连接服务器"
+        case .disconnected: "现在已经断开连接"
+        }
+    }
+}
 
 enum PadWorkspaceLayoutPolicy {
     static func showsPersistentOutlineSelection(isRegularWidth: Bool, width: CGFloat) -> Bool {

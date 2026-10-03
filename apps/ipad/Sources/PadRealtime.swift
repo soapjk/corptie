@@ -101,6 +101,8 @@ extension PadWorkspace {
                 }
             } catch {
                 if Task.isCancelled { return }
+                realtimeConnected = false
+                realtimePausedAt = Date()
                 if !receivedV2Ready {
                     // The initial stream is preferred, but a transport-level
                     // failure must never leave a newly opened client empty.
