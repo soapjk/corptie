@@ -305,7 +305,7 @@ private struct PadBottomTabBar: View {
     }
 }
 
-private enum PadSettingsTab: String, CaseIterable, Identifiable {
+private enum PadSettingsTab: String, CaseIterable, Hashable, Identifiable {
     case general
     case appearance
     case notifications
@@ -332,11 +332,43 @@ private enum PadSettingsTab: String, CaseIterable, Identifiable {
 
 private struct PadSettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     let connection: PadConnection
     let workspace: PadWorkspace
     @State private var selectedTab = PadSettingsTab.general
 
     var body: some View {
+        Group {
+            if PadSettingsNavigationPolicy.usesStack(isCompactWidth: horizontalSizeClass == .compact) {
+                compactSettings
+            } else {
+                regularSettings
+            }
+        }
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private var compactSettings: some View {
+        NavigationStack {
+            List(PadSettingsTab.allCases) { tab in
+                NavigationLink(value: tab) {
+                    Label(tab.title, systemImage: tab.symbol)
+                }
+                .accessibilityIdentifier("settings.tab.\(tab.rawValue)")
+            }
+            .navigationTitle("设置")
+            .toolbar { doneToolbar }
+            .navigationDestination(for: PadSettingsTab.self) { tab in
+                settingsDetail(for: tab)
+                    .navigationTitle(tab.title)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar { doneToolbar }
+            }
+        }
+    }
+
+    private var regularSettings: some View {
         NavigationSplitView {
             List {
                 ForEach(PadSettingsTab.allCases) { tab in
@@ -357,31 +389,35 @@ private struct PadSettingsView: View {
             .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 260)
         } detail: {
             NavigationStack {
-                Group {
-                    switch selectedTab {
-                    case .general:
-                        PadGeneralSettingsView(connection: connection, workspace: workspace)
-                    case .appearance:
-                        LocalWallpaperSettingsView()
-                    case .notifications:
-                        PadNotificationSettingsView()
-                    case .devices:
-                        PadDeviceSettingsView(connection: connection, workspace: workspace) {
-                            dismiss()
-                        }
-                    }
-                }
+                settingsDetail(for: selectedTab)
                 .navigationTitle(selectedTab.title)
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("完成") { dismiss() }
-                    }
-                }
+                .toolbar { doneToolbar }
             }
         }
-        .presentationDetents([.large])
-        .presentationDragIndicator(.visible)
+    }
+
+    @ViewBuilder
+    private func settingsDetail(for tab: PadSettingsTab) -> some View {
+        switch tab {
+        case .general:
+            PadGeneralSettingsView(connection: connection, workspace: workspace)
+        case .appearance:
+            LocalWallpaperSettingsView()
+        case .notifications:
+            PadNotificationSettingsView()
+        case .devices:
+            PadDeviceSettingsView(connection: connection, workspace: workspace) {
+                dismiss()
+            }
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var doneToolbar: some ToolbarContent {
+        ToolbarItem(placement: .confirmationAction) {
+            Button("完成") { dismiss() }
+        }
     }
 }
 

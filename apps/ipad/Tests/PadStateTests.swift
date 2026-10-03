@@ -20,6 +20,11 @@ struct PadStateTests {
         ))
     }
 
+    @Test func compactSettingsNavigateIntoDetailsInsteadOfSelectingAnInvisibleSplitColumn() {
+        #expect(PadSettingsNavigationPolicy.usesStack(isCompactWidth: true))
+        #expect(!PadSettingsNavigationPolicy.usesStack(isCompactWidth: false))
+    }
+
     @Test func originalResponseArrivingAfterReceiptSettlementDoesNotReportMismatch() async throws {
         let name = "corptie-ipad-command-tests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
