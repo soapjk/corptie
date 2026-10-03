@@ -6,6 +6,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct SessionConversationContent: View {
+    @Environment(\.locale) private var locale
     @ObservedObject private var backendClient: BackendClient
     @ObservedObject private var timelineHistory = BackendClient.shared.timelineHistoryController
     @ObservedObject private var archivedSessionState = BackendClient.shared.archivedSessionController
@@ -454,6 +455,24 @@ struct SessionConversationContent: View {
             .onChange(of: appKitDetailRevision) { _, _ in
                 if let currentDetail = displayedDetail {
                     updateCachedDisplayEntries(for: currentDetail)
+                }
+            }
+            .onChange(of: locale.identifier, initial: true) { _, _ in
+                let language = AppLanguageController.shared.languageCode
+                guard cachedAppKitRows.contains(where: {
+                    $0.nativeStyle == .process && $0.processLanguageCode != language
+                }) else { return }
+                // Language changes are rare. Invalidate only process labels;
+                // do not reproject history or install a per-row observer.
+                cachedAppKitRows = cachedAppKitRows.map { old in
+                    guard old.nativeStyle == .process, old.processLanguageCode != language else { return old }
+                    var row = old
+                    row.processLanguageCode = language
+                    var revision = Hasher()
+                    revision.combine(old.contentRevision)
+                    revision.combine(language)
+                    row.contentRevision = revision.finalize()
+                    return row
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .sessionTimelineSubmissionAccepted)) { notification in

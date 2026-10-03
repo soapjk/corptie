@@ -1168,6 +1168,7 @@ private struct PadCommandConfirmationView: View {
 private struct PadProcessCard: View {
     let steps: [ConversationExecutionStep]
     let presentation: ConversationProcessPresentation
+    @Environment(\.locale) private var locale
     let laneWidth: CGFloat
     let startedAt: Date?
     let canAdvance: Bool
@@ -1180,7 +1181,7 @@ private struct PadProcessCard: View {
             state: presentation.state,
             count: presentation.count,
             duration: presentation.duration
-        ).summary
+        ).summary(languageCode: locale.language.languageCode?.identifier ?? "en")
     }
     private var progressLabel: String? {
         latestPlan.flatMap { plan in
@@ -1241,7 +1242,7 @@ private struct PadProcessCard: View {
 
     private var staticSummary: String {
         ConversationProcessPresentation(state: presentation.state, count: presentation.count,
-            duration: presentation.duration).summary
+            duration: presentation.duration).summary(languageCode: locale.language.languageCode?.identifier ?? "en")
     }
 
     private var pausedSummary: String {
@@ -1256,7 +1257,7 @@ private struct PadProcessCard: View {
             startedAt: startedAt, endingAt: date, showSeconds: true)
             ?? presentation.duration
         return ConversationProcessPresentation(state: presentation.state, count: presentation.count,
-            duration: duration).summary
+            duration: duration).summary(languageCode: locale.language.languageCode?.identifier ?? "en")
     }
 
     private func processCard(summary: String) -> some View {
