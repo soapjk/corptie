@@ -13,6 +13,7 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
     @Published private(set) var enabled = false
     @Published private(set) var connected = false
     @Published private(set) var busy = false
+    @Published private(set) var restoring = false
     @Published private(set) var devices: [CloudDevice] = []
     @Published private(set) var currentDeviceID: UUID?
     @Published private(set) var status = "尚未登录 Corptie Cloud"
@@ -32,6 +33,8 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
     func restore() async {
         guard !restored else { return }
         restored = true
+        restoring = true
+        defer { restoring = false }
         do {
             let configuration = try Self.configuration()
             guard let saved = try await vault.load(configuration: configuration) else { return }

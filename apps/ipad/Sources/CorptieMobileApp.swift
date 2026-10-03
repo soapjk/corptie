@@ -38,10 +38,15 @@ struct PairingView: View {
             Form {
                 Section("Corptie Cloud") {
                     if connection.cloudSignedIn {
+                        Label("已登录 Corptie Cloud", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
                         let macs = connection.cloudDevices.filter { $0.kind == .mac && $0.revokedAt == nil }
                         if macs.isEmpty {
-                            Text("没有可连接的 Mac。请在 Mac 上登录同一账号并开启远程连接。")
-                                .font(.footnote).foregroundStyle(.secondary)
+                            ContentUnavailableView {
+                                Label("没有在线的 Mac", systemImage: "desktopcomputer.trianglebadge.exclamationmark")
+                            } description: {
+                                Text("请在 Mac 上登录同一账号并开启远程连接。")
+                            }
                         } else {
                             ForEach(macs) { mac in
                                 Button("连接 \(mac.displayName)", systemImage: "desktopcomputer") {
@@ -68,7 +73,8 @@ struct PairingView: View {
                         }
                     } else {
                         Button("登录 Corptie Cloud", systemImage: "person.crop.circle") { startCloudSignIn() }
-                        Text("使用独立 Corptie 账号，在外网安全连接同账号下的 Mac。通信内容端到端加密。")
+                            .buttonStyle(.borderedProminent)
+                        Text("登录后可在外网连接同账号下的 Mac。账号凭据保存在系统钥匙串，通信内容端到端加密。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
