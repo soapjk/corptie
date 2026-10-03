@@ -875,9 +875,22 @@ final class EntityAPIClient: ObservableObject {
         return await mutateMemory(request)
     }
 
+    func reviewMemory(memoryId: String, action: String, content: String, expectedVersion: Int) async -> MemoryItem? {
+        var request = URLRequest(url: baseURL.appending(path: "memories/\(memoryId)/\(action)"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "content": content, "expectedVersion": expectedVersion
+        ])
+        return await mutateMemory(request)
+    }
+
     func memoryRecalls(sessionId: String) async -> [MemoryRecallAudit]? {
         var components = URLComponents(url: baseURL.appending(path: "memory-recall-audit"), resolvingAgainstBaseURL: false)
-        components?.queryItems = [URLQueryItem(name: "sessionId", value: sessionId)]
+        components?.queryItems = [
+            URLQueryItem(name: "sessionId", value: sessionId),
+            URLQueryItem(name: "limit", value: "8")
+        ]
         guard let url = components?.url else { return nil }
         do {
             let (data, response) = try await URLSession.shared.data(from: url)

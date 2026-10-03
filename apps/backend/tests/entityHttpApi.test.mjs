@@ -2235,6 +2235,31 @@ test("Memory Inspector HTTP supports global audit, tag update, revoke, and rollb
   }
 });
 
+test("Memory candidate review API publishes confirmed content to startup recall", async () => {
+  const services = await createServices();
+  try {
+    const candidate = services.store.createMemory({ ownerType: "agent", ownerId: "assistant", kind: "fact",
+      content: "Unreviewed fact", sourceType: "extracted", promotionStatus: "candidate", trustLevel: "untrusted" });
+    const encoded = encodeURIComponent(candidate.id);
+    const before = await callApi({ method: "GET", pathname: "/memory-recall",
+      search: "?phase=startup&agentId=assistant", ...services });
+    assert.equal(before.body.memories.length, 0);
+    const confirmed = await callApi({ method: "POST", pathname: `/memories/${encoded}/confirm`,
+      body: { content: "Verified fact", expectedVersion: 1 }, ...services });
+    assert.equal(confirmed.statusCode, 200);
+    assert.equal(confirmed.body.memory.content, "Verified fact");
+    const after = await callApi({ method: "GET", pathname: "/memory-recall",
+      search: "?phase=startup&agentId=assistant", ...services });
+    assert.deepEqual(after.body.memories.map((item) => item.id), [candidate.id]);
+    const stale = await callApi({ method: "POST", pathname: `/memories/${encoded}/confirm`,
+      body: { expectedVersion: 1 }, ...services });
+    assert.equal(stale.statusCode, 409);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
 test("GET /agents returns unified Agents and marks the platform-managed resource", async () => {
   const services = await createServices();
   try {

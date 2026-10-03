@@ -1135,3 +1135,14 @@
 "To allow Git tracking instead, use the owning Session to promote the exact document version as an Artifact, then return and retry. This permission does not include pushing to a remote." = "To allow Git tracking instead, use the owning Session to promote the exact document version as an Artifact, then return and retry. This permission does not include pushing to a remote.";
 "Later" = "Later";
 "Ignore Files and Continue" = "Ignore Files and Continue";
+"Could not load recall decisions." = "Could not load recall decisions.";
+"Memory unavailable" = "Memory unavailable";
+"Current content; historical snapshot unavailable" = "Current content; historical snapshot unavailable";
+"Review candidate" = "Review candidate";
+"Review extracted Memory" = "Review extracted Memory";
+"Confirm only durable information that should be recalled in future Sessions." = "Confirm only durable information that should be recalled in future Sessions.";
+"Reject candidate" = "Reject candidate";
+"Confirm Memory" = "Confirm Memory";
+"Included in context" = "Included in context";
+"Omitted by context budget" = "Omitted by context budget";
+"Context inclusion not recorded" = "Context inclusion not recorded";

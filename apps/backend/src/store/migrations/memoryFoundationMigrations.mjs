@@ -44,6 +44,17 @@ export function ensureMemoryFoundationTables({ db }) {
       CREATE INDEX IF NOT EXISTS idx_memories_owner_updated_page
         ON memories(owner_type, owner_id, updated_at DESC, id DESC);
 
+      CREATE TABLE IF NOT EXISTS memory_extraction_progress (
+        session_id TEXT PRIMARY KEY,
+        last_event_sequence INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS memory_extraction_metadata (
+        key TEXT PRIMARY KEY
+      );
+
       CREATE TABLE IF NOT EXISTS memory_remember_operations (
         session_id TEXT NOT NULL,
         idempotency_key TEXT NOT NULL,
@@ -117,6 +128,18 @@ export function ensureMemoryFoundationTables({ db }) {
         consumed_at TEXT,
         FOREIGN KEY (actor_session_id) REFERENCES sessions(id) ON DELETE RESTRICT
       );
+    `);
+
+    // Existing Session history is deliberately excluded from automatic extraction.
+    // A later, explicitly scoped backfill may reset a Session's cursor to zero.
+    db.run(`
+      INSERT OR IGNORE INTO memory_extraction_progress (session_id, last_event_sequence, updated_at)
+      SELECT events.session_id, MAX(events.sequence), strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      FROM session_events AS events
+      JOIN sessions ON sessions.id = events.session_id
+      WHERE NOT EXISTS (SELECT 1 FROM memory_extraction_metadata WHERE key = 'initial_baseline')
+      GROUP BY events.session_id;
+      INSERT OR IGNORE INTO memory_extraction_metadata (key) VALUES ('initial_baseline');
     `);
 
     // --- 晋升技能（13.7：Agent 能力类记忆晋升为可发现技能，对接 12 hub） ---
