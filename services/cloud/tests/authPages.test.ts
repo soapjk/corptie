@@ -15,10 +15,30 @@ test("account pages are small same-origin pages with strict browser protections"
   const html = await response.text();
   assert.match(html, /<html lang="zh-CN">/);
   assert.match(html, /登录 Corptie/);
+  assert.match(html, /创建账号/);
+  assert.doesNotMatch(html, /邀请码/);
   assert.match(html, /aria-live="polite"/);
   assert.match(html, /autocomplete="current-password"/);
   assert.match(html, /<script src="\/auth\/assets\/auth\.js" defer><\/script>/);
   assert.doesNotMatch(html, /<script[^>]*>[^<]+<\/script>/);
+});
+
+test("public sign-up is direct, accessible, and can be closed by configuration", async () => {
+  const dependencies = { verifyOAuthPageQuery: async () => false, publicRegistration: true };
+  const response = await authPageResponse(new Request("https://cloud.example.test/auth/sign-up"), dependencies);
+  assert.equal(response?.status, 200);
+  const html = await response!.text();
+  assert.match(html, /填写以下信息即可注册，无需邀请码/);
+  assert.match(html, /data-page="sign-up"/);
+  assert.match(html, /autocomplete="new-password"/);
+  assert.doesNotMatch(html, /name="code"/);
+
+  const closed = await authPageResponse(new Request("https://cloud.example.test/auth/sign-up"), {
+    ...dependencies,
+    publicRegistration: false
+  });
+  assert.equal(closed?.status, 200);
+  assert.match(await closed!.text(), /公开注册当前已关闭/);
 });
 
 test("OAuth pages reject invalid signed requests before rendering", async () => {

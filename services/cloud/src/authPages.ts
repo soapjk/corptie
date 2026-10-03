@@ -74,12 +74,12 @@ async function submit(event) {
         accept: accepted, scope: root.dataset.scope || undefined, oauth_query: oauthQuery
       });
       window.location.assign(payload.redirect_uri);
-    } else if (page === "redeem") {
-      await post("/v1/invitations/redeem", {
-        code: data.get("code"), email: data.get("email"), name: data.get("name"), password: data.get("password")
+    } else if (page === "sign-up") {
+      await post("/api/auth/sign-up/email", {
+        email: data.get("email"), name: data.get("name"), password: data.get("password")
       });
       form.reset();
-      setStatus("账号已创建。请登录并验证邮箱后继续。");
+      setStatus("账号已创建。请查收验证邮件，然后返回登录。");
     } else if (page === "recover") {
       await post("/api/auth/request-password-reset", {
         email: data.get("email"), redirectTo: window.location.origin + "/auth/reset-password"
@@ -104,6 +104,7 @@ if (form) form.addEventListener("submit", submit);
 
 export interface AuthPageDependencies {
   verifyOAuthPageQuery: (query: string) => Promise<boolean>;
+  publicRegistration?: boolean;
 }
 
 export async function authPageResponse(request: Request, dependencies: AuthPageDependencies): Promise<Response | null> {
@@ -121,7 +122,7 @@ export async function authPageResponse(request: Request, dependencies: AuthPageD
         <label>密码<input name="password" type="password" autocomplete="current-password" required maxlength="128"></label>
         <button type="submit">登录</button>
       </form>
-      <nav class="links" aria-label="账号帮助"><a href="/auth/redeem">使用邀请码注册</a><a href="/auth/recover">忘记密码？</a></nav>
+      <nav class="links" aria-label="账号帮助">${dependencies.publicRegistration === false ? "" : `<a href="${signUpPath(query)}">创建账号</a>`}<a href="/auth/recover">忘记密码？</a></nav>
     `, query ? { oauthQuery: query } : {});
   }
   if (url.pathname === "/auth/consent") {
@@ -136,18 +137,23 @@ export async function authPageResponse(request: Request, dependencies: AuthPageD
       <form><div class="actions"><button type="submit" value="allow">允许</button><button class="secondary" type="submit" value="deny">拒绝</button></div></form>
     `, { oauthQuery: query, scope });
   }
-  if (url.pathname === "/auth/redeem") {
-    return page("创建 Corptie 账号", "注册需要有效的邀请码。", "redeem", `
+  if (url.pathname === "/auth/sign-up" || url.pathname === "/auth/redeem") {
+    if (dependencies.publicRegistration === false) {
+      return page("暂时无法创建账号", "公开注册当前已关闭。", "complete", `
+        <nav class="links" aria-label="账号帮助"><a href="${signInPath(query)}">返回登录</a></nav>
+      `);
+    }
+    if (query && !await dependencies.verifyOAuthPageQuery(query)) return invalidOAuthRequest();
+    return page("创建 Corptie 账号", "填写以下信息即可注册，无需邀请码。", "sign-up", `
       <form>
-        <label>邀请码<input name="code" autocomplete="one-time-code" required minlength="32" maxlength="256"></label>
         <label>姓名<input name="name" autocomplete="name" required maxlength="100"></label>
         <label>邮箱<input name="email" type="email" inputmode="email" autocomplete="username" required maxlength="320"></label>
         <label>密码<input name="password" type="password" autocomplete="new-password" required minlength="8" maxlength="128" aria-describedby="password-hint"></label>
         <span id="password-hint" class="footnote">至少 8 个字符</span>
         <button type="submit">创建账号</button>
       </form>
-      <nav class="links" aria-label="账号帮助"><a href="/auth/sign-in">返回登录</a></nav>
-    `);
+      <nav class="links" aria-label="账号帮助"><a href="${signInPath(query)}">已有账号？返回登录</a></nav>
+    `, query ? { oauthQuery: query } : {});
   }
   if (url.pathname === "/auth/recover") {
     return page("找回账号", "如果账号存在，我们会发送密码重置链接。", "recover", `
@@ -187,6 +193,14 @@ function page(
 
 function invalidOAuthRequest(): Response {
   return new Response("登录请求无效或已过期", { status: 400, headers: securityHeaders("text/plain; charset=utf-8") });
+}
+
+function signUpPath(query: string): string {
+  return query ? `/auth/sign-up?${escapeHtml(query)}` : "/auth/sign-up";
+}
+
+function signInPath(query: string): string {
+  return query ? `/auth/sign-in?${escapeHtml(query)}` : "/auth/sign-in";
 }
 
 function asset(body: string, contentType: string): Response {

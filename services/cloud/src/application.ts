@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { DatabaseSync } from "node:sqlite";
 import type { AddressInfo } from "node:net";
+import { z } from "zod";
 import type { CloudConfig } from "./config.js";
 import {
   AccountAlreadyExistsError,
@@ -45,6 +46,15 @@ interface ApplicationDependencies {
   verifyOAuthPageQuery?: (query: string) => Promise<boolean>;
   revocations?: AccountRevocationEvents;
   now?: () => Date;
+}
+
+const deleteAccountInputSchema = z.object({
+  email: z.email().transform((value) => value.trim().toLowerCase())
+});
+
+class AccountNotFoundError extends Error {
+  readonly status = 404;
+  readonly code = "ACCOUNT_NOT_FOUND";
 }
 
 export function createCloudApplication(dependencies: ApplicationDependencies) {
@@ -121,7 +131,8 @@ async function dispatch(
     return dependencies.auth.handler(request);
   }
   const authPage = await authPageResponse(request, {
-    verifyOAuthPageQuery: dependencies.verifyOAuthPageQuery ?? (async () => false)
+    verifyOAuthPageQuery: dependencies.verifyOAuthPageQuery ?? (async () => false),
+    publicRegistration: dependencies.config.publicRegistration
   });
   if (authPage) return authPage;
 
@@ -138,6 +149,32 @@ async function dispatch(
     }
     const input = nativeOAuthClientInputSchema.parse(await request.json());
     return json(201, { client: oauthClients.register(input) });
+  }
+  if (url.pathname === "/v1/admin/accounts" && request.method === "DELETE") {
+    if (!invitations.authorizeAdminToken(request.headers.get("authorization"))) {
+      throw new AuthenticationError("Valid local administration token required");
+    }
+    const input = deleteAccountInputSchema.parse(await request.json());
+    const account = dependencies.database.prepare(
+      'SELECT id, email FROM "user" WHERE lower(email) = ?'
+    ).get(input.email) as { id: string; email: string } | undefined;
+    if (!account) throw new AccountNotFoundError("Account does not exist");
+    dependencies.database.exec("BEGIN IMMEDIATE");
+    try {
+      dependencies.database.prepare("DELETE FROM cloud_devices WHERE account_id = ?").run(account.id);
+      dependencies.database.prepare("DELETE FROM cloud_account_security_state WHERE account_id = ?").run(account.id);
+      dependencies.database.prepare("DELETE FROM cloud_revocations WHERE account_id = ?").run(account.id);
+      dependencies.database.prepare("UPDATE cloud_invitation_redemptions SET user_id = NULL WHERE user_id = ?").run(account.id);
+      dependencies.database.prepare("DELETE FROM cloud_mail_capture WHERE recipient = ?").run(input.email);
+      dependencies.database.prepare('DELETE FROM "verification" WHERE identifier = ?').run(input.email);
+      dependencies.database.prepare('DELETE FROM "user" WHERE id = ?').run(account.id);
+      dependencies.database.exec("COMMIT");
+    } catch (error) {
+      dependencies.database.exec("ROLLBACK");
+      throw error;
+    }
+    dependencies.revocations?.publish(account.id);
+    return json(200, { deleted: true, email: input.email });
   }
   if (url.pathname === "/v1/invitations/redeem" && request.method === "POST") {
     const input = redeemInvitationInputSchema.parse(await request.json());

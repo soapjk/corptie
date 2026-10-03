@@ -5,6 +5,7 @@ import { createCloudAuth, type CloudPrincipal } from "../src/auth.js";
 import type { CloudConfig } from "../src/config.js";
 import { openCloudDatabase } from "../src/database.js";
 import { createTestDeviceInput } from "../src/devices.js";
+import { CloudDeviceService } from "../src/devices.js";
 
 const config: CloudConfig = {
   host: "127.0.0.1",
@@ -13,6 +14,7 @@ const config: CloudConfig = {
   publicBaseUrl: "http://127.0.0.1",
   authSecret: "7vQ!2mx9L#p4Az8Wc6Ty1Nk5Rs3Hd0Uf",
   adminToken: "8wR!3ny0M$q5Ba9Xd7Uz2Pm6St4Je1Vg",
+  publicRegistration: true,
   trustedOrigins: ["https://trusted.example.test"],
   logLevel: "error",
   maxJsonBytes: 65_536,
@@ -168,6 +170,49 @@ test("administration endpoint creates an invitation that provisions a Better Aut
     assert.equal(account.providerId, "credential");
     assert.equal(account.accountId, body.user.id);
     assert.notEqual(account.password, "correct horse battery staple");
+  } finally {
+    await application.close();
+    database.close();
+  }
+});
+
+test("administration endpoint deletes an account and all Cloud device access", async () => {
+  const database = openCloudDatabase(":memory:");
+  const userId = "user:delete-me";
+  const timestamp = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO "user"(id, name, email, emailVerified, createdAt, updatedAt)
+    VALUES (?, 'Delete Me', 'delete@example.test', 1, ?, ?)
+  `).run(userId, timestamp, timestamp);
+  database.prepare(`
+    INSERT INTO "session"(id, expiresAt, token, createdAt, updatedAt, userId)
+    VALUES ('session:delete', ?, 'session-token-delete', ?, ?, ?)
+  `).run(new Date(Date.now() + 60_000).toISOString(), timestamp, timestamp, userId);
+  database.prepare(`
+    INSERT INTO "account"(id, accountId, providerId, userId, password, createdAt, updatedAt)
+    VALUES ('account:delete', ?, 'credential', ?, 'password-hash', ?, ?)
+  `).run(userId, userId, timestamp, timestamp);
+  new CloudDeviceService(database).register(userId, "session:delete", createTestDeviceInput());
+  const application = createCloudApplication({
+    config,
+    database,
+    auth: { handler: async () => new Response(null, { status: 404 }) },
+    provisionInvitedUser: async () => { throw new Error("unused"); },
+    resolvePrincipal: async () => { throw new Error("unused"); }
+  });
+  try {
+    const address = await application.listen();
+    const response = await fetch(`http://127.0.0.1:${address.port}/v1/admin/accounts`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json", authorization: `Bearer ${config.adminToken}` },
+      body: JSON.stringify({ email: "Delete@Example.Test" })
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { deleted: true, email: "delete@example.test" });
+    assert.equal((database.prepare('SELECT COUNT(*) AS count FROM "user" WHERE id = ?').get(userId) as { count: number }).count, 0);
+    assert.equal((database.prepare('SELECT COUNT(*) AS count FROM "session" WHERE userId = ?').get(userId) as { count: number }).count, 0);
+    assert.equal((database.prepare('SELECT COUNT(*) AS count FROM "account" WHERE userId = ?').get(userId) as { count: number }).count, 0);
+    assert.equal((database.prepare("SELECT COUNT(*) AS count FROM cloud_devices WHERE account_id = ?").get(userId) as { count: number }).count, 0);
   } finally {
     await application.close();
     database.close();
