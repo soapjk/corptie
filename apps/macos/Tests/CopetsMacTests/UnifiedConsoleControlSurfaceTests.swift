@@ -1,4 +1,6 @@
 import Foundation
+import AppKit
+import SwiftUI
 import Testing
 @testable import CorptieMac
 
@@ -70,9 +72,9 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func navigationControlsFloatOverTheFullHeightSidebar() throws {
+    func navigationControlsReserveAnIndependentMobileStyleToolbar() throws {
         let source = try source(named: "UnifiedConsoleView.swift")
-        let controlsStart = try #require(source.range(of: ".overlay(alignment: .topLeading) {"))
+        let controlsStart = try #require(source.range(of: ".safeAreaInset(edge: .top, spacing: 0) {"))
         let controlsEnd = try #require(source.range(of: "var navigationMode:", range: controlsStart.upperBound..<source.endIndex))
         let controls = source[controlsStart.lowerBound..<controlsEnd.lowerBound]
 
@@ -88,8 +90,34 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains("Menu {\n            navigationModeOption(.workOutline, title: \"分组\")"))
         #expect(source.contains(".buttonStyle(.plain)\n        .menuIndicator(.hidden)"))
         #expect(source.contains(".modifier(ConsoleTopEdgeEffectModifier())"))
-        #expect(controls.contains(".platformGlassSurface(in: Circle(), interactive: true)"))
+        #expect(controls.contains("ConsoleWorkToolbar {"))
+        #expect(controls.contains("Spacer(minLength: ConsoleWorkToolbarMetrics.spacing)"))
+        #expect(!controls.contains(".padding(.top, 3)"))
+        #expect(ConsoleWorkToolbarMetrics.buttonDiameter == 36)
+        #expect(ConsoleWorkToolbarMetrics.symbolSize == 16)
+        #expect(ConsoleWorkToolbarMetrics.height == 48)
+        #expect(ConsoleWorkToolbarMetrics.minimumWidth == 220)
         #expect(!source.contains("ConsoleSidebarTitlebarControls("))
+    }
+
+    @Test @MainActor
+    func workToolbarFitsNarrowSidebarWithoutShrinkingButtons() {
+        let host = NSHostingView(rootView: ConsoleWorkToolbar {
+            HStack(spacing: ConsoleWorkToolbarMetrics.spacing) {
+                ForEach(["arrow.up.arrow.down", "rectangle.3.group", "magnifyingglass", "archivebox"], id: \.self) { symbol in
+                    Button {} label: { ConsoleWorkToolbarGlyph(symbol: symbol) }.buttonStyle(.plain)
+                }
+            }
+            Spacer(minLength: ConsoleWorkToolbarMetrics.spacing)
+            Menu {} label: { ConsoleWorkToolbarGlyph(symbol: "plus") }
+                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
+        })
+        for width in [220.0, 300.0, 420.0] {
+            host.frame = NSRect(x: 0, y: 0, width: width, height: ConsoleWorkToolbarMetrics.height)
+            host.layoutSubtreeIfNeeded()
+            #expect(host.fittingSize.height == ConsoleWorkToolbarMetrics.height)
+            #expect(host.fittingSize.width <= width)
+        }
     }
 
     @Test

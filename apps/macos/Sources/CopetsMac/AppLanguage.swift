@@ -43,6 +43,14 @@ final class AppLanguageController: ObservableObject {
 
     var locale: Locale { selection.locale }
 
+    var languageCode: String {
+        switch selection {
+        case .system: Locale.preferredLanguages.first ?? "en"
+        case .english: "en"
+        case .simplifiedChinese: "zh-Hans"
+        }
+    }
+
     var localizationBundle: Bundle {
         let localization: String
         switch selection {

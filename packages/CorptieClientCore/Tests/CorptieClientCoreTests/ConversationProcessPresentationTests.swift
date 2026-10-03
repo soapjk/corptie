@@ -50,6 +50,13 @@ struct ConversationProcessPresentationTests {
     }
 
     @Test func summariesKeepDesktopWordingAndDurationRules() {
+        let completed = ConversationProcessPresentation(state: .completed, count: 3, duration: "1.2s")
+        #expect(completed.summary(languageCode: "en") == "Processed for 1.2s · 3 steps")
+        #expect(completed.summary(languageCode: "zh-Hans") == "已处理 1.2秒 · 3 步")
+        #expect(ConversationProcessPresentation(state: .completed, count: 1, duration: "1m 12s")
+            .summary(languageCode: "zh") == "已处理 1分钟 12秒 · 1 步")
+        #expect(ConversationProcessPresentation(state: .completed, count: 1, duration: "1h 2m")
+            .summary(languageCode: "zh") == "已处理 1小时 2分钟 · 1 步")
         #expect(ConversationProcessPresentation(state: .running, count: 2).summary == "Working… · 2 steps")
         #expect(ConversationProcessPresentation(state: .completed, count: 1).summary == "Completed · 1 step")
         #expect(ConversationProcessPresentation(state: .failed, count: 2, duration: "· 3s").summary == "Execution failed after 3s · 2 steps")
