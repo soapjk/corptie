@@ -31,6 +31,21 @@ function matchScore(content, terms) {
   return hit / terms.length;
 }
 
+function chineseMatchScore(content, intent) {
+  const grams = (value) => {
+    const result = new Set();
+    for (const run of String(value ?? "").match(/[\u4e00-\u9fff]+/g) ?? []) {
+      for (let i = 0; i + 2 <= run.length; i += 1) result.add(run.slice(i, i + 2));
+    }
+    return result;
+  };
+  const query = grams(intent);
+  if (query.size === 0) return 0;
+  const target = grams(content);
+  const hits = [...query].filter((gram) => target.has(gram)).length;
+  return hits >= 2 ? hits / Math.min(query.size, Math.max(target.size, 1)) : 0;
+}
+
 // 字符 n-gram 词袋向量（零依赖离线回退，非真语义，但保证 embedding 路径可用、可离线排序）。
 export function localBagOfWordsEmbedder(text, dim = 128) {
   const grams = new Set();
@@ -187,7 +202,7 @@ export class HubService {
         const memVec = embeddings.get(m.id) ?? null;
         semantic = memVec ? cosineSimilarity(intentVec, memVec) : 0;
       }
-      const lexical = matchScore(m.content, terms);
+      const lexical = Math.max(matchScore(m.content, terms), chineseMatchScore(m.content, intent));
       // 语义优先；无语义时纯关键词；两者取高者再乘置信度。
       // 空 intent 是显式的启动召回策略：按置信度与既有使用/新近度排序，
       // 而不是让零关键词分数把所有 active 记忆过滤掉。

@@ -55,7 +55,7 @@ enum MemoryOriginLayer: Int, CaseIterable {
         let expired = memory.expiresAt.flatMap(timestampFormatter.date(from:)).map { $0 <= now } ?? false
         if memory.revokedAt != nil || expired || inactiveStatuses.contains(memory.promotionStatus ?? "") { return .inactive }
         if memory.sourceType == "user" { return .userKept }
-        if memory.promotionStatus == "candidate" || memory.trustLevel == "untrusted" || memory.sourceType == "extracted" {
+        if memory.promotionStatus == "candidate" || memory.trustLevel == "untrusted" {
             return .agentCandidate
         }
         if ["system", "consolidated", "pre_compaction"].contains(memory.sourceType) { return .systemManaged }
@@ -81,6 +81,7 @@ struct MemoryManagementView: View {
     @State private var editingMemory: MemoryItem?
     @State private var revokingMemory: MemoryItem?
     @State private var historyMemory: MemoryItem?
+    @State private var reviewingMemory: MemoryItem?
     @State private var isAddingMemory = false
 
     init(scope: Scope, embedsListInParentScrollView: Bool = false) {
@@ -151,6 +152,9 @@ struct MemoryManagementView: View {
         }
         .sheet(item: $historyMemory) { memory in
             MemoryAuditSheet(memory: memory) { updated in replace(updated) }
+        }
+        .sheet(item: $reviewingMemory) { memory in
+            MemoryReviewSheet(memory: memory) { updated in replace(updated) }
         }
     }
 
@@ -296,6 +300,9 @@ struct MemoryManagementView: View {
                 Button(L10n("Edit tags")) { editingMemory = memory }.buttonStyle(.link)
                     .disabled(memory.revokedAt != nil)
                 Button(L10n("History")) { historyMemory = memory }.buttonStyle(.link)
+                if memory.promotionStatus == "candidate" && memory.sourceType == "extracted" {
+                    Button(L10n("Review candidate")) { reviewingMemory = memory }.buttonStyle(.link)
+                }
                 if memory.revokedAt == nil {
                     Button(L10n("Disable recall"), role: .destructive) { revokingMemory = memory }.buttonStyle(.link)
                 } else {
@@ -365,6 +372,56 @@ struct MemoryManagementView: View {
 
     private func replace(_ updated: MemoryItem) {
         if let index = memories.firstIndex(where: { $0.id == updated.id }) { memories[index] = updated }
+    }
+}
+
+private struct MemoryReviewSheet: View {
+    let memory: MemoryItem
+    let onReview: (MemoryItem) -> Void
+    @ObservedObject private var client = EntityAPIClient.shared
+    @Environment(\.dismiss) private var dismiss
+    @State private var content: String
+    @State private var isSaving = false
+
+    init(memory: MemoryItem, onReview: @escaping (MemoryItem) -> Void) {
+        self.memory = memory
+        self.onReview = onReview
+        _content = State(initialValue: memory.content)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(L10n("Review extracted Memory")).font(.headline)
+            Text(L10n("Confirm only durable information that should be recalled in future Sessions."))
+                .font(.caption).foregroundStyle(.secondary)
+            TextEditor(text: $content).frame(minHeight: 130)
+            Text("\(memory.sourceSessionId ?? "") · \(memory.ownerType) · #\(memory.sourceEventSeqs?.first ?? 0)")
+                .font(.caption2).foregroundStyle(.tertiary)
+            if let error = client.errorMessage, !error.isEmpty {
+                Text(error).font(.caption).foregroundStyle(.red)
+            }
+            HStack {
+                Button(L10n("Reject candidate"), role: .destructive) { Task { await review("reject") } }
+                    .disabled(isSaving)
+                Spacer()
+                Button(L10n("Cancel")) { dismiss() }
+                Button(L10n("Confirm Memory")) { Task { await review("confirm") } }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isSaving || content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+    }
+
+    private func review(_ action: String) async {
+        isSaving = true
+        defer { isSaving = false }
+        guard let updated = await client.reviewMemory(
+            memoryId: memory.id, action: action, content: content, expectedVersion: memory.version ?? 1
+        ) else { return }
+        onReview(updated)
+        dismiss()
     }
 }
 
@@ -580,10 +637,18 @@ private struct MemoryTagEditor: View {
 struct SessionMemoryDiagnosticsView: View {
     let session: TaskSession
     @State private var recalls: [MemoryRecallAudit] = []
+    @State private var loadFailed = false
+    @State private var isExpanded = false
+    @State private var isLoading = false
 
     var body: some View {
-        DisclosureGroup {
-            if recalls.isEmpty {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            if isLoading {
+                ProgressView().controlSize(.small)
+            } else if loadFailed {
+                Text(L10n("Could not load recall decisions."))
+                    .font(.caption).foregroundStyle(.red)
+            } else if recalls.isEmpty {
                 Text(L10n("No recall decisions recorded yet.")).font(.caption).foregroundStyle(.tertiary)
             } else {
                 ForEach(recalls.prefix(8)) { recall in
@@ -594,6 +659,32 @@ struct SessionMemoryDiagnosticsView: View {
                             Text("\(recall.phase) · \(recall.mode)").font(.caption.bold())
                             Text("\(recall.reason) · hit \(recall.selectedIds.count)/\(recall.candidateIds.count)")
                                 .font(.caption2).foregroundStyle(.secondary)
+                            if !recall.selectedIds.isEmpty {
+                                Text(recall.injectionStatus == "context_included"
+                                     ? L10n("Included in context")
+                                     : recall.injectionStatus == "budget_omitted"
+                                     ? L10n("Omitted by context budget")
+                                     : L10n("Context inclusion not recorded"))
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                            ForEach(recall.selectedEntries ?? []) { entry in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(entry.content ?? entry.id)
+                                        .font(.caption).lineLimit(4).textSelection(.enabled)
+                                    HStack(spacing: 4) {
+                                        Text(entry.kind ?? L10n("Memory unavailable"))
+                                        if let ownerType = entry.ownerType {
+                                            Text("· \(ownerType)")
+                                        }
+                                        if !entry.snapshotAtRecall {
+                                            Text("· \(L10n("Current content; historical snapshot unavailable"))")
+                                        }
+                                    }
+                                    .font(.caption2).foregroundStyle(.tertiary)
+                                }
+                                .padding(.leading, 6)
+                                .padding(.vertical, 2)
+                            }
                         }
                     }
                 }
@@ -602,8 +693,13 @@ struct SessionMemoryDiagnosticsView: View {
             Label(L10n("Memory recall"), systemImage: "brain.head.profile")
                 .font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
         }
-        .task(id: session.id) {
-            recalls = await EntityAPIClient.shared.memoryRecalls(sessionId: session.id) ?? []
+        .task(id: "\(session.id):\(isExpanded)") {
+            guard isExpanded else { return }
+            isLoading = true
+            defer { isLoading = false }
+            let loaded = await EntityAPIClient.shared.memoryRecalls(sessionId: session.id)
+            recalls = loaded ?? []
+            loadFailed = loaded == nil
         }
     }
 }

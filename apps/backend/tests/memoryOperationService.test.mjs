@@ -7,7 +7,8 @@ import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import { AgentContextService } from "../src/application/agentContextService.mjs";
 import { HubService } from "../src/application/hubService.mjs";
 import { MemoryExtractor } from "../src/application/memoryExtractor.mjs";
-import { MemoryOperationService } from "../src/application/memoryOperationService.mjs";
+import { MemoryOperationService, reviewExtractedMemory } from "../src/application/memoryOperationService.mjs";
+import { MemoryRecallService } from "../src/application/memoryRecallService.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
 async function fixture(options = {}) {
@@ -95,6 +96,38 @@ test("manual remember defaults to the most-specific current Task and preserves p
       scope: { workId: "work:bound", taskId: "task:bound" }
     });
     assert.match(startupContext.instructions, /Always summarize changes concisely/);
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("review confirms a candidate for startup recall and rejects stale or unwanted candidates", async () => {
+  const f = await fixture();
+  try {
+    const candidate = f.store.createMemory({ ownerType: "work", ownerId: "work:bound", kind: "fact",
+      content: "Original candidate", sourceType: "extracted", sourceSessionId: "session:current",
+      promotionStatus: "candidate", trustLevel: "untrusted" });
+    const scope = { workId: "work:bound", agentId: f.agent.agentId, sessionId: "session:current" };
+    const recall = new MemoryRecallService({ store: f.store, hubService: new HubService({ store: f.store }) });
+    assert.equal((await recall.startup(scope)).memories.length, 0);
+    const confirmed = reviewExtractedMemory(f.store, candidate.id, {
+      action: "confirm", content: "Verified durable fact", expectedVersion: 1, actorId: "user:test"
+    });
+    assert.equal(confirmed.promotion_status, "active");
+    assert.equal(confirmed.trust_level, "trusted");
+    assert.equal(confirmed.confidence, 1);
+    assert.equal((await recall.startup(scope)).memories[0].id, candidate.id);
+    assert.throws(() => reviewExtractedMemory(f.store, candidate.id, {
+      action: "confirm", expectedVersion: 1, actorId: "user:test"
+    }), { code: "MEMORY_REVIEW_CONFLICT" });
+    const unwanted = f.store.createMemory({ ownerType: "work", ownerId: "work:bound", kind: "fact",
+      content: "Unwanted", sourceType: "extracted", sourceSessionId: "session:current",
+      promotionStatus: "candidate", trustLevel: "untrusted" });
+    assert.equal(reviewExtractedMemory(f.store, unwanted.id, {
+      action: "reject", expectedVersion: 1, actorId: "user:test"
+    }).promotion_status, "archived");
+    assert.ok(!(await recall.startup(scope)).memories.some((item) => item.id === unwanted.id));
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });
