@@ -9,6 +9,12 @@ enum PadWorkspaceLayoutPolicy {
     }
 }
 
+enum PadSettingsNavigationPolicy {
+    static func usesStack(isCompactWidth: Bool) -> Bool {
+        isCompactWidth
+    }
+}
+
 /// Pure geometry: menu stays above the module and inside the conversation's
 /// visible top edge, including after the keyboard or split view changes size.
 struct PadMentionMenuPlacement {
