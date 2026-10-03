@@ -3,6 +3,8 @@ import CorptieClientCore
 import Foundation
 
 extension BackendClient {
+    static let quickMessageCache = ClientQuickMessageCache(defaults: CorptieAppEnvironment.userDefaults)
+
     func quickMessages(for sessionID: String) async throws -> ClientQuickMessageRecommendations {
         let (data, response) = try await URLSession.shared.data(for: URLRequest(
             url: baseURL.appending(path: "sessions/\(sessionID)/quick-messages")))

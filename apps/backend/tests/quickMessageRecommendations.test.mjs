@@ -3,10 +3,22 @@ import test from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eligibleQuickMessage, rankQuickMessages } from "../src/application/quickMessageRecommendations.mjs";
+import { QUICK_MESSAGE_DEFAULTS, eligibleQuickMessage, rankQuickMessages } from "../src/application/quickMessageRecommendations.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { TimelineReadPool } from "../src/store/timelineReadPool.mjs";
 import { ClientSessionAPI } from "../src/application/clientSessionAPI.mjs";
+
+test("exactly three defaults always remain, with stable IDs and no duplicate learned commands", () => {
+  assert.deepEqual(QUICK_MESSAGE_DEFAULTS, ["继续", "开始开发", "给我一个完整方案"]);
+  const empty = rankQuickMessages([], [], "a");
+  assert.deepEqual(empty.items.map(item => item.text), QUICK_MESSAGE_DEFAULTS);
+  const rows = Array.from({ length: 8 }, (_, index) => ({ text: `常用指令${index}`, count: 4 }));
+  const populated = rankQuickMessages(rows, [], "a");
+  assert.equal(populated.items.length, 6);
+  assert.deepEqual(populated.items.filter(item => item.scope === "default"), empty.items);
+  const repeatedDefault = rankQuickMessages([{ text: "继续", count: 5 }], [], "a");
+  assert.equal(repeatedDefault.items.find(item => item.text === "继续").id, empty.items[0].id);
+});
 
 test("short exact repeats rank before common defaults; sensitive/attachment content stays out", () => {
   const row = (text, task_id = "a", extra = {}) => ({ text, task_id, ...extra });
@@ -68,6 +80,23 @@ test("real SQLite read worker isolates Tasks, merges their Sessions across Provi
     const refreshed = await pool.readQuickMessages({ sessionId: "a1" });
     assert.equal(refreshed.items.find(item => item.text === "检查布局").count, 3,
       "new sends invalidate the bounded recommendation cache immediately");
+    message("a1", "总结一下"); message("b1", "总结一下"); message("b1", "总结一下");
+    // Move the learned commands beyond both former sampling windows. Bulk SQL
+    // keeps this fixture cheap and exercises the real read-worker query plan.
+    store.db.run(`WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value + 1 FROM n WHERE value < 21000)
+      INSERT INTO session_items (id, session_id, turn_id, turn_status, title, type, text, created_at, raw_metadata_json)
+      SELECT 'tool-' || value, 'b1', 'bulk', 'completed', '', 'commandExecution', '工具输出', '2099-01-01T00:00:00Z', '{}' FROM n`);
+    store.db.run(`WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value + 1 FROM n WHERE value < 2100)
+      INSERT INTO session_items (id, session_id, turn_id, turn_status, title, type, text, created_at, raw_metadata_json)
+      SELECT 'one-off-' || value, 'a1', 'bulk', 'completed', '', 'userMessage', '一次消息' || value, '2099-01-01T00:00:00Z', '{}' FROM n`);
+    const started = performance.now();
+    const historical = await pool.readQuickMessages({ sessionId: "a1" });
+    const elapsed = performance.now() - started;
+    assert.equal(historical.items.find(item => item.text === "检查布局").count, 3,
+      "new one-off messages do not erase a Task's historical repeats");
+    assert.ok(historical.items.some(item => item.text === "总结一下" && item.scope === "common"),
+      "tool traffic does not erase cross-Task common-message history");
+    console.log(`quick-message worker: 23k extra history rows, ${elapsed.toFixed(1)}ms, ${historical.items.length} output items`);
     await assert.rejects(api.quickMessages({ deviceId: "d" }, "missing"), { code: "SESSION_NOT_AVAILABLE" });
     assert.ok(pool.inFlightByKey.size <= 1);
   } finally {
