@@ -74,9 +74,7 @@ export function createCloudAuth(
     trustedOrigins: config.trustedOrigins,
     emailAndPassword: {
       enabled: true,
-      // Invitation redemption will create accounts through a dedicated,
-      // transactional endpoint. The generic public sign-up path stays closed.
-      disableSignUp: true,
+      disableSignUp: !config.publicRegistration,
       requireEmailVerification: true,
       revokeSessionsOnPasswordReset: true,
       sendResetPassword: async ({ user, url }) => {
@@ -88,6 +86,7 @@ export function createCloudAuth(
       }
     },
     emailVerification: {
+      sendOnSignUp: true,
       sendOnSignIn: true,
       sendVerificationEmail: async ({ user, url }) => {
         if (!services.mailer) throw new Error("Cloud mailer is not configured");

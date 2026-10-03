@@ -15,6 +15,7 @@ const config: CloudConfig = {
   publicBaseUrl: "http://127.0.0.1",
   authSecret: "9xS!4oz1N%r6Cb0Ye8Va3Qn7Tu5Kf2Wh",
   adminToken: "0yT!5pa2O^s7Dc1Zf9Wb4Ro8Uv6Lg3Xi",
+  publicRegistration: true,
   trustedOrigins: ["http://127.0.0.1"],
   logLevel: "error",
   maxJsonBytes: 65_536,

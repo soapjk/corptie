@@ -14,7 +14,13 @@ test("loads strict Cloud configuration without exposing implicit public bindings
   const config = loadCloudConfig(validEnvironment);
   assert.equal(config.host, "127.0.0.1");
   assert.equal(config.port, 4310);
+  assert.equal(config.publicRegistration, true);
   assert.deepEqual(config.trustedOrigins, ["https://corptie.example.test", "corptie://oauth"]);
+});
+
+test("public registration can be disabled without changing authentication code", () => {
+  const config = loadCloudConfig({ ...validEnvironment, CORPTIE_CLOUD_PUBLIC_REGISTRATION: "false" });
+  assert.equal(config.publicRegistration, false);
 });
 
 test("rejects insecure non-loopback public URLs", () => {
