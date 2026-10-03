@@ -72,38 +72,33 @@ private struct PadUsageBar: View {
                 .accessibilityIdentifier("conversation-usage-context")
             }
             if let quota {
-                if usage.route?.providerId == "codex-app-server" || usage.account?.provider == "codex" {
-                    Button { isResetNoticePresented.toggle() } label: {
-                        quotaSlot(remaining: quota.remaining)
-                    }
-                    .buttonStyle(.plain)
-                    .popover(isPresented: $isResetNoticePresented, arrowEdge: .bottom) {
-                        resetNoticePopover(window: quota.window)
-                            .presentationCompactAdaptation(.popover)
-                    }
-                    .task(id: isResetNoticePresented) {
-                        guard isResetNoticePresented else {
-                            verification = .idle
-                            refreshedCredits = nil
-                            return
-                        }
-                        verification = .loading
-                        let refreshed = await refreshAccount()
-                        guard !Task.isCancelled else { return }
-                        if let credits = refreshed?.account?.rateLimitResetCredits {
-                            refreshedCredits = credits
-                            verification = .idle
-                        } else {
-                            verification = .failed
-                        }
-                    }
-                    .accessibilityLabel(quotaAccessibilityLabel(remaining: quota.remaining))
-                    .accessibilityIdentifier("conversation-usage-quota")
-                } else {
+                // Quota details are supported by the usage data, not a Provider identifier.
+                Button { isResetNoticePresented.toggle() } label: {
                     quotaSlot(remaining: quota.remaining)
-                        .accessibilityLabel(quotaAccessibilityLabel(remaining: quota.remaining))
-                        .accessibilityIdentifier("conversation-usage-quota")
                 }
+                .buttonStyle(.plain)
+                .popover(isPresented: $isResetNoticePresented, arrowEdge: .bottom) {
+                    resetNoticePopover(window: quota.window)
+                        .presentationCompactAdaptation(.popover)
+                }
+                .task(id: isResetNoticePresented) {
+                    guard isResetNoticePresented else {
+                        verification = .idle
+                        refreshedCredits = nil
+                        return
+                    }
+                    verification = .loading
+                    let refreshed = await refreshAccount()
+                    guard !Task.isCancelled else { return }
+                    if let refreshed, let account = refreshed.account {
+                        refreshedCredits = account.rateLimitResetCredits
+                        verification = .idle
+                    } else {
+                        verification = .failed
+                    }
+                }
+                .accessibilityLabel(quotaAccessibilityLabel(remaining: quota.remaining))
+                .accessibilityIdentifier("conversation-usage-quota")
             }
         }
         .font(.system(size: 9, weight: .semibold))
