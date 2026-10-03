@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TASK_WORKSPACE_INSTRUCTIONS } from "../src/application/sessionResponsibilityInstructions.mjs";
+import { TASK_WORKSPACE_INSTRUCTIONS } from "../src/application/workSessionContext.mjs";
 import {
   isWorkspaceDynamicTool,
   workspaceDynamicTools

@@ -1,6 +1,7 @@
 const TRUSTED_SOURCE_TYPES = new Set(["user", "system", "consolidated", "pre_compaction"]);
 const DEFAULT_STARTUP_LIMIT = 8;
 const DEFAULT_TURN_LIMIT = 5;
+const AUDIT_CANDIDATE_PREVIEW_LIMIT = 20;
 
 export class MemoryRecallService {
   constructor({ store, hubService, clock = () => new Date().toISOString() } = {}) {
@@ -13,7 +14,8 @@ export class MemoryRecallService {
 
   async startup(scope = {}, options = {}) {
     const limit = boundedLimit(options.limit, DEFAULT_STARTUP_LIMIT, 12);
-    const candidates = this.#visibleActive(scope).filter(isTrustedMemory);
+    const visible = this.#visible(scope);
+    const candidates = visible.filter(isRecallableMemory);
     const ranked = await this.hubService.rankMemory("", candidates, { allowEmbedding: false });
     return this.#record({
       sessionId: scope.sessionId,
@@ -23,6 +25,7 @@ export class MemoryRecallService {
       candidates,
       selected: ranked.slice(0, limit).map((entry) => entry.memory),
       scope,
+      diagnostics: { pendingReviewCount: pendingReviewCount(visible) },
       touch: true
     });
   }
@@ -48,7 +51,8 @@ export class MemoryRecallService {
 
     const deepRequested = options.deepRecall === true;
     const allowEmbedding = deepRequested && typeof this.hubService.embedder === "function";
-    const candidates = this.#visibleActive(scope).filter(isTrustedMemory);
+    const visible = this.#visible(scope);
+    const candidates = visible.filter(isRecallableMemory);
     const ranked = await this.hubService.rankMemory(intent, candidates, { allowEmbedding });
     const selected = ranked.filter((entry) => entry.score > 0)
       .slice(0, boundedLimit(options.limit, DEFAULT_TURN_LIMIT, 12))
@@ -63,7 +67,7 @@ export class MemoryRecallService {
       candidates,
       selected,
       scope,
-      diagnostics: { ...trigger, deepRequested, degraded },
+      diagnostics: { ...trigger, deepRequested, degraded, pendingReviewCount: pendingReviewCount(visible) },
       touch: true
     });
   }
@@ -81,14 +85,19 @@ export class MemoryRecallService {
     return this.store.updateMemoryRecallAuditInjection(recall.id, status);
   }
 
-  #visibleActive(scope) {
+  hasStartupRecall(sessionId) {
+    return this.store.hasMemoryStartupRecall(sessionId);
+  }
+
+  #visible(scope) {
     const now = Date.parse(this.clock());
     const memories = [];
     // Order is intentional and is retained as a stable tie-breaker by rankMemory.
     if (scope.taskId) memories.push(...this.store.listMemoriesByOwner("task", scope.taskId));
     if (scope.workId) memories.push(...this.store.listMemoriesByOwner("work", scope.workId));
+    memories.push(...this.store.listMemoriesByOwner("global", "user:local"));
     if (scope.agentId) memories.push(...this.store.listMemoriesByOwner("agent", scope.agentId));
-    return memories.filter((memory) => memory.promotion_status === "active" && !memory.revoked_at)
+    return memories.filter((memory) => !memory.revoked_at)
       .filter((memory) => !memory.expires_at || Date.parse(memory.expires_at) > now);
   }
 
@@ -97,6 +106,8 @@ export class MemoryRecallService {
       for (const memory of selected) this.store.touchMemory(memory.id);
     }
     const selectedEntries = selected.map((memory) => memoryRecallEntry(memory, true));
+    const candidateEntries = candidates.slice(0, AUDIT_CANDIDATE_PREVIEW_LIMIT)
+      .map((memory) => memoryRecallEntry(memory, true));
     const record = this.store.createMemoryRecallAudit({
       sessionId: sessionId ?? null,
       phase,
@@ -105,7 +116,7 @@ export class MemoryRecallService {
       scope,
       candidateIds: candidates.map((memory) => memory.id),
       selectedIds: selected.map((memory) => memory.id),
-      diagnostics: { ...diagnostics, selectedEntries }
+      diagnostics: { ...diagnostics, selectedEntries, candidateEntries }
     });
     return { ...record, memories: selected.map((memory) => this.store.getMemory(memory.id) ?? memory) };
   }
@@ -118,6 +129,14 @@ export function presentMemoryRecallAudit(store, audit) {
   return {
     ...audit,
     injectionStatus: audit.diagnostics?.injection?.status ?? "not_recorded",
+    pendingReviewCount: Number(audit.diagnostics?.pendingReviewCount ?? 0),
+    candidateEntries: Array.isArray(audit.diagnostics?.candidateEntries)
+      ? audit.diagnostics.candidateEntries
+      : audit.candidateIds.slice(0, AUDIT_CANDIDATE_PREVIEW_LIMIT).map((id) => {
+        const current = store.getMemory(id);
+        return current ? memoryRecallEntry(current, false)
+          : { id, kind: null, content: null, ownerType: null, ownerId: null, snapshotAtRecall: false };
+      }),
     selectedEntries: audit.selectedIds.map((id) => {
       const snapshot = snapshots.get(id);
       if (snapshot) return snapshot;
@@ -126,6 +145,15 @@ export function presentMemoryRecallAudit(store, audit) {
         : { id, kind: null, content: null, ownerType: null, ownerId: null, snapshotAtRecall: false };
     })
   };
+}
+
+function isRecallableMemory(memory) {
+  return memory.promotion_status === "active" && isTrustedMemory(memory);
+}
+
+function pendingReviewCount(memories) {
+  return memories.filter((memory) => memory.source_type === "extracted"
+    && memory.promotion_status === "candidate").length;
 }
 
 function memoryRecallEntry(memory, snapshotAtRecall) {

@@ -11,7 +11,7 @@ struct SettingsWindowLayoutTests {
         let horizontalPadding: CGFloat = 40
         let interTabSpacing: CGFloat = 8
 
-        #expect(SettingsTab.allCases.count == 8)
+        #expect(SettingsTab.allCases.count == 7)
         #expect(
             SettingsWindowLayout.contentSize.width
                 >= CGFloat(SettingsTab.allCases.count) * minimumUsableTabWidth
@@ -33,7 +33,6 @@ struct SettingsWindowLayoutTests {
             .general,
             .appearance,
             .notifications,
-            .memory,
             .proxy,
             .gateway,
             .devices,
@@ -47,14 +46,14 @@ struct SettingsWindowLayoutTests {
             .appendingPathComponent("Sources/CopetsMac/Settings/SettingsView.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
 
-        for route in ["general", "appearance", "notifications", "memory", "proxy", "gateway", "devices", "archivedSessions"] {
+        for route in ["general", "appearance", "notifications", "proxy", "gateway", "devices", "archivedSessions"] {
             #expect(contents.contains("case .\(route):"))
         }
         #expect(contents.contains("LocalWallpaperSettingsView()"))
         #expect(contents.contains("ForEach(SettingsTab.allCases"))
         #expect(contents.contains("selectedTab = tab"))
         #expect(!contents.contains(".tabItem"))
-        #expect(contents.contains("if selectedTab == .archivedSessions || selectedTab == .notifications || selectedTab == .memory"))
+        #expect(contents.contains("if selectedTab == .archivedSessions || selectedTab == .notifications"))
         #expect(contents.contains("Button(L10n(\"Close\"))"))
         #expect(contents.contains("Button(L10n(\"Save\"))"))
         #expect(contents.contains("await saveAllSettings()"))
