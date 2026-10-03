@@ -74,6 +74,7 @@ struct MessageComposer: View {
     @State private var selectedMentions: [ConversationMention] = []
     @State private var quickMessages = ClientQuickMessage.defaults
     @State private var quickMessageRefresh = 0
+    @State private var quickMessageScope = ""
 
     init(
         sessionId: String,
@@ -99,6 +100,12 @@ struct MessageComposer: View {
         _selectedMentions = State(initialValue: draft.mentions)
         _editorController = State(initialValue: ComposerEditorController(draft: draft))
         _hasSendableText = State(initialValue: draft.hasSendableText)
+        let taskID = BackendClient.shared.sessions.first(where: { $0.id == sessionId })?.taskId
+            ?? BackendClient.shared.archivedSessions.first(where: { $0.id == sessionId })?.taskId
+        let scope = ClientQuickMessageCache.scope(host: BackendClient.shared.baseURL.absoluteString,
+            taskID: taskID, sessionID: sessionId)
+        _quickMessages = State(initialValue: BackendClient.quickMessageCache.items(for: scope))
+        _quickMessageScope = State(initialValue: scope)
     }
 
     var body: some View {
@@ -120,13 +127,26 @@ struct MessageComposer: View {
             editorRow
         }
         }
-        .task(id: "\(session?.taskId ?? sessionId):\(quickMessageRefresh)") {
+        .task(id: "\(session?.taskId ?? sessionId):\(sessionId):\(quickMessageRefresh)") {
+            let taskID = session?.taskId
+            let scope = ClientQuickMessageCache.scope(host: backendClient.baseURL.absoluteString,
+                taskID: taskID, sessionID: sessionId)
+            if quickMessageScope != scope {
+                quickMessages = BackendClient.quickMessageCache.items(for: scope)
+                quickMessageScope = scope
+            }
             do {
                 let result = try await backendClient.quickMessages(for: sessionId)
-                guard !Task.isCancelled else { return }
-                quickMessages = result.items
+                guard !Task.isCancelled, quickMessageScope == scope,
+                      taskID == nil || result.taskId == taskID else { return }
+                let resolvedScope = ClientQuickMessageCache.scope(host: backendClient.baseURL.absoluteString,
+                    taskID: result.taskId, sessionID: sessionId)
+                let items = BackendClient.quickMessageCache.remember(result.items, for: resolvedScope)
+                // Also retain the Session fallback while inventory is loading.
+                if resolvedScope != scope { BackendClient.quickMessageCache.remember(items, for: scope) }
+                if quickMessages != items { quickMessages = items }
             } catch {
-                // Older hosts and transient disconnects retain the safe defaults.
+                // Recreated composers and transient disconnects retain the last good snapshot.
             }
         }
         .background(
@@ -311,6 +331,7 @@ struct MessageComposer: View {
         let didStartSending = backendClient.sendMessage(submission.text, to: session,
             images: submittedImages,
             mentions: submittedMentions,
+            onSuccess: { quickMessageRefresh += 1 },
             onFailure: {
             if editorController.restoreAfterFailedSubmission(submission) {
                 hasSendableText = true
