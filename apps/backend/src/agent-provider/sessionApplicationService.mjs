@@ -22,6 +22,7 @@ export class SessionApplicationService {
     this.persistRenamedSession = options.persistRenamedSession ?? null;
     this.persistModelSelection = options.persistModelSelection ?? null;
     this.resolveMessageContext = options.resolveMessageContext ?? null;
+    this.observeMemoryDispatch = options.observeMemoryDispatch ?? null;
     this.assertMessageDispatchAllowed = options.assertMessageDispatchAllowed ?? null;
     this.recoverUnavailableSession = options.recoverUnavailableSession ?? null;
     this.toolHostService = options.toolHostService ?? null;
@@ -708,13 +709,29 @@ export class SessionApplicationService {
         omissionReasons: sessionContext.contextBudget?.omissionReasons ?? {}
       })}`);
     }
-    return this.registry.invoke(
-      dispatchReference.providerId,
-      AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
-      dispatchReference,
-      message,
-      sessionContext ? { ...context, sessionContext } : context
-    );
+    try {
+      const result = await this.registry.invoke(
+        dispatchReference.providerId,
+        AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
+        dispatchReference,
+        message,
+        sessionContext ? { ...context, sessionContext } : context
+      );
+      this.#recordMemoryDispatch(sessionContext, "provider_accepted");
+      return result;
+    } catch (error) {
+      this.#recordMemoryDispatch(sessionContext, "provider_rejected");
+      throw error;
+    }
+  }
+
+  #recordMemoryDispatch(sessionContext, status) {
+    if (!sessionContext?.memoryRecall?.id || !sessionContext.memoryRecall.memories?.length) return;
+    try {
+      this.observeMemoryDispatch?.(sessionContext.memoryRecall, status);
+    } catch (error) {
+      console.warn(`[session-memory] dispatch audit failed: ${error?.message ?? error}`);
+    }
   }
 
   #canReplaceProviderBinding(error) {

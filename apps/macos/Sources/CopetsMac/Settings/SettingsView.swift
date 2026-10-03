@@ -17,7 +17,6 @@ enum SettingsTab: Hashable, CaseIterable {
     case appearance
     case notifications
     case devices
-    case memory
     case proxy
     case gateway
     case archivedSessions
@@ -28,7 +27,6 @@ enum SettingsTab: Hashable, CaseIterable {
         case .appearance: "外观"
         case .notifications: "Notifications"
         case .devices: "设备接入"
-        case .memory: "Memory Inspector"
         case .proxy: "Proxy"
         case .gateway: "Gateway"
         case .archivedSessions: "Archived Sessions"
@@ -41,7 +39,6 @@ enum SettingsTab: Hashable, CaseIterable {
         case .appearance: "paintpalette"
         case .notifications: "bell"
         case .devices: "ipad.and.iphone"
-        case .memory: "brain.head.profile"
         case .proxy: "network"
         case .gateway: "message.badge.filled.fill"
         case .archivedSessions: "archivebox"
@@ -101,7 +98,7 @@ struct SettingsView: View {
 
             HStack {
                 Spacer()
-                if selectedTab == .archivedSessions || selectedTab == .notifications || selectedTab == .memory || selectedTab == .devices || selectedTab == .appearance {
+                if selectedTab == .archivedSessions || selectedTab == .notifications || selectedTab == .devices || selectedTab == .appearance {
                     Button(L10n("Close")) {
                         onClose()
                     }
@@ -355,8 +352,6 @@ struct SettingsView: View {
             NotificationSettingsView()
         case .devices:
             ClientDevicesSettingsView()
-        case .memory:
-            MemoryManagementView(scope: .global)
         case .proxy:
             proxySettingsTab
         case .gateway:

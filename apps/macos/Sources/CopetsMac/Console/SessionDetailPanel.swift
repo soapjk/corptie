@@ -108,7 +108,7 @@ struct SessionDetailPanel: View {
             if detailKind == .workDetail,
                let work = entityClient.works.first(where: { $0.id == session.workId }) {
                 Button {
-                    TaskMemoryWindowManager.shared.show(workID: work.id, title: work.name)
+                    AppTabRouter.shared.openMemory(ownerType: "work", ownerId: work.id)
                 } label: {
                     Label("Work 记忆", systemImage: "brain")
                         .font(.system(size: 11))

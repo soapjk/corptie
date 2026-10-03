@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { ARTIFACT_RUNTIME_POLICY } from "../src/application/artifactRuntimePolicy.mjs";
 import { sessionResponsibilityInstructions } from "../src/application/sessionResponsibilityInstructions.mjs";
+import { TASK_WORKSPACE_INSTRUCTIONS } from "../src/application/workSessionContext.mjs";
 
 import {
   ensureCorptieAgentMemory,
@@ -129,7 +130,7 @@ test("existing shared memory replaces legacy Worktree autonomy with authoritativ
   }
 });
 
-test("shared Provider memory has no invented Task binding; only Worker instructions bind a Worktree", async () => {
+test("shared Provider memory has no Task binding; only Worker Turn context binds a Worktree", async () => {
   for (const relativePath of [
     "../resources/agent/global-instructions.development.md",
     "../resources/agent/global-instructions.production.md"
@@ -137,10 +138,10 @@ test("shared Provider memory has no invented Task binding; only Worker instructi
     const content = await readFile(new URL(relativePath, import.meta.url), "utf8");
     assert.doesNotMatch(content, /programmatically creates and binds the Task Worktree/u);
   }
-  const worker = sessionResponsibilityInstructions("worker");
-  assert.match(worker, /only when the direct user explicitly requests it/);
-  assert.match(worker, /Ordinary development is not authorization/);
-  for (const kind of ["worker", "workChat", "assistantChat"]) assert.ok(sessionResponsibilityInstructions(kind).includes(ARTIFACT_RUNTIME_POLICY));
+  assert.equal(sessionResponsibilityInstructions("worker"), "");
+  assert.match(TASK_WORKSPACE_INSTRUCTIONS, /only when the direct user explicitly requests it/);
+  assert.match(TASK_WORKSPACE_INSTRUCTIONS, /Ordinary development is not authorization/);
+  for (const kind of ["workChat", "assistantChat"]) assert.ok(sessionResponsibilityInstructions(kind).includes(ARTIFACT_RUNTIME_POLICY));
 });
 
 test("Artifact policy upgrades existing runtime memory once and preserves unrelated user memory", async () => {

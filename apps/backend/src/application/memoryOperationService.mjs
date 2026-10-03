@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 const MEMORY_KINDS = new Set([
   "skill", "procedure", "dev_experience", "fact", "lesson", "preference", "feedback", "episodic"
 ]);
-const SCOPES = new Set(["agent", "work", "task"]);
+const SCOPES = new Set(["global", "agent", "work", "task"]);
 
 export class MemoryOperationService {
   constructor(options = {}) {
@@ -300,7 +300,10 @@ export class MemoryOperationService {
       || task.current_session_id !== session.id)) {
       throw operationError("MEMORY_SESSION_SCOPE_REQUIRED", "The current Session references an invalid Task binding.");
     }
-    const owners = new Map([["agent", { ownerType: "agent", ownerId: actorId }]]);
+    const owners = new Map([
+      ["global", { ownerType: "global", ownerId: "user:local" }],
+      ["agent", { ownerType: "agent", ownerId: actorId }]
+    ]);
     if (session.workId) owners.set("work", { ownerType: "work", ownerId: session.workId });
     if (session.taskId) owners.set("task", { ownerType: "task", ownerId: session.taskId });
     return {

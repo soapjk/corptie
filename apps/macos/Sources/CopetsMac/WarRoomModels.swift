@@ -789,6 +789,7 @@ struct MemoryItem: Identifiable, Codable, Hashable {
     let taskId: String?
     let kind: String
     let content: String
+    let structured: MemoryStructuredData?
     let sourceType: String
     let sourceSessionId: String?
     let sourceEventSequence: Int?
@@ -808,6 +809,37 @@ struct MemoryItem: Identifiable, Codable, Hashable {
     let revokedAt: String?
     let createdAt: String
     let updatedAt: String?
+}
+
+struct MemoryStructuredData: Codable, Hashable {
+    let extraction: MemoryExtractionEvidence?
+}
+
+struct MemoryExtractionEvidence: Codable, Hashable {
+    let evidence: String?
+    let rationale: String?
+    let scopeRationale: String?
+    let modelConfidence: Double?
+}
+
+struct MemoryExtractionJob: Codable, Hashable {
+    let sessionId: String
+    let reason: String
+    let state: String
+    let attempts: Int
+    let retryAt: String?
+    let lastError: String?
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId = "session_id"
+        case reason, state, attempts
+        case retryAt = "retry_at"
+        case lastError = "last_error"
+    }
+}
+
+struct MemoryExtractionJobsEnvelope: Codable {
+    let jobs: [MemoryExtractionJob]
 }
 
 enum CorptieTaskMemoryPresentationPolicy {
@@ -835,9 +867,11 @@ struct MemoryRecallAudit: Identifiable, Codable, Hashable {
     let mode: String
     let reason: String
     let candidateIds: [String]
+    let candidateEntries: [MemoryRecallEntry]?
     let selectedIds: [String]
     let selectedEntries: [MemoryRecallEntry]?
     let injectionStatus: String?
+    let pendingReviewCount: Int?
     let createdAt: String
 }
 
@@ -852,6 +886,13 @@ struct MemoryRecallEntry: Identifiable, Codable, Hashable {
 
 struct MemoryRecallListEnvelope: Codable {
     let recalls: [MemoryRecallAudit]
+}
+
+struct MemoryBackfillProgress: Codable {
+    let scannedEvents: Int
+    let createdCount: Int
+    let nextSequence: Int
+    let hasMore: Bool
 }
 
 struct MemoryAuditEntry: Identifiable, Codable, Hashable {

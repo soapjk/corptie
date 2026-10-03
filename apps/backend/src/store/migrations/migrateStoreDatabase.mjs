@@ -3,7 +3,8 @@ import { migrateArtifactTaxonomy } from "./artifactTaxonomyMigrations.mjs";
 import { migrateStartupOperations } from "./startupOperationMigrations.mjs";
 import { migrateCollaborationProtocol } from "./collaborationProtocolMigrations.mjs";
 import { migrateSessionEventStorage } from "./sessionEventEvolutionMigrations.mjs";
-import { ensureMemoryFoundationTables } from "./memoryFoundationMigrations.mjs";
+import { ensureMemoryFoundationTables, quarantineLegacyExtractionNoise,
+  quarantinePreModelExtractionCandidates } from "./memoryFoundationMigrations.mjs";
 import { ensureCollaborationDirectoryTables } from "./collaborationDirectoryMigrations.mjs";
 import { ensureHubFoundationTables } from "./hubFoundationMigrations.mjs";
 import { migrateSessionAssociationGuards } from "./sessionAssociationMigrations.mjs";
@@ -71,6 +72,8 @@ export function migrateStoreDatabase({ db, selectAll, selectOne, ensureColumn, r
       WHERE status IN ('queued', 'running', 'paused', 'cancellation_requested', 'replanning')`);
 
     ensureMemoryFoundationTables({ db: db });
+    quarantineLegacyExtractionNoise({ db, selectAll, runDataMigrationOnce });
+    quarantinePreModelExtractionCandidates({ db, selectAll, runDataMigrationOnce });
 
     ensureCollaborationDirectoryTables({ db: db });
 

@@ -37,6 +37,7 @@ test("Worker Session context preserves normal handling for in-scope requests", (
   const context = workerContext();
 
   assert.match(context.prompt, /authoritative Task binding/);
+  assert.equal(context.prompt.split("Corptie programmatically binds the Task Worktree.").length - 1, 1);
   assert.match(context.prompt, /Handle requests within the bound Task scope normally/);
   assert.match(context.prompt, /Strict association validation/);
   assert.match(context.prompt, /No partial writes/);

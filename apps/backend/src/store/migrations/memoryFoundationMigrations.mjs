@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 export function ensureMemoryFoundationTables({ db }) {
     // --- 三层记忆（13：Work/Task 工作记忆 + Agent 进化记忆） ---
     db.run(`
@@ -55,6 +57,32 @@ export function ensureMemoryFoundationTables({ db }) {
         key TEXT PRIMARY KEY
       );
 
+      CREATE TABLE IF NOT EXISTS memory_backfill_progress (
+        session_id TEXT PRIMARY KEY,
+        last_event_sequence INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS memory_extraction_jobs (
+        session_id TEXT PRIMARY KEY,
+        reason TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'queued',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        retry_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_error TEXT,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_memory_extraction_jobs_queue
+        ON memory_extraction_jobs(state, retry_at, created_at);
+
+      CREATE TABLE IF NOT EXISTS memory_extraction_daily_budget (
+        day TEXT PRIMARY KEY,
+        calls INTEGER NOT NULL DEFAULT 0
+      );
+
       CREATE TABLE IF NOT EXISTS memory_remember_operations (
         session_id TEXT NOT NULL,
         idempotency_key TEXT NOT NULL,
@@ -99,6 +127,8 @@ export function ensureMemoryFoundationTables({ db }) {
         created_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_memory_recall_session ON memory_recall_audit(session_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_recall_startup_phase
+        ON memory_recall_audit(session_id, phase) WHERE phase = 'startup';
 
       CREATE TABLE IF NOT EXISTS platform_admin_operations (
         operation_id TEXT PRIMARY KEY,
@@ -163,4 +193,47 @@ export function ensureMemoryFoundationTables({ db }) {
       CREATE INDEX IF NOT EXISTS idx_skills_agent ON skills(source_agent_id);
       CREATE INDEX IF NOT EXISTS idx_skills_status ON skills(status);
     `);
+}
+
+export function quarantineLegacyExtractionNoise({ db, selectAll, runDataMigrationOnce }) {
+  runDataMigrationOnce("memory-extraction-source-quarantine-v1", () => {
+    const rows = selectAll(`SELECT * FROM memories
+      WHERE source_type = 'extracted' AND promotion_status = 'candidate'
+        AND (CASE WHEN json_valid(structured_json)
+          THEN json_extract(structured_json, '$.extraction.eventType') ELSE NULL END)
+          NOT IN ('SessionUserMessageCreated', 'user.message.accepted')`);
+    const updatedAt = new Date().toISOString();
+    for (const before of rows) {
+      const after = { ...before, promotion_status: "archived",
+        version: Number(before.version ?? 1) + 1, updated_at: updatedAt };
+      db.run(`UPDATE memories SET promotion_status = 'archived', version = ?, updated_at = ?
+        WHERE id = ? AND promotion_status = 'candidate'`, [after.version, updatedAt, before.id]);
+      db.run(`INSERT INTO memory_audit
+        (id, memory_id, action, actor_type, reason, before_json, after_json, created_at)
+        VALUES (?, ?, 'quarantine_extraction', 'system', ?, ?, ?, ?)`,
+      [`memory-audit:${randomUUID()}`, before.id,
+        "Legacy automatic extraction used a non-user event; retained for review but excluded from active candidates.",
+        JSON.stringify(before), JSON.stringify(after), updatedAt]);
+    }
+  });
+}
+
+export function quarantinePreModelExtractionCandidates({ db, selectAll, runDataMigrationOnce }) {
+  runDataMigrationOnce("memory-model-extraction-quarantine-v2", () => {
+    const rows = selectAll(`SELECT * FROM memories
+      WHERE source_type = 'extracted' AND promotion_status = 'candidate'`);
+    const updatedAt = new Date().toISOString();
+    for (const before of rows) {
+      const after = { ...before, promotion_status: "archived",
+        version: Number(before.version ?? 1) + 1, updated_at: updatedAt };
+      db.run(`UPDATE memories SET promotion_status = 'archived', version = ?, updated_at = ?
+        WHERE id = ? AND promotion_status = 'candidate'`, [after.version, updatedAt, before.id]);
+      db.run(`INSERT INTO memory_audit
+        (id, memory_id, action, actor_type, reason, before_json, after_json, created_at)
+        VALUES (?, ?, 'quarantine_pre_model_extraction', 'system', ?, ?, ?, ?)`,
+      [`memory-audit:${randomUUID()}`, before.id,
+        "Pre-model automatic candidate retained for audit but excluded from review and recall.",
+        JSON.stringify(before), JSON.stringify(after), updatedAt]);
+    }
+  });
 }

@@ -96,6 +96,14 @@ test("manual remember defaults to the most-specific current Task and preserves p
       scope: { workId: "work:bound", taskId: "task:bound" }
     });
     assert.match(startupContext.instructions, /Always summarize changes concisely/);
+    const bootstrapIdentity = await new AgentContextService({
+      store: f.store, hubService: f.hubService
+    }).buildAgentContext(f.agent.agentId, {
+      scope: { sessionId: "session:current", workId: "work:bound", taskId: "task:bound" },
+      includeMemories: false
+    });
+    assert.deepEqual(bootstrapIdentity.memories, []);
+    assert.doesNotMatch(bootstrapIdentity.instructions, /Always summarize changes concisely/);
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });
@@ -118,6 +126,14 @@ test("review confirms a candidate for startup recall and rejects stale or unwant
     assert.equal(confirmed.trust_level, "trusted");
     assert.equal(confirmed.confidence, 1);
     assert.equal((await recall.startup(scope)).memories[0].id, candidate.id);
+    const startupContext = await new AgentContextService({
+      store: f.store, hubService: f.hubService, recallService: recall
+    }).buildAgentContext(f.agent.agentId, { scope });
+    assert.match(startupContext.instructions, /Verified durable fact/);
+    const startupAudit = f.store.listMemoryRecallAudit({ sessionId: scope.sessionId })
+      .find((entry) => entry.id === startupContext.recall.id);
+    assert.deepEqual(startupAudit.selectedIds, [candidate.id]);
+    assert.equal(startupAudit.diagnostics.injection.status, "context_included");
     assert.throws(() => reviewExtractedMemory(f.store, candidate.id, {
       action: "confirm", expectedVersion: 1, actorId: "user:test"
     }), { code: "MEMORY_REVIEW_CONFLICT" });
@@ -402,10 +418,14 @@ test("automatic extraction and manual memory use distinct source_type with exact
     f.store.appendSessionEvent({
       eventId: "event:extract-source",
       sessionId: "session:current",
-      type: "summary",
-      payload: { summary: "Stable extracted fact" }
+      type: "SessionUserMessageCreated",
+      payload: { message: { text: "Stable extracted fact" } }
     });
-    const extracted = await new MemoryExtractor({ store: f.store }).extractFromSession("session:current", {
+    const extracted = await new MemoryExtractor({ store: f.store, classifyMany: async (events) => [{
+      eventSequence: events[0].sequence, evidence: events[0].text, content: events[0].text,
+      kind: "fact", scope: "task", scopeRationale: "Task context", rationale: "Stable fact",
+      confidence: 0.8, conflict: false
+    }] }).extractFromSession("session:current", {
       agentId: f.agent.agentId,
       workId: "work:bound",
       taskId: "task:bound"

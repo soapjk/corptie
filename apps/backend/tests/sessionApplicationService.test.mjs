@@ -297,6 +297,28 @@ test("Session application service resolves context once and passes it through th
   });
 });
 
+test("Memory dispatch audit distinguishes Provider acceptance and rejection", async () => {
+  const { registry } = fixture();
+  const statuses = [];
+  const reference = { sessionId: "legacy-a", providerId: "fake.provider", providerSessionId: "native-a" };
+  const service = new SessionApplicationService({
+    registry,
+    resolveSessionReference: async () => reference,
+    resolveMessageContext: async () => ({ prompt: "Remember the rule", memoryRecall: {
+      id: "recall:one", memories: [{ id: "memory:one" }]
+    } }),
+    observeMemoryDispatch: (recall, status) => statuses.push([recall.id, status])
+  });
+  await service.sendMessage("legacy-a", "hello");
+  assert.deepEqual(statuses, [["recall:one", "provider_accepted"]]);
+
+  const originalInvoke = registry.invoke.bind(registry);
+  registry.invoke = (...args) => args[1] === AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND
+    ? Promise.reject(new Error("Provider send failed")) : originalInvoke(...args);
+  await assert.rejects(service.sendMessage("legacy-a", "retry"), /Provider send failed/);
+  assert.deepEqual(statuses.at(-1), ["recall:one", "provider_rejected"]);
+});
+
 test("Session application service owns Provider-neutral lifecycle and stable identity", async () => {
   const { calls, service } = fixture();
   const created = await service.createSession("fake.provider", { cwd: "/tmp/project" }, { source: "desktop" });

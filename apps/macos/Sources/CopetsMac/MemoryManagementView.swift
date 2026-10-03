@@ -5,12 +5,14 @@ import CorptieConversation
 enum MemoryScopeLayer: String, CaseIterable {
     case task = "task"
     case work
+    case global
     case agent
 
     var title: String {
         switch self {
         case .task: L10n("CorptieTask Memory")
         case .work: L10n("Work Memory")
+        case .global: L10n("Global Memory")
         case .agent: L10n("Agent Long-term Memory")
         }
     }
@@ -18,6 +20,7 @@ enum MemoryScopeLayer: String, CaseIterable {
         switch self {
         case .task: "checklist"
         case .work: "target"
+        case .global: "globe"
         case .agent: "person.crop.circle.badge.checkmark"
         }
     }
@@ -36,7 +39,7 @@ enum MemoryOriginLayer: Int, CaseIterable {
         switch self {
         case .userKept: L10n("Kept by me")
         case .agentCandidate: L10n("Suggested by Agent")
-        case .agentDurable: L10n("Confirmed Agent Memory")
+        case .agentDurable: L10n("Active extracted Memory")
         case .systemManaged: L10n("System checkpoints and consolidation")
         case .inactive: L10n("Disabled, replaced or expired")
         }
@@ -44,7 +47,7 @@ enum MemoryOriginLayer: Int, CaseIterable {
     var explanation: String {
         switch self {
         case .userKept: L10n("Memories explicitly kept or manually added by you.")
-        case .agentCandidate: L10n("Untrusted candidates learned from Session activity; they are not recalled automatically.")
+        case .agentCandidate: L10n("Candidates awaiting review; they do not participate in recall.")
         case .agentDurable: L10n("Trusted durable knowledge available within this scope.")
         case .systemManaged: L10n("Recoverable pre-compaction checkpoints and audited consolidation results.")
         case .inactive: L10n("Preserved for audit but excluded from normal recall.")
@@ -72,11 +75,13 @@ struct MemoryManagementView: View {
 
     let scope: Scope
     let embedsListInParentScrollView: Bool
-    @ObservedObject private var client = EntityAPIClient.shared
+    private let client = EntityAPIClient.shared
     @State private var memories: [MemoryItem] = []
+    @State private var extractionJobs: [MemoryExtractionJob] = []
     @State private var query = ""
+    @State private var selectedLayer = "all"
     @State private var kind = "all"
-    @State private var status = "all"
+    @State private var status = "current"
     @State private var includeRevoked = true
     @State private var isLoading = false
     @State private var editingMemory: MemoryItem?
@@ -84,6 +89,8 @@ struct MemoryManagementView: View {
     @State private var historyMemory: MemoryItem?
     @State private var reviewingMemory: MemoryItem?
     @State private var isAddingMemory = false
+    @State private var selectedForMerge = Set<String>()
+    @State private var isMerging = false
 
     init(scope: Scope, embedsListInParentScrollView: Bool = false) {
         self.scope = scope
@@ -93,6 +100,7 @@ struct MemoryManagementView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             scopeExplanation
+            if scope == .global { extractionStatus }
             controls
             if isLoading && memories.isEmpty {
                 Spacer()
@@ -121,10 +129,13 @@ struct MemoryManagementView: View {
                 Text(error).font(.caption).foregroundStyle(.red)
             }
         }
-        .task(id: reloadKey) { await load() }
+        .task(id: reloadKey) {
+            await load()
+            if scope == .global { extractionJobs = await client.memoryExtractionJobs() ?? [] }
+        }
         .sheet(item: $editingMemory) { memory in
-            MemoryTagEditor(memory: memory) { tags in
-                if let updated = await client.updateMemory(memoryId: memory.id, tags: tags) {
+            MemoryTagEditor(memory: memory) { content, tags in
+                if let updated = await client.updateMemory(memoryId: memory.id, content: content, tags: tags) {
                     replace(updated)
                 }
             }
@@ -132,6 +143,18 @@ struct MemoryManagementView: View {
         .sheet(isPresented: $isAddingMemory) {
             MemoryCreationSheet(scope: scope) { memory in
                 memories.insert(memory, at: 0)
+            }
+        }
+        .sheet(isPresented: $isMerging) {
+            MemoryMergeSheet(memories: selectedMemoriesForMerge) { content in
+                if await client.consolidateMemories(
+                    memoryIds: selectedMemoriesForMerge.map(\.id), content: content
+                ) != nil {
+                    selectedForMerge.removeAll()
+                    await load()
+                    return true
+                }
+                return false
             }
         }
         .alert(L10n("Disable Memory recall?"), isPresented: Binding(
@@ -163,6 +186,16 @@ struct MemoryManagementView: View {
         HStack(spacing: 8) {
             TextField(L10n("Search memories"), text: $query)
                 .textFieldStyle(.roundedBorder)
+            if scope == .global {
+                Picker(L10n("Memory layer"), selection: $selectedLayer) {
+                    Text(L10n("All scopes")).tag("all")
+                    ForEach(MemoryScopeLayer.allCases, id: \.self) { layer in
+                        Text(layer.title).tag(layer.rawValue)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 150)
+            }
             Picker(L10n("Kind"), selection: $kind) {
                 Text(L10n("All kinds")).tag("all")
                 ForEach(["skill", "procedure", "dev_experience", "fact", "lesson", "preference", "feedback", "episodic"], id: \.self) {
@@ -172,6 +205,7 @@ struct MemoryManagementView: View {
             .labelsHidden()
             .frame(width: 130)
             Picker(L10n("Status"), selection: $status) {
+                Text(L10n("Current memories")).tag("current")
                 Text(L10n("All statuses")).tag("all")
                 ForEach(["active", "candidate", "superseded", "promoted_to_skill", "archived", "rolled_back"], id: \.self) {
                     Text($0).tag($0)
@@ -184,9 +218,35 @@ struct MemoryManagementView: View {
                 Label(L10n("Add Memory"), systemImage: "plus")
             }
             .buttonStyle(.borderedProminent)
-            Button { Task { await load() } } label: { Image(systemName: "arrow.clockwise") }
+            if canMerge {
+                Button(L10n("Merge selected")) { isMerging = true }
+                    .buttonStyle(.bordered)
+            }
+            Button { Task {
+                await load()
+                if scope == .global { extractionJobs = await client.memoryExtractionJobs() ?? extractionJobs }
+            } } label: { Image(systemName: "arrow.clockwise") }
                 .buttonStyle(.borderless)
         }
+    }
+
+    private var extractionStatus: some View {
+        let pending = extractionJobs.filter { $0.state != "done" }
+        let retrying = pending.filter { $0.retryAt != nil }
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 12) {
+                Label(L10n("Extraction queue"), systemImage: "clock.arrow.circlepath")
+                    .font(.caption.bold())
+                Text("\(pending.count) \(L10n("pending")) · \(retrying.count) \(L10n("retrying"))")
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                Spacer()
+            }
+            if let failed = retrying.first, let reason = failed.lastError {
+                Text("\(failed.sessionId): \(reason)")
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+        .accessibilityElement(children: .combine)
     }
 
     private var scopeExplanation: some View {
@@ -213,7 +273,7 @@ struct MemoryManagementView: View {
     private var scopeSubtitle: String {
         switch scope {
         case .global:
-            L10n("CorptieTask → Work → Agent is the recall priority. Memories are grouped by both scope and origin.")
+            L10n("Task → Work → Global memories apply across their scopes. Agent memories remain a separate legacy layer.")
         case .owner(type: "agent", id: _):
             L10n("Only this Agent's structured long-term layer is managed here. Work, CorptieTask, and runtime file memories remain separate.")
         case .owner(type: "work", id: _):
@@ -278,6 +338,13 @@ struct MemoryManagementView: View {
                     .foregroundStyle(memory.revokedAt == nil ? Color.secondary : Color.red)
             }
             Text(memory.content).font(.body).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            if let evidence = memory.structured?.extraction?.evidence {
+                Text(evidence).font(.caption).foregroundStyle(.secondary)
+                    .textSelection(.enabled).lineLimit(4)
+            }
+            if let rationale = memory.structured?.extraction?.rationale {
+                Text(rationale).font(.caption2).foregroundStyle(.tertiary).lineLimit(2)
+            }
             if let tags = memory.tags, !tags.isEmpty {
                 Text(tags.map { "#\($0)" }.joined(separator: "  "))
                     .font(.caption).foregroundStyle(.secondary)
@@ -294,11 +361,24 @@ struct MemoryManagementView: View {
                 Spacer()
             }
             HStack {
+                if memory.promotionStatus == "active" && memory.trustLevel == "trusted"
+                    && memory.revokedAt == nil {
+                    Toggle(L10n("Select for merge"), isOn: Binding(
+                        get: { selectedForMerge.contains(memory.id) },
+                        set: { selected in
+                            if selected { selectedForMerge.insert(memory.id) }
+                            else { selectedForMerge.remove(memory.id) }
+                        }
+                    ))
+                    .toggleStyle(.checkbox)
+                    .labelsHidden()
+                    .help(L10n("Select for merge"))
+                }
                 if let sourceSessionId = memory.sourceSessionId {
                     Label(sourceSessionId, systemImage: "arrow.triangle.branch").font(.caption2).foregroundStyle(.tertiary)
                 }
                 Spacer()
-                Button(L10n("Edit tags")) { editingMemory = memory }.buttonStyle(.link)
+                Button(L10n("Edit Memory")) { editingMemory = memory }.buttonStyle(.link)
                     .disabled(memory.revokedAt != nil)
                 Button(L10n("History")) { historyMemory = memory }.buttonStyle(.link)
                 if memory.promotionStatus == "candidate" && memory.sourceType == "extracted" {
@@ -328,12 +408,24 @@ struct MemoryManagementView: View {
 
     private var filteredMemories: [MemoryItem] {
         memories.filter { memory in
-            (includeRevoked || memory.revokedAt == nil)
+            (selectedLayer == "all" || memory.ownerType == selectedLayer)
+                && (includeRevoked || memory.revokedAt == nil)
                 && (kind == "all" || memory.kind == kind)
-                && (status == "all" || memory.promotionStatus == status)
+                && (status == "all" || status == "current" && ["active", "candidate"].contains(memory.promotionStatus ?? "")
+                    || memory.promotionStatus == status)
                 && (query.isEmpty || "\(memory.content) \(memory.tags?.joined(separator: " ") ?? "") \(memory.ownerId)"
                     .localizedCaseInsensitiveContains(query))
         }
+    }
+
+    private var selectedMemoriesForMerge: [MemoryItem] {
+        memories.filter { selectedForMerge.contains($0.id) }
+    }
+
+    private var canMerge: Bool {
+        let selected = selectedMemoriesForMerge
+        guard selected.count >= 2, let first = selected.first else { return false }
+        return selected.allSatisfy { $0.ownerType == first.ownerType && $0.ownerId == first.ownerId }
     }
 
     private var scopeLayersWithContent: [MemoryScopeLayer] {
@@ -355,8 +447,8 @@ struct MemoryManagementView: View {
 
     private var reloadKey: String {
         switch scope {
-        case .global: return "global:\(includeRevoked)"
-        case let .owner(type, id): return "\(type):\(id):\(includeRevoked)"
+        case .global: return "global:\(includeRevoked):\(status)"
+        case let .owner(type, id): return "\(type):\(id):\(includeRevoked):\(status)"
         }
     }
 
@@ -365,9 +457,11 @@ struct MemoryManagementView: View {
         defer { isLoading = false }
         switch scope {
         case .global:
-            memories = await client.allMemories(includeRevoked: includeRevoked) ?? memories
+            memories = await client.allMemories(includeRevoked: includeRevoked,
+                                                status: status == "all" ? nil : status) ?? memories
         case let .owner(type, id):
-            memories = await client.memories(ownerType: type, ownerId: id, includeRevoked: includeRevoked) ?? memories
+            memories = await client.memories(ownerType: type, ownerId: id, includeRevoked: includeRevoked,
+                                             status: status == "all" ? nil : status) ?? memories
         }
     }
 
@@ -443,8 +537,8 @@ private struct MemoryCreationSheet: View {
         self.onCreate = onCreate
         switch scope {
         case .global:
-            _ownerType = State(initialValue: "agent")
-            _ownerId = State(initialValue: "")
+            _ownerType = State(initialValue: "global")
+            _ownerId = State(initialValue: "user:local")
         case let .owner(type, id):
             _ownerType = State(initialValue: type)
             _ownerId = State(initialValue: id)
@@ -454,7 +548,7 @@ private struct MemoryCreationSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(L10n("Add structured Memory")).font(.headline)
-            Text(L10n("Choose the narrowest scope that should be affected. CorptieTask is local, Work is shared by the work, and Agent is long-term."))
+            Text(L10n("Choose the scope where this memory should apply. Global memories follow you across Works and Tasks."))
                 .font(.caption).foregroundStyle(.secondary)
 
             Form {
@@ -506,6 +600,7 @@ private struct MemoryCreationSheet: View {
     private var ownerOptions: [MemoryOwnerOption] {
         let options: [MemoryOwnerOption]
         switch ownerType {
+        case "global": options = [MemoryOwnerOption(id: "user:local", label: L10n("You"))]
         case "task": options = client.tasks.compactMap {
             guard $0.currentSessionId != nil else { return nil }
             return MemoryOwnerOption(id: $0.id, label: $0.title)
@@ -561,10 +656,50 @@ private struct MemoryOwnerOption: Identifiable {
     let label: String
 }
 
+private struct MemoryMergeSheet: View {
+    let memories: [MemoryItem]
+    let onMerge: (String) async -> Bool
+    @Environment(\.dismiss) private var dismiss
+    @State private var content: String
+    @State private var isSaving = false
+
+    init(memories: [MemoryItem], onMerge: @escaping (String) async -> Bool) {
+        self.memories = memories
+        self.onMerge = onMerge
+        _content = State(initialValue: memories.map(\.content).joined(separator: "；"))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(L10n("Merge memories")).font(.headline)
+            Text(L10n("The selected memories will be superseded. The merged memory keeps their source references and can be rolled back."))
+                .font(.caption).foregroundStyle(.secondary)
+            TextEditor(text: $content).frame(minHeight: 120)
+            HStack {
+                Spacer()
+                Button(L10n("Cancel")) { dismiss() }
+                Button(L10n("Merge")) {
+                    Task {
+                        isSaving = true
+                        defer { isSaving = false }
+                        if await onMerge(content.trimmingCharacters(in: .whitespacesAndNewlines)) { dismiss() }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isSaving || content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+    }
+}
+
 private struct MemoryAuditSheet: View {
     let memory: MemoryItem
     let onRollback: (MemoryItem) -> Void
+    @Environment(\.dismiss) private var dismiss
     @State private var entries: [MemoryAuditEntry] = []
+    @State private var recalls: [MemoryRecallAudit] = []
     @State private var isLoading = true
 
     var body: some View {
@@ -595,12 +730,32 @@ private struct MemoryAuditSheet: View {
                         }
                     }
                 }
+                if !recalls.isEmpty {
+                    Text(L10n("Recall history")).font(.subheadline.bold())
+                    List(recalls) { recall in
+                        HStack {
+                            if let sessionId = recall.sessionId {
+                                Button(sessionId) {
+                                    AppTabRouter.shared.openSession(sessionId, source: .userSelection)
+                                    dismiss()
+                                }
+                                .buttonStyle(.link)
+                                .font(.caption.monospaced()).lineLimit(1)
+                            }
+                            Spacer()
+                            Text(recall.injectionStatus ?? "not_recorded")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(minHeight: 100, maxHeight: 180)
+                }
             }
         }
         .padding(20)
         .frame(width: 620, height: 460)
         .task {
             entries = await EntityAPIClient.shared.memoryAudit(memoryId: memory.id) ?? []
+            recalls = await EntityAPIClient.shared.memoryRecalls(memoryId: memory.id) ?? []
             isLoading = false
         }
     }
@@ -608,28 +763,31 @@ private struct MemoryAuditSheet: View {
 
 private struct MemoryTagEditor: View {
     let memory: MemoryItem
-    let save: ([String]) async -> Void
+    let save: (String, [String]) async -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var text: String
+    @State private var content: String
 
-    init(memory: MemoryItem, save: @escaping ([String]) async -> Void) {
+    init(memory: MemoryItem, save: @escaping (String, [String]) async -> Void) {
         self.memory = memory
         self.save = save
         _text = State(initialValue: memory.tags?.joined(separator: ", ") ?? "")
+        _content = State(initialValue: memory.content)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(L10n("Edit Memory tags")).font(.headline)
-            Text(memory.content).foregroundStyle(.secondary).lineLimit(3)
+            Text(L10n("Edit Memory")).font(.headline)
+            TextEditor(text: $content).frame(minHeight: 100)
             TextField(L10n("Comma-separated tags"), text: $text)
             HStack {
                 Spacer()
                 Button(L10n("Cancel")) { dismiss() }
                 Button(L10n("Save")) {
                     let tags = text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-                    Task { await save(tags); dismiss() }
+                    Task { await save(content.trimmingCharacters(in: .whitespacesAndNewlines), tags); dismiss() }
                 }.keyboardShortcut(.defaultAction)
+                    .disabled(content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }.padding(20).frame(width: 420)
     }
@@ -641,12 +799,42 @@ struct SessionMemoryDiagnosticsView: View {
     @State private var loadFailed = false
     @State private var isExpanded = false
     @State private var isLoading = false
+    @State private var isBackfilling = false
+    @State private var backfillProgress: MemoryBackfillProgress?
+    @State private var backfillError: String?
 
     var body: some View {
         ConversationDetailDisclosure(isExpanded: $isExpanded, header: {
             Label(L10n("Memory recall"), systemImage: "brain.head.profile")
                 .font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
         }, content: {
+            Button { Task { await reloadRecalls() } } label: {
+                Label(L10n("Refresh recall records"), systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.link)
+            .disabled(isLoading)
+            if backfillProgress?.hasMore != false {
+                Button(backfillProgress == nil
+                       ? L10n("Scan earlier Session memories")
+                       : L10n("Scan next 500 events")) {
+                    Task { await backfillNextPage() }
+                }
+                .buttonStyle(.link)
+                .disabled(isBackfilling)
+            }
+            if isBackfilling { ProgressView().controlSize(.small) }
+            if let backfillError {
+                Text(backfillError).font(.caption2).foregroundStyle(.red)
+            }
+            if let progress = backfillProgress {
+                Text(String(format: L10n("Scanned %d events; found %d candidates this page."),
+                            progress.scannedEvents, progress.createdCount))
+                    .font(.caption2).foregroundStyle(.secondary)
+                if !progress.hasMore {
+                    Text(L10n("Historical scan complete. Review candidates in Memory management."))
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
             if isLoading {
                 ProgressView().controlSize(.small)
             } else if loadFailed {
@@ -663,13 +851,23 @@ struct SessionMemoryDiagnosticsView: View {
                             Text("\(recall.phase) · \(recall.mode)").font(.caption.bold())
                             Text("\(recall.reason) · hit \(recall.selectedIds.count)/\(recall.candidateIds.count)")
                                 .font(.caption2).foregroundStyle(.secondary)
+                            if let pending = recall.pendingReviewCount, pending > 0 {
+                                Text(String(format: L10n("%d Memory candidates await review."), pending))
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
                             if !recall.selectedIds.isEmpty {
-                                Text(recall.injectionStatus == "context_included"
+                                Text(recall.injectionStatus == "provider_accepted"
+                                     ? L10n("Provider accepted Memory context")
+                                     : recall.injectionStatus == "provider_rejected"
+                                     ? L10n("Provider rejected Memory context")
+                                     : recall.injectionStatus == "context_included"
                                      ? L10n("Included in context")
                                      : recall.injectionStatus == "budget_omitted"
                                      ? L10n("Omitted by context budget")
                                      : L10n("Context inclusion not recorded"))
                                     .font(.caption2).foregroundStyle(.secondary)
+                                Text(L10n("Selected memories"))
+                                    .font(.caption2.bold()).foregroundStyle(.secondary)
                             }
                             ForEach(recall.selectedEntries ?? []) { entry in
                                 VStack(alignment: .leading, spacing: 2) {
@@ -689,6 +887,23 @@ struct SessionMemoryDiagnosticsView: View {
                                 .padding(.leading, 6)
                                 .padding(.vertical, 2)
                             }
+                            let otherCandidates = (recall.candidateEntries ?? [])
+                                .filter { !recall.selectedIds.contains($0.id) }
+                            if !otherCandidates.isEmpty {
+                                Text(L10n("Other recall candidates"))
+                                    .font(.caption2.bold()).foregroundStyle(.secondary)
+                                ForEach(otherCandidates) { entry in
+                                    Text(entry.content ?? entry.id)
+                                        .font(.caption).foregroundStyle(.secondary)
+                                        .lineLimit(3).textSelection(.enabled)
+                                        .padding(.leading, 6)
+                                }
+                            }
+                            if recall.candidateIds.count > (recall.candidateEntries?.count ?? 0) {
+                                Text(String(format: L10n("Showing first %d of %d recall candidates."),
+                                            recall.candidateEntries?.count ?? 0, recall.candidateIds.count))
+                                    .font(.caption2).foregroundStyle(.tertiary)
+                            }
                         }
                     }
                 }
@@ -696,11 +911,29 @@ struct SessionMemoryDiagnosticsView: View {
         })
         .task(id: "\(session.id):\(isExpanded)") {
             guard isExpanded else { return }
-            isLoading = true
-            defer { isLoading = false }
-            let loaded = await EntityAPIClient.shared.memoryRecalls(sessionId: session.id)
-            recalls = loaded ?? []
-            loadFailed = loaded == nil
+            await reloadRecalls()
+        }
+    }
+
+    private func reloadRecalls() async {
+        isLoading = true
+        defer { isLoading = false }
+        let loaded = await EntityAPIClient.shared.memoryRecalls(sessionId: session.id)
+        recalls = loaded ?? []
+        loadFailed = loaded == nil
+    }
+
+    private func backfillNextPage() async {
+        isBackfilling = true
+        defer { isBackfilling = false }
+        let result = await EntityAPIClient.shared.backfillSessionMemories(
+            sessionId: session.id
+        )
+        if let result {
+            backfillProgress = result
+            backfillError = nil
+        } else {
+            backfillError = EntityAPIClient.shared.errorMessage ?? L10n("Historical scan failed.")
         }
     }
 }

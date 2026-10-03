@@ -40,6 +40,7 @@ export function createCollaborationProviderOptions({
     if (!agentId) return "";
     const context = await agentContextService.buildAgentContext(agentId, {
       intent: "",
+      includeMemories: false,
       scope: {
         sessionId: metadata?.sessionId ?? null,
         workId: metadata?.workId ?? null,

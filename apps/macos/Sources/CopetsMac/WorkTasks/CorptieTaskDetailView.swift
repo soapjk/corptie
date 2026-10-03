@@ -401,7 +401,7 @@ struct CorptieTaskDetailView: View {
                         .foregroundStyle(.tertiary)
                 }
                 Button {
-                    TaskMemoryWindowManager.shared.show(taskID: task.id, title: task.title)
+                    router.openMemory(ownerType: "task", ownerId: task.id)
                 } label: { ConversationDetailHeaderIcon(systemName: "arrow.up.right.square") }
                 .buttonStyle(.borderless)
                 .help(L10n("Open Memory Inspector"))

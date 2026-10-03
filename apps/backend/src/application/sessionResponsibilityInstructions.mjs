@@ -1,9 +1,9 @@
 import { ARTIFACT_RUNTIME_POLICY } from "./artifactRuntimePolicy.mjs";
 
-export const TASK_WORKSPACE_INSTRUCTIONS = "Corptie programmatically binds the Task Worktree. Stay in it; create or switch Worktrees only when the direct user explicitly requests it. Ordinary development is not authorization, and shell cd or command workdir never changes the logical Workspace.";
-
 export function sessionResponsibilityInstructions(sessionKind) {
-  if (sessionKind === "worker") return `${TASK_WORKSPACE_INSTRUCTIONS}\n${ARTIFACT_RUNTIME_POLICY}`;
+  // Worker-specific rules are supplied only by buildWorkSessionContext at each
+  // Turn, where the authoritative Task binding and current definition exist.
+  if (sessionKind === "worker") return "";
   if (!["assistantChat", "workChat"].includes(sessionKind)) return "";
   return [
     ARTIFACT_RUNTIME_POLICY,
