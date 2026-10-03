@@ -34,4 +34,16 @@ struct PadInspectorTests {
         #expect(store.snapshot?.taskDefinition?["acceptanceCriteria"].text == "Accepted")
         #expect(store.snapshot?.taskDefinition?["verificationCriteria"].text == "Verified")
     }
+
+    @Test func taskDetailAlwaysUsesTheSharedInformationCard() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/PadInspectorResources.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        #expect(source.contains("ConversationTaskInformationCard(summary: summary"))
+        #expect(source.contains("showsWhenEmpty: true"))
+        #expect(!source.contains("Task 摘要与设置"))
+        #expect(!source.contains("ConversationDetailModuleCard(title: \"Task 定义\""))
+    }
 }
