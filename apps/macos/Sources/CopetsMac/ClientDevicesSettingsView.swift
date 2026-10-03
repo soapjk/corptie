@@ -85,10 +85,26 @@ struct ClientDevicesSettingsView: View {
 
     var body: some View {
         Form {
-            Section("Corptie Cloud 远程连接") {
-                Text("使用独立 Corptie 账号，让同账号下的手机或 iPad 从外网连接这台 Mac。Relay 只转发端到端加密数据。")
-                    .font(.callout).foregroundStyle(.secondary)
-                Text(cloud.status).font(.callout)
+            Section {
+                Label {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(cloud.signedIn ? "已登录 Corptie Cloud" : "登录后从外网安全连接这台 Mac")
+                            .font(.headline)
+                        Text(cloud.status)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: cloud.connected ? "checkmark.icloud.fill" : "person.crop.circle")
+                        .foregroundStyle(cloud.connected ? .green : .secondary)
+                }
+                .accessibilityElement(children: .combine)
+                if cloud.restoring {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("正在恢复账号…").foregroundStyle(.secondary)
+                    }
+                }
                 HStack {
                     if cloud.signedIn {
                         Toggle("允许远程连接", isOn: Binding(
@@ -97,10 +113,12 @@ struct ClientDevicesSettingsView: View {
                         .toggleStyle(.switch)
                         Spacer()
                         Button("刷新设备") { Task { try? await cloud.refreshDevices() } }
+                            .disabled(cloud.busy || cloud.restoring)
                         Button("退出账号", role: .destructive) { Task { await cloud.signOut() } }
                     } else {
                         Button("登录 Corptie Cloud") { Task { await cloud.signIn() } }
                             .buttonStyle(.borderedProminent)
+                            .disabled(cloud.restoring)
                     }
                     if cloud.busy { ProgressView().controlSize(.small) }
                 }
@@ -127,6 +145,11 @@ struct ClientDevicesSettingsView: View {
                         }
                     }
                 }
+                Text("账号凭据保存在本机钥匙串；Relay 只转发端到端加密数据。局域网配对仍可独立使用。")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } header: {
+                Text("Corptie 账号")
             }
             Section("连接手机或 iPad") {
                 Text("让同一局域网内的设备访问这台 Mac。扫码申请并经你批准后，设备即可使用客户端提供的全部功能。")

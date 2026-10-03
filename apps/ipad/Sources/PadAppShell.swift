@@ -456,7 +456,7 @@ private struct PadDeviceSettingsView: View {
                     .foregroundStyle(workspace.realtimeConnected ? Color.green : Color.secondary)
             }
             if connection.cloudSignedIn {
-                Section("Corptie Cloud 设备") {
+                Section {
                     ForEach(connection.cloudDevices.filter { $0.kind == .mac && $0.revokedAt == nil }) { mac in
                         Button("切换到 \(mac.displayName)", systemImage: "arrow.triangle.2.circlepath") {
                             Task { await connection.connectCloud(to: mac) }
@@ -481,6 +481,8 @@ private struct PadDeviceSettingsView: View {
                         }
                     }
                     .disabled(connection.busy)
+                } header: {
+                    Text("Corptie Cloud 设备")
                 } footer: {
                     Text("同账号只有一台可用 Mac 时会自动连接；多台时可在此切换。撤销移动设备需要最近重新认证。")
                 }
