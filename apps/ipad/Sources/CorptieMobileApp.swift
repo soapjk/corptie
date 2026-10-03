@@ -463,6 +463,8 @@ struct ConversationView: View {
     @State private var didPlaceInitialTimeline = false
     @State private var pendingLatestJump = false
     @State private var latestJumpGeneration: UInt64 = 0
+    @State private var explicitJumpRevision: UInt64 = 0
+    @State private var latestTailGeometry = TimelineTailGeometry()
     @State private var attachmentPreview: PadAttachmentPreview?
     @State private var composerSheet: ComposerSheet?
     private enum ComposerSheet: String, Identifiable {
@@ -585,6 +587,12 @@ struct ConversationView: View {
                         }
                     }
                     Color.clear.frame(height: 1).id("latest")
+                        .background {
+                            GeometryReader { proxy in
+                                Color.clear.preference(key: TimelineTailPositionKey.self,
+                                    value: proxy.frame(in: .named(timelineCoordinateSpace)).minY)
+                            }
+                        }
                         .onAppear {
                             if #unavailable(iOS 18.0) { viewportState.setFollowsLatest(true) }
                         }
@@ -610,6 +618,7 @@ struct ConversationView: View {
             })
             .modifier(TimelineFollowLatestModifier(
                 followLatest: followsLatestBinding,
+                explicitJumpRevision: explicitJumpRevision,
                 onUserInteractionChange: { interacting in
                     isUserInteractingWithTimeline = interacting
                     if interacting {
@@ -624,7 +633,7 @@ struct ConversationView: View {
                 },
                 onBottomProximityChange: { nearBottom in
                     guard pendingLatestJump else { return }
-                    if nearBottom {
+                    if nearBottom && isTimelineAtLatest() {
                         pendingLatestJump = false
                     }
                 }
@@ -652,6 +661,10 @@ struct ConversationView: View {
             .onPreferenceChange(TimelineAnchorPositionKey.self) { position in
                 historyAnchorGeometry.latest = position
                 correctHistoryAnchorIfReady(position)
+            }
+            .onPreferenceChange(TimelineTailPositionKey.self) { minY in
+                latestTailGeometry.minY = minY
+                if pendingLatestJump && isTimelineAtLatest() { pendingLatestJump = false }
             }
             .onPreferenceChange(TimelineContentHeightKey.self) { height in
                 guard height != historyViewport.contentHeight else { return }
@@ -723,6 +736,7 @@ struct ConversationView: View {
                 deferredHistoryLoad = false
                 isUserInteractingWithTimeline = false
                 timelineScrollView = nil
+                latestTailGeometry.minY = nil
                 historyViewport = TimelineHistoryViewportState()
                 historyAutoLoadGate = PadHistoryAutoLoadGate()
                 didPlaceInitialTimeline = false
@@ -782,27 +796,64 @@ struct ConversationView: View {
     private var followsLatestBinding: Binding<Bool> {
         Binding(
             get: { viewportState.followsLatest },
-            set: { viewportState.setFollowsLatest($0) }
+            set: { followsLatest in
+                // Idle/geometry callbacks from the interrupted gesture cannot
+                // undo explicit intent. A new drag clears pendingLatestJump first.
+                if followsLatest || !pendingLatestJump {
+                    viewportState.setFollowsLatest(followsLatest)
+                }
+            }
         )
     }
 
-    /// Explicit intent shares the same coalesced placement as tail updates.
+    /// Explicit intent interrupts scrolling and acts synchronously, regardless
+    /// of the interaction/follow guards used by automatic placement.
     private func jumpToLatest(_ reader: ScrollViewProxy) {
-        historyRestorationTask?.cancel()
-        historyRestorationTask = nil
+        cancelPendingTimelinePlacement()
         pendingHistoryViewport = nil
         deferredHistoryLoad = false
-        withAnimation(.easeInOut(duration: 0.2)) {
-            viewportState.jumpToLatest()
-        }
         pendingLatestJump = true
-        scheduleLatestPlacement(reader)
+        viewportState.jumpToLatest()
+        isUserInteractingWithTimeline = false
+        explicitJumpRevision &+= 1
+        if let scrollView = timelineScrollView {
+            // End the active pan and stop any deceleration/scroll animation.
+            // Row virtualization is still driven by the semantic scroll below.
+            scrollView.panGestureRecognizer.isEnabled = false
+            scrollView.setContentOffset(scrollView.contentOffset, animated: false)
+            scrollView.panGestureRecognizer.isEnabled = true
+        }
+        withTransaction(Transaction(animation: nil)) {
+            reader.scrollTo("latest", anchor: .bottom)
+        }
+        let generation = latestJumpGeneration
+        let targetSessionID = sessionID
+        latestPlacementTask = Task { @MainActor in
+            defer {
+                if generation == latestJumpGeneration { latestPlacementTask = nil }
+            }
+            // Finite post-layout corrections; height measurements never restart
+            // this loop. Failure leaves the button available for another click.
+            for delay in [32, 64, 128, 256] {
+                do { try await Task.sleep(for: .milliseconds(delay)) } catch { return }
+                guard !Task.isCancelled, generation == latestJumpGeneration,
+                      workspace.selection == targetSessionID, pendingLatestJump else { return }
+                if isTimelineAtLatest() {
+                    didPlaceInitialTimeline = true
+                    pendingLatestJump = false
+                    return
+                }
+                withTransaction(Transaction(animation: nil)) {
+                    reader.scrollTo("latest", anchor: .bottom)
+                }
+            }
+        }
     }
 
     /// Coalesce tail, send/receipt and keyboard requests into one placement
     /// after the current layout transaction. Never drive this from row heights.
     private func scheduleLatestPlacement(_ reader: ScrollViewProxy) {
-        guard latestPlacementTask == nil, !isUserInteractingWithTimeline,
+        guard !pendingLatestJump, latestPlacementTask == nil, !isUserInteractingWithTimeline,
               viewportState.followsLatest, pendingHistoryViewport == nil,
               !workspace.displayEntries.isEmpty,
               historyViewport.viewportHeight > 1, laneWidth > 0 else { return }
@@ -821,7 +872,6 @@ struct ConversationView: View {
                 reader.scrollTo("latest", anchor: .bottom)
             }
             didPlaceInitialTimeline = true
-            pendingLatestJump = false
         }
     }
 
@@ -840,7 +890,9 @@ struct ConversationView: View {
             timelineScrollView.contentSize.height - timelineScrollView.bounds.height
                 + timelineScrollView.adjustedContentInset.bottom
         )
-        return maximumY - timelineScrollView.contentOffset.y <= 24
+        return PadTimelineJumpPolicy.isAtLatest(tailMinY: latestTailGeometry.minY,
+            viewportHeight: historyViewport.viewportHeight,
+            distanceToBottom: maximumY - timelineScrollView.contentOffset.y)
     }
 
     /// ScrollViewReader cannot reliably resolve the lazy tail marker before
@@ -1375,6 +1427,12 @@ private final class TimelineAnchorGeometry {
     var latest: TimelineAnchorPosition?
 }
 
+/// Diagnostic geometry is not observable: pixel changes during scrolling must
+/// not invalidate all realized message rows. Only jump completion changes UI.
+private final class TimelineTailGeometry {
+    var minY: CGFloat?
+}
+
 private struct TimelineAnchorPositionKey: PreferenceKey {
     static let defaultValue: TimelineAnchorPosition? = nil
     static func reduce(value: inout TimelineAnchorPosition?, nextValue: () -> TimelineAnchorPosition?) {
@@ -1480,6 +1538,13 @@ private struct TimelineContentHeightKey: PreferenceKey {
     }
 }
 
+private struct TimelineTailPositionKey: PreferenceKey {
+    static let defaultValue: CGFloat? = nil
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
+        value = nextValue() ?? value
+    }
+}
+
 private struct TimelineViewportSizeKey: PreferenceKey {
     static let defaultValue: CGSize = .zero
     static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
@@ -1489,6 +1554,7 @@ private struct TimelineViewportSizeKey: PreferenceKey {
 
 private struct TimelineFollowLatestModifier: ViewModifier {
     @Binding var followLatest: Bool
+    let explicitJumpRevision: UInt64
     let onUserInteractionChange: (Bool) -> Void
     let onBottomProximityChange: (Bool) -> Void
     @State private var isUserScrolling = false
@@ -1517,6 +1583,7 @@ private struct TimelineFollowLatestModifier: ViewModifier {
                         onUserInteractionChange(false)
                     }
                 }
+                .onChange(of: explicitJumpRevision) { _, _ in isUserScrolling = false }
         } else {
             content.simultaneousGesture(
                 DragGesture(minimumDistance: 1)
@@ -1531,6 +1598,7 @@ private struct TimelineFollowLatestModifier: ViewModifier {
                         onUserInteractionChange(false)
                     }
             )
+            .onChange(of: explicitJumpRevision) { _, _ in isUserScrolling = false }
         }
     }
 

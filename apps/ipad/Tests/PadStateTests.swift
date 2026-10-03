@@ -5,6 +5,27 @@ import CorptieClientCore
 
 @MainActor
 struct PadStateTests {
+    @Test func savedPairingDoesNotMakeInterruptedTransportLookConnected() {
+        #expect(PadServerConnectionStatus.resolve(hasPairing: true,
+            realtimeConnected: false, hasInterrupted: false) == .connecting)
+        #expect(PadServerConnectionStatus.resolve(hasPairing: true,
+            realtimeConnected: false, hasInterrupted: true) == .disconnected)
+        #expect(PadServerConnectionStatus.resolve(hasPairing: true,
+            realtimeConnected: true, hasInterrupted: true) == .connected)
+        #expect(PadServerConnectionStatus.resolve(hasPairing: false,
+            realtimeConnected: true, hasInterrupted: false) == .disconnected)
+        #expect(PadServerConnectionStatus.disconnected.title == "现在已经断开连接")
+    }
+
+    @Test func latestJumpRequiresBothRealizedTailAndPhysicalBottom() {
+        #expect(!PadTimelineJumpPolicy.isAtLatest(tailMinY: nil, viewportHeight: 600, distanceToBottom: 0))
+        #expect(!PadTimelineJumpPolicy.isAtLatest(tailMinY: 900, viewportHeight: 600, distanceToBottom: 0))
+        #expect(!PadTimelineJumpPolicy.isAtLatest(tailMinY: 580, viewportHeight: 600, distanceToBottom: 300))
+        #expect(!PadTimelineJumpPolicy.isAtLatest(tailMinY: 0, viewportHeight: 0, distanceToBottom: 0))
+        #expect(PadTimelineJumpPolicy.isAtLatest(tailMinY: 580, viewportHeight: 600, distanceToBottom: 12))
+        #expect(PadTimelineJumpPolicy.isAtLatest(tailMinY: 100, viewportHeight: 600, distanceToBottom: 0))
+    }
+
     @Test func persistentOutlineSelectionOnlyAppearsInTheThreeColumnLayout() {
         #expect(!PadWorkspaceLayoutPolicy.showsPersistentOutlineSelection(
             isRegularWidth: false,
