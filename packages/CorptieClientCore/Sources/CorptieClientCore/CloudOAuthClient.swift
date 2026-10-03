@@ -24,7 +24,7 @@ public struct CloudOAuthConfiguration: Equatable, Sendable {
               let redirectScheme = redirectURI.scheme,
               redirectScheme == "corptie" || (redirectScheme == "http" && ["127.0.0.1", "::1", "localhost"].contains(redirectURI.host?.lowercased() ?? "")),
               !scopes.isEmpty, scopes.allSatisfy({ Self.isToken($0) }),
-              resource.scheme == "https" || resource.host == "127.0.0.1" || resource.host == "localhost",
+              resource.scheme == "https" || (resource.scheme == "http" && ["127.0.0.1", "::1", "localhost"].contains(resource.host?.lowercased() ?? "")),
               endpoint.contains(resource) else { throw CloudOAuthError.invalidConfiguration }
         self.endpoint = endpoint
         self.clientID = clientID
@@ -37,6 +37,32 @@ public struct CloudOAuthConfiguration: Equatable, Sendable {
         !value.isEmpty && value.utf8.allSatisfy { byte in
             byte == 0x21 || (0x23...0x5B).contains(byte) || (0x5D...0x7E).contains(byte)
         }
+    }
+}
+
+public enum CorptieCloudService {
+    public static let productionBaseURL = URL(string: "https://corptie.llmay.cn")!
+    public static let nativeScopes = [
+        "openid", "profile", "email", "offline_access", "devices:read", "devices:write",
+        "devices:manage", "connections:read", "connections:write"
+    ]
+
+    public static func nativeOAuth(clientID: String, developmentBaseURL: String? = nil) throws -> CloudOAuthConfiguration {
+        let baseURL: URL
+        if let developmentBaseURL, !developmentBaseURL.isEmpty {
+            guard let candidate = URL(string: developmentBaseURL) else { throw CloudOAuthError.invalidConfiguration }
+            baseURL = candidate
+        } else {
+            baseURL = productionBaseURL
+        }
+        let endpoint = try BackendEndpoint(baseURL)
+        return try CloudOAuthConfiguration(
+            endpoint: endpoint,
+            clientID: clientID,
+            redirectURI: URL(string: "corptie://oauth/callback")!,
+            scopes: nativeScopes,
+            resource: endpoint.baseURL.appending(path: "v1")
+        )
     }
 }
 
@@ -136,11 +162,11 @@ public struct CloudOAuthTokenClient: Sendable {
 
     public init(
         configuration: CloudOAuthConfiguration,
-        session: URLSession = .shared,
+        session: URLSession? = nil,
         now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.configuration = configuration
-        self.session = session
+        self.session = session ?? URLSession(configuration: .ephemeral, delegate: CloudOAuthNoRedirects(), delegateQueue: nil)
         self.now = now
     }
 
@@ -200,4 +226,13 @@ private struct TokenResponse: Decodable {
         case expiresIn = "expires_in"
         case scope
     }
+}
+
+private final class CloudOAuthNoRedirects: NSObject, URLSessionTaskDelegate, Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest
+    ) async -> URLRequest? { nil }
 }

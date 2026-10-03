@@ -41,6 +41,11 @@ export function routeBackendHttpRequest(request, response, ports) {
     else void clientDeviceGateway.handleAdmin(request, response);
     return;
   }
+  if (url.pathname.startsWith("/client/")) {
+    if (!clientDeviceGateway) sendJson(response, 503, { code: "REMOTE_ACCESS_DISABLED" });
+    else void clientDeviceGateway.handle(request, response);
+    return;
+  }
   if (request.method === "GET" && url.pathname === "/client-capabilities") {
     sendJson(response, 200, clientCapabilities());
     return;

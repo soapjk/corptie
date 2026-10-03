@@ -108,6 +108,17 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
     <string>${APP_VERSION}</string>
     <key>CFBundleVersion</key>
     <string>1</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+      <dict>
+        <key>CFBundleTypeRole</key>
+        <string>Editor</string>
+        <key>CFBundleURLName</key>
+        <string>com.corptie.oauth</string>
+        <key>CFBundleURLSchemes</key>
+        <array><string>corptie</string></array>
+      </dict>
+    </array>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSUIElement</key>

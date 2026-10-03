@@ -92,6 +92,33 @@ test("denied and expired invitations and expired access tokens fail closed", asy
   } finally { await f.close(); }
 });
 
+test("Cloud account LAN grants use a fixed 24-hour window and sync revocations", async () => {
+  const f = await fixture();
+  try {
+    const cloudDeviceId = "11111111-1111-4111-8111-111111111111";
+    const first = await f.authority.issueCloudGrant({ cloudDeviceId, name: "Account iPad" });
+    assert.equal(first.refreshExpiresAt - first.cloudValidatedAt, 24 * 60 * 60_000);
+    assert.equal(f.authority.list().devices[0].authSource, "cloud_account");
+    f.advance(60 * 60_000);
+    const rotated = await f.authority.refresh(first);
+    assert.equal(rotated.refreshExpiresAt, first.refreshExpiresAt);
+    f.advance(23 * 60 * 60_000 + 1);
+    await assert.rejects(f.authority.refresh(rotated), { code: "INVALID_CREDENTIAL" });
+
+    const secondId = "22222222-2222-4222-8222-222222222222";
+    const second = await f.authority.issueCloudGrant({ cloudDeviceId: secondId, name: "Other iPad" });
+    await f.authority.revokeCloudDevice(secondId);
+    assert.throws(() => f.authority.authenticate(second.accessToken), { code: "INVALID_CREDENTIAL" });
+    assert.equal(f.authority.list().devices.find(device => device.id === second.deviceId).revoked, true);
+
+    const third = await f.authority.issueCloudGrant({
+      cloudDeviceId: "33333333-3333-4333-8333-333333333333", name: "Third iPad"
+    });
+    await f.authority.syncCloudDevices([]);
+    assert.throws(() => f.authority.authenticate(third.accessToken), { code: "INVALID_CREDENTIAL" });
+  } finally { await f.close(); }
+});
+
 test("gateway is disabled by default and always disabled in preview", async () => {
   assert.equal(await startConfiguredDeviceGateway({ environment: {}, directory: "/unused", preview: false }), null);
   assert.equal(await startConfiguredDeviceGateway({ environment: { CORPTIE_REMOTE_ACCESS: "1" }, directory: "/unused", preview: true }), null);
@@ -205,7 +232,9 @@ test("real TLS route boundary and authenticated local approval", async () => {
       "-out", certPath, "-days", "1", "-subj", "/CN=localhost"], { stdio: "ignore" });
     const cert = await readFile(certPath);
     const address = await gateway.start({ key: await readFile(keyPath), cert });
-    admin = http.createServer((req, res) => void gateway.handleAdmin(req, res));
+    admin = http.createServer((req, res) => void (
+      req.url.startsWith("/client/") ? gateway.handle(req, res) : gateway.handleAdmin(req, res)
+    ));
     await new Promise(resolve => admin.listen(0, "127.0.0.1", resolve));
     const call = (path, { local = false, method = "GET", token, value, headers = {} } = {}) => new Promise((resolve, reject) => {
       const req = (local ? http : https).request({ host: "127.0.0.1", servername: "localhost",
@@ -225,6 +254,10 @@ test("real TLS route boundary and authenticated local approval", async () => {
     });
     assert.equal((await call("/internal/client-devices", { local: true })).status, 403);
     const token = f.authority.adminToken;
+    const relayIdentity = await call("/client/v1/me", { local: true, token });
+    assert.equal(relayIdentity.status, 200);
+    assert.equal(relayIdentity.body.deviceId, "cloud-relay-connector");
+    assert.equal((await call("/client/v1/me", { token })).status, 401);
     assert.equal((await call("/internal/client-devices", { local: true, token, headers: { origin: "https://evil.test" } })).status, 403);
     const invitation = (await call("/internal/client-devices/invite", { local: true, token, method: "POST" })).body;
     const claim = (await call("/client/v1/pairing/claim", { method: "POST", value: { ...invitation, name: "iPad" } })).body;
