@@ -143,7 +143,7 @@ import { SkillRegistryService } from "./application/skillRegistryService.mjs";
 import { CollaborationRouter } from "./application/collaborationRouter.mjs";
 import { SceneApplicationService } from "./scenes/sceneApplicationService.mjs";
 import { handleSceneHttpRequest } from "./scenes/sceneHttpApi.mjs";
-import { MemoryExtractor, createMemoryClassifier } from "./application/memoryExtractor.mjs";
+import { MemoryExtractor } from "./application/memoryExtractor.mjs";
 import { AssistantService, createAssistantIntentResolver } from "./application/assistantService.mjs";
 import { createEntityHttpRoutes } from "./application/entityHttpComposition.mjs";
 import { handleSshWorkspaceHttpRequest } from "./application/sshWorkspaceHttpApi.mjs";
@@ -492,10 +492,7 @@ const memoryOperationService = new MemoryOperationService({
   onDiagnostic: (diagnostic) => console.warn("[memory-operation]", JSON.stringify(diagnostic))
 });
 const collaborationRouter = new CollaborationRouter({ store });
-const memoryExtractor = new MemoryExtractor({
-  store,
-  classifyMany: createMemoryClassifier(store.choiceParserSettings())
-});
+const memoryExtractor = new MemoryExtractor({ store });
 const taskSessionProjection = createTaskSessionProjection({
   store, memoryExtractor, emitEvent, sessionWithLogicalWorkspace
 });

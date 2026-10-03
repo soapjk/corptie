@@ -1541,3 +1541,14 @@
 "To allow Git tracking instead, use the owning Session to promote the exact document version as an Artifact, then return and retry. This permission does not include pushing to a remote." = "如需允许 Git 追踪，请在所属 Session 中将该文档的确定版本提升为 Artifact，然后返回重试。此授权不包含推送远端。";
 "Later" = "稍后处理";
 "Ignore Files and Continue" = "忽略文件并继续";
+"Could not load recall decisions." = "无法加载召回记录。";
+"Memory unavailable" = "记忆条目不可用";
+"Current content; historical snapshot unavailable" = "当前内容；历史快照不可用";
+"Review candidate" = "审核候选记忆";
+"Review extracted Memory" = "审核提取的记忆";
+"Confirm only durable information that should be recalled in future Sessions." = "只确认应在后续会话中召回的长期有效信息。";
+"Reject candidate" = "拒绝候选";
+"Confirm Memory" = "确认记忆";
+"Included in context" = "已加入上下文";
+"Omitted by context budget" = "因上下文预算未注入";
+"Context inclusion not recorded" = "未记录上下文注入状态";
