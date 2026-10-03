@@ -193,6 +193,7 @@ struct ConversationNativeRowBuilder {
             images: images
         )
         row.forkItemID = forkItemID(for: entry)
+        if row.nativeStyle == .process { row.processLanguageCode = AppLanguageController.shared.languageCode }
         row.forkUnavailableReason = forkUnavailableReason(for: entry)
         if case .message(let item) = entry.kind {
             if item.type == "userInput", item.userInput?.schemaVersion == 1 {
@@ -353,6 +354,7 @@ struct ConversationNativeRowBuilder {
         case .message(let item):
             hasher.combine(itemSignature(item))
         case .process(let turnId, let items):
+            hasher.combine(AppLanguageController.shared.languageCode)
             hasher.combine(turnId)
             hasher.combine(expandedTurnIds.contains(turnId))
             hasher.combine(items.count)

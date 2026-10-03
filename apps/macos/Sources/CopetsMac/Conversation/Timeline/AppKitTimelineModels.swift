@@ -132,14 +132,18 @@ struct AppKitChatTimelineRow: Identifiable {
         case process
     }
 
-    func processSummaryText(now: Date = Date(), advancing: Bool = false, includesCurrentStep: Bool = true) -> String {
+    var processLanguageCode: String?
+
+    func processSummaryText(now: Date = Date(), advancing: Bool = false, includesCurrentStep: Bool = true,
+                            languageCode: String? = nil) -> String {
         let duration = advancing && processState == .running
             ? processStartedAt.flatMap { ConversationProcessPresentation.durationText(
                 startedAt: $0, endingAt: now, showSeconds: true) }
                 ?? processDuration
             : processDuration
         return ConversationProcessPresentation(state: processState, count: processCount ?? 0,
-            duration: duration, currentStepTitle: includesCurrentStep ? processCurrentStepTitle : nil).summary
+            duration: duration, currentStepTitle: includesCurrentStep ? processCurrentStepTitle : nil)
+            .summary(languageCode: languageCode ?? processLanguageCode ?? "en")
     }
 
     var processSummary: String { processSummaryText() }
