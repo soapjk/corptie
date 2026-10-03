@@ -370,6 +370,38 @@ export function createUserMemory(store, input, actorId) {
   return memory;
 }
 
+export function reviewExtractedMemory(store, memoryId, { action, content, expectedVersion, actorId, reason } = {}) {
+  if (action !== "confirm" && action !== "reject") {
+    throw operationError("INVALID_INPUT", "Memory review action must be confirm or reject.");
+  }
+  if (!Number.isSafeInteger(Number(expectedVersion)) || Number(expectedVersion) < 1) {
+    throw operationError("INVALID_INPUT", "expectedVersion is required for Memory review.");
+  }
+  return store.runInTransaction(() => {
+    const memory = store.getMemory(memoryId);
+    if (!memory) throw operationError("MEMORY_NOT_FOUND", `Memory not found: ${memoryId}`);
+    if (memory.source_type !== "extracted" || memory.promotion_status !== "candidate" || memory.revoked_at) {
+      throw operationError("MEMORY_REVIEW_CONFLICT", "Only an active extracted candidate can be reviewed.");
+    }
+    if (Number(expectedVersion) !== Number(memory.version)) {
+      throw operationError("MEMORY_VERSION_CONFLICT", "Memory changed since it was loaded.");
+    }
+    const revisedContent = content == null ? memory.content : requiredText(content, "content");
+    const updated = store.updateMemory(memory.id, {
+      content: revisedContent,
+      promotionStatus: action === "confirm" ? "active" : "archived",
+      trustLevel: action === "confirm" ? "trusted" : "untrusted",
+      ...(action === "confirm" ? { baseConfidence: 1, confidence: 1, appliedAt: new Date().toISOString() } : {}),
+      version: Number(memory.version ?? 1) + 1
+    });
+    store.createMemoryAudit({
+      memoryId: memory.id, action: action === "confirm" ? "confirm" : "reject",
+      actorType: "user", actorId, reason: optionalText(reason), before: memory, after: updated
+    });
+    return updated;
+  });
+}
+
 export function presentMemory(memory) {
   return {
     id: memory.id,

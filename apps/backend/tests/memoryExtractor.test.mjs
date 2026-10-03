@@ -112,6 +112,85 @@ test("MemoryExtractor 提取 + 分类 + kind→owner 分流", async () => {
   }
 });
 
+test("real nested events after the first page are extracted once and progress resumes", async () => {
+  const { store, directory } = await createStore();
+  try {
+    createStartedExecution(store);
+    for (let index = 0; index < 205; index += 1) {
+      store.appendSessionEvent({ eventId: `noise:${index}`, sessionId: "s1", type: "usage.updated", payload: {} });
+    }
+    store.appendSessionEvent({
+      eventId: "user:preference", sessionId: "s1", type: "SessionUserMessageCreated",
+      payload: { message: { text: "以后记住这个项目要先运行本地测试" } }
+    });
+    store.upsertTimelineItemProjection("s1", {
+      id: "item:final", type: "agentMessage", text: "已修复数据库迁移的重复执行问题"
+    });
+    store.appendSessionEvent({
+      eventId: "assistant:final", sessionId: "s1", type: "assistant.message.completed",
+      payload: { itemReference: { id: "item:final" } }
+    });
+    const extractor = new MemoryExtractor({ store });
+    const first = await extractor.extractFromSession("s1");
+    assert.deepEqual(first.map((item) => item.kind), ["preference", "fact"]);
+    assert.ok(first.every((item) => item.promotion_status === "candidate"));
+    assert.equal(store.getMemoryExtractionProgress("s1"), 207);
+    assert.deepEqual(await extractor.extractFromSession("s1"), []);
+    store.appendSessionEvent({ eventId: "later", sessionId: "s1", type: "summary", payload: { summary: "完成后续验证" } });
+    assert.equal((await extractor.extractFromSession("s1")).length, 1);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("migration baselines legacy events while an explicit reprocess can review them", async () => {
+  const { store, directory } = await createStore();
+  const dbPath = join(directory, "corptie.sqlite");
+  const configPath = join(directory, "config.json");
+  let reopened;
+  try {
+    createStartedExecution(store);
+    store.appendSessionEvent({ eventId: "legacy", sessionId: "s1", type: "SessionUserMessageCreated",
+      payload: { message: { text: "以后先验证数据库迁移" } } });
+    store.db.run("DELETE FROM memory_extraction_metadata WHERE key = 'initial_baseline'");
+    await store.close();
+    reopened = new CorptieStore({ dbPath, configPath });
+    await reopened.initialize();
+    assert.equal(reopened.getMemoryExtractionProgress("s1"), 1);
+    const extractor = new MemoryExtractor({ store: reopened });
+    assert.deepEqual(await extractor.extractFromSession("s1"), []);
+    reopened.appendSessionEvent({ eventId: "new", sessionId: "s1", type: "SessionUserMessageCreated",
+      payload: { message: { text: "以后先运行本地测试" } } });
+    assert.equal((await extractor.extractFromSession("s1")).length, 1);
+    const [old] = await extractor.extractFromSession("s1", {}, { reprocess: true });
+    assert.equal(old.source_event_sequence, 1);
+    assert.equal(reopened.getMemoryExtractionProgress("s1"), 2);
+  } finally {
+    await reopened?.close();
+    if (!reopened) await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Work Chat extracts candidates into its bound Work", async () => {
+  const { store, directory } = await createStore();
+  try {
+    store.createAgent({ id: "agent:chat", name: "Chat" });
+    store.createWork({ id: "work:chat", name: "Chat", contributorAgentIds: ["agent:chat"] });
+    store.createSession({ id: "session:chat", title: "Chat", provider: "codex-app-server",
+      status: "running", sessionKind: "workChat", workId: "work:chat", agentId: "agent:chat" });
+    store.appendSessionEvent({ eventId: "chat:user", sessionId: "session:chat", type: "SessionUserMessageCreated",
+      payload: { message: { text: "以后这个 Work 的提交必须先测试" } } });
+    const [candidate] = await new MemoryExtractor({ store }).extractFromSession("session:chat");
+    assert.equal(candidate.owner_type, "work");
+    assert.equal(candidate.owner_id, "work:chat");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("two Sessions can append memories to one Agent concurrently without lost writes", async () => {
   const { store, directory } = await createStore();
   try {
