@@ -36,6 +36,15 @@ export function defaultClassify(event) {
   ).trim();
   if (!text) return null;
 
+  if (type === "SessionUserMessageCreated" || type === "user.message.accepted") {
+    return /记住|以后|始终|偏好|约定|不要|remember|always|never|prefer/i.test(text)
+      ? { kind: "preference", content: text.slice(0, 1000) } : null;
+  }
+  if (type === "assistant.message.completed") {
+    return /修复|实现|决定|约定|规则|原因|结论|验证|fixed|implemented|decided|rule|lesson|learned|verified/i.test(text)
+      ? { kind: "fact", content: text.slice(0, 1000) } : null;
+  }
+
   if (/(error|fail|exception)/i.test(type)) return { kind: "lesson", content: text };
   if (/feedback/i.test(type)) return { kind: "feedback", content: text };
   if (/(summary|complete|result)/i.test(type)) return { kind: "fact", content: text };
@@ -120,54 +129,60 @@ export class MemoryExtractor {
   }
 
   // 从 Session 事件流提取不可信候选；返回落库的记忆数组。
-  async extractFromSession(sessionId, claimedScope = {}) {
+  async extractFromSession(sessionId, claimedScope = {}, { reprocess = false } = {}) {
     const scope = this.resolveExecutionScope(sessionId, claimedScope);
-    const events = this.store.listSessionEvents(sessionId);
-    const classified = await this.classifyEvents(events);
     const memories = [];
-    for (let i = 0; i < events.length; i++) {
-      if (events[i]?.type === "memory/inject" || events[i]?.producer === "memory"
-        || events[i]?.source?.type === "memory-recall") continue;
-      const result = classified[i];
-      if (!result) continue;
-      const owner = ownerForKind(result.kind, scope);
-      if (!owner) continue; // 无有效归属（如能力类记忆缺失 agentId）时跳过，避免写入 owner_id=null
-      const sourceEventSequence = events[i].sequence;
-      const existing = this.store.getMemoryBySourceEvent({
-        ownerType: owner.ownerType,
-        ownerId: owner.ownerId,
-        sourceSessionId: sessionId,
-        sourceEventSequence
-      });
-      if (existing) {
-        const nextConfidence = result.baseConfidence ?? existing.confidence;
-        if (existing.content === result.content && Number(existing.confidence) === Number(nextConfidence)) {
-          continue;
+    let after = reprocess ? 0 : this.store.getMemoryExtractionProgress(sessionId);
+    while (true) {
+      const events = this.store.listSessionEvents(sessionId, after, 200);
+      if (events.length === 0) break;
+      const eligible = events.map((event) => memoryExtractionEvent(this.store, sessionId, event));
+      const selected = eligible.filter(Boolean);
+      const classified = selected.length ? await this.classifyEvents(selected) : [];
+      this.store.runInTransaction(() => {
+        for (let i = 0; i < selected.length; i += 1) {
+          const event = selected[i];
+          const result = classified[i];
+          if (!result || !String(result.content ?? "").trim()) continue;
+          const owner = ownerForKind(result.kind, scope);
+          if (!owner) continue;
+          const sourceEventSequence = event.sequence;
+          const existing = this.store.getMemoryBySourceEvent({
+            ownerType: owner.ownerType, ownerId: owner.ownerId,
+            sourceSessionId: sessionId, sourceEventSequence
+          });
+          if (existing) {
+            if (reprocess && existing.promotion_status === "candidate"
+              && existing.content !== String(result.content).trim()) {
+              memories.push(this.store.updateMemory(existing.id, {
+                content: String(result.content).trim().slice(0, 4000),
+                confidence: result.baseConfidence ?? existing.confidence,
+                version: Number(existing.version ?? 1) + 1
+              }));
+            }
+            continue;
+          }
+          memories.push(this.store.createMemory({
+            ownerType: owner.ownerType,
+            ownerId: owner.ownerId,
+            taskId: owner.ownerType === "task" ? scope.taskId : null,
+            kind: result.kind,
+            content: String(result.content).trim().slice(0, 4000),
+            sourceType: "extracted",
+            sourceSessionId: sessionId,
+            sourceEventSequence,
+            sourceEventSeqs: [sourceEventSequence],
+            structuredJson: { extraction: { eventId: event.eventId ?? null, eventType: event.type, eventSequence: sourceEventSequence } },
+            baseConfidence: result.baseConfidence ?? 0.5,
+            promotionStatus: "candidate",
+            autoApplied: false,
+            trustLevel: "untrusted"
+          }));
         }
-        memories.push(this.store.updateMemory(existing.id, {
-          content: result.content,
-          confidence: nextConfidence,
-          version: Number(existing.version ?? 1) + 1
-        }));
-        continue;
-      }
-      memories.push(
-        this.store.createMemory({
-          ownerType: owner.ownerType,
-          ownerId: owner.ownerId,
-          taskId: owner.ownerType === "task" ? scope.taskId : null,
-          kind: result.kind,
-          content: result.content,
-          sourceType: "extracted",
-          sourceSessionId: sessionId,
-          sourceEventSequence,
-          sourceEventSeqs: [sourceEventSequence],
-          baseConfidence: result.baseConfidence ?? 0.5,
-          promotionStatus: "candidate",
-          autoApplied: false,
-          trustLevel: "untrusted"
-        })
-      );
+        after = events.at(-1).sequence;
+        this.store.setMemoryExtractionProgress(sessionId, after);
+      });
+      if (events.length < 200) break;
     }
     return memories;
   }
@@ -175,24 +190,26 @@ export class MemoryExtractor {
   resolveExecutionScope(sessionId, claimedScope = {}) {
     const session = this.store.getSession(sessionId);
     if (!session) throw memoryExtractionError("SESSION_NOT_FOUND", `Session not found: ${sessionId}`);
-    if (session.sessionKind !== "worker" || !session.taskId || !session.workId) {
+    if (!["worker", "workChat", "assistantChat"].includes(session.sessionKind)) {
       throw memoryExtractionError(
-        "TASK_SESSION_REQUIRED",
-        "Task memory extraction requires a bound Worker Session."
+        "MEMORY_SESSION_KIND_UNSUPPORTED",
+        "Memory extraction requires a supported Session kind."
       );
     }
-    const task = this.store.getTask(session.taskId);
-    if (!task || task.work_id !== session.workId
-      || task.current_session_id !== session.id) {
+    const task = session.taskId ? this.store.getTask(session.taskId) : null;
+    if (session.sessionKind === "worker" && (!task || task.work_id !== session.workId)) {
       throw memoryExtractionError(
         "INVALID_TASK_SESSION",
-        "The Session is not the Task's current bound execution Session."
+        "The Session is not bound to its Task and Work."
       );
     }
+    if (session.workId && !this.store.getWork(session.workId)) {
+      throw memoryExtractionError("WORK_NOT_FOUND", "The Session references a missing Work.");
+    }
     const derived = {
-      workId: session.workId,
-      taskId: session.taskId,
-      agentId: session.agentId ?? task.main_agent_id ?? null
+      workId: session.workId ?? null,
+      taskId: session.sessionKind === "worker" ? session.taskId : null,
+      agentId: session.agentId ?? task?.main_agent_id ?? null
     };
     for (const key of ["workId", "taskId", "agentId"]) {
       const claimed = typeof claimedScope[key] === "string" ? claimedScope[key].trim() : "";
@@ -218,6 +235,20 @@ export class MemoryExtractor {
     }
     return events.map((event) => this.classify(event));
   }
+}
+
+function memoryExtractionEvent(store, sessionId, event) {
+  if (event?.type === "memory/inject" || event?.producer === "memory"
+    || event?.source?.type === "memory-recall") return null;
+  const payload = event?.payload ?? safeParse(event?.payload_json);
+  const direct = [payload?.text, payload?.summary, payload?.content, payload?.message]
+    .find((value) => typeof value === "string" && value.trim());
+  const nested = typeof payload?.message?.text === "string" ? payload.message.text : null;
+  const itemId = event?.type === "assistant.message.completed" ? payload?.itemReference?.id : null;
+  const item = itemId ? store.getSessionItem(sessionId, itemId) : null;
+  const text = String(direct ?? nested ?? item?.text ?? payload?.itemReference?.summary ?? "").trim();
+  if (!text) return null;
+  return { ...event, payload: { ...payload, text: text.slice(0, 4000) } };
 }
 
 function memoryExtractionError(code, message) {

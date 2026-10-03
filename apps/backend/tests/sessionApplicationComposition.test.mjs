@@ -128,3 +128,26 @@ test("Work Chat message context also includes references already allowed by its 
   assert.match(context.prompt, /Work snapshot: authoritative scope/);
   assert.match(context.prompt, /Reference: selected document/);
 });
+
+test("Work Chat records selected Memory only when it enters the provider-neutral context", async () => {
+  const session = { id: "session:work-memory", sessionKind: "workChat",
+    workId: "work:one", agentId: "agent:one" };
+  const reference = { sessionId: session.id, logicalSessionId: "logical:work-memory" };
+  const statuses = [];
+  const service = createSessionApplicationComposition({
+    store: { getSession: () => session },
+    agentProviderRegistry: {}, sessionBindingRepository: { resolve: () => reference },
+    workChatContextService: { build: () => ({ prompt: "Work context" }) },
+    resolveContextReferences: async () => null,
+    mcpAssignmentRevisionForAgent: () => null,
+    memoryRecallService: {
+      turn: async () => ({ id: "recall:one", mode: "lightweight", reason: "routine_context",
+        memories: [{ kind: "preference", content: "先运行本地测试" }] }),
+      markInjection: (recall, status) => statuses.push([recall.id, status])
+    },
+    emitEvent: () => {}
+  });
+  const context = await service.resolveMessageContext(reference, { message: { text: "如何提交？" } });
+  assert.match(context.prompt, /先运行本地测试/);
+  assert.deepEqual(statuses, [["recall:one", "context_included"]]);
+});
