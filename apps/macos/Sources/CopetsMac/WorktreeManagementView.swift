@@ -18,6 +18,7 @@ enum WorktreeAutomaticLoadPolicy {
 private struct WorktreeCommitPolicyResolutionSheet: View {
     @ObservedObject var client: WorktreeManagementClient
     @Binding var isPresented: Bool
+    @State private var decisions: [String: WorktreeCommitPolicyAction] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -36,42 +37,84 @@ private struct WorktreeCommitPolicyResolutionSheet: View {
 
             if let blocker = client.job?.commitPolicyBlocker {
                 List(blocker.files) { file in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(file.path)
-                            .font(.body.monospaced())
-                            .textSelection(.enabled)
-                        Text(L10n("Ignore keeps the local file, adds its exact path to .gitignore, and excludes it from this commit."))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(file.path)
+                                .font(.body.monospaced())
+                                .textSelection(.enabled)
+                                .lineLimit(2)
+                            if let appliedAction = file.appliedAction,
+                               let action = WorktreeCommitPolicyAction(rawValue: appliedAction) {
+                                Label(
+                                    String(format: L10n("Applied: %@"), action.title),
+                                    systemImage: "checkmark.circle.fill"
+                                )
+                                .font(.caption)
+                                .foregroundStyle(.green)
+                            }
+                        }
+                        Spacer(minLength: 8)
+                        Picker(
+                            L10n("Action"),
+                            selection: Binding(
+                                get: { selectedAction(for: file) },
+                                set: { decisions[file.path] = $0 }
+                            )
+                        ) {
+                            ForEach(WorktreeCommitPolicyAction.allCases) { action in
+                                Text(action.title).tag(action)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .frame(width: 160, alignment: .trailing)
+                        .disabled(file.appliedAction != nil || client.isMutating)
+                        .accessibilityLabel(String(format: L10n("Action for %@"), file.path))
                     }
                     .padding(.vertical, 3)
                 }
                 .frame(minHeight: 150, maxHeight: 320)
             }
 
-            Text(L10n("To allow Git tracking instead, use the owning Session to promote the exact document version as an Artifact, then return and retry. This permission does not include pushing to a remote."))
+            Text(L10n("Choose one action for each file. Converting creates an Artifact and removes the Worktree file; allowing Git tracking records exact-version approval. No action pushes to a remote."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            if let error = client.errorMessage, !error.isEmpty {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+            }
+
             HStack {
-                Button(L10n("Later")) { isPresented = false }
-                    .keyboardShortcut(.cancelAction)
                 Spacer()
                 if client.isMutating { ProgressView().controlSize(.small) }
-                Button(L10n("Ignore Files and Continue")) {
+                Button(L10n("Confirm and Continue")) {
                     Task {
-                        if await client.ignoreBlockedMarkdownAndContinue() {
+                        guard let files = client.job?.commitPolicyBlocker?.files else { return }
+                        let selected = Dictionary(uniqueKeysWithValues: files.map {
+                            ($0.path, selectedAction(for: $0))
+                        })
+                        if await client.resolveBlockedMarkdownAndContinue(decisions: selected) {
                             isPresented = false
                         }
                     }
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(client.isMutating || client.job?.commitPolicyBlocker?.files.isEmpty != false)
-                .accessibilityIdentifier("worktree.commit-policy.ignore-and-continue")
+                .accessibilityIdentifier("worktree.commit-policy.confirm-and-continue")
             }
         }
         .padding(20)
-        .frame(width: 560)
+        .frame(width: 680)
+    }
+
+    private func selectedAction(for file: WorktreeCommitPolicyFile) -> WorktreeCommitPolicyAction {
+        if let applied = file.appliedAction.flatMap(WorktreeCommitPolicyAction.init(rawValue:)) {
+            return applied
+        }
+        return decisions[file.path] ?? .ignore
     }
 }
 

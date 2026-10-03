@@ -1361,7 +1361,7 @@ const { sessionForkService, prepareConversationForkWorkspace } = createSessionFo
 });
 const { projectWorktreeIntegrationService, worktreeIntegrationJobService } = createWorktreeIntegrationServices({
   store, projectApplicationService, gitWorkspaces, gitHubPushes, gitCommitProtection,
-  workService, agentProviderRegistry, startPreparedWorkSession,
+  workService, artifactService, agentProviderRegistry, startPreparedWorkSession,
   sendUnifiedSessionMessage, emitEvent, presentTaskForClient
 });
 const {

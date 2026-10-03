@@ -31,6 +31,9 @@ export class WorktreeIntegrationJobService {
     this.commitChanges = options.commitChanges;
     this.inspectCommitPolicyFiles = options.inspectCommitPolicyFiles;
     this.ignoreCommitPolicyFile = options.ignoreCommitPolicyFile;
+    this.deleteCommitPolicyFile = options.deleteCommitPolicyFile;
+    this.convertCommitPolicyFileToArtifact = options.convertCommitPolicyFileToArtifact;
+    this.allowCommitPolicyFileTracking = options.allowCommitPolicyFileTracking;
     this.inspectCommitProtection = options.inspectCommitProtection;
     this.mergeSource = options.mergeSource;
     this.abortMerge = options.abortMerge;
@@ -61,6 +64,9 @@ export class WorktreeIntegrationJobService {
       "commitChanges",
       "inspectCommitPolicyFiles",
       "ignoreCommitPolicyFile",
+      "deleteCommitPolicyFile",
+      "convertCommitPolicyFileToArtifact",
+      "allowCommitPolicyFileTracking",
       "mergeSource",
       "abortMerge",
       "prepareConflictResolution",
@@ -989,7 +995,8 @@ export class WorktreeIntegrationJobService {
     }
     const entries = Array.isArray(input.decisions) ? input.decisions : [];
     const decisions = new Map(entries.map((entry) => [entry?.path, entry?.action]));
-    if (decisions.size !== blocker.files.length || blocker.files.some((file) => !decisions.has(file.path))) {
+    if (entries.length !== blocker.files.length || decisions.size !== blocker.files.length
+      || blocker.files.some((file) => !decisions.has(file.path))) {
       throw new WorktreeIntegrationJobError(
         "COMMIT_POLICY_DECISION_INCOMPLETE",
         "Choose an action for every blocked Markdown file.",
@@ -998,19 +1005,75 @@ export class WorktreeIntegrationJobService {
     }
     const item = job.details.plan.items.find((candidate) => candidate.worktreeId === blocker.worktreeId);
     if (!item) throw new WorktreeIntegrationJobError("WORKTREE_NOT_FOUND", "The blocked Worktree no longer exists.", 404);
+    const supportedActions = new Set(["ignore", "delete", "artifact", "track"]);
     for (const file of blocker.files) {
-      if (decisions.get(file.path) !== "ignore") {
+      const action = decisions.get(file.path);
+      if (!supportedActions.has(action)) {
         throw new WorktreeIntegrationJobError(
           "COMMIT_POLICY_ACTION_UNSUPPORTED",
-          "Git tracking requires an exact Artifact promotion first. Promote the document through its owning Session, then reopen this task.",
+          `Unsupported Markdown action for ${file.path}: ${action ?? "missing"}.`,
+          400
+        );
+      }
+      if (file.appliedAction && file.appliedAction !== action) {
+        throw new WorktreeIntegrationJobError(
+          "COMMIT_POLICY_DECISION_CHANGED",
+          `${file.path} was already handled as ${file.appliedAction}; its action cannot be changed.`,
           409
         );
       }
-      await this.ignoreCommitPolicyFile({
+    }
+    const pendingFiles = blocker.files.filter((file) => !file.appliedAction);
+    if (pendingFiles.length > 0) {
+      const inspected = await this.inspectCommitPolicyFiles({
+        path: item.path,
+        relativePaths: pendingFiles.map((file) => file.path)
+      });
+      const inspectedByPath = new Map(inspected.map((file) => [file.path, file]));
+      const changed = pendingFiles.find((file) => inspectedByPath.get(file.path)?.contentHash !== file.contentHash);
+      if (changed) {
+        throw new WorktreeIntegrationJobError(
+          "COMMIT_POLICY_FILE_CHANGED",
+          `${changed.path} changed after the decision panel was opened. Review the latest files before continuing.`,
+          409
+        );
+      }
+    }
+    for (const file of pendingFiles) {
+      const action = decisions.get(file.path);
+      const common = {
         repositoryId: job.repositoryId,
+        jobId: job.id,
+        blockerId: blocker.id,
+        decisionId: `${job.id}:${blocker.id}:${blocker.version}:${file.path}:${action}`,
+        item,
         path: item.path,
         relativePath: file.path,
         expectedContentHash: file.contentHash
+      };
+      let result;
+      if (action === "ignore") result = await this.ignoreCommitPolicyFile(common);
+      else if (action === "delete") result = await this.deleteCommitPolicyFile(common);
+      else if (action === "artifact") result = await this.convertCommitPolicyFileToArtifact(common);
+      else result = await this.allowCommitPolicyFileTracking(common);
+      const current = this.#requireJob(job.id);
+      const currentBlocker = current.details.commitPolicyBlocker;
+      if (!currentBlocker || currentBlocker.id !== blocker.id || currentBlocker.version !== blocker.version) {
+        throw new WorktreeIntegrationJobError(
+          "COMMIT_POLICY_BLOCKER_CHANGED",
+          "The blocked Markdown set changed while decisions were being applied.",
+          409
+        );
+      }
+      const files = currentBlocker.files.map((candidate) => candidate.path === file.path ? {
+        ...candidate,
+        appliedAction: action,
+        ...(result?.artifactId ? { artifactId: result.artifactId } : {})
+      } : candidate);
+      job = this.#update(current, {
+        details: { ...current.details, commitPolicyBlocker: { ...currentBlocker, files } },
+        auditEvent: "commit_policy_file_resolved",
+        auditData: { blockerId: blocker.id, path: file.path, action, artifactId: result?.artifactId ?? null }
       });
     }
     const refreshed = await this.#refreshWorktreeItem(job, blocker.worktreeId);
@@ -1018,7 +1081,10 @@ export class WorktreeIntegrationJobService {
       commitStatus: "pending",
       error: null
     }, "commit_policy_resolved", "commit_policy_decisions_applied", {
-      auditData: { blockerId: blocker.id, ignoredPaths: blocker.files.map((file) => file.path) }
+      auditData: {
+        blockerId: blocker.id,
+        decisions: blocker.files.map((file) => ({ path: file.path, action: decisions.get(file.path) }))
+      }
     });
     const { commitPolicyBlocker: _resolved, ...details } = job.details;
     job = this.#update(job, {
@@ -1300,6 +1366,9 @@ export class WorktreeIntegrationJobService {
           && ["conflict", "conflict_resolution_preparing"].includes(reconciled.phase)) {
           this.#scheduleAutomaticConflictResolution(reconciled.id);
         }
+        continue;
+      }
+      if (job.status === "paused" && job.details.commitPolicyBlocker) {
         continue;
       }
       this.#update(job, { status: "queued", phase: "recovery_queued", auditEvent: "backend_recovered" });
@@ -1774,7 +1843,7 @@ export class WorktreeIntegrationJobService {
     const files = inspected.map((file) => ({
       ...file,
       code: "GIT_MARKDOWN_PROMOTION_REQUIRED",
-      supportedActions: ["ignore"]
+      supportedActions: ["ignore", "delete", "artifact", "track"]
     }));
     const version = Number(job.details.commitPolicyBlocker?.version ?? 0) + 1;
     const blocker = {

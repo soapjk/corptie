@@ -89,6 +89,8 @@ export class ClientWorktreeManagementAPI {
         ? await this.worktrees.cancel(jobId, input)
         : action === "commit-policy-decisions"
           ? await this.worktrees.resolveCommitPolicy(jobId, input)
+        : action === "commit-policy-prepare"
+          ? await this.worktrees.prepareCommitPolicyResolution(jobId)
         : action === "resolve-conflict"
           ? await this.worktrees.resolveConflictWithAgent(jobId)
           : await this.worktrees.retry(jobId);

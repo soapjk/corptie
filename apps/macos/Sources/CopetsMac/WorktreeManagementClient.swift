@@ -666,9 +666,15 @@ final class WorktreeManagementClient: ObservableObject {
     }
 
     @discardableResult
-    func ignoreBlockedMarkdownAndContinue() async -> Bool {
+    func resolveBlockedMarkdownAndContinue(
+        decisions: [String: WorktreeCommitPolicyAction]
+    ) async -> Bool {
         guard let job, let blocker = job.commitPolicyBlocker,
               job.isWaitingForCommitPolicyDecision else { return false }
+        guard blocker.files.allSatisfy({ decisions[$0.path] != nil }) else {
+            errorMessage = L10n("Choose an action for every Markdown file.")
+            return false
+        }
         isMutating = true
         defer { isMutating = false }
         do {
@@ -677,7 +683,9 @@ final class WorktreeManagementClient: ObservableObject {
                 body: [
                     "blockerId": blocker.id,
                     "version": blocker.version,
-                    "decisions": blocker.files.map { ["path": $0.path, "action": "ignore"] }
+                    "decisions": blocker.files.map { file in
+                        ["path": file.path, "action": decisions[file.path]!.rawValue]
+                    }
                 ]
             )
             self.job = envelope.job

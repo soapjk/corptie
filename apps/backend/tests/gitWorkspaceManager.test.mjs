@@ -1634,6 +1634,43 @@ test("integration commit is traceable and a retry recognizes its persisted job m
   }
 });
 
+test("Markdown decisions verify exact content before ignoring or deleting individual files", async () => {
+  const fixture = await createFixture("integration-markdown-decisions", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    await mkdir(join(fixture.activeWorktree, "docs"));
+    await writeFile(join(fixture.activeWorktree, "docs", "keep.md"), "keep\n");
+    await writeFile(join(fixture.activeWorktree, "docs", "remove.md"), "remove\n");
+    const inspected = await manager.inspectIntegrationMarkdownFiles({
+      path: fixture.activeWorktree,
+      relativePaths: ["docs/keep.md", "docs/remove.md"]
+    });
+    const byPath = new Map(inspected.map((file) => [file.path, file]));
+
+    await manager.ignoreIntegrationMarkdownFile({
+      repositoryId: fixture.repositoryId,
+      path: fixture.activeWorktree,
+      relativePath: "docs/keep.md",
+      expectedContentHash: byPath.get("docs/keep.md").contentHash
+    });
+    assert.equal(await readFile(join(fixture.activeWorktree, "docs", "keep.md"), "utf8"), "keep\n");
+    assert.match(await readFile(join(fixture.activeWorktree, ".gitignore"), "utf8"), /^\/docs\/keep\.md$/m);
+
+    await manager.deleteIntegrationMarkdownFile({
+      repositoryId: fixture.repositoryId,
+      path: fixture.activeWorktree,
+      relativePath: "docs/remove.md",
+      expectedContentHash: byPath.get("docs/remove.md").contentHash
+    });
+    await assert.rejects(readFile(join(fixture.activeWorktree, "docs", "remove.md")), { code: "ENOENT" });
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("integration merge keeps conflicts in main and safely finishes them on retry", async () => {
   const fixture = await createFixture("integration-conflict-preserved", { activeFeatureWorktree: true });
   const manager = new GitWorkspaceManager({
