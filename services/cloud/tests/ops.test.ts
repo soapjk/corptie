@@ -37,6 +37,8 @@ test("runtime installation pins a verified Node 24 executable", {
     assert.match(output, /^installed Node 24\./);
     const installed = join(root, "shared", "runtime", "node");
     assert.equal(execFileSync(installed, ["-p", "process.versions.node.split('.')[0]"], { encoding: "utf8" }).trim(), "24");
+    const npmCLI = join(root, "shared", "runtime", "npm", "lib", "node_modules", "npm", "bin", "npm-cli.js");
+    assert.match(execFileSync(installed, [npmCLI, "--version"], { encoding: "utf8" }).trim(), /^\d+\./);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
