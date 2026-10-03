@@ -1,4 +1,5 @@
 import AppKit
+import CorptieConversation
 import SwiftUI
 
 enum ScheduledSessionAccessibilityID {
@@ -18,7 +19,6 @@ enum ScheduledSessionAccessibilityID {
 }
 
 struct ScheduledSessionStrip: View {
-    @EnvironmentObject private var backendClient: BackendClient
     @ObservedObject private var supplementaryData = BackendClient.shared.supplementaryDataController
     @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     let session: TaskSession
@@ -42,7 +42,8 @@ struct ScheduledSessionStrip: View {
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-        } else if !activeTasks.isEmpty || backendClient.scheduledTaskError != nil {
+            .modifier(ConversationDetailModuleSurface())
+        } else if !activeTasks.isEmpty || commandState.scheduledTaskError != nil {
             VStack(alignment: .leading, spacing: 6) {
                 if activeTasks.count > 2 {
                     Button { isExpanded.toggle() } label: {
@@ -78,7 +79,7 @@ struct ScheduledSessionStrip: View {
                     ScheduledSessionCompactCard(task: task)
                 }
 
-                if let error = backendClient.scheduledTaskError {
+                if let error = commandState.scheduledTaskError {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.red)
@@ -96,6 +97,7 @@ struct ScheduledSessionStrip: View {
             .background(Color.accentColor.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
             .onChange(of: session.id) { _, _ in isExpanded = false }
             .accessibilityIdentifier(ScheduledSessionAccessibilityID.detailSection)
+            .modifier(ConversationDetailModuleSurface())
         }
     }
 }

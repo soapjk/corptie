@@ -586,6 +586,18 @@ final class ScheduledSessionUITests: XCTestCase {
         )
         XCTAssertGreaterThan(scheduleRange.lowerBound, detailCardStart.lowerBound)
         XCTAssertFalse(conversationView.contains("ScheduledSessionStrip(session: session)"))
+        XCTAssertFalse(sessionsView.contains("if backendClient.supplementaryDataController.isLoadingScheduledTasks"))
+
+        let strip = try String(
+            contentsOf: sourceRoot.appendingPathComponent("ScheduledSessionViews.swift"),
+            encoding: .utf8
+        )
+        let stripStart = try XCTUnwrap(strip.range(of: "struct ScheduledSessionStrip: View"))
+        let compactCardStart = try XCTUnwrap(strip.range(of: "private struct ScheduledSessionCompactCard"))
+        let stripBody = strip[stripStart.lowerBound..<compactCardStart.lowerBound]
+        XCTAssertTrue(stripBody.contains("@ObservedObject private var supplementaryData"))
+        XCTAssertTrue(stripBody.contains("@ObservedObject private var commandState"))
+        XCTAssertEqual(stripBody.components(separatedBy: ".modifier(ConversationDetailModuleSurface())").count - 1, 2)
     }
 
     func testScheduledDetailTitleTogglesTheVisibleTaskList() throws {
