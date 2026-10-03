@@ -175,7 +175,7 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
             description: description, acceptance: acceptance, verification: verification) {
             ConversationDetailModuleCard(title: title, systemImage: "checklist") {
                 VStack(alignment: .leading, spacing: 14) {
-                    if summary != nil { ConversationTaskSummaryView(summary: summary, title: summaryTitle) }
+                    ConversationTaskSummaryView(summary: summary, title: summaryTitle)
                     ConversationTaskDefinition(description: description, acceptance: acceptance, verification: verification,
                         descriptionTitle: descriptionTitle, acceptanceTitle: acceptanceTitle,
                         verificationTitle: verificationTitle, expandLabel: expandLabel, collapseLabel: collapseLabel)
