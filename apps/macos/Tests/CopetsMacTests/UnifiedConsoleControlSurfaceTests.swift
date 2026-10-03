@@ -6,6 +6,24 @@ import Testing
 
 struct UnifiedConsoleControlSurfaceTests {
     @Test
+    func quickMessagesRestoreTaskSnapshotsAndDiscardCancelledOrWrongTaskResponsesOnBothClients() throws {
+        let desktop = try source(named: "Conversation/Composer/MessageComposer.swift")
+        let mobileURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("ipad/Sources/PadComposer.swift")
+        let mobile = try String(contentsOf: mobileURL, encoding: .utf8)
+        for contents in [desktop, mobile] {
+            #expect(contents.contains(".items(for: scope)"))
+            #expect(contents.contains(".remember(result.items, for: resolvedScope)"))
+            #expect(contents.contains("!Task.isCancelled, quickMessageScope == scope"))
+            #expect(contents.contains("taskID == nil || result.taskId == taskID"))
+            #expect(!contents.contains("quickMessages = result.items"))
+            #expect(!contents.contains("\n                quickMessages = ClientQuickMessage.defaults\n"))
+        }
+    }
+
+    @Test
     func experimentalDetailsRemainOpenWithoutToggleState() throws {
         let source = try source(named: "UnifiedConsoleView.swift")
         #expect(!source.contains("showsCardTaskDetails"))
