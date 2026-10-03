@@ -43,7 +43,12 @@ struct PadInspectorTests {
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         #expect(source.contains("ConversationTaskInformationCard(summary: summary"))
         #expect(source.contains("showsWhenEmpty: true"))
+        #expect(source.contains("ConversationDetailModuleCard(title: \"引用内容\", systemImage: \"link\", headerActions:"))
+        #expect(source.contains("ConversationDetailHeaderIcon(systemName: \"plus\")"))
+        #expect(!source.contains("Menu(\"添加引用\", systemImage: \"plus\")"))
         #expect(!source.contains("Task 摘要与设置"))
         #expect(!source.contains("ConversationDetailModuleCard(title: \"Task 定义\""))
+        #expect(source.contains("ConversationDetailDisclosure(isExpanded: $recallsExpanded"))
+        #expect(source.contains("ConversationDetailDisclosure(isExpanded: $turnExpanded"))
     }
 }

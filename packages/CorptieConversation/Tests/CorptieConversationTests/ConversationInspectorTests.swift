@@ -50,6 +50,33 @@ struct ConversationInspectorTests {
         #expect(ConversationTaskDefinition.hasContent(description: "描述", acceptance: "", verification: ""))
     }
 
+    @Test func detailHeaderReservesAccessibleNativeActionTargets() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CorptieConversation/ConversationInspectorSection.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        #expect(source.contains("headerActions: () -> HeaderActions"))
+        #expect(source.contains("HStack(spacing: 2) { headerActions }"))
+        #expect(source.contains(".frame(width: 44, height: 44)"))
+        #expect(source.contains(".frame(width: 28, height: 28)"))
+    }
+
+    @Test func detailDisclosureMakesTheWholeTitleRowTheToggle() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CorptieConversation/ConversationInspectorSection.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        #expect(source.contains("public struct ConversationDetailDisclosure<Header: View, Content: View>"))
+        #expect(source.contains("Button { isExpanded.toggle() } label:"))
+        #expect(source.contains("header.frame(maxWidth: .infinity, alignment: .leading)"))
+        #expect(source.contains(".contentShape(Rectangle())"))
+        #expect(source.contains(".accessibilityValue(isExpanded ? \"已展开\" : \"已收起\")"))
+    }
+
     @Test func taskSummaryUsesRevisionAndInterventionConsistently() {
         let value: ClientInspectorValue = .object([
             "state": .string("ready"),

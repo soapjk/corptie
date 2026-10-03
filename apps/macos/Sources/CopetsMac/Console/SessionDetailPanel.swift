@@ -96,7 +96,7 @@ struct SessionDetailPanel: View {
 
             if detailKind == .workDetail { workDetailContent }
 
-            contextReferencesSection.modifier(ConversationDetailModuleSurface())
+            contextReferencesSection
 
             if backendClient.supplementaryDataController.isLoadingScheduledTasks
                 || !backendClient.supplementaryDataController.selectedScheduledTasks.isEmpty
@@ -124,9 +124,8 @@ struct SessionDetailPanel: View {
             ConversationEnvironmentCard(provider: currentProviderDisplayName,
                 agent: agentDisplayName, model: session.external?.currentModel,
                 reasoning: session.external?.currentReasoningLevel,
-                workspacePath: session.external?.cwd) {
-                compactProviderPicker
-            }
+                workspacePath: session.external?.cwd,
+                actions: { compactProviderMenu }, statusContent: { providerSwitchStatus })
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -194,12 +193,8 @@ struct SessionDetailPanel: View {
     }
 
     private var contextReferencesSection: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                Label(L10n("引用内容"), systemImage: "link")
-                    .detailRailSectionLabelStyle()
-                Spacer()
-                Menu {
+        ConversationDetailModuleCard(title: L10n("引用内容"), systemImage: "link", headerActions: {
+            Menu {
                     Button("本地文件…", systemImage: "doc") { chooseLocalFile() }
                     Button("网页链接…", systemImage: "globe") { contextReferenceAddMode = .webURL }
                     Divider()
@@ -207,16 +202,20 @@ struct SessionDetailPanel: View {
                     Button("CorptieTask…", systemImage: "checklist") { contextReferenceAddMode = .task }
                     Button("Agent…", systemImage: "person.2") { contextReferenceAddMode = .agent }
                     Button("其他会话…", systemImage: "bubble.left.and.bubble.right") { contextReferenceAddMode = .session }
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 10, weight: .semibold))
-                        .frame(width: 20, height: 18)
+            } label: { ConversationDetailHeaderIcon(systemName: "plus") }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .help("添加上下文引用")
+            .accessibilityLabel("添加上下文引用")
+            if contextReferences.count > 2 {
+                Button { showsAllContextReferences.toggle() } label: {
+                    ConversationDetailHeaderIcon(systemName: showsAllContextReferences ? "chevron.up" : "chevron.down")
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .help("添加上下文引用")
+                .buttonStyle(.plain)
+                .help(showsAllContextReferences ? "收起引用" : "展开全部引用")
+                .accessibilityLabel(showsAllContextReferences ? "收起引用" : "展开全部引用（\(contextReferences.count)）")
             }
-
+        }) {
             if isLoadingContextReferences && contextReferences.isEmpty {
                 ProgressView().controlSize(.small)
             } else if !contextReferences.isEmpty {
@@ -224,11 +223,6 @@ struct SessionDetailPanel: View {
                     ForEach(showsAllContextReferences ? contextReferences : Array(contextReferences.prefix(2))) { reference in
                         contextReferenceRow(reference)
                     }
-                }
-                if contextReferences.count > 2 {
-                    Button(showsAllContextReferences ? "收起" : "展开全部（\(contextReferences.count)）") {
-                        showsAllContextReferences.toggle()
-                    }.buttonStyle(.borderless).font(.caption)
                 }
             }
         }
@@ -294,27 +288,24 @@ struct SessionDetailPanel: View {
         ConversationDetailModuleCard(title: title, systemImage: systemImage, content: content)
     }
 
-    private var compactProviderPicker: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 4) {
-                Menu {
-                    providerMenuItems
-                    if alternativeProviders.isEmpty {
-                        Text(isLoadingProviderCatalog ? L10n("正在加载 Provider…") : L10n("没有其他可用 Provider"))
-                        Button(L10n("重新加载 Provider")) {
-                            Task { await reloadProviderCatalog() }
-                        }
-                    }
-                } label: {
-                    Text(L10n("切换 Provider"))
+    private var compactProviderMenu: some View {
+        Menu {
+            providerMenuItems
+            if alternativeProviders.isEmpty {
+                Text(isLoadingProviderCatalog ? L10n("正在加载 Provider…") : L10n("没有其他可用 Provider"))
+                Button(L10n("重新加载 Provider")) {
+                    Task { await reloadProviderCatalog() }
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .disabled(isSwitchingProvider || session.external?.providerSwitchInFlight == true)
-                .accessibilityLabel(L10n("切换 Provider"))
             }
-            .font(.system(size: 10))
-            .foregroundStyle(.secondary)
+        } label: { ConversationDetailHeaderIcon(systemName: "arrow.triangle.2.circlepath") }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .disabled(isSwitchingProvider || session.external?.providerSwitchInFlight == true)
+        .help(L10n("切换 Provider"))
+        .accessibilityLabel(L10n("切换 Provider"))
+    }
+
+    @ViewBuilder private var providerSwitchStatus: some View {
             if isSwitchingProvider || session.external?.providerSwitchInFlight == true {
                 Text(L10n("正在切换 Provider…")).font(.caption2)
             }
@@ -324,7 +315,6 @@ struct SessionDetailPanel: View {
             if let providerSwitchError {
                 Text(providerSwitchError).font(.caption2).foregroundStyle(.red)
             }
-        }
     }
 
     private var providerMenuItems: some View {

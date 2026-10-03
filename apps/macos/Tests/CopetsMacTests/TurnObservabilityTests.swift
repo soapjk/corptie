@@ -47,6 +47,8 @@ final class TurnTimelineV4Tests: XCTestCase {
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         XCTAssertTrue(source.contains("@State private var isAnalysisExpanded = false"))
         XCTAssertTrue(source.contains("@State private var isTraceExpanded = false"))
+        XCTAssertTrue(source.contains("ConversationDetailDisclosure(isExpanded: $isAnalysisExpanded"))
+        XCTAssertTrue(source.contains("ConversationDetailDisclosure(isExpanded: $isTraceExpanded"))
         XCTAssertTrue(source.contains("Text(\"上一次 \\(durationText(summary.wallClockMs))\")"))
         XCTAssertTrue(source.contains("await model.loadSummary(sessionId: sessionId)"))
         XCTAssertTrue(source.contains("if isTraceExpanded { await model.loadTraceIfNeeded() }"))
