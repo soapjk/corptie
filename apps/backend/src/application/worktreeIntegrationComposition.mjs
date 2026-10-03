@@ -254,7 +254,10 @@ export function createWorktreeIntegrationServices({
           title,
           workspace,
           idempotencyKey: `integration-plan:${job.id}:start`,
-          sourceSessionId: sourceLogical?.logicalSessionId
+          sourceSessionId: sourceLogical?.logicalSessionId,
+          // The plan-specific prompt below is the single initial execution
+          // message. Startup still activates the Provider and Tool contract.
+          dispatchInitialTurn: false
         });
       } catch (error) {
         workService.deleteTask(task.id);
