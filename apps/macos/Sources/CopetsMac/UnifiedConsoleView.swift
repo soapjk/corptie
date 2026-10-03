@@ -277,21 +277,17 @@ struct UnifiedConsoleView: View {
         }
         .frame(maxHeight: .infinity)
         .modifier(ConsoleTopEdgeEffectModifier())
-        .overlay(alignment: .topLeading) {
-            HStack(spacing: 6) {
-                outlineSortMenu
-                    .platformGlassSurface(in: Circle(), interactive: true)
-                navigationModeToggle.labelsHidden()
-                    .platformGlassSurface(in: Circle(), interactive: true)
-                searchToggleButton
-                    .platformGlassSurface(in: Circle(), interactive: true)
-                taskArchiveToggle
-                    .platformGlassSurface(in: Circle(), interactive: true)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            ConsoleWorkToolbar {
+                HStack(spacing: ConsoleWorkToolbarMetrics.spacing) {
+                    outlineSortMenu
+                    navigationModeToggle.labelsHidden()
+                    searchToggleButton
+                    taskArchiveToggle
+                }
+                Spacer(minLength: ConsoleWorkToolbarMetrics.spacing)
                 outlineCreationMenu
-                    .platformGlassSurface(in: Circle(), interactive: true)
             }
-            .padding(.leading, 8)
-            .padding(.top, 3)
         }
     }
 
@@ -311,9 +307,9 @@ struct UnifiedConsoleView: View {
                 }
             }
         } label: {
-            Image(systemName: "arrow.up.arrow.down").frame(width: 24, height: 24)
+            ConsoleWorkToolbarGlyph(symbol: "arrow.up.arrow.down")
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden)
+        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
         .accessibilityLabel("排序方式").accessibilityValue(outlineSort.title)
         .accessibilityIdentifier("work-outline-sort")
         .help("排序方式")
@@ -324,10 +320,7 @@ struct UnifiedConsoleView: View {
             navigationModeOption(.workOutline, title: "分组")
             navigationModeOption(.taskCards, title: "卡片 · 实验")
         } label: {
-            Image(systemName: navigationMode == .taskCards ? "rectangle.grid.2x2" : "rectangle.3.group")
-            .font(.system(size: 11, weight: .medium))
-            .frame(width: 24, height: 24)
-            .contentShape(Circle())
+            ConsoleWorkToolbarGlyph(symbol: navigationMode == .taskCards ? "rectangle.grid.2x2" : "rectangle.3.group")
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -398,7 +391,6 @@ struct UnifiedConsoleView: View {
                 }, createTask: { presentTaskCreation(for: $0.id) },
                 taskMenu: { task in taskContextMenuContent(for: task, session: workerSession(for: task)) })
         }
-        .padding(.top, 40)
         .sheet(isPresented: Binding(
             get: { navigationMode == .taskCards && showNewSessionCreation },
             set: { if navigationMode == .taskCards { showNewSessionCreation = $0 } }
@@ -700,10 +692,7 @@ struct UnifiedConsoleView: View {
             }
             isSearchFieldFocused = true
         } label: {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 22, height: 22)
+            ConsoleWorkToolbarGlyph(symbol: "magnifyingglass")
         }
         .buttonStyle(.plain)
         .help(L10n("Search sessions"))
@@ -823,13 +812,10 @@ struct UnifiedConsoleView: View {
                 isCreatingWork = true
             }
         } label: {
-            Image(systemName: "plus")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.primary)
-                .frame(width: 24, height: 24)
-                .contentShape(Circle())
+            ConsoleWorkToolbarGlyph(symbol: "plus")
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
         .help(L10n("Create"))
@@ -844,9 +830,8 @@ struct UnifiedConsoleView: View {
         Button {
             setWorkerArchiveVisible(!isShowingWorkerArchive)
         } label: {
-            Image(systemName: isShowingWorkerArchive ? "archivebox.fill" : "archivebox")
+            ConsoleWorkToolbarGlyph(symbol: isShowingWorkerArchive ? "archivebox.fill" : "archivebox")
                 .foregroundStyle(isShowingWorkerArchive ? Color.accentColor : Color.secondary)
-                .frame(width: 24, height: 24)
         }
         .buttonStyle(.plain)
         .help(isShowingWorkerArchive ? L10n("返回活动 Task") : L10n("查看归档 Task"))

@@ -355,8 +355,9 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let processCard = try XCTUnwrap(view(in: processCell, identifier: "chat.timeline.card"))
         XCTAssertEqual(processCard.layer?.borderWidth, 0)
         XCTAssertEqual(processCard.layer?.shadowOpacity, 0)
-        XCTAssertTrue(processButton.attributedTitle.string.contains("Worked for 1.2s"))
-        XCTAssertTrue(processButton.attributedTitle.string.contains("3 steps"))
+        let expected = ConversationProcessPresentation(state: .completed, count: 3, duration: "1.2s")
+            .summary
+        XCTAssertTrue(processButton.attributedTitle.string.contains(expected))
         XCTAssertLessThan(processCell.subviews[0].frame.width, harness.tableView.tableColumns[0].width)
     }
 
@@ -589,8 +590,8 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             processState: .cancelled
         )
 
-        XCTAssertEqual(failed.processSummary, "Execution failed after 17s · 1 step")
-        XCTAssertEqual(cancelled.processSummary, "Execution stopped after 1m 4s · 3 steps")
+        XCTAssertEqual(failed.processSummaryText(languageCode: "en"), "Execution failed after 17s · 1 step")
+        XCTAssertEqual(cancelled.processSummaryText(languageCode: "en"), "Execution stopped after 1m 4s · 3 steps")
     }
 
     func testExpandedExecutionPlacesSummaryBeforeStepDetails() throws {
