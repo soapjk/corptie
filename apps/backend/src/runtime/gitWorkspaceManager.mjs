@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, realpath, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { createGitWorkspaceSnapshot } from "../utils/gitWorktreeInventory.mjs";
@@ -598,6 +598,42 @@ export class GitWorkspaceManager {
     await this.runGit(repositoryRoot, ["reset", "--quiet", "HEAD", "--", relativePath]).catch(() => {});
     this.invalidateInspectionCache(input.repositoryId, "commit_policy_ignore");
     return { relativePath, contentHash, ignoreRule: rule };
+  }
+
+  async deleteIntegrationMarkdownFile(input) {
+    const repositoryRoot = await realpath((await this.gitOutput(input.path, ["rev-parse", "--show-toplevel"])).trim());
+    const relativePath = safeRepositoryRelativePath(input.relativePath);
+    const absolute = resolve(repositoryRoot, relativePath);
+    if (!pathContains(repositoryRoot, absolute)) {
+      throw integrationGitError("COMMIT_POLICY_PATH_INVALID", "The Markdown path is outside the repository.");
+    }
+    const bytes = await readFile(absolute);
+    const contentHash = createHash("sha256").update(bytes).digest("hex");
+    if (contentHash !== input.expectedContentHash) {
+      throw integrationGitError("COMMIT_POLICY_FILE_CHANGED", `${relativePath} changed after the decision panel was opened.`);
+    }
+    if (await this.gitSucceeds(repositoryRoot, ["cat-file", "-e", `HEAD:${relativePath}`])) {
+      throw integrationGitError("COMMIT_POLICY_FILE_TRACKED", `${relativePath} is already tracked and cannot be deleted by this action.`);
+    }
+    await this.runGit(repositoryRoot, ["reset", "--quiet", "HEAD", "--", relativePath]).catch(() => {});
+    await unlink(absolute);
+    this.invalidateInspectionCache(input.repositoryId, "commit_policy_delete");
+    return { relativePath, contentHash, deleted: true };
+  }
+
+  async readIntegrationMarkdownFile(input) {
+    const repositoryRoot = await realpath((await this.gitOutput(input.path, ["rev-parse", "--show-toplevel"])).trim());
+    const relativePath = safeRepositoryRelativePath(input.relativePath);
+    const absolute = resolve(repositoryRoot, relativePath);
+    if (!pathContains(repositoryRoot, absolute)) {
+      throw integrationGitError("COMMIT_POLICY_PATH_INVALID", "The Markdown path is outside the repository.");
+    }
+    const content = await readFile(absolute);
+    const contentHash = createHash("sha256").update(content).digest("hex");
+    if (contentHash !== input.expectedContentHash) {
+      throw integrationGitError("COMMIT_POLICY_FILE_CHANGED", `${relativePath} changed after the decision panel was opened.`);
+    }
+    return { repositoryRoot, relativePath, content, contentHash, byteLength: content.byteLength };
   }
 
   async inspectIntegrationMarkdownFiles(input) {

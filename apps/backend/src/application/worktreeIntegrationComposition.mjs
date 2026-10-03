@@ -1,16 +1,103 @@
-import { resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { basename, resolve } from "node:path";
 import { ProjectWorktreeIntegrationService } from "./projectWorktreeIntegrationService.mjs";
 import { WorktreeIntegrationJobService } from "./worktreeIntegrationJobService.mjs";
 import { resolveConflictResolutionAgentContext } from "./conflictResolutionAgentContext.mjs";
 import { sessionHasActiveRun } from "../utils/sessionPresentation.mjs";
 
+function commitPolicyArtifactBinding(store, item) {
+  const taskIds = new Set();
+  const workIds = new Set();
+  for (const association of item.associations ?? []) {
+    const session = association.sessionId ? store.getSession(association.sessionId) : null;
+    const logical = association.logicalSessionId && store.getLogicalSession
+      ? store.getLogicalSession(association.logicalSessionId)
+      : null;
+    const taskId = association.taskId ?? session?.taskId ?? session?.task_id
+      ?? logical?.taskId ?? logical?.task_id ?? null;
+    const task = taskId ? store.getTask(taskId) : null;
+    const workId = task?.work_id ?? task?.workId ?? session?.workId ?? session?.work_id
+      ?? logical?.workId ?? logical?.work_id ?? null;
+    if (taskId && task) taskIds.add(taskId);
+    if (workId) workIds.add(workId);
+  }
+  if (workIds.size !== 1) {
+    const error = new Error(
+      "The blocked Worktree must be associated with exactly one Work before its Markdown can become an Artifact."
+    );
+    error.code = "COMMIT_POLICY_ARTIFACT_OWNER_AMBIGUOUS";
+    error.statusCode = 409;
+    throw error;
+  }
+  const workId = [...workIds][0];
+  const taskId = taskIds.size === 1
+    ? [...taskIds].find((id) => {
+      const task = store.getTask(id);
+      return (task?.work_id ?? task?.workId) === workId;
+    }) ?? null
+    : null;
+  return { workId, taskId };
+}
+
 // Project-level integration wiring, including explicit conflict Session launch.
 // Both services share the host's Store and Git services; no runtime is started here.
 export function createWorktreeIntegrationServices({
   store, projectApplicationService, gitWorkspaces, gitHubPushes, gitCommitProtection,
-  workService, agentProviderRegistry, startPreparedWorkSession,
+  workService, artifactService, agentProviderRegistry, startPreparedWorkSession,
   sendUnifiedSessionMessage, emitEvent, presentTaskForClient
 }) {
+  const applyArtifactDecision = async (input, { removeSource, allowTracking }) => {
+    const binding = commitPolicyArtifactBinding(store, input.item);
+    const file = await gitWorkspaces.readIntegrationMarkdownFile({
+      path: input.item.path,
+      relativePath: input.relativePath,
+      expectedContentHash: input.expectedContentHash
+    });
+    const identity = createHash("sha256").update([
+      input.jobId, input.blockerId, input.relativePath, input.expectedContentHash,
+      allowTracking ? "track" : "artifact"
+    ].join("\0")).digest("hex");
+    const artifact = await artifactService.create({
+      kind: "local_user",
+      actorId: "user:local-macos",
+      workId: binding.workId
+    }, {
+      artifactId: `artifact:worktree-markdown:${identity}`,
+      title: basename(input.relativePath),
+      summary: `Captured from Worktree Markdown decision for ${input.relativePath}.`,
+      content: file.content,
+      mimeType: "text/markdown",
+      visibility: binding.taskId ? "task_private" : "work_private",
+      scope: binding.taskId ? "task" : "work",
+      ...(binding.taskId ? { boundTaskId: binding.taskId } : {}),
+      kind: "document",
+      categoryPath: "worktree-markdown",
+      tags: ["worktree", "markdown"],
+      sourceEventId: input.decisionId
+    });
+    if (allowTracking) {
+      await artifactService.promoteExistingRepositoryFileFromUserDecision({
+        kind: "local_user",
+        actorId: "user:local-macos",
+        workId: binding.workId
+      }, artifact.artifactId, {
+        repositoryPath: file.repositoryRoot,
+        path: file.relativePath,
+        version: artifact.currentVersion,
+        contentHash: file.contentHash,
+        decisionId: input.decisionId
+      });
+    }
+    if (removeSource) {
+      await gitWorkspaces.deleteIntegrationMarkdownFile({
+        repositoryId: input.repositoryId,
+        path: input.item.path,
+        relativePath: input.relativePath,
+        expectedContentHash: input.expectedContentHash
+      });
+    }
+    return { artifactId: artifact.artifactId, version: artifact.currentVersion };
+  };
   const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService({
     store,
     inspectProject: async (projectId, options = {}) => {
@@ -106,6 +193,15 @@ export function createWorktreeIntegrationServices({
     inspectCommitProtection: (path) => gitCommitProtection.inspect(path),
     inspectCommitPolicyFiles: (input) => gitWorkspaces.inspectIntegrationMarkdownFiles(input),
     ignoreCommitPolicyFile: (input) => gitWorkspaces.ignoreIntegrationMarkdownFile(input),
+    deleteCommitPolicyFile: (input) => gitWorkspaces.deleteIntegrationMarkdownFile(input),
+    convertCommitPolicyFileToArtifact: (input) => applyArtifactDecision(input, {
+      removeSource: true,
+      allowTracking: false
+    }),
+    allowCommitPolicyFileTracking: (input) => applyArtifactDecision(input, {
+      removeSource: false,
+      allowTracking: true
+    }),
     commitChanges: (input) => gitWorkspaces.commitIntegrationChanges({
       ...input,
       prepare: () => gitCommitProtection.resolve(input.path, {

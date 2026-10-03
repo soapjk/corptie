@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { access, mkdir, open, readFile, readdir, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { resolvePlatformAdminSession } from "../utils/platformAssistantIdentity.mjs";
 import { ArtifactReferenceAuthorizer, SessionAuthorizationResolver, artifactError as pinnedReadError, safeHashEqual } from "./artifactAuthorization.mjs";
 import { buildArtifactContextIndex } from "./artifactContextIndex.mjs";
@@ -1343,6 +1343,81 @@ export class ArtifactService {
     });
     return { promotionId, artifactId, version: version.version, contentHash: version.contentHash,
       ...destination, staged: false, committed: false, auditAction: "artifact.promoted_to_repository" };
+  }
+
+  async promoteExistingRepositoryFileFromUserDecision(contextInput, artifactId, input = {}) {
+    const context = this.context(contextInput);
+    if (context.kind !== "local_user") {
+      throw artifactError("ARTIFACT_PROMOTION_AUTHORIZATION_REQUIRED", "A direct local-user decision is required.", 403);
+    }
+    const path = requiredText(input.path, "path");
+    if (!/\.md$/iu.test(path) || path.startsWith("/") || path.includes("\\") || /[\0\r\n]/u.test(path)
+      || path.split("/").some((part) => !part || part === "." || part === ".." || [".git", ".corptie"].includes(part.toLowerCase()))) {
+      throw artifactError("ARTIFACT_PATH_INVALID", "Unsafe repository target.", 400);
+    }
+    const decisionId = requiredText(input.decisionId, "decisionId");
+    const artifact = this.#readableArtifact(context, artifactId);
+    const version = this.store.getArtifactVersion(artifactId, input.version);
+    if (!version?.storageKey || !/^[a-f0-9]{64}$/u.test(input.contentHash ?? "")
+      || !safeHashEqual(version.contentHash, input.contentHash)) {
+      throw artifactError("ARTIFACT_VERSION_HASH_MISMATCH", "Tracking approval requires an exact stored Artifact version/hash.", 409);
+    }
+    const repositoryPath = await realpath(requiredText(input.repositoryPath, "repositoryPath"));
+    const destination = resolve(repositoryPath, path);
+    const relation = relative(repositoryPath, destination);
+    if (!relation || relation === ".." || relation.startsWith(`..${sep}`) || isAbsolute(relation)) {
+      throw artifactError("ARTIFACT_PATH_INVALID", "The Markdown file is outside the repository.", 400);
+    }
+    const actualPath = await realpath(destination);
+    const actualRelation = relative(repositoryPath, actualPath);
+    if (actualRelation === ".." || actualRelation.startsWith(`..${sep}`) || isAbsolute(actualRelation)) {
+      throw artifactError("ARTIFACT_PATH_INVALID", "The Markdown file resolves outside the repository.", 400);
+    }
+    const [storedContent, repositoryContent] = await Promise.all([
+      readFile(this.#safeStoragePath(version.storageKey)),
+      readFile(actualPath)
+    ]);
+    if (storedContent.byteLength !== version.byteLength || sha256(storedContent) !== version.contentHash
+      || sha256(repositoryContent) !== version.contentHash) {
+      throw artifactError("ARTIFACT_VERSION_HASH_MISMATCH", "The repository file no longer matches the approved Artifact version.", 409);
+    }
+    await ensureArtifactCommitHook(repositoryPath, { dbPath: this.store.dbPath });
+    const promotionId = `artifact_promotion:worktree:${sha256(Buffer.from(decisionId, "utf8"))}`;
+    const existing = this.store.selectOne(
+      "SELECT * FROM artifact_repository_promotions WHERE promotion_id=?",
+      [promotionId]
+    );
+    if (existing) {
+      if (existing.repository_path !== repositoryPath || existing.target_path !== path
+        || existing.artifact_id !== artifactId || existing.version !== version.version
+        || existing.content_hash !== version.contentHash) {
+        throw artifactError("ARTIFACT_IDEMPOTENCY_CONFLICT", "This tracking decision was already used for different content.", 409);
+      }
+      return { promotionId, artifactId, version: version.version, contentHash: version.contentHash,
+        repositoryPath, path, staged: false, committed: false, idempotentReplay: true };
+    }
+    const interactionId = `worktree-commit-policy:${decisionId}`;
+    const authorization = {
+      source: "worktree_commit_policy_panel",
+      actorId: context.actorId,
+      sessionId: "local-user:macos",
+      turnId: interactionId,
+      eventId: interactionId,
+      path,
+      action: "track",
+      contentHash: version.contentHash
+    };
+    this.store.runInTransaction(() => {
+      this.store.db.run("INSERT INTO artifact_repository_promotions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [promotionId, repositoryPath, path, artifactId, version.version, version.contentHash,
+          authorization.sessionId, JSON.stringify(authorization), this.clock()]);
+      this.#audit(context, artifact.artifactId, "artifact.promoted_to_repository", {
+        promotionId, repositoryPath, path, contentHash: version.contentHash, authorization
+      }, version.version, version.version);
+    });
+    return { promotionId, artifactId, version: version.version, contentHash: version.contentHash,
+      repositoryPath, path, staged: false, committed: false, idempotentReplay: false,
+      auditAction: "artifact.promoted_to_repository" };
   }
 
   verifyRepositoryPromotion({ repositoryPath, path, contentHash }) {

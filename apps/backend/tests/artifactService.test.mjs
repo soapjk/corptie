@@ -111,6 +111,44 @@ test("promotion records durable exact-path evidence without staging and the Git 
   } finally { f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
+test("a Worktree decision can approve the exact existing Markdown version without a Session turn", async () => {
+  const f = await fixture();
+  try {
+    const root = join(f.directory, "decision-project");
+    await mkdir(join(root, "docs"), { recursive: true });
+    const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" });
+    git("init", "--quiet");
+    const content = "approved from the Worktree panel\n";
+    const path = "docs/panel.md";
+    await writeFile(join(root, path), content);
+    const artifact = await f.service.create(localUserContext, {
+      title: "panel.md", content, visibility: "work_private"
+    });
+    const version = artifact.versions.find((candidate) => candidate.version === artifact.currentVersion);
+    const input = {
+      repositoryPath: root,
+      path,
+      version: version.version,
+      contentHash: version.contentHash,
+      decisionId: "job:one:blocker:one:docs/panel.md:track"
+    };
+
+    const receipt = await f.service.promoteExistingRepositoryFileFromUserDecision(
+      localUserContext, artifact.artifactId, input
+    );
+    assert.equal(receipt.idempotentReplay, false);
+    const replay = await f.service.promoteExistingRepositoryFileFromUserDecision(
+      localUserContext, artifact.artifactId, input
+    );
+    assert.equal(replay.idempotentReplay, true);
+    git("add", "--", path);
+    const result = await inspectArtifactMarkdownCommit(root, {
+      verifyPromotion: (candidate) => f.service.verifyRepositoryPromotion(candidate)
+    });
+    assert.equal(result.ok, true);
+  } finally { f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
 test("materialization binds the Session workspace, verifies fixed content and leaves Git untouched", async () => {
   const f = await fixture();
   try {
