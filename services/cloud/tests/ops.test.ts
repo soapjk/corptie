@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -78,6 +78,8 @@ test("backup and explicitly confirmed restore preserve a consistent SQLite snaps
       cwd: cloudDirectory, env, encoding: "utf8"
     }).trim();
     assert.equal(readFileSync(`${backup}.sha256`, "utf8").includes("cloud-test.sqlite"), true);
+    assert.equal(existsSync(`${backup}-wal`), false);
+    assert.equal(existsSync(`${backup}-shm`), false);
 
     execFileSync("sqlite3", [database, "UPDATE sample SET value = 'after';"]);
     const refused = spawnSync("sh", [control, "restore", backup], { cwd: cloudDirectory, env, encoding: "utf8" });

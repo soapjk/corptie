@@ -63,6 +63,7 @@ backup_database() {
   sqlite3 "${DB_PATH}" ".backup '${target}'"
   chmod 600 "${target}"
   integrity "${target}"
+  rm -f "${target}-wal" "${target}-shm"
   shasum -a 256 "${target}" > "${target}.sha256"
   chmod 600 "${target}.sha256"
   echo "${target}"
