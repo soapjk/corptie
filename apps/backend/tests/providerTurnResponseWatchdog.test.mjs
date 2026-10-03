@@ -49,17 +49,17 @@ test("a silent Provider Turn warns and then times out", async () => {
   });
 
   assert.equal(watchdog.watch(turn), true);
-  assert.equal(timers.size, 3);
+  assert.equal(timers.size, 2);
   timers.run(20);
   await Promise.resolve();
   assert.deepEqual(delayed, [{ ...turn, startedAt: null }]);
   timers.run(120);
   await Promise.resolve();
-  assert.deepEqual(timedOut, [{ ...turn, startedAt: null, timeoutKind: "inactivity" }]);
+  assert.deepEqual(timedOut, [{ ...turn, startedAt: null, timeoutKind: "first_activity" }]);
   assert.equal(timers.size, 0);
 });
 
-test("Provider activity resets inactivity timeout but keeps the absolute deadline", async () => {
+test("substantive Provider activity arms a rolling timeout when heartbeats are reliable", async () => {
   const timers = scheduler();
   let timedOut = false;
   const watchdog = new ProviderTurnResponseWatchdog({
@@ -76,14 +76,14 @@ test("Provider activity resets inactivity timeout but keeps the absolute deadlin
     event: { ...turn, type: "tool.started" },
     binding: turn
   }), true);
-  assert.equal(timers.size, 2);
+  assert.equal(timers.size, 1);
   assert.equal(watchdog.watch(turn), false, "activity must not create a second watch entry");
   timers.run(120);
   await Promise.resolve();
   assert.equal(timedOut, true);
 });
 
-test("a retry event suppresses the generic delay warning and keeps a hard timeout without reliable heartbeats", async () => {
+test("a retry event suppresses the generic delay warning and keeps a bounded failure timeout", async () => {
   const timers = scheduler();
   let delayed = false;
   let timedOut = false;
@@ -138,7 +138,6 @@ test("Provider retry backoff cannot extend the first failure deadline", () => {
   const watchdog = new ProviderTurnResponseWatchdog({
     warningAfterMs: 20,
     timeoutAfterMs: 120,
-    absoluteTimeoutAfterMs: 10_000,
     resolveTurnLiveness: () => ({ heartbeat: "best_effort" }),
     schedule: timers.schedule,
     cancel: timers.cancel
@@ -151,7 +150,6 @@ test("Provider retry backoff cannot extend the first failure deadline", () => {
     } },
     binding: turn
   });
-  assert.equal(timers.hasDelay(10_000), true, "absolute deadline remains armed");
   assert.equal(timers.hasDelay(120), true, "the first retry keeps a bounded failure deadline");
   watchdog.observe({
     event: { ...turn, type: "provider.error", payload: {
@@ -176,26 +174,26 @@ test("terminal events disarm the watchdog", () => {
   assert.equal(timers.size, 0);
 });
 
-test("Provider activity cannot extend a Turn beyond the absolute deadline", async () => {
+test("an active Turn is not failed only because it exceeds the former absolute deadline", async () => {
   const timers = scheduler();
   const timedOut = [];
   const watchdog = new ProviderTurnResponseWatchdog({
     warningAfterMs: 20,
     timeoutAfterMs: 120,
-    absoluteTimeoutAfterMs: 500,
+    resolveTurnLiveness: () => ({ heartbeat: "best_effort" }),
     schedule: timers.schedule,
     cancel: timers.cancel,
     onTimeout: (entry) => timedOut.push(entry)
   });
   watchdog.watch(turn);
   watchdog.observe({
-    event: { ...turn, type: "provider.activity", occurredAt: "2026-10-02T00:00:00.000Z" },
+    event: { ...turn, type: "tool.completed", occurredAt: "2026-10-02T00:00:00.000Z" },
     binding: turn
   });
-  timers.run(500);
+  timers.run(30 * 60_000);
   await Promise.resolve();
-  assert.equal(timedOut[0].timeoutKind, "absolute");
-  assert.equal(timedOut[0].lastActivityAt, "2026-10-02T00:00:00.000Z");
+  assert.deepEqual(timedOut, []);
+  assert.equal(timers.size, 1, "only the non-terminal stream-idle warning remains armed");
 });
 
 test("Provider without reliable heartbeats warns on stream silence but is not failed early", async () => {
@@ -205,7 +203,6 @@ test("Provider without reliable heartbeats warns on stream silence but is not fa
   const watchdog = new ProviderTurnResponseWatchdog({
     warningAfterMs: 20,
     timeoutAfterMs: 120,
-    absoluteTimeoutAfterMs: 500,
     resolveTurnLiveness: () => ({ heartbeat: "best_effort" }),
     schedule: timers.schedule,
     cancel: timers.cancel,
@@ -229,9 +226,92 @@ test("Provider without reliable heartbeats warns on stream silence but is not fa
   }]);
   assert.deepEqual(timedOut, [], "stream silence is not proof of failure without reliable heartbeats");
 
-  timers.run(500);
+  timers.run(30 * 60_000);
   await Promise.resolve();
-  assert.equal(timedOut[0].timeoutKind, "absolute");
+  assert.deepEqual(timedOut, [], "elapsed wall-clock time alone cannot fail the Turn");
+});
+
+test("Provider heartbeat is not accepted as the first substantive response", async () => {
+  const timers = scheduler();
+  const timedOut = [];
+  const watchdog = new ProviderTurnResponseWatchdog({
+    warningAfterMs: 20,
+    timeoutAfterMs: 120,
+    resolveTurnLiveness: () => ({ heartbeat: "reliable" }),
+    schedule: timers.schedule,
+    cancel: timers.cancel,
+    onTimeout: (entry) => timedOut.push(entry)
+  });
+  watchdog.watch(turn);
+  watchdog.observe({
+    event: { ...turn, type: "provider.activity", occurredAt: "2026-10-02T00:00:01.000Z" },
+    binding: turn
+  });
+  timers.run(120);
+  await Promise.resolve();
+  assert.equal(timedOut[0].timeoutKind, "first_activity");
+  assert.equal(timedOut[0].lastProviderSignalAt, "2026-10-02T00:00:01.000Z");
+});
+
+test("Provider heartbeat cannot clear a retry failure deadline", async () => {
+  const timers = scheduler();
+  const timedOut = [];
+  const watchdog = new ProviderTurnResponseWatchdog({
+    warningAfterMs: 20,
+    timeoutAfterMs: 120,
+    resolveTurnLiveness: () => ({ heartbeat: "reliable" }),
+    schedule: timers.schedule,
+    cancel: timers.cancel,
+    onTimeout: (entry) => timedOut.push(entry)
+  });
+  watchdog.watch(turn);
+  watchdog.observe({ event: { ...turn, type: "tool.started" }, binding: turn });
+  watchdog.observe({
+    event: { ...turn, type: "provider.error", occurredAt: "2026-10-02T00:00:01.000Z", payload: {
+      willRetry: true,
+      error: { code: "NETWORK_UNAVAILABLE", message: "offline" }
+    } },
+    binding: turn
+  });
+  watchdog.observe({ event: { ...turn, type: "provider.activity" }, binding: turn });
+  assert.equal(timers.countDelay(120), 1);
+  timers.run(120);
+  await Promise.resolve();
+  assert.equal(timedOut[0].timeoutKind, "provider_retry");
+});
+
+test("substantive activity clears a Provider retry failure deadline", async () => {
+  const timers = scheduler();
+  const delayed = [];
+  const timedOut = [];
+  const watchdog = new ProviderTurnResponseWatchdog({
+    warningAfterMs: 20,
+    timeoutAfterMs: 120,
+    resolveTurnLiveness: () => ({ heartbeat: "best_effort" }),
+    schedule: timers.schedule,
+    cancel: timers.cancel,
+    onDelayed: (entry) => delayed.push(entry),
+    onTimeout: (entry) => timedOut.push(entry)
+  });
+  watchdog.watch(turn);
+  watchdog.observe({
+    event: { ...turn, type: "provider.error", occurredAt: "2026-10-02T00:00:01.000Z", payload: {
+      willRetry: true,
+      error: { code: "NETWORK_UNAVAILABLE", message: "offline" }
+    } },
+    binding: turn
+  });
+  watchdog.observe({
+    event: { ...turn, type: "tool.completed", occurredAt: "2026-10-02T00:00:02.000Z" },
+    binding: turn
+  });
+  assert.equal(timers.countDelay(120), 1, "only the non-terminal stream-idle warning remains");
+  timers.run(120);
+  await Promise.resolve();
+  assert.deepEqual(timedOut, []);
+  assert.equal(delayed[0].warningKind, "stream_idle");
+  assert.equal(delayed[0].lastFailureAt, undefined);
+  assert.equal(delayed[0].lastProviderError, undefined);
 });
 
 test("a long-running tool on a Provider without reliable heartbeats remains active", async () => {
@@ -240,7 +320,6 @@ test("a long-running tool on a Provider without reliable heartbeats remains acti
   const watchdog = new ProviderTurnResponseWatchdog({
     warningAfterMs: 20,
     timeoutAfterMs: 120,
-    absoluteTimeoutAfterMs: 500,
     schedule: timers.schedule,
     cancel: timers.cancel,
     onTimeout: (entry) => timedOut.push(entry)

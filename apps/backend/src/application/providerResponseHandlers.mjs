@@ -50,17 +50,13 @@ export function createProviderResponseHandlers({
     const turn = store.getSessionTurn(entry.sessionId, entry.bindingId, entry.turnId);
     if (!turn || !["running", "blocked"].includes(turn.execution_status)) return;
     const timestamp = now();
-    const absolute = entry.timeoutKind === "absolute";
     const retryTimedOut = entry.timeoutKind === "provider_retry";
     const hadActivity = Boolean(entry.lastActivityAt);
-    const code = absolute ? "PROVIDER_TURN_DEADLINE_EXCEEDED"
-      : retryTimedOut ? "PROVIDER_RETRY_TIMEOUT"
+    const code = retryTimedOut ? "PROVIDER_RETRY_TIMEOUT"
       : hadActivity ? "PROVIDER_STREAM_IDLE_TIMEOUT"
         : "PROVIDER_FIRST_ACTIVITY_TIMEOUT";
-    const message = absolute
-      ? "模型执行超过允许的最长时间，本次执行已自动结束；您可以重试或切换模型。"
-      : retryTimedOut
-        ? `模型服务连接持续失败，本次执行已自动结束；您可以检查模型网络后重试。${entry.lastProviderError?.message ? `（${entry.lastProviderError.message}）` : ""}`
+    const message = retryTimedOut
+      ? `模型服务连接持续失败，本次执行已自动结束；您可以检查模型网络后重试。${entry.lastProviderError?.message ? `（${entry.lastProviderError.message}）` : ""}`
       : hadActivity
         ? "模型流式连接长时间没有新数据，本次执行已自动结束；您可以重试或切换模型。"
         : "模型服务长时间未返回任何执行信息。本次执行已自动结束；您可以重试或切换模型。";
@@ -72,7 +68,7 @@ export function createProviderResponseHandlers({
         turnId: entry.turnId,
         turnStatus: "failed",
         type: "system",
-        title: absolute ? "模型执行超时" : retryTimedOut ? "模型连接失败" : hadActivity ? "模型流中断" : "模型响应超时",
+        title: retryTimedOut ? "模型连接失败" : hadActivity ? "模型流中断" : "模型响应超时",
         text: message,
         status: "failed",
         createdAt: timestamp

@@ -1,6 +1,5 @@
 const DEFAULT_WARNING_AFTER_MS = 20_000;
 const DEFAULT_TIMEOUT_AFTER_MS = 120_000;
-const DEFAULT_ABSOLUTE_TIMEOUT_AFTER_MS = 30 * 60_000;
 const RELIABLE_HEARTBEAT = "reliable";
 
 const SUBSTANTIVE_EVENT_TYPES = new Set([
@@ -20,32 +19,21 @@ const TERMINAL_EVENT_TYPES = new Set([
   "turn.cancelled"
 ]);
 
-const ACTIVITY_EVENT_TYPES = new Set([
-  ...SUBSTANTIVE_EVENT_TYPES,
-  "provider.activity"
-]);
-
 /**
  * Provider-neutral response-activity watchdog.
  *
  * The warning and first-activity timeout cover a silent start. A rolling hard
  * timeout is armed only when the Provider explicitly guarantees reliable
- * heartbeats. Other Providers receive a one-shot stalled-stream warning while
- * the absolute timeout remains the final safety boundary.
+ * heartbeats. Other Providers receive a one-shot stalled-stream warning and
+ * remain interruptible; elapsed wall-clock time alone is never proof that an
+ * otherwise active interactive Turn has failed.
  */
 export class ProviderTurnResponseWatchdog {
   constructor(options = {}) {
     this.warningAfterMs = positiveDelay(options.warningAfterMs, DEFAULT_WARNING_AFTER_MS);
     this.timeoutAfterMs = positiveDelay(options.timeoutAfterMs, DEFAULT_TIMEOUT_AFTER_MS);
-    this.absoluteTimeoutAfterMs = positiveDelay(
-      options.absoluteTimeoutAfterMs,
-      Math.max(DEFAULT_ABSOLUTE_TIMEOUT_AFTER_MS, this.timeoutAfterMs * 2)
-    );
     if (this.timeoutAfterMs <= this.warningAfterMs) {
       throw new TypeError("Provider response timeout must be greater than its warning delay.");
-    }
-    if (this.absoluteTimeoutAfterMs <= this.timeoutAfterMs) {
-      throw new TypeError("Provider absolute timeout must be greater than its inactivity timeout.");
     }
     this.schedule = options.schedule ?? ((callback, delay) => setTimeout(callback, delay));
     this.cancel = options.cancel ?? ((handle) => clearTimeout(handle));
@@ -69,22 +57,15 @@ export class ProviderTurnResponseWatchdog {
       current.warningTimer = null;
       this.#invoke(this.onDelayed, current);
     }, this.warningAfterMs);
-    const timeoutTimer = this.#scheduleTimeout(key, this.timeoutAfterMs, "inactivity");
-    const absoluteTimeoutTimer = this.#scheduleTimeout(
-      key,
-      this.absoluteTimeoutAfterMs,
-      "absolute"
-    );
+    const timeoutTimer = this.#scheduleTimeout(key, this.timeoutAfterMs, "first_activity");
     warningTimer?.unref?.();
     timeoutTimer?.unref?.();
-    absoluteTimeoutTimer?.unref?.();
     this.pending.set(key, {
       ...entry,
       turnLiveness,
       warningTimer,
       stallWarningTimer: null,
       timeoutTimer,
-      absoluteTimeoutTimer,
       hasActivity: false,
       lastActivityAt: null
     });
@@ -112,9 +93,13 @@ export class ProviderTurnResponseWatchdog {
       return current ? this.#recordRetryFailure(key, current, event) : false;
     }
     if (TERMINAL_EVENT_TYPES.has(event.type)) return this.resolve(entry);
-    if (ACTIVITY_EVENT_TYPES.has(event.type)) {
+    if (SUBSTANTIVE_EVENT_TYPES.has(event.type)) {
       const current = this.pending.get(key);
-      return current ? this.#recordActivity(key, current, event) : false;
+      return current ? this.#recordSubstantiveActivity(key, current, event) : false;
+    }
+    if (event.type === "provider.activity") {
+      const current = this.pending.get(key);
+      return current ? this.#recordHeartbeat(key, current, event) : false;
     }
     return false;
   }
@@ -127,7 +112,6 @@ export class ProviderTurnResponseWatchdog {
       if (current.warningTimer) this.cancel(current.warningTimer);
       if (current.stallWarningTimer) this.cancel(current.stallWarningTimer);
       if (current.timeoutTimer) this.cancel(current.timeoutTimer);
-      if (current.absoluteTimeoutTimer) this.cancel(current.absoluteTimeoutTimer);
       this.pending.delete(key);
     }
     this.#rememberResolved(key);
@@ -139,7 +123,6 @@ export class ProviderTurnResponseWatchdog {
       if (current.warningTimer) this.cancel(current.warningTimer);
       if (current.stallWarningTimer) this.cancel(current.stallWarningTimer);
       if (current.timeoutTimer) this.cancel(current.timeoutTimer);
-      if (current.absoluteTimeoutTimer) this.cancel(current.absoluteTimeoutTimer);
     }
     this.pending.clear();
     this.resolved.clear();
@@ -158,7 +141,7 @@ export class ProviderTurnResponseWatchdog {
     }));
   }
 
-  #recordActivity(key, current, event) {
+  #recordSubstantiveActivity(key, current, event) {
     if (current.warningTimer) {
       this.cancel(current.warningTimer);
       current.warningTimer = null;
@@ -170,12 +153,10 @@ export class ProviderTurnResponseWatchdog {
     }
     current.hasActivity = true;
     current.lastActivityAt = event.occurredAt ?? event.receivedAt ?? new Date().toISOString();
-    const retryAfterMs = Number(event.payload?.retryAfterMs);
-    const inactivityDelay = Number.isFinite(retryAfterMs) && retryAfterMs >= 0
-      ? Math.max(this.timeoutAfterMs, Math.min(this.absoluteTimeoutAfterMs, retryAfterMs + 5_000))
-      : this.timeoutAfterMs;
+    current.lastFailureAt = null;
+    current.lastProviderError = null;
     if (current.turnLiveness.heartbeat === RELIABLE_HEARTBEAT) {
-      current.timeoutTimer = this.#scheduleTimeout(key, inactivityDelay, "inactivity");
+      current.timeoutTimer = this.#scheduleTimeout(key, this.timeoutAfterMs, "inactivity");
       current.timeoutTimer?.unref?.();
     } else {
       current.timeoutTimer = null;
@@ -184,9 +165,20 @@ export class ProviderTurnResponseWatchdog {
         if (!latest) return;
         latest.stallWarningTimer = null;
         this.#invoke(this.onDelayed, latest, { warningKind: "stream_idle" });
-      }, inactivityDelay);
+      }, this.timeoutAfterMs);
       current.stallWarningTimer?.unref?.();
     }
+    return true;
+  }
+
+  #recordHeartbeat(key, current, event) {
+    current.lastProviderSignalAt = event.occurredAt ?? event.receivedAt ?? new Date().toISOString();
+    if (!current.hasActivity
+      || current.lastFailureAt
+      || current.turnLiveness.heartbeat !== RELIABLE_HEARTBEAT) return true;
+    if (current.timeoutTimer) this.cancel(current.timeoutTimer);
+    current.timeoutTimer = this.#scheduleTimeout(key, this.timeoutAfterMs, "inactivity");
+    current.timeoutTimer?.unref?.();
     return true;
   }
 
@@ -204,8 +196,9 @@ export class ProviderTurnResponseWatchdog {
       current.stallWarningTimer = null;
     }
     current.lastProviderError = normalizedProviderError(event.payload?.error);
-    current.lastFailureAt ??= event.occurredAt ?? event.receivedAt ?? new Date().toISOString();
-    if (!current.timeoutTimer) {
+    if (!current.lastFailureAt) {
+      current.lastFailureAt = event.occurredAt ?? event.receivedAt ?? new Date().toISOString();
+      if (current.timeoutTimer) this.cancel(current.timeoutTimer);
       current.timeoutTimer = this.#scheduleTimeout(key, this.timeoutAfterMs, "provider_retry");
       current.timeoutTimer?.unref?.();
     }
@@ -220,11 +213,9 @@ export class ProviderTurnResponseWatchdog {
       if (current.warningTimer) this.cancel(current.warningTimer);
       if (current.stallWarningTimer) this.cancel(current.stallWarningTimer);
       if (current.timeoutTimer) this.cancel(current.timeoutTimer);
-      if (current.absoluteTimeoutTimer) this.cancel(current.absoluteTimeoutTimer);
       current.warningTimer = null;
       current.stallWarningTimer = null;
       current.timeoutTimer = null;
-      current.absoluteTimeoutTimer = null;
       current.timeoutKind = timeoutKind;
       this.#rememberResolved(key);
       this.#invoke(this.onTimeout, current);
@@ -261,6 +252,7 @@ function publicEntry(entry) {
     startedAt: entry.startedAt,
     ...(entry.timeoutKind ? { timeoutKind: entry.timeoutKind } : {}),
     ...(entry.lastActivityAt ? { lastActivityAt: entry.lastActivityAt } : {}),
+    ...(entry.lastProviderSignalAt ? { lastProviderSignalAt: entry.lastProviderSignalAt } : {}),
     ...(entry.lastFailureAt ? { lastFailureAt: entry.lastFailureAt } : {}),
     ...(entry.lastProviderError ? { lastProviderError: entry.lastProviderError } : {})
   };

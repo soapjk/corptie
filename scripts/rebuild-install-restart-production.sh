@@ -13,6 +13,7 @@ LAUNCH_AGENT_STAGED_PLIST=""
 BACKEND_LOG_DIR="${HOME}/Library/Logs/Corptie"
 BACKEND_STDOUT_LOG="${BACKEND_LOG_DIR}/backend.out.log"
 BACKEND_STDERR_LOG="${BACKEND_LOG_DIR}/backend.err.log"
+PRODUCTION_BUILD_LOG_DIR="${CORPTIE_PRODUCTION_BUILD_LOG_DIR:-${BACKEND_LOG_DIR}/production-builds}"
 CHECK_ONLY=false
 RESET_PRODUCTION_DATABASE=false
 MOUNT_POINT=""
@@ -309,7 +310,13 @@ cleanup() {
   fi
   [[ -z "${STAGED_APP}" ]] || rm -rf "${STAGED_APP}" 2>/dev/null || true
   [[ -z "${LAUNCH_AGENT_STAGED_PLIST}" ]] || rm -f "${LAUNCH_AGENT_STAGED_PLIST}" 2>/dev/null || true
-  [[ -z "${BUILD_LOG}" ]] || rm -f "${BUILD_LOG}" 2>/dev/null || true
+  if [[ -n "${BUILD_LOG}" && -f "${BUILD_LOG}" ]]; then
+    if (( status == 0 )); then
+      echo "Production build log: ${BUILD_LOG}"
+    else
+      echo "Production build failed; combined stdout/stderr log retained at: ${BUILD_LOG}" >&2
+    fi
+  fi
   if [[ "${FINISHED}" != true && -n "${OLD_APP}" && -d "${OLD_APP}" ]]; then
     local app_pids=() pid
     while IFS= read -r pid; do
@@ -361,8 +368,11 @@ if [[ "${RESET_PRODUCTION_DATABASE}" == true ]]; then
 fi
 
 echo "Building production installers from the current checkout..."
-BUILD_LOG="$(mktemp /tmp/corptie-production-build-XXXXXX)"
-"${ROOT}/scripts/package-macos-installer.sh" | tee "${BUILD_LOG}"
+mkdir -p "${PRODUCTION_BUILD_LOG_DIR}"
+BUILD_LOG="${PRODUCTION_BUILD_LOG_DIR}/production-build-$(date '+%Y%m%d-%H%M%S')-$$.log"
+install -m 600 /dev/null "${BUILD_LOG}"
+echo "Production build log: ${BUILD_LOG}"
+"${ROOT}/scripts/package-macos-installer.sh" 2>&1 | tee -a "${BUILD_LOG}"
 PKG_PATH="$(sed -n 's/^Built production installer package: //p' "${BUILD_LOG}" | tail -1)"
 DMG_PATH="$(sed -n 's/^Built production dmg: //p' "${BUILD_LOG}" | tail -1)"
 if [[ ! -f "${PKG_PATH}" || ! -f "${DMG_PATH}" ]]; then
