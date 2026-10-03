@@ -1,25 +1,28 @@
 import SwiftUI
 
-public struct ConversationEnvironmentCard<Actions: View>: View {
+public struct ConversationEnvironmentCard<Actions: View, StatusContent: View>: View {
     public let provider: String?
     public let agent: String?
     public let model: String?
     public let reasoning: String?
     public let workspacePath: String?
     private let actions: Actions
+    private let statusContent: StatusContent
 
     public init(provider: String?, agent: String?, model: String?, reasoning: String?,
-                workspacePath: String?, @ViewBuilder actions: () -> Actions) {
+                workspacePath: String?, @ViewBuilder actions: () -> Actions,
+                @ViewBuilder statusContent: () -> StatusContent) {
         self.provider = provider
         self.agent = agent
         self.model = model
         self.reasoning = reasoning
         self.workspacePath = workspacePath
         self.actions = actions()
+        self.statusContent = statusContent()
     }
 
     public var body: some View {
-        ConversationDetailModuleCard(title: "工作空间与 Provider", systemImage: "cpu") {
+        ConversationDetailModuleCard(title: "工作空间与 Provider", systemImage: "cpu", headerActions: { actions }) {
             if let provider, !provider.isEmpty { LabeledContent("Provider", value: provider) }
             if let agent, !agent.isEmpty { LabeledContent("Agent", value: agent) }
             if let model, !model.isEmpty { LabeledContent("模型", value: model) }
@@ -30,7 +33,15 @@ public struct ConversationEnvironmentCard<Actions: View>: View {
                         .lineLimit(2).truncationMode(.middle)
                 }
             }
-            actions
+            statusContent
         }
+    }
+}
+
+public extension ConversationEnvironmentCard where StatusContent == EmptyView {
+    init(provider: String?, agent: String?, model: String?, reasoning: String?,
+         workspacePath: String?, @ViewBuilder actions: () -> Actions) {
+        self.init(provider: provider, agent: agent, model: model, reasoning: reasoning,
+            workspacePath: workspacePath, actions: actions, statusContent: { EmptyView() })
     }
 }

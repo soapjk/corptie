@@ -1509,6 +1509,9 @@
 "Banked resets could not be verified; showing the last known value." = "无法核实当前已存额度重置；以下为上次记录。";
 "Task 信息" = "Task 信息";
 "Artifact 引用" = "Artifact 引用";
+"Add Artifact" = "添加 Artifact";
+"Check Worktree status" = "检查 Worktree 状态";
+"Checking Worktree" = "正在检查 Worktree";
 "Task 记忆" = "Task 记忆";
 "验证所需证据" = "验证所需证据";
 
