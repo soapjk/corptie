@@ -10,6 +10,8 @@ PROJECT_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/../../.." && pwd)
 DB_PATH=${CORPTIE_CLOUD_DATABASE_PATH:-${CLOUD_ROOT}/shared/data/cloud.sqlite}
 SECONDARY_BACKUP_DIR=${CORPTIE_CLOUD_SECONDARY_BACKUP_DIR:-}
 BACKUP_KEY_FILE=${CORPTIE_CLOUD_BACKUP_KEY_FILE:-}
+MANAGED_NODE=${CLOUD_ROOT}/shared/runtime/node
+MANAGED_NPM_CLI=${CLOUD_ROOT}/shared/runtime/npm/lib/node_modules/npm/bin/npm-cli.js
 
 die() { echo "cloudctl: $*" >&2; exit 64; }
 safe_root() {
@@ -22,6 +24,11 @@ safe_root() {
 }
 require_revision() { printf '%s' "$1" | grep -Eq '^[0-9a-f]{7,40}$' || die "revision must be a hexadecimal Git object id"; }
 require_name() { printf '%s' "$1" | grep -Eq '^[A-Za-z0-9._-]+$' || die "unsafe file name"; }
+managed_npm() {
+  test -x "${MANAGED_NODE}" || die "managed Node runtime is unavailable"
+  test -f "${MANAGED_NPM_CLI}" || die "managed npm runtime is unavailable"
+  "${MANAGED_NODE}" "${MANAGED_NPM_CLI}" "$@"
+}
 prepare_layout() {
   safe_root
   umask 077
@@ -165,15 +172,24 @@ case "${command}" in
     test -x "${source_node}" || die "Node source is not executable"
     major=$("${source_node}" -p "Number(process.versions.node.split('.')[0])") || die "Node source cannot run"
     test "${major}" = "24" || die "Cloud runtime must be Node 24"
+    source_root=$(CDPATH= cd -- "$(dirname -- "${source_node}")/.." && pwd)
+    bundled_npm="${source_root}/lib/node_modules/npm"
+    test -f "${bundled_npm}/bin/npm-cli.js" || die "Node source must include its bundled npm runtime"
     mkdir -p "${CLOUD_ROOT}/shared/runtime"
     temporary="${CLOUD_ROOT}/shared/runtime/node.$$"
-    trap 'rm -f "${temporary}"' EXIT HUP INT TERM
+    npm_temporary=$(mktemp -d "${CLOUD_ROOT}/shared/runtime/npm.XXXXXX")
+    trap 'rm -f "${temporary}"; rm -rf "${npm_temporary}"' EXIT HUP INT TERM
     cp "${source_node}" "${temporary}"
     chmod 700 "${temporary}"
     test "$("${temporary}" -p "Number(process.versions.node.split('.')[0])")" = "24" || die "copied Node runtime failed verification"
+    mkdir -p "${npm_temporary}/lib/node_modules"
+    cp -R "${bundled_npm}" "${npm_temporary}/lib/node_modules/npm"
     mv "${temporary}" "${CLOUD_ROOT}/shared/runtime/node"
+    rm -rf "${CLOUD_ROOT}/shared/runtime/npm"
+    mv "${npm_temporary}" "${CLOUD_ROOT}/shared/runtime/npm"
     trap - EXIT HUP INT TERM
-    "${CLOUD_ROOT}/shared/runtime/node" -p "'installed Node ' + process.versions.node"
+    managed_npm --version >/dev/null
+    "${MANAGED_NODE}" -p "'installed Node ' + process.versions.node + ' with npm'"
     ;;
   backup)
     backup_database "${2:-}"
@@ -217,7 +233,7 @@ case "${command}" in
     staging=$(mktemp -d "${CLOUD_ROOT}/shared/run/deploy.XXXXXX")
     trap 'rm -rf "${staging}"' EXIT HUP INT TERM
     git -C "${PROJECT_ROOT}" archive "${resolved}" services/cloud | tar -x -C "${staging}"
-    (cd "${staging}/services/cloud" && npm ci && npm test && npm run build && npm prune --omit=dev)
+    (cd "${staging}/services/cloud" && managed_npm ci && managed_npm run build && managed_npm test && managed_npm prune --omit=dev)
     printf '2\n' > "${staging}/services/cloud/schema-version"
     printf '%s\n' "${resolved}" > "${staging}/services/cloud/revision"
     chmod -R go-w "${staging}/services/cloud"
