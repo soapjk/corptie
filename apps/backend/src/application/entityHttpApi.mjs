@@ -1101,6 +1101,10 @@ export function handleEntityHttpRequest({
       }
 
       // ---- Memory ----
+      if (request.method === "GET" && path === "/memory-extraction-jobs") {
+        const jobs = hubService.store.listMemoryExtractionJobs(100);
+        return sendJson(response, 200, { jobs });
+      }
       if (request.method === "GET" && path === "/memories") {
         const ownerType = url.searchParams.get("ownerType");
         const ownerId = url.searchParams.get("ownerId");
@@ -1134,6 +1138,14 @@ export function handleEntityHttpRequest({
           hasMore: page.hasMore,
           nextCursor: encodeMemoryCursor(page.nextCursor)
         });
+      }
+      if (request.method === "POST" && path === "/memories/consolidate") {
+        const input = await readJson(request);
+        rejectUnknownFields(input, new Set(["memoryIds", "content"]));
+        const result = hubService.store.runInTransaction(() => memoryLifecycleService.consolidate({
+          memoryIds: input.memoryIds, content: input.content, actorId: "user:local-macos"
+        }));
+        return sendJson(response, 201, { memory: presentMemory(result.memory), audit: result.audit });
       }
       const memoryMatch = path.match(/^\/memories\/([^/]+)$/);
       if (request.method === "GET" && memoryMatch) {
@@ -1225,7 +1237,10 @@ export function handleEntityHttpRequest({
         const limit = Number.isSafeInteger(requestedLimit) && requestedLimit > 0
           ? Math.min(requestedLimit, 200) : 200;
         return sendJson(response, 200, {
-          recalls: hubService.store.listMemoryRecallAudit({ sessionId: url.searchParams.get("sessionId"), limit })
+          recalls: hubService.store.listMemoryRecallAudit({
+            sessionId: url.searchParams.get("sessionId"),
+            memoryId: url.searchParams.get("memoryId"), limit
+          })
             .map((audit) => presentMemoryRecallAudit(hubService.store, audit))
         });
       }
@@ -1255,20 +1270,34 @@ export function handleEntityHttpRequest({
         const memory = createUserMemory(hubService.store, input, "user:local-macos");
         return sendJson(response, 201, memory);
       }
-      // Explicit reprocess permits a scoped historical backfill; it preserves reviewed memories.
-      if (request.method === "POST" && path === "/memories/extract") {
+      // Explicit historical backfill is scoped to one Session and one bounded page.
+      if (request.method === "POST" && path === "/memories/backfill") {
         const input = await readJson(request);
-        rejectUnknownFields(input, new Set(["sessionId", "workId", "taskId", "agentId", "reprocess"]));
+        rejectUnknownFields(input, new Set(["sessionId", "workId", "taskId", "agentId", "afterSequence", "maxEvents"]));
         const sessionId = String(input.sessionId ?? "").trim();
         if (!sessionId) throw apiError("INVALID_INPUT", "sessionId is required.", 400);
-        if (input.reprocess != null && typeof input.reprocess !== "boolean") {
-          throw apiError("INVALID_INPUT", "reprocess must be a boolean.", 400);
-        }
+        const result = await memoryExtractor.backfillSession(sessionId, {
+          workId: input.workId,
+          taskId: input.taskId,
+          agentId: input.agentId
+        }, { afterSequence: input.afterSequence ?? null, maxEvents: input.maxEvents ?? 500 });
+        return sendJson(response, 200, {
+          scannedEvents: result.scannedEvents,
+          nextSequence: result.nextSequence,
+          hasMore: result.hasMore,
+          createdCount: result.memories.length
+        });
+      }
+      if (request.method === "POST" && path === "/memories/extract") {
+        const input = await readJson(request);
+        rejectUnknownFields(input, new Set(["sessionId", "workId", "taskId", "agentId"]));
+        const sessionId = String(input.sessionId ?? "").trim();
+        if (!sessionId) throw apiError("INVALID_INPUT", "sessionId is required.", 400);
         const memories = await memoryExtractor.extractFromSession(sessionId, {
           workId: input.workId,
           taskId: input.taskId,
           agentId: input.agentId
-        }, { reprocess: input.reprocess === true });
+        });
         return sendJson(response, 201, { memories });
       }
 
@@ -1358,7 +1387,7 @@ export function validateMemoryInput(input = {}, store) {
       throw apiError("INVALID_INPUT", `Field "${field}" is required.`, 400);
     }
   }
-  if (!["agent", "work", "task"].includes(input.ownerType)) {
+  if (!["global", "agent", "work", "task"].includes(input.ownerType)) {
     throw apiError("INVALID_MEMORY_SCOPE", `Unsupported memory ownerType: ${input.ownerType}`, 400);
   }
   if (!["skill", "procedure", "dev_experience", "fact", "lesson", "preference", "feedback", "episodic"].includes(input.kind)) {
@@ -1389,6 +1418,10 @@ export function validateMemoryInput(input = {}, store) {
 function validateMemoryOwnerReference(store, ownerType, ownerId) {
   const normalizedOwnerId = typeof ownerId === "string" ? ownerId.trim() : "";
   if (!normalizedOwnerId) throw apiError("INVALID_INPUT", "ownerId is required.", 400);
+  if (ownerType === "global") {
+    if (normalizedOwnerId !== "user:local") throw apiError("INVALID_MEMORY_SCOPE", "Invalid global Memory owner.", 400);
+    return;
+  }
   const record = ownerType === "agent"
     ? store.getAgent(normalizedOwnerId)
     : ownerType === "work"

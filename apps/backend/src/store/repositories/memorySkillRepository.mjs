@@ -76,6 +76,61 @@ export class MemorySkillRepository {
     );
   }
 
+  listMemoriesForExtraction(ownerType, ownerId, limit = 100) {
+    return this.selectAll(`SELECT * FROM memories WHERE owner_type = ? AND owner_id = ?
+      ORDER BY updated_at DESC LIMIT ?`, [ownerType, ownerId, limit]);
+  }
+
+  findMemoryByContent(ownerType, ownerId, content) {
+    return this.selectOne(`SELECT * FROM memories WHERE owner_type = ? AND owner_id = ?
+      AND LOWER(TRIM(content)) = LOWER(TRIM(?)) LIMIT 1`, [ownerType, ownerId, content]);
+  }
+
+  enqueueMemoryExtraction(sessionId, reason = "session_end", retryAt = null) {
+    const now = createdAtFromOrNow();
+    this.db.run(`INSERT INTO memory_extraction_jobs
+      (session_id, reason, state, attempts, retry_at, created_at, updated_at)
+      VALUES (?, ?, 'queued', 0, ?, ?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        reason = excluded.reason,
+        state = CASE WHEN memory_extraction_jobs.state = 'running' THEN 'running' ELSE 'queued' END,
+        retry_at = excluded.retry_at, updated_at = excluded.updated_at`,
+    [sessionId, reason, retryAt, now, now]);
+    this.scheduleSave();
+  }
+
+  nextMemoryExtractionJob(now = createdAtFromOrNow()) {
+    return this.selectOne(`SELECT * FROM memory_extraction_jobs
+      WHERE state IN ('queued', 'running') AND (retry_at IS NULL OR retry_at <= ?)
+      ORDER BY created_at ASC LIMIT 1`, [now]);
+  }
+
+  finishMemoryExtractionJob(sessionId, { error = null, retryAt = null, hasMore = false,
+    expectedUpdatedAt = null } = {}) {
+    const now = createdAtFromOrNow();
+    this.db.run(`UPDATE memory_extraction_jobs SET
+      state = ?, attempts = attempts + 1, retry_at = ?, last_error = ?, updated_at = ?,
+      created_at = CASE WHEN ? THEN ? ELSE created_at END
+      WHERE session_id = ? AND (? IS NULL OR updated_at = ?)`,
+    [error || hasMore ? "queued" : "done", retryAt, error, now,
+      hasMore ? 1 : 0, now, sessionId, expectedUpdatedAt, expectedUpdatedAt]);
+    this.scheduleSave();
+  }
+
+  listMemoryExtractionJobs(limit = 100) {
+    return this.selectAll(`SELECT * FROM memory_extraction_jobs
+      ORDER BY updated_at DESC LIMIT ?`, [Math.max(1, Math.min(500, Number(limit) || 100))]);
+  }
+
+  claimMemoryExtractionDailyCall(day, limit) {
+    const existing = this.selectOne(`SELECT calls FROM memory_extraction_daily_budget WHERE day = ?`, [day]);
+    if (Number(existing?.calls ?? 0) >= limit) return false;
+    this.db.run(`INSERT INTO memory_extraction_daily_budget (day, calls) VALUES (?, 1)
+      ON CONFLICT(day) DO UPDATE SET calls = calls + 1`, [day]);
+    this.scheduleSave();
+    return true;
+  }
+
   getMemoryBySourceEvent({ ownerType, ownerId, sourceSessionId, sourceEventSequence }) {
     return this.selectOne(
       `SELECT * FROM memories
@@ -90,12 +145,41 @@ export class MemorySkillRepository {
     )?.last_event_sequence ?? 0);
   }
 
+  memoryExtractionWindowStats(sessionId) {
+    const row = this.selectOne(`SELECT
+      (SELECT COUNT(*) FROM session_events AS events
+       WHERE events.session_id = ? AND events.sequence > COALESCE(progress.last_event_sequence, 0)
+         AND events.type IN ('SessionUserMessageCreated', 'user.message.accepted')) AS user_messages,
+      progress.updated_at AS last_extracted_at
+      FROM (SELECT 1) AS singleton
+      LEFT JOIN memory_extraction_progress AS progress ON progress.session_id = ?`, [sessionId, sessionId]);
+    return { userMessages: Number(row?.user_messages ?? 0), lastExtractedAt: row?.last_extracted_at ?? null };
+  }
+
   setMemoryExtractionProgress(sessionId, sequence) {
     this.db.run(
       `INSERT INTO memory_extraction_progress (session_id, last_event_sequence, updated_at)
        VALUES (?, ?, ?)
        ON CONFLICT(session_id) DO UPDATE SET
          last_event_sequence = MAX(memory_extraction_progress.last_event_sequence, excluded.last_event_sequence),
+         updated_at = excluded.updated_at`,
+      [sessionId, sequence, createdAtFromOrNow()]
+    );
+    this.scheduleSave();
+  }
+
+  getMemoryBackfillProgress(sessionId) {
+    return Number(this.selectOne(
+      "SELECT last_event_sequence FROM memory_backfill_progress WHERE session_id = ?", [sessionId]
+    )?.last_event_sequence ?? 0);
+  }
+
+  setMemoryBackfillProgress(sessionId, sequence) {
+    this.db.run(
+      `INSERT INTO memory_backfill_progress (session_id, last_event_sequence, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET
+         last_event_sequence = MAX(memory_backfill_progress.last_event_sequence, excluded.last_event_sequence),
          updated_at = excluded.updated_at`,
       [sessionId, sequence, createdAtFromOrNow()]
     );
@@ -127,6 +211,12 @@ export class MemorySkillRepository {
     const ownerId = typeof input.ownerId === "string" ? input.ownerId.trim() : "";
     if (!ownerType || !ownerId) {
       throw memoryAssociationError("INVALID_MEMORY_ASSOCIATION", "Memory ownerType and ownerId are required.");
+    }
+    if (ownerType === "global") {
+      if (ownerId !== "user:local" || input.taskId != null) {
+        throw memoryAssociationError("INVALID_MEMORY_ASSOCIATION", "Global Memory must belong to the local user.");
+      }
+      return { taskId: null };
     }
     if (ownerType !== "task") {
       if (input.taskId != null && String(input.taskId).trim()) {
@@ -192,9 +282,10 @@ export class MemorySkillRepository {
       params.push(ownerType, ownerId);
     }
     if (options.includeRevoked !== true) clauses.push("revoked_at IS NULL");
+    if (options.status === "current") clauses.push("promotion_status IN ('active', 'candidate')");
     for (const [column, value] of [
       ["kind", options.kind],
-      ["promotion_status", options.status],
+      ["promotion_status", options.status === "current" ? null : options.status],
       ["source_type", options.sourceType],
       ["trust_level", options.trustLevel]
     ]) {
@@ -342,16 +433,33 @@ export class MemorySkillRepository {
     };
   }
 
-  listMemoryRecallAudit({ sessionId = null, limit = 200 } = {}) {
-    const rows = sessionId
-      ? this.selectAll(`SELECT * FROM memory_recall_audit WHERE session_id = ? ORDER BY created_at DESC LIMIT ?`, [sessionId, limit])
-      : this.selectAll(`SELECT * FROM memory_recall_audit ORDER BY created_at DESC LIMIT ?`, [limit]);
+  listMemoryRecallAudit({ sessionId = null, memoryId = null, limit = 200 } = {}) {
+    const conditions = [];
+    const params = [];
+    if (sessionId) { conditions.push("session_id = ?"); params.push(sessionId); }
+    if (memoryId) {
+      conditions.push(`EXISTS (SELECT 1 FROM json_each(memory_recall_audit.selected_ids_json)
+        WHERE json_each.value = ?)`);
+      params.push(memoryId);
+    }
+    const rows = this.selectAll(`SELECT * FROM memory_recall_audit
+      ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}
+      ORDER BY created_at DESC, rowid DESC LIMIT ?`, [...params, limit]);
     return rows.map((row) => ({
       id: row.id, sessionId: row.session_id, phase: row.phase, mode: row.mode, reason: row.reason,
       scope: safeJsonValue(row.scope_json, {}), candidateIds: safeJsonValue(row.candidate_ids_json, []),
       selectedIds: safeJsonValue(row.selected_ids_json, []), diagnostics: safeJsonValue(row.diagnostics_json, {}),
       createdAt: row.created_at
     }));
+  }
+
+  hasMemoryStartupRecall(sessionId) {
+    return Boolean(this.selectOne(
+      `SELECT 1 FROM memory_recall_audit
+       WHERE session_id = ? AND phase = 'startup'
+         AND json_extract(diagnostics_json, '$.injection.status') IN ('provider_accepted', 'not_selected')
+       LIMIT 1`, [sessionId]
+    ));
   }
 
   updateMemoryRecallAuditInjection(id, status) {

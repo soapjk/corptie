@@ -7,6 +7,7 @@
 // - proposeSkill：创建技能 = 持久副作用，走 guard 分级（至少 moderate），默认落 draft 待用户裁决。
 
 import { randomUUID } from "node:crypto";
+import { isTrustedMemory } from "./memoryRecallService.mjs";
 
 function defaultHashIntent(text) {
   let hash = 0;
@@ -32,9 +33,13 @@ function matchScore(content, terms) {
 }
 
 function chineseMatchScore(content, intent) {
+  const normalize = (value) => String(value ?? "")
+    .replace(/验证|校验|检验|检查/g, "测试")
+    .replace(/事先|提前|之前/g, "预先")
+    .replace(/怎样|怎么/g, "如何");
   const grams = (value) => {
     const result = new Set();
-    for (const run of String(value ?? "").match(/[\u4e00-\u9fff]+/g) ?? []) {
+    for (const run of normalize(value).match(/[\u4e00-\u9fff]+/g) ?? []) {
       for (let i = 0; i + 2 <= run.length; i += 1) result.add(run.slice(i, i + 2));
     }
     return result;
@@ -122,9 +127,11 @@ export class HubService {
     const memories = [];
     if (taskId) memories.push(...this.store.listMemoriesByOwner("task", taskId));
     if (workId) memories.push(...this.store.listMemoriesByOwner("work", workId));
+    memories.push(...this.store.listMemoriesByOwner("global", "user:local"));
     if (agentId) memories.push(...this.store.listMemoriesByOwner("agent", agentId));
 
-    const active = memories.filter((m) => m.promotion_status === "active" && !m.revoked_at);
+    const active = memories.filter((m) => m.promotion_status === "active"
+      && !m.revoked_at && isTrustedMemory(m));
     const normalizedIntent = String(intent ?? "").trim();
     const scored = await this.rankMemory(normalizedIntent, active, {
       allowEmbedding: options.allowEmbedding !== false
@@ -143,7 +150,7 @@ export class HubService {
   }
 
   async rankMemory(intent, memories, options = {}) {
-    const scopePriority = { task: 3, work: 2, agent: 1 };
+    const scopePriority = { task: 4, work: 3, global: 2, agent: 1 };
     const scored = await this.scoreMemories(intent, memories, options);
     return scored.sort((left, right) => right.score - left.score
       || (scopePriority[right.memory.owner_type] ?? 0) - (scopePriority[left.memory.owner_type] ?? 0)

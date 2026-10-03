@@ -16,7 +16,8 @@ export function createSessionMessageOperation({
   sessionBindingReadinessProbe, sessionApplicationService, emitEvent, now,
   decorateSessionForClient, chatResourceService, providerTurnResponseWatchdog,
   ensureCollaborationAgentForSession, registerRuntimeQueuedWork,
-  runtimeQueuePosition, publishProviderEventOutbox, scheduleAgentWorkDrain
+  runtimeQueuePosition, publishProviderEventOutbox, scheduleAgentWorkDrain,
+  scheduleMemoryExtraction = null
 }) {
 async function sendUnifiedSessionMessage(sessionId, input, source = { type: "desktop" }, options = {}) {
   const message = normalizeConversationMessage(input);
@@ -101,6 +102,7 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
         code: "SESSION_BUSY", statusCode: 409
       });
     }
+    if (slashCommand.name === "compact") scheduleMemoryExtraction?.(routedSessionId, "pre_compaction");
     const result = await sessionApplicationService.executeCommand(sessionId, slashCommand, { before, source });
     const id = `command:${randomUUID()}`;
     const item = {

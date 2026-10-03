@@ -1,5 +1,5 @@
 export function createBackendShutdown({
-  backgroundAgentService, getClientDeviceGateway, taskSummaryService,
+  backgroundAgentService, memoryExtractionScheduler, getClientDeviceGateway, taskSummaryService,
   turnObservability, runtimeActivity, mcpCleanupInterval,
   stateSyncPublisher, scheduledSessionTaskService, getResetForecastMonitor,
   openClackyManager, feishuGateway, codexRuntime, skillMcpGateway,
@@ -12,6 +12,7 @@ export function createBackendShutdown({
     if (shutdownPromise) return shutdownPromise;
     shutdownPromise = (async () => {
       backgroundAgentService.close();
+      await memoryExtractionScheduler?.close();
       await getClientDeviceGateway()?.close();
       taskSummaryService.close();
       turnObservability.flush();

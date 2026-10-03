@@ -35,8 +35,8 @@ export class MemoryLifecycleService {
 
   consolidate({ memoryIds, content, actorId = null } = {}) {
     const memories = unique(memoryIds).map((id) => this.store.getMemory(id));
-    if (!memories.length || memories.some((memory) => !memory)) {
-      throw lifecycleError("MEMORY_NOT_FOUND", "All consolidation inputs must exist.");
+    if (memories.length < 2 || memories.some((memory) => !memory)) {
+      throw lifecycleError("MEMORY_NOT_FOUND", "At least two consolidation inputs must exist.");
     }
     const ownerKey = `${memories[0].owner_type}:${memories[0].owner_id}`;
     if (memories.some((memory) => `${memory.owner_type}:${memory.owner_id}` !== ownerKey)) {
@@ -44,6 +44,9 @@ export class MemoryLifecycleService {
     }
     if (memories.some((memory) => !isTrustedMemory(memory))) {
       throw lifecycleError("UNTRUSTED_MEMORY_PROMOTION_FORBIDDEN", "Untrusted memories cannot be automatically consolidated or promoted.");
+    }
+    if (memories.some((memory) => memory.promotion_status !== "active" || memory.revoked_at)) {
+      throw lifecycleError("MEMORY_NOT_ACTIVE", "Only active memories can be consolidated.");
     }
     const first = memories[0];
     const consolidated = this.store.createMemory({

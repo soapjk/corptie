@@ -13,6 +13,7 @@ import { HubService } from "../src/application/hubService.mjs";
 import { CollaborationRouter } from "../src/application/collaborationRouter.mjs";
 import { MemoryExtractor } from "../src/application/memoryExtractor.mjs";
 import { MemoryRecallService } from "../src/application/memoryRecallService.mjs";
+import { MemoryLifecycleService } from "../src/application/memoryLifecycleService.mjs";
 import { AssistantService } from "../src/application/assistantService.mjs";
 import { handleEntityHttpRequest } from "../src/application/entityHttpApi.mjs";
 import { SkillRegistryService } from "../src/application/skillRegistryService.mjs";
@@ -88,6 +89,7 @@ async function createServices() {
     taskCompletionService,
     hubService,
     memoryRecallService: new MemoryRecallService({ store, hubService }),
+    memoryLifecycleService: new MemoryLifecycleService({ store }),
     router: new CollaborationRouter({ store }),
     memoryExtractor: new MemoryExtractor({ store }),
     assistantService: new AssistantService({ store, workService, onEntityChanged }),
@@ -182,6 +184,7 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     router: services.router,
     memoryExtractor: services.memoryExtractor,
     memoryRecallService: services.memoryRecallService,
+    memoryLifecycleService: services.memoryLifecycleService,
     assistantService: services.assistantService,
     skillRegistryService: services.skillRegistryService,
     backgroundAgentService: services.backgroundAgentService,
@@ -2048,7 +2051,13 @@ test("POST /memories/extract 从 Session 提炼记忆（主路径）", async () 
       workId: "o1", taskId: "wi1", agentId: "a1"
     });
     services.store.appendSessionEvent({ eventId: "e1", sessionId: "s1", type: "tool_call", payload: { text: "git commit 流程" } });
-    services.store.appendSessionEvent({ eventId: "e2", sessionId: "s1", type: "summary", payload: { summary: "完成实体层" } });
+    services.store.appendSessionEvent({ eventId: "e2", sessionId: "s1", type: "SessionUserMessageCreated",
+      payload: { message: { text: "以后提交前先运行测试" } } });
+    services.memoryExtractor.classifyMany = async (events) => events.map((event) => ({
+      eventSequence: event.sequence, evidence: event.text, content: event.text,
+      kind: "preference", scope: "task", scopeRationale: "Task preference",
+      rationale: "User preference", confidence: 0.8, conflict: false
+    }));
 
     const extract = await callApi({
       method: "POST",
@@ -2057,10 +2066,31 @@ test("POST /memories/extract 从 Session 提炼记忆（主路径）", async () 
       ...services
     });
     assert.equal(extract.statusCode, 201);
-    assert.equal(extract.body.memories.length, 2);
-    const procedure = extract.body.memories.find((m) => m.kind === "procedure");
-    assert.equal(procedure.owner_type, "agent");
-    assert.equal(procedure.owner_id, "a1");
+    assert.equal(extract.body.memories.length, 1);
+    assert.equal(extract.body.memories[0].kind, "preference");
+    assert.equal(extract.body.memories[0].owner_type, "task");
+    assert.equal(extract.body.memories[0].owner_id, "wi1");
+
+    const backfill = await callApi({
+      method: "POST", pathname: "/memories/backfill",
+      body: { sessionId: "s1", maxEvents: 1 }, ...services
+    });
+    assert.equal(backfill.statusCode, 200);
+    assert.equal(backfill.body.scannedEvents, 1);
+    assert.equal(backfill.body.nextSequence, 1);
+    assert.equal(backfill.body.hasMore, true);
+    assert.equal(backfill.body.createdCount, 0);
+    const backfillNext = await callApi({
+      method: "POST", pathname: "/memories/backfill",
+      body: { sessionId: "s1", maxEvents: 1 }, ...services
+    });
+    assert.equal(backfillNext.body.nextSequence, 2);
+    assert.equal(backfillNext.body.hasMore, false);
+    const invalidBackfill = await callApi({
+      method: "POST", pathname: "/memories/backfill",
+      body: { sessionId: "s1", maxEvents: 1001 }, ...services
+    });
+    assert.equal(invalidBackfill.statusCode, 400);
 
     // 缺 sessionId → 400
     const bad = await callApi({ method: "POST", pathname: "/memories/extract", body: {}, ...services });
@@ -2170,10 +2200,12 @@ test("Memory Inspector HTTP supports global audit, tag update, revoke, and rollb
   try {
     const created = await callApi({
       method: "POST", pathname: "/memories",
-      body: { ownerType: "agent", ownerId: "assistant", kind: "preference", content: "Keep this auditable", tags: ["initial"] },
+      body: { ownerType: "global", ownerId: "user:local", kind: "preference",
+        content: "Keep this auditable", tags: ["initial"] },
       ...services
     });
     assert.equal(created.statusCode, 201);
+    assert.equal(created.body.owner_type, "global");
     const memoryId = created.body.id;
     const encoded = encodeURIComponent(memoryId);
     const global = await callApi({
@@ -2229,6 +2261,27 @@ test("Memory Inspector HTTP supports global audit, tag update, revoke, and rollb
     });
     assert.equal(rollback.statusCode, 200);
     assert.deepEqual(rollback.body.memory.tags, ["initial"]);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("Memory center merges only trusted memories in the same scope and keeps rollback evidence", async () => {
+  const services = await createServices();
+  try {
+    const first = services.store.createMemory({ ownerType: "global", ownerId: "user:local",
+      kind: "preference", content: "Prefer concise answers", sourceType: "user", trustLevel: "trusted" });
+    const second = services.store.createMemory({ ownerType: "global", ownerId: "user:local",
+      kind: "preference", content: "Prefer Chinese answers", sourceType: "user", trustLevel: "trusted" });
+    const result = await callApi({ method: "POST", pathname: "/memories/consolidate",
+      body: { memoryIds: [first.id, second.id], content: "Prefer concise Chinese answers" }, ...services });
+    assert.equal(result.statusCode, 201, JSON.stringify(result.body));
+    assert.equal(result.body.memory.ownerType, "global");
+    assert.equal(result.body.memory.content, "Prefer concise Chinese answers");
+    assert.equal(services.store.getMemory(first.id).promotion_status, "superseded");
+    assert.ok(services.store.listMemoryAudit({ memoryId: result.body.memory.id })
+      .some((entry) => entry.action === "consolidate"));
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
@@ -2351,7 +2404,7 @@ test("POST /assistant/chat directs Work creation to the contributor-aware form",
       body: { content: "建目标 重构 Corptie" },
       ...services
     });
-    assert.equal(chat.statusCode, 200);
+    assert.equal(chat.statusCode, 200, JSON.stringify(chat.body));
     assert.equal(chat.body.messages.length, 2);
     assert.match(chat.body.messages[1].content, /Contributor Agent/);
     assert.equal(services.store.listWorks().length, 0);
