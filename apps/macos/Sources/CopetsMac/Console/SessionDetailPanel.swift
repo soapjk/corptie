@@ -98,12 +98,7 @@ struct SessionDetailPanel: View {
 
             contextReferencesSection
 
-            if backendClient.supplementaryDataController.isLoadingScheduledTasks
-                || !backendClient.supplementaryDataController.selectedScheduledTasks.isEmpty
-                || backendClient.scheduledTaskError != nil {
-                ScheduledSessionStrip(session: session)
-                    .modifier(ConversationDetailModuleSurface())
-            }
+            ScheduledSessionStrip(session: session)
 
             if detailKind == .workDetail,
                let work = entityClient.works.first(where: { $0.id == session.workId }) {
