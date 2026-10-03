@@ -129,9 +129,44 @@ export class ClientDeviceSetup extends ClientDeviceGateway {
         if (this.state !== "ready") throw deviceError("REMOTE_ACCESS_DISABLED", 409);
         return reply(response, 201, { ...this.authority.invite(), address: this.address, certificate: this.certificate });
       }
+      if (request.method === "POST" && request.url === "/internal/client-devices/cloud-grant") {
+        if (this.state !== "ready") await this.enable();
+        const input = await readBody(request);
+        const credentials = await this.authority.issueCloudGrant(input);
+        return reply(response, 201, {
+          address: this.address, certificate: this.certificate, ...credentials
+        });
+      }
+      if (request.method === "POST" && request.url === "/internal/client-devices/cloud-sync") {
+        const input = await readBody(request);
+        if (!Array.isArray(input.activeCloudDeviceIds) || input.activeCloudDeviceIds.some(id => typeof id !== "string")) {
+          throw deviceError("INVALID_CLOUD_DEVICES", 400);
+        }
+        return reply(response, 200, await this.authority.syncCloudDevices(input.activeCloudDeviceIds));
+      }
+      if (request.method === "POST" && request.url === "/internal/client-devices/cloud-revoke") {
+        const input = await readBody(request);
+        if (input.cloudDeviceId !== null && typeof input.cloudDeviceId !== "string") {
+          throw deviceError("INVALID_CLOUD_DEVICE", 400);
+        }
+        return reply(response, 200, await this.authority.revokeCloudDevice(input.cloudDeviceId));
+      }
       return super.handleAdmin(request, response);
     } catch (error) { return reply(response, error.status ?? 500, { code: error.code ?? "DEVICE_SETUP_FAILED" }); }
   }
+}
+
+async function readBody(request) {
+  if (!/^application\/json(?:;|$)/i.test(request.headers["content-type"] ?? "")) throw deviceError("JSON_REQUIRED", 415);
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > 64 * 1024) throw deviceError("BODY_TOO_LARGE", 413);
+    chunks.push(chunk);
+  }
+  try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+  catch { throw deviceError("INVALID_JSON", 400); }
 }
 
 export async function createDeviceSetup(options) {

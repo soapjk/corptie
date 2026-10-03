@@ -130,6 +130,73 @@ export class ClientDeviceAuthority {
     } catch (error) { item.status = "approved"; throw error; }
   }
 
+  issueCloudGrant({ cloudDeviceId, name }) {
+    if (typeof cloudDeviceId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(cloudDeviceId)) {
+      throw deviceError("INVALID_CLOUD_DEVICE", 400);
+    }
+    if (typeof name !== "string" || !name.trim() || name.length > 80 || /[\x00-\x1f\x7f]/.test(name)) {
+      throw deviceError("INVALID_DEVICE_NAME", 400);
+    }
+    return this.change(state => {
+      const now = this.now();
+      let device = state.devices.find(item => item.authSource === "cloud_account" && item.cloudDeviceId === cloudDeviceId);
+      if (!device) {
+        if (state.devices.length >= 100) throw deviceError("DEVICE_LIMIT", 409);
+        device = { id: randomUUID(), createdAt: now };
+        state.devices.push(device);
+      }
+      device.name = name.trim();
+      device.authSource = "cloud_account";
+      device.cloudDeviceId = cloudDeviceId;
+      device.lastOnlineValidatedAt = now;
+      device.refreshExpiresAt = now + 24 * 60 * 60_000;
+      device.revoked = false;
+      delete device.previousRefreshHash;
+      delete device.previousRefreshExpiresAt;
+      return { ...this.issue(device, state.serverId), cloudValidatedAt: now };
+    });
+  }
+
+  syncCloudDevices(activeCloudDeviceIds) {
+    const active = new Set(activeCloudDeviceIds);
+    return this.change(state => {
+      const revoked = [];
+      for (const device of state.devices) {
+        if (device.authSource !== "cloud_account" || device.revoked || active.has(device.cloudDeviceId)) continue;
+        device.revoked = true;
+        delete device.accessHash;
+        delete device.refreshHash;
+        delete device.previousRefreshHash;
+        delete device.previousRefreshExpiresAt;
+        revoked.push(device.id);
+      }
+      return revoked;
+    }).then(revoked => {
+      for (const id of revoked) for (const listener of this.listeners) listener(id);
+      return { revoked };
+    });
+  }
+
+  revokeCloudDevice(cloudDeviceId = null) {
+    return this.change(state => {
+      const revoked = [];
+      for (const device of state.devices) {
+        if (device.authSource !== "cloud_account" || device.revoked
+            || (cloudDeviceId !== null && device.cloudDeviceId !== cloudDeviceId)) continue;
+        device.revoked = true;
+        delete device.accessHash;
+        delete device.refreshHash;
+        delete device.previousRefreshHash;
+        delete device.previousRefreshExpiresAt;
+        revoked.push(device.id);
+      }
+      return revoked;
+    }).then(revoked => {
+      for (const id of revoked) for (const listener of this.listeners) listener(id);
+      return { revoked };
+    });
+  }
+
   issue(device, serverId, { preserveGrace = false } = {}) {
     const accessToken = token();
     const refreshToken = token();
@@ -141,7 +208,8 @@ export class ClientDeviceAuthority {
     device.refreshHash = hash(refreshToken);
     device.accessExpiresAt = this.now() + 15 * 60_000;
     return { serverId, deviceId: device.id, accessToken, refreshToken,
-      accessExpiresAt: device.accessExpiresAt, refreshExpiresAt: device.refreshExpiresAt };
+      accessExpiresAt: device.accessExpiresAt, refreshExpiresAt: device.refreshExpiresAt,
+      ...(device.authSource === "cloud_account" ? { cloudValidatedAt: device.lastOnlineValidatedAt } : {}) };
   }
 
   refresh({ refreshToken }) {
@@ -186,7 +254,8 @@ export class ClientDeviceAuthority {
   }
 
   list() {
-    return { devices: this.state.devices.map(({ id, name, createdAt, revoked }) => ({ id, name, createdAt, revoked })),
+    return { devices: this.state.devices.map(({ id, name, createdAt, revoked, authSource = "local_pairing" }) =>
+      ({ id, name, createdAt, revoked, authSource })),
       pending: [...this.pending].filter(([, p]) => p.expiresAt > this.now() && p.status === "pending")
         .map(([pairingId, p]) => ({ pairingId, name: p.name, expiresAt: p.expiresAt })) };
   }

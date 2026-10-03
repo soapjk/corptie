@@ -53,6 +53,11 @@ export class RelayHub {
 
   revokeDevice(accountId: string, deviceId: string): void {
     for (const peer of this.peers) {
+      if (peer.accountId === accountId && peer.device.id !== deviceId) {
+        this.sendControl(peer, { type: "device_revoked", deviceId });
+      }
+    }
+    for (const peer of this.peers) {
       if (peer.accountId === accountId && peer.device.id === deviceId) {
         peer.socket.close(4003, "device revoked");
       }
@@ -61,7 +66,10 @@ export class RelayHub {
 
   revokeAccount(accountId: string): void {
     for (const peer of this.peers) {
-      if (peer.accountId === accountId) peer.socket.close(4003, "account authorization revoked");
+      if (peer.accountId === accountId) {
+        this.sendControl(peer, { type: "account_revoked" });
+        peer.socket.close(4003, "account authorization revoked");
+      }
     }
   }
 
@@ -92,7 +100,11 @@ export class RelayHub {
       }
       const webRequest = new Request(url, { method: "GET", headers: request.headers as HeadersInit });
       const principal = await this.options.resolvePrincipal(webRequest, ["connections:write"]);
-      const device = this.options.devices.getForAccount(principal.accountId, deviceId);
+      const device = this.options.devices.getAuthorizedForAccount(
+        principal.accountId,
+        deviceId,
+        principal.authorizationSessionId
+      );
       if (!device || device.revokedAt) {
         rejectUpgrade(socket, 403, "Device is not active for this account");
         return;
@@ -135,6 +147,10 @@ export class RelayHub {
       throw new Error("unsupported control message");
     }
     if (peer.device.kind !== "mobile") throw new Error("only mobile devices initiate relay connections");
+    const accountConnectionCount = [...this.connections.values()].filter((connection) => connection.accountId === peer.accountId).length;
+    if (accountConnectionCount >= this.options.config.relayMaxConnectionsPerAccount) {
+      throw new Error("account relay connection limit reached");
+    }
     const target = this.options.devices.getForAccount(peer.accountId, message.targetDeviceId);
     if (!target || target.kind !== "mac" || target.revokedAt) throw new Error("target Mac is unavailable");
     const macPeer = [...this.peers].find((candidate) =>

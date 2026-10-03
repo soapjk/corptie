@@ -18,6 +18,28 @@ targets:
   CorptieMobile:
     type: application
     platform: iOS
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Corptie
+        CFBundleShortVersionString: 0.1.0
+        CFBundleVersion: '1'
+        CFBundleURLTypes:
+          - CFBundleTypeRole: Editor
+            CFBundleURLName: com.corptie.oauth
+            CFBundleURLSchemes: [corptie]
+        NSLocalNetworkUsageDescription: 连接你指定的 Mac，浏览并操作 Corptie 会话。
+        NSCameraUsageDescription: 扫描 Mac 上的 Corptie 配对二维码，自动填写连接信息并申请配对。
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
     sources: [Sources]
     dependencies:
       - package: CorptieConversation
@@ -30,14 +52,6 @@ targets:
       base:
         PRODUCT_NAME: CorptieMobile
         PRODUCT_BUNDLE_IDENTIFIER: com.corptie.ipad.development
-        GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: Corptie
-        INFOPLIST_KEY_NSLocalNetworkUsageDescription: 连接你指定的 Mac，浏览并操作 Corptie 会话。
-        INFOPLIST_KEY_NSCameraUsageDescription: 扫描 Mac 上的 Corptie 配对二维码，自动填写连接信息并申请配对。
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
-        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
-        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
   CorptieMobileUITests:
     type: bundle.ui-testing
     platform: iOS

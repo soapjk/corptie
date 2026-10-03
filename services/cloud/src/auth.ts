@@ -18,6 +18,7 @@ export const CLOUD_RESOURCE_SCOPES = [
 
 export interface CloudPrincipal {
   accountId: string;
+  authorizationSessionId: string;
   scopes: ReadonlySet<string>;
   reauthenticatedAt: Date | null;
 }
@@ -141,9 +142,13 @@ export function createCloudAuth(
       if (typeof payload.sub !== "string" || payload.sub.length === 0) {
         throw new AuthenticationError("Access token is missing a subject");
       }
+      if (typeof payload.sid !== "string" || payload.sid.length === 0) {
+        throw new AuthenticationError("Access token is not bound to an authorization session");
+      }
       const authTime = typeof payload.auth_time === "number" ? new Date(payload.auth_time * 1_000) : null;
       return {
         accountId: payload.sub,
+        authorizationSessionId: payload.sid,
         scopes: new Set(readScopeClaim(payload.scope)),
         reauthenticatedAt: authTime
       };
@@ -155,6 +160,7 @@ export function createCloudAuth(
     if (missingScope) throw new AuthorizationError(`Unsupported scope: ${missingScope}`);
     return {
       accountId: session.user.id,
+      authorizationSessionId: session.session.id,
       scopes: new Set(CLOUD_RESOURCE_SCOPES),
       reauthenticatedAt: new Date(session.session.createdAt)
     };

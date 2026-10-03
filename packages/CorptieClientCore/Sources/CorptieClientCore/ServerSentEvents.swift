@@ -90,9 +90,9 @@ public struct ServerSentEventParser: Sendable {
 }
 
 public enum ServerSentEventStream {
-    public static func events(
-        from bytes: URLSession.AsyncBytes
-    ) -> AsyncThrowingStream<ServerSentEvent, Error> {
+    public static func events<Bytes: AsyncSequence & Sendable>(
+        from bytes: Bytes
+    ) -> AsyncThrowingStream<ServerSentEvent, Error> where Bytes.Element == UInt8 {
         AsyncThrowingStream { continuation in
             let decodingTask = Task.detached(priority: .userInitiated) {
                 do {

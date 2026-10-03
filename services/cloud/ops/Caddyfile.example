@@ -1,0 +1,10 @@
+corptie.llmay.cn {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:19081 {
+		flush_interval -1
+		transport http {
+			read_timeout 0
+			write_timeout 0
+		}
+	}
+}

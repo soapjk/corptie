@@ -31,6 +31,7 @@ let package = Package(
             name: "CorptieMac",
             dependencies: [
                 .product(name: "CorptieClientCore", package: "CorptieClientCore"),
+                .product(name: "CorptieClientSecurity", package: "CorptieClientCore"),
                 .product(name: "CorptieConversation", package: "CorptieConversation"),
                 "RectanglePacking",
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),

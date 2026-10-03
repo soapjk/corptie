@@ -83,6 +83,13 @@ CREATE TABLE IF NOT EXISTS cloud_mail_capture (
 );
 `;
 
+const applicationMigrationV2 = `
+ALTER TABLE cloud_devices ADD COLUMN authorization_session_id TEXT;
+CREATE UNIQUE INDEX idx_cloud_devices_active_authorization_session
+  ON cloud_devices(authorization_session_id)
+  WHERE revoked_at IS NULL AND authorization_session_id IS NOT NULL;
+`;
+
 export function openCloudDatabase(databasePath: string): DatabaseSync {
   if (databasePath !== ":memory:") {
     const absolutePath = resolve(databasePath);
@@ -99,7 +106,27 @@ export function openCloudDatabase(databasePath: string): DatabaseSync {
     INSERT OR IGNORE INTO cloud_schema_migrations(version, applied_at)
     VALUES (1, ?)
   `).run(new Date().toISOString());
+  applyMigration(database, 2, applicationMigrationV2);
   return database;
+}
+
+function applyMigration(database: DatabaseSync, version: number, sql: string): void {
+  const applied = database.prepare(
+    "SELECT 1 FROM cloud_schema_migrations WHERE version = ?"
+  ).get(version);
+  if (applied) return;
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    database.exec(sql);
+    database.prepare(`
+      INSERT INTO cloud_schema_migrations(version, applied_at)
+      VALUES (?, ?)
+    `).run(version, new Date().toISOString());
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function checkCloudDatabase(database: DatabaseSync): void {

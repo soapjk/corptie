@@ -39,7 +39,7 @@ test("password recovery revokes devices, sessions, and active-account listeners 
       VALUES ('session:one', ?, 'secret-session-token', ?, ?, ?)
     `).run(new Date(Date.now() + 60_000).toISOString(), timestamp, timestamp, userId);
     const deviceService = new CloudDeviceService(database);
-    deviceService.register(userId, createTestDeviceInput());
+    deviceService.register(userId, "session:one", createTestDeviceInput());
     const events = new AccountRevocationEvents();
     const notified: string[] = [];
     events.subscribe((accountId) => notified.push(accountId));
