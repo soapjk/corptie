@@ -37,7 +37,9 @@ prepare_layout() {
 }
 integrity() {
   test -f "$1" || die "database does not exist: $1"
-  result=$(sqlite3 "$1" 'PRAGMA quick_check;' 2>/dev/null) || die "SQLite integrity check failed"
+  # Backups are immutable snapshots. Opening a WAL-mode snapshot normally can
+  # create empty -wal/-shm neighbors, so validate through SQLite's immutable URI.
+  result=$(sqlite3 "file:$1?immutable=1" 'PRAGMA quick_check;' 2>/dev/null) || die "SQLite integrity check failed"
   test "${result}" = "ok" || die "SQLite integrity check returned: ${result}"
 }
 restart_service() {
