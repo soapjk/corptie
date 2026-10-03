@@ -445,6 +445,7 @@ private struct PadDeviceSettingsView: View {
     let connection: PadConnection
     let workspace: PadWorkspace
     let disconnected: () -> Void
+    @State private var cloudRevocation: CloudDevice?
 
     var body: some View {
         Form {
@@ -453,6 +454,38 @@ private struct PadDeviceSettingsView: View {
                 LabeledContent("服务器", value: connection.serverID)
                 Label(workspace.liveStatus, systemImage: workspace.realtimeConnected ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                     .foregroundStyle(workspace.realtimeConnected ? Color.green : Color.secondary)
+            }
+            if connection.cloudSignedIn {
+                Section {
+                    ForEach(connection.cloudDevices.filter { $0.kind == .mac && $0.revokedAt == nil }) { mac in
+                        Button("切换到 \(mac.displayName)", systemImage: "arrow.triangle.2.circlepath") {
+                            Task { await connection.connectCloud(to: mac) }
+                        }
+                        .disabled(connection.busy || UserDefaults.standard.string(forKey: "cloudMacID") == mac.id.uuidString)
+                    }
+                    ForEach(connection.cloudDevices.filter { $0.kind == .mobile && $0.revokedAt == nil }) { device in
+                        HStack {
+                            Label(device.displayName, systemImage: "ipad.and.iphone")
+                            Spacer()
+                            if device.id == connection.cloudCurrentDeviceID {
+                                Text("此设备").font(.caption).foregroundStyle(.secondary)
+                            } else {
+                                Button("撤销", role: .destructive) { cloudRevocation = device }
+                            }
+                        }
+                    }
+                    Button("退出 Cloud 账号", role: .destructive) {
+                        Task {
+                            await connection.signOutCloud()
+                            disconnected()
+                        }
+                    }
+                    .disabled(connection.busy)
+                } header: {
+                    Text("Corptie Cloud 设备")
+                } footer: {
+                    Text("同账号只有一台可用 Mac 时会自动连接；多台时可在此切换。撤销移动设备需要最近重新认证。")
+                }
             }
             Section {
                 Button("断开连接", role: .destructive) {
@@ -463,6 +496,17 @@ private struct PadDeviceSettingsView: View {
             } footer: {
                 Text("此 iPad 已由你在 Mac 上扫码批准，使用与其他已批准客户端一致的功能权限。")
             }
+        }
+        .alert("撤销移动设备？", isPresented: Binding(
+            get: { cloudRevocation != nil }, set: { if !$0 { cloudRevocation = nil } }
+        )) {
+            Button("取消", role: .cancel) { cloudRevocation = nil }
+            Button("撤销", role: .destructive) {
+                if let device = cloudRevocation { Task { await connection.revokeCloudDevice(device) } }
+                cloudRevocation = nil
+            }
+        } message: {
+            Text("\(cloudRevocation?.displayName ?? "") 将立即失去 Cloud 访问权限，现有 Relay 连接会关闭。")
         }
     }
 }

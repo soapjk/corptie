@@ -40,6 +40,7 @@ test("HTTP control plane keeps device inventory isolated by authenticated accoun
       if (!accountId) throw new Error("test account is required");
       return {
         accountId,
+        authorizationSessionId: request.headers.get("x-test-session") ?? `session:${accountId}`,
         scopes: new Set(scopes),
         reauthenticatedAt: request.headers.get("x-test-reauth") === "fresh"
           ? new Date(now.getTime() - 60_000)

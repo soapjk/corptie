@@ -14,6 +14,7 @@
 		24D9855E3C5BC2CDF2F027DC /* PadKeyboardDismissal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7253672D0D9624B647B6853E /* PadKeyboardDismissal.swift */; };
 		25F551E1B2B000CDFB3D4FF4 /* PadThreadMetaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D37BB4FB57B211895A177B49 /* PadThreadMetaView.swift */; };
 		30E41D342FAB927670418286 /* PadEntityCommandState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CEDA1E4E6BD9CCE07DCC3E4 /* PadEntityCommandState.swift */; };
+		32CA6C507DF6D5B1CA23DBB9 /* CloudSignInSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 632493EE476C34E4C1426464 /* CloudSignInSession.swift */; };
 		34634689B8C3008920FDC59D /* PadControlStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41341EEF7E91BE71F58B4B28 /* PadControlStore.swift */; };
 		359AA123BEFF3F4458508267 /* PadWorkOutline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52A95E7EF5AB57916E1AB280 /* PadWorkOutline.swift */; };
 		382FE16988F49BDDB749E55E /* PadWorktreeStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFED4C380E996064085541D0 /* PadWorktreeStore.swift */; };
@@ -70,6 +71,7 @@
 		478EC69830D1118FB7D7CC70 /* PadControlView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadControlView.swift; sourceTree = "<group>"; };
 		52A95E7EF5AB57916E1AB280 /* PadWorkOutline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadWorkOutline.swift; sourceTree = "<group>"; };
 		62B66A0F91332595B942C17D /* PadConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadConnection.swift; sourceTree = "<group>"; };
+		632493EE476C34E4C1426464 /* CloudSignInSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudSignInSession.swift; sourceTree = "<group>"; };
 		7253672D0D9624B647B6853E /* PadKeyboardDismissal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadKeyboardDismissal.swift; sourceTree = "<group>"; };
 		78421E23A339C48A496AB52C /* PadInspectorStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadInspectorStore.swift; sourceTree = "<group>"; };
 		7D77A56C019E63DC489BB0CD /* PadMessageLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadMessageLayout.swift; sourceTree = "<group>"; };
@@ -147,6 +149,7 @@
 			isa = PBXGroup;
 			children = (
 				2D9B809D725F65D6640C0388 /* Assets.xcassets */,
+				632493EE476C34E4C1426464 /* CloudSignInSession.swift */,
 				0146C8406CC84803BF91ADAF /* CorptieMobileApp.swift */,
 				3D62B49ED9E16E6F8382410B /* PadAppShell.swift */,
 				31A26A434B5210116AAC3252 /* PadComposer.swift */,
@@ -292,6 +295,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				32CA6C507DF6D5B1CA23DBB9 /* CloudSignInSession.swift in Sources */,
 				BDDCF61CFDF90AE3DD652697 /* CorptieMobileApp.swift in Sources */,
 				975B53902DC662C45D54A2A9 /* PadAppShell.swift in Sources */,
 				1FA71C8AF1C024C052BBD737 /* PadComposer.swift in Sources */,
@@ -375,14 +379,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = Corptie;
-				INFOPLIST_KEY_NSCameraUsageDescription = "扫描 Mac 上的 Corptie 配对二维码，自动填写连接信息并申请配对。";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "连接你指定的 Mac，浏览并操作 Corptie 会话。";
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_FILE = Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -399,14 +396,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = Corptie;
-				INFOPLIST_KEY_NSCameraUsageDescription = "扫描 Mac 上的 Corptie 配对二维码，自动填写连接信息并申请配对。";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "连接你指定的 Mac，浏览并操作 Corptie 会话。";
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_FILE = Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

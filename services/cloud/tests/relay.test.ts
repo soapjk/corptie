@@ -31,8 +31,8 @@ test("Relay routes opaque binary frames only between active devices on the same 
   const database = openCloudDatabase(":memory:");
   const devices = new CloudDeviceService(database);
   const accountId = "account:relay";
-  const mac = devices.register(accountId, createTestDeviceInput({ kind: "mac", displayName: "Mac" }));
-  const mobile = devices.register(accountId, createTestDeviceInput({
+  const mac = devices.register(accountId, "session:mac", createTestDeviceInput({ kind: "mac", displayName: "Mac" }));
+  const mobile = devices.register(accountId, "session:mobile", createTestDeviceInput({
     kind: "mobile",
     displayName: "Phone",
     publicKey: Buffer.alloc(32, 9).toString("base64")
@@ -43,6 +43,7 @@ test("Relay routes opaque binary frames only between active devices on the same 
     auth: { handler: async () => new Response(null, { status: 404 }) },
     resolvePrincipal: async (request, scopes): Promise<CloudPrincipal> => ({
       accountId: request.headers.get("x-test-account") ?? "",
+      authorizationSessionId: request.headers.get("x-test-session") ?? "",
       scopes: new Set(scopes),
       reauthenticatedAt: new Date()
     }),
@@ -53,8 +54,12 @@ test("Relay routes opaque binary frames only between active devices on the same 
   try {
     const address = await application.listen();
     const relayUrl = `ws://127.0.0.1:${address.port}/v1/relay`;
-    macSocket = new WebSocket(`${relayUrl}?deviceId=${mac.id}`, { headers: { "x-test-account": accountId } });
-    mobileSocket = new WebSocket(`${relayUrl}?deviceId=${mobile.id}`, { headers: { "x-test-account": accountId } });
+    macSocket = new WebSocket(`${relayUrl}?deviceId=${mac.id}`, {
+      headers: { "x-test-account": accountId, "x-test-session": "session:mac" }
+    });
+    mobileSocket = new WebSocket(`${relayUrl}?deviceId=${mobile.id}`, {
+      headers: { "x-test-account": accountId, "x-test-session": "session:mobile" }
+    });
     const macReady = nextJson(macSocket);
     const mobileReady = nextJson(mobileSocket);
     await Promise.all([nextOpen(macSocket), nextOpen(mobileSocket)]);
@@ -79,11 +84,13 @@ test("Relay routes opaque binary frames only between active devices on the same 
     assert.deepEqual(await received, frame);
 
     const mobileClosed = nextClose(mobileSocket);
+    const revokedNotice = nextJson(macSocket);
     const revoked = await fetch(`http://127.0.0.1:${address.port}/v1/devices/${mobile.id}`, {
       method: "DELETE",
       headers: { "x-test-account": accountId }
     });
     assert.equal(revoked.status, 200);
+    assert.deepEqual(await revokedNotice, { type: "device_revoked", deviceId: mobile.id });
     assert.equal((await mobileClosed).code, 4003);
   } finally {
     macSocket?.terminate();

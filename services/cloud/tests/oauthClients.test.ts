@@ -57,3 +57,21 @@ test("refuses silent native OAuth client mutation and unsafe callbacks", () => {
     database.close();
   }
 });
+
+test("first-party native clients are idempotently available without dynamic registration", () => {
+  const database = openCloudDatabase(":memory:");
+  try {
+    const registry = new NativeOAuthClientRegistry(database, "https://corptie.example.test/v1");
+    registry.ensureFirstPartyClients();
+    registry.ensureFirstPartyClients();
+    const rows = database.prepare(`
+      SELECT clientId, clientSecret, requirePKCE FROM oauthClient ORDER BY clientId
+    `).all() as unknown as Array<{ clientId: string; clientSecret: string | null; requirePKCE: number }>;
+    assert.deepEqual(rows.map((row) => ({ ...row })), [
+      { clientId: "corptie-ios", clientSecret: null, requirePKCE: 1 },
+      { clientId: "corptie-macos", clientSecret: null, requirePKCE: 1 }
+    ]);
+  } finally {
+    database.close();
+  }
+});

@@ -9,6 +9,7 @@ struct ClientDeviceInventory: Decodable {
         let id: String
         let name: String
         let revoked: Bool
+        let authSource: String
     }
     struct Pending: Decodable, Identifiable {
         let pairingId: String
@@ -29,15 +30,23 @@ struct ClientDeviceInvite: Decodable {
 }
 
 enum LocalDeviceAdminClient {
-    static func request(dataRoot: String, action: String? = nil, body: [String: String]? = nil,
+    static func adminToken(dataRoot: String) async throws -> String {
+        let secretURL = URL(fileURLWithPath: dataRoot, isDirectory: true)
+            .appendingPathComponent("client-devices/admin-token")
+        let value = try await Task.detached {
+            try String(contentsOf: secretURL, encoding: .utf8)
+        }.value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { throw ClientConnectionError.invalidResponse }
+        return value
+    }
+
+    static func request(dataRoot: String, action: String? = nil, body: [String: Any]? = nil,
                         approved: Bool? = nil) async throws -> Data {
         let endpoint = await CorptieAppEnvironment.backendEndpoint
         guard endpoint.isLoopback else { throw ClientConnectionError.outsideEndpoint }
-        let secretURL = URL(fileURLWithPath: dataRoot, isDirectory: true)
-            .appendingPathComponent("client-devices/admin-token")
         let secret: String?
         do {
-            secret = try await Task.detached { try String(contentsOf: secretURL, encoding: .utf8) }.value
+            secret = try await adminToken(dataRoot: dataRoot)
         } catch {
             guard action == nil else { throw error }
             secret = nil // Only the unavailable/preview status is public on loopback.
@@ -66,6 +75,8 @@ struct ClientDevicesSettingsView: View {
     @State private var busy = false
     @State private var message: String?
     @State private var confirmation: Action?
+    @StateObject private var cloud = CloudRemoteAccessController.shared
+    @State private var cloudRevocation: CloudDevice?
     private struct Action: Identifiable {
         let id: String
         let name: String
@@ -74,6 +85,72 @@ struct ClientDevicesSettingsView: View {
 
     var body: some View {
         Form {
+            Section {
+                Label {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(cloud.signedIn ? "已登录 Corptie Cloud" : "登录后从外网安全连接这台 Mac")
+                            .font(.headline)
+                        Text(cloud.status)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: cloud.connected ? "checkmark.icloud.fill" : "person.crop.circle")
+                        .foregroundStyle(cloud.connected ? .green : .secondary)
+                }
+                .accessibilityElement(children: .combine)
+                if cloud.restoring {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("正在恢复账号…").foregroundStyle(.secondary)
+                    }
+                }
+                HStack {
+                    if cloud.signedIn {
+                        Toggle("允许远程连接", isOn: Binding(
+                            get: { cloud.enabled }, set: { cloud.setEnabled($0) }
+                        ))
+                        .toggleStyle(.switch)
+                        Spacer()
+                        Button("刷新设备") { Task { try? await cloud.refreshDevices() } }
+                            .disabled(cloud.busy || cloud.restoring)
+                        Button("退出账号", role: .destructive) { Task { await cloud.signOut() } }
+                    } else {
+                        Button("登录 Corptie Cloud") { Task { await cloud.signIn() } }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(cloud.restoring)
+                    }
+                    if cloud.busy { ProgressView().controlSize(.small) }
+                }
+                if cloud.signedIn {
+                    let activeDevices = cloud.devices.filter { $0.revokedAt == nil }
+                    if activeDevices.isEmpty {
+                        Text("暂无已注册设备").foregroundStyle(.secondary)
+                    } else {
+                        ForEach(activeDevices) { device in
+                            HStack {
+                                Image(systemName: device.kind == .mac ? "desktopcomputer" : "ipad.and.iphone")
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(device.displayName)
+                                    Text(device.kind == .mac ? "Mac" : "移动设备")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if device.id == cloud.currentDeviceID {
+                                    Text("此 Mac").font(.caption).foregroundStyle(.secondary)
+                                } else {
+                                    Button("撤销", role: .destructive) { cloudRevocation = device }
+                                }
+                            }
+                        }
+                    }
+                }
+                Text("账号凭据保存在本机钥匙串；Relay 只转发端到端加密数据。局域网配对仍可独立使用。")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } header: {
+                Text("Corptie 账号")
+            }
             Section("连接手机或 iPad") {
                 Text("让同一局域网内的设备访问这台 Mac。扫码申请并经你批准后，设备即可使用客户端提供的全部功能。")
                     .font(.callout).foregroundStyle(.secondary)
@@ -128,7 +205,9 @@ struct ClientDevicesSettingsView: View {
                         HStack {
                             VStack(alignment: .leading) {
                                 Text(item.name)
-                                Text(item.id).font(.caption).foregroundStyle(.secondary)
+                                Text(item.authSource == "cloud_account" ? "账号设备 · 最长离线 24 小时" : "本地配对")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Text(item.id).font(.caption2).foregroundStyle(.tertiary)
                             }
                             Spacer()
                             if item.revoked { Text("已撤销").foregroundStyle(.secondary) }
@@ -143,6 +222,7 @@ struct ClientDevicesSettingsView: View {
         .formStyle(.grouped)
         .disabled(busy)
         .task(id: backendClient.settings?.dataRoot) { await refresh() }
+        .task { await cloud.restore() }
         .task(id: invite?.pairingId) {
             guard let invite else { return }
             while !Task.isCancelled && Date().timeIntervalSince1970 * 1000 < invite.expiresAt {
@@ -172,6 +252,17 @@ struct ClientDevicesSettingsView: View {
         } message: {
             Text("\(confirmation?.name ?? "")\n\(confirmation?.id ?? "")\n" +
                  (confirmation?.revoke == true ? "设备将失去访问权限，现有连接也会关闭。" : "仅批准你正在配对的设备。批准后，该设备可以使用客户端提供的全部功能。"))
+        }
+        .alert("撤销 Cloud 设备？", isPresented: Binding(
+            get: { cloudRevocation != nil }, set: { if !$0 { cloudRevocation = nil } }
+        )) {
+            Button("取消", role: .cancel) { cloudRevocation = nil }
+            Button("撤销", role: .destructive) {
+                if let device = cloudRevocation { Task { await cloud.revoke(device) } }
+                cloudRevocation = nil
+            }
+        } message: {
+            Text("\(cloudRevocation?.displayName ?? "") 将立即失去 Cloud 访问权限，现有 Relay 连接会关闭。")
         }
     }
 

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.corptie.cloud.backup</string>
+  <key>ProgramArguments</key>
+  <array><string>/bin/sh</string><string>/Volumes/T9/data/corptie-cloud/current/ops/run-backup.sh</string></array>
+  <key>EnvironmentVariables</key>
+  <dict><key>CORPTIE_CLOUD_ROOT</key><string>/Volumes/T9/data/corptie-cloud</string></dict>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>15</integer></dict>
+  <key>StandardOutPath</key><string>/Volumes/T9/data/corptie-cloud/shared/logs/backup.log</string>
+  <key>StandardErrorPath</key><string>/Volumes/T9/data/corptie-cloud/shared/logs/backup-error.log</string>
+</dict>
+</plist>

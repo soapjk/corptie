@@ -13,6 +13,9 @@ test("account pages are small same-origin pages with strict browser protections"
   assert.equal(response.headers.get("x-frame-options"), "DENY");
   assert.equal(response.headers.get("cache-control"), "no-store");
   const html = await response.text();
+  assert.match(html, /<html lang="zh-CN">/);
+  assert.match(html, /登录 Corptie/);
+  assert.match(html, /aria-live="polite"/);
   assert.match(html, /autocomplete="current-password"/);
   assert.match(html, /<script src="\/auth\/assets\/auth\.js" defer><\/script>/);
   assert.doesNotMatch(html, /<script[^>]*>[^<]+<\/script>/);
@@ -38,8 +41,8 @@ test("OAuth pages reject invalid signed requests before rendering", async () => 
   );
   assert.equal(accepted?.status, 200);
   const html = await accepted?.text();
-  assert.match(html ?? "", /Confirm your identity/);
-  assert.match(html ?? "", /View your devices/);
+  assert.match(html ?? "", /确认你的身份/);
+  assert.match(html ?? "", /查看你的设备/);
   assert.match(html ?? "", /data-oauth-query="client_id=native&amp;scope=openid\+devices%3Aread&amp;sig=valid"/);
   assert.deepEqual(observed, [
     "client_id=native&scope=openid&sig=invalid",
