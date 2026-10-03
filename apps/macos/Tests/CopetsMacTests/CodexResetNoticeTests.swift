@@ -35,12 +35,32 @@ struct CodexResetNoticeTests {
         #expect(contents.contains(".popover(isPresented: $isResetNoticePresented"))
         #expect(!contents.contains("scheduleResetNoticeIfNeeded"))
         #expect(!contents.contains("automaticPresentationDelay"))
+        #expect(!contents.contains("if usage.account.provider"))
+        #expect(contents.contains("if let refreshed {"))
+        #expect(contents.contains("case ready(CodexRateLimitResetCredits?)"))
         let popover = try #require(contents.components(separatedBy: "private func resetNoticePopover(").dropFirst().first?
             .components(separatedBy: "private func formattedResetDate(").first)
         #expect(!popover.contains("Tibo forecast"))
         #expect(!popover.contains("openResetForecast"))
         #expect(!popover.contains(".frame(width:"))
         #expect(popover.contains(".fixedSize(horizontal: true, vertical: true)"))
+    }
+
+    @Test
+    func mobileQuotaPopoverAlsoUsesUsageDataInsteadOfProviderNames() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("ipad/Sources/PadThreadMetaView.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+        #expect(contents.contains("if let quota {"))
+        #expect(contents.contains("Button { isResetNoticePresented.toggle() }"))
+        #expect(contents.contains(".popover(isPresented: $isResetNoticePresented"))
+        #expect(!contents.contains("usage.route?.providerId =="))
+        #expect(!contents.contains("usage.account?.provider =="))
+        #expect(contents.contains("if let refreshed, let account = refreshed.account"))
     }
 
     @Test
@@ -69,11 +89,11 @@ struct CodexResetNoticeTests {
         ])
     }
 
-    @Test
-    func planQuotaUsesTheLongestAvailableRateLimitWindow() {
+    @Test(arguments: ["codex", "codex-app-server", "claude", "future-provider"])
+    func planQuotaUsesTheLongestAvailableRateLimitWindow(provider: String) {
         let account = CodexAccountUsage(
             available: true,
-            provider: "codex",
+            provider: provider,
             model: nil,
             rateLimits: CodexRateLimitSnapshot(
                 limitId: "codex",
