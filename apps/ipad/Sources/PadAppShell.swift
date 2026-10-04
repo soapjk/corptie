@@ -15,6 +15,7 @@ struct PadAppShell: View {
     @State private var isKeyboardVisible = false
     @State private var compactWorkspaceIsRoot = true
     @State private var compactOpenSessionRequest = 0
+    @State private var wasBackgrounded = false
     private let notificationManager = PadNotificationManager.shared
     @AppStorage("corptie.mobile.navigationRailExpanded") private var navigationRailExpanded = true
     private enum Sheet: String, Identifiable { case settings; var id: String { rawValue } }
@@ -92,7 +93,12 @@ struct PadAppShell: View {
         // One foreground scene owns one resident event stream. Selecting a
         // Task only changes the local timeline projection; it must never tear
         // down the connection and request another bootstrap snapshot.
-        .task {
+        .task { await connection.monitorNetwork() }
+        .task(id: connection.recoveryRevision) {
+            guard connection.networkAvailable, connection.recoveryBlockedMessage == nil else {
+                workspace.prepareForegroundRealtime()
+                return
+            }
             controls.activate(tab, connection: connection)
             // Keep the single server-pushed stream resident while the scene is
             // backgrounded. iPadOS may suspend the process, but the client must
@@ -104,7 +110,15 @@ struct PadAppShell: View {
     private var synchronizedContent: some View {
         appContent
         .onChange(of: scenePhase) {
-            if scenePhase == .active { controls.activate(tab, connection: connection) }
+            if scenePhase == .background { wasBackgrounded = true }
+            if scenePhase == .active {
+                if wasBackgrounded {
+                    wasBackgrounded = false
+                    workspace.prepareForegroundRealtime()
+                    connection.requestRealtimeRecovery()
+                }
+                controls.activate(tab, connection: connection)
+            }
             else { controls.pause() }
         }
         .onChange(of: tab) { if scenePhase == .active { controls.activate(tab, connection: connection) } }

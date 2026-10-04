@@ -15,10 +15,10 @@ import CorptieConversation
 enum PadServerConnectionStatus: Equatable {
     case connecting, connected, disconnected
 
-    static func resolve(hasPairing: Bool, realtimeConnected: Bool, hasInterrupted: Bool) -> Self {
+    static func resolve(hasPairing: Bool, realtimeConnected: Bool, reconnectFailed: Bool) -> Self {
         guard hasPairing else { return .disconnected }
         if realtimeConnected { return .connected }
-        return hasInterrupted ? .disconnected : .connecting
+        return reconnectFailed ? .disconnected : .connecting
     }
 
     var title: String {
@@ -623,6 +623,7 @@ final class PadWorkspace {
     var conversationNotice = ""
     var liveStatus = "正在连接实时更新"
     var realtimeConnected = false
+    var realtimeReconnectFailed = false
     var lastRealtimePulseAt: Date?
     var realtimePausedAt: Date?
     private(set) var hasReceivedRealtimeState = false
