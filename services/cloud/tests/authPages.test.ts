@@ -78,3 +78,31 @@ test("password reset page requires a reset token", async () => {
   assert.equal(present?.status, 200);
   assert.match(await present!.text(), /data-token="secret-token"/);
 });
+
+test("email verification has explicit success and error landing pages", async () => {
+  const dependencies = { verifyOAuthPageQuery: async () => false };
+  const success = await authPageResponse(new Request("https://cloud.example.test/auth/verified"), dependencies);
+  assert.equal(success?.status, 200);
+  assert.match(await success!.text(), /邮箱已验证/);
+
+  const expired = await authPageResponse(
+    new Request("https://cloud.example.test/auth/verified?error=TOKEN_EXPIRED"),
+    dependencies
+  );
+  assert.equal(expired?.status, 200);
+  const expiredHtml = await expired!.text();
+  assert.match(expiredHtml, /验证链接已过期/);
+  assert.match(expiredHtml, /发送新的验证邮件/);
+
+  const invalid = await authPageResponse(
+    new Request("https://cloud.example.test/auth/verified?error=INVALID_TOKEN"),
+    dependencies
+  );
+  assert.equal(invalid?.status, 200);
+  assert.match(await invalid!.text(), /验证链接无效/);
+
+  const script = await authPageResponse(new Request("https://cloud.example.test/auth/assets/auth.js"), dependencies);
+  const javaScript = await script!.text();
+  assert.match(javaScript, /callbackURL: window\.location\.origin \+ "\/auth\/verified"/);
+  assert.match(javaScript, /\/api\/auth\/send-verification-email/);
+});

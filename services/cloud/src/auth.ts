@@ -87,7 +87,10 @@ export function createCloudAuth(
     },
     emailVerification: {
       sendOnSignUp: true,
-      sendOnSignIn: true,
+      // The sign-in endpoint reuses callbackURL as its successful login
+      // destination. Let the account page request a dedicated verification
+      // email instead so OAuth sign-in redirects remain untouched.
+      sendOnSignIn: false,
       sendVerificationEmail: async ({ user, url }) => {
         if (!services.mailer) throw new Error("Cloud mailer is not configured");
         await services.mailer.sendVerification(user.email, url);
