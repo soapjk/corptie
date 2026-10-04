@@ -14,6 +14,7 @@ struct PadRealtimeTests {
         let workspace = PadWorkspace()
         workspace.selection = "session:test"
         RealtimeProtocol.phase = 0
+        RealtimeProtocol.rejectStreams = false
         return (connection, workspace)
     }
 
@@ -26,6 +27,7 @@ struct PadRealtimeTests {
         let workspace = PadWorkspace()
         workspace.selection = "session:test"
         PushRealtimeProtocol.requests = []
+        PushRealtimeProtocol.rejectStreams = false
         return (connection, workspace)
     }
 
@@ -203,7 +205,7 @@ struct PadRealtimeTests {
         }
         #expect(PadServerConnectionStatus.resolve(hasPairing: connection.connected,
             realtimeConnected: workspace.realtimeConnected,
-            hasInterrupted: workspace.realtimePausedAt != nil) == .streamInterrupted)
+            reconnectFailed: workspace.realtimeReconnectFailed) == .connecting)
         for _ in 0..<100 {
             if workspace.messages.first?.text == "completed response" { break }
             try await Task.sleep(for: .milliseconds(50))
@@ -213,7 +215,50 @@ struct PadRealtimeTests {
         #expect(workspace.selection == "session:test")
         #expect(PadServerConnectionStatus.resolve(hasPairing: connection.connected,
             realtimeConnected: workspace.realtimeConnected,
-            hasInterrupted: workspace.realtimePausedAt != nil) == .connected)
+            reconnectFailed: workspace.realtimeReconnectFailed) == .connected)
+        live.cancel(); await live.value
+    }
+
+    @Test(arguments: [false, true])
+    func disconnectNoticeWaitsForFailedReconnectAndClearsAfterRecovery(v2: Bool) async throws {
+        let (connection, workspace) = try v2 ? pushFixture() : fixture()
+        let live = Task { await workspace.runRealtime(connection) }
+        defer {
+            live.cancel()
+            RealtimeProtocol.rejectStreams = false; RealtimeProtocol.stream = nil
+            PushRealtimeProtocol.rejectStreams = false; PushRealtimeProtocol.stream = nil
+        }
+        for _ in 0..<100 {
+            if workspace.realtimeConnected { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(workspace.realtimeConnected)
+        if v2 {
+            PushRealtimeProtocol.rejectStreams = true
+            PushRealtimeProtocol.stream?.finishFromServer()
+        } else {
+            RealtimeProtocol.rejectStreams = true
+            RealtimeProtocol.stream?.finishFromServer()
+        }
+        for _ in 0..<50 {
+            if workspace.realtimePausedAt != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!workspace.realtimeReconnectFailed)
+        for _ in 0..<100 {
+            if workspace.realtimeReconnectFailed { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(workspace.realtimeReconnectFailed)
+        #expect(!workspace.realtimeConnected)
+        RealtimeProtocol.rejectStreams = false
+        PushRealtimeProtocol.rejectStreams = false
+        for _ in 0..<120 {
+            if workspace.realtimeConnected { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(workspace.realtimeConnected)
+        #expect(!workspace.realtimeReconnectFailed)
         live.cancel(); await live.value
     }
 
@@ -244,6 +289,7 @@ struct PadRealtimeTests {
 
 private final class PushRealtimeProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var requests: [String] = []
+    nonisolated(unsafe) static var rejectStreams = false
     nonisolated(unsafe) static var stream: PushRealtimeProtocol?
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -251,6 +297,10 @@ private final class PushRealtimeProtocol: URLProtocol, @unchecked Sendable {
         let path = request.url!.path
         let recorded = path + request.url.map { $0.query.map { "?" + $0 } ?? "" }!
         Self.requests.append(recorded)
+        if path.hasSuffix("/events") && Self.rejectStreams {
+            client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
+            return
+        }
         #expect(request.httpMethod == "GET")
         if path.hasSuffix("/messages") {
             client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
@@ -274,6 +324,7 @@ private final class PushRealtimeProtocol: URLProtocol, @unchecked Sendable {
     func sendBackgroundDelta() {
         send("timeline-delta", #"{"schemaVersion":2,"kind":"delta","sessionId":"session:background","snapshotRequired":false,"baseRevision":9,"revision":10,"currentRevision":10,"hasMore":false,"changes":[{"revision":10,"itemId":"item:background","operation":"upsert","item":{"id":"item:background","type":"agentMessage","text":"completed background response"}}]}"#)
     }
+    func finishFromServer() { client?.urlProtocolDidFinishLoading(self) }
     override func stopLoading() {}
 }
 
@@ -314,6 +365,7 @@ private final class ReadyOnlyRealtimeProtocol: URLProtocol, @unchecked Sendable 
 
 private final class RealtimeProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var phase = 0
+    nonisolated(unsafe) static var rejectStreams = false
     nonisolated(unsafe) static var stream: RealtimeProtocol?
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -321,6 +373,10 @@ private final class RealtimeProtocol: URLProtocol, @unchecked Sendable {
         let path = request.url!.path
         #expect(request.httpMethod == "GET") // this workflow must never replay send/stop
         let streaming = path.hasSuffix("/events")
+        if streaming && Self.rejectStreams {
+            client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
+            return
+        }
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": streaming ? "text/event-stream" : "application/json"])!, cacheStoragePolicy: .notAllowed)
         if streaming {
             Self.stream = self
