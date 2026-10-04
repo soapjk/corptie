@@ -5,6 +5,44 @@ import CorptieClientCore
 import CorptieClientSecurity
 import Foundation
 
+final class WebAuthenticationCallbackBridge: @unchecked Sendable {
+    typealias Delivery = @MainActor @Sendable (URL?, (any Error)?) -> Void
+
+    private struct Payload: @unchecked Sendable {
+        let callbackURL: URL?
+        let error: (any Error)?
+    }
+
+    private let lock = NSLock()
+    private let delivery: Delivery
+    private var completed = false
+
+    init(delivery: @escaping Delivery) {
+        self.delivery = delivery
+    }
+
+    func makeCompletionHandler() -> ASWebAuthenticationSession.CompletionHandler {
+        { [self] callbackURL, error in
+            complete(callbackURL: callbackURL, error: error)
+        }
+    }
+
+    func complete(callbackURL: URL?, error: (any Error)?) {
+        lock.lock()
+        guard !completed else {
+            lock.unlock()
+            return
+        }
+        completed = true
+        lock.unlock()
+
+        let payload = Payload(callbackURL: callbackURL, error: error)
+        Task { @MainActor [delivery] in
+            delivery(payload.callbackURL, payload.error)
+        }
+    }
+}
+
 @MainActor
 final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthenticationPresentationContextProviding {
     static let shared = CloudRemoteAccessController()
@@ -229,19 +267,21 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
 
     private func authenticate(at url: URL) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
-            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: "corptie") { [weak self] callback, error in
-                Task { @MainActor in
-                    self?.webSession = nil
-                    if let callback { continuation.resume(returning: callback) }
-                    else { continuation.resume(throwing: error ?? CloudOAuthError.invalidCallback) }
-                }
+            let bridge = WebAuthenticationCallbackBridge { [weak self] callback, error in
+                self?.webSession = nil
+                if let callback { continuation.resume(returning: callback) }
+                else { continuation.resume(throwing: error ?? CloudOAuthError.invalidCallback) }
             }
+            let session = ASWebAuthenticationSession(
+                url: url,
+                callbackURLScheme: "corptie",
+                completionHandler: bridge.makeCompletionHandler()
+            )
             session.presentationContextProvider = self
             session.prefersEphemeralWebBrowserSession = false
             webSession = session
             if !session.start() {
-                webSession = nil
-                continuation.resume(throwing: CloudOAuthError.invalidCallback)
+                bridge.complete(callbackURL: nil, error: CloudOAuthError.invalidCallback)
             }
         }
     }
