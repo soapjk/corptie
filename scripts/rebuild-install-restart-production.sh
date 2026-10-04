@@ -7,6 +7,7 @@ APP_EXECUTABLE="${APP_PATH}/Contents/MacOS/Corptie"
 BACKEND_PORT="${CORPTIE_PRODUCTION_PORT:-47321}"
 BACKEND_URL="http://127.0.0.1:${BACKEND_PORT}"
 HEALTH_TIMEOUT_SECONDS="${CORPTIE_PRODUCTION_HEALTH_TIMEOUT_SECONDS:-180}"
+SESSION_POLL_SECONDS="${CORPTIE_PRODUCTION_SESSION_POLL_SECONDS:-2}"
 LAUNCH_AGENT_LABEL="com.corptie.backend"
 LAUNCH_AGENT_PLIST="${HOME}/Library/LaunchAgents/${LAUNCH_AGENT_LABEL}.plist"
 LAUNCH_AGENT_STAGED_PLIST=""
@@ -55,6 +56,11 @@ fi
 
 if ! [[ "${HEALTH_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
   echo "CORPTIE_PRODUCTION_HEALTH_TIMEOUT_SECONDS must be a positive integer." >&2
+  exit 64
+fi
+
+if ! [[ "${SESSION_POLL_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "CORPTIE_PRODUCTION_SESSION_POLL_SECONDS must be a positive integer." >&2
   exit 64
 fi
 
@@ -152,7 +158,7 @@ check_production_sessions() {
 }
 
 wait_for_production_sessions() {
-  local active="" last_reported="" unavailable_reports=0
+  local active="" active_ids="" last_reported_ids="" availability="unknown"
 
   echo "Production build is ready; waiting for all unfinished sessions before installation..."
   while true; do
@@ -161,13 +167,20 @@ wait_for_production_sessions() {
       return 0
     fi
 
-    if active="$(unfinished_sessions)"; then
-      unavailable_reports=0
+    # Polling is intentionally quiet: check_production_sessions retains raw
+    # diagnostics for one-shot checks, while a long-running upgrade reports
+    # only meaningful state transitions.
+    if active="$(unfinished_sessions 2>/dev/null)"; then
+      if [[ "${availability}" == "unavailable" ]]; then
+        echo "Production session inspection is available again."
+      fi
+      availability="available"
       if [[ -z "${active}" ]]; then
         echo "All production sessions are finished; installing the update now."
         return 0
       fi
-      if [[ "${active}" != "${last_reported}" ]]; then
+      active_ids="$(cut -f1 <<<"${active}" | LC_ALL=C sort -u)"
+      if [[ "${active_ids}" != "${last_reported_ids}" ]]; then
         echo "Production still has unfinished sessions; installation is waiting:" >&2
         while IFS=$'\t' read -r id title status activity; do
           printf '  - %s [%s%s] %s\n' \
@@ -176,15 +189,15 @@ wait_for_production_sessions() {
             "${activity:+ / ${activity}}" \
             "${id}" >&2
         done <<<"${active}"
-        last_reported="${active}"
+        last_reported_ids="${active_ids}"
       fi
     else
-      unavailable_reports=$((unavailable_reports + 1))
-      if (( unavailable_reports == 1 || unavailable_reports % 30 == 0 )); then
+      if [[ "${availability}" != "unavailable" ]]; then
         echo "Cannot inspect production sessions at ${BACKEND_URL}; installation remains paused and will retry." >&2
       fi
+      availability="unavailable"
     fi
-    sleep 1
+    sleep "${SESSION_POLL_SECONDS}"
   done
 }
 
@@ -253,6 +266,10 @@ reset_production_database() {
   delete_sqlite_family "${HOME}/Library/Application Support/Copets/corptie.sqlite"
   delete_sqlite_family "${HOME}/Library/Application Support/Copets/copets.sqlite"
 }
+
+if [[ "${CORPTIE_PRODUCTION_SCRIPT_SOURCE_ONLY:-false}" == true ]]; then
+  return 0
+fi
 
 stop_pids() {
   local label="$1"
