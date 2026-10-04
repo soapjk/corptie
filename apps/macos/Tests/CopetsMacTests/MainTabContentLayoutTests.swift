@@ -12,6 +12,13 @@ struct MainTabContentLayoutTests {
         #expect(AppTab.worktrees.index == 3)
         #expect(AppTab.agents.index == 4)
         #expect(AppTab.console.systemImage == "circle.hexagongrid.fill")
+        #expect(AppTab.scenes.systemImage == "house")
+    }
+
+    @MainActor
+    @Test
+    func sceneNavigationSymbolExistsInTheSystemLibrary() {
+        #expect(NSImage(systemSymbolName: AppTab.scenes.systemImage, accessibilityDescription: nil) != nil)
     }
 
     @Test
