@@ -46,7 +46,11 @@ async function post(path, body) {
     body: JSON.stringify(body)
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.message || "请求未完成，请稍后重试。");
+  if (!response.ok) {
+    const error = new Error(payload.message || "请求未完成，请稍后重试。");
+    error.code = payload.code;
+    throw error;
+  }
   return payload;
 }
 
@@ -57,9 +61,9 @@ async function submit(event) {
   controls.forEach((button) => { button.disabled = true; });
   form.setAttribute("aria-busy", "true");
   setStatus("正在处理…");
+  const data = new FormData(form);
+  const page = root.dataset.page;
   try {
-    const data = new FormData(form);
-    const page = root.dataset.page;
     const oauthQuery = root.dataset.oauthQuery || undefined;
     if (page === "sign-in") {
       const payload = await post("/api/auth/sign-in/email", {
@@ -76,7 +80,10 @@ async function submit(event) {
       window.location.assign(payload.redirect_uri);
     } else if (page === "sign-up") {
       await post("/api/auth/sign-up/email", {
-        email: data.get("email"), name: data.get("name"), password: data.get("password")
+        email: data.get("email"),
+        name: data.get("name"),
+        password: data.get("password"),
+        callbackURL: window.location.origin + "/auth/verified"
       });
       form.reset();
       setStatus("账号已创建。请查收验证邮件，然后返回登录。");
@@ -92,7 +99,19 @@ async function submit(event) {
       setStatus("密码已更新，所有设备需要重新登录。");
     }
   } catch (error) {
-    setStatus(error instanceof Error ? error.message : "请求未完成，请稍后重试。", true);
+    if (page === "sign-in" && error?.code === "EMAIL_NOT_VERIFIED") {
+      try {
+        await post("/api/auth/send-verification-email", {
+          email: data.get("email"),
+          callbackURL: window.location.origin + "/auth/verified"
+        });
+        setStatus("邮箱尚未验证，新的验证邮件已发送。请查收邮件后再登录。");
+      } catch (resendError) {
+        setStatus(resendError instanceof Error ? resendError.message : "验证邮件发送失败，请稍后重试。", true);
+      }
+    } else {
+      setStatus(error instanceof Error ? error.message : "请求未完成，请稍后重试。", true);
+    }
   } finally {
     controls.forEach((button) => { button.disabled = false; });
     form.removeAttribute("aria-busy");
@@ -169,6 +188,16 @@ export async function authPageResponse(request: Request, dependencies: AuthPageD
     `, { token });
   }
   if (url.pathname === "/auth/verified") {
+    const error = url.searchParams.get("error");
+    if (error) {
+      const expired = error === "TOKEN_EXPIRED";
+      return page(
+        expired ? "验证链接已过期" : "验证链接无效",
+        expired ? "请返回登录页，登录后我们会向你发送新的验证邮件。" : "该验证链接无法使用，请返回登录页重新获取验证邮件。",
+        "complete",
+        `<nav class="links"><a href="/auth/sign-in">返回登录</a></nav>`
+      );
+    }
     return page("邮箱已验证", "现在可以返回 Corptie 登录。", "complete", `<nav class="links"><a href="/auth/sign-in">登录</a></nav>`);
   }
   return null;
