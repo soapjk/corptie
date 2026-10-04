@@ -61,9 +61,6 @@ struct PadAppShell: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .safeAreaInset(edge: .top, spacing: 0) {
-            PadServerConnectionStatusView(connection: connection, workspace: workspace)
-        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if !usesNavigationRail, !isKeyboardVisible,
                (tab != .workspace || compactWorkspaceIsRoot) {
@@ -186,42 +183,6 @@ struct PadAppShell: View {
         } else {
             tab = .workspace
         }
-    }
-}
-
-/// Observe only transport transitions, not heartbeat timestamps or message rows.
-private struct PadServerConnectionStatusView: View {
-    let connection: PadConnection
-    let workspace: PadWorkspace
-
-    private var status: PadServerConnectionStatus {
-        .resolve(hasPairing: connection.connected, realtimeConnected: workspace.realtimeConnected,
-                 hasInterrupted: workspace.realtimePausedAt != nil)
-    }
-
-    var body: some View {
-        let current = status
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: current == .connected ? "checkmark.circle.fill"
-                  : current == .disconnected ? "wifi.slash" : "network")
-                .foregroundStyle(current == .connected ? Color.green
-                                 : current == .disconnected ? Color.red : Color.secondary)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(current.title).font(.caption.weight(.semibold))
-                if current == .disconnected {
-                    Text("正在自动重连；消息与状态暂时无法实时更新。")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(Color(uiColor: .secondarySystemBackground))
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("server-connection-status")
     }
 }
 
