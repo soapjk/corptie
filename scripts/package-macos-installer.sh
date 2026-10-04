@@ -15,6 +15,23 @@ ICON_SOURCE="${ROOT}/apps/macos/Sources/CopetsMac/Resources/AppIcon.png"
 MACOS_SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
 MACOS_SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
 
+source "${ROOT}/scripts/macos-signing-policy.sh"
+APP_SIGNING_IDENTITY="$(corptie_resolve_macos_signing_identity)"
+corptie_validate_macos_signing_config "${APP_SIGNING_IDENTITY}"
+if [[ "${APP_SIGNING_IDENTITY}" != "-" ]]; then
+  PROFILE_PATH="${CORPTIE_MACOS_PROVISIONING_PROFILE:-}"
+  if [[ -z "${PROFILE_PATH}" ]]; then
+    echo "Error: set CORPTIE_MACOS_PROVISIONING_PROFILE to a macOS profile authorizing com.corptie.mac and its keychain group." >&2
+    exit 67
+  fi
+  SIGNING_TEAM="$(security find-certificate -c "${APP_SIGNING_IDENTITY}" -p 2>/dev/null | openssl x509 -noout -subject -nameopt RFC2253 2>/dev/null | sed -n 's/.*OU=\([^,]*\).*/\1/p')"
+  if [[ -z "${SIGNING_TEAM}" ]]; then
+    echo "Error: unable to read the signing identity team ID." >&2
+    exit 68
+  fi
+  corptie_validate_cloud_keychain_profile "${PROFILE_PATH}" "${SIGNING_TEAM}"
+fi
+
 mkdir -p "${ARCHIVE_DIR}"
 NODE_DISTRIBUTION="$(bash "${ROOT}/scripts/prepare-bundled-node.sh")"
 export PATH="${NODE_DISTRIBUTION}/bin:${PATH}"
@@ -216,13 +233,18 @@ PLIST
 
 xattr -cr "${STAGING_ROOT}" 2>/dev/null || true
 
-source "${ROOT}/scripts/macos-signing-policy.sh"
-APP_SIGNING_IDENTITY="$(corptie_resolve_macos_signing_identity)"
-corptie_validate_macos_signing_config "${APP_SIGNING_IDENTITY}"
 SIGN_FLAGS=(--force --sign "${APP_SIGNING_IDENTITY}")
 if [[ "${APP_SIGNING_IDENTITY}" == "-" ]]; then
+  plutil -insert CorptieCloudDataProtectionKeychain -bool NO "${APP_DIR}/Contents/Info.plist"
   echo "Warning: building an ad-hoc signed app; macOS privacy permissions may need to be granted again after upgrades." >&2
 else
+  cp "${PROFILE_PATH}" "${APP_DIR}/Contents/embedded.provisionprofile"
+  plutil -insert CorptieCloudDataProtectionKeychain -bool YES "${APP_DIR}/Contents/Info.plist"
+  APP_ENTITLEMENTS="${STAGING_ROOT}/corptie-cloud-entitlements.plist"
+  plutil -create xml1 "${APP_ENTITLEMENTS}"
+  /usr/libexec/PlistBuddy -c "Add :com.apple.application-identifier string ${SIGNING_TEAM}.com.corptie.mac" "${APP_ENTITLEMENTS}"
+  /usr/libexec/PlistBuddy -c 'Add :keychain-access-groups array' "${APP_ENTITLEMENTS}"
+  /usr/libexec/PlistBuddy -c "Add :keychain-access-groups:0 string ${SIGNING_TEAM}.com.corptie.mac" "${APP_ENTITLEMENTS}"
   echo "Signing app and bundled backend with: ${APP_SIGNING_IDENTITY}"
   # This installer is built and installed locally. Requiring Apple's timestamp
   # service makes an otherwise valid local upgrade fail whenever that service
@@ -247,7 +269,11 @@ while IFS= read -r -d '' native_file; do
 done < <(find "${BACKEND_DEST}" -type f -print0)
 codesign "${SIGN_FLAGS[@]}" --identifier com.corptie.backend.node \
   --entitlements "${ROOT}/scripts/bundled-node-entitlements.plist" "${APP_DIR}/Contents/Helpers/node"
-codesign "${SIGN_FLAGS[@]}" "${APP_DIR}"
+if [[ "${APP_SIGNING_IDENTITY}" == "-" ]]; then
+  codesign "${SIGN_FLAGS[@]}" "${APP_DIR}"
+else
+  codesign "${SIGN_FLAGS[@]}" --entitlements "${APP_ENTITLEMENTS}" "${APP_DIR}"
+fi
 codesign --verify --deep --strict --verbose=2 "${APP_DIR}"
 if [[ "${APP_SIGNING_IDENTITY}" != "-" ]]; then
   corptie_verify_signed_bundle_identity "${APP_DIR}"

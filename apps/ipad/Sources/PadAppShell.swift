@@ -450,9 +450,20 @@ private struct PadDeviceSettingsView: View {
     var body: some View {
         Form {
             Section("连接的 Mac") {
-                LabeledContent("地址", value: connection.address)
-                LabeledContent("服务器", value: connection.serverID)
-                Label(workspace.liveStatus, systemImage: workspace.realtimeConnected ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                LabeledContent("连接方式", value: connection.connectedThroughCloud ? "Corptie Cloud · 账号连接" : "局域网连接")
+                if connection.connectedThroughCloud, let name = connection.connectedCloudMacName {
+                    LabeledContent("当前 Mac", value: name)
+                } else {
+                    LabeledContent("地址", value: connection.address)
+                    LabeledContent("服务器", value: connection.serverID)
+                }
+                let status = PadServerConnectionStatus.resolve(
+                    hasPairing: connection.connected,
+                    realtimeConnected: workspace.realtimeConnected,
+                    hasInterrupted: workspace.realtimePausedAt != nil
+                )
+                Label(status == .connected ? workspace.liveStatus : status.title,
+                      systemImage: status == .connected ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                     .foregroundStyle(workspace.realtimeConnected ? Color.green : Color.secondary)
             }
             if connection.cloudSignedIn {

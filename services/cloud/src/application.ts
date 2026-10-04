@@ -206,7 +206,7 @@ async function dispatch(
     const principal = await dependencies.resolvePrincipal(request, ["devices:manage"]);
     requireRecentAuthentication(principal.reauthenticatedAt, dependencies.now?.() ?? new Date());
     const device = devices.revokeDevice(principal.accountId, deviceId);
-    relay.revokeDevice(principal.accountId, deviceId);
+    relay.revokeDevice(principal.accountId, device.id);
     return json(200, { device });
   }
 
@@ -273,6 +273,12 @@ function json(status: number, body: unknown): Response {
 function errorResponse(error: unknown): Response {
   if (error instanceof AuthenticationError || error instanceof AuthorizationError) {
     return json(error.status, { code: error.code, message: error.message });
+  }
+  if (error && typeof error === "object" && "statusCode" in error && "status" in error) {
+    const candidate = error as { statusCode: unknown; status: unknown };
+    if (candidate.statusCode === 401 && candidate.status === "UNAUTHORIZED") {
+      return json(401, { code: "AUTHENTICATION_REQUIRED", message: "Access token is invalid" });
+    }
   }
   if (error instanceof DeviceConflictError) return json(409, { code: error.code, message: error.message });
   if (error instanceof DeviceNotFoundError) return json(404, { code: error.code, message: error.message });

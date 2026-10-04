@@ -203,7 +203,7 @@ struct PadRealtimeTests {
         }
         #expect(PadServerConnectionStatus.resolve(hasPairing: connection.connected,
             realtimeConnected: workspace.realtimeConnected,
-            hasInterrupted: workspace.realtimePausedAt != nil) == .disconnected)
+            hasInterrupted: workspace.realtimePausedAt != nil) == .streamInterrupted)
         for _ in 0..<100 {
             if workspace.messages.first?.text == "completed response" { break }
             try await Task.sleep(for: .milliseconds(50))

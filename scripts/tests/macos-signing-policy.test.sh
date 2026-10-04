@@ -16,6 +16,14 @@ CORPTIE_APP_SIGNING_IDENTITY=- CORPTIE_ALLOW_ADHOC_PACKAGE=1 \
 CORPTIE_APP_SIGNING_IDENTITY="Apple Development: Example (TEAMID)" \
   corptie_validate_macos_signing_config
 
+if corptie_validate_cloud_keychain_profile /tmp/corptie-missing-test-profile.provisionprofile TEAMID >/dev/null 2>&1; then
+  echo "expected a missing Cloud keychain provisioning profile to be rejected" >&2
+  exit 1
+fi
+grep -Fq 'CORPTIE_MACOS_PROVISIONING_PROFILE' "${PACKAGE_SCRIPT}"
+grep -Fq 'embedded.provisionprofile' "${PACKAGE_SCRIPT}"
+grep -Fq 'CorptieCloudDataProtectionKeychain' "${PACKAGE_SCRIPT}"
+
 resolved="$(CORPTIE_APP_SIGNING_IDENTITY="Apple Development: Example (TEAMID)" \
   corptie_resolve_macos_signing_identity)"
 [[ "${resolved}" == "Apple Development: Example (TEAMID)" ]]

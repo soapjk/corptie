@@ -22,6 +22,26 @@ test("devices are account-isolated and cannot be claimed by another account", ()
   }
 });
 
+test("Swift uppercase UUIDs match lowercase relay and revocation requests", () => {
+  const database = openCloudDatabase(":memory:");
+  try {
+    const service = new CloudDeviceService(database);
+    const input = createTestDeviceInput({ id: "A64D49AD-EB0F-44BC-BFE8-048B7CF79D96" });
+    const first = service.register("account:a", "session:a", input);
+    assert.equal(service.getAuthorizedForAccount("account:a", input.id.toLowerCase(), "session:a")?.id, first.id);
+    const second = service.register("account:a", "session:a", { ...input, id: input.id.toLowerCase() });
+    assert.equal(second.id, first.id);
+    assert.equal(service.listForAccount("account:a").length, 1);
+    assert.throws(
+      () => service.register("account:b", "session:b", { ...input, id: input.id.toLowerCase() }),
+      DeviceConflictError
+    );
+    assert.equal(service.revokeDevice("account:a", input.id.toLowerCase()).revokedAt !== null, true);
+  } finally {
+    database.close();
+  }
+});
+
 test("device revocation is durable, idempotent, and prevents identifier reuse", () => {
   const database = openCloudDatabase(":memory:");
   try {
