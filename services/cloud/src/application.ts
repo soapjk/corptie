@@ -206,7 +206,7 @@ async function dispatch(
     const principal = await dependencies.resolvePrincipal(request, ["devices:manage"]);
     requireRecentAuthentication(principal.reauthenticatedAt, dependencies.now?.() ?? new Date());
     const device = devices.revokeDevice(principal.accountId, deviceId);
-    relay.revokeDevice(principal.accountId, deviceId);
+    relay.revokeDevice(principal.accountId, device.id);
     return json(200, { device });
   }
 

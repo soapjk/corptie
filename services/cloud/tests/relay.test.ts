@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { WebSocket, type RawData } from "ws";
 import { createCloudApplication } from "../src/application.js";
@@ -32,8 +33,11 @@ test("Relay routes opaque binary frames only between active devices on the same 
   const database = openCloudDatabase(":memory:");
   const devices = new CloudDeviceService(database);
   const accountId = "account:relay";
-  const mac = devices.register(accountId, "session:mac", createTestDeviceInput({ kind: "mac", displayName: "Mac" }));
+  const mac = devices.register(accountId, "session:mac", createTestDeviceInput({
+    id: randomUUID().toUpperCase(), kind: "mac", displayName: "Mac"
+  }));
   const mobile = devices.register(accountId, "session:mobile", createTestDeviceInput({
+    id: randomUUID().toUpperCase(),
     kind: "mobile",
     displayName: "Phone",
     publicKey: Buffer.alloc(32, 9).toString("base64")
@@ -55,10 +59,10 @@ test("Relay routes opaque binary frames only between active devices on the same 
   try {
     const address = await application.listen();
     const relayUrl = `ws://127.0.0.1:${address.port}/v1/relay`;
-    macSocket = new WebSocket(`${relayUrl}?deviceId=${mac.id}`, {
+    macSocket = new WebSocket(`${relayUrl}?deviceId=${mac.id.toLowerCase()}`, {
       headers: { "x-test-account": accountId, "x-test-session": "session:mac" }
     });
-    mobileSocket = new WebSocket(`${relayUrl}?deviceId=${mobile.id}`, {
+    mobileSocket = new WebSocket(`${relayUrl}?deviceId=${mobile.id.toLowerCase()}`, {
       headers: { "x-test-account": accountId, "x-test-session": "session:mobile" }
     });
     const macReady = nextJson(macSocket);
@@ -69,7 +73,7 @@ test("Relay routes opaque binary frames only between active devices on the same 
 
     const incoming = nextJson(macSocket);
     const connected = nextJson(mobileSocket);
-    mobileSocket.send(JSON.stringify({ type: "connect", targetDeviceId: mac.id, requestId: "request:one" }));
+    mobileSocket.send(JSON.stringify({ type: "connect", targetDeviceId: mac.id.toLowerCase(), requestId: "request:one" }));
     const mobileControl = await connected;
     const macControl = await incoming;
     assert.equal(mobileControl.type, "connected");
@@ -86,7 +90,7 @@ test("Relay routes opaque binary frames only between active devices on the same 
 
     const mobileClosed = nextClose(mobileSocket);
     const revokedNotice = nextJson(macSocket);
-    const revoked = await fetch(`http://127.0.0.1:${address.port}/v1/devices/${mobile.id}`, {
+    const revoked = await fetch(`http://127.0.0.1:${address.port}/v1/devices/${mobile.id.toLowerCase()}`, {
       method: "DELETE",
       headers: { "x-test-account": accountId }
     });
