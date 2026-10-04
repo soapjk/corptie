@@ -25,6 +25,7 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case sending, deliveryUnknown, accepted, queued, processing
         case deliveryFailed, processingFailed, cancelled
+        case waitingToSend, retrying, deliveryBlocked, retryStopped
     }
 
     public let kind: Kind
@@ -62,8 +63,12 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
             failureReason = Self.nonempty(String(localDeliveryState.dropFirst("发送失败：".count)))
         } else {
             switch localDeliveryState {
-            case "Sending": kind = .sending
-            case "Sent": kind = .accepted
+            case "Sending", "发送中": kind = .sending
+            case "Sent", "后端已接收": kind = .accepted
+            case "已保存，等待发送", "等待网络，恢复后自动发送", "等待前一条消息处理": kind = .waitingToSend
+            case "等待重试，将自动发送": kind = .retrying
+            case "等待恢复连接授权", "后端不支持可靠发送，请更新后端": kind = .deliveryBlocked
+            case "已停止重试；不代表撤回": kind = .retryStopped
             case "送达状态未确认": kind = .deliveryUnknown
             default: kind = .deliveryUnknown
             }
@@ -81,6 +86,9 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
         case .processing: "circle.dotted.circle"
         case .deliveryFailed, .processingFailed: "exclamationmark.circle.fill"
         case .cancelled: "xmark.circle"
+        case .waitingToSend, .retrying: "clock.arrow.circlepath"
+        case .deliveryBlocked: "exclamationmark.lock"
+        case .retryStopped: "pause.circle"
         }
     }
 
@@ -88,6 +96,7 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
     public var tone: Tone {
         switch kind {
         case .queued: .amber
+        case .waitingToSend, .retrying, .deliveryBlocked: .amber
         case .processing: .green
         case .deliveryFailed, .processingFailed: .red
         default: .neutral
@@ -105,6 +114,10 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
         case .deliveryFailed: return chinese ? "发送失败" : "Send failed"
         case .processingFailed: return chinese ? "处理失败" : "Processing failed"
         case .cancelled: return chinese ? "已取消" : "Cancelled"
+        case .waitingToSend: return chinese ? "待发送" : "Waiting to send"
+        case .retrying: return chinese ? "自动重试" : "Retrying"
+        case .deliveryBlocked: return chinese ? "发送暂停" : "Delivery paused"
+        case .retryStopped: return chinese ? "已停重试" : "Retries stopped"
         }
     }
 
@@ -122,6 +135,18 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
         if kind == .accepted {
             return chinese ? "服务端已接收；这不代表模型已开始处理。"
                 : "Received by the server; the model may not have started yet."
+        }
+        if kind == .waitingToSend || kind == .retrying {
+            return chinese ? "消息已保存在本机，连接恢复后自动发送。"
+                : "Saved on this device; delivery resumes automatically when connectivity returns."
+        }
+        if kind == .deliveryBlocked {
+            return chinese ? "原消息已保留，请恢复连接授权或更新后端后继续发送。"
+                : "Message retained; restore authorization or update the backend to resume."
+        }
+        if kind == .retryStopped {
+            return chinese ? "已停止后续重试；不代表已撤回，后端仍可能执行已经收到的请求。"
+                : "Further retries stopped. This does not withdraw a request already received by the server."
         }
         return label
     }

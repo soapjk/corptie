@@ -94,7 +94,11 @@ import CorptieClientSecurity
         connection.applyNetworkPath(.init(available: true, interfaces: "cellular"))
         connection.applyNetworkPath(.init(available: true, interfaces: "wifi"))
         connection.applyNetworkPath(.init(available: true, interfaces: "cellular"))
-        try await Task.sleep(for: .milliseconds(350))
+        // The full suite shares the main actor. Wait for the observable result,
+        // not 100 ms of assumed scheduling headroom above the 250 ms debounce.
+        for _ in 0..<200 where connection.recoveryRevision == 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         #expect(connection.recoveryRevision == 1)
         connection.applyNetworkPath(.init(available: true, interfaces: "cellular"))
         #expect(connection.recoveryRevision == 1)
@@ -105,7 +109,9 @@ import CorptieClientSecurity
         await workspace.runRealtime(connection)
         #expect(!workspace.realtimeReconnectFailed)
         connection.applyNetworkPath(.init(available: true, interfaces: "cellular"))
-        try await Task.sleep(for: .milliseconds(350))
+        for _ in 0..<200 where connection.recoveryRevision < 3 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         #expect(connection.networkAvailable)
         #expect(connection.recoveryRevision == 3)
         #expect(connection.connectionStatusNotice(reconnectFailed: false) == nil)

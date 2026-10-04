@@ -85,7 +85,8 @@ export class ClientDeviceGateway {
   authenticateRequest(request) {
     const value = bearer(request);
     const address = request.socket.remoteAddress;
-    if (["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(address)
+    if (request.socket.encrypted !== true
+        && ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(address)
         && this.authority.checkAdmin(value)) {
       return { deviceId: "cloud-relay-connector", name: "Corptie Cloud Relay", serverId: this.authority.state.serverId };
     }
@@ -119,7 +120,7 @@ export class ClientDeviceGateway {
       const worktreeRepositoryJobs = /^\/client\/v1\/worktrees\/repositories\/([^/]+)\/integration-jobs$/.exec(path);
       const worktreeJob = /^\/client\/v1\/worktrees\/jobs\/([^/]+)$/.exec(path);
       const worktreeJobAction = /^\/client\/v1\/worktrees\/jobs\/([^/]+)\/actions\/([^/]+)$/.exec(path);
-      const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|quick-messages|stop|capabilities|composer|conversation-commands|tasks|read-receipt|images|usage|approval|user-input|collaboration-confirmation)$/.exec(path);
+      const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|message-deliveries|quick-messages|stop|capabilities|composer|conversation-commands|tasks|read-receipt|images|usage|approval|user-input|collaboration-confirmation)$/.exec(path);
       const commandReceipt = /^\/client\/v1\/commands\/([A-Za-z0-9_-]{8,128})$/.exec(path);
       if (url.search && !inventory && !control && !eventV2 && !worktreeRepository
           && !(["messages", "tasks", "images", "usage"].includes(conversation?.[2]) && request.method === "GET")) {
@@ -381,6 +382,11 @@ export class ClientDeviceGateway {
           const current = this.authenticateRequest(request);
           return reply(response, 202, await this.sessionAPI.command(current, sessionId,
             conversation[2] === "messages" ? "send" : "stop", input));
+        }
+        if (request.method === "POST" && conversation[2] === "message-deliveries") {
+          const input = await body(request, 29 * 1024 * 1024);
+          return reply(response, 202, await this.sessionAPI.reliableMessage(this.authenticateRequest(request),
+            sessionId, input, () => this.authenticateRequest(request)));
         }
       }
       if (commandReceipt && request.method === "GET" && this.sessionAPI) {

@@ -30,6 +30,7 @@ struct PadComposer<Header: View>: View {
     @State private var quickMessages = ClientQuickMessage.defaults
     @State private var quickMessageRefresh = 0
     @State private var quickMessageScope = ""
+    @State private var confirmStopRetries = false
 
     private var isPhone: Bool { UIDevice.current.userInterfaceIdiom == .phone }
     private var quickMessageTaskID: String? { workspace.sessionsByID[sessionID]?.taskId }
@@ -59,7 +60,7 @@ struct PadComposer<Header: View>: View {
     }
     private var isSendDisabled: Bool {
         let text = draft.wrappedValue
-        return connection.busy || workspace.pending != nil || isSubmitting
+        return connection.busy || workspace.pending != nil || isSubmitting || workspace.outboxSaving
             || workspace.capabilities?.send.available != true
             || workspace.importingImagesForSession == sessionID
             || (text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachedImages.isEmpty)
@@ -73,8 +74,18 @@ struct PadComposer<Header: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
+            if workspace.deliveryIssues[sessionID] != nil {
+                HStack {
+                    Text("有消息仍未送达，原内容已保留")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("停止重试") { confirmStopRetries = true }
+                        .font(.caption)
+                }
+                .padding(.horizontal, 8)
+            }
             ConversationQuickMessages(items: quickMessages,
-                enabled: !connection.busy && workspace.pending == nil
+                enabled: !connection.busy && workspace.pending == nil && !workspace.outboxSaving
                     && workspace.capabilities?.send.available == true
                     && workspace.importingImagesForSession != sessionID) { text in
                 Task {
@@ -123,6 +134,14 @@ struct PadComposer<Header: View>: View {
             }
         }
         .offset(y: phoneBottomOffset)
+        .confirmationDialog("停止后续重试？", isPresented: $confirmStopRetries, titleVisibility: .visible) {
+            Button("停止重试", role: .destructive) {
+                Task { await workspace.stopReliableRetries(connection, displaySessionID: sessionID) }
+            }
+            Button("继续自动发送", role: .cancel) {}
+        } message: {
+            Text("消息内容仍保留在本机。这不会撤回已经到达后端的请求，后端仍可能执行。")
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             guard isPhone else { return }
             withAnimation(.easeInOut(duration: 0.2)) { isKeyboardVisible = true }

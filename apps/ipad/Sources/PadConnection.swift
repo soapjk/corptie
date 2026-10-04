@@ -96,10 +96,12 @@ final class PadConnection {
     private var cloudClient: CloudRelayHTTPClient?
 
     init(transportOverride: BackendTransport? = nil, cloudTargetMacID: UUID? = nil,
-         relayFactory: RelayFactory? = nil) {
+         relayFactory: RelayFactory? = nil, credentials: DeviceCredentials? = nil) {
         self.transportOverride = transportOverride
         self.cloudTargetMacID = cloudTargetMacID
         self.relayFactory = relayFactory
+        // Injectable identity only accompanies the explicit test transport seam.
+        if transportOverride != nil { self.credentials = credentials }
     }
 
     /// One monitor for the shell lifetime. No timer, inventory polling, or message observation.

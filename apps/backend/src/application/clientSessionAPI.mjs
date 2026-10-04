@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { ensureReliableMessageSchema, acceptReliableMessage, reliableReceipt } from "./clientReliableMessages.mjs";
 import { deviceError } from "./clientDeviceAuthority.mjs";
 import { validateSessionCommand, sessionCommandNeedsConfirmation } from "../commands/sessionCommandCatalog.mjs";
 import { parseSlashCommand } from "../commands/unifiedCommands.mjs";
@@ -113,7 +114,10 @@ function publicClientMessage(item) {
 
 /** v1 text messaging + stop commands. Provider-neutral callbacks, durable at-most-once dispatch. */
 export class ClientSessionAPI {
-  constructor({ quickMessages = null, store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null, respondToApproval = null, respondToUserInput = null, respondToCollaborationConfirmation = null, respondToSessionChannelRequest = null, onReceiptChanged = null, inspector = null }) {
+  constructor({ quickMessages = null, store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null, respondToApproval = null, respondToUserInput = null, respondToCollaborationConfirmation = null, respondToSessionChannelRequest = null, onReceiptChanged = null, inspector = null, admitReliableMessage = null }) {
+    this.admitReliableMessage = admitReliableMessage;
+    this.reliableMessagesInFlight = new Map();
+    ensureReliableMessageSchema(store);
     this.quickMessageReader = quickMessages;
     this.inspector = inspector;
     Object.assign(this, { store, readWindow, send, stop, actions, resolveSession, composer, images, schedule, conversationCommands });
@@ -447,6 +451,7 @@ export class ClientSessionAPI {
       composer: Boolean(this.composer),
       sendImages: Boolean(this.images?.available(resolved.session)),
       sendMentions: true,
+      reliableMessages: this.admitReliableMessage ? { version: 1, maximumAgeSeconds: 604800 } : null,
       scheduleMessage: Boolean(this.schedule),
       createTask: { available: Boolean(this.taskCreation) && Boolean(resolved.session.workId),
         reason: !this.taskCreation ? "CAPABILITY_UNSUPPORTED" : !resolved.session.workId ? "WORK_REQUIRED" : null },
@@ -542,9 +547,18 @@ export class ClientSessionAPI {
   }
 
   receipt(identity, requestId) {
+    const reliable = reliableReceipt(this.store, identity, requestId);
+    if (reliable) return reliable;
     const row = this.store.selectOne("SELECT * FROM client_command_receipts WHERE device_id = ? AND request_id = ?", [identity.deviceId, requestId]);
     if (!row) throw deviceError("COMMAND_NOT_FOUND", 404);
     const key = `${identity.deviceId}:${requestId}`;
+    if (row.kind === "send" && ["dispatching", "unknown"].includes(row.status) && !this.inFlight.has(key)) {
+      const deliveryId = `delivery:client:${createHash("sha256").update(key).digest("hex")}`;
+      if (this.store.getMessageDelivery?.(deliveryId)) {
+        this.update(identity.deviceId, requestId, "accepted", null);
+        return this.receipt(identity, requestId);
+      }
+    }
     return { schemaVersion: 1, requestId: row.request_id, sessionId: row.session_id, kind: row.kind,
       status: row.status === "dispatching" && !this.inFlight.has(key) ? "unknown" : row.status,
       errorCode: row.error_code, updatedAt: row.updated_at,
@@ -616,6 +630,10 @@ export class ClientSessionAPI {
         rejected ? error.code ?? "INVALID_COMMAND_ARGUMENTS" : "COMMAND_OUTCOME_UNCERTAIN");
     } finally { this.inFlight.delete(key); }
     return this.receipt(identity, input.requestId);
+  }
+
+  reliableMessage(identity, sessionId, input, authenticate) {
+    return acceptReliableMessage(this, identity, sessionId, input, authenticate);
   }
 
   async command(identity, sessionId, kind, input) {
