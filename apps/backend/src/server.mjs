@@ -2150,6 +2150,7 @@ function startBackendRuntime() {
     sessionContextReferenceService, artifactService, scheduledSessionTaskService,
     turnObservability, agentProviderRegistry, switchSessionProvider, workService,
     inspectTaskWorktree, reclaimTaskWorktree, sendUnifiedSessionMessage,
+    admitReliableMessage: sessionMessageOperation.admitReliableMessage,
     interruptUnifiedSession, respondUnifiedSessionApproval, respondUnifiedSessionUserInput,
     resolveCollaborationConfirmation, resolveSessionChannelRequest,
     publishStateChangesIfNeeded, workDiscussionService, sessionApplicationService,

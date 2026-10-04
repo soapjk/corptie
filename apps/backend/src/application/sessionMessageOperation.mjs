@@ -272,6 +272,32 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
   };
 }
 
+// Durable admission is independent of Provider startup. The existing queue
+// verifies runtime readiness when it dispatches. This entry point never treats
+// chat text as a command or an authorization response.
+function admitReliableMessage(sessionId, input, source) {
+  const reference = requireSessionReference(sessionId);
+  assertSessionRecoveryMessageBoundary(reference);
+  const message = normalizeConversationMessage(input);
+  if (parseSlashCommand(message.text)) throw Object.assign(new Error("Use the explicit command endpoint"), {
+    code: "INVALID_MESSAGE", statusCode: 400
+  });
+  const logical = store.getLogicalSessionByLegacySessionId(reference.sessionId);
+  if (logical?.archived || !logical?.activeBinding || logical.activeBinding.state !== "active") {
+    throw Object.assign(new Error("Session is not available"), { code: "SESSION_NOT_AVAILABLE", statusCode: 409 });
+  }
+  if (workspaceTransitionBlocksWork(logical)) throw Object.assign(new Error("Session is transitioning"), {
+    code: "SESSION_BUSY", statusCode: 503
+  });
+  for (const capability of [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
+    ...(message.images.length ? [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND_IMAGE] : [])]) {
+    if (!agentProviderRegistry.supports(reference.providerId, capability)) {
+      throw Object.assign(new Error("Provider capability unavailable"), { code: "CAPABILITY_UNSUPPORTED", statusCode: 409 });
+    }
+  }
+  return enqueueUserAgentWork(reference.metadata.session, message, source, null, reference);
+}
+
 function assertSessionRecoveryMessageBoundary(reference) {
   const logicalSessionId = reference?.logicalSessionId ?? null;
   const legacySessionId = reference?.sessionId ?? null;
@@ -350,6 +376,7 @@ function enqueueUserAgentWork(session, input, source, latencyTrace = null, refer
     source: persistedSource,
     createdAt: now()
   });
+  delete persistedSource.clientReceipt;
   const task = created.task;
   registerRuntimeQueuedWork(session.id, task.taskId);
   const queuePosition = runtimeQueuePosition(session.id, task.taskId);
@@ -371,5 +398,5 @@ function enqueueUserAgentWork(session, input, source, latencyTrace = null, refer
   };
 }
 
-  return { sendUnifiedSessionMessage, assertSessionRecoveryMessageBoundary };
+  return { sendUnifiedSessionMessage, admitReliableMessage, assertSessionRecoveryMessageBoundary };
 }

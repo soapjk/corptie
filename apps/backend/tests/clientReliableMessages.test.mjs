@@ -1,0 +1,123 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CorptieStore } from "../src/store/corptieStore.mjs";
+import { ClientSessionAPI } from "../src/application/clientSessionAPI.mjs";
+
+const identity = { deviceId: "device:reliable" };
+const binding = { bindingId: "binding:reliable", providerId: "provider:test", providerSessionId: "thread:reliable", routingVersion: 1 };
+const input = () => ({ schemaVersion: 1, requestId: "reliable_request_1", createdAt: new Date().toISOString(), text: "Hello" });
+async function fixture() {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-reliable-"));
+  const path = { dbPath: join(directory, "db.sqlite"), configPath: join(directory, "config.json") };
+  const store = new CorptieStore(path); await store.initialize();
+  store.createAgent({ id: "agent:reliable", name: "Agent", role: "independentContributor" });
+  store.upsertSession({ id: "session:reliable", title: "Reliable", agentId: "agent:reliable", provider: "provider:test", status: "complete" });
+  const api = makeAPI(store);
+  return { api, store, path, close: async () => { await store.close(); await rm(directory, { recursive: true, force: true }); } };
+}
+function makeAPI(store, overrides = {}) {
+  return new ClientSessionAPI({ store, actions: () => ({ send: { available: true } }),
+    admitReliableMessage: (sessionId, message, source) => store.createUserMessageDelivery({
+      deliveryId: `delivery:${source.messageId}`, messageId: source.messageId, sessionId, binding,
+      agentId: "agent:reliable", text: message.text, content: message, source
+    }), ...overrides });
+}
+
+test("durable receipt, user message and queued work commit once; lost ACK and process restart are safe", async () => {
+  const f = await fixture();
+  try {
+    const body = input();
+    const first = await f.api.reliableMessage(identity, "session:reliable", body);
+    assert.equal(first.status, "accepted");
+    assert.equal(f.api.receipt(identity, body.requestId).status, "accepted");
+    assert.deepEqual(await f.api.reliableMessage(identity, "session:reliable", body), first);
+    const restarted = makeAPI(f.store);
+    assert.deepEqual(await restarted.reliableMessage(identity, "session:reliable", body), first);
+    assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM client_message_receipts").n, 1);
+    assert.equal(f.store.listSessionEvents("session:reliable").filter(event => event.type === "SessionUserMessageCreated").length, 1);
+    await assert.rejects(restarted.reliableMessage(identity, "session:reliable", { ...body, text: "Changed" }), { code: "IDEMPOTENCY_CONFLICT" });
+    // Reopen the actual database, not just another API instance.
+    await f.store.close();
+    const reopened = new CorptieStore(f.path); await reopened.initialize();
+    try { assert.deepEqual(await makeAPI(reopened).reliableMessage(identity, "session:reliable", body), first); }
+    finally { await reopened.close(); }
+  } finally { await f.close(); }
+});
+
+test("queue write failure rolls back receipt; the exact same request can recover", async () => {
+  const f = await fixture();
+  try {
+    const body = input(), enqueue = f.store.enqueueAgentTaskWithResult;
+    f.store.enqueueAgentTaskWithResult = () => { throw new Error("injected crash before commit"); };
+    await assert.rejects(f.api.reliableMessage(identity, "session:reliable", body));
+    assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM client_message_receipts").n, 0);
+    assert.equal(f.store.listSessionEvents("session:reliable").length, 0);
+    f.store.enqueueAgentTaskWithResult = enqueue;
+    assert.equal((await f.api.reliableMessage(identity, "session:reliable", body)).status, "accepted");
+  } finally { await f.close(); }
+});
+
+test("publication failure after commit returns acceptance, not an uncertain command", async () => {
+  const f = await fixture();
+  try {
+    const admit = f.api.admitReliableMessage;
+    f.api.admitReliableMessage = (...args) => { admit(...args); throw new Error("publication failed after commit"); };
+    assert.equal((await f.api.reliableMessage(identity, "session:reliable", input())).status, "accepted");
+  } finally { await f.close(); }
+});
+
+test("same-clock-tick admissions preserve Session instruction order", async () => {
+  const f = await fixture();
+  try {
+    const sameTime = new Date().toISOString();
+    f.api.admitReliableMessage = (sessionId, message, source) => f.store.createUserMessageDelivery({
+      deliveryId: `delivery:${source.messageId}`, messageId: source.messageId, sessionId, binding,
+      agentId: "agent:reliable", text: message.text, content: message, source, createdAt: sameTime
+    });
+    await f.api.reliableMessage(identity, "session:reliable", { ...input(), text: "first" });
+    await f.api.reliableMessage(identity, "session:reliable", { ...input(), requestId: "reliable_request_2", text: "second" });
+    const queue = f.store.listQueuedAgentTasksForSession("session:reliable");
+    assert.deepEqual(queue.map(task => task.text), ["first", "second"]);
+    assert.ok(Date.parse(queue[1].createdAt) > Date.parse(queue[0].createdAt));
+  } finally { await f.close(); }
+});
+
+test("image import singleflight, conflict checks and revocation occur before durable admission", async () => {
+  const f = await fixture();
+  try {
+    let imports = 0, finish;
+    f.api.images = { available: () => true, import: async () => {
+      imports++; await new Promise(resolve => { finish = resolve; });
+      return { managedPath: "chat-resources/image.png" };
+    } };
+    const body = { ...input(), images: [{ fileName: "image.png", dataBase64: "aGVsbG8=" }] };
+    const first = f.api.reliableMessage(identity, "session:reliable", body);
+    const second = f.api.reliableMessage(identity, "session:reliable", body);
+    await assert.rejects(f.api.reliableMessage(identity, "session:reliable", { ...body, text: "Other" }), { code: "IDEMPOTENCY_CONFLICT" });
+    finish();
+    assert.equal((await first).status, "accepted"); assert.equal((await second).status, "accepted"); assert.equal(imports, 1);
+    const reordered = { ...body, images: [{ dataBase64: "aGVsbG8=", fileName: "image.png" }] };
+    assert.equal((await f.api.reliableMessage(identity, "session:reliable", reordered)).status, "accepted");
+    assert.equal(imports, 1);
+    const revoked = { ...input(), requestId: "revoked_request_1" };
+    await assert.rejects(f.api.reliableMessage(identity, "session:reliable", revoked,
+      () => { throw Object.assign(new Error("revoked"), { code: "DEVICE_REVOKED" }); }), { code: "DEVICE_REVOKED" });
+    assert.throws(() => f.api.receipt(identity, revoked.requestId), { code: "COMMAND_NOT_FOUND" });
+  } finally { await f.close(); }
+});
+
+test("expired messages cannot be re-admitted after receipt cleanup; unsafe operations are excluded", async () => {
+  const f = await fixture();
+  try {
+    const expired = { ...input(), createdAt: new Date(Date.now() - 8 * 86400000).toISOString() };
+    await assert.rejects(f.api.reliableMessage(identity, "session:reliable", expired), { code: "MESSAGE_EXPIRED" });
+    for (const extra of [{ text: "/clear" }, { schedule: {} }, { confirmed: true }]) {
+      await assert.rejects(f.api.reliableMessage(identity, "session:reliable", { ...input(), ...extra }), { code: "INVALID_MESSAGE" });
+    }
+    assert.equal(f.api.capabilities(identity, "session:reliable").reliableMessages.version, 1);
+    assert.equal(makeAPI(f.store, { admitReliableMessage: null }).capabilities(identity, "session:reliable").reliableMessages, null);
+  } finally { await f.close(); }
+});

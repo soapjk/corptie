@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createSessionMessageOperation } from "../src/application/sessionMessageOperation.mjs";
+import { CODEX_APP_SERVER_PROVIDER_ID } from "../src/agent-provider/providers/codexAppServerProvider.mjs";
+import { CLAUDE_AGENT_SDK_PROVIDER_ID } from "../src/agent-provider/providers/claudeAgentSdkProvider.mjs";
+import { OPENCLACKY_PROVIDER_ID } from "../src/agent-provider/providers/openClackyProvider.mjs";
 
 function fixture(overrides = {}) {
   const calls = [];
@@ -10,6 +13,7 @@ function fixture(overrides = {}) {
   const operation = createSessionMessageOperation({
     store: {
       getLogicalSession: () => ({ activeBinding: { bindingId: "binding" } }),
+      getLogicalSessionByLegacySessionId: () => ({ activeBinding: { bindingId: "binding", state: "active" } }),
       getRunningAgentTaskForSession: () => null,
       createUserMessageDelivery: (input) => {
         calls.push(["persist", input]);
@@ -41,6 +45,20 @@ test("ordinary text verifies readiness before admission to the existing queue", 
   assert.deepEqual(calls.map(([name]) => name), ["verify", "persist", "register", "outbox", "event", "drain"]);
   assert.deepEqual(calls[0].slice(1), ["session", { reuseReady: true }]);
   assert.equal(calls[1][1].text, "hello");
+});
+
+test("reliable admission is Provider-neutral and never waits for startup or interprets confirmation text", () => {
+  for (const providerId of [CODEX_APP_SERVER_PROVIDER_ID, CLAUDE_AGENT_SDK_PROVIDER_ID, OPENCLACKY_PROVIDER_ID]) {
+    const session = { id: "session", status: "complete" };
+    const { operation, calls } = fixture({
+      requireSessionReference: () => ({ sessionId: "session", logicalSessionId: "logical", providerId, metadata: { session } }),
+      agentProviderRegistry: { supports: () => true },
+      sessionBindingReadinessProbe: { verify: () => { throw new Error("Must not start Provider during admission"); } }
+    });
+    assert.equal(operation.admitReliableMessage("session", { text: "确认" }, { type: "remote-client" }).accepted, true);
+    assert.deepEqual(calls.map(([name]) => name), ["persist", "register", "outbox", "event", "drain"]);
+    assert.throws(() => operation.admitReliableMessage("session", { text: "/clear" }, { type: "remote-client" }), { code: "INVALID_MESSAGE" });
+  }
 });
 
 test("recovery rejects messages before readiness probes and queue writes", async () => {

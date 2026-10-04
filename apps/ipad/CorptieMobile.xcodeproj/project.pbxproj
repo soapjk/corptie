@@ -26,6 +26,7 @@
 		573078EEBC4E2F4021F7CFF1 /* PadConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62B66A0F91332595B942C17D /* PadConnection.swift */; };
 		62734F1A7F698706900EE17A /* PadInspectorEditors.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7CE11B7F03EA8F1AE916EE2 /* PadInspectorEditors.swift */; };
 		6C4D891CDB0C629EC7BB49F4 /* PadWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = D74723A4F488D827E4C0CBAA /* PadWorkspace.swift */; };
+		A91000123456789012345678 /* PadMessageDelivery.swift in Sources */ = {isa = PBXBuildFile; fileRef = A91000123456789012345679 /* PadMessageDelivery.swift */; };
 		88CE4B3D38B40D6865094B33 /* PadTaskCreationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2E6C8CFCD0976EDE49F48DA /* PadTaskCreationSheet.swift */; };
 		8BA92F35F810762B4783C169 /* PadWorktreeManagementView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42AD03735DA3F5793C72C028 /* PadWorktreeManagementView.swift */; };
 		8E749F6C19EAF2D838959569 /* CorptieClientSecurity in Frameworks */ = {isa = PBXBuildFile; productRef = CD7A45D0A4BDB567CDA7A59C /* CorptieClientSecurity */; };
@@ -88,6 +89,7 @@
 		D2E6C8CFCD0976EDE49F48DA /* PadTaskCreationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadTaskCreationSheet.swift; sourceTree = "<group>"; };
 		D37BB4FB57B211895A177B49 /* PadThreadMetaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadThreadMetaView.swift; sourceTree = "<group>"; };
 		D74723A4F488D827E4C0CBAA /* PadWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadWorkspace.swift; sourceTree = "<group>"; };
+		A91000123456789012345679 /* PadMessageDelivery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadMessageDelivery.swift; sourceTree = "<group>"; };
 		D7975CBE598087E4B97F86D1 /* PadMessageImages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadMessageImages.swift; sourceTree = "<group>"; };
 		D9B6D5D9E4A86E7BA5C3C033 /* ConversationNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationNavigationTests.swift; sourceTree = "<group>"; };
 		F4726B953FA884F26404ED3A /* PadComposerExtras.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadComposerExtras.swift; sourceTree = "<group>"; };
@@ -177,6 +179,7 @@
 				F93C253BE20DFE671139ED6D /* PadWorkAvatars.swift */,
 				52A95E7EF5AB57916E1AB280 /* PadWorkOutline.swift */,
 				D74723A4F488D827E4C0CBAA /* PadWorkspace.swift */,
+				A91000123456789012345679 /* PadMessageDelivery.swift */,
 				42AD03735DA3F5793C72C028 /* PadWorktreeManagementView.swift */,
 				FFED4C380E996064085541D0 /* PadWorktreeStore.swift */,
 				8230A353B7ABADD90261A123 /* PairingScannerView.swift */,
@@ -323,6 +326,7 @@
 				4835F7F7070C0F42E1518CC8 /* PadWorkAvatars.swift in Sources */,
 				359AA123BEFF3F4458508267 /* PadWorkOutline.swift in Sources */,
 				6C4D891CDB0C629EC7BB49F4 /* PadWorkspace.swift in Sources */,
+				A91000123456789012345678 /* PadMessageDelivery.swift in Sources */,
 				8BA92F35F810762B4783C169 /* PadWorktreeManagementView.swift in Sources */,
 				382FE16988F49BDDB749E55E /* PadWorktreeStore.swift in Sources */,
 				F1E827384CEA7D30F6E1B9C0 /* PairingScannerView.swift in Sources */,

@@ -1,6 +1,15 @@
 import Foundation
 import Observation
 import CorptieClientCore
+import CorptieClientSecurity
+import OSLog
+
+enum PadConversationReadOperation: String {
+    case messages = "加载消息"
+    case history = "加载历史消息"
+    case composer = "加载模型设置"
+    case updateComposer = "更新模型设置"
+}
 
 enum PadTimelineJumpPolicy {
     /// A lazy content-size estimate alone is not proof that the latest row is visible.
@@ -441,6 +450,11 @@ final class PadWorkspace {
         ), for: sessionID)
     }
 
+    func hasAuthoritativeMessage(_ messageID: String, sessionID: String) -> Bool {
+        if selection == sessionID { return messages.contains { $0.id == messageID } }
+        return timelineRepository.state(for: sessionID)?.messages.contains { $0.id == messageID } == true
+    }
+
     private func residentKey(for sessionID: String) -> String? {
         if timelineRepository.peek(sessionID: sessionID) != nil { return sessionID }
         let normalized = normalizedSessionID(sessionID)
@@ -626,7 +640,47 @@ final class PadWorkspace {
     var draftImages: [String: [ClientDraftImage]] = [:]
     var draftMentions: [String: [ClientDraftMention]] = [:]
     var status = ""
-    var conversationNotice = ""
+    var conversationNotice = "" {
+        didSet { conversationNoticeOperation = nil }
+    }
+    @ObservationIgnored private var conversationNoticeOperation: PadConversationReadOperation?
+    private static let noticeLog = Logger(subsystem: "com.corptie.mobile", category: "ConversationNotice")
+
+    func reportConversationReadFailure(_ error: Error, operation: PadConversationReadOperation) {
+        if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
+        let isTransportFailure = Self.isTransientConversationTransportFailure(error)
+        Self.noticeLog.info("Conversation request failed: operation=\(operation.rawValue, privacy: .public), transport=\(isTransportFailure, privacy: .public)")
+        // A failed optional/bootstrap read is not evidence that the working
+        // realtime stream or the user's send failed. Connection UI owns recovery.
+        if isTransportFailure, operation != .updateComposer {
+            clearConversationReadNotice(operation)
+            return
+        }
+        let explanation: String
+        if isTransportFailure { explanation = "连接暂时不可用，请重试。" }
+        else if error is ClientServiceFailure || error is DevicePairingFailure {
+            explanation = PadConnection.explain(error)
+        } else if let failure = error as? ClientConnectionError, case .httpStatus = failure {
+            explanation = PadConnection.explain(error)
+        } else { explanation = "服务端未返回有效结果，请重试。" }
+        conversationNotice = "\(operation.rawValue)失败：\(explanation)"
+        conversationNoticeOperation = operation
+    }
+
+    func clearConversationReadNotice(_ operation: PadConversationReadOperation) {
+        guard conversationNoticeOperation == operation else { return }
+        conversationNotice = ""
+    }
+
+    static func isTransientConversationTransportFailure(_ error: Error) -> Bool {
+        if let error = error as? CloudRelayTransportError { return error == .disconnected }
+        if let error = error as? URLError {
+            return [.timedOut, .networkConnectionLost, .notConnectedToInternet,
+                    .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+                    .internationalRoamingOff, .dataNotAllowed].contains(error.code)
+        }
+        return false
+    }
     var liveStatus = "正在连接实时更新"
     var realtimeConnected = false
     var realtimeReconnectFailed = false
@@ -652,15 +706,21 @@ final class PadWorkspace {
     var automaticReconciliationActive = false
     @ObservationIgnored private var reconciliationRun: UUID?
     @ObservationIgnored private var receiptReadInFlight = false
+    @ObservationIgnored let messageOutbox: ReliableMessageOutbox
+    var outboxSaving = false
+    var deliveryRevision = 0
+    var deliveryIssues: [String: String] = [:]
     private let defaults: UserDefaults
     @ObservationIgnored private let initialStateRecoveryDelay: Duration
 
     init(
         defaults: UserDefaults = .standard,
-        initialStateRecoveryDelay: Duration = .seconds(2)
+        initialStateRecoveryDelay: Duration = .seconds(2),
+        messageOutbox: ReliableMessageOutbox = ReliableMessageOutbox()
     ) {
         self.defaults = defaults
         self.initialStateRecoveryDelay = initialStateRecoveryDelay
+        self.messageOutbox = messageOutbox
         pending = defaults.data(forKey: "pendingCommand").flatMap { try? JSONDecoder().decode(PendingCommand.self, from: $0) }
     }
 
@@ -707,6 +767,7 @@ final class PadWorkspace {
             applyBackgroundTimeline(snapshot)
             return
         }
+        clearConversationReadNotice(.messages)
         capabilities = snapshot.capabilities
         if let incoming = snapshot.usage { applyUsage(incoming) }
         mergeComposerConfiguration(snapshot.composer, capabilities: snapshot.capabilities)
@@ -727,6 +788,7 @@ final class PadWorkspace {
             composerConfiguration = nil
         } else if let incoming {
             composerConfiguration = incoming
+            clearConversationReadNotice(.composer)
         }
     }
 
@@ -742,6 +804,7 @@ final class PadWorkspace {
         guard case .applied(let state) = timelineRepository.apply(delta, sessionKey: selection) else {
             return delta.revision <= (lastTimelineRevision ?? 0)
         }
+        clearConversationReadNotice(.messages)
         let previous = messages
         messages = state.messages
         applyUsage(state.usage)
@@ -927,7 +990,8 @@ final class PadWorkspace {
 
     func load(_ connection: PadConnection, older: Bool = false) async {
         guard let id = selection else { return }
-        conversationNotice = ""
+        let operation: PadConversationReadOperation = older ? .history : .messages
+        clearConversationReadNotice(operation)
         if !older {
             timelineGeneration += 1
         }
@@ -948,6 +1012,7 @@ final class PadWorkspace {
             }
             let page = try await api.messages(sessionId: caps.sessionId, before: older ? before : nil)
             guard !Task.isCancelled, selection == id, generation == timelineGeneration else { return }
+            clearConversationReadNotice(operation)
             if older {
                 let anchorID = messages.first?.id
                 messages = Self.merge(page.items, messages)
@@ -968,8 +1033,8 @@ final class PadWorkspace {
         } catch is CancellationError {
             return
         } catch {
-            guard selection == id, generation == timelineGeneration else { return }
-            conversationNotice = PadConnection.explain(error)
+            guard !Task.isCancelled, selection == id, generation == timelineGeneration else { return }
+            reportConversationReadFailure(error, operation: operation)
         }
     }
 
@@ -1082,9 +1147,10 @@ final class PadWorkspace {
             let result = try await api.composer(sessionId: routedID, update: update)
             guard selection == id, generation == composerGeneration, !Task.isCancelled else { return }
             composerConfiguration = result
+            clearConversationReadNotice(update == nil ? .composer : .updateComposer)
         } catch {
             guard selection == id, generation == composerGeneration, !Task.isCancelled else { return }
-            conversationNotice = PadConnection.explain(error)
+            reportConversationReadFailure(error, operation: update == nil ? .composer : .updateComposer)
         }
     }
 
@@ -1107,6 +1173,11 @@ final class PadWorkspace {
             return
         }
         guard stop || ((!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty) && text.utf16.count <= 16000) else { return }
+        if !stop, slashCommand == nil, schedule == nil, capabilities?.reliableMessages?.version == 1 {
+            await enqueueReliableMessage(connection, sessionID: routedID, displaySessionID: id,
+                text: text, images: images, mentions: mentions, clearsDraft: suggestedReply == nil)
+            return
+        }
         let snapshot = submissionSnapshot(sessionID: id)
         let serverID = connection.serverID, address = connection.address, deviceID = connection.deviceID
         var receivedAcknowledgement = false
@@ -1262,10 +1333,12 @@ final class PadWorkspace {
                 denied = [401, 403].contains(statusCode)
             }
             if denied {
-                status = PadConnection.explain(error)
+                status = "核对发送结果失败：\(PadConnection.explain(error)) 原请求保留，不会自动重发。"
                 return false
             }
-            if !automaticReconciliationActive { status = PadConnection.explain(error) }
+            if !automaticReconciliationActive {
+                status = "暂时无法核对发送结果，请稍后查询回执。原请求保留，不会自动重发。"
+            }
         }
         return true
     }
