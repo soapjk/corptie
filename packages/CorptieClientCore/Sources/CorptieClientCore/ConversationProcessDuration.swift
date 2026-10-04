@@ -1,6 +1,8 @@
 import Foundation
 
 extension ConversationProcessPresentation {
+// Read the actual elapsed time at hundredth-second cadence; never count ticks.
+public static let elapsedRefreshInterval: TimeInterval = 1.0 / 100.0
 public static func durationText<Item: ConversationTimelineItem>(
     for items: [Item],
     now: Date = Date()
@@ -22,7 +24,7 @@ public static func durationText<Item: ConversationTimelineItem>(
         end = itemDates.max()
     }
     guard let end else { return nil }
-    return durationText(startedAt: start, endingAt: end)
+    return durationText(startedAt: start, endingAt: end, showSeconds: state(for: items) == .running)
 }
 
 public static func startedAt<Item: ConversationTimelineItem>(for items: [Item]) -> Date? {
@@ -32,19 +34,21 @@ public static func startedAt<Item: ConversationTimelineItem>(for items: [Item]) 
 
 public static func durationText(startedAt start: Date, endingAt end: Date, showSeconds: Bool = false) -> String? {
     let duration = end.timeIntervalSince(start)
-    guard duration > 0.05 else { return nil }
-    if duration < 10 { return String(format: "%.1fs", duration) }
-    let seconds = Int(duration.rounded())
-    if seconds < 60 { return "\(seconds)s" }
+    guard duration.isFinite, duration >= 0, duration > 0 || showSeconds,
+          duration * 100 < Double(Int.max) else { return nil }
+    // Round before splitting so 59.999s becomes 1m 0.00s, not 60.00s.
+    let hundredths = Int((duration * 100).rounded())
+    let seconds = hundredths / 100
+    let fraction = hundredths % 100
+    let secondText = "\(seconds % 60).\(fraction < 10 ? "0" : "")\(fraction)s"
+    if seconds < 60 { return secondText }
     let minutes = seconds / 60
-    let remainder = seconds % 60
     if minutes < 60 {
-        return showSeconds || remainder != 0 ? "\(minutes)m \(remainder)s" : "\(minutes)m"
+        return "\(minutes)m \(secondText)"
     }
     let hours = minutes / 60
     let minuteRemainder = minutes % 60
-    if showSeconds { return "\(hours)h \(minuteRemainder)m \(remainder)s" }
-    return minuteRemainder == 0 ? "\(hours)h" : "\(hours)h \(minuteRemainder)m"
+    return "\(hours)h \(minuteRemainder)m \(secondText)"
 }
     private static let dateParser = ProcessDateParser()
 }

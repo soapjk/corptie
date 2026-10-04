@@ -7,7 +7,7 @@ import CorptieClientCore
 struct MacSharedMessageTextCard: View {
     let row: AppKitChatTimelineRow
     let layout: NativeTimelineLayoutCache.Layout
-    var processSummaryOverride: String? = nil
+    var processSummaryOverride: ProcessCardSummary? = nil
     var baseDirectory: String?
     var copy: () -> Void = {}
     var toggle: () -> Void = {}
@@ -98,7 +98,7 @@ struct MacSharedMessageTextCard: View {
     }
 
     private var processCard: some View {
-        ProcessCard(summary: processSummaryOverride ?? row.processPrimarySummary, secondary: row.processCurrentStepTitle,
+        ProcessCard(summary: row.processPrimarySummary, summaryOverride: processSummaryOverride, secondary: row.processCurrentStepTitle,
                     symbol: row.processState.symbolName,
                     tint: Color(nsColor: row.processState.color), expanded: row.isExpanded,
                     progress: row.processPlanProgress, progressLabel: row.processPlanProgressLabel,
@@ -359,12 +359,13 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
     private var measuredLayout: NativeTimelineLayoutCache.Layout?
     private var baseDirectory: String?
     private var measuredWidth: CGFloat?
-    private var elapsedSummary: String?
-    var displayedProcessSummary: String? { elapsedSummary }
+    private let elapsedSummary = ProcessCardSummary()
+    var displayedProcessSummary: String? { elapsedSummary.text }
     private var onToggleExpansion: (String) -> Void = { _ in }
     private var onAction: (AppKitChatTimelineRow.Action) -> Void = { _ in }
     private(set) var contentConfigurationCount = 0
     private(set) var widthLayoutUpdateCount = 0
+    private(set) var hostUpdateCount = 0
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
@@ -389,7 +390,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
                     onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in }) {
         precondition(MacSharedMessageTextCard.supports(row))
         self.row = row; self.baseDirectory = baseDirectory
-        elapsedSummary = nil
+        elapsedSummary.text = nil
         self.onToggleExpansion = onToggleExpansion
         self.onAction = onAction
         measuredLayout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth)
@@ -413,6 +414,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
 
     private func updateHost(needsLayout: Bool = true, resetTextSelection: Bool = false) {
         guard let row, let measuredLayout else { return }
+        hostUpdateCount += 1
         let root = MacSharedMessageTextCard(row: row, layout: measuredLayout,
             processSummaryOverride: elapsedSummary, baseDirectory: baseDirectory,
             copy: { [weak self] in self?.copyRepresentedMessage() },
@@ -440,9 +442,8 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         guard let row, row.nativeStyle == .process, row.processState == .running,
               row.processStartedAt != nil else { return }
         let summary = row.processSummaryText(now: now, advancing: true, includesCurrentStep: false)
-        guard elapsedSummary != summary else { return }
-        elapsedSummary = summary
-        updateHost(needsLayout: false)
+        guard elapsedSummary.text != summary else { return }
+        elapsedSummary.text = summary
     }
 
     override func layout() {
