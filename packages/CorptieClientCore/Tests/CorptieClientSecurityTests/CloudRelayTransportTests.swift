@@ -4,6 +4,52 @@ import CorptieClientCore
 @testable import CorptieClientSecurity
 
 struct CloudRelayTransportTests {
+    @Test func unansweredRelayRequestHasDeadlineAndDoesNotReplayMutation() async throws {
+        let endpoint = try BackendEndpoint(URL(string: "http://127.0.0.1")!)
+        let channel = SilentRelayChannel(sendHead: false)
+        let client = CloudRelayHTTPClient(endpoint: endpoint, channel: channel)
+        var request = try endpoint.request(path: ["command"])
+        request.httpMethod = "POST"
+        request.timeoutInterval = 0.05
+        do { _ = try await client.transport().data(for: request); Issue.record("Expected timeout") }
+        catch { #expect((error as? URLError)?.code == .timedOut) }
+        #expect(await channel.requestCount == 1)
+        await client.close()
+        #expect(!(await client.isUsable()))
+        await #expect(throws: CloudRelayTransportError.disconnected) { try await client.transport().data(for: request) }
+    }
+
+    @Test(arguments: [false, true]) func relayStreamBoundsFirstResponseAndIdleTime(sendHead: Bool) async throws {
+        let endpoint = try BackendEndpoint(URL(string: "http://127.0.0.1")!)
+        let channel = SilentRelayChannel(sendHead: sendHead)
+        let client = CloudRelayHTTPClient(endpoint: endpoint, channel: channel)
+        var request = try endpoint.request(path: ["events"])
+        request.timeoutInterval = 0.05
+        do {
+            let (bytes, _) = try await client.transport().bytes(for: request)
+            for try await _ in bytes {}
+            Issue.record("Expected timeout")
+        } catch { #expect((error as? URLError)?.code == .timedOut) }
+        #expect(await channel.requestCount == 1)
+        await client.close()
+    }
+
+    @Test func cancellingStreamConsumerCancelsRemoteRequest() async throws {
+        let endpoint = try BackendEndpoint(URL(string: "http://127.0.0.1")!)
+        let channel = SilentRelayChannel(sendHead: true)
+        let client = CloudRelayHTTPClient(endpoint: endpoint, channel: channel)
+        let (bytes, _) = try await client.transport().bytes(for: endpoint.request(path: ["events"]))
+        let reader = Task { for try await _ in bytes {} }
+        reader.cancel()
+        _ = try? await reader.value
+        for _ in 0..<30 {
+            if await channel.cancelCount == 1 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await channel.cancelCount == 1)
+        await client.close()
+    }
+
     @Test func customBackendTransportMultiplexesDataAndStreamingResponses() async throws {
         let endpoint = try BackendEndpoint(URL(string: "http://127.0.0.1:4311")!)
         let channel = RelayLoopbackChannel()
@@ -47,6 +93,37 @@ struct CloudRelayTransportTests {
             try await transport.data(for: request)
         }
         #expect(await channel.requests.isEmpty)
+    }
+}
+
+private actor SilentRelayChannel: CloudRelaySecureChannel {
+    let sendHead: Bool
+    private(set) var requestCount = 0
+    private(set) var cancelCount = 0
+    private var responses: [Data] = []
+    private var waiter: CheckedContinuation<Data, Error>?
+    private var closed = false
+    init(sendHead: Bool) { self.sendHead = sendHead }
+    func send(_ plaintext: Data) async throws {
+        let message = try JSONDecoder().decode(CloudRelayApplicationMessage.self, from: plaintext)
+        if message.kind == .cancel { cancelCount += 1; return }
+        guard message.kind == .request else { return }
+        requestCount += 1
+        if sendHead {
+            let head = try JSONEncoder().encode(CloudRelayApplicationMessage.response(
+                id: message.id, status: 200, headers: ["Content-Type": "text/event-stream"]))
+            if let waiter { self.waiter = nil; waiter.resume(returning: head) }
+            else { responses.append(head) }
+        }
+    }
+    func receive() async throws -> Data {
+        if closed { throw CloudRelayTransportError.disconnected }
+        if !responses.isEmpty { return responses.removeFirst() }
+        return try await withCheckedThrowingContinuation { waiter = $0 }
+    }
+    func close() async {
+        closed = true
+        waiter?.resume(throwing: CloudRelayTransportError.disconnected); waiter = nil
     }
 }
 

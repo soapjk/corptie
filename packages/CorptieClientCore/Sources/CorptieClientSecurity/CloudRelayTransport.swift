@@ -61,6 +61,7 @@ public actor CloudRelayHTTPClient {
         let head: CheckedContinuation<(BackendByteStream, HTTPURLResponse), Error>
         let bytes: BackendByteStream
         let stream: AsyncThrowingStream<UInt8, Error>.Continuation
+        let idleTimeout: TimeInterval
     }
 
     private enum Pending { case data(PendingData), stream(PendingStream) }
@@ -70,13 +71,16 @@ public actor CloudRelayHTTPClient {
     private var pending: [UUID: Pending] = [:]
     private var receiver: Task<Void, Never>?
     private var terminalError: Error?
+    private var deadlines: [UUID: Task<Void, Never>] = [:]
 
     public init(endpoint: BackendEndpoint, channel: any CloudRelaySecureChannel) {
         self.endpoint = endpoint
         self.channel = channel
     }
 
-    deinit { receiver?.cancel() }
+    deinit { receiver?.cancel(); for task in deadlines.values { task.cancel() } }
+
+    public func isUsable() -> Bool { terminalError == nil }
 
     public nonisolated func transport() -> BackendTransport {
         BackendTransport(endpoint: endpoint, data: { [weak self] request in
@@ -102,6 +106,7 @@ public actor CloudRelayHTTPClient {
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 pending[message.id] = .data(PendingData(url: request.url!, continuation: continuation))
+                armDeadline(message.id, seconds: min(30, request.timeoutInterval))
                 Task { await self.send(messages) }
             }
         } onCancel: { Task { await self.cancel(message.id) } }
@@ -112,11 +117,16 @@ public actor CloudRelayHTTPClient {
         let messages = try makeRequest(request)
         let message = messages[0]
         let pair = AsyncThrowingStream<UInt8, Error>.makeStream(bufferingPolicy: .bufferingOldest(64 * 1_024))
+        pair.continuation.onTermination = { [weak self] _ in
+            Task { await self?.cancel(message.id) }
+        }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 pending[message.id] = .stream(PendingStream(
-                    url: request.url!, head: continuation, bytes: BackendByteStream(pair.stream), stream: pair.continuation
+                    url: request.url!, head: continuation, bytes: BackendByteStream(pair.stream), stream: pair.continuation,
+                    idleTimeout: min(35, request.timeoutInterval)
                 ))
+                armDeadline(message.id, seconds: min(10, request.timeoutInterval))
                 Task { await self.send(messages) }
             }
         } onCancel: { Task { await self.cancel(message.id) } }
@@ -143,6 +153,7 @@ public actor CloudRelayHTTPClient {
     }
 
     private func cancel(_ id: UUID) async {
+        guard pending[id] != nil else { return }
         fail(id, CancellationError())
         try? await channel.send(JSONEncoder().encode(CloudRelayApplicationMessage.cancel(id: id)))
     }
@@ -159,6 +170,7 @@ public actor CloudRelayHTTPClient {
             value.response = response
             value.head.resume(returning: (value.bytes, response))
             current = .stream(value)
+            armDeadline(message.id, seconds: value.idleTimeout)
         case (.chunk, .data(var value)):
             guard value.response != nil, let body = message.body, let final = message.final else { throw CloudRelayTransportError.invalidApplicationMessage }
             guard value.body.count + body.count <= Self.maximumResponseBytes else {
@@ -167,12 +179,14 @@ public actor CloudRelayHTTPClient {
             value.body.append(body)
             if final {
                 pending.removeValue(forKey: message.id)
+                deadlines.removeValue(forKey: message.id)?.cancel()
                 value.continuation.resume(returning: (value.body, value.response!))
                 return
             }
             current = .data(value)
         case (.chunk, .stream(let value)):
             guard value.response != nil, let body = message.body, let final = message.final else { throw CloudRelayTransportError.invalidApplicationMessage }
+            armDeadline(message.id, seconds: value.idleTimeout)
             for byte in body {
                 if case .dropped = value.stream.yield(byte) {
                     fail(message.id, CloudRelayTransportError.responseTooLarge); return
@@ -180,6 +194,7 @@ public actor CloudRelayHTTPClient {
             }
             if final {
                 pending.removeValue(forKey: message.id)
+                deadlines.removeValue(forKey: message.id)?.cancel()
                 value.stream.finish()
                 return
             }
@@ -227,6 +242,7 @@ public actor CloudRelayHTTPClient {
     }
 
     private func fail(_ id: UUID, _ error: Error) {
+        deadlines.removeValue(forKey: id)?.cancel()
         guard let value = pending.removeValue(forKey: id) else { return }
         switch value {
         case .data(let pending): pending.continuation.resume(throwing: error)
@@ -234,6 +250,22 @@ public actor CloudRelayHTTPClient {
             if pending.response == nil { pending.head.resume(throwing: error) }
             pending.stream.finish(throwing: error)
         }
+    }
+
+    private func armDeadline(_ id: UUID, seconds: TimeInterval) {
+        deadlines.removeValue(forKey: id)?.cancel()
+        deadlines[id] = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(max(0.01, seconds))) }
+            catch { return }
+            guard let self else { return }
+            await self.expire(id)
+        }
+    }
+
+    private func expire(_ id: UUID) async {
+        guard pending[id] != nil else { return }
+        fail(id, URLError(.timedOut))
+        try? await channel.send(JSONEncoder().encode(CloudRelayApplicationMessage.cancel(id: id)))
     }
 
     private func failAll(_ error: Error) {
@@ -279,12 +311,21 @@ public actor CloudRelayMobileChannel: CloudRelaySecureChannel {
         components.queryItems = [URLQueryItem(name: "deviceId", value: deviceID.uuidString.lowercased())]
         guard let url = components.url else { throw CloudRelayTransportError.invalidControlMessage }
         var request = URLRequest(url: url)
+        request.timeoutInterval = 10
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         let session = URLSession(configuration: .ephemeral, delegate: CloudRelayWebSocketDelegate(), delegateQueue: nil)
         let socket = session.webSocketTask(with: request)
         socket.maximumMessageSize = 512 * 1_024
         socket.resume()
+        // Bound all relay control/crypto handshake stages, not just URL loading.
+        let deadline = Task {
+            do { try await Task.sleep(for: .seconds(10)) } catch { return }
+            socket.cancel(with: .goingAway, reason: nil)
+            session.invalidateAndCancel()
+        }
+        defer { deadline.cancel() }
         do {
+            return try await withTaskCancellationHandler {
             let ready = try await receiveControl(socket)
             guard ready.type == "ready" else { throw CloudRelayTransportError.invalidControlMessage }
             let connect = try JSONSerialization.data(withJSONObject: [
@@ -306,10 +347,17 @@ public actor CloudRelayMobileChannel: CloudRelaySecureChannel {
                 throw CloudRelayCryptoError.invalidHello
             }
             let cipher = try handshake.complete(peerHello: Data(peerFrame.dropFirst(17)))
+            try Task.checkCancellation()
             return CloudRelayMobileChannel(session: session, socket: socket, cipher: cipher)
+            } onCancel: {
+                socket.cancel(with: .goingAway, reason: nil)
+                session.invalidateAndCancel()
+            }
         } catch {
+            let status = (socket.response as? HTTPURLResponse)?.statusCode
             socket.cancel(with: .protocolError, reason: nil)
             session.invalidateAndCancel()
+            if status == 401 || status == 403 { throw ClientConnectionError.httpStatus(status!) }
             throw error
         }
     }
