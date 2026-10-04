@@ -46,13 +46,17 @@ struct PadWorkOutline: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 8) {
-                let connectionStatus = PadServerConnectionStatus.resolve(
-                    hasPairing: connection.connected,
-                    realtimeConnected: workspace.realtimeConnected,
-                    hasInterrupted: workspace.realtimePausedAt != nil
-                )
-                if connectionStatus == .disconnected || connectionStatus == .streamInterrupted {
-                    Label(connectionStatus.title, systemImage: "wifi.exclamationmark")
+                if let notice = connection.connectionStatusNotice(reconnectFailed: workspace.realtimeReconnectFailed) {
+                    HStack {
+                        Label(notice, systemImage: "wifi.slash")
+                        Spacer(minLength: 8)
+                        if connection.connected, connection.networkAvailable, connection.recoveryBlockedMessage == nil {
+                            Button("重试") { connection.retryRealtimeRecovery() }
+                                .buttonStyle(.plain)
+                                .frame(minHeight: 44)
+                                .accessibilityLabel("重新连接服务器")
+                        }
+                    }
                         .font(.subheadline)
                         .foregroundStyle(.red)
                         .frame(maxWidth: .infinity, alignment: .leading)

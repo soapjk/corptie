@@ -188,6 +188,7 @@ public struct CloudOAuthTokenClient: Sendable {
 
     private func request(_ fields: [String: String], priorRefreshToken: String?) async throws -> CloudOAuthTokens {
         var request = try configuration.endpoint.request(path: ["api", "auth", "oauth2", "token"])
+        request.timeoutInterval = 15
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         var form = URLComponents()

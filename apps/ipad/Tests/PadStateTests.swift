@@ -7,15 +7,30 @@ import CorptieClientCore
 struct PadStateTests {
     @Test func savedPairingDoesNotMakeInterruptedTransportLookConnected() {
         #expect(PadServerConnectionStatus.resolve(hasPairing: true,
-            realtimeConnected: false, hasInterrupted: false) == .connecting)
+            realtimeConnected: false, reconnectFailed: false) == .connecting)
         #expect(PadServerConnectionStatus.resolve(hasPairing: true,
             realtimeConnected: false, hasInterrupted: true) == .streamInterrupted)
         #expect(PadServerConnectionStatus.resolve(hasPairing: true,
-            realtimeConnected: true, hasInterrupted: true) == .connected)
+            realtimeConnected: false, reconnectFailed: true) == .streamInterrupted)
+        #expect(PadServerConnectionStatus.resolve(hasPairing: true,
+            realtimeConnected: true, reconnectFailed: true) == .connected)
         #expect(PadServerConnectionStatus.resolve(hasPairing: false,
-            realtimeConnected: true, hasInterrupted: false) == .disconnected)
+            realtimeConnected: true, reconnectFailed: false) == .disconnected)
         #expect(PadServerConnectionStatus.disconnected.title == "现在已经断开连接")
         #expect(PadServerConnectionStatus.streamInterrupted.title == "实时消息暂时中断，正在重连")
+    }
+
+    @Test func foregroundRecoveryClearsBackgroundFailureAndInvalidatesOldStream() {
+        let workspace = PadWorkspace()
+        let oldGeneration = UUID()
+        workspace.realtimeGeneration = oldGeneration
+        workspace.realtimeReconnectFailed = true
+        workspace.realtimePausedAt = Date()
+        workspace.prepareForegroundRealtime()
+        #expect(!workspace.realtimeReconnectFailed)
+        #expect(!workspace.realtimeConnected)
+        #expect(workspace.realtimePausedAt == nil)
+        #expect(workspace.realtimeGeneration != oldGeneration)
     }
 
     @Test func latestJumpRequiresBothRealizedTailAndPhysicalBottom() {
