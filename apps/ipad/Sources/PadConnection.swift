@@ -3,6 +3,36 @@ import Observation
 import CorptieClientCore
 import CorptieClientSecurity
 
+/// AuthenticationServices may invoke its completion on an XPC queue. Keep that
+/// callback nonisolated, then deliver exactly once to UI state on the main actor.
+final class CloudSignInCallbackBridge: @unchecked Sendable {
+    typealias Delivery = @MainActor @Sendable (URL?, (any Error)?) -> Void
+
+    private struct Payload: @unchecked Sendable {
+        let callback: URL?
+        let error: (any Error)?
+    }
+
+    private let lock = NSLock()
+    private let delivery: Delivery
+    private var completed = false
+
+    init(delivery: @escaping Delivery) { self.delivery = delivery }
+
+    func makeCompletionHandler() -> @Sendable (URL?, (any Error)?) -> Void {
+        { [self] callback, error in complete(callback: callback, error: error) }
+    }
+
+    func complete(callback: URL?, error: (any Error)?) {
+        lock.lock()
+        guard !completed else { lock.unlock(); return }
+        completed = true
+        lock.unlock()
+        let payload = Payload(callback: callback, error: error)
+        Task { @MainActor [delivery] in delivery(payload.callback, payload.error) }
+    }
+}
+
 @MainActor @Observable
 final class PadConnection {
     private struct CloudOfflineLANGrant: Decodable {
@@ -27,9 +57,13 @@ final class PadConnection {
     private var attemptedStartupConnection = false
     var busy = false
     var notice = ""
+    var cloudNotice = ""
     var cloudDevices: [CloudDevice] = []
     var cloudSignedIn = false
     var cloudCurrentDeviceID: UUID? { cloudCredential?.identity.id }
+    var connectedThroughCloud: Bool { connected && cloudClient != nil }
+    private(set) var connectedCloudMacID: UUID?
+    private(set) var connectedCloudMacName: String?
     private var endpoint: BackendEndpoint?
     private var credentials: DeviceCredentials?
     var deviceID: String? { credentials?.deviceId }
@@ -114,6 +148,24 @@ final class PadConnection {
         return "操作未完成。请检查 HTTPS 地址、证书信任、局域网权限和 Mac 后端状态。"
     }
 
+    static func explainCloudSignIn(_ error: Error) -> String {
+        if let error = error as? CloudOAuthError {
+            switch error {
+            case .invalidConfiguration: return "Cloud 登录配置无效，请更新应用后重试。"
+            case .invalidCallback: return "Cloud 没有返回有效的授权结果，请重新登录。"
+            case .stateMismatch: return "登录状态校验失败，请重新登录。"
+            case .authorizationDenied: return "Cloud 授权未完成，请确认账号已验证后重试。"
+            case .invalidTokenResponse: return "Cloud 返回的登录凭据无效，请重新登录。"
+            }
+        }
+        if let error = error as? ClientConnectionError,
+           case .httpStatus(let status) = error {
+            if status == 401 || status == 403 { return "Cloud 授权被拒绝（\(status)），请重新登录。" }
+            return "Cloud 请求失败（HTTP \(status)），请稍后重试。"
+        }
+        return "Cloud 登录后续步骤失败。请检查网络后重试；若仍失败，请联系开发者。"
+    }
+
     private func configuredEndpoint() throws -> BackendEndpoint {
         guard let url = URL(string: address.trimmingCharacters(in: .whitespacesAndNewlines)),
               url.scheme == "https", !serverID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -188,10 +240,10 @@ final class PadConnection {
         guard !attemptedStartupConnection else { return }
         attemptedStartupConnection = true
         defer { restoringConnection = false }
-        if UserDefaults.standard.string(forKey: "connectionMode") == "cloud" {
-            await restoreCloudConnection()
-            if connected { return }
-        }
+        await restoreCloudConnection()
+        if connected { return }
+        // A failed account connection must not silently become a LAN session.
+        if UserDefaults.standard.string(forKey: "connectionMode") == "cloud" { return }
         guard !connected, !address.isEmpty, !serverID.isEmpty else { return }
         await reconnect()
     }
@@ -199,11 +251,12 @@ final class PadConnection {
     func beginCloudSignIn() throws -> URL {
         let authorization = try CloudOAuthAuthorization(configuration: Self.cloudConfiguration())
         cloudAuthorization = authorization
+        cloudNotice = ""
         return authorization.url
     }
 
     func completeCloudSignIn(callback: URL, deviceName: String) async {
-        await perform {
+        await performCloud {
             guard let authorization = cloudAuthorization else { throw CloudOAuthError.invalidCallback }
             defer { cloudAuthorization = nil }
             let configuration = try Self.cloudConfiguration()
@@ -219,14 +272,15 @@ final class PadConnection {
             let credential = CloudCredential(tokens: tokens, identity: identity)
             try await cloudVault.save(credential, configuration: configuration)
             cloudCredential = credential
-            try await registerCloudDeviceAndRefresh(credential, configuration: configuration)
             cloudSignedIn = true
+            UserDefaults.standard.set("cloud", forKey: "connectionMode")
+            try await registerCloudDeviceAndRefresh(credential, configuration: configuration)
             let macs = cloudDevices.filter { $0.kind == .mac && $0.revokedAt == nil }
             if macs.count == 1 {
                 try await connectCloudImpl(to: macs[0])
-                notice = "已自动连接 \(macs[0].displayName)。"
+                cloudNotice = "已自动连接 \(macs[0].displayName)。"
             } else {
-                notice = macs.isEmpty
+                cloudNotice = macs.isEmpty
                     ? "已登录 Corptie Cloud；请先在 Mac 上登录并开启远程连接。"
                     : "已登录 Corptie Cloud。请选择要连接的 Mac。"
             }
@@ -234,7 +288,50 @@ final class PadConnection {
     }
 
     func connectCloud(to mac: CloudDevice) async {
-        await perform { try await connectCloudImpl(to: mac) }
+        await performCloud {
+            try await connectCloudImpl(to: mac)
+            cloudNotice = "已连接 \(mac.displayName)。"
+        }
+    }
+
+    func reconnectCloudTransportIfNeeded() async {
+        guard connectedThroughCloud, !busy, let macID = connectedCloudMacID,
+              let mac = cloudDevices.first(where: { $0.id == macID && $0.revokedAt == nil }) else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            try await connectCloudImpl(to: mac)
+            cloudNotice = ""
+        } catch is CancellationError {
+        } catch {
+            cloudNotice = "账号仍已登录，但与 Mac 的实时连接中断，正在重试。"
+        }
+    }
+
+    func refreshCloudDevices() async {
+        await performCloud {
+            let configuration = try Self.cloudConfiguration()
+            let credential = try await validCloudCredential(configuration)
+            try await registerCloudDeviceAndRefresh(credential, configuration: configuration)
+            cloudSignedIn = true
+            cloudNotice = cloudDevices.contains { $0.kind == .mac && $0.revokedAt == nil }
+                ? "设备列表已更新，请选择要连接的 Mac。"
+                : "已登录 Corptie Cloud；还没有可连接的 Mac。"
+        }
+    }
+
+    private func performCloud(_ operation: () async throws -> Void) async {
+        guard !busy else { return }
+        busy = true
+        cloudNotice = ""
+        defer { busy = false }
+        do { try await operation() }
+        catch is CancellationError { }
+        catch {
+            cloudNotice = cloudSignedIn
+                ? "账号已登录，但连接 Mac 或同步设备失败：\(Self.explainCloudSignIn(error))"
+                : Self.explainCloudSignIn(error)
+        }
     }
 
     func revokeCloudDevice(_ device: CloudDevice) async {
@@ -290,6 +387,9 @@ final class PadConnection {
             cachedTransport = transport
             cachedToken = nil
             connected = true
+            connectedCloudMacID = mac.id
+            connectedCloudMacName = mac.displayName
+            notice = ""
             UserDefaults.standard.set("cloud", forKey: "connectionMode")
             UserDefaults.standard.set(mac.id.uuidString, forKey: "cloudMacID")
             if let previous { await previous.close() }
@@ -313,6 +413,8 @@ final class PadConnection {
         do { try await cloudVault.remove(configuration: Self.cloudConfiguration()) }
         catch { notice = Self.explain(error); return }
         cloudClient = nil
+        connectedCloudMacID = nil
+        connectedCloudMacName = nil
         cloudCredential = nil
         cloudDevices = []
         cloudSignedIn = false
@@ -333,15 +435,18 @@ final class PadConnection {
             guard let saved = try await cloudVault.load(configuration: configuration) else { return }
             cloudCredential = saved
             let credential = try await validCloudCredential(configuration)
-            try await registerCloudDeviceAndRefresh(credential, configuration: configuration)
             cloudSignedIn = true
+            try await registerCloudDeviceAndRefresh(credential, configuration: configuration)
+            guard UserDefaults.standard.string(forKey: "connectionMode") == "cloud" else { return }
             let macs = cloudDevices.filter { $0.kind == .mac && $0.revokedAt == nil }
             let remembered = UserDefaults.standard.string(forKey: "cloudMacID").flatMap(UUID.init(uuidString:))
             if let mac = macs.first(where: { $0.id == remembered }) ?? (macs.count == 1 ? macs[0] : nil) {
                 await connectCloud(to: mac)
             }
         } catch {
-            notice = Self.explain(error)
+            cloudNotice = cloudSignedIn
+                ? "账号已登录，但同步设备失败：\(Self.explainCloudSignIn(error))"
+                : Self.explainCloudSignIn(error)
         }
     }
 
@@ -398,8 +503,16 @@ final class PadConnection {
                 )
             }
             do {
-                let transport = try await transport()
+                let transport = try BackendTransport(
+                    endpoint: endpoint, bearerToken: saved.accessToken, certificate: saved.certificate
+                )
                 let (_, _) = try await transport.data(for: endpoint.request(path: ["client", "v1", "me"]))
+                if let cloudClient { await cloudClient.close() }
+                cloudClient = nil
+                connectedCloudMacID = nil
+                connectedCloudMacName = nil
+                cachedTransport = transport
+                cachedToken = saved.accessToken
                 remember(endpoint)
                 connected = true
             } catch let error as DevicePairingFailure where error.code == "INVALID_CREDENTIAL" || error.code == "DEVICE_REVOKED" {
@@ -415,7 +528,7 @@ final class PadConnection {
         address = endpoint.baseURL.absoluteString
         UserDefaults.standard.set(address, forKey: "serverAddress")
         UserDefaults.standard.set(serverID, forKey: "serverID")
-        UserDefaults.standard.set(credentials?.cloudValidatedAt == nil ? "lan" : "cloud", forKey: "connectionMode")
+        UserDefaults.standard.set("lan", forKey: "connectionMode")
     }
 
     private func saveOfflineGrant(_ grant: CloudOfflineLANGrant) async throws {
@@ -478,6 +591,8 @@ final class PadConnection {
         cachedToken = nil
         if let cloudClient { Task { await cloudClient.close() } }
         cloudClient = nil
+        connectedCloudMacID = nil
+        connectedCloudMacName = nil
         endpoint = nil
         claim = nil
         notice = "现在已经断开连接。配对凭据保留在钥匙串中，可点击连接重新连接 Mac。"

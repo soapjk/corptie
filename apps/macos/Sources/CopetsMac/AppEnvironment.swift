@@ -22,6 +22,13 @@ enum CorptieAppEnvironment {
     static let displayName = isDevelopment ? "Development" : "Production"
     static let appName = isDevelopment ? "Corptie Dev" : "Corptie"
     static let appSupportFolderName = isDevelopment ? "Corptie Development" : "Corptie"
+    static let cloudCredentialService = RunIsolationAppPaths.cloudCredentialService(
+        environment: environment,
+        isDevelopment: isDevelopment,
+        isProductionBundle: canManageProductionBackend
+    )
+    static let usesDataProtectionCloudKeychain = canManageProductionBackend &&
+        (Bundle.main.object(forInfoDictionaryKey: "CorptieCloudDataProtectionKeychain") as? Bool == true)
 
     static let backendPort: Int = {
         if let value = ProcessInfo.processInfo.environment["CORPTIE_BACKEND_PORT"],
@@ -94,6 +101,17 @@ enum CorptieProcessLifecycle {
 }
 
 enum RunIsolationAppPaths {
+    static func cloudCredentialService(
+        environment: [String: String], isDevelopment: Bool, isProductionBundle: Bool
+    ) -> String {
+        let base = "com.corptie.mac.cloud-credentials"
+        // Only the installed, signed Production bundle may read the legacy
+        // credential. Ad-hoc Development builds have changing code identities.
+        guard !isProductionBundle else { return base }
+        let suite = userDefaultsSuite(environment: environment, isDevelopment: isDevelopment)
+        return "\(base).\(suite)"
+    }
+
     static func userDefaultsSuite(environment: [String: String], isDevelopment: Bool) -> String {
         let isolatedRun = !(environment["CORPTIE_RUN_ID"] ?? "").isEmpty
         if let value = environment["CORPTIE_USER_DEFAULTS_SUITE"] {
