@@ -83,9 +83,9 @@ export class CloudDeviceService {
     }
     const timestamp = this.now().toISOString();
     const existing = this.database.prepare(`
-      SELECT account_id, authorization_session_id FROM cloud_devices WHERE id = ?
+      SELECT id, account_id, authorization_session_id FROM cloud_devices WHERE id = ? COLLATE NOCASE
     `).get(input.id) as
-      | { account_id: string; authorization_session_id: string | null }
+      | { id: string; account_id: string; authorization_session_id: string | null }
       | undefined;
     if (existing && existing.account_id !== accountId) {
       throw new DeviceConflictError("Device identifier is already registered to another account");
@@ -93,10 +93,11 @@ export class CloudDeviceService {
     if (existing?.authorization_session_id && existing.authorization_session_id !== authorizationSessionId) {
       throw new DeviceConflictError("Device is bound to another authorization session");
     }
+    const storedId = existing?.id ?? input.id.toLowerCase();
     const sessionOwner = this.database.prepare(`
       SELECT id FROM cloud_devices
-      WHERE authorization_session_id = ? AND revoked_at IS NULL AND id <> ?
-    `).get(authorizationSessionId, input.id) as { id: string } | undefined;
+      WHERE authorization_session_id = ? AND revoked_at IS NULL AND id <> ? COLLATE NOCASE
+    `).get(authorizationSessionId, storedId) as { id: string } | undefined;
     if (sessionOwner) {
       throw new DeviceConflictError("Authorization session is already bound to another active device");
     }
@@ -119,7 +120,7 @@ export class CloudDeviceService {
       WHERE cloud_devices.account_id = excluded.account_id
         AND cloud_devices.revoked_at IS NULL
     `).run(
-      input.id,
+      storedId,
       accountId,
       input.kind,
       input.displayName,
@@ -131,7 +132,7 @@ export class CloudDeviceService {
       authorizationSessionId
     );
 
-    const device = this.getForAccount(accountId, input.id);
+    const device = this.getForAccount(accountId, storedId);
     if (!device || device.revokedAt) {
       throw new DeviceConflictError("A revoked device identifier cannot be registered again");
     }
@@ -148,7 +149,7 @@ export class CloudDeviceService {
 
   getForAccount(accountId: string, deviceId: string): CloudDevice | null {
     const row = this.database.prepare(
-      "SELECT * FROM cloud_devices WHERE account_id = ? AND id = ?"
+      "SELECT * FROM cloud_devices WHERE account_id = ? AND id = ? COLLATE NOCASE"
     ).get(accountId, deviceId) as DeviceRow | undefined;
     return row ? mapDevice(row) : null;
   }
@@ -156,7 +157,7 @@ export class CloudDeviceService {
   getAuthorizedForAccount(accountId: string, deviceId: string, authorizationSessionId: string): CloudDevice | null {
     const row = this.database.prepare(`
       SELECT * FROM cloud_devices
-      WHERE account_id = ? AND id = ? AND authorization_session_id = ?
+      WHERE account_id = ? AND id = ? COLLATE NOCASE AND authorization_session_id = ?
     `).get(accountId, deviceId, authorizationSessionId) as DeviceRow | undefined;
     return row ? mapDevice(row) : null;
   }
@@ -180,17 +181,17 @@ export class CloudDeviceService {
         const binding = this.database.prepare(`
           SELECT authorization_session_id FROM cloud_devices
           WHERE account_id = ? AND id = ?
-        `).get(accountId, deviceId) as { authorization_session_id: string | null };
+        `).get(accountId, current.id) as { authorization_session_id: string | null };
         const nextEpoch = current.authEpoch + 1;
         this.database.prepare(`
           UPDATE cloud_devices
           SET revoked_at = ?, updated_at = ?, auth_epoch = ?
           WHERE account_id = ? AND id = ? AND revoked_at IS NULL
-        `).run(timestamp, timestamp, nextEpoch, accountId, deviceId);
+        `).run(timestamp, timestamp, nextEpoch, accountId, current.id);
         this.database.prepare(`
           INSERT INTO cloud_revocations(account_id, device_id, reason, auth_epoch, revoked_at)
           VALUES (?, ?, ?, ?, ?)
-        `).run(accountId, deviceId, reason, nextEpoch, timestamp);
+        `).run(accountId, current.id, reason, nextEpoch, timestamp);
         if (binding.authorization_session_id) {
           this.revokeAuthorizationSession(accountId, binding.authorization_session_id, timestamp);
         }
