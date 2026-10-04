@@ -19,6 +19,7 @@ const environmentSchema = z.object({
   }, "must use HTTPS unless it targets loopback"),
   CORPTIE_CLOUD_AUTH_SECRET: z.string().min(32),
   CORPTIE_CLOUD_ADMIN_TOKEN: z.string().min(32),
+  CORPTIE_CLOUD_PUBLIC_REGISTRATION: z.enum(["true", "false"]).default("true"),
   CORPTIE_CLOUD_TRUSTED_ORIGINS: csv,
   CORPTIE_CLOUD_LOG_LEVEL: z.enum(["error", "warn", "info", "debug"]).default("info"),
   CORPTIE_CLOUD_MAX_JSON_BYTES: z.coerce.number().int().min(1_024).max(1_048_576).default(65_536),
@@ -54,6 +55,7 @@ export interface CloudConfig {
   publicBaseUrl: string;
   authSecret: string;
   adminToken: string;
+  publicRegistration: boolean;
   trustedOrigins: string[];
   logLevel: "error" | "warn" | "info" | "debug";
   maxJsonBytes: number;
@@ -106,6 +108,7 @@ export function loadCloudConfig(environment: NodeJS.ProcessEnv): CloudConfig {
     publicBaseUrl: publicUrl.origin,
     authSecret: parsed.CORPTIE_CLOUD_AUTH_SECRET,
     adminToken: parsed.CORPTIE_CLOUD_ADMIN_TOKEN,
+    publicRegistration: parsed.CORPTIE_CLOUD_PUBLIC_REGISTRATION === "true",
     trustedOrigins: parsed.CORPTIE_CLOUD_TRUSTED_ORIGINS,
     logLevel: parsed.CORPTIE_CLOUD_LOG_LEVEL,
     maxJsonBytes: parsed.CORPTIE_CLOUD_MAX_JSON_BYTES,
