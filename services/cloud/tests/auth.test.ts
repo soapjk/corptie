@@ -33,18 +33,35 @@ test("public registration creates a credential account and requests email verifi
     const response = await auth.handler(new Request("http://127.0.0.1:4310/api/auth/sign-up/email", {
       method: "POST",
       headers: { "content-type": "application/json", origin: "http://127.0.0.1:4310" },
-      body: JSON.stringify({ name: "Uninvited", email: "uninvited@example.test", password: "correct horse battery staple" })
+      body: JSON.stringify({
+        name: "Uninvited",
+        email: "uninvited@example.test",
+        password: "correct horse battery staple",
+        callbackURL: "http://127.0.0.1:4310/auth/verified"
+      })
     }));
 
     assert.equal(response.status, 200);
     const count = database.prepare('SELECT COUNT(*) AS count FROM "user"').get() as { count: number };
     assert.equal(count.count, 1);
-    const mail = database.prepare("SELECT kind, recipient FROM cloud_mail_capture").get() as {
+    const mail = database.prepare("SELECT kind, recipient, text_body FROM cloud_mail_capture").get() as {
       kind: string;
       recipient: string;
+      text_body: string;
     };
     assert.equal(mail.kind, "email_verification");
     assert.equal(mail.recipient, "uninvited@example.test");
+    const verificationUrl = mail.text_body.match(/https?:\/\/\S+/)?.[0];
+    assert.ok(verificationUrl);
+    assert.equal(new URL(verificationUrl).searchParams.get("callbackURL"), "http://127.0.0.1:4310/auth/verified");
+
+    const verification = await auth.handler(new Request(verificationUrl));
+    assert.equal(verification.status, 302);
+    assert.equal(verification.headers.get("location"), "http://127.0.0.1:4310/auth/verified");
+    const user = database.prepare('SELECT emailVerified FROM "user" WHERE email = ?').get("uninvited@example.test") as {
+      emailVerified: number;
+    };
+    assert.equal(user.emailVerified, 1);
     await mailer.close();
   } finally {
     database.close();
@@ -63,6 +80,54 @@ test("public registration can be disabled by configuration", async () => {
     assert.equal(response.status, 400);
     assert.equal((await response.json() as { code: string }).code, "EMAIL_PASSWORD_SIGN_UP_DISABLED");
   } finally {
+    database.close();
+  }
+});
+
+test("unverified sign-in uses a dedicated verification resend callback", async () => {
+  const database = openCloudDatabase(":memory:");
+  const mailer = new CloudMailer({ mode: "capture" }, database);
+  try {
+    const { auth } = createCloudAuth(config, database, { mailer });
+    const headers = { "content-type": "application/json", origin: "http://127.0.0.1:4310" };
+    const signUp = await auth.handler(new Request("http://127.0.0.1:4310/api/auth/sign-up/email", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        name: "Pending",
+        email: "pending@example.test",
+        password: "correct horse battery staple",
+        callbackURL: "http://127.0.0.1:4310/auth/verified"
+      })
+    }));
+    assert.equal(signUp.status, 200);
+    database.exec("DELETE FROM cloud_mail_capture");
+
+    const signIn = await auth.handler(new Request("http://127.0.0.1:4310/api/auth/sign-in/email", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ email: "pending@example.test", password: "correct horse battery staple" })
+    }));
+    assert.equal(signIn.status, 403);
+    assert.equal((await signIn.json() as { code: string }).code, "EMAIL_NOT_VERIFIED");
+    const automaticMailCount = database.prepare("SELECT COUNT(*) AS count FROM cloud_mail_capture").get() as { count: number };
+    assert.equal(automaticMailCount.count, 0);
+
+    const resend = await auth.handler(new Request("http://127.0.0.1:4310/api/auth/send-verification-email", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        email: "pending@example.test",
+        callbackURL: "http://127.0.0.1:4310/auth/verified"
+      })
+    }));
+    assert.equal(resend.status, 200);
+    const mail = database.prepare("SELECT text_body FROM cloud_mail_capture").get() as { text_body: string };
+    const verificationUrl = mail.text_body.match(/https?:\/\/\S+/)?.[0];
+    assert.ok(verificationUrl);
+    assert.equal(new URL(verificationUrl).searchParams.get("callbackURL"), "http://127.0.0.1:4310/auth/verified");
+  } finally {
+    await mailer.close();
     database.close();
   }
 });
