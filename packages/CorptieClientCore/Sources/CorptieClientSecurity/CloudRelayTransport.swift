@@ -15,6 +15,19 @@ public protocol CloudRelaySecureChannel: Sendable {
     func close() async
 }
 
+struct CloudRelaySSEBuffer {
+    private(set) var remainder = Data()
+    private var suffix: UInt32 = 0
+    mutating func append(_ byte: UInt8) -> Data? {
+        remainder.append(byte)
+        suffix = (suffix << 8) | UInt32(byte)
+        guard remainder.count >= 16 * 1024 || suffix & 0xffff == 0x0a0a || suffix == 0x0d0a0d0a else { return nil }
+        let event = remainder
+        remainder = Data()
+        return event
+    }
+}
+
 public struct CloudRelayApplicationMessage: Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Sendable { case request, response, chunk, cancel }
     public let kind: Kind
@@ -46,7 +59,7 @@ public struct CloudRelayApplicationMessage: Codable, Equatable, Sendable {
 public actor CloudRelayHTTPClient {
     public static let maximumRequestBytes = 8 * 1_024 * 1_024
     public static let maximumResponseBytes = 16 * 1_024 * 1_024
-    public static let maximumChunkBytes = 128 * 1_024
+    public static let maximumChunkBytes = 16 * 1_024
 
     private struct PendingData {
         let url: URL
@@ -150,7 +163,12 @@ public actor CloudRelayHTTPClient {
     private func send(_ messages: [CloudRelayApplicationMessage]) async {
         guard let id = messages.first?.id else { return }
         do {
-            for message in messages { try await channel.send(try JSONEncoder().encode(message)) }
+            for message in messages {
+                guard pending[id] != nil else { return }
+                try Task.checkCancellation()
+                try await channel.send(try JSONEncoder().encode(message))
+                await Task.yield()
+            }
         }
         catch { fail(id, error) }
     }
@@ -602,21 +620,29 @@ public actor CloudRelayMacAgent {
             if request.value(forHTTPHeaderField: "Accept")?.hasPrefix("text/event-stream") == true {
                 let (bytes, response) = try await localTransport.bytes(for: request)
                 try await send(.response(id: message.id, status: response.statusCode, headers: responseHeaders(response)), on: connectionID)
-                var buffer = Data(); buffer.reserveCapacity(16 * 1_024)
+                var buffer = CloudRelaySSEBuffer()
                 for try await byte in bytes {
                     try Task.checkCancellation()
-                    buffer.append(byte)
-                    if buffer.count >= 16 * 1_024 {
-                        try await send(.chunk(id: message.id, body: buffer, final: false), on: connectionID)
-                        buffer.removeAll(keepingCapacity: true)
+                    if let chunk = buffer.append(byte) {
+                        try await send(.chunk(id: message.id, body: chunk, final: false), on: connectionID)
+                        await Task.yield()
                     }
                 }
-                try await send(.chunk(id: message.id, body: buffer, final: true), on: connectionID)
+                try await send(.chunk(id: message.id, body: buffer.remainder, final: true), on: connectionID)
             } else {
                 let (body, response) = try await localTransport.data(for: request)
                 guard body.count <= CloudRelayHTTPClient.maximumResponseBytes else { throw CloudRelayTransportError.responseTooLarge }
                 try await send(.response(id: message.id, status: response.statusCode, headers: responseHeaders(response)), on: connectionID)
-                try await send(.chunk(id: message.id, body: body, final: true), on: connectionID)
+                if body.isEmpty {
+                    try await send(.chunk(id: message.id, body: Data(), final: true), on: connectionID)
+                } else {
+                    for offset in stride(from: 0, to: body.count, by: CloudRelayHTTPClient.maximumChunkBytes) {
+                        try Task.checkCancellation()
+                        let end = min(body.count, offset + CloudRelayHTTPClient.maximumChunkBytes)
+                        try await send(.chunk(id: message.id, body: body.subdata(in: offset..<end), final: end == body.count), on: connectionID)
+                        await Task.yield()
+                    }
+                }
             }
         } catch is CancellationError { }
         catch let failure as ClientServiceFailure {
