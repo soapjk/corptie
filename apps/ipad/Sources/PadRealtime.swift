@@ -103,7 +103,12 @@ extension PadWorkspace {
                 if Task.isCancelled { return }
                 realtimeConnected = false
                 realtimePausedAt = Date()
-                if !receivedV2Ready {
+                if connection.connectedThroughCloud {
+                    // A Relay socket may have closed while the LAN fallback is
+                    // unavailable. Recreate the account channel before retrying.
+                    await connection.reconnectCloudTransportIfNeeded()
+                    if !receivedV2Ready { await inventory(connection) }
+                } else if !receivedV2Ready {
                     // The initial stream is preferred, but a transport-level
                     // failure must never leave a newly opened client empty.
                     // This is one finite bootstrap read, not polling.

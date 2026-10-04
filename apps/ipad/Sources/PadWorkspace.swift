@@ -13,18 +13,19 @@ enum PadTimelineJumpPolicy {
 import CorptieConversation
 
 enum PadServerConnectionStatus: Equatable {
-    case connecting, connected, disconnected
+    case connecting, connected, streamInterrupted, disconnected
 
     static func resolve(hasPairing: Bool, realtimeConnected: Bool, hasInterrupted: Bool) -> Self {
         guard hasPairing else { return .disconnected }
         if realtimeConnected { return .connected }
-        return hasInterrupted ? .disconnected : .connecting
+        return hasInterrupted ? .streamInterrupted : .connecting
     }
 
     var title: String {
         switch self {
         case .connecting: "正在连接服务器"
         case .connected: "已连接服务器"
+        case .streamInterrupted: "实时消息暂时中断，正在重连"
         case .disconnected: "现在已经断开连接"
         }
     }

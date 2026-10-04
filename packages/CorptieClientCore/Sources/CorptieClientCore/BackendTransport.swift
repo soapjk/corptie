@@ -17,10 +17,47 @@ public struct ClientServiceFailure: Error, Equatable, Sendable {
 
 public struct BackendByteStream: AsyncSequence, Sendable {
     public typealias Element = UInt8
-    private let stream: AsyncThrowingStream<UInt8, Error>
+    public struct AsyncIterator: AsyncIteratorProtocol {
+        private var bytes: AsyncThrowingStream<UInt8, Error>.Iterator?
+        private var chunks: AsyncThrowingStream<Data, Error>.Iterator?
+        private var chunk = Data()
+        private var offset = 0
 
-    public init(_ stream: AsyncThrowingStream<UInt8, Error>) { self.stream = stream }
-    public func makeAsyncIterator() -> AsyncThrowingStream<UInt8, Error>.Iterator { stream.makeAsyncIterator() }
+        fileprivate init(bytes: AsyncThrowingStream<UInt8, Error>.Iterator) { self.bytes = bytes }
+        fileprivate init(chunks: AsyncThrowingStream<Data, Error>.Iterator) { self.chunks = chunks }
+
+        public mutating func next() async throws -> UInt8? {
+            if var bytes {
+                let value = try await bytes.next()
+                self.bytes = bytes
+                return value
+            }
+            if offset < chunk.count {
+                defer { offset += 1 }
+                return chunk[offset]
+            }
+            guard var chunks else { return nil }
+            while let next = try await chunks.next() {
+                if next.isEmpty { continue }
+                chunk = next
+                offset = 1
+                self.chunks = chunks
+                return chunk[0]
+            }
+            self.chunks = nil
+            return nil
+        }
+    }
+
+    private let bytes: AsyncThrowingStream<UInt8, Error>?
+    private let chunks: AsyncThrowingStream<Data, Error>?
+
+    public init(_ stream: AsyncThrowingStream<UInt8, Error>) { bytes = stream; chunks = nil }
+    public init(chunks stream: AsyncThrowingStream<Data, Error>) { bytes = nil; chunks = stream }
+    public func makeAsyncIterator() -> AsyncIterator {
+        if let bytes { return AsyncIterator(bytes: bytes.makeAsyncIterator()) }
+        return AsyncIterator(chunks: chunks!.makeAsyncIterator())
+    }
 }
 
 /// Explicit endpoint ownership: no global URLSession overrides or automatic mutation retries.

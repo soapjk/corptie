@@ -48,6 +48,20 @@ struct CloudRelayTransportTests {
         }
         #expect(await channel.requests.isEmpty)
     }
+
+    @Test func relayStreamingSnapshotSurvivesBurstBeforeConsumerStarts() async throws {
+        let endpoint = try BackendEndpoint(URL(string: "http://127.0.0.1:4311")!)
+        let channel = RelayLoopbackChannel()
+        let client = CloudRelayHTTPClient(endpoint: endpoint, channel: channel)
+        var request = try endpoint.request(path: ["client", "v2", "events", "large"])
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        let (bytes, _) = try await client.transport().bytes(for: request)
+        try await Task.sleep(for: .milliseconds(100))
+        var received = Data()
+        for try await byte in bytes { received.append(byte) }
+        #expect(received == Data(repeating: 65, count: 256 * 1_024))
+        await client.close()
+    }
 }
 
 private actor RelayLoopbackChannel: CloudRelaySecureChannel {
@@ -80,7 +94,16 @@ private actor RelayLoopbackChannel: CloudRelaySecureChannel {
 
     private func respond(to message: CloudRelayApplicationMessage) throws {
         requests.append(message)
-        if message.path?.contains("/events") == true {
+        if message.path?.contains("/events/large") == true {
+            enqueue(try JSONEncoder().encode(CloudRelayApplicationMessage.response(
+                id: message.id, status: 200, headers: ["Content-Type": "text/event-stream"]
+            )))
+            for index in 0..<16 {
+                enqueue(try JSONEncoder().encode(CloudRelayApplicationMessage.chunk(
+                    id: message.id, body: Data(repeating: 65, count: 16 * 1_024), final: index == 15
+                )))
+            }
+        } else if message.path?.contains("/events") == true {
             enqueue(try JSONEncoder().encode(CloudRelayApplicationMessage.response(
                 id: message.id, status: 200, headers: ["Content-Type": "text/event-stream"]
             )))

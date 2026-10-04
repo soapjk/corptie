@@ -65,6 +65,27 @@ final class RunIsolationAppPathsTests: XCTestCase {
                        "com.corptie.mac.production")
     }
 
+    func testOnlyInstalledProductionBundleUsesProductionCloudKeychainItem() {
+        let legacy = "com.corptie.mac.cloud-credentials"
+        XCTAssertEqual(RunIsolationAppPaths.cloudCredentialService(
+            environment: [:], isDevelopment: false, isProductionBundle: true
+        ), legacy)
+        let first = RunIsolationAppPaths.cloudCredentialService(
+            environment: ["CORPTIE_USER_DEFAULTS_SUITE": "com.corptie.development.first"],
+            isDevelopment: true, isProductionBundle: false
+        )
+        let second = RunIsolationAppPaths.cloudCredentialService(
+            environment: ["CORPTIE_USER_DEFAULTS_SUITE": "com.corptie.development.second"],
+            isDevelopment: true, isProductionBundle: false
+        )
+        XCTAssertNotEqual(first, legacy)
+        XCTAssertNotEqual(first, second)
+        XCTAssertEqual(RunIsolationAppPaths.cloudCredentialService(
+            environment: ["CORPTIE_RUN_ID": "run:one", "CORPTIE_USER_DEFAULTS_SUITE": "com.corptie.run.one"],
+            isDevelopment: false, isProductionBundle: false
+        ), "\(legacy).com.corptie.run.one")
+    }
+
     func testWorktreeDevelopmentLauncherMayUseAnExplicitBoundedSuiteAndPresentationDirectory() {
         let environment = [
             "CORPTIE_USER_DEFAULTS_SUITE": "com.corptie.development.abc123",

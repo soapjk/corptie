@@ -56,7 +56,11 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
     @Published private(set) var currentDeviceID: UUID?
     @Published private(set) var status = "尚未登录 Corptie Cloud"
 
-    private let vault = CloudCredentialVault(service: "com.corptie.mac.cloud-credentials")
+    private let vault = CloudCredentialVault(
+        service: CorptieAppEnvironment.cloudCredentialService,
+        storage: CorptieAppEnvironment.usesDataProtectionCloudKeychain
+            ? .dataProtectionKeychain : .legacyKeychain
+    )
     private var credential: CloudCredential?
     private var webSession: ASWebAuthenticationSession?
     private var agent: CloudRelayMacAgent?
@@ -75,7 +79,10 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
         defer { restoring = false }
         do {
             let configuration = try Self.configuration()
-            guard let saved = try await vault.load(configuration: configuration) else { return }
+            guard let saved = try await vault.loadMigrating(
+                configuration: configuration,
+                legacyService: "com.corptie.mac.cloud-credentials"
+            ) else { return }
             credential = saved
             currentDeviceID = saved.identity.id
             signedIn = true
@@ -83,7 +90,12 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
             if enabled { startAgent() }
             else { status = "已登录；远程连接已关闭" }
         } catch {
-            status = "Cloud 凭据不可用，请重新登录"
+            if signedIn && enabled {
+                status = "设备注册未完成，正在自动重试…"
+                startAgent()
+            } else {
+                status = "Cloud 凭据不可用，请重新登录"
+            }
         }
     }
 
@@ -116,7 +128,12 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
         } catch let error as ASWebAuthenticationSessionError where error.code == .canceledLogin {
             status = "Cloud 登录已取消"
         } catch {
-            status = "Cloud 登录未完成，请重试"
+            if signedIn && enabled {
+                status = "账号已登录，设备注册未完成，正在自动重试…"
+                startAgent()
+            } else {
+                status = "Cloud 登录未完成，请重试"
+            }
         }
     }
 
@@ -166,7 +183,12 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
            let client = try? CloudDeviceClient(endpoint: configuration.endpoint, accessToken: current.tokens.accessToken) {
             serverRevoked = (try? await client.revokeCurrent()) != nil
         }
-        do { try await vault.remove(configuration: Self.configuration()) }
+        do {
+            try await vault.removeIncludingLegacy(
+                configuration: Self.configuration(),
+                legacyService: "com.corptie.mac.cloud-credentials"
+            )
+        }
         catch { status = "无法清除本机 Cloud 凭据"; return }
         credential = nil
         signedIn = false

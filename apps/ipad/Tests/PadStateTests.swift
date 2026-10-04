@@ -9,12 +9,13 @@ struct PadStateTests {
         #expect(PadServerConnectionStatus.resolve(hasPairing: true,
             realtimeConnected: false, hasInterrupted: false) == .connecting)
         #expect(PadServerConnectionStatus.resolve(hasPairing: true,
-            realtimeConnected: false, hasInterrupted: true) == .disconnected)
+            realtimeConnected: false, hasInterrupted: true) == .streamInterrupted)
         #expect(PadServerConnectionStatus.resolve(hasPairing: true,
             realtimeConnected: true, hasInterrupted: true) == .connected)
         #expect(PadServerConnectionStatus.resolve(hasPairing: false,
             realtimeConnected: true, hasInterrupted: false) == .disconnected)
         #expect(PadServerConnectionStatus.disconnected.title == "现在已经断开连接")
+        #expect(PadServerConnectionStatus.streamInterrupted.title == "实时消息暂时中断，正在重连")
     }
 
     @Test func latestJumpRequiresBothRealizedTailAndPhysicalBottom() {

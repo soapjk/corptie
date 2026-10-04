@@ -60,7 +60,7 @@ public actor CloudRelayHTTPClient {
         var response: HTTPURLResponse?
         let head: CheckedContinuation<(BackendByteStream, HTTPURLResponse), Error>
         let bytes: BackendByteStream
-        let stream: AsyncThrowingStream<UInt8, Error>.Continuation
+        let stream: AsyncThrowingStream<Data, Error>.Continuation
     }
 
     private enum Pending { case data(PendingData), stream(PendingStream) }
@@ -111,11 +111,13 @@ public actor CloudRelayHTTPClient {
         try startReceiver()
         let messages = try makeRequest(request)
         let message = messages[0]
-        let pair = AsyncThrowingStream<UInt8, Error>.makeStream(bufferingPolicy: .bufferingOldest(64 * 1_024))
+        // A state snapshot can arrive as many Relay frames before the UI starts
+        // consuming. Buffer chunks, not individual bytes, to keep memory bounded.
+        let pair = AsyncThrowingStream<Data, Error>.makeStream(bufferingPolicy: .bufferingOldest(512))
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 pending[message.id] = .stream(PendingStream(
-                    url: request.url!, head: continuation, bytes: BackendByteStream(pair.stream), stream: pair.continuation
+                    url: request.url!, head: continuation, bytes: BackendByteStream(chunks: pair.stream), stream: pair.continuation
                 ))
                 Task { await self.send(messages) }
             }
@@ -173,8 +175,9 @@ public actor CloudRelayHTTPClient {
             current = .data(value)
         case (.chunk, .stream(let value)):
             guard value.response != nil, let body = message.body, let final = message.final else { throw CloudRelayTransportError.invalidApplicationMessage }
-            for byte in body {
-                if case .dropped = value.stream.yield(byte) {
+            for start in stride(from: 0, to: body.count, by: 16 * 1_024) {
+                let end = min(body.count, start + 16 * 1_024)
+                if case .dropped = value.stream.yield(body.subdata(in: start..<end)) {
                     fail(message.id, CloudRelayTransportError.responseTooLarge); return
                 }
             }
