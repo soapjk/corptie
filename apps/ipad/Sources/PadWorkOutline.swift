@@ -46,6 +46,19 @@ struct PadWorkOutline: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 8) {
+                if PadServerConnectionStatus.resolve(hasPairing: connection.connected,
+                    realtimeConnected: workspace.realtimeConnected,
+                    hasInterrupted: workspace.realtimePausedAt != nil) == .disconnected {
+                    Label("现在已经断开连接", systemImage: "wifi.slash")
+                        .font(.subheadline)
+                        .foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(Color(uiColor: .secondarySystemBackground),
+                                    in: RoundedRectangle(cornerRadius: 8))
+                        .accessibilityIdentifier("server-connection-status")
+                }
                 if !showingArchived { chatGroup }
                 if showingArchived && orderedTasks.isEmpty {
                     Text("没有归档 Task")
