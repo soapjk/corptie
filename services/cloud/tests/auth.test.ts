@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { createServer } from "node:net";
 import test from "node:test";
+import { createCloudApplication } from "../src/application.js";
 import { createCloudAuth } from "../src/auth.js";
 import type { CloudConfig } from "../src/config.js";
 import { openCloudDatabase } from "../src/database.js";
@@ -127,6 +130,100 @@ test("unverified sign-in uses a dedicated verification resend callback", async (
     assert.ok(verificationUrl);
     assert.equal(new URL(verificationUrl).searchParams.get("callbackURL"), "http://127.0.0.1:4310/auth/verified");
   } finally {
+    await mailer.close();
+    database.close();
+  }
+});
+
+test("native OAuth bearer token can register and list its Cloud device", async () => {
+  const reservation = createServer();
+  await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
+  const address = reservation.address();
+  assert.ok(address && typeof address !== "string");
+  await new Promise<void>((resolve) => reservation.close(() => resolve()));
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const localConfig = { ...config, port: address.port, publicBaseUrl: baseUrl, trustedOrigins: [baseUrl] };
+  const database = openCloudDatabase(":memory:");
+  const mailer = new CloudMailer({ mode: "capture" }, database);
+  const cloudAuth = createCloudAuth(localConfig, database, { mailer });
+  const application = createCloudApplication({
+    config: localConfig,
+    database,
+    auth: cloudAuth.auth,
+    resolvePrincipal: cloudAuth.resolvePrincipal,
+    provisionInvitedUser: cloudAuth.provisionInvitedUser,
+    verifyOAuthPageQuery: cloudAuth.verifyOAuthPageQuery
+  });
+  try {
+    await application.listen();
+    const email = "device-login@example.test";
+    const password = "correct horse battery staple";
+    const headers = { "content-type": "application/json", origin: baseUrl };
+    const signUp = await fetch(`${baseUrl}/api/auth/sign-up/email`, {
+      method: "POST", headers, body: JSON.stringify({ name: "Device", email, password })
+    });
+    assert.equal(signUp.status, 200);
+    database.prepare('UPDATE "user" SET emailVerified = 1 WHERE email = ?').run(email);
+    const signIn = await fetch(`${baseUrl}/api/auth/sign-in/email`, {
+      method: "POST", headers, body: JSON.stringify({ email, password })
+    });
+    assert.equal(signIn.status, 200);
+    const cookie = signIn.headers.getSetCookie().map((item) => item.split(";")[0]).join("; ");
+    assert.ok(cookie);
+    const verifier = "a".repeat(43);
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    const query = new URLSearchParams({
+      client_id: "corptie-ios", redirect_uri: "corptie://oauth/callback", response_type: "code",
+      scope: "openid profile email offline_access devices:read devices:write",
+      resource: `${baseUrl}/v1`, code_challenge: challenge, code_challenge_method: "S256", state: "b".repeat(43)
+    });
+    const authorization = await fetch(`${baseUrl}/api/auth/oauth2/authorize?${query}`, {
+      headers: { cookie }, redirect: "manual"
+    });
+    assert.equal(authorization.status, 200);
+    const callback = new URL((await authorization.json() as { url: string }).url);
+    assert.equal(callback.protocol, "corptie:");
+    const code = callback.searchParams.get("code");
+    assert.ok(code);
+    const token = await fetch(`${baseUrl}/api/auth/oauth2/token`, {
+      method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code", client_id: "corptie-ios", code,
+        redirect_uri: "corptie://oauth/callback", code_verifier: verifier, resource: `${baseUrl}/v1`
+      })
+    });
+    assert.equal(token.status, 200);
+    const accessToken = (await token.json() as { access_token: string }).access_token;
+    assert.ok(accessToken);
+    const claims = JSON.parse(Buffer.from(accessToken.split(".")[1]!, "base64url").toString("utf8")) as {
+      aud: string[]; iss: string; sid: string; scope: string;
+    };
+    assert.ok(claims.aud.includes(`${baseUrl}/v1`));
+    assert.equal(claims.iss, `${baseUrl}/api/auth`);
+    assert.ok(claims.sid);
+    await cloudAuth.resolvePrincipal(new Request(`${baseUrl}/v1/devices`, {
+      headers: { authorization: `Bearer ${accessToken}` }
+    }), ["devices:write"]);
+    const device = {
+      id: "a64d49ad-eb0f-44bc-bfe8-048b7cf79d96", kind: "mobile",
+      displayName: "Test iPhone", publicKeyAlgorithm: "X25519", publicKey: Buffer.alloc(32, 7).toString("base64")
+    };
+    const registered = await fetch(`${baseUrl}/v1/devices`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+      body: JSON.stringify(device)
+    });
+    assert.equal(registered.status, 201, JSON.stringify(await registered.json()));
+    const listed = await fetch(`${baseUrl}/v1/devices`, {
+      headers: { authorization: `Bearer ${accessToken}` }
+    });
+    assert.equal(listed.status, 200, JSON.stringify(await listed.json()));
+    const tampered = await fetch(`${baseUrl}/v1/devices`, {
+      headers: { authorization: `Bearer ${accessToken.slice(0, -2)}aa` }
+    });
+    assert.equal(tampered.status, 401);
+  } finally {
+    await application.close();
     await mailer.close();
     database.close();
   }
