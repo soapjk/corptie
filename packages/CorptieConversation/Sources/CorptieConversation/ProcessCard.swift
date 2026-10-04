@@ -1,4 +1,6 @@
 import SwiftUI
+import Observation
+import CorptieClientCore
 #if os(macOS)
 import AppKit
 #else
@@ -6,6 +8,12 @@ import UIKit
 #endif
 
 /// Shared process-card chrome. Platforms supply the selectable detail text leaf.
+@MainActor @Observable
+public final class ProcessCardSummary {
+    public var text: String?
+    public init(text: String? = nil) { self.text = text }
+}
+
 public struct ProcessCard<Details: View>: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ScaledMetric(relativeTo: .caption) private var summarySize: CGFloat = 10.5
@@ -13,6 +21,8 @@ public struct ProcessCard<Details: View>: View {
     @ScaledMetric(relativeTo: .caption) private var progressSize: CGFloat = 9
     @ScaledMetric(relativeTo: .caption) private var headerHeight: CGFloat = 22
     private let summary: String
+    private let summaryOverride: ProcessCardSummary?
+    private let liveSummary: ((Date) -> String)?
     private let secondary: String?
     private let symbol: String
     private let tint: Color
@@ -30,11 +40,13 @@ public struct ProcessCard<Details: View>: View {
         #endif
     }
 
-    public init(summary: String, secondary: String? = nil,
+    public init(summary: String, summaryOverride: ProcessCardSummary? = nil,
+                liveSummary: ((Date) -> String)? = nil, secondary: String? = nil,
                 symbol: String, tint: Color, expanded: Bool,
                 progress: Double? = nil, progressLabel: String? = nil,
                 toggle: @escaping () -> Void, @ViewBuilder details: @escaping () -> Details) {
         self.summary = summary; self.secondary = secondary
+        self.summaryOverride = summaryOverride; self.liveSummary = liveSummary
         self.symbol = symbol; self.tint = tint
         self.expanded = expanded; self.progress = progress; self.progressLabel = progressLabel
         self.toggle = toggle; self.details = details
@@ -46,7 +58,8 @@ public struct ProcessCard<Details: View>: View {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 8) {
                         Image(systemName: symbol).foregroundStyle(tint)
-                        Text(summary).font(.system(size: summarySize, weight: .medium))
+                        ProcessCardSummaryLabel(summary: summary, override: summaryOverride, liveSummary: liveSummary)
+                            .font(.system(size: summarySize, weight: .medium)).monospacedDigit()
                             .foregroundStyle(.primary)
                             .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
                         if let progressLabel {
@@ -100,5 +113,36 @@ public struct ProcessCard<Details: View>: View {
                 .accessibilityHidden(true)
             }
         }
+    }
+}
+
+/// Only this text leaf observes elapsed-time changes; details and geometry stay static.
+private struct ProcessCardSummaryLabel: View {
+    let summary: String
+    let override: ProcessCardSummary?
+    let liveSummary: ((Date) -> String)?
+
+    var body: some View {
+        Group {
+            if let liveSummary {
+                ProcessCardLiveSummaryLabel(summary: liveSummary)
+            } else {
+                Text(override?.text ?? summary)
+            }
+        }
+    }
+}
+
+private struct ProcessCardLiveSummaryLabel: View {
+    let summary: (Date) -> String
+    @State private var visible = false
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: ConversationProcessPresentation.elapsedRefreshInterval,
+                                paused: !visible)) { context in
+            Text(summary(context.date))
+        }
+        .onAppear { visible = true }
+        .onDisappear { visible = false }
     }
 }
