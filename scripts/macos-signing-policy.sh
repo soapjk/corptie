@@ -73,3 +73,23 @@ corptie_validate_cloud_keychain_profile() {
     return 69
   fi
 }
+
+corptie_find_cloud_keychain_profile() {
+  local expected_team="$1" directory profile
+  local profile_directories=(
+    "${HOME}/Library/Developer/Xcode/UserData/Provisioning Profiles"
+    "${HOME}/Library/MobileDevice/Provisioning Profiles"
+  )
+
+  for directory in "${profile_directories[@]}"; do
+    [[ -d "${directory}" ]] || continue
+    while IFS= read -r -d '' profile; do
+      if corptie_validate_cloud_keychain_profile "${profile}" "${expected_team}" >/dev/null 2>&1; then
+        printf '%s\n' "${profile}"
+        return 0
+      fi
+    done < <(find "${directory}" -maxdepth 1 -type f \
+      \( -name '*.provisionprofile' -o -name '*.mobileprovision' \) -print0)
+  done
+  return 1
+}

@@ -23,6 +23,8 @@ fi
 grep -Fq 'CORPTIE_MACOS_PROVISIONING_PROFILE' "${PACKAGE_SCRIPT}"
 grep -Fq 'embedded.provisionprofile' "${PACKAGE_SCRIPT}"
 grep -Fq 'CorptieCloudDataProtectionKeychain' "${PACKAGE_SCRIPT}"
+grep -Fq 'corptie_find_cloud_keychain_profile' "${PACKAGE_SCRIPT}"
+grep -Fq 'Cloud credentials will use the legacy keychain' "${PACKAGE_SCRIPT}"
 
 resolved="$(CORPTIE_APP_SIGNING_IDENTITY="Apple Development: Example (TEAMID)" \
   corptie_resolve_macos_signing_identity)"
