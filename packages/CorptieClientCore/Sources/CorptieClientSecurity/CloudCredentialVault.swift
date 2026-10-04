@@ -28,10 +28,51 @@ public struct CloudCredential: Codable, Equatable, Sendable {
     }
 }
 
+public enum CloudCredentialStorage: Equatable, Sendable {
+    case legacyKeychain
+    case dataProtectionKeychain
+}
+
 public actor CloudCredentialVault {
     private let service: String
+    private let storage: CloudCredentialStorage
 
-    public init(service: String = "com.corptie.client.cloud-credentials") { self.service = service }
+    public init(
+        service: String = "com.corptie.client.cloud-credentials",
+        storage: CloudCredentialStorage = .legacyKeychain
+    ) {
+        self.service = service
+        self.storage = storage
+    }
+
+    // Only the installed macOS app uses this path. Never remove the legacy item
+    // during migration: it is the recovery copy until the new signed build has
+    // proved it can read the credential across restarts and upgrades.
+    public func loadMigrating(
+        configuration: CloudOAuthConfiguration,
+        legacyService: String
+    ) async throws -> CloudCredential? {
+        if let saved = try load(configuration: configuration) { return saved }
+        guard storage == .dataProtectionKeychain else { return nil }
+        let legacy = CloudCredentialVault(service: legacyService, storage: .legacyKeychain)
+        guard let saved = try await legacy.load(configuration: configuration) else { return nil }
+        try save(saved, configuration: configuration)
+        guard try load(configuration: configuration) == saved else {
+            throw CredentialVaultError.invalidIdentity
+        }
+        return saved
+    }
+
+    public func removeIncludingLegacy(
+        configuration: CloudOAuthConfiguration,
+        legacyService: String
+    ) async throws {
+        if storage == .dataProtectionKeychain {
+            let legacy = CloudCredentialVault(service: legacyService, storage: .legacyKeychain)
+            try await legacy.remove(configuration: configuration)
+        }
+        try remove(configuration: configuration)
+    }
 
     public func save(_ credential: CloudCredential, configuration: CloudOAuthConfiguration) throws {
         let query = try query(configuration)
@@ -68,15 +109,19 @@ public actor CloudCredentialVault {
         guard status == errSecSuccess || status == errSecItemNotFound else { throw CredentialVaultError.keychain(status) }
     }
 
-    private func query(_ configuration: CloudOAuthConfiguration) throws -> [String: Any] {
+    nonisolated func query(_ configuration: CloudOAuthConfiguration) throws -> [String: Any] {
         guard let host = configuration.endpoint.baseURL.host?.lowercased() else { throw CredentialVaultError.invalidIdentity }
         let port = configuration.endpoint.baseURL.port ?? (configuration.endpoint.baseURL.scheme == "https" ? 443 : 80)
         let account = "\(configuration.endpoint.baseURL.scheme ?? "")://\(host):\(port)|\(configuration.clientID)"
-        return [
+        var result: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecAttrSynchronizable as String: false
         ]
+        if storage == .dataProtectionKeychain {
+            result[kSecUseDataProtectionKeychain as String] = true
+        }
+        return result
     }
 }

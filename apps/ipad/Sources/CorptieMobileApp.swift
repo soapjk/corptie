@@ -43,7 +43,7 @@ struct PairingView: View {
                         let macs = connection.cloudDevices.filter { $0.kind == .mac && $0.revokedAt == nil }
                         if macs.isEmpty {
                             ContentUnavailableView {
-                                Label("没有在线的 Mac", systemImage: "desktopcomputer.trianglebadge.exclamationmark")
+                                Label("没有可连接的 Mac", systemImage: "desktopcomputer.trianglebadge.exclamationmark")
                             } description: {
                                 Text("请在 Mac 上登录同一账号并开启远程连接。")
                             }
@@ -53,6 +53,9 @@ struct PairingView: View {
                                     Task { await connection.connectCloud(to: mac) }
                                 }
                             }
+                        }
+                        Button("刷新设备列表", systemImage: "arrow.clockwise") {
+                            Task { await connection.refreshCloudDevices() }
                         }
                         let mobileDevices = connection.cloudDevices.filter { $0.kind == .mobile && $0.revokedAt == nil }
                         if !mobileDevices.isEmpty {
@@ -76,6 +79,13 @@ struct PairingView: View {
                             .buttonStyle(.borderedProminent)
                         Text("登录后可在外网连接同账号下的 Mac。账号凭据保存在系统钥匙串，通信内容端到端加密。")
                             .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    if connection.busy { ProgressView("正在处理 Cloud 登录或连接…") }
+                    if !connection.cloudNotice.isEmpty {
+                        Text(connection.cloudNotice)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("cloud-status")
                     }
                 }
                 Section {
@@ -163,11 +173,11 @@ struct PairingView: View {
                 case .failure(let error as ASWebAuthenticationSessionError) where error.code == .canceledLogin:
                     break
                 case .failure:
-                    connection.notice = "Cloud 登录未完成，请重试。"
+                    connection.cloudNotice = "Cloud 登录未完成，请重试。"
                 }
             }
         } catch {
-            connection.notice = "Cloud 登录配置无效，请更新应用后重试。"
+            connection.cloudNotice = "Cloud 登录配置无效，请更新应用后重试。"
         }
     }
 
