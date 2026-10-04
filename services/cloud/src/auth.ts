@@ -138,7 +138,13 @@ export function createCloudAuth(
     const authorization = request.headers.get("authorization");
     if (authorization?.startsWith("Bearer ")) {
       const payload = await resourceActions.verifyAccessTokenRequest(request, {
-        verifyOptions: { audience: resourceIdentifier },
+        // Better Auth's resource-client default uses /jwks, while this app
+        // mounts the JWT endpoint beneath /api/auth/jwks.
+        jwksUrl: `${config.publicBaseUrl}/api/auth/jwks`,
+        verifyOptions: {
+          audience: resourceIdentifier,
+          issuer: `${config.publicBaseUrl}/api/auth`
+        },
         requiredScopes
       });
       if (typeof payload.sub !== "string" || payload.sub.length === 0) {

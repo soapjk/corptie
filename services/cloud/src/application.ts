@@ -274,6 +274,12 @@ function errorResponse(error: unknown): Response {
   if (error instanceof AuthenticationError || error instanceof AuthorizationError) {
     return json(error.status, { code: error.code, message: error.message });
   }
+  if (error && typeof error === "object" && "statusCode" in error && "status" in error) {
+    const candidate = error as { statusCode: unknown; status: unknown };
+    if (candidate.statusCode === 401 && candidate.status === "UNAUTHORIZED") {
+      return json(401, { code: "AUTHENTICATION_REQUIRED", message: "Access token is invalid" });
+    }
+  }
   if (error instanceof DeviceConflictError) return json(409, { code: error.code, message: error.message });
   if (error instanceof DeviceNotFoundError) return json(404, { code: error.code, message: error.message });
   if (error instanceof AccountAlreadyExistsError) return json(409, { code: error.code, message: error.message });
