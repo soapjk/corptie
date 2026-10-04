@@ -1,5 +1,7 @@
 import Foundation
 import Observation
+import Network
+import OSLog
 import CorptieClientCore
 import CorptieClientSecurity
 
@@ -35,6 +37,21 @@ final class CloudSignInCallbackBridge: @unchecked Sendable {
 
 @MainActor @Observable
 final class PadConnection {
+    struct NetworkPath: Equatable, Sendable {
+        let available: Bool
+        let interfaces: String
+    }
+    typealias RelayFactory = @MainActor @Sendable (UUID) async throws -> CloudRelayHTTPClient
+    var networkAvailable = true
+    var recoveryRevision = 0
+    var recoveryBlockedMessage: String?
+    @ObservationIgnored private var lastNetworkPath: NetworkPath?
+    @ObservationIgnored private var networkRecoveryTask: Task<Void, Never>?
+    @ObservationIgnored private var cloudRecoveryTask: Task<BackendTransport, Error>?
+    @ObservationIgnored private var connectionGeneration = UUID()
+    @ObservationIgnored private let relayFactory: RelayFactory?
+    private var cloudTargetMacID: UUID?
+    private static let recoveryLog = Logger(subsystem: "com.corptie.mobile", category: "ConnectionRecovery")
     private struct CloudOfflineLANGrant: Decodable {
         let address: String
         let certificate: String
@@ -78,7 +95,103 @@ final class PadConnection {
     private var cloudAuthorization: CloudOAuthAuthorization?
     private var cloudClient: CloudRelayHTTPClient?
 
-    init(transportOverride: BackendTransport? = nil) { self.transportOverride = transportOverride }
+    init(transportOverride: BackendTransport? = nil, cloudTargetMacID: UUID? = nil,
+         relayFactory: RelayFactory? = nil) {
+        self.transportOverride = transportOverride
+        self.cloudTargetMacID = cloudTargetMacID
+        self.relayFactory = relayFactory
+    }
+
+    /// One monitor for the shell lifetime. No timer, inventory polling, or message observation.
+    func monitorNetwork() async {
+        let monitor = NWPathMonitor()
+        let paths = AsyncStream<NetworkPath>(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            monitor.pathUpdateHandler = { path in
+                let interfaces = [NWInterface.InterfaceType.wifi, .cellular, .wiredEthernet, .other]
+                    .filter { path.usesInterfaceType($0) }.map { String(describing: $0) }.joined(separator: ",")
+                continuation.yield(NetworkPath(available: path.status == .satisfied, interfaces: interfaces))
+            }
+            continuation.onTermination = { _ in monitor.cancel() }
+            monitor.start(queue: DispatchQueue(label: "com.corptie.mobile.network-path"))
+        }
+        defer { monitor.cancel(); networkRecoveryTask?.cancel(); networkRecoveryTask = nil }
+        for await path in paths {
+            if Task.isCancelled { return }
+            applyNetworkPath(path)
+        }
+    }
+
+    func applyNetworkPath(_ path: NetworkPath) {
+        let previous = lastNetworkPath
+        guard path != previous else { return }
+        lastNetworkPath = path
+        networkAvailable = path.available
+        networkRecoveryTask?.cancel()
+        guard connected, previous != nil || !path.available else { return }
+        if !path.available {
+            guard previous?.available != false else { return }
+            requestRealtimeRecovery()
+        } else {
+            networkRecoveryTask = Task { [weak self] in
+                do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+                guard let self, self.connected else { return }
+                self.requestRealtimeRecovery()
+            }
+        }
+    }
+
+    func requestRealtimeRecovery() {
+        guard connected else { return }
+        // A revoked/expired credential must not be retried on every network event.
+        guard recoveryBlockedMessage == nil else { return }
+        invalidateRealtimeTransport()
+        recoveryRevision += 1
+        Self.recoveryLog.info("Recovery requested: revision=\(self.recoveryRevision, privacy: .public)")
+    }
+
+    func retryRealtimeRecovery() {
+        recoveryBlockedMessage = nil
+        requestRealtimeRecovery()
+    }
+
+    func invalidateRealtimeTransport() {
+        connectionGeneration = UUID()
+        cloudRecoveryTask?.cancel(); cloudRecoveryTask = nil
+        let previous = cloudClient
+        cloudClient = nil
+        cachedTransport = nil; cachedToken = nil
+        if let previous { Task { await previous.close() } }
+    }
+
+    /// Returns true for an authorization failure that requires user intervention.
+    func stopRecoveryIfUnauthorized(_ error: Error) -> Bool {
+        let denied: Bool
+        if let failure = error as? ClientServiceFailure {
+            denied = failure.statusCode == 401 || failure.statusCode == 403
+        } else if let failure = error as? ClientConnectionError {
+            denied = failure == .httpStatus(401) || failure == .httpStatus(403) || failure == .invalidCredential
+        } else if let failure = error as? DevicePairingFailure {
+            denied = ["INVALID_CREDENTIAL", "DEVICE_REVOKED"].contains(failure.code)
+        } else { denied = false }
+        if denied { recoveryBlockedMessage = "连接授权已失效，请在设置中重新登录或配对。" }
+        let code = (error as? URLError).map { "url:\($0.code.rawValue)" } ?? "transport"
+        Self.recoveryLog.info("Recovery failure: category=\(code, privacy: .public), authorization=\(denied, privacy: .public)")
+        return denied
+    }
+
+    func connectionStatusNotice(reconnectFailed: Bool) -> String? {
+        guard connected else { return "现在已经断开连接" }
+        if !networkAvailable { return "网络不可用" }
+        if let recoveryBlockedMessage { return recoveryBlockedMessage }
+        guard reconnectFailed else { return nil }
+        return cloudTargetMacID == nil
+            ? "无法连接 Mac，正在重试；请确认当前网络能访问 Mac 地址。"
+            : "连接恢复失败，正在重试"
+    }
+
+    static func recoveryDelay(failures: Int, jitter: Double = 1) -> Duration {
+        .seconds(min(15, Double(1 << min(max(0, failures - 1), 4)) * jitter))
+    }
 
     private static func cloudConfiguration() throws -> CloudOAuthConfiguration {
         #if DEBUG
@@ -383,13 +496,18 @@ final class PadConnection {
             let grant = try JSONDecoder().decode(CloudOfflineLANGrant.self, from: grantData)
             try await saveOfflineGrant(grant)
             let previous = cloudClient
+            connectionGeneration = UUID()
+            cloudRecoveryTask?.cancel(); cloudRecoveryTask = nil
             cloudClient = relay
+            cloudTargetMacID = mac.id
             cachedTransport = transport
             cachedToken = nil
             connected = true
             connectedCloudMacID = mac.id
             connectedCloudMacName = mac.displayName
             notice = ""
+            recoveryBlockedMessage = nil
+            recoveryRevision += 1
             UserDefaults.standard.set("cloud", forKey: "connectionMode")
             UserDefaults.standard.set(mac.id.uuidString, forKey: "cloudMacID")
             if let previous { await previous.close() }
@@ -403,6 +521,8 @@ final class PadConnection {
         guard !busy else { return }
         busy = true
         defer { busy = false }
+        invalidateRealtimeTransport()
+        cloudTargetMacID = nil
         if let cloudClient { await cloudClient.close() }
         var serverRevoked = false
         if let configuration = try? Self.cloudConfiguration(),
@@ -458,7 +578,9 @@ final class PadConnection {
             throw ClientConnectionError.invalidCredential
         }
         if credential.tokens.isNearExpiry {
-            let tokens = try await CloudOAuthTokenClient(configuration: configuration).refresh(credential.tokens)
+            let tokens: CloudOAuthTokens
+            do { tokens = try await CloudOAuthTokenClient(configuration: configuration).refresh(credential.tokens) }
+            catch ClientConnectionError.httpStatus(400) { throw ClientConnectionError.invalidCredential }
             credential = CloudCredential(tokens: tokens, identity: credential.identity)
             try await cloudVault.save(credential, configuration: configuration)
         }
@@ -479,6 +601,7 @@ final class PadConnection {
     }
 
     func reconnect() async {
+        recoveryBlockedMessage = nil
         await perform {
             let endpoint = try configuredEndpoint()
             guard let saved = try await vault.load(endpoint: endpoint, serverId: serverID) else {
@@ -554,7 +677,18 @@ final class PadConnection {
     // Background reads and the event stream share one token rotation, never parallel refreshes.
     func transport() async throws -> BackendTransport {
         if let transportOverride { return transportOverride }
-        if cloudClient != nil, let cachedTransport { return cachedTransport }
+        guard networkAvailable else { throw URLError(.notConnectedToInternet) }
+        guard recoveryBlockedMessage == nil else { throw ClientConnectionError.invalidCredential }
+        if let target = cloudTargetMacID {
+            let generation = connectionGeneration
+            if let cloudClient, let cachedTransport, await cloudClient.isUsable() {
+                guard generation == connectionGeneration else { throw CancellationError() }
+                return cachedTransport
+            }
+            guard generation == connectionGeneration else { throw CancellationError() }
+            if cloudRecoveryTask == nil && cloudClient != nil { invalidateRealtimeTransport() }
+            return try await recoverCloudTransport(to: target)
+        }
         guard let endpoint, var credentials else { throw ClientConnectionError.invalidCredential }
         if credentials.accessExpiresAt <= Date().timeIntervalSince1970 * 1000 + 30_000 {
             if refreshTask == nil {
@@ -581,9 +715,53 @@ final class PadConnection {
         return cachedTransport!
     }
 
+    private func recoverCloudTransport(to target: UUID) async throws -> BackendTransport {
+        guard connected, networkAvailable, recoveryBlockedMessage == nil else { throw URLError(.notConnectedToInternet) }
+        let generation = connectionGeneration
+        if cloudRecoveryTask == nil {
+            cloudRecoveryTask = Task { @MainActor in
+                let started = ContinuousClock.now
+                Self.recoveryLog.info("Cloud channel recovery started")
+                let relay: CloudRelayHTTPClient
+                if let relayFactory { relay = try await relayFactory(target) }
+                else {
+                    let configuration = try Self.cloudConfiguration()
+                    let credential = try await validCloudCredential(configuration)
+                    let key = try CloudRelayDeviceKey(rawRepresentation: credential.identity.privateKey)
+                    let channel = try await CloudRelayMobileChannel.connect(
+                        cloudEndpoint: configuration.endpoint, accessToken: credential.tokens.accessToken,
+                        deviceID: credential.identity.id, targetMacID: target, deviceKey: key)
+                    relay = CloudRelayHTTPClient(endpoint: try BackendEndpoint(URL(string: "http://127.0.0.1")!), channel: channel)
+                }
+                do {
+                    let transport = relay.transport()
+                    var request = try transport.endpoint.request(path: ["client", "v1", "me"])
+                    request.timeoutInterval = 10
+                    _ = try await transport.data(for: request)
+                    try Task.checkCancellation()
+                    guard connectionGeneration == generation, connected, cloudTargetMacID == target else { throw CancellationError() }
+                    cloudClient = relay
+                    cachedTransport = transport
+                    Self.recoveryLog.info("Cloud channel recovered in \(String(describing: started.duration(to: .now)), privacy: .public)")
+                    return transport
+                } catch { await relay.close(); throw error }
+            }
+        }
+        let task = cloudRecoveryTask!
+        defer { if connectionGeneration == generation { cloudRecoveryTask = nil } }
+        let transport = try await task.value
+        try Task.checkCancellation()
+        guard connectionGeneration == generation, connected else { throw CancellationError() }
+        return transport
+    }
+
     func disconnect() {
         guard !busy else { return }
         connected = false
+        networkRecoveryTask?.cancel(); networkRecoveryTask = nil
+        invalidateRealtimeTransport()
+        cloudTargetMacID = nil
+        recoveryBlockedMessage = nil
         credentials = nil
         refreshTask?.cancel()
         refreshTask = nil

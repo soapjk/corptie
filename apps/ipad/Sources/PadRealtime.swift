@@ -27,12 +27,22 @@ extension PadWorkspace {
         await load(connection)
     }
 
-    /// Owned by the foreground scene. Cancellation closes the stream and pending refreshes.
+    /// Start a fresh foreground recovery without presenting an old background failure.
+    func prepareForegroundRealtime() {
+        realtimeGeneration = UUID()
+        realtimeConnected = false
+        realtimeReconnectFailed = false
+        realtimePausedAt = nil
+    }
+
+    /// Owned by the scene. Cancellation closes the stream and pending refreshes.
     func runRealtime(_ connection: PadConnection) async {
         let generation = UUID()
+        let connectionRevision = connection.recoveryRevision
         refreshWorker?.cancel(); refreshWorker = nil
         realtimeGeneration = generation
         realtimeConnected = false
+        realtimeReconnectFailed = false
         realtimePausedAt = nil
         defer {
             if realtimeGeneration == generation {
@@ -43,9 +53,11 @@ extension PadWorkspace {
                 realtimePausedAt = Date()
             }
         }
-        var failures = 0
+        var failures = connection.recoveryRevision > 0 ? 1 : 0
         var receivedV2Ready = false
-        while !Task.isCancelled && connection.connected {
+        while !Task.isCancelled && connection.connected && connection.networkAvailable
+            && connection.recoveryBlockedMessage == nil && realtimeGeneration == generation
+            && connection.recoveryRevision == connectionRevision {
             do {
                 liveStatus = "正在连接实时更新"
                 realtimeConnected = false
@@ -59,12 +71,13 @@ extension PadWorkspace {
                     timelineRevision: 0
                 ) {
                     try Task.checkCancellation()
-                    guard realtimeGeneration == generation else { return }
+                    guard realtimeGeneration == generation, connection.recoveryRevision == connectionRevision else { return }
                     failures = 0
                     switch update {
                     case .ready:
                         receivedV2Ready = true
                         realtimeConnected = true
+                        realtimeReconnectFailed = false
                         lastRealtimePulseAt = Date()
                         realtimePausedAt = nil
                         liveStatus = hasReceivedRealtimeState ? "实时连接正常" : "实时连接已建立，正在同步数据"
@@ -94,50 +107,59 @@ extension PadWorkspace {
                         if pending?.requestID == receipt.requestId { settle(receipt) }
                     case .heartbeat:
                         realtimeConnected = true
+                        realtimeReconnectFailed = false
                         lastRealtimePulseAt = Date()
                         realtimePausedAt = nil
                         liveStatus = hasReceivedRealtimeState ? "实时连接正常" : "实时连接已建立，正在同步数据"
                     }
                 }
             } catch {
-                if Task.isCancelled { return }
+                guard !Task.isCancelled, realtimeGeneration == generation,
+                      connection.recoveryRevision == connectionRevision else { return }
                 realtimeConnected = false
                 realtimePausedAt = Date()
-                if connection.connectedThroughCloud {
-                    // A Relay socket may have closed while the LAN fallback is
-                    // unavailable. Recreate the account channel before retrying.
-                    await connection.reconnectCloudTransportIfNeeded()
-                    if !receivedV2Ready { await inventory(connection) }
-                } else if !receivedV2Ready {
+                if connection.stopRecoveryIfUnauthorized(error) {
+                    realtimeReconnectFailed = true
+                    return
+                }
+                if !receivedV2Ready && Self.needsLegacyRealtime(error) {
                     // The initial stream is preferred, but a transport-level
                     // failure must never leave a newly opened client empty.
                     // This is one finite bootstrap read, not polling.
                     await inventory(connection)
-                    await runLegacyRealtime(connection, generation: generation)
+                    guard !Task.isCancelled, connection.recoveryRevision == connectionRevision else { return }
+                    await runLegacyRealtime(connection, generation: generation, initialFailures: 1)
                     return
                 }
             }
             failures = min(failures + 1, 5)
+            connection.invalidateRealtimeTransport()
+            // The first interruption is recovery, not a user-facing failure.
+            if failures >= 2 { realtimeReconnectFailed = true }
             liveStatus = "连接中断，正在自动重连"
             realtimeConnected = false
             realtimePausedAt = Date()
-            do { try await Task.sleep(for: .seconds(min(30, 1 << failures))) } catch { return }
+            do { try await Task.sleep(for: PadConnection.recoveryDelay(failures: failures, jitter: .random(in: 0.85...1.15))) } catch { return }
         }
     }
 
-    private func runLegacyRealtime(_ connection: PadConnection, generation: UUID) async {
-        var failures = 0
-        while !Task.isCancelled && connection.connected && realtimeGeneration == generation {
+    private func runLegacyRealtime(_ connection: PadConnection, generation: UUID, initialFailures: Int) async {
+        let connectionRevision = connection.recoveryRevision
+        var failures = initialFailures
+        while !Task.isCancelled && connection.connected && connection.networkAvailable
+            && connection.recoveryBlockedMessage == nil && realtimeGeneration == generation
+            && connection.recoveryRevision == connectionRevision {
             do {
                 liveStatus = "正在连接兼容模式实时更新"
                 realtimeConnected = false
                 let api = ClientEvents(transport: try await connection.transport())
                 for try await update in api.subscribe() {
                     try Task.checkCancellation()
-                    guard realtimeGeneration == generation else { return }
+                    guard realtimeGeneration == generation, connection.recoveryRevision == connectionRevision else { return }
                     failures = 0
                     liveStatus = "兼容模式实时连接正常"
                     realtimeConnected = true
+                    realtimeReconnectFailed = false
                     lastRealtimePulseAt = Date()
                     realtimePausedAt = nil
                     if update.control == true { controlRevision += 1 }
@@ -146,14 +168,29 @@ extension PadWorkspace {
                     scheduleRefresh(connection)
                 }
             } catch {
-                if Task.isCancelled { return }
+                guard !Task.isCancelled, realtimeGeneration == generation,
+                      connection.recoveryRevision == connectionRevision else { return }
+                if connection.stopRecoveryIfUnauthorized(error) {
+                    realtimeReconnectFailed = true
+                    return
+                }
             }
             failures = min(failures + 1, 5)
+            connection.invalidateRealtimeTransport()
+            if failures >= 2 { realtimeReconnectFailed = true }
             liveStatus = "兼容模式连接中断，正在自动重连"
             realtimeConnected = false
             realtimePausedAt = Date()
-            do { try await Task.sleep(for: .seconds(min(30, 1 << failures))) } catch { return }
+            do { try await Task.sleep(for: PadConnection.recoveryDelay(failures: failures, jitter: .random(in: 0.85...1.15))) } catch { return }
         }
+    }
+
+    private static func needsLegacyRealtime(_ error: Error) -> Bool {
+        // Offline/relay failures are not evidence that the server lacks v2.
+        if let error = error as? ClientConnectionError {
+            return error == .invalidResponse || error == .httpStatus(404)
+        }
+        return false
     }
 
     private func sessionMatchesUpdate(_ update: ClientInvalidation) -> Bool {
