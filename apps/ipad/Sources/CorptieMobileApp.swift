@@ -1349,9 +1349,8 @@ private struct PadProcessCard: View {
     var body: some View {
         Group {
             if canAdvance, state == .running, let startedAt {
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    processCard(summary: summary(at: context.date, startedAt: startedAt))
-                }
+                processCard(summary: summary(at: Date(), startedAt: startedAt),
+                    liveSummary: { summary(at: $0, startedAt: startedAt) })
             } else {
                 processCard(summary: pausedSummary)
             }
@@ -1387,8 +1386,8 @@ private struct PadProcessCard: View {
             duration: duration).summary(languageCode: locale.language.languageCode?.identifier ?? "en")
     }
 
-    private func processCard(summary: String) -> some View {
-        ProcessCard(summary: summary,
+    private func processCard(summary: String, liveSummary: ((Date) -> String)? = nil) -> some View {
+        ProcessCard(summary: summary, liveSummary: liveSummary,
                     secondary: presentation.currentStepTitle,
                     symbol: state.symbolName, tint: tint, expanded: expanded,
                     progress: latestPlan?.completionFraction,
@@ -1401,7 +1400,9 @@ private struct PadProcessCard: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(width: cardWidth(summary: summary), alignment: .leading)
+        .frame(width: max(cardWidth(summary: summary), liveSummary == nil ? 0
+            : cardWidth(summary: startedAt.map { self.summary(at: $0.addingTimeInterval(3_599.99), startedAt: $0) } ?? summary)),
+            alignment: .leading)
     }
 }
 

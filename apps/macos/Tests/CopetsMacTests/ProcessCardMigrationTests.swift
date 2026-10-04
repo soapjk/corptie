@@ -81,12 +81,20 @@ final class ProcessCardMigrationTests: XCTestCase {
         cell.setContent(process, availableWidth: 320, onToggleExpansion: { _ in })
         let configurations = cell.contentConfigurationCount
         let widthUpdates = cell.widthLayoutUpdateCount
+        let hostUpdates = cell.hostUpdateCount
         cell.refreshProcessElapsed(now: start.addingTimeInterval(5))
-        XCTAssertEqual(cell.displayedProcessSummary, "Working for 5.0s · 1 step")
+        XCTAssertEqual(cell.displayedProcessSummary, "Working for 5.00s · 1 step")
         cell.refreshProcessElapsed(now: start.addingTimeInterval(6))
-        XCTAssertEqual(cell.displayedProcessSummary, "Working for 6.0s · 1 step")
+        XCTAssertEqual(cell.displayedProcessSummary, "Working for 6.00s · 1 step")
         XCTAssertEqual(cell.contentConfigurationCount, configurations)
         XCTAssertEqual(cell.widthLayoutUpdateCount, widthUpdates)
+        let tickStart = ProcessInfo.processInfo.systemUptime
+        for tick in 0..<1000 {
+            cell.refreshProcessElapsed(now: start.addingTimeInterval(6 + Double(tick) * ConversationProcessPresentation.elapsedRefreshInterval))
+        }
+        XCTAssertEqual(cell.hostUpdateCount, hostUpdates, "Clock ticks only invalidate the summary text leaf")
+        XCTAssertEqual(cell.widthLayoutUpdateCount, widthUpdates)
+        print("PROCESS_CLOCK 1000 localized ticks ms=\((ProcessInfo.processInfo.systemUptime - tickStart) * 1000)")
     }
 
     func testThousandProcessRowsReuseAndScrollWithinNativeBudget() throws {

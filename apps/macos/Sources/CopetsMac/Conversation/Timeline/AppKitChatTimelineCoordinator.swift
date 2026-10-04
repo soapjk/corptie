@@ -24,6 +24,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     private var rows: [AppKitChatTimelineRow] = []
     private var canAdvanceProcessClock: Bool
     private var processClockTimer: Timer?
+    private var activeProcessClockRowIndex: Int?
     private var revisionsByID: [String: Int] = [:]
     private var heightCache: [HeightCacheKey: CGFloat] = [:]
     private var cellsByKey: [CellCacheKey: NSTableCellView & AppKitChatRowRendering] = [:]
@@ -202,24 +203,21 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     }
 
     private func synchronizeProcessClock() {
-        let shouldTick = canAdvanceProcessClock && activeProcessClockRowID != nil
+        activeProcessClockRowIndex = rows.lastIndex(where: {
+            $0.nativeStyle == .process && $0.processState == .running && $0.processStartedAt != nil
+        })
+        let shouldTick = canAdvanceProcessClock && activeProcessClockRowIndex != nil
         guard shouldTick else {
             processClockTimer?.invalidate()
             processClockTimer = nil
             return
         }
         guard processClockTimer == nil else { return }
-        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: ConversationProcessPresentation.elapsedRefreshInterval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshVisibleProcessElapsed() }
         }
         RunLoop.main.add(timer, forMode: .common)
         processClockTimer = timer
-    }
-
-    private var activeProcessClockRowID: String? {
-        rows.last(where: {
-            $0.nativeStyle == .process && $0.processState == .running && $0.processStartedAt != nil
-        })?.id
     }
 
     var isProcessClockScheduled: Bool { processClockTimer != nil }
@@ -228,14 +226,10 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         guard canAdvanceProcessClock, let tableView,
               tableView.window != nil, !tableView.isHiddenOrHasHiddenAncestor else { return }
         let visible = tableView.rows(in: tableView.visibleRect)
-        guard visible.location != NSNotFound, visible.location < rows.count,
-              let activeID = activeProcessClockRowID else { return }
-        for index in visible.location..<min(rows.count, visible.location + visible.length) {
-            let row = rows[index]
-            guard row.id == activeID else { continue }
-            (tableView.view(atColumn: 0, row: index, makeIfNecessary: false)
-                as? AppKitChatRowRendering)?.refreshProcessElapsed(now: now)
-        }
+        guard visible.location != NSNotFound, let index = activeProcessClockRowIndex,
+              rows.indices.contains(index), NSLocationInRange(index, visible) else { return }
+        (tableView.view(atColumn: 0, row: index, makeIfNecessary: false)
+            as? AppKitChatRowRendering)?.refreshProcessElapsed(now: now)
     }
 
     func attach(tableView: NSTableView, scrollView: NSScrollView) {

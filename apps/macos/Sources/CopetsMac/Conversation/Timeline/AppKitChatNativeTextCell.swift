@@ -479,7 +479,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         processButton.attributedTitle = NSAttributedString(
             string: "  \(summary)    \(expanded ? "⌄" : "›")",
             attributes: [
-                .font: NSFont.systemFont(ofSize: 10.5, weight: .medium),
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium),
                 .foregroundColor: NativeTimelineCardPalette.secondaryText
             ]
         )

@@ -517,9 +517,9 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let rowHeight = harness.coordinator.tableView(harness.tableView, heightOfRow: 0)
         let scrollY = harness.scrollView.contentView.bounds.minY
         cell.refreshProcessElapsed(now: startedAt.addingTimeInterval(5))
-        XCTAssertTrue(button.attributedTitle.string.contains("Working for 5.0s"))
+        XCTAssertTrue(button.attributedTitle.string.contains("Working for 5.00s"))
         cell.refreshProcessElapsed(now: startedAt.addingTimeInterval(6))
-        XCTAssertTrue(button.attributedTitle.string.contains("Working for 6.0s"))
+        XCTAssertTrue(button.attributedTitle.string.contains("Working for 6.00s"))
         XCTAssertEqual(cell.contentConfigurationCount, configurations)
         XCTAssertEqual(harness.coordinator.tableView(harness.tableView, heightOfRow: 0), rowHeight)
         XCTAssertEqual(harness.scrollView.contentView.bounds.minY, scrollY)
@@ -529,7 +529,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let final = AppKitChatTimelineRow(
             id: "running-clock", contentRevision: 2, nativeText: "", copyText: "",
             nativeStyle: .process, title: "", metadata: "", expandableTurnId: "turn",
-            isExpanded: false, processCount: 1, processDuration: "6.0s",
+            isExpanded: false, processCount: 1, processDuration: "6.00s",
             processStartedAt: startedAt, processState: .completed
         )
         harness.coordinator.apply(rows: [final])
@@ -554,7 +554,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let originalTitle = button.attributedTitle.string
         let originalConfigurations = cell.contentConfigurationCount
         harness.coordinator.setProcessClockEnabled(true)
-        try await Task.sleep(for: .milliseconds(1_250))
+        try await Task.sleep(for: .milliseconds(180))
         XCTAssertNotEqual(button.attributedTitle.string, originalTitle)
         XCTAssertEqual(cell.contentConfigurationCount, originalConfigurations)
         harness.coordinator.setProcessClockEnabled(false)
