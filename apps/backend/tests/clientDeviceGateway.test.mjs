@@ -129,6 +129,7 @@ test("gateway is disabled by default and always disabled in preview", async () =
 test("real TLS route boundary and authenticated local approval", async () => {
   const f = await fixture();
   const approvalCalls = [];
+  const reliableCalls = [];
   const worktreeCalls = [];
   const usageReads = [];
   const avatarPath = join(f.dir, "avatar.png");
@@ -176,6 +177,11 @@ test("real TLS route boundary and authenticated local approval", async () => {
     },
     command(identity, sessionId, kind, input) {
       return { schemaVersion: 1, sessionId, kind, requestId: input.requestId, status: "dispatching" };
+    },
+    reliableMessage(identity, sessionId, input, revalidate) {
+      assert.equal(revalidate().deviceId, identity.deviceId);
+      reliableCalls.push(input);
+      return { schemaVersion: 1, sessionId, kind: "send", requestId: input.requestId, status: "accepted" };
     },
     receipt(identity, requestId) { return { requestId, deviceId: identity.deviceId }; },
     capabilities() { return { schemaVersion: 1 }; },
@@ -265,6 +271,14 @@ test("real TLS route boundary and authenticated local approval", async () => {
     await call("/internal/client-devices/approve", { local: true, token, method: "POST", value: { pairingId: invitation.pairingId, approved: true } });
     const creds = (await call("/client/v1/pairing/exchange", { method: "POST", value: claim })).body;
     assert.equal((await call("/client/v1/me", { token: creds.accessToken })).body.deviceId, creds.deviceId);
+    const reliableRoute = "/client/v1/sessions/session%3Aone/message-deliveries";
+    assert.equal((await call(reliableRoute, { method: "POST", value: {} })).status, 401);
+    const reliable = await call(reliableRoute, { token: creds.accessToken, method: "POST",
+      value: { schemaVersion: 1, requestId: "reliable_tls_request", createdAt: new Date().toISOString(), text: "hello" } });
+    assert.equal(reliable.status, 202);
+    assert.equal(reliable.body.status, "accepted");
+    assert.equal(reliableCalls.length, 1);
+    assert.equal((await call(`${reliableRoute}?unsafe=1`, { token: creds.accessToken, method: "POST", value: {} })).status, 403);
     assert.equal((await call("/client/v1/works?limit=1")).status, 401);
     for (const kind of ["works", "tasks", "sessions"]) {
       const page = await call(`/client/v1/${kind}?limit=1`, { token: creds.accessToken });

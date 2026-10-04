@@ -246,6 +246,10 @@ public struct ClientCommandReceipt: Decodable, Sendable {
     public let entityResult: ClientEntityCommandResult?
 }
 public struct ClientSessionCapabilities: Decodable, Sendable {
+    public struct ReliableMessages: Decodable, Sendable {
+        public let version: Int
+        public let maximumAgeSeconds: Int
+    }
     public struct Action: Decodable, Sendable {
         public let available: Bool
         public let reason: String?
@@ -258,6 +262,7 @@ public struct ClientSessionCapabilities: Decodable, Sendable {
     public let composer: Bool?
     public let sendImages: Bool?
     public let sendMentions: Bool?
+    public let reliableMessages: ReliableMessages?
     public let scheduleMessage: Bool?
     public let createTask: Action?
     public let collaborationConfirmation: Action?
@@ -369,19 +374,27 @@ public struct ClientMessageSchedule: Encodable, Sendable {
     }
 }
 
-public struct ClientDraftImage: Encodable, Sendable, Identifiable {
+public struct ClientDraftImage: Codable, Sendable, Identifiable {
     public let id: UUID
     public let fileName: String
     public let data: Data
     public init(fileName: String, data: Data) { id = UUID(); self.fileName = fileName; self.data = data }
     enum CodingKeys: String, CodingKey { case fileName, dataBase64 }
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let encoded = try container.decode(String.self, forKey: .dataBase64)
+        guard let data = Data(base64Encoded: encoded) else {
+            throw DecodingError.dataCorruptedError(forKey: .dataBase64, in: container, debugDescription: "Invalid image")
+        }
+        self.init(fileName: try container.decode(String.self, forKey: .fileName), data: data)
+    }
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(fileName, forKey: .fileName)
         try container.encode(data.base64EncodedString(), forKey: .dataBase64)
     }
 }
-public struct ClientDraftMention: Encodable, Sendable, Identifiable {
+public struct ClientDraftMention: Codable, Equatable, Sendable, Identifiable {
     public var id: String { targetType + ":" + targetId }
     public let targetType: String
     public let targetId: String
@@ -476,6 +489,20 @@ public struct ClientSessionAPI: Sendable {
     }
     public func stop(sessionId: String, requestId: String) async throws -> ClientCommandReceipt {
         try await command(sessionId: sessionId, route: "stop", body: ["requestId": requestId])
+    }
+    public func deliver(sessionId: String, requestId: String, createdAt: String, text: String,
+                        images: [ClientDraftImage] = [], mentions: [ClientDraftMention] = []) async throws -> ClientCommandReceipt {
+        struct Body: Encodable {
+            let schemaVersion = 1
+            let requestId: String
+            let createdAt: String
+            let text: String
+            let images: [ClientDraftImage]?
+            let mentions: [ClientDraftMention]?
+        }
+        return try await command(sessionId: sessionId, route: "message-deliveries", body: Body(
+            requestId: requestId, createdAt: createdAt, text: text,
+            images: images.isEmpty ? nil : images, mentions: mentions.isEmpty ? nil : mentions))
     }
     public func respondToApproval(sessionId: String, itemId: String, optionId: String) async throws -> ClientApprovalResponse {
         struct Body: Encodable { let itemId: String; let optionId: String }

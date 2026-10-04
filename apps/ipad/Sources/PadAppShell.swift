@@ -94,6 +94,10 @@ struct PadAppShell: View {
         // Task only changes the local timeline projection; it must never tear
         // down the connection and request another bootstrap snapshot.
         .task { await connection.monitorNetwork() }
+        .task(id: scenePhase == .active ? workspace.deliveryKey(connection) : nil) {
+            guard scenePhase == .active else { return }
+            await workspace.runMessageDelivery(connection)
+        }
         .task(id: connection.recoveryRevision) {
             guard connection.networkAvailable, connection.recoveryBlockedMessage == nil else {
                 workspace.prepareForegroundRealtime()

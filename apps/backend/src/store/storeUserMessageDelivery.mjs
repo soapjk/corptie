@@ -15,6 +15,20 @@ export function createUserMessageDelivery(store, {
   createdAt = createdAtFromOrNow()
 }) {
   return store.runInTransaction(() => {
+    if (source.clientReceipt) {
+      const receipt = source.clientReceipt;
+      store.db.run(`INSERT INTO client_message_receipts
+        (device_id, request_id, session_id, payload_hash, accepted_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      [receipt.deviceId, receipt.requestId, sessionId, receipt.payloadHash, receipt.acceptedAt, receipt.expiresAt]);
+      // Transport audit data is private; never project it into ordinary messages.
+      source = { ...source };
+      delete source.clientReceipt;
+      // Millisecond collisions must not let task-ID lexical order reorder
+      // consecutive instructions admitted by the reliable sender.
+      const last = store.selectOne("SELECT MAX(created_at) AS timestamp FROM agent_operations WHERE session_id=?", [sessionId]);
+      const previous = Date.parse(last?.timestamp);
+      createdAt = new Date(Math.max(Date.parse(createdAt), Number.isFinite(previous) ? previous + 1 : 0)).toISOString();
+    }
     const { inserted, delivery: existing } = store.messageDeliveryRepository.insertUserMessageDelivery({
       deliveryId, messageId, sessionId, binding, source, createdAt
     });
