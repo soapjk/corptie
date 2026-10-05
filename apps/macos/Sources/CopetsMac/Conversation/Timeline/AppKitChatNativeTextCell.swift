@@ -451,7 +451,9 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
                 cardView.layer?.borderColor = NativeTimelineCardPalette.userBorder.cgColor
             case .agent:
                 cardView.layer?.borderWidth = 0
-                cardView.layer?.backgroundColor = NativeTimelineCardPalette.agentBackground.cgColor
+                cardView.layer?.backgroundColor = (row.isCommentary
+                    ? MessageTextCardPalette.commentaryNativeBackground
+                    : NativeTimelineCardPalette.agentBackground).cgColor
                 cardView.layer?.borderColor = NSColor.black.withAlphaComponent(0.08).cgColor
             case .process:
                 cardView.layer?.borderWidth = 0

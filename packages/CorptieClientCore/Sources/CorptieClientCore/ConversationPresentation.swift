@@ -14,6 +14,11 @@ public enum ConversationPresentationKind: String, Equatable, Sendable {
     case executionPlan
     case unknown
 
+    public static func isCommentary(type: String, presentationRole: String?) -> Bool {
+        resolve(type: type, presentationRole: presentationRole) == .agentMessage
+            && presentationRole?.lowercased() == "commentary"
+    }
+
     public static func resolve(type: String, presentationRole: String?) -> Self {
         switch presentationRole?.lowercased() {
         case "collaboration_confirmation": return .collaborationConfirmation

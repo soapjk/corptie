@@ -30,6 +30,7 @@ public enum MessageTextCardPalette {
     static let darkUserBackground = RGB(red: 0.15, green: 0.20, blue: 0.29)
     static let lightUserForeground = RGB(red: 0.16, green: 0.24, blue: 0.40)
     static let darkUserForeground = RGB(red: 0.90, green: 0.94, blue: 0.99)
+    static let commentaryRGB = RGB(red: 0.975, green: 0.955, blue: 0.915)
 
     static func contrastRatio(foreground: RGB, background: RGB) -> Double {
         let lighter = max(foreground.relativeLuminance, background.relativeLuminance)
@@ -44,6 +45,9 @@ public enum MessageTextCardPalette {
     public static let userNativeForeground = NSColor(name: nil) { appearance in
         nativeColor(for: appearance, light: lightUserForeground, dark: darkUserForeground)
     }
+    public static let commentaryNativeBackground = NSColor(
+        calibratedRed: commentaryRGB.red, green: commentaryRGB.green, blue: commentaryRGB.blue, alpha: 1)
+    public static let commentaryBackground = Color(nsColor: commentaryNativeBackground)
 
     private static func nativeColor(for appearance: NSAppearance, light: RGB, dark: RGB) -> NSColor {
         let rgb = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
@@ -59,6 +63,9 @@ public enum MessageTextCardPalette {
     public static let userNativeForeground = UIColor { traits in
         nativeColor(for: traits, light: lightUserForeground, dark: darkUserForeground)
     }
+    public static let commentaryNativeBackground = UIColor(
+        red: commentaryRGB.red, green: commentaryRGB.green, blue: commentaryRGB.blue, alpha: 1)
+    public static let commentaryBackground = Color(uiColor: commentaryNativeBackground)
 
     private static func nativeColor(for traits: UITraitCollection, light: RGB, dark: RGB) -> UIColor {
         let rgb = traits.userInterfaceStyle == .dark ? dark : light
@@ -90,7 +97,7 @@ public struct MessageTextCardMenuConfiguration {
 /// measurement, link handling and clipboard access are injected platform leaves.
 /// No workspace observation, network calls, timers or implicit animations.
 public struct MessageTextCard<Content: View>: View {
-    public enum Role: Sendable { case user, agent }
+    public enum Role: Sendable { case user, agent, commentary }
     private let role: Role
     private let messageID: String
     private let timestamp: String
@@ -248,8 +255,11 @@ public struct MessageTextCard<Content: View>: View {
     }
 
     private var background: Color {
-        role == .user ? MessageTextCardPalette.userBackground
-            : Color(red: 0.952, green: 0.961, blue: 0.941)
+        switch role {
+        case .user: MessageTextCardPalette.userBackground
+        case .commentary: MessageTextCardPalette.commentaryBackground
+        case .agent: Color(red: 0.952, green: 0.961, blue: 0.941)
+        }
     }
     private func statusColor(_ tone: UserMessageStatusPresentation.Tone) -> Color {
         switch tone {

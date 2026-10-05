@@ -5,11 +5,12 @@ import Testing
 struct ConversationTimelineTests {
     private func message(_ id: String, _ type: String, role: String? = nil,
                          turn: String? = "turn", status: String = "running",
-                         date: String? = nil) throws -> ClientMessage {
+                         date: String? = nil, direction: String? = nil) throws -> ClientMessage {
         var value: [String: Any] = ["id": id, "type": type, "text": id, "turnStatus": status]
         value["turnId"] = turn
         value["presentationRole"] = role
         value["createdAt"] = date
+        value["collaborationDirection"] = direction
         return try JSONDecoder().decode(ClientMessage.self, from: JSONSerialization.data(withJSONObject: value))
     }
 
@@ -133,5 +134,85 @@ struct ConversationTimelineTests {
         #expect(p2Items[0].processStartedAt == "2026-09-19T00:00:05Z")
         #expect(p2Items[0].processEndedAt == "2026-09-19T00:00:06Z")
         #expect(ConversationProcessPresentation.state(for: p2Items) == .completed)
+    }
+
+    @Test(arguments: ["userMessage", "agentMessage"])
+    func outboundCollaborationSplitsActiveProcessWithoutCompletingProviderTurn(transportType: String) throws {
+        let items = try [message("u", "userMessage", date: "2026-10-05T00:00:00Z"),
+            message("t1", "commandExecution", date: "2026-10-05T00:00:01Z"),
+            message("sent", transportType, role: "collaboration", turn: "session-channel-message:sent",
+                    status: "completed", date: "2026-10-05T00:00:02Z", direction: "outbound"),
+            message("t2", "mcpToolCall", date: "2026-10-05T00:00:03Z")]
+        let prefix = ConversationTimeline.makeEntries(from: Array(items.prefix(3)))
+        let entries = ConversationTimeline.makeEntries(from: items)
+        #expect(prefix.map(\.id) == ["message:u", "process:turn", "message:sent"])
+        #expect(entries.map(\.id) == prefix.map(\.id) + ["process:turn:process-segment:1"])
+        guard case let .process(_, before) = entries[1].kind,
+              case let .message(sent) = entries[2].kind,
+              case let .process(_, after) = entries[3].kind else {
+            Issue.record("Missing collaboration boundary"); return
+        }
+        #expect(before.map(\.id) == ["t1"])
+        #expect(after.map(\.id) == ["t2"])
+        #expect(sent.turnId == "session-channel-message:sent")
+        #expect(before.first?.processStartedAt == "2026-10-05T00:00:00Z")
+        #expect(before.first?.processEndedAt == "2026-10-05T00:00:01Z")
+        #expect(ConversationProcessPresentation.state(for: before) == .completed)
+        #expect(after.first?.processStartedAt == "2026-10-05T00:00:03Z")
+        #expect(after.first?.processEndedAt == nil)
+        #expect(ConversationProcessPresentation.state(for: after) == .running)
+    }
+
+    @Test(arguments: ["running", "completed"])
+    func queuedUserMessageDoesNotStealOutboundCollaborationFromExecutingTurn(status: String) throws {
+        let entries = ConversationTimeline.makeEntries(from: try [
+            message("u1", "userMessage", turn: "one", status: status), message("t1", "mcpToolCall", turn: "one", status: status),
+            message("u2", "userMessage", turn: "two"),
+            message("sent", "userMessage", role: "collaboration", turn: "channel:sent", status: "completed", direction: "outbound"),
+            message("t2", "mcpToolCall", turn: "one", status: status),
+            message("a", "agentMessage", role: "final_answer", turn: "one", status: "completed")])
+        #expect(entries.map(\.id) == ["message:u1", "process:one", "message:sent",
+            "process:one:process-segment:1", "message:a", "message:u2"])
+    }
+
+    @Test func completedHistoryRetainsTheSameCollaborationBoundaryAsLiveExecution() throws {
+        let items = try [message("u", "userMessage", status: "completed"),
+            message("t1", "mcpToolCall", status: "completed"),
+            message("c", "agentMessage", role: "commentary", status: "completed"),
+            message("sent", "userMessage", role: "collaboration", turn: "channel:sent", status: "completed", direction: "outbound"),
+            message("t2", "mcpToolCall", status: "completed"),
+            message("a", "agentMessage", role: "final_answer", status: "completed")]
+        #expect(ConversationTimeline.makeEntries(from: items).map(\.id) == [
+            "message:u", "process:turn", "message:c", "message:sent", "process:turn:process-segment:1", "message:a"])
+    }
+
+    @Test func inboundAndPostCompletionCollaborationRemainIndependent() throws {
+        let items = try [message("u", "userMessage"), message("t", "mcpToolCall"),
+            message("a", "agentMessage", role: "final_answer", status: "completed"),
+            message("sent", "userMessage", role: "collaboration", turn: "channel:sent", status: "completed", direction: "outbound"),
+            message("received", "userMessage", role: "collaboration", turn: "inbound", direction: "inbound"),
+            message("reply", "agentMessage", role: "final_answer", turn: "inbound", status: "completed")]
+        #expect(ConversationTimeline.makeEntries(from: items).map(\.id) == [
+            "message:u", "process:turn", "message:a", "message:sent", "message:received", "message:reply"])
+    }
+
+    @Test func confirmationDoesNotEraseCommentaryOrToolHistory() throws {
+        let entries = ConversationTimeline.makeEntries(from: try [message("u", "userMessage"),
+            message("t1", "mcpToolCall"), message("c", "agentMessage", role: "commentary"),
+            message("confirm", "collaborationConfirmation", role: "collaboration_confirmation", status: "completed"),
+            message("t2", "commandExecution")])
+        #expect(entries.map(\.id) == ["message:u", "process:turn", "message:c", "message:confirm",
+                                     "process:turn:process-segment:1"])
+        guard case let .process(_, after) = entries.last?.kind else {
+            Issue.record("Missing continuing process"); return
+        }
+        #expect(ConversationProcessPresentation.state(for: after) == .running)
+    }
+
+    @Test func commentaryMeaningDoesNotDependOnProviderOrTurnCompletion() {
+        #expect(ConversationPresentationKind.isCommentary(type: "agentMessage", presentationRole: "commentary"))
+        #expect(!ConversationPresentationKind.isCommentary(type: "agentMessage", presentationRole: "final_answer"))
+        #expect(!ConversationPresentationKind.isCommentary(type: "agentMessage", presentationRole: nil))
+        #expect(!ConversationPresentationKind.isCommentary(type: "userMessage", presentationRole: "commentary"))
     }
 }

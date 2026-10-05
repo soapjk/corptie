@@ -196,6 +196,8 @@ struct ConversationNativeRowBuilder {
         if row.nativeStyle == .process { row.processLanguageCode = AppLanguageController.shared.languageCode }
         row.forkUnavailableReason = forkUnavailableReason(for: entry)
         if case .message(let item) = entry.kind {
+            row.isCommentary = ConversationPresentationKind.isCommentary(
+                type: item.type, presentationRole: item.presentationRole)
             if item.type == "userInput", item.userInput?.schemaVersion == 1 {
                 row.userInput = item.userInput
                 row.userInputItemID = item.id
