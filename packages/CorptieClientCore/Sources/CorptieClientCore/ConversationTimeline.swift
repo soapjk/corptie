@@ -10,8 +10,13 @@ public protocol ConversationTimelineItem: Sendable {
     var text: String { get }
     var createdAt: String? { get }
     var presentationRole: String? { get }
+    var collaborationDirection: String? { get }
     var processStartedAt: String? { get set }
     var processEndedAt: String? { get set }
+}
+
+public extension ConversationTimelineItem {
+    var collaborationDirection: String? { nil }
 }
 
 public struct ConversationEntry<Item: ConversationTimelineItem>: Identifiable, Sendable {
@@ -57,6 +62,7 @@ public enum ConversationTimeline {
         var items: [Item] = []
         var hasNonUserMessage: Bool = false
         var isTerminal: Bool = false
+        var hasFinalReply: Bool = false
     }
 
 public static func makeEntries<Item: ConversationTimelineItem>(from items: [Item]) -> [ConversationEntry<Item>] {
@@ -65,12 +71,40 @@ public static func makeEntries<Item: ConversationTimelineItem>(from items: [Item
 
     var buckets: [TurnBucket<Item>] = []
     var openBucketIndexByTurnId: [String: Int] = [:]
+    var activeConversationBucketIndex: Int?
 
     for item in ordered {
         let turnId = item.timelineTurnID
+        let kind = ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole)
+        let isOutboundCollaboration = kind == .collaborationMessage
+            && item.collaborationDirection?.lowercased() == "outbound"
+        if isOutboundCollaboration || kind == .collaborationConfirmation {
+            // Product-owned collaboration cards have their own turn/status.
+            // Insert them into the active conversation without letting their
+            // completed delivery status complete the Provider's execution.
+            let matchingIndex = openBucketIndexByTurnId[turnId].flatMap {
+                buckets[$0].hasFinalReply ? nil : $0
+            }
+            let activeIndex = activeConversationBucketIndex.flatMap {
+                buckets[$0].hasFinalReply ? nil : $0
+            }
+            if let index = matchingIndex ?? activeIndex {
+                buckets[index].items.append(item)
+            } else {
+                buckets.append(TurnBucket(sourceTurnId: turnId, items: [item],
+                                          hasNonUserMessage: true, isTerminal: true))
+            }
+            continue
+        }
         let isUserMessage = item.type == "userMessage"
         let isTerminalItem = isTerminalTurnStatus(item.timelineTurnStatus)
             || item.presentationRole?.lowercased() == "final_answer"
+        // Completed history marks *all* turn items terminal, including steps
+        // preceding a collaboration card. Only an actual reply closes its
+        // chronological insertion window.
+        let isFinalReply = item.presentationRole?.lowercased() == "final_answer"
+            || (item.type == "agentMessage" && isTerminalItem
+                && !ConversationPresentationKind.isCommentary(type: item.type, presentationRole: item.presentationRole))
 
         if isUserMessage {
             // A new user message starts a new conversational turn if:
@@ -92,30 +126,39 @@ public static func makeEntries<Item: ConversationTimelineItem>(from items: [Item
                 if !turnId.isEmpty {
                     openBucketIndexByTurnId[turnId] = newIndex
                 }
+                if activeConversationBucketIndex.map({ buckets[$0].hasFinalReply }) ?? true {
+                    activeConversationBucketIndex = newIndex
+                }
             }
         } else {
             // Non-user item (agent message, tool call, plan, interaction, etc.)
             if !turnId.isEmpty, let bucketIndex = openBucketIndexByTurnId[turnId] {
+                activeConversationBucketIndex = bucketIndex
                 buckets[bucketIndex].items.append(item)
                 buckets[bucketIndex].hasNonUserMessage = true
+                buckets[bucketIndex].hasFinalReply = buckets[bucketIndex].hasFinalReply || isFinalReply
                 if isTerminalItem {
                     buckets[bucketIndex].isTerminal = true
                 }
             } else if let lastIndex = buckets.indices.last, turnId.isEmpty || buckets[lastIndex].sourceTurnId.isEmpty {
+                activeConversationBucketIndex = lastIndex
                 // Item without turnId, or matching empty turnId of last bucket
                 buckets[lastIndex].items.append(item)
                 buckets[lastIndex].hasNonUserMessage = true
+                buckets[lastIndex].hasFinalReply = buckets[lastIndex].hasFinalReply || isFinalReply
                 if isTerminalItem {
                     buckets[lastIndex].isTerminal = true
                 }
             } else {
                 // Orphan non-user item with unseen turnId: start a new bucket
                 let newIndex = buckets.count
+                activeConversationBucketIndex = newIndex
                 buckets.append(TurnBucket(
                     sourceTurnId: turnId,
                     items: [item],
                     hasNonUserMessage: true,
-                    isTerminal: isTerminalItem
+                    isTerminal: isTerminalItem,
+                    hasFinalReply: isFinalReply
                 ))
                 if !turnId.isEmpty {
                     openBucketIndexByTurnId[turnId] = newIndex
@@ -266,10 +309,8 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
     _ items: [Item],
     displayTurnId: String? = nil
 ) -> [ConversationEntry<Item>] {
-    let userMessages = items.filter { $0.type == "userMessage" }
-    if let confirmation = items.last(where: { $0.type == "collaborationConfirmation" }) {
-        return userMessages.map { ConversationEntry<Item>(kind: .message($0)) }
-            + [ConversationEntry<Item>(kind: .message(confirmation))]
+    let userMessages = items.filter {
+        ConversationPresentationKind.resolve(type: $0.type, presentationRole: $0.presentationRole) == .userMessage
     }
 
     var entries: [ConversationEntry<Item>] = []
@@ -279,8 +320,13 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
     let baseTurnId = displayTurnId ?? items.first?.timelineTurnID ?? ""
     let turnStartedAt = userMessages.compactMap(\.createdAt).first
         ?? items.compactMap(\.createdAt).first
-    let isTerminalTurn = items.contains(where: { isTerminalTurnStatus($0.timelineTurnStatus) })
+    let isTerminalTurn = items.contains(where: {
+        let kind = ConversationPresentationKind.resolve(type: $0.type, presentationRole: $0.presentationRole)
+        return kind != .collaborationMessage && kind != .collaborationConfirmation
+            && isTerminalTurnStatus($0.timelineTurnStatus)
+    })
     let turnEndedAt = items.reversed().compactMap(\.createdAt).first
+    let lastProcessIndex = items.lastIndex(where: { isDetailProcessItem($0) })
 
     func flushProcessBuffer(isLastInTurn: Bool) {
         guard !processBuffer.isEmpty else { return }
@@ -314,15 +360,16 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
         if isDetailProcessItem(item) {
             processBuffer.append(item)
         } else if item.type == "agentMessage" {
-            if item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole) == .agentMessage {
                 continue
             }
-            let hasMoreProcessItems = items[(index + 1)...].contains(where: { isDetailProcessItem($0) })
+            let hasMoreProcessItems = lastProcessIndex.map { $0 > index } ?? false
             flushProcessBuffer(isLastInTurn: !hasMoreProcessItems)
             entries.append(ConversationEntry<Item>(kind: .message(item)))
         } else {
             // userMessage, plan, executionPlan, userInput, choice, approval, etc.
-            let hasMoreProcessItems = items[(index + 1)...].contains(where: { isDetailProcessItem($0) })
+            let hasMoreProcessItems = lastProcessIndex.map { $0 > index } ?? false
             flushProcessBuffer(isLastInTurn: !hasMoreProcessItems)
             entries.append(ConversationEntry<Item>(kind: .message(item)))
         }
@@ -341,6 +388,8 @@ private static func isTerminalTurnStatus(_ status: String) -> Bool {
 }
 
 private static func isDetailProcessItem<Item: ConversationTimelineItem>(_ item: Item) -> Bool {
+    let kind = ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole)
+    if kind == .collaborationMessage || kind == .collaborationConfirmation { return false }
     switch item.type {
     // These are provider execution events, not authored conversation replies.
     // Keep the mapping explicit: an unfamiliar event (or an interaction/error)

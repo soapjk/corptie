@@ -193,7 +193,7 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
 
         XCTAssertEqual(processItems.first?.processStartedAt, user.createdAt)
         XCTAssertEqual(processItems.first?.processEndedAt, final.createdAt)
-        XCTAssertEqual(executionProcessDurationText(for: processItems), "12s")
+        XCTAssertEqual(executionProcessDurationText(for: processItems), "12.00s")
     }
 
     func testStoredTimelineJSONProjectsCommentaryAsDirectMessageAndToolInsideProcess() throws {
