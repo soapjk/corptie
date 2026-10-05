@@ -17,7 +17,8 @@ export function reliableReceipt(store, identity, requestId) {
   const row = store.selectOne("SELECT * FROM client_message_receipts WHERE device_id=? AND request_id=?",
     [identity.deviceId, requestId]);
   return row ? { schemaVersion: 1, requestId, sessionId: row.session_id, kind: "send",
-    status: "accepted", errorCode: null, updatedAt: row.accepted_at } : null;
+    status: "accepted", errorCode: null, updatedAt: row.accepted_at,
+    messageId: `client:${createHash("sha256").update(`${identity.deviceId}:${requestId}`).digest("hex")}` } : null;
 }
 
 /** Only ordinary chat: no schedule, slash command, or implicit authorization reply. */
