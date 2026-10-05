@@ -12,6 +12,30 @@ test("LAN selection excludes public, VPN and loopback addresses", () => {
   assert.deepEqual(lanAddresses({ en0: [value("192.168.1.2"), value("8.8.8.8")], utun0: [value("10.0.0.2")], lo0: [value("127.0.0.1")] }), ["192.168.1.2"]);
 });
 
+test("cloud registration is local-admin-only and independent of LAN availability", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-setup-test-"));
+  const setup = await createDeviceSetup({ directory, addresses: () => [] });
+  const cloudDeviceId = "11111111-1111-4111-8111-111111111111";
+  const call = async (headers, address = "127.0.0.1") => {
+    const response = { writeHead(status) { this.status = status; }, end(value) { this.value = JSON.parse(value); } };
+    const request = { method: "POST", url: "/internal/client-devices/cloud-register",
+      headers: { "content-type": "application/json", ...headers }, socket: { remoteAddress: address },
+      async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify({ cloudDeviceId, name: "iPhone" })); } };
+    await setup.handleAdmin(request, response); return response;
+  };
+  try {
+    const headers = { authorization: `Bearer ${setup.authority.adminToken}` };
+    assert.equal((await call({})).status, 403);
+    assert.equal((await call(headers, "192.168.1.1")).status, 403);
+    assert.equal((await call({ ...headers, origin: "https://evil.invalid" })).status, 403);
+    const first = await call(headers);
+    assert.equal(first.status, 200);
+    assert.equal((await call(headers)).value.deviceId, first.value.deviceId);
+    assert.equal(setup.state, "disabled");
+    assert.equal(setup.authority.authenticateCloudRelayPeer(cloudDeviceId).deviceId, first.value.deviceId);
+  } finally { await setup.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
 test("first use is disabled, enables real trusted TLS, restarts and disables without losing devices", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-setup-test-"));
   let setup;

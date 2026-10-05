@@ -43,7 +43,7 @@ extension PadWorkspace {
     }
 
     private func projectReliableMessage(_ message: ReliableOutgoingMessage, title: String) {
-        let id = message.messageID
+        let id = message.authoritativeMessageID ?? message.messageID
         let sessionID = message.displaySessionID
         // Do not reinsert authoritative messages on every retry/foreground resume.
         let authoritative = hasAuthoritativeMessage(id, sessionID: sessionID)
@@ -89,6 +89,21 @@ extension PadWorkspace {
         guard !serverID.isEmpty, let deviceID else { return }
         let generation = deliveryKey(connection)
         deliveryIssues = [:]
+        let acknowledgementScope = "\(serverID)|\(deviceID)"
+        if restoredAcknowledgementScope != acknowledgementScope {
+            do {
+                for acknowledgement in try await messageOutbox.acceptedIdentities()
+                    where acknowledgement.serverID == serverID && acknowledgement.deviceID == deviceID {
+                    guard !Task.isCancelled, deliveryKey(connection) == generation else { return }
+                    acknowledgeOutgoing(localID: acknowledgement.localMessageID, messageID: acknowledgement.messageID,
+                        sessionID: acknowledgement.sessionID)
+                }
+                restoredAcknowledgementScope = acknowledgementScope
+            } catch {
+                status = "发送回执读取失败，本地消息已保留。请检查存储空间后重试。"
+                return
+            }
+        }
         while !Task.isCancelled, deliveryKey(connection) == generation {
             let records: [ReliableOutgoingMessage]
             do { records = try await messageOutbox.all().filter { $0.serverID == serverID && $0.deviceID == deviceID } }
@@ -97,10 +112,19 @@ extension PadWorkspace {
                 return
             }
             var blockedSessions = Set<String>()
+            var retryScheduled = false
             var nextWake = Date().addingTimeInterval(30)
             for var message in records {
                 guard !Task.isCancelled, deliveryKey(connection) == generation else { return }
                 if message.state == .accepted {
+                    guard let messageID = message.authoritativeMessageID else {
+                        projectReliableMessage(message, title: "旧请求需核对；不会自动重发")
+                        deliveryIssues[message.displaySessionID] = message.id
+                        blockedSessions.insert(message.sessionID)
+                        continue
+                    }
+                    do { try await messageOutbox.acknowledge(message, messageID: messageID) } catch { return }
+                    acknowledgeOutgoing(localID: message.messageID, messageID: messageID, sessionID: message.displaySessionID)
                     projectReliableMessage(message, title: "后端已接收")
                     // Durable backend ownership releases local attachment storage.
                     do { try await messageOutbox.remove(message.id) } catch { return }
@@ -132,26 +156,61 @@ extension PadWorkspace {
                     continue
                 }
                 if message.nextAttemptAt > Date() && message.state != .blocked {
+                    retryScheduled = true
                     nextWake = min(nextWake, message.nextAttemptAt)
                     projectReliableMessage(message, title: "等待重试，将自动发送")
                     continue
                 }
                 projectReliableMessage(message, title: "发送中")
                 do {
-                    let api = ClientSessionAPI(transport: try await connection.transport())
+                    let transport = try await connection.transport()
+                    let api = ClientSessionAPI(transport: transport)
+                    guard !Task.isCancelled, deliveryKey(connection) == generation else { return }
+                    let identityScope = "\(serverID)|\(deviceID)|\(connection.recoveryRevision)"
+                    if validatedDeliveryIdentityScope != identityScope {
+                        let request = try transport.endpoint.request(path: ["client", "v1", "me"])
+                        let (data, _) = try await transport.data(for: request)
+                        struct Identity: Decodable { let deviceId: String; let serverId: String }
+                        let identity = try JSONDecoder().decode(Identity.self, from: data)
+                        guard identity.deviceId == deviceID, identity.serverId == serverID else {
+                            throw ClientServiceFailure(statusCode: 409, code: "MESSAGE_IDENTITY_UNAVAILABLE")
+                        }
+                        validatedDeliveryIdentityScope = identityScope
+                    }
                     guard !Task.isCancelled, deliveryKey(connection) == generation else { return }
                     // Negotiated before enqueue; the immutable v1 endpoint is
                     // safe to retry directly. An extra capabilities read adds
                     // an RTT and can hide an accepted receipt after Session deletion.
-                    let receipt = try await api.deliver(sessionId: message.sessionID, requestId: message.id,
-                        createdAt: message.createdAt, text: message.text, images: message.images, mentions: message.mentions)
+                    let receipt: ClientCommandReceipt
+                    if message.messageIdentityVersion != 2 {
+                        // No blind replay across the old shared relay identity.
+                        // Query only; absence cannot prove a previous request failed.
+                        do {
+                            receipt = try await api.receipt(requestId: message.id)
+                            if receipt.status != "accepted" {
+                                throw ClientServiceFailure(statusCode: 409, code: "LEGACY_MESSAGE_REQUIRES_RECONCILIATION")
+                            }
+                        }
+                        catch let failure as ClientServiceFailure where failure.statusCode == 404 {
+                            throw ClientServiceFailure(statusCode: 409, code: "LEGACY_MESSAGE_REQUIRES_RECONCILIATION")
+                        }
+                    } else {
+                        receipt = try await api.deliver(sessionId: message.sessionID, requestId: message.id,
+                            createdAt: message.createdAt, text: message.text, images: message.images, mentions: message.mentions)
+                    }
                     guard !Task.isCancelled, deliveryKey(connection) == generation else { return }
                     guard receipt.requestId == message.id, receipt.sessionId == message.sessionID,
                           receipt.kind == "send", receipt.status == "accepted" else {
                         throw ClientConnectionError.invalidResponse
                     }
+                    guard let messageID = receipt.messageId, messageID.hasPrefix("client:"), messageID.count <= 200 else {
+                        throw ClientServiceFailure(statusCode: 409, code: "MESSAGE_IDENTITY_UNAVAILABLE")
+                    }
                     message.state = .accepted; message.errorCode = nil
+                    message.authoritativeMessageID = messageID
                     try await messageOutbox.save(message)
+                    try await messageOutbox.acknowledge(message, messageID: messageID)
+                    acknowledgeOutgoing(localID: message.messageID, messageID: messageID, sessionID: message.displaySessionID)
                     if deliveryIssues[message.displaySessionID] == message.id {
                         deliveryIssues.removeValue(forKey: message.displaySessionID)
                     }
@@ -165,8 +224,16 @@ extension PadWorkspace {
                 } catch is CancellationError { return }
                 catch {
                     guard !Task.isCancelled, deliveryKey(connection) == generation else { return }
+                    if message.state == .accepted {
+                        status = "后端已接收，但本地回执保存未完成。原记录已保留，稍后继续核对。"
+                        return
+                    }
                     if connection.stopRecoveryIfUnauthorized(error) {
                         message.state = .blocked; message.errorCode = "等待恢复连接授权"
+                    } else if ["MESSAGE_IDENTITY_UNAVAILABLE", "LEGACY_MESSAGE_REQUIRES_RECONCILIATION"].contains((error as? ClientServiceFailure)?.code ?? "") {
+                        message.state = .blocked
+                        message.errorCode = (error as? ClientServiceFailure)?.code == "MESSAGE_IDENTITY_UNAVAILABLE"
+                            ? "发送身份未对齐，请更新 Mac 并重新连接" : "旧请求需核对；不会自动重发"
                     } else if (error as? ClientServiceFailure)?.code == "ROUTE_NOT_AVAILABLE" {
                         message.state = .blocked; message.errorCode = "后端不支持可靠发送，请更新后端"
                     } else if Self.deliveryFailureIsPermanent(error) {
@@ -176,6 +243,7 @@ extension PadWorkspace {
                             : (error as? ClientServiceFailure)?.code ?? "请求被拒绝"
                     } else {
                         message.state = .waiting; message.attempts += 1
+                        retryScheduled = true
                         message.nextAttemptAt = Date().addingTimeInterval(Self.retryInterval(attempt: message.attempts))
                         message.errorCode = nil
                         nextWake = min(nextWake, message.nextAttemptAt)
@@ -195,7 +263,7 @@ extension PadWorkspace {
             }
             // Idle/offline workers suspend; network and foreground changes wake
             // through the root task's identity, not a high-frequency timer.
-            if !records.contains(where: { $0.state == .waiting || $0.state == .blocked })
+            if !retryScheduled
                 || !connection.networkAvailable || !connection.connected
                 || connection.recoveryBlockedMessage != nil { return }
             do { try await Task.sleep(for: .seconds(max(0.2, nextWake.timeIntervalSinceNow))) }

@@ -1,7 +1,10 @@
 import Foundation
 import CorptieClientCore
+import CorptieClientSecurity
+import OSLog
 
 extension PadWorkspace {
+    private static let realtimeLog = Logger(subsystem: "com.corptie.connection", category: "MobileRealtime")
     /// Capabilities can arrive before the timeline snapshot. They describe
     /// permission, not whether the selected conversation has any message data.
     var selectedTimelineReady: Bool {
@@ -62,6 +65,7 @@ extension PadWorkspace {
                 liveStatus = "正在连接实时更新"
                 realtimeConnected = false
                 let api = ClientEvents(transport: try await connection.transport())
+                Self.realtimeLog.info("Subscribe attempt: generation=\(generation, privacy: .public) recoveryRevision=\(connectionRevision) failures=\(failures)")
                 // The v2 stream pushes resident snapshots and subsequent
                 // deltas for every active Session. Keep it global so changing
                 // the visible Task remains a local projection operation.
@@ -75,6 +79,7 @@ extension PadWorkspace {
                     failures = 0
                     switch update {
                     case .ready:
+                        Self.realtimeLog.info("Realtime ready: generation=\(generation, privacy: .public)")
                         receivedV2Ready = true
                         realtimeConnected = true
                         realtimeReconnectFailed = false
@@ -113,9 +118,11 @@ extension PadWorkspace {
                         liveStatus = hasReceivedRealtimeState ? "实时连接正常" : "实时连接已建立，正在同步数据"
                     }
                 }
+                Self.realtimeLog.info("Realtime stream ended: generation=\(generation, privacy: .public) reason=end-of-stream")
             } catch {
                 guard !Task.isCancelled, realtimeGeneration == generation,
                       connection.recoveryRevision == connectionRevision else { return }
+                Self.realtimeLog.error("Realtime failed: generation=\(generation, privacy: .public) reason=\(ConnectionDiagnostic.failure(error), privacy: .public) pulseAgeSeconds=\(self.lastRealtimePulseAt.map { Date().timeIntervalSince($0) } ?? -1) networkAvailable=\(connection.networkAvailable)")
                 realtimeConnected = false
                 realtimePausedAt = Date()
                 if connection.stopRecoveryIfUnauthorized(error) {
@@ -134,6 +141,7 @@ extension PadWorkspace {
             }
             failures = min(failures + 1, 5)
             connection.invalidateRealtimeTransport()
+            Self.realtimeLog.info("Recovery scheduled: generation=\(generation, privacy: .public) failures=\(failures) rebuildChannel=true")
             // The first interruption is recovery, not a user-facing failure.
             if failures >= 2 { realtimeReconnectFailed = true }
             liveStatus = "连接中断，正在自动重连"

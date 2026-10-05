@@ -4,6 +4,7 @@ import Combine
 import CorptieClientCore
 import CorptieClientSecurity
 import Foundation
+import OSLog
 
 final class WebAuthenticationCallbackBridge: @unchecked Sendable {
     typealias Delivery = @MainActor @Sendable (URL?, (any Error)?) -> Void
@@ -45,6 +46,7 @@ final class WebAuthenticationCallbackBridge: @unchecked Sendable {
 
 @MainActor
 final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthenticationPresentationContextProviding {
+    private static let connectionLog = Logger(subsystem: "com.corptie.connection", category: "MacCloudRecovery")
     static let shared = CloudRemoteAccessController()
 
     @Published private(set) var signedIn = false
@@ -208,15 +210,20 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
             guard let self else { return }
             var delay = 1
             while !Task.isCancelled, self.enabled {
+                let started = ContinuousClock.now
+                var stage = "credential"
                 do {
                     let configuration = try Self.configuration()
                     let current = try await self.validCredential(configuration)
+                    stage = "directory-registration"
                     try await self.registerAndLoad(current, configuration: configuration)
+                    stage = "local-admin"
                     guard let dataRoot = BackendClient.shared.settings?.dataRoot, !dataRoot.isEmpty else {
                         throw ClientConnectionError.invalidResponse
                     }
                     let localAccessToken = try await LocalDeviceAdminClient.adminToken(dataRoot: dataRoot)
                     let key = try CloudRelayDeviceKey(rawRepresentation: current.identity.privateKey)
+                    stage = "cloud-socket-connect"
                     let next = try await CloudRelayMacAgent.connect(
                         cloudEndpoint: configuration.endpoint,
                         accessToken: current.tokens.accessToken,
@@ -229,9 +236,12 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
                     self.connected = true
                     self.status = "远程连接在线 · 通信内容端到端加密"
                     delay = 1
+                    stage = "cloud-socket-running"
+                    Self.connectionLog.info("Mac relay connected: elapsed=\(String(describing: started.duration(to: .now)), privacy: .public)")
                     try await next.run()
                 } catch is CancellationError { break }
                 catch {
+                    Self.connectionLog.error("Mac relay recovery: stage=\(stage, privacy: .public) reason=\(ConnectionDiagnostic.failure(error), privacy: .public) elapsed=\(String(describing: started.duration(to: .now)), privacy: .public) retrySeconds=\(delay)")
                     self.connected = false
                     self.agent = nil
                     self.status = "Cloud 连接中断，正在自动重连…"

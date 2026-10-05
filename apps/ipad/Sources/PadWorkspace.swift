@@ -229,7 +229,7 @@ final class PadWorkspace {
         didSet { if oldValue != selection { selectSession(from: oldValue, to: selection) } }
     }
     var messages: [ClientMessage] = [] {
-        didSet { if oldValue != messages { refreshDisplayEntries() } }
+        didSet { if oldValue != messages { reconcileAuthoritativeOutgoing(); refreshDisplayEntries() } }
     }
     var outgoingMessages: [String: [ClientMessage]] = [:] {
         didSet {
@@ -251,11 +251,47 @@ final class PadWorkspace {
     private(set) var visibleMessageLimit = 20
     var outgoingStates: [String: String] = [:]
     var outgoingRequestIDs: [String: String] = [:]
+    @ObservationIgnored var validatedDeliveryIdentityScope: String?
+    @ObservationIgnored var restoredAcknowledgementScope: String?
     var lastTimelineRevision: Int?
     var visibleMessages: [ClientMessage] {
-        Self.merge(messages, (outgoingMessages[selection ?? ""] ?? []).filter { item in
-            !messages.contains { $0.id == item.id }
+        let received = Set(messages.map(\.id))
+        return Self.merge(messages, (outgoingMessages[selection ?? ""] ?? []).filter { item in
+            !received.contains(item.id)
         })
+    }
+
+    func reconcileAuthoritativeOutgoing() {
+        guard let selection else { return }
+        let received = Set(messages.map(\.id))
+        let removed = (outgoingMessages[selection] ?? []).filter {
+            received.contains($0.id)
+        }
+        guard !removed.isEmpty else { return }
+        let ids = Set(removed.map(\.id))
+        outgoingMessages[selection]?.removeAll { ids.contains($0.id) }
+        for id in ids { outgoingStates.removeValue(forKey: id) }
+    }
+
+    func acknowledgeOutgoing(localID: String, messageID: String, sessionID: String) {
+        // Historical journal entries and duplicate ACKs must not reproject a
+        // long timeline when there is no corresponding local placeholder.
+        guard let index = outgoingMessages[sessionID]?.firstIndex(where: { $0.id == localID }) else { return }
+        var items = outgoingMessages[sessionID]!
+        let item = items[index]
+        outgoingStates.removeValue(forKey: localID)
+        if hasAuthoritativeMessage(messageID, sessionID: sessionID)
+            || items.enumerated().contains(where: { $0.offset != index && $0.element.id == messageID }) {
+            items.remove(at: index)
+        } else {
+            // Receipt identity changes must not move an earlier instruction
+            // behind later locally queued instructions.
+            if localID != messageID { items[index] = ClientMessage(id: messageID, text: item.text) }
+            outgoingStates[messageID] = "后端已接收"
+        }
+        if outgoingMessages[sessionID] != items { outgoingMessages[sessionID] = items }
+        reconcileAuthoritativeOutgoing()
+        refreshDisplayEntries()
     }
 
     private func refreshDisplayEntries() {
@@ -1173,7 +1209,12 @@ final class PadWorkspace {
             return
         }
         guard stop || ((!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty) && text.utf16.count <= 16000) else { return }
-        if !stop, slashCommand == nil, schedule == nil, capabilities?.reliableMessages?.version == 1 {
+        if !stop, slashCommand == nil, schedule == nil {
+            guard capabilities?.reliableMessages?.version == 1,
+                  capabilities?.reliableMessages?.messageIdentityVersion == 2 else {
+                status = "后端尚未提供身份一致的可靠发送，请更新 Mac 正式版并重新连接。消息仍保留在草稿中。"
+                return
+            }
             await enqueueReliableMessage(connection, sessionID: routedID, displaySessionID: id,
                 text: text, images: images, mentions: mentions, clearsDraft: suggestedReply == nil)
             return
@@ -1380,8 +1421,13 @@ final class PadWorkspace {
             }
             status = ""
             // Acceptance confirms receipt only, not model execution.
-            if let messageID = outgoingRequestIDs.removeValue(forKey: receipt.requestId), outgoingStates[messageID] != nil {
-                outgoingStates[messageID] = "Sent"
+            if let localID = outgoingRequestIDs.removeValue(forKey: receipt.requestId) {
+                if let messageID = receipt.messageId {
+                    acknowledgeOutgoing(localID: localID, messageID: messageID,
+                        sessionID: pending.draftSessionID ?? receipt.sessionId)
+                } else if outgoingStates[localID] != nil {
+                    outgoingStates[localID] = "Sent"
+                }
             }
             forgetPending()
         } else if ["rejected", "failed", "cancelled"].contains(receipt.status) {
