@@ -88,8 +88,13 @@ export class ClientDeviceGateway {
     if (request.socket.encrypted !== true
         && ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(address)
         && this.authority.checkAdmin(value)) {
+      const peer = request.headers["x-corptie-relay-cloud-device-id"];
+      if (peer !== undefined) return this.authority.authenticateCloudRelayPeer(peer);
+      // Compatibility for old Mac relays. Never accept a peer header from TLS
+      // or a paired-device credential; only the local admin is a relay authority.
       return { deviceId: "cloud-relay-connector", name: "Corptie Cloud Relay", serverId: this.authority.state.serverId };
     }
+    if (request.headers["x-corptie-relay-cloud-device-id"] !== undefined) throw deviceError("DEVICE_AUTH_REQUIRED");
     return this.authority.authenticate(value);
   }
 

@@ -451,7 +451,7 @@ export class ClientSessionAPI {
       composer: Boolean(this.composer),
       sendImages: Boolean(this.images?.available(resolved.session)),
       sendMentions: true,
-      reliableMessages: this.admitReliableMessage ? { version: 1, maximumAgeSeconds: 604800 } : null,
+      reliableMessages: this.admitReliableMessage ? { version: 1, maximumAgeSeconds: 604800, messageIdentityVersion: 2 } : null,
       scheduleMessage: Boolean(this.schedule),
       createTask: { available: Boolean(this.taskCreation) && Boolean(resolved.session.workId),
         reason: !this.taskCreation ? "CAPABILITY_UNSUPPORTED" : !resolved.session.workId ? "WORK_REQUIRED" : null },
@@ -562,6 +562,8 @@ export class ClientSessionAPI {
     return { schemaVersion: 1, requestId: row.request_id, sessionId: row.session_id, kind: row.kind,
       status: row.status === "dispatching" && !this.inFlight.has(key) ? "unknown" : row.status,
       errorCode: row.error_code, updatedAt: row.updated_at,
+      ...(row.kind === "send" && row.status === "accepted" && this.store.getMessageDelivery?.(`delivery:client:${createHash("sha256").update(key).digest("hex")}`)
+        ? { messageId: `client:${createHash("sha256").update(key).digest("hex")}` } : {}),
       ...(row.result_json ? { [row.kind === "create_task" ? "taskResult" : row.kind === "open_work_discussion" ? "discussionResult"
         : row.kind.startsWith("inspector:") ? "inspectorResult"
         : /^(task|work)_/.test(row.kind) ? "entityResult" : "commandResult"]: JSON.parse(row.result_json) } : {}) };

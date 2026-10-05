@@ -126,6 +126,7 @@ final class PadConnection {
     func applyNetworkPath(_ path: NetworkPath) {
         let previous = lastNetworkPath
         guard path != previous else { return }
+        Self.recoveryLog.info("Network path changed: available=\(path.available) interfaces=\(path.interfaces, privacy: .public)")
         lastNetworkPath = path
         networkAvailable = path.available
         networkRecoveryTask?.cancel()
@@ -157,6 +158,7 @@ final class PadConnection {
     }
 
     func invalidateRealtimeTransport() {
+        Self.recoveryLog.info("Transport invalidated: generation=\(self.connectionGeneration, privacy: .public) hadCloudClient=\(self.cloudClient != nil) recovering=\(self.cloudRecoveryTask != nil)")
         connectionGeneration = UUID()
         cloudRecoveryTask?.cancel(); cloudRecoveryTask = nil
         let previous = cloudClient
@@ -176,7 +178,7 @@ final class PadConnection {
             denied = ["INVALID_CREDENTIAL", "DEVICE_REVOKED"].contains(failure.code)
         } else { denied = false }
         if denied { recoveryBlockedMessage = "连接授权已失效，请在设置中重新登录或配对。" }
-        let code = (error as? URLError).map { "url:\($0.code.rawValue)" } ?? "transport"
+        let code = ConnectionDiagnostic.failure(error)
         Self.recoveryLog.info("Recovery failure: category=\(code, privacy: .public), authorization=\(denied, privacy: .public)")
         return denied
     }

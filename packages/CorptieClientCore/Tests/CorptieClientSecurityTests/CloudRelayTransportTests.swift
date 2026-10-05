@@ -4,6 +4,28 @@ import CorptieClientCore
 @testable import CorptieClientSecurity
 
 struct CloudRelayTransportTests {
+    @Test func diagnosticsNeverIncludeErrorDescriptionsURLsOrUnrecognizedServerText() {
+        let secret = "Bearer SECRET https://private.invalid/message?token=SECRET"
+        #expect(ConnectionDiagnostic.failure(NSError(domain: "private", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: secret])) == "unclassified")
+        #expect(ConnectionDiagnostic.failure(ClientServiceFailure(statusCode: 502, code: secret)) == "http:502:other")
+        #expect(ConnectionDiagnostic.failure(URLError(.timedOut)) == "url:-1001")
+        #expect(ConnectionDiagnostic.failure(CancellationError()) == "cancelled")
+        #expect(ConnectionDiagnostic.failure(CloudRelayTransportError.disconnected) == "relay:disconnected")
+    }
+    @Test func localRelayIdentityComesOnlyFromAuthenticatedPeerNotMobileHeaders() throws {
+        let endpoint = try BackendEndpoint(URL(string: "http://127.0.0.1:4311")!)
+        let peer = UUID()
+        let message = CloudRelayApplicationMessage.request(id: UUID(), method: "POST",
+            path: "/client/v1/sessions/session/message-deliveries", headers: [
+                "X-Corptie-Relay-Cloud-Device-Id": UUID().uuidString,
+                "Authorization": "Bearer forged", "Content-Type": "application/json"
+            ], body: Data("{}".utf8))
+        let request = try CloudRelayMacAgent.localRequest(message, peerID: peer, endpoint: endpoint)
+        #expect(request.value(forHTTPHeaderField: "X-Corptie-Relay-Cloud-Device-Id") == peer.uuidString.lowercased())
+        #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+    }
     @Test func unansweredRelayRequestHasDeadlineAndDoesNotReplayMutation() async throws {
         let endpoint = try BackendEndpoint(URL(string: "http://127.0.0.1")!)
         let channel = SilentRelayChannel(sendHead: false)

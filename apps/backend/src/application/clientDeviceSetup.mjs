@@ -137,6 +137,9 @@ export class ClientDeviceSetup extends ClientDeviceGateway {
           address: this.address, certificate: this.certificate, ...credentials
         });
       }
+      if (request.method === "POST" && request.url === "/internal/client-devices/cloud-register") {
+        return reply(response, 200, await this.authority.registerCloudRelayPeer(await readBody(request)));
+      }
       if (request.method === "POST" && request.url === "/internal/client-devices/cloud-sync") {
         const input = await readBody(request);
         if (!Array.isArray(input.activeCloudDeviceIds) || input.activeCloudDeviceIds.some(id => typeof id !== "string")) {

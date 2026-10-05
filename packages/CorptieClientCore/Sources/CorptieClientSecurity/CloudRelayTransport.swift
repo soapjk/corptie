@@ -1,5 +1,26 @@
 import Foundation
 import CorptieClientCore
+import OSLog
+
+/// Deliberately excludes localized descriptions, URLs, bodies and credentials.
+public enum ConnectionDiagnostic {
+    public static func failure(_ error: any Error) -> String {
+        if error is CancellationError { return "cancelled" }
+        if let error = error as? URLError { return "url:\(error.code.rawValue)" }
+        if let error = error as? CloudRelayTransportError { return "relay:\(error)" }
+        if let error = error as? CloudRelayCryptoError { return "crypto:\(error)" }
+        if error is DecodingError { return "protocol-decode" }
+        if let error = error as? ClientServiceFailure {
+            let known = ["LOCAL_BACKEND_UNAVAILABLE", "DEVICE_REVOKED", "INVALID_CREDENTIAL", "ROUTE_NOT_AVAILABLE", "RATE_LIMITED", "DEVICE_AUTH_REQUIRED"]
+            return "http:\(error.statusCode):\(known.contains(error.code) ? error.code : "other")"
+        }
+        if let error = error as? ClientConnectionError {
+            if case .httpStatus(let status) = error { return "http:\(status)" }
+            return error == .invalidCredential ? "invalidCredential" : "clientConnection"
+        }
+        return "unclassified"
+    }
+}
 
 public enum CloudRelayTransportError: Error, Equatable, Sendable {
     case invalidControlMessage
@@ -75,12 +96,16 @@ public actor CloudRelayHTTPClient {
         let bytes: BackendByteStream
         let stream: AsyncThrowingStream<Data, Error>.Continuation
         let idleTimeout: TimeInterval
+        var lastActivity = ContinuousClock.now
+        var receivedBytes = 0
     }
 
     private enum Pending { case data(PendingData), stream(PendingStream) }
 
     private let endpoint: BackendEndpoint
     private let channel: any CloudRelaySecureChannel
+    private let diagnosticID = UUID()
+    private static let log = Logger(subsystem: "com.corptie.connection", category: "MobileRelayHTTP")
     private var pending: [UUID: Pending] = [:]
     private var receiver: Task<Void, Never>?
     private var terminalError: Error?
@@ -119,6 +144,7 @@ public actor CloudRelayHTTPClient {
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 pending[message.id] = .data(PendingData(url: request.url!, continuation: continuation))
+                Self.log.debug("Request start: channel=\(self.diagnosticID, privacy: .public) request=\(message.id, privacy: .public) kind=data")
                 armDeadline(message.id, seconds: min(30, request.timeoutInterval))
                 Task { await self.send(messages) }
             }
@@ -143,6 +169,7 @@ public actor CloudRelayHTTPClient {
                     idleTimeout: min(35, request.timeoutInterval)
                 ))
                 armDeadline(message.id, seconds: min(10, request.timeoutInterval))
+                Self.log.info("Stream start: channel=\(self.diagnosticID, privacy: .public) request=\(message.id, privacy: .public)")
                 Task { await self.send(messages) }
             }
         } onCancel: { Task { await self.cancel(message.id) } }
@@ -184,9 +211,12 @@ public actor CloudRelayHTTPClient {
         guard var current = pending[message.id] else { return }
         switch (message.kind, current) {
         case (.response, .data(var value)):
+            Self.log.debug("Response head: request=\(message.id, privacy: .public) status=\(message.status ?? 0)")
             value.response = try response(message, url: value.url)
             current = .data(value)
         case (.response, .stream(var value)):
+            Self.log.info("Stream head: request=\(message.id, privacy: .public) status=\(message.status ?? 0)")
+            value.lastActivity = .now
             let response = try response(message, url: value.url)
             value.response = response
             value.head.resume(returning: (value.bytes, response))
@@ -205,9 +235,12 @@ public actor CloudRelayHTTPClient {
                 return
             }
             current = .data(value)
-        case (.chunk, .stream(let value)):
+        case (.chunk, .stream(var value)):
             guard value.response != nil, let body = message.body, let final = message.final else { throw CloudRelayTransportError.invalidApplicationMessage }
             armDeadline(message.id, seconds: value.idleTimeout)
+            value.lastActivity = .now
+            value.receivedBytes += body.count
+            current = .stream(value)
             for start in stride(from: 0, to: body.count, by: 16 * 1_024) {
                 let end = min(body.count, start + 16 * 1_024)
                 if case .dropped = value.stream.yield(body.subdata(in: start..<end)) {
@@ -266,6 +299,7 @@ public actor CloudRelayHTTPClient {
     private func fail(_ id: UUID, _ error: Error) {
         deadlines.removeValue(forKey: id)?.cancel()
         guard let value = pending.removeValue(forKey: id) else { return }
+        Self.log.info("Request ended: channel=\(self.diagnosticID, privacy: .public) request=\(id, privacy: .public) reason=\(ConnectionDiagnostic.failure(error), privacy: .public)")
         switch value {
         case .data(let pending): pending.continuation.resume(throwing: error)
         case .stream(let pending):
@@ -285,12 +319,19 @@ public actor CloudRelayHTTPClient {
     }
 
     private func expire(_ id: UUID) async {
-        guard pending[id] != nil else { return }
+        guard let value = pending[id] else { return }
+        switch value {
+        case .data:
+            Self.log.error("Deadline: request=\(id, privacy: .public) phase=data")
+        case .stream(let stream):
+            Self.log.error("Deadline: request=\(id, privacy: .public) phase=\(stream.response == nil ? "stream-head" : "stream-idle", privacy: .public) receivedBytes=\(stream.receivedBytes) lastActivityAgo=\(String(describing: stream.lastActivity.duration(to: .now)), privacy: .public)")
+        }
         fail(id, URLError(.timedOut))
         try? await channel.send(JSONEncoder().encode(CloudRelayApplicationMessage.cancel(id: id)))
     }
 
     private func failAll(_ error: Error) {
+        Self.log.info("Channel ended: channel=\(self.diagnosticID, privacy: .public) pending=\(self.pending.count) reason=\(ConnectionDiagnostic.failure(error), privacy: .public)")
         terminalError = error
         let ids = Array(pending.keys)
         for id in ids { fail(id, error) }
@@ -298,6 +339,7 @@ public actor CloudRelayHTTPClient {
 }
 
 public actor CloudRelayMobileChannel: CloudRelaySecureChannel {
+    private static let log = Logger(subsystem: "com.corptie.connection", category: "MobileRelaySocket")
     private struct Control: Decodable {
         struct Peer: Decodable {
             let id: UUID
@@ -327,6 +369,8 @@ public actor CloudRelayMobileChannel: CloudRelaySecureChannel {
         targetMacID: UUID,
         deviceKey: CloudRelayDeviceKey
     ) async throws -> CloudRelayMobileChannel {
+        let started = ContinuousClock.now
+        Self.log.info("Connect started")
         var components = URLComponents(url: cloudEndpoint.baseURL, resolvingAgainstBaseURL: false)!
         components.scheme = components.scheme == "https" ? "wss" : "ws"
         components.path = "/v1/relay"
@@ -350,6 +394,7 @@ public actor CloudRelayMobileChannel: CloudRelaySecureChannel {
             return try await withTaskCancellationHandler {
             let ready = try await receiveControl(socket)
             guard ready.type == "ready" else { throw CloudRelayTransportError.invalidControlMessage }
+            Self.log.info("Cloud socket ready: elapsed=\(String(describing: started.duration(to: .now)), privacy: .public)")
             let connect = try JSONSerialization.data(withJSONObject: [
                 "type": "connect", "targetDeviceId": targetMacID.uuidString.lowercased(), "requestId": UUID().uuidString
             ])
@@ -369,6 +414,7 @@ public actor CloudRelayMobileChannel: CloudRelaySecureChannel {
                 throw CloudRelayCryptoError.invalidHello
             }
             let cipher = try handshake.complete(peerHello: Data(peerFrame.dropFirst(17)))
+            Self.log.info("E2E handshake ready: connection=\(connectionID, privacy: .public) elapsed=\(String(describing: started.duration(to: .now)), privacy: .public)")
             try Task.checkCancellation()
             return CloudRelayMobileChannel(session: session, socket: socket, cipher: cipher)
             } onCancel: {
@@ -377,6 +423,7 @@ public actor CloudRelayMobileChannel: CloudRelaySecureChannel {
             }
         } catch {
             let status = (socket.response as? HTTPURLResponse)?.statusCode
+            Self.log.error("Connect failed: http=\(status ?? 0) closeCode=\(socket.closeCode.rawValue) elapsed=\(String(describing: started.duration(to: .now)), privacy: .public) reason=\(ConnectionDiagnostic.failure(error), privacy: .public)")
             socket.cancel(with: .protocolError, reason: nil)
             session.invalidateAndCancel()
             if status == 401 || status == 403 { throw ClientConnectionError.httpStatus(status!) }
@@ -389,19 +436,25 @@ public actor CloudRelayMobileChannel: CloudRelaySecureChannel {
     }
 
     public func receive() async throws -> Data {
-        while true {
-            switch try await socket.receive() {
-            case .data(let data): return try await cipher.open(data)
-            case .string(let value):
-                if (try? JSONDecoder().decode(Control.self, from: Data(value.utf8)).type) == "disconnected" {
-                    throw CloudRelayTransportError.disconnected
+        do {
+            while true {
+                switch try await socket.receive() {
+                case .data(let data): return try await cipher.open(data)
+                case .string(let value):
+                    if (try? JSONDecoder().decode(Control.self, from: Data(value.utf8)).type) == "disconnected" {
+                        throw CloudRelayTransportError.disconnected
+                    }
+                @unknown default: throw CloudRelayTransportError.disconnected
                 }
-            @unknown default: throw CloudRelayTransportError.disconnected
             }
+        } catch {
+            Self.log.info("Mobile cloud receive ended: closeCode=\(self.socket.closeCode.rawValue) reason=\(ConnectionDiagnostic.failure(error), privacy: .public)")
+            throw error
         }
     }
 
     public func close() async {
+        Self.log.info("Mobile socket closing: initiator=local")
         socket.cancel(with: .normalClosure, reason: nil)
         session.invalidateAndCancel()
     }
@@ -439,6 +492,7 @@ private final class CloudRelayWebSocketDelegate: NSObject, URLSessionTaskDelegat
 }
 
 public actor CloudRelayMacAgent {
+    private static let log = Logger(subsystem: "com.corptie.connection", category: "MacRelay")
     private struct Control: Decodable {
         struct Peer: Decodable {
             let id: UUID
@@ -458,6 +512,7 @@ public actor CloudRelayMacAgent {
         var cipher: CloudRelayCipherSession?
         var requests: [UUID: Task<Void, Never>] = [:]
         var uploads: [UUID: Upload] = [:]
+        var registration: Task<Void, Error>?
     }
 
     private let session: URLSession
@@ -520,12 +575,18 @@ public actor CloudRelayMacAgent {
     /// and token refresh so account policy remains outside the relay protocol.
     public func run() async throws {
         defer { terminate() }
-        while !Task.isCancelled {
-            switch try await socket.receive() {
-            case .string(let text): try handleControl(Data(text.utf8))
-            case .data(let frame): try await handleFrame(frame)
-            @unknown default: throw CloudRelayTransportError.disconnected
+        Self.log.info("Mac cloud socket ready")
+        do {
+            while !Task.isCancelled {
+                switch try await socket.receive() {
+                case .string(let text): try handleControl(Data(text.utf8))
+                case .data(let frame): try await handleFrame(frame)
+                @unknown default: throw CloudRelayTransportError.disconnected
+                }
             }
+        } catch {
+            Self.log.error("Mac cloud socket ended: closeCode=\(self.socket.closeCode.rawValue) connections=\(self.connections.count) reason=\(ConnectionDiagnostic.failure(error), privacy: .public)")
+            throw error
         }
     }
 
@@ -542,6 +603,7 @@ public actor CloudRelayMacAgent {
                 staticPrivateKey: deviceKey.privateKey, peerStaticPublicKeyData: peerKey
             )
             connections[id] = Connection(handshake: handshake, peer: peer)
+            Self.log.info("Peer incoming: connection=\(id, privacy: .public)")
             Task { [weak self] in try? await self?.sendRaw(routingHeader(id) + handshake.makeHello()) }
             return
         }
@@ -550,10 +612,12 @@ public actor CloudRelayMacAgent {
             return
         }
         if control.type == "device_revoked", let deviceID = control.deviceId {
+            for id in connections.keys.filter({ connections[$0]?.peer.id == deviceID }) { removeConnection(id) }
             Task { [weak self] in await self?.revokeCloudGrant(deviceID: deviceID) }
             return
         }
         if control.type == "account_revoked" {
+            for id in Array(connections.keys) { removeConnection(id) }
             Task { [weak self] in await self?.revokeCloudGrant(deviceID: nil) }
             return
         }
@@ -569,6 +633,7 @@ public actor CloudRelayMacAgent {
         if connection.cipher == nil {
             connection.cipher = try connection.handshake.complete(peerHello: Data(frame.dropFirst(17)))
             connections[connectionID] = connection
+            Self.log.info("E2E handshake ready: connection=\(connectionID, privacy: .public)")
             return
         }
         let plaintext = try await connection.cipher!.open(frame)
@@ -612,25 +677,39 @@ public actor CloudRelayMacAgent {
     }
 
     private func serve(_ message: CloudRelayApplicationMessage, connectionID: UUID) async {
+        let started = ContinuousClock.now
+        Self.log.debug("Local request start: connection=\(connectionID, privacy: .public) request=\(message.id, privacy: .public)")
         do {
             guard let connection = connections[connectionID] else { throw CloudRelayTransportError.disconnected }
+            if message.path != "/client/v1/cloud/offline-lan-grant" {
+                try await registerPeer(connectionID: connectionID)
+            }
             let request = try message.path == "/client/v1/cloud/offline-lan-grant"
                 ? cloudGrantRequest(message, peer: connection.peer)
-                : localRequest(message)
+                : Self.localRequest(message, peerID: connection.peer.id, endpoint: localTransport.endpoint)
             if request.value(forHTTPHeaderField: "Accept")?.hasPrefix("text/event-stream") == true {
                 let (bytes, response) = try await localTransport.bytes(for: request)
+                Self.log.info("Local stream head: connection=\(connectionID, privacy: .public) request=\(message.id, privacy: .public) status=\(response.statusCode) elapsed=\(String(describing: started.duration(to: .now)), privacy: .public)")
                 try await send(.response(id: message.id, status: response.statusCode, headers: responseHeaders(response)), on: connectionID)
                 var buffer = CloudRelaySSEBuffer()
+                var lastFlushLog = ContinuousClock.now
+                var flushedBytes = 0
                 for try await byte in bytes {
                     try Task.checkCancellation()
                     if let chunk = buffer.append(byte) {
                         try await send(.chunk(id: message.id, body: chunk, final: false), on: connectionID)
+                        flushedBytes += chunk.count
+                        if lastFlushLog.duration(to: .now) >= .seconds(10) {
+                            Self.log.info("Stream relay progress: request=\(message.id, privacy: .public) sentBytes=\(flushedBytes)")
+                            lastFlushLog = .now
+                        }
                         await Task.yield()
                     }
                 }
                 try await send(.chunk(id: message.id, body: buffer.remainder, final: true), on: connectionID)
             } else {
                 let (body, response) = try await localTransport.data(for: request)
+                Self.log.debug("Local response: request=\(message.id, privacy: .public) status=\(response.statusCode) bytes=\(body.count) elapsed=\(String(describing: started.duration(to: .now)), privacy: .public)")
                 guard body.count <= CloudRelayHTTPClient.maximumResponseBytes else { throw CloudRelayTransportError.responseTooLarge }
                 try await send(.response(id: message.id, status: response.statusCode, headers: responseHeaders(response)), on: connectionID)
                 if body.isEmpty {
@@ -646,15 +725,19 @@ public actor CloudRelayMacAgent {
             }
         } catch is CancellationError { }
         catch let failure as ClientServiceFailure {
+            Self.log.error("Local request failed: request=\(message.id, privacy: .public) reason=\(ConnectionDiagnostic.failure(failure), privacy: .public)")
             await sendFailure(id: message.id, status: failure.statusCode, code: failure.code, connectionID: connectionID)
         } catch let failure as ClientConnectionError {
+            Self.log.error("Local request failed: request=\(message.id, privacy: .public) reason=\(ConnectionDiagnostic.failure(failure), privacy: .public)")
             let status: Int
             if case .httpStatus(let value) = failure { status = value } else { status = 502 }
             await sendFailure(id: message.id, status: status, code: "LOCAL_BACKEND_UNAVAILABLE", connectionID: connectionID)
         } catch {
+            Self.log.error("Local request failed: request=\(message.id, privacy: .public) reason=\(ConnectionDiagnostic.failure(error), privacy: .public)")
             await sendFailure(id: message.id, status: 502, code: "LOCAL_BACKEND_UNAVAILABLE", connectionID: connectionID)
         }
         connections[connectionID]?.requests.removeValue(forKey: message.id)
+        Self.log.debug("Local request finished: request=\(message.id, privacy: .public) elapsed=\(String(describing: started.duration(to: .now)), privacy: .public)")
     }
 
     private func cloudGrantRequest(_ message: CloudRelayApplicationMessage, peer: Control.Peer) throws -> URLRequest {
@@ -685,11 +768,30 @@ public actor CloudRelayMacAgent {
         }
     }
 
-    private func localRequest(_ message: CloudRelayApplicationMessage) throws -> URLRequest {
+    private func registerPeer(connectionID: UUID) async throws {
+        guard var connection = connections[connectionID] else { throw CloudRelayTransportError.disconnected }
+        if let registration = connection.registration { return try await registration.value }
+        let peer = connection.peer, transport = localTransport
+        let registration = Task {
+            var request = try transport.endpoint.request(path: ["internal", "client-devices", "cloud-register"])
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONEncoder().encode([
+                "cloudDeviceId": peer.id.uuidString.lowercased(), "name": peer.displayName
+            ])
+            _ = try await transport.data(for: request)
+        }
+        connection.registration = registration; connections[connectionID] = connection
+        do { try await registration.value }
+        catch { connections[connectionID]?.registration = nil; throw error }
+        guard connections[connectionID] != nil else { throw CloudRelayTransportError.disconnected }
+    }
+
+    static func localRequest(_ message: CloudRelayApplicationMessage, peerID: UUID, endpoint: BackendEndpoint) throws -> URLRequest {
         guard let method = message.method, ["GET", "POST", "PUT", "PATCH", "DELETE"].contains(method),
               let path = message.path, path.hasPrefix("/client/"), !path.contains("\\"),
-              let relative = URL(string: path, relativeTo: localTransport.endpoint.baseURL),
-              localTransport.endpoint.contains(relative.absoluteURL),
+              let relative = URL(string: path, relativeTo: endpoint.baseURL),
+              endpoint.contains(relative.absoluteURL),
               (message.body?.count ?? 0) <= CloudRelayHTTPClient.maximumRequestBytes else {
             throw CloudRelayTransportError.unsupportedRequest
         }
@@ -700,6 +802,9 @@ public actor CloudRelayMacAgent {
         for (name, value) in message.headers ?? [:] where allowed.contains(name.lowercased()) {
             request.setValue(value, forHTTPHeaderField: name)
         }
+        // The peer comes from the authenticated cloud control plane AND the
+        // completed E2E handshake, never from mobile HTTP headers or a body.
+        request.setValue(peerID.uuidString.lowercased(), forHTTPHeaderField: "X-Corptie-Relay-Cloud-Device-Id")
         return request
     }
 
@@ -726,6 +831,8 @@ public actor CloudRelayMacAgent {
 
     private func removeConnection(_ id: UUID) {
         guard let removed = connections.removeValue(forKey: id) else { return }
+        Self.log.info("Peer removed: connection=\(id, privacy: .public) requests=\(removed.requests.count) uploads=\(removed.uploads.count)")
+        removed.registration?.cancel()
         for task in removed.requests.values { task.cancel() }
     }
 
