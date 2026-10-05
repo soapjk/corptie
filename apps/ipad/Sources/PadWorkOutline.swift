@@ -388,11 +388,13 @@ struct PadWorkOutline: View {
                             UnreadSessionDot()
                         }
                     }
+                    .frame(minHeight: isPhone ? 28 : WorkOutlineMetrics.headerIconSize)
                     .padding(.vertical, headerPadding)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityHidden(true)
+                .accessibilityIdentifier("work-header-empty-\(work.id)")
             }
         }
         .contextMenu {

@@ -266,14 +266,23 @@ struct ConsoleWorkOutlineHeader: View {
                 action: openChat)
                 .padding(.leading, 6)
 
-            Spacer(minLength: 4)
-
-            if hasUnread && !isExpanded {
-                Circle()
-                    .fill(Color.red)
-                    .frame(width: 8, height: 8)
-                    .accessibilityLabel(L10n("Unread Session"))
+            Button(action: toggleExpanded) {
+                HStack(spacing: 0) {
+                    Spacer(minLength: 4)
+                    if hasUnread && !isExpanded {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 8, height: 8)
+                            .accessibilityLabel(L10n("Unread Session"))
+                    }
+                }
+                .frame(minHeight: WorkOutlineMetrics.headerIconSize)
+                .padding(.vertical, WorkOutlineMetrics.headerPadding)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityHidden(true)
+            .accessibilityIdentifier("work-header-empty-\(work.id)")
 
             Button(action: createTask) {
                 Image(systemName: "plus")
