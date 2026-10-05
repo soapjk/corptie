@@ -8,6 +8,7 @@ struct AppKitChatTimelineRow: Identifiable {
     var forkUnavailableReason: String? = nil
     var timeSeparatorText: String? = nil
     var isWorkspaceCard = false
+    var isCommentary = false
     var userInput: ConversationUserInput? = nil
     var userInputItemID: String? = nil
     var userInputStatus: String? = nil

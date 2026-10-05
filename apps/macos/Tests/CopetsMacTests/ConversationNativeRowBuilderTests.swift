@@ -7,6 +7,35 @@ import CorptieConversation
 
 @MainActor
 final class ConversationNativeRowBuilderTests: XCTestCase {
+    func testCommentaryAndFinalRepliesKeepIdentityButUseDifferentCardRoles() throws {
+        let commentary = builder().nativeAppKitRow(ChatDisplayEntry(kind: .message(try item([
+            "presentationRole": "commentary"]))), expandedTurnIds: [])
+        let final = builder().nativeAppKitRow(ChatDisplayEntry(kind: .message(try item())), expandedTurnIds: [])
+        XCTAssertTrue(commentary.isCommentary)
+        XCTAssertFalse(final.isCommentary)
+        XCTAssertEqual(commentary.id, final.id)
+        XCTAssertNotEqual(commentary.contentRevision, final.contentRevision)
+        XCTAssertTrue(MacSharedMessageTextCard.supports(commentary))
+        XCTAssertFalse(commentary.showsHeader)
+    }
+
+    func testDesktopProjectionSplitsSyntheticOutboundCollaborationTurn() throws {
+        let items = try [item(["id": "u", "type": "userMessage", "presentationRole": NSNull(), "turnStatus": "running"]),
+            item(["id": "t1", "type": "mcpToolCall", "presentationRole": NSNull(), "turnStatus": "running"]),
+            item(["id": "sent", "type": "userMessage", "presentationRole": "collaboration",
+                  "turnId": "session-channel-message:sent", "collaborationDirection": "outbound",
+                  "presentationText": "Status update", "collaborationChannelId": "channel:authorized",
+                  "collaborationInitiatorSessionId": "logical:source", "collaborationRecipientSessionId": "logical:target",
+                  "collaborationSourceWorkId": "work:source", "collaborationTargetWorkId": "work:target"]),
+            item(["id": "t2", "type": "mcpToolCall", "presentationRole": NSNull(), "turnStatus": "running"])]
+        let entries = ConversationTimeline.makeEntries(from: items)
+        XCTAssertEqual(entries.map(\.id), ["message:u", "process:turn:one", "message:sent", "process:turn:one:process-segment:1"])
+        let rows = entries.map { builder().nativeAppKitRow($0, expandedTurnIds: []) }
+        XCTAssertTrue(rows[2].isCollaboration)
+        XCTAssertEqual(rows[3].processState, .running)
+        XCTAssertFalse(rows[2].isCommentary)
+    }
+
     private func item(_ overrides: [String: Any] = [:]) throws -> CodexThreadItem {
         var fields: [String: Any] = [
             "id": "message:one", "turnId": "turn:one", "turnStatus": "completed",
