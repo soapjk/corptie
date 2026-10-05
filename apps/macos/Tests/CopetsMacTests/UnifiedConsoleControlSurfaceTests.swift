@@ -5,6 +5,71 @@ import Testing
 @testable import CorptieMac
 
 struct UnifiedConsoleControlSurfaceTests {
+    @MainActor
+    @Test
+    func workHeaderBlankAreaClicksOnlyToggleDisclosure() throws {
+        _ = NSApplication.shared
+        var toggles = 0
+        var chatOpens = 0
+        var taskCreates = 0
+        let work = Work(id: "work:hit-test", workspaceId: "workspace:test", name: "Work",
+            description: "", status: "active", profile: "general", tags: [], contributorAgentIds: [],
+            createdAt: "", updatedAt: "")
+        let host = NSHostingView(rootView: ConsoleWorkOutlineHeader(work: work,
+            isExpanded: false, isSelected: false, isWorking: false, hasUnread: false,
+            isChatSelected: false, isChatRunning: false, hasUnreadChat: false,
+            toggleExpanded: { toggles += 1 }, openChat: { chatOpens += 1 },
+            createTask: { taskCreates += 1 }))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 28),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        host.layoutSubtreeIfNeeded()
+
+        // Click near the top, middle and bottom of the flexible blank region.
+        for y in [CGFloat(2), CGFloat(14), CGFloat(26)] {
+            let point = NSPoint(x: 400, y: y)
+            let up = try #require(NSEvent.mouseEvent(with: .leftMouseUp, location: point,
+                modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 0))
+            let down = try #require(NSEvent.mouseEvent(with: .leftMouseDown, location: point,
+                modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+            window.sendEvent(down)
+            window.sendEvent(up)
+            // SwiftUI completes the gesture after receiving the mouse up.
+            RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+        }
+        #expect(toggles == 3)
+        #expect(chatOpens == 0)
+        #expect(taskCreates == 0)
+    }
+
+    @Test
+    func workHeaderEmptyAreaUsesFullHeightDisclosureButtonsOnBothClients() throws {
+        let desktop = try source(named: "Console/ConsoleNavigationPolicies.swift")
+        let headerStart = try #require(desktop.range(of: "struct ConsoleWorkOutlineHeader: View"))
+        let headerEnd = try #require(desktop.range(of: "enum ConsoleTaskSelectionPolicy", range: headerStart.upperBound..<desktop.endIndex))
+        let header = String(desktop[headerStart.lowerBound..<headerEnd.lowerBound])
+        #expect(header.components(separatedBy: "Button(action: toggleExpanded)").count == 3)
+        #expect(header.contains(".frame(minHeight: WorkOutlineMetrics.headerIconSize)"))
+        #expect(header.contains(".accessibilityIdentifier(\"work-header-empty-\\(work.id)\")"))
+        #expect(header.contains(".contentShape(Rectangle())"))
+        #expect(header.contains("action: openChat"))
+        #expect(header.contains("Button(action: createTask)"))
+        #expect(!header.contains(".onTapGesture"))
+        #expect(!header.contains(".highPriorityGesture"))
+
+        let mobileURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("ipad/Sources/PadWorkOutline.swift")
+        let mobile = try String(contentsOf: mobileURL, encoding: .utf8)
+        #expect(mobile.contains(".frame(minHeight: isPhone ? 28 : WorkOutlineMetrics.headerIconSize)"))
+        #expect(mobile.contains(".accessibilityIdentifier(\"work-header-empty-\\(work.id)\")"))
+    }
+
     @Test
     func quickMessagesRestoreTaskSnapshotsAndDiscardCancelledOrWrongTaskResponsesOnBothClients() throws {
         let desktop = try source(named: "Conversation/Composer/MessageComposer.swift")
