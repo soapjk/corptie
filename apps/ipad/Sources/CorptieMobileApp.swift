@@ -2119,7 +2119,9 @@ private struct MobileMessageBubble: View {
             HStack(alignment: .bottom, spacing: 0) {
             if fromUser { Spacer(minLength: 0) }
             VStack(alignment: fromUser ? .trailing : .leading, spacing: 5) {
-                MessageTextCard(messageID: message.id, role: fromUser ? .user : .agent,
+                MessageTextCard(messageID: message.id, role: fromUser ? .user :
+                    (ConversationPresentationKind.isCommentary(type: message.type, presentationRole: message.presentationRole)
+                        ? .commentary : .agent),
                     timestamp: "", showsActions: false, actionsAlwaysVisible: false, cardWidth: cardWidth,
                     status: messageStatus,
                     contextMenu: MessageTextCardMenuConfiguration(

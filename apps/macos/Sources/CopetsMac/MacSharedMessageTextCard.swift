@@ -130,7 +130,7 @@ struct MacSharedMessageTextCard: View {
     }
 
     private var messageCard: some View {
-        MessageTextCard(messageID: row.id, role: row.nativeStyle == .user ? .user : .agent,
+        MessageTextCard(messageID: row.id, role: row.nativeStyle == .user ? .user : (row.isCommentary ? .commentary : .agent),
             timestamp: "", showsActions: false,
             actionsAlwaysVisible: false, cardWidth: layout.cardWidth,
             cardHeight: layout.rowHeight - row.timeSeparatorHeight - (row.showsMessageStatusBar ? 28 : 2),
