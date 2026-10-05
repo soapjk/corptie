@@ -137,6 +137,7 @@ export class ClientDeviceAuthority {
     if (typeof name !== "string" || !name.trim() || name.length > 80 || /[\x00-\x1f\x7f]/.test(name)) {
       throw deviceError("INVALID_DEVICE_NAME", 400);
     }
+    cloudDeviceId = cloudDeviceId.toLowerCase();
     return this.change(state => {
       const now = this.now();
       let device = state.devices.find(item => item.authSource === "cloud_account" && item.cloudDeviceId === cloudDeviceId);
@@ -155,6 +156,35 @@ export class ClientDeviceAuthority {
       delete device.previousRefreshExpiresAt;
       return { ...this.issue(device, state.serverId), cloudValidatedAt: now };
     });
+  }
+
+  // Only the local authenticated Mac relay may register an E2E-verified peer.
+  // Keep its identity shared with LAN grants without rotating their credentials.
+  registerCloudRelayPeer({ cloudDeviceId, name }) {
+    if (typeof cloudDeviceId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(cloudDeviceId)
+        || typeof name !== "string" || !name.trim() || name.length > 80 || /[\x00-\x1f\x7f]/.test(name)) {
+      throw deviceError("INVALID_CLOUD_DEVICE", 400);
+    }
+    cloudDeviceId = cloudDeviceId.toLowerCase();
+    return this.change(state => {
+      let device = state.devices.find(item => item.authSource === "cloud_account" && item.cloudDeviceId === cloudDeviceId);
+      if (!device) {
+        if (state.devices.length >= 100) throw deviceError("DEVICE_LIMIT", 409);
+        device = { id: randomUUID(), authSource: "cloud_account", cloudDeviceId, createdAt: this.now() };
+        state.devices.push(device);
+      }
+      device.name = name.trim(); device.revoked = false;
+      device.lastOnlineValidatedAt = this.now();
+      return { deviceId: device.id };
+    });
+  }
+
+  authenticateCloudRelayPeer(cloudDeviceId) {
+    if (typeof cloudDeviceId !== "string") throw deviceError("DEVICE_AUTH_REQUIRED");
+    const device = this.state.devices.find(item => item.authSource === "cloud_account"
+      && item.cloudDeviceId === cloudDeviceId.toLowerCase());
+    if (!device || device.revoked) throw deviceError("DEVICE_REVOKED");
+    return { deviceId: device.id, name: device.name, serverId: this.state.serverId };
   }
 
   syncCloudDevices(activeCloudDeviceIds) {

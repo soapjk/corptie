@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { createHash } from "node:crypto";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { ClientSessionAPI } from "../src/application/clientSessionAPI.mjs";
+import { ClientDeviceAuthority } from "../src/application/clientDeviceAuthority.mjs";
+import { ClientDeviceGateway } from "../src/application/clientDeviceGateway.mjs";
 
 const identity = { deviceId: "device:reliable" };
 const binding = { bindingId: "binding:reliable", providerId: "provider:test", providerSessionId: "thread:reliable", routingVersion: 1 };
@@ -32,6 +35,8 @@ test("durable receipt, user message and queued work commit once; lost ACK and pr
     const body = input();
     const first = await f.api.reliableMessage(identity, "session:reliable", body);
     assert.equal(first.status, "accepted");
+    assert.equal(first.messageId, `client:${createHash("sha256").update(`${identity.deviceId}:${body.requestId}`).digest("hex")}`);
+    assert.equal(f.store.getSessionItem("session:reliable", first.messageId).id, first.messageId);
     assert.equal(f.api.receipt(identity, body.requestId).status, "accepted");
     assert.deepEqual(await f.api.reliableMessage(identity, "session:reliable", body), first);
     const restarted = makeAPI(f.store);
@@ -44,6 +49,48 @@ test("durable receipt, user message and queued work commit once; lost ACK and pr
     const reopened = new CorptieStore(f.path); await reopened.initialize();
     try { assert.deepEqual(await makeAPI(reopened).reliableMessage(identity, "session:reliable", body), first); }
     finally { await reopened.close(); }
+  } finally { await f.close(); }
+});
+
+test("receipt identities isolate devices and Sessions; identical text is not deduplicated", async () => {
+  const f = await fixture();
+  try {
+    const body = input();
+    const first = await f.api.reliableMessage(identity, "session:reliable", body);
+    const other = { deviceId: "device:other" };
+    const second = await f.api.reliableMessage(other, "session:reliable", body);
+    assert.notEqual(first.messageId, second.messageId);
+    const third = await f.api.reliableMessage(identity, "session:reliable", { ...body, requestId: "another_request_1" });
+    assert.notEqual(first.messageId, third.messageId);
+    assert.equal(f.store.listQueuedAgentTasksForSession("session:reliable").length, 3);
+    await assert.rejects(f.api.reliableMessage(identity, "session:other", body), { code: "IDEMPOTENCY_CONFLICT" });
+    assert.throws(() => f.api.receipt({ deviceId: "device:stranger" }, body.requestId), { code: "COMMAND_NOT_FOUND" });
+  } finally { await f.close(); }
+});
+
+test("relay-to-LAN retry after a lost receipt retains one durable message and one execution", async () => {
+  const f = await fixture();
+  try {
+    const authority = new ClientDeviceAuthority(join(dirname(f.path.dbPath), "authority"));
+    await authority.initialize();
+    const cloudDeviceId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    await authority.registerCloudRelayPeer({ cloudDeviceId, name: "Phone" });
+    const grant = await authority.issueCloudGrant({ cloudDeviceId, name: "Phone" });
+    const gateway = new ClientDeviceGateway(authority);
+    const relayRequest = { headers: { authorization: `Bearer ${authority.adminToken}`,
+      "x-corptie-relay-cloud-device-id": cloudDeviceId }, socket: { remoteAddress: "127.0.0.1" } };
+    const relayIdentity = gateway.authenticateRequest(relayRequest);
+    const lanIdentity = gateway.authenticateRequest({ headers: { authorization: `Bearer ${grant.accessToken}` },
+      socket: { encrypted: true, remoteAddress: "192.168.1.3" } });
+    const body = input();
+    const accepted = await f.api.reliableMessage(relayIdentity, "session:reliable", body,
+      () => gateway.authenticateRequest(relayRequest));
+    const retried = await f.api.reliableMessage(lanIdentity, "session:reliable", body);
+    assert.equal(accepted.messageId, retried.messageId);
+    assert.equal(retried.messageId, `client:${createHash("sha256").update(`${grant.deviceId}:${body.requestId}`).digest("hex")}`);
+    assert.deepEqual(f.api.receipt(lanIdentity, body.requestId), accepted);
+    assert.equal(f.store.listQueuedAgentTasksForSession("session:reliable").length, 1);
+    assert.equal(f.store.listSessionEvents("session:reliable").filter(event => event.type === "SessionUserMessageCreated").length, 1);
   } finally { await f.close(); }
 });
 
@@ -114,7 +161,7 @@ test("expired messages cannot be re-admitted after receipt cleanup; unsafe opera
   try {
     const expired = { ...input(), createdAt: new Date(Date.now() - 8 * 86400000).toISOString() };
     await assert.rejects(f.api.reliableMessage(identity, "session:reliable", expired), { code: "MESSAGE_EXPIRED" });
-    for (const extra of [{ text: "/clear" }, { schedule: {} }, { confirmed: true }]) {
+    for (const extra of [{ text: "/clear" }, { schedule: {} }, { confirmed: true }, { deviceId: "device:forged" }]) {
       await assert.rejects(f.api.reliableMessage(identity, "session:reliable", { ...input(), ...extra }), { code: "INVALID_MESSAGE" });
     }
     assert.equal(f.api.capabilities(identity, "session:reliable").reliableMessages.version, 1);

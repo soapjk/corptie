@@ -19,16 +19,37 @@ public struct ReliableOutgoingMessage: Codable, Sendable, Identifiable {
     public var attempts = 0
     public var nextAttemptAt: Date = .distantPast
     public var errorCode: String?
+    /// Nil on pre-fix records: their remote ownership may be ambiguous.
+    public let messageIdentityVersion: Int?
+    public var authoritativeMessageID: String?
 
     public init(serverID: String, deviceID: String, sessionID: String, displaySessionID: String,
                 text: String, images: [ClientDraftImage] = [], mentions: [ClientDraftMention] = [],
-                id: String = UUID().uuidString, createdAt: String = Date().ISO8601Format()) {
+                id: String = UUID().uuidString, createdAt: String = Date().ISO8601Format(),
+                messageIdentityVersion: Int? = 2) {
         self.id = id; self.serverID = serverID; self.deviceID = deviceID
         self.sessionID = sessionID; self.displaySessionID = displaySessionID
         self.createdAt = createdAt; self.text = text; self.images = images; self.mentions = mentions
         enqueuedAt = Date()
+        self.messageIdentityVersion = messageIdentityVersion
     }
     public var messageID: String { ClientSessionAPI.messageID(deviceID: deviceID, requestID: id) }
+}
+
+/// Compact encrypted identity journal, independent of attachment ownership.
+public struct ReliableMessageAcknowledgement: Codable, Sendable {
+    public let requestID: String
+    public let serverID: String
+    public let deviceID: String
+    public let sessionID: String
+    public let localMessageID: String
+    public let messageID: String
+    public let acceptedAt: Date
+    public init(_ message: ReliableOutgoingMessage, messageID: String) {
+        requestID = message.id; serverID = message.serverID; deviceID = message.deviceID
+        sessionID = message.displaySessionID; localMessageID = message.messageID
+        self.messageID = messageID; acceptedAt = Date()
+    }
 }
 
 public enum ReliableOutboxError: Error { case full, corrupt, keychain(OSStatus), invalidIdentity }
@@ -42,9 +63,11 @@ public actor ReliableMessageOutbox {
         let attempts: Int
         let nextAttemptAt: Date
         let errorCode: String?
+        let authoritativeMessageID: String?
         init(_ message: ReliableOutgoingMessage) {
             state = message.state; attempts = message.attempts
             nextAttemptAt = message.nextAttemptAt; errorCode = message.errorCode
+            authoritativeMessageID = message.authoritativeMessageID
         }
     }
     private let directory: URL
@@ -54,6 +77,9 @@ public actor ReliableMessageOutbox {
     private var sizes: [String: Int] = [:]
     private var statusSizes: [String: Int] = [:]
     private var loaded = false
+    private var acknowledgements: [String: ReliableMessageAcknowledgement] = [:]
+    private var acknowledgementsLoaded = false
+    public static let maximumAcknowledgements = 1000
     public static let maximumMessages = 100
     public static let maximumBytes = 48 * 1024 * 1024
 
@@ -80,6 +106,7 @@ public actor ReliableMessageOutbox {
                   previous.sessionID == message.sessionID, previous.createdAt == message.createdAt,
                   previous.displaySessionID == message.displaySessionID, previous.enqueuedAt == message.enqueuedAt,
                   previous.text == message.text,
+                  previous.messageIdentityVersion == message.messageIdentityVersion,
                   previous.images.count == message.images.count,
                   zip(previous.images, message.images).allSatisfy({ pair in
                       pair.0.fileName == pair.1.fileName && pair.0.data == pair.1.data
@@ -127,6 +154,60 @@ public actor ReliableMessageOutbox {
         statusSizes.removeValue(forKey: id)
     }
 
+    public func acceptedIdentities() throws -> [ReliableMessageAcknowledgement] {
+        try load(); try loadAcknowledgements()
+        return Array(acknowledgements.values)
+    }
+
+    public func acknowledge(_ message: ReliableOutgoingMessage, messageID: String) throws {
+        try load(); try loadAcknowledgements()
+        guard UUID(uuidString: message.id) != nil, messageID.hasPrefix("client:"), messageID.count <= 200 else {
+            throw ReliableOutboxError.invalidIdentity
+        }
+        let acknowledgement = ReliableMessageAcknowledgement(message, messageID: messageID)
+        if let previous = acknowledgements[message.id] {
+            guard previous.serverID == message.serverID, previous.deviceID == message.deviceID,
+                  previous.localMessageID == message.messageID, previous.messageID == messageID else {
+                throw ReliableOutboxError.invalidIdentity
+            }
+            return
+        }
+        // Bound this journal separately; it never retains prompt text or images.
+        while acknowledgements.count >= Self.maximumAcknowledgements,
+              let oldest = acknowledgements.values.min(by: { $0.acceptedAt < $1.acceptedAt }) {
+            try FileManager.default.removeItem(at: directory.appendingPathComponent(oldest.requestID + ".ack"))
+            acknowledgements.removeValue(forKey: oldest.requestID)
+        }
+        let data = try AES.GCM.seal(JSONEncoder().encode(acknowledgement), using: key!,
+            authenticating: Data((message.id + ":ack").utf8)).combined!
+        try write(data, to: directory.appendingPathComponent(message.id + ".ack"))
+        acknowledgements[message.id] = acknowledgement
+    }
+
+    private func loadAcknowledgements() throws {
+        guard !acknowledgementsLoaded else { return }
+        let files = try FileManager.default.contentsOfDirectory(at: directory,
+            includingPropertiesForKeys: [.fileSizeKey]).filter { $0.pathExtension == "ack" }
+        guard files.count <= Self.maximumAcknowledgements else { throw ReliableOutboxError.corrupt }
+        var recovered: [String: ReliableMessageAcknowledgement] = [:]
+        for file in files {
+            let id = file.deletingPathExtension().lastPathComponent
+            guard UUID(uuidString: id) != nil,
+                  (try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) <= 4096 else {
+                throw ReliableOutboxError.corrupt
+            }
+            let data = try Data(contentsOf: file)
+            let clear = try AES.GCM.open(AES.GCM.SealedBox(combined: data), using: key!,
+                authenticating: Data((id + ":ack").utf8))
+            let acknowledgement = try JSONDecoder().decode(ReliableMessageAcknowledgement.self, from: clear)
+            guard acknowledgement.requestID == id else { throw ReliableOutboxError.corrupt }
+            if Date().timeIntervalSince(acknowledgement.acceptedAt) > 7 * 86400 {
+                try FileManager.default.removeItem(at: file)
+            } else { recovered[id] = acknowledgement }
+        }
+        acknowledgements = recovered; acknowledgementsLoaded = true
+    }
+
     private func load() throws {
         guard !loaded else { return }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
@@ -162,6 +243,7 @@ public actor ReliableMessageOutbox {
                 let status = try JSONDecoder().decode(Status.self, from: stateClear)
                 record.state = status.state; record.attempts = status.attempts
                 record.nextAttemptAt = status.nextAttemptAt; record.errorCode = status.errorCode
+                record.authoritativeMessageID = status.authoritativeMessageID
             }
             recovered[id] = record; recoveredSizes[id] = data.count + stateSize
             recoveredStatusSizes[id] = stateSize

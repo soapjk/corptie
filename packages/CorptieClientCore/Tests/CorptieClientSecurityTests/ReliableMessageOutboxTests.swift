@@ -5,6 +5,48 @@ import CorptieClientCore
 @testable import CorptieClientSecurity
 
 struct ReliableMessageOutboxTests {
+    @Test func identityJournalHasABoundedRetentionIndependentOfPayloads() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let key = SymmetricKey(size: .bits256)
+        let store = ReliableMessageOutbox(directory: directory, key: key)
+        for _ in 0...ReliableMessageOutbox.maximumAcknowledgements {
+            let record = ReliableOutgoingMessage(serverID: "server", deviceID: "device", sessionID: "session",
+                displaySessionID: "session", text: "not retained")
+            try await store.acknowledge(record, messageID: record.messageID)
+        }
+        let restored = ReliableMessageOutbox(directory: directory, key: key)
+        #expect(try await restored.acceptedIdentities().count == ReliableMessageOutbox.maximumAcknowledgements)
+        #expect(try await restored.all().isEmpty)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).count == ReliableMessageOutbox.maximumAcknowledgements)
+    }
+    @Test func encryptedIdentityJournalSurvivesPayloadReleaseAndRestart() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let key = SymmetricKey(size: .bits256)
+        let outbox = ReliableMessageOutbox(directory: directory, key: key)
+        var message = ReliableOutgoingMessage(serverID: "server", deviceID: "device", sessionID: "session",
+            displaySessionID: "logical", text: "private body", images: [.init(fileName: "image", data: Data([1, 2, 3]))])
+        try await outbox.save(message)
+        message.state = .accepted; message.authoritativeMessageID = "client:authoritative"
+        try await outbox.save(message)
+        let restored = ReliableMessageOutbox(directory: directory, key: key)
+        #expect(try await restored.all().first?.authoritativeMessageID == "client:authoritative")
+        try await restored.acknowledge(message, messageID: "client:authoritative")
+        try await restored.remove(message.id)
+        let afterRelease = ReliableMessageOutbox(directory: directory, key: key)
+        #expect(try await afterRelease.all().isEmpty)
+        let ack = try #require(await afterRelease.acceptedIdentities().first)
+        #expect(ack.localMessageID == message.messageID)
+        #expect(ack.messageID == "client:authoritative")
+        #expect(ack.sessionID == "logical")
+        let raw = try Data(contentsOf: directory.appendingPathComponent(message.id + ".ack"))
+        #expect(raw.range(of: Data("client:authoritative".utf8)) == nil)
+        await #expect(throws: (any Error).self) {
+            _ = try await ReliableMessageOutbox(directory: directory, key: SymmetricKey(size: .bits256)).acceptedIdentities()
+        }
+        await #expect(throws: ReliableOutboxError.self) { try await afterRelease.acknowledge(message, messageID: "client:conflict") }
+    }
     @Test func queueIsBoundedAndCannotOverwriteAnExistingIntent() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

@@ -50,6 +50,33 @@ test("pairing requires local approval, exchanges once, rotates and revokes persi
   } finally { await f.close(); }
 });
 
+test("authenticated relay peer shares LAN identity without rotating tokens; forged peer headers fail closed", async () => {
+  const f = await fixture();
+  try {
+    const a = f.authority, cloudDeviceId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const registered = await a.registerCloudRelayPeer({ cloudDeviceId, name: "Phone" });
+    const grant = await a.issueCloudGrant({ cloudDeviceId, name: "Phone" });
+    assert.equal(registered.deviceId, grant.deviceId);
+    assert.equal((await a.registerCloudRelayPeer({ cloudDeviceId, name: "Phone" })).deviceId, grant.deviceId);
+    assert.equal(a.authenticate(grant.accessToken).deviceId, grant.deviceId);
+    const gateway = new ClientDeviceGateway(a);
+    const request = (token, encrypted = false, remoteAddress = "127.0.0.1") => ({
+      headers: { authorization: `Bearer ${token}`, "x-corptie-relay-cloud-device-id": cloudDeviceId },
+      socket: { encrypted, remoteAddress }
+    });
+    assert.equal(gateway.authenticateRequest(request(a.adminToken)).deviceId, grant.deviceId);
+    assert.throws(() => gateway.authenticateRequest(request(a.adminToken, true)), { code: "DEVICE_AUTH_REQUIRED" });
+    assert.throws(() => gateway.authenticateRequest(request(a.adminToken, false, "192.168.1.3")), { code: "DEVICE_AUTH_REQUIRED" });
+    assert.throws(() => gateway.authenticateRequest(request(grant.accessToken)), { code: "DEVICE_AUTH_REQUIRED" });
+    const second = await a.registerCloudRelayPeer({ cloudDeviceId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", name: "iPad" });
+    assert.notEqual(second.deviceId, registered.deviceId);
+    const restored = new ClientDeviceAuthority(join(f.dir, "auth")); await restored.initialize();
+    assert.equal(restored.authenticateCloudRelayPeer(cloudDeviceId).deviceId, grant.deviceId);
+    await a.revokeCloudDevice(cloudDeviceId);
+    assert.throws(() => gateway.authenticateRequest(request(a.adminToken)), { code: "DEVICE_REVOKED" });
+  } finally { await f.close(); }
+});
+
 test("legacy per-feature grants are removed and never exposed after restart", async () => {
   const f = await fixture();
   try {

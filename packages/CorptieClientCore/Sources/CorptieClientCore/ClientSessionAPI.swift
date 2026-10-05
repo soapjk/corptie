@@ -240,6 +240,7 @@ public struct ClientCommandReceipt: Decodable, Sendable {
     public let status: String
     public let errorCode: String?
     public let updatedAt: String
+    public let messageId: String?
     public let commandResult: ClientConversationCommandResult?
     public let taskResult: ClientTaskCreationResult?
     /// Present for `task_*` / `work_*` management commands.
@@ -249,6 +250,7 @@ public struct ClientSessionCapabilities: Decodable, Sendable {
     public struct ReliableMessages: Decodable, Sendable {
         public let version: Int
         public let maximumAgeSeconds: Int
+        public let messageIdentityVersion: Int?
     }
     public struct Action: Decodable, Sendable {
         public let available: Bool

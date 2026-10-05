@@ -68,6 +68,7 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
             case "已保存，等待发送", "等待网络，恢复后自动发送", "等待前一条消息处理": kind = .waitingToSend
             case "等待重试，将自动发送": kind = .retrying
             case "等待恢复连接授权", "后端不支持可靠发送，请更新后端": kind = .deliveryBlocked
+            case "发送身份未对齐，请更新 Mac 并重新连接", "旧请求需核对；不会自动重发": kind = .deliveryBlocked
             case "已停止重试；不代表撤回": kind = .retryStopped
             case "送达状态未确认": kind = .deliveryUnknown
             default: kind = .deliveryUnknown
