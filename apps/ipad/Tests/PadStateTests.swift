@@ -5,6 +5,57 @@ import CorptieClientCore
 
 @MainActor
 struct PadStateTests {
+    @Test func conversationSwipeNavigatesFromAnyStartPositionButNotVerticalOrOwnedContent() {
+        #expect(PadConversationSwipePolicy.destination(horizontal: 100, vertical: 8) == .taskList)
+        #expect(PadConversationSwipePolicy.destination(horizontal: -100, vertical: 8) == .detail)
+        #expect(PadConversationSwipePolicy.destination(horizontal: -30, vertical: 0) == nil)
+        #expect(PadConversationSwipePolicy.destination(horizontal: -90, vertical: 90) == nil)
+        #expect(PadConversationSwipePolicy.destination(horizontal: 0, vertical: 160) == nil)
+        #expect(PadConversationSwipePolicy.destination(horizontal: -100, vertical: 0, contentOwnsGesture: true) == nil)
+        #expect(!PadConversationSwipePolicy.isHorizontal(x: 10, y: 100))
+        #expect(!PadConversationSwipePolicy.isHorizontal(x: .nan, y: 0))
+    }
+    @Test func workReturnSwipeRequiresAnIntentionalLeftwardMovement() {
+        #expect(PadWorkReturnSwipePolicy.opensPreviousTask(horizontal: -90, vertical: 8))
+        #expect(!PadWorkReturnSwipePolicy.opensPreviousTask(horizontal: 90, vertical: 8))
+        #expect(!PadWorkReturnSwipePolicy.opensPreviousTask(horizontal: -20, vertical: 0))
+        #expect(!PadWorkReturnSwipePolicy.opensPreviousTask(horizontal: -90, vertical: 90))
+        #expect(!PadWorkReturnSwipePolicy.opensPreviousTask(horizontal: 2, vertical: 160))
+    }
+
+    @Test func previousMobileTaskTracksLastOpenedTaskAndItsCurrentBinding() throws {
+        let connection = PadConnection()
+        connection.serverID = "server"
+        let workspace = PadWorkspace()
+        func task(_ id: String, _ sessionID: String) throws -> ClientTask {
+            let data = try JSONSerialization.data(withJSONObject: ["id": id, "title": id,
+                "workId": "work", "lifecycleState": "active", "executionStatus": "idle",
+                "currentSessionId": sessionID, "updatedAt": "now"])
+            return try JSONDecoder().decode(ClientTask.self, from: data)
+        }
+        workspace.tasks = [try task("first", "session:first"), try task("second", "session:second")]
+        for id in ["session:first", "session:second", "session:rebound"] {
+            let data = try JSONSerialization.data(withJSONObject: ["id": id, "title": id,
+                "executionStatus": "idle", "updatedAt": "now"])
+            workspace.sessionsByID[id] = try JSONDecoder().decode(ClientSession.self, from: data)
+        }
+        #expect(workspace.previousMobileTaskSession(connection) == nil)
+        workspace.rememberOpenedMobileTask(connection, sessionID: "session:first")
+        #expect(workspace.previousMobileTaskSession(connection) == "session:first")
+        workspace.rememberOpenedMobileTask(connection, sessionID: "discussion")
+        #expect(workspace.previousMobileTaskSession(connection) == "session:first")
+        workspace.rememberOpenedMobileTask(connection, sessionID: "session:second")
+        #expect(workspace.previousMobileTaskSession(connection) == "session:second")
+        workspace.tasks[1] = try task("second", "session:rebound")
+        #expect(workspace.previousMobileTaskSession(connection) == "session:rebound")
+        workspace.sessionsByID.removeValue(forKey: "session:rebound")
+        #expect(workspace.previousMobileTaskSession(connection) == nil)
+        connection.serverID = "other"
+        #expect(workspace.previousMobileTaskSession(connection) == nil)
+        connection.serverID = "server"
+        workspace.tasks.removeLast()
+        #expect(workspace.previousMobileTaskSession(connection) == nil)
+    }
     @Test func savedPairingDoesNotMakeInterruptedTransportLookConnected() {
         #expect(PadServerConnectionStatus.resolve(hasPairing: true,
             realtimeConnected: false, reconnectFailed: false) == .connecting)

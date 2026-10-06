@@ -26,6 +26,24 @@ enum PadTimelineJumpPolicy {
         return tailMinY >= -1 && tailMinY <= viewportHeight + 1 && distanceToBottom <= 24
     }
 }
+
+enum PadWorkReturnSwipePolicy {
+    static func opensPreviousTask(horizontal: CGFloat, vertical: CGFloat) -> Bool {
+        horizontal <= -64 && abs(horizontal) > abs(vertical) * 1.5
+    }
+}
+
+enum PadConversationSwipePolicy {
+    enum Destination { case taskList, detail }
+    static func isHorizontal(x: CGFloat, y: CGFloat) -> Bool {
+        x.isFinite && y.isFinite && abs(x) > abs(y) * 1.5
+    }
+    static func destination(horizontal: CGFloat, vertical: CGFloat, contentOwnsGesture: Bool = false) -> Destination? {
+        guard !contentOwnsGesture, abs(horizontal) > 64,
+              isHorizontal(x: horizontal, y: vertical) else { return nil }
+        return horizontal > 0 ? .taskList : .detail
+    }
+}
 import CorptieConversation
 
 enum PadServerConnectionStatus: Equatable {
@@ -414,6 +432,25 @@ final class PadWorkspace {
     }
     var before: String?
     var capabilities: ClientSessionCapabilities?
+    @ObservationIgnored var lastOpenedMobileTaskID: String?
+    @ObservationIgnored var lastOpenedMobileTaskScope: String?
+
+    func rememberOpenedMobileTask(_ connection: PadConnection, sessionID: String) {
+        guard let task = tasks.first(where: {
+            (sessionIDByTaskID[$0.id] ?? $0.currentSessionId) == sessionID
+        }) else { return }
+        lastOpenedMobileTaskID = task.id
+        lastOpenedMobileTaskScope = connection.serverID + "|" + (connection.deviceID ?? "")
+    }
+
+    func previousMobileTaskSession(_ connection: PadConnection) -> String? {
+        guard lastOpenedMobileTaskScope == connection.serverID + "|" + (connection.deviceID ?? ""),
+              let taskID = lastOpenedMobileTaskID,
+              let task = tasks.first(where: { $0.id == taskID }), task.deletionStatus == nil,
+              let sessionID = sessionIDByTaskID[taskID] ?? task.currentSessionId,
+              !sessionIsKnownUnavailable(sessionID) else { return nil }
+        return sessionID
+    }
     var capabilityRefreshRevision = 0
     var capabilityRefreshError: String?
     var refreshingCapabilities = false
@@ -815,6 +852,7 @@ final class PadWorkspace {
     @ObservationIgnored private var reconciliationRun: UUID?
     @ObservationIgnored private var receiptReadInFlight = false
     @ObservationIgnored let messageOutbox: ReliableMessageOutbox
+    @ObservationIgnored let messageDeliveryLifetime = PadMessageDeliveryLifetime()
     @ObservationIgnored let persistentTimelineCache: PersistentTimelineCache
     @ObservationIgnored private var persistentTimelineScope: String?
     var outboxSaving = false
