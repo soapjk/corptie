@@ -3,6 +3,41 @@ import RectanglePacking
 
 struct WorkPackingID: LayoutValueKey { static let defaultValue = "" }
 
+/// Native grid owns Task arrangement; the existing canvas only places Works.
+/// Width depends on viewport and count, never streamed text or selection.
+enum WorkTaskGridMetrics {
+    static let minimumCardWidth: CGFloat = 192
+    static let maximumCardWidth: CGFloat = 264
+    static let spacing: CGFloat = 8
+    static let groupHorizontalPadding: CGFloat = 24
+    static let maximumContentWidth: CGFloat = 792 - groupHorizontalPadding
+
+    static func contentWidth(itemCount: Int, availableWidth: CGFloat) -> CGFloat {
+        let count = CGFloat(min(3, max(1, itemCount)))
+        let preferred = min(maximumContentWidth, count * maximumCardWidth + (count - 1) * spacing)
+        let available = availableWidth.isFinite ? max(1, availableWidth - groupHorizontalPadding) : preferred
+        return min(preferred, available)
+    }
+}
+
+struct WorkTaskCardGrid<Content: View>: View {
+    let itemCount: Int
+    let availableWidth: CGFloat
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        let width = WorkTaskGridMetrics.contentWidth(itemCount: itemCount, availableWidth: availableWidth)
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: min(WorkTaskGridMetrics.minimumCardWidth, width),
+                                               maximum: WorkTaskGridMetrics.maximumCardWidth),
+                                    spacing: WorkTaskGridMetrics.spacing, alignment: .top)],
+                  alignment: .leading, spacing: WorkTaskGridMetrics.spacing) {
+            content
+        }
+        .frame(width: width, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
 /// Size one Task from its content, independently of siblings and the viewport.
 /// Arrangement belongs to SwiftUI's VStack, not the rectangle packing engine.
 struct ContentSizedTaskCardLayout: Layout {
