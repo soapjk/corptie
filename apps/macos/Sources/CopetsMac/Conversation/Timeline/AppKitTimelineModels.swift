@@ -258,7 +258,7 @@ enum ChatBubbleWidthPolicy {
         let fullAvailableWidth = MessageBubbleWidthPolicy.fullAvailableWidth(laneWidth: availableWidth)
         if row.nativeStyle == .process {
             let summaryWidth = ceil((row.processPrimarySummary as NSString).size(withAttributes: [
-                .font: NSFont.systemFont(ofSize: 10.5, weight: .medium)
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)
             ]).width)
             let secondaryWidth = row.processCurrentStepTitle.map {
                 ceil(($0 as NSString).size(withAttributes: [
@@ -270,6 +270,14 @@ enum ChatBubbleWidthPolicy {
                     .font: NSFont.systemFont(ofSize: 9, weight: .semibold)
                 ]).width)
             } ?? 0
+            if !row.isExpanded {
+                // Match ProcessCard's monospaced digits and allow its complete
+                // single-line heading to determine the collapsed card width.
+                // Do not apply the expanded body/viewport ceiling to this label.
+                return max(MessageBubbleWidthPolicy.minimumWidth,
+                    summaryWidth + (progressWidth > 0 ? progressWidth + 8 : 0) + 66,
+                    secondaryWidth > 0 ? secondaryWidth + 40 : 0)
+            }
             return MessageBubbleWidthPolicy.processCardWidth(
                 summaryWidth: summaryWidth,
                 secondaryWidth: secondaryWidth,

@@ -570,6 +570,8 @@ final class NativeTimelineLayoutCache {
     static func processSummaryExtraHeight(for row: AppKitChatTimelineRow,
                                           cardWidth: CGFloat,
                                           includesCurrentStep: Bool = false) -> CGFloat {
+        // Collapsed headers truncate on one line and never need wrapping height.
+        guard row.isExpanded else { return 0 }
         let progressWidth = row.processPlanProgressLabel.map {
             ceil(($0 as NSString).size(withAttributes: [
                 .font: NSFont.systemFont(ofSize: 9, weight: .semibold)

@@ -107,8 +107,16 @@ public struct ProcessCard<Details: View>: View {
                         ProcessCardSummaryLabel(summary: summary, override: summaryOverride, liveSummary: liveSummary)
                             .font(.system(size: summarySize, weight: .medium)).monospacedDigit()
                             .foregroundStyle(.primary)
+                            #if os(macOS)
+                            .lineLimit(expanded ? nil : 1)
+                            #else
                             .lineLimit(nil)
+                            #endif
+                            #if os(macOS)
+                            .fixedSize(horizontal: !expanded, vertical: true)
+                            #else
                             .fixedSize(horizontal: false, vertical: true)
+                            #endif
                             .layoutPriority(1)
                         if let progressLabel {
                             Text(progressLabel).font(.system(size: progressSize, weight: .semibold))

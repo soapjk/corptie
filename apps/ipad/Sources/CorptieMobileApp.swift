@@ -121,7 +121,18 @@ struct PairingView: View {
                     Section("已配对的 Mac") {
                         Text(connection.address).font(.footnote)
                         Button("连接") { Task { await connection.reconnect() } }
+                            .disabled(connection.lanConnecting || connection.busy)
                     }.disabled(connection.claim != nil)
+                }
+                if connection.lanConnecting || !connection.lanConnectionNotice.isEmpty {
+                    Section {
+                        if connection.lanConnecting { ProgressView("正在恢复局域网连接…") }
+                        if !connection.lanConnectionNotice.isEmpty {
+                            Text(connection.lanConnectionNotice).font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .accessibilityIdentifier("lan-connection-status")
+                        }
+                    }
                 }
                 DisclosureGroup("手动连接（高级）") {
                     TextField("HTTPS 地址（含端口）", text: $connection.address)
