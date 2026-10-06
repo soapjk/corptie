@@ -331,6 +331,7 @@ final class NativeTimelineLayoutCache {
         let collaborationRoute: NativeCollaborationRoutePresentation?
         let processCount: Int?
         let processDuration: String?
+        let processLanguageCode: String?
         let processState: AppKitChatTimelineRow.ProcessState
         let processCurrentStepTitle: String?
         let processSteps: [NativeExecutionTimelineStep]
@@ -390,6 +391,7 @@ final class NativeTimelineLayoutCache {
             collaborationRoute: row.collaborationRoute,
             processCount: row.processCount,
             processDuration: row.processDuration,
+            processLanguageCode: row.processLanguageCode,
             processState: row.processState,
             processCurrentStepTitle: row.processCurrentStepTitle,
             processSteps: row.isExpanded ? row.processSteps : [],
@@ -521,13 +523,16 @@ final class NativeTimelineLayoutCache {
             rawStatusHeight = 0
         }
         let rowHeight: CGFloat
+        let processSummaryExtraHeight: CGFloat = row.nativeStyle == .process
+            ? Self.processSummaryExtraHeight(for: row, cardWidth: cardWidth,
+                includesCurrentStep: !MacSharedMessageTextCard.supportsProcess(row)) : 0
         if row.nativeStyle == .process && !row.isExpanded {
-            rowHeight = row.processCurrentStepTitle == nil ? 32 : 48
+            rowHeight = (row.processCurrentStepTitle == nil ? 32 : 48) + processSummaryExtraHeight
         } else {
             // This exactly matches the native cell's 10pt leading/trailing
             // constraints and the NativeTimelineTextView's TextKit container.
             if row.nativeStyle == .process {
-                rowHeight = max(54, textHeight + 48
+                rowHeight = max(54, textHeight + 48 + processSummaryExtraHeight
                     + (row.processCurrentStepTitle == nil ? 0 : 16)
                     + (rawStatusHeight > 0 ? rawStatusHeight + 8 : 0))
             } else {
@@ -560,6 +565,27 @@ final class NativeTimelineLayoutCache {
             + processBlocks.reduce(0) { $0 + $1.attributedText.length * 8 } + 192
         evictIfNeeded()
         return layout
+    }
+
+    static func processSummaryExtraHeight(for row: AppKitChatTimelineRow,
+                                          cardWidth: CGFloat,
+                                          includesCurrentStep: Bool = false) -> CGFloat {
+        let progressWidth = row.processPlanProgressLabel.map {
+            ceil(($0 as NSString).size(withAttributes: [
+                .font: NSFont.systemFont(ofSize: 9, weight: .semibold)
+            ]).width)
+        } ?? 0
+        // ProcessCard keeps the icon, progress label and chevron on the same
+        // HStack; only the summary wraps inside the remaining native row width.
+        let summaryWidth = max(20, cardWidth - 76 - progressWidth)
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)
+        let summary = includesCurrentStep ? row.processSummary : row.processPrimarySummary
+        let measuredHeight = ceil((summary as NSString).boundingRect(
+            with: NSSize(width: summaryWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font]
+        ).height) + 2
+        return max(0, measuredHeight - 22)
     }
 
     private func userInputHeight(_ request: ConversationUserInput, status: String?, cardWidth: CGFloat) -> CGFloat {

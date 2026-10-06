@@ -21,6 +21,10 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     private var baseDirectory: String?
     private weak var tableView: NSTableView?
     private weak var scrollView: NSScrollView?
+    private weak var processCollapseButton: NSButton?
+    private var visibleProcessCollapseRowID: String?
+    private var pendingProcessCollapseRowID: String?
+    private var hasExpandedProcessRows = false
     private var rows: [AppKitChatTimelineRow] = []
     private var canAdvanceProcessClock: Bool
     private var processClockTimer: Timer?
@@ -158,6 +162,10 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         suppressesNearTopTrigger = false
         representedSessionID = sessionID
         rows.removeAll(keepingCapacity: true)
+        hasExpandedProcessRows = false
+        visibleProcessCollapseRowID = nil
+        pendingProcessCollapseRowID = nil
+        processCollapseButton?.isHidden = true
         synchronizeProcessClock()
         revisionsByID.removeAll(keepingCapacity: true)
         lastPublishedPosition = nil
@@ -235,6 +243,19 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     func attach(tableView: NSTableView, scrollView: NSScrollView) {
         self.tableView = tableView
         self.scrollView = scrollView
+        let collapseButton = NSButton(title: L10n("Collapse"), target: self,
+                                      action: #selector(collapseVisibleProcess))
+        collapseButton.image = NSImage(systemSymbolName: "chevron.up", accessibilityDescription: nil)
+        collapseButton.imagePosition = .imageLeading
+        collapseButton.bezelStyle = .rounded
+        collapseButton.controlSize = .small
+        collapseButton.font = .systemFont(ofSize: 11, weight: .semibold)
+        collapseButton.frame.size = NSSize(width: 80, height: 32)
+        collapseButton.identifier = NSUserInterfaceItemIdentifier("chat.timeline.process-follow-collapse")
+        collapseButton.setAccessibilityLabel(L10n("Collapse") + " · " + L10n("Execution process"))
+        collapseButton.isHidden = true
+        scrollView.addSubview(collapseButton, positioned: .above, relativeTo: scrollView.contentView)
+        processCollapseButton = collapseButton
         if let firstLayoutScrollView = scrollView as? FirstLayoutRestoringScrollView {
             firstLayoutScrollView.onLayout = { [weak self] in
                 self?.restoreInitialViewportSynchronouslyIfNeeded()
@@ -297,6 +318,14 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         for cell in cellsByKey.values {
             cell.updateLinkContext(baseDirectory: normalized)
         }
+    }
+
+    func updateProcessCollapseLocalization() {
+        guard let button = processCollapseButton else { return }
+        let title = L10n("Collapse")
+        guard button.title != title else { return }
+        button.title = title
+        button.setAccessibilityLabel(title + " · " + L10n("Execution process"))
     }
 
     private static func normalizedBaseDirectory(_ value: String?) -> String? {
@@ -418,7 +447,8 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
 
     func apply(rows nextRows: [AppKitChatTimelineRow], animated: Bool = false) {
         let nextRows = ConversationTimeSeparatorPolicy.applying(to: Self.uniquedRows(nextRows))
-        defer { synchronizeProcessClock() }
+        hasExpandedProcessRows = nextRows.contains { $0.nativeStyle == .process && $0.isExpanded }
+        defer { synchronizeProcessClock(); updateProcessCollapseButton() }
         suppressNearTopDuringLayout()
         guard let tableView else {
             rows = nextRows
@@ -439,9 +469,9 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         // physical bottom must not strand a completed reply below the
         // visible document. Only an empty projection has no geometry to
         // consult, so it falls back to the semantic flag.
-        let shouldFollowAfterUpdate = rows.isEmpty
+        let shouldFollowAfterUpdate = pendingProcessCollapseRowID == nil && (rows.isEmpty
             ? followedLatestBeforeUpdate
-            : isViewportNearBottom()
+            : isViewportNearBottom())
         synchronizeTableWidth()
         let width = tableView.tableColumns.first?.width ?? tableView.bounds.width
         let hasPendingInitialViewport = pendingRestorePosition != nil || pendingInitialScrollToBottom
@@ -487,7 +517,10 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                 in: tableView
             )
             synchronizeDocumentHeight(in: tableView)
-            if shouldFollowAfterUpdate, !pendingInitialScrollToBottom {
+            if let rowID = pendingProcessCollapseRowID {
+                pendingProcessCollapseRowID = nil
+                scrollToProcessRow(rowID)
+            } else if shouldFollowAfterUpdate, !pendingInitialScrollToBottom {
                 scrollToBottom()
             } else if let returningFromEmptyProjection {
                 deferredEmptyProjectionViewport = nil
@@ -551,7 +584,10 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         }
         tableView.noteHeightOfRows(withIndexesChanged: changed)
         synchronizeDocumentHeight(in: tableView)
-        if shouldFollowAfterUpdate,
+        if let rowID = pendingProcessCollapseRowID {
+            pendingProcessCollapseRowID = nil
+            scrollToProcessRow(rowID)
+        } else if shouldFollowAfterUpdate,
            !pendingInitialScrollToBottom {
             scrollToBottom()
         } else if let prependAnchor {
@@ -849,7 +885,69 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     }
 
     @objc private func viewportBoundsDidChange(_ notification: Notification) {
+        updateProcessCollapseButton()
         viewportDidScroll()
+    }
+
+    @objc private func collapseVisibleProcess() {
+        guard let rowID = visibleProcessCollapseRowID,
+              let turnID = rows.first(where: { $0.id == rowID })?.expandableTurnId else { return }
+        // The click is explicit reader intent. The row-height update must land
+        // on this compact card, not restore an offset inside its removed body.
+        claimViewportIntent()
+        followsLatest = false
+        if followsLatestBinding.wrappedValue { followsLatestBinding.wrappedValue = false }
+        pendingProcessCollapseRowID = rowID
+        processCollapseButton?.isHidden = true
+        onToggleExpansion(turnID)
+    }
+
+    private func updateProcessCollapseButton() {
+        guard hasExpandedProcessRows,
+              let tableView, let scrollView, let button = processCollapseButton,
+              let column = tableView.tableColumns.first, !rows.isEmpty else {
+            processCollapseButton?.isHidden = true
+            visibleProcessCollapseRowID = nil
+            return
+        }
+        let clip = scrollView.contentView
+        let visible = tableView.convert(clip.bounds, from: clip)
+        let readable = NSRect(x: visible.minX, y: visible.minY + topClearance,
+                              width: visible.width,
+                              height: max(0, visible.height - topClearance - bottomClearance))
+        let range = tableView.rows(in: readable)
+        guard range.location != NSNotFound else {
+            button.isHidden = true
+            visibleProcessCollapseRowID = nil
+            return
+        }
+        let cardWidth = MessageBubbleWidthPolicy.processCardWidth(
+            summaryWidth: 0, expanded: true, laneWidth: column.width)
+        let candidates: [ProcessCollapseCandidate] = (range.location..<min(rows.count, range.location + range.length))
+            .compactMap { index in
+                let row = rows[index]
+                guard row.nativeStyle == .process, row.isExpanded,
+                      row.expandableTurnId != nil else { return nil }
+                let rowRect = tableView.rect(ofRow: index)
+                return ProcessCollapseCandidate(id: row.id,
+                    frame: CGRect(x: rowRect.minX + 2,
+                                  y: rowRect.minY + row.timeSeparatorHeight,
+                                  width: cardWidth,
+                                  height: max(0, rowRect.height - row.timeSeparatorHeight)),
+                    headerHeight: row.processCurrentStepTitle == nil ? 32 : 48)
+            }
+        guard let placement = ProcessCollapsePlacementPolicy.placement(
+            candidates: candidates, viewport: readable,
+            handleSize: button.frame.size) else {
+            button.isHidden = true
+            visibleProcessCollapseRowID = nil
+            return
+        }
+        visibleProcessCollapseRowID = placement.id
+        let buttonRect = NSRect(origin: placement.origin, size: button.frame.size)
+        let converted = tableView.convert(buttonRect, to: scrollView)
+        if button.frame != converted { button.frame = converted }
+        button.isHidden = false
     }
 
     /// User input is the highest viewport authority. Cancel every queued
@@ -907,6 +1005,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
 
     @objc private func containerFrameDidChange(_ notification: Notification) {
         synchronizeTableWidth()
+        updateProcessCollapseButton()
         reconcileLayout()
         scheduleUnderfilledHistoryEvaluation()
     }
@@ -1070,10 +1169,19 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     }
 
     func scrollToTurn(_ turnID: String) {
+        guard let row = AppKitChatTimelineView.rowIndex(forTurnID: turnID, in: rows) else { return }
+        scrollToRow(row)
+    }
+
+    private func scrollToProcessRow(_ rowID: String) {
+        guard let row = rows.firstIndex(where: { $0.id == rowID }) else { return }
+        scrollToRow(row)
+    }
+
+    private func scrollToRow(_ row: Int) {
         guard !isProcessingUserScrollEvent,
               let tableView,
-              let clipView = scrollView?.contentView,
-              let row = AppKitChatTimelineView.rowIndex(forTurnID: turnID, in: rows) else { return }
+              let clipView = scrollView?.contentView else { return }
         claimViewportIntent()
         pendingRestorePosition = nil
         pendingInitialScrollToBottom = false

@@ -5,6 +5,33 @@ import CorptieClientCore
 
 @MainActor
 struct PadTimelineProjectionTests {
+    @Test func longProcessCollapseTracksOnlyExpandedCardBoundaries() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CorptieMobileApp.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+        #expect(contents.contains("ProcessCollapseCandidate(id: entryID"))
+        #expect(contents.contains("ProcessCollapsePlacementPolicy.placement("))
+        #expect(contents.contains("reader.scrollTo(entryID, anchor: .top)"))
+        let stepStart = try #require(contents.range(of: "private struct PadExecutionStepCard: View"))
+        #expect(!contents[stepStart.lowerBound...].contains("ProcessCollapseCandidate("))
+    }
+
+    @Test func processSummaryUsesTheUsersPreferredLanguage() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CorptieMobileApp.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+        let start = try #require(contents.range(of: "private struct PadProcessCard: View"))
+        let end = try #require(contents.range(of: "private struct TimelineHistoryViewportState"))
+        let card = contents[start.lowerBound..<end.lowerBound]
+        #expect(card.contains("Locale.preferredLanguages.first ?? \"en\""))
+        #expect(!card.contains("locale.language.languageCode"))
+        #expect(card.components(separatedBy: ".summary(languageCode: languageCode)").count - 1 == 3)
+    }
+
     @Test func workExpansionStartsCollapsedAndRestoresOnlySavedWorkIDs() {
         let name = "pad-work-expansion-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
