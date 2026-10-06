@@ -171,6 +171,9 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         processButton.alignment = .left
         processButton.imagePosition = .imageLeading
         processButton.imageHugsTitle = true
+        processButton.cell?.usesSingleLineMode = false
+        processButton.cell?.wraps = true
+        processButton.cell?.lineBreakMode = .byWordWrapping
         processButton.target = self
         processButton.action = #selector(toggleDisclosure)
         processButton.identifier = NSUserInterfaceItemIdentifier("chat.timeline.process")
@@ -413,7 +416,8 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         processSeparator.isHidden = !hasProcess || isStandaloneProcess
         processButton.isHidden = !hasProcess
         processSeparatorHeight.constant = hasProcess && !isStandaloneProcess ? 1 : 0
-        processButtonHeight.constant = hasProcess ? 22 : 0
+        processButtonHeight.constant = hasProcess ? 22 + NativeTimelineLayoutCache.processSummaryExtraHeight(
+            for: row, cardWidth: layout.cardWidth, includesCurrentStep: true) : 0
         if row.processCount != nil {
             processButton.image = NSImage(
                 systemSymbolName: row.processState.symbolName,
@@ -478,11 +482,14 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
 
     private func setProcessSummary(_ summary: String, expanded: Bool) {
         processButton.setAccessibilityLabel(summary)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byWordWrapping
         processButton.attributedTitle = NSAttributedString(
             string: "  \(summary)    \(expanded ? "⌄" : "›")",
             attributes: [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium),
-                .foregroundColor: NativeTimelineCardPalette.secondaryText
+                .foregroundColor: NativeTimelineCardPalette.secondaryText,
+                .paragraphStyle: paragraph
             ]
         )
     }

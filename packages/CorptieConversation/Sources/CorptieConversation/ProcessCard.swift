@@ -14,6 +14,52 @@ public final class ProcessCardSummary {
     public init(text: String? = nil) { self.text = text }
 }
 
+/// Viewport geometry for the one visible, expanded process card that can be
+/// collapsed after its ordinary disclosure header has scrolled away.
+public struct ProcessCollapseCandidate: Equatable, Sendable {
+    public let id: String
+    public let frame: CGRect
+    public let headerHeight: CGFloat
+
+    public init(id: String, frame: CGRect, headerHeight: CGFloat) {
+        self.id = id
+        self.frame = frame
+        self.headerHeight = headerHeight
+    }
+}
+
+public struct ProcessCollapsePlacement: Equatable, Sendable {
+    public let id: String
+    public let origin: CGPoint
+}
+
+public enum ProcessCollapsePlacementPolicy {
+    public static func placement(candidates: [ProcessCollapseCandidate], viewport: CGRect,
+                                 handleSize: CGSize, margin: CGFloat = 10) -> ProcessCollapsePlacement? {
+        guard viewport.width > 0, viewport.height > 0 else { return nil }
+        let centerY = viewport.midY
+        var selected: (placement: ProcessCollapsePlacement, containsCenter: Bool, visibleHeight: CGFloat)?
+        for candidate in candidates {
+            let visible = candidate.frame.intersection(viewport)
+            guard !visible.isNull, visible.height >= max(68, handleSize.height + 2 * margin),
+                  visible.width >= handleSize.width + 2 * margin,
+                  candidate.frame.minY + candidate.headerHeight <= viewport.minY - 8 else { continue }
+            let placement = ProcessCollapsePlacement(id: candidate.id, origin: CGPoint(
+                x: visible.maxX - handleSize.width - margin,
+                y: visible.maxY - handleSize.height - margin
+            ))
+            let containsCenter = visible.minY <= centerY && visible.maxY >= centerY
+            if let current = selected {
+                if current.containsCenter && !containsCenter { continue }
+                if current.containsCenter == containsCenter,
+                   current.visibleHeight >= visible.height { continue }
+            }
+            selected = (placement, containsCenter, visible.height)
+        }
+        return selected?.placement
+    }
+}
+
 public struct ProcessCard<Details: View>: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ScaledMetric(relativeTo: .caption) private var summarySize: CGFloat = 10.5
@@ -61,7 +107,9 @@ public struct ProcessCard<Details: View>: View {
                         ProcessCardSummaryLabel(summary: summary, override: summaryOverride, liveSummary: liveSummary)
                             .font(.system(size: summarySize, weight: .medium)).monospacedDigit()
                             .foregroundStyle(.primary)
-                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                            .lineLimit(nil)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .layoutPriority(1)
                         if let progressLabel {
                             Text(progressLabel).font(.system(size: progressSize, weight: .semibold))
                                 .foregroundStyle(tint)

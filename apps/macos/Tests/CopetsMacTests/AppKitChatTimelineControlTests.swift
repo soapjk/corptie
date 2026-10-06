@@ -343,10 +343,8 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let messageActions = try XCTUnwrap(view(in: messageCell, identifier: "chat.timeline.message-actions"))
         XCTAssertTrue(messageActions.isHidden)
 
-        XCTAssertEqual(
-            harness.coordinator.tableView(harness.tableView, heightOfRow: 1),
-            32
-        )
+        let processRowHeight = harness.coordinator.tableView(harness.tableView, heightOfRow: 1)
+        XCTAssertGreaterThanOrEqual(processRowHeight, 32)
         let processCell = try XCTUnwrap(
             harness.coordinator.tableView(harness.tableView, viewFor: harness.tableView.tableColumns[0], row: 1)
                 as? AppKitChatNativeTextCell
@@ -359,6 +357,40 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             .summary
         XCTAssertTrue(processButton.attributedTitle.string.contains(expected))
         XCTAssertLessThan(processCell.subviews[0].frame.width, harness.tableView.tableColumns[0].width)
+    }
+
+    func testLongProcessCanCollapseFromItsVisibleMiddleWithoutReturningToHeader() throws {
+        var toggledTurnID: String?
+        let harness = makeHarness(followsLatest: false, height: 240,
+                                  onToggle: { toggledTurnID = $0 })
+        let longText = Array(repeating: "Execution detail with a long result that wraps inside the card.",
+                             count: 100).joined(separator: "\n")
+        let process = AppKitChatTimelineRow(id: "long-process", contentRevision: 1,
+            nativeText: longText, copyText: longText, nativeStyle: .process,
+            title: "", metadata: "", expandableTurnId: "long-turn", isExpanded: true,
+            processCount: 100, processDuration: "2m")
+        harness.coordinator.apply(rows: [process])
+        harness.window.layoutIfNeeded()
+        harness.scrollView.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(harness.tableView.rect(ofRow: 0).height, 600)
+
+        let clip = harness.scrollView.contentView
+        clip.scroll(to: NSPoint(x: 0, y: 200))
+        harness.scrollView.reflectScrolledClipView(clip)
+        let collapse = try XCTUnwrap(button(in: harness.scrollView,
+            identifier: "chat.timeline.process-follow-collapse"))
+        XCTAssertFalse(collapse.isHidden)
+        XCTAssertTrue(harness.scrollView.bounds.intersects(collapse.frame))
+        collapse.performClick(nil)
+        XCTAssertEqual(toggledTurnID, "long-turn")
+
+        let compact = AppKitChatTimelineRow(id: "long-process", contentRevision: 2,
+            nativeText: longText, copyText: longText, nativeStyle: .process,
+            title: "", metadata: "", expandableTurnId: "long-turn", isExpanded: false,
+            processCount: 100, processDuration: "2m")
+        harness.coordinator.apply(rows: [compact])
+        XCTAssertTrue(collapse.isHidden)
+        XCTAssertLessThanOrEqual(clip.bounds.minY, 10)
     }
 
     func testCollaborationCardShowsHeaderMetadataAndDistinctVisualTreatment() throws {

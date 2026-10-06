@@ -371,9 +371,32 @@ final class SharedExecutionTextTests: XCTestCase {
             processCount: 2, processState: .running,
             processCurrentStepTitle: "Verify the result", showsHeader: false)
         let layout = NativeTimelineLayoutCache.shared.layout(for: collapsed, columnWidth: 480)
-        XCTAssertEqual(layout.rowHeight, 48)
+        XCTAssertGreaterThanOrEqual(layout.rowHeight, 48)
         XCTAssertEqual(collapsed.id, "process:current")
         XCTAssertFalse(collapsed.processPrimarySummary.contains("Verify the result"))
+    }
+
+    func testCollapsedProcessSummaryWrapsWithinTheCachedNativeRow() {
+        var row = AppKitChatTimelineRow(id: "process:long-summary", contentRevision: 1,
+            nativeText: "", copyText: "", nativeStyle: .process,
+            title: "", metadata: "", expandableTurnId: "turn:long-summary", isExpanded: false,
+            processCount: 999, processDuration: "123456h 59m 59.99s", showsHeader: false)
+        row.processLanguageCode = "en"
+        let narrow = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 140)
+        XCTAssertGreaterThan(narrow.rowHeight, 32)
+        XCTAssertEqual(narrow.rowHeight,
+            NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 140).rowHeight)
+
+        var localized = AppKitChatTimelineRow(id: "process:localized-summary", contentRevision: 1,
+            nativeText: "", copyText: "", nativeStyle: .process,
+            title: "", metadata: "", expandableTurnId: "turn:localized-summary", isExpanded: false,
+            processCount: 1, processDuration: "1m 12.00s", showsHeader: false)
+        localized.processLanguageCode = "en"
+        let english = NativeTimelineLayoutCache.shared.layout(for: localized, columnWidth: 480)
+        localized.processLanguageCode = "zh-Hans"
+        let chinese = NativeTimelineLayoutCache.shared.layout(for: localized, columnWidth: 480)
+        XCTAssertNotEqual(english.cardWidth, chinese.cardWidth,
+            "Changing language must invalidate the cached process summary geometry")
     }
 
     func testLongToolResultKeepsTheNativeRowBounded() throws {
