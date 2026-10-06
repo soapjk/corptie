@@ -555,8 +555,9 @@ struct UnifiedConsoleControlSurfaceTests {
         ))
         let fields = source[fieldsStart.lowerBound..<fieldsEnd.lowerBound]
 
-        #expect(content.contains("ConversationEnvironmentCard(provider: currentProviderDisplayName"))
-        #expect(content.contains("actions: { compactProviderMenu }, statusContent: { providerSwitchStatus }"))
+        #expect(content.contains("ConversationEnvironmentCard(provider: { providerPicker }"))
+        #expect(content.contains("actions: { EmptyView() }, statusContent: { providerSwitchStatus }"))
+        #expect(!content.contains("compactProviderMenu"))
         #expect(content.contains("workspacePath: session.external?.cwd"))
         #expect(fields.contains("(\"Agent\", agentDisplayName)"))
         #expect(fields.contains("(\"工作空间\", compactPath(cwd))"))

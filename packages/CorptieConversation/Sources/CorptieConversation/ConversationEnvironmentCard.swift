@@ -1,18 +1,18 @@
 import SwiftUI
 
-public struct ConversationEnvironmentCard<Actions: View, StatusContent: View>: View {
-    public let provider: String?
+public struct ConversationEnvironmentCard<ProviderContent: View, Actions: View, StatusContent: View>: View {
     public let agent: String?
     public let model: String?
     public let reasoning: String?
     public let workspacePath: String?
+    private let providerContent: ProviderContent
     private let actions: Actions
     private let statusContent: StatusContent
 
-    public init(provider: String?, agent: String?, model: String?, reasoning: String?,
+    public init(@ViewBuilder provider: () -> ProviderContent, agent: String?, model: String?, reasoning: String?,
                 workspacePath: String?, @ViewBuilder actions: () -> Actions,
                 @ViewBuilder statusContent: () -> StatusContent) {
-        self.provider = provider
+        self.providerContent = provider()
         self.agent = agent
         self.model = model
         self.reasoning = reasoning
@@ -23,7 +23,7 @@ public struct ConversationEnvironmentCard<Actions: View, StatusContent: View>: V
 
     public var body: some View {
         ConversationDetailModuleCard(title: "工作空间与 Provider", systemImage: "cpu", headerActions: { actions }) {
-            if let provider, !provider.isEmpty { LabeledContent("Provider", value: provider) }
+            LabeledContent("Provider") { providerContent }
             if let agent, !agent.isEmpty { LabeledContent("Agent", value: agent) }
             if let model, !model.isEmpty { LabeledContent("模型", value: model) }
             if let reasoning, !reasoning.isEmpty { LabeledContent("推理强度", value: reasoning) }
@@ -39,7 +39,7 @@ public struct ConversationEnvironmentCard<Actions: View, StatusContent: View>: V
 }
 
 public extension ConversationEnvironmentCard where StatusContent == EmptyView {
-    init(provider: String?, agent: String?, model: String?, reasoning: String?,
+    init(@ViewBuilder provider: () -> ProviderContent, agent: String?, model: String?, reasoning: String?,
          workspacePath: String?, @ViewBuilder actions: () -> Actions) {
         self.init(provider: provider, agent: agent, model: model, reasoning: reasoning,
             workspacePath: workspacePath, actions: actions, statusContent: { EmptyView() })
