@@ -541,12 +541,17 @@ export class GitWorkspaceManager {
   }
 
   async commitIntegrationChanges(input) {
+    const legacyHookRepair = await this.repairLegacyArtifactHookPollution(input.path);
     const currentHead = (await this.gitOutput(input.path, ["rev-parse", "--verify", "HEAD"])).trim();
     const marker = `Corptie-Integration-Job: ${input.jobId}`;
     if (currentHead !== input.expectedHead) {
       const body = await this.gitOutput(input.path, ["show", "-s", "--format=%B", "HEAD"]);
-      if (body.includes(marker)) return { committed: true, recovered: true, headOid: currentHead };
-      throw integrationGitError("WORKTREE_HEAD_CHANGED", "The Worktree HEAD changed after confirmation.");
+      if (body.includes(marker) && !legacyHookRepair.repaired) {
+        return { committed: true, recovered: true, headOid: currentHead };
+      }
+      if (!(body.includes(marker) && legacyHookRepair.repaired)) {
+        throw integrationGitError("WORKTREE_HEAD_CHANGED", "The Worktree HEAD changed after confirmation.");
+      }
     }
     const operationState = await this.integrationOperationState(input.path);
     if (operationState) {
@@ -554,7 +559,7 @@ export class GitWorkspaceManager {
     }
     const status = (await this.gitOutput(input.path, ["status", "--porcelain=v1"])).trim();
     if (!status) return { committed: false, recovered: false, headOid: currentHead };
-    if (input.expectedStatusSummary != null && status !== input.expectedStatusSummary.trim()) {
+    if (!legacyHookRepair.repaired && input.expectedStatusSummary != null && status !== input.expectedStatusSummary.trim()) {
       throw integrationGitError("WORKTREE_CHANGES_CHANGED", "The uncommitted changes changed after confirmation.");
     }
     try {
@@ -567,7 +572,29 @@ export class GitWorkspaceManager {
       throw integrationGitError("WORKTREE_COMMIT_FAILED", safeGitError(error, "Could not commit Worktree changes"));
     }
     const headOid = (await this.gitOutput(input.path, ["rev-parse", "--verify", "HEAD"])).trim();
-    return { committed: true, recovered: false, headOid };
+    return { committed: true, recovered: false, headOid, legacyHookPollutionRepaired: legacyHookRepair.repaired };
+  }
+
+  async repairLegacyArtifactHookPollution(path) {
+    const head = (await this.gitOutput(path, ["rev-parse", "--verify", "HEAD"])).trim();
+    const parents = (await this.gitOutput(path, ["show", "-s", "--format=%P", head])).trim().split(/\s+/u).filter(Boolean);
+    if (parents.length !== 1) return { repaired: false };
+    const parent = parents[0];
+    const body = await this.gitOutput(path, ["show", "-s", "--format=%B", head]);
+    if (!body.startsWith("Corptie: preserve changes in ") || !body.includes("Corptie-Integration-Job:")) {
+      return { repaired: false };
+    }
+    const entry = (await this.gitOutput(path, ["ls-tree", head, "--", "corptie-artifact-hooks"])).trim();
+    const match = entry.match(/^160000\s+commit\s+([0-9a-f]{40})\tcorptie-artifact-hooks$/u);
+    if (!match || match[1] !== parent) return { repaired: false };
+    if (await this.gitSucceeds(path, ["cat-file", "-e", `${parent}:corptie-artifact-hooks`])
+      || await this.gitSucceeds(path, ["cat-file", "-e", `${parent}:info/exclude`])) {
+      return { repaired: false };
+    }
+    const exclude = await this.gitOutput(path, ["show", `${head}:info/exclude`]).catch(() => null);
+    if (exclude !== "/.corptie/\n") return { repaired: false };
+    await this.runGit(path, ["rm", "--force", "--", "corptie-artifact-hooks", "info/exclude"]);
+    return { repaired: true, paths: ["corptie-artifact-hooks", "info/exclude"] };
   }
 
   async ignoreIntegrationMarkdownFile(input) {
