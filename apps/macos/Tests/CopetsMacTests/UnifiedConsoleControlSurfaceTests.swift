@@ -5,6 +5,23 @@ import Testing
 @testable import CorptieMac
 
 struct UnifiedConsoleControlSurfaceTests {
+    @Test
+    func cardGroupsUpdateAutomaticallyWithoutManualRefreshAndUseNativeTaskGrid() throws {
+        let console = try source(named: "UnifiedConsoleView.swift")
+        let workspace = try source(named: "ConsoleCardWorkspace.swift")
+        #expect(!console.contains("cardRefreshRevision"))
+        #expect(!console.contains("刷新重点 Task"))
+        #expect(!workspace.contains("refreshRevision"))
+        #expect(!workspace.contains("rebuild(reset:"))
+        for observer in [".onChange(of: tasks)", ".onChange(of: works)", ".onChange(of: sessions.map(CardSessionKey.init))"] {
+            #expect(workspace.contains(observer))
+        }
+        #expect(workspace.contains("WorkTaskCardGrid(itemCount: visibleTasks.count, availableWidth: availableWidth)"))
+        #expect(workspace.contains("ForEach(visibleTasks)"))
+        #expect(workspace.contains("groupInteraction(for: work.id, availableWidth: availableWidth)"))
+        #expect(!workspace.contains("ContentSizedTaskCardLayout { card(task) }"))
+    }
+
     @MainActor
     @Test
     func workHeaderBlankAreaClicksOnlyToggleDisclosure() throws {

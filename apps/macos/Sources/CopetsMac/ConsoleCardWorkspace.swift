@@ -2,6 +2,13 @@ import SwiftUI
 import Flow
 import CorptieConversation
 
+private struct WorkCanvasEntryRequest: Equatable {
+    let active: Bool
+    let ready: Bool
+    let ids: [String]
+    let size: CGSize
+}
+
 /// No transcript reads or per-card observers. Index on collection changes,
 /// derive attention membership without changing the selected conversation.
 struct ConsoleCardWorkspace<TaskMenu: View>: View {
@@ -16,7 +23,6 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     var sortMode: WorkOutlineSort = .standard
     var showsArchive = false
     @Binding var attentionCount: Int
-    let refreshRevision: Int
     let openChat: (TaskSession) -> Void
     let createChat: () -> Void
     let openTask: (CorptieTask, TaskSession?) -> Void
@@ -28,10 +34,26 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     @ObservedObject private var displayPreferences = TaskCardDisplayPreferences.shared
     @State private var clickHistory = TaskCardClickHistory()
     @State private var canvasPositions: [String: CGPoint] = Self.loadCanvasPositions()
+    @State private var filteredCanvasPositions: [String: CGPoint]? = nil
+    @State private var viewportState = WorkCanvasViewportState()
     @State private var frontWorkID: String?
     @State private var canvasDrag = WorkCanvasDragController()
     @State private var layoutSnapshot = WorkCanvasLayoutSnapshot()
     private static var canvasKey: String { "console.freeWorkCanvas.positions.v1" }
+    private static var anchorKey: String { "console.freeWorkCanvas.anchor.v1" }
+    private var isFilteredCanvas: Bool { !query.isEmpty || showsArchive }
+    private var canInitializeCanvas: Bool { reachable || !works.isEmpty || !sessions.isEmpty }
+    private var effectiveCanvasPositions: [String: CGPoint] { filteredCanvasPositions ?? canvasPositions }
+    private var canvasOrder: [String] {
+        (showsArchive ? [] : [Self.chatCardID]) + orderedWorks.map(\.id)
+    }
+    private var selectedCardID: String? {
+        if let selectedTaskID, let task = tasks.first(where: { $0.id == selectedTaskID }) {
+            return task.workId
+        }
+        guard let session = sessions.first(where: { $0.id == selectedSessionID }) else { return nil }
+        return session.resolvedSessionKind == .assistantChat ? Self.chatCardID : session.workId
+    }
     private static func loadCanvasPositions() -> [String: CGPoint] {
         guard let data = CorptieAppEnvironment.userDefaults.data(forKey: canvasKey),
               let positions = try? JSONDecoder().decode([String: CGPoint].self, from: data) else { return [:] }
@@ -40,6 +62,29 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     private func saveCanvasPositions() {
         if let data = try? JSONEncoder().encode(canvasPositions) {
             CorptieAppEnvironment.userDefaults.set(data, forKey: Self.canvasKey)
+        }
+    }
+
+    private func commitCanvasPositions(_ frames: [String: CGRect], anchorID: String) {
+        if isFilteredCanvas {
+            // Filtering is a temporary projection, not a rewrite of the full canvas.
+            filteredCanvasPositions = frames.mapValues(\.origin)
+        } else {
+            let validIDs = Set(works.map(\.id) + [Self.chatCardID])
+            canvasPositions = canvasPositions.filter { validIDs.contains($0.key) }
+                .merging(frames.mapValues(\.origin), uniquingKeysWith: { _, new in new })
+            saveCanvasPositions()
+            CorptieAppEnvironment.userDefaults.set(anchorID, forKey: Self.anchorKey)
+        }
+        layoutSnapshot.frames = frames
+    }
+
+    private func initializeCanvas(viewport: CGSize, ids: [String]) async {
+        guard isActive, canInitializeCanvas, viewportState.entryPending, canvasDrag.activeID == nil else { return }
+        await viewportState.initialize(snapshot: layoutSnapshot, viewport: viewport, ids: ids,
+            selectedID: selectedCardID,
+            previousAnchor: CorptieAppEnvironment.userDefaults.string(forKey: Self.anchorKey)) { frames, anchor in
+                commitCanvasPositions(frames, anchorID: anchor)
         }
     }
     @State private var retainedTasks: [String: CorptieTask] = [:]
@@ -100,9 +145,11 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                               .contentMargins(.leading, ConsoleOverlayScroller.leadingContentInset, for: .scrollContent)
                             } else {
                               InfiniteWorkCanvasViewport(origin: canvasOrigin, isActive: isActive,
-                                                         cardDragging: canvasDrag.activeID != nil) {
+                                                         cardDragging: canvasDrag.activeID != nil,
+                                                         viewportState: viewportState,
+                                                         layoutSnapshot: layoutSnapshot, selectedCardID: selectedCardID) {
                                 FreeWorkCanvasLayout(
-                                    positions: canvasPositions,
+                                    positions: effectiveCanvasPositions,
                                     viewport: CGSize(width: max(1, viewport.size.width - 20), height: max(1, viewport.size.height - 20)),
                                     worldOrigin: canvasOrigin,
                                     frozenFrames: canvasDrag.snapshot,
@@ -111,14 +158,14 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                                     if !showsArchive {
                                     ConsoleChatCanvasCard(sessions: chatSessions, selectedSessionID: selectedSessionID,
                                         isActive: isActive, openChat: openChat, createChat: createChat)
-                                        .modifier(groupInteraction(for: Self.chatCardID))
+                                        .modifier(groupInteraction(for: Self.chatCardID, availableWidth: max(1, viewport.size.width - 20)))
                                         .modifier(WorkCanvasMotionModifier(motion: canvasDrag.motion(for: Self.chatCardID),
                                             frozenSize: canvasDrag.snapshot[Self.chatCardID]?.size))
                                         .zIndex(frontWorkID == Self.chatCardID ? 1 : 0)
                                         .layoutValue(key: WorkPackingID.self, value: Self.chatCardID).id(Self.chatCardID)
                                     }
                                     ForEach(orderedWorks) { work in
-                                        group(work)
+                                        group(work, availableWidth: max(1, viewport.size.width - 20))
                                             .modifier(WorkCanvasMotionModifier(motion: canvasDrag.motion(for: work.id),
                                                 frozenSize: canvasDrag.snapshot[work.id]?.size))
                                             .transition(.opacity)
@@ -128,10 +175,14 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                                 }
                                 .coordinateSpace(name: "freeWorkCanvas")
                               }
+                              .task(id: WorkCanvasEntryRequest(active: isActive, ready: canInitializeCanvas,
+                                                             ids: canvasOrder, size: viewport.size)) {
+                                  await initializeCanvas(viewport: viewport.size, ids: canvasOrder)
+                              }
                             }
                     }
         }
-        .onAppear { if isActive { rebuild(reset: false) } }
+        .onAppear { if isActive { rebuild() } }
         .onChange(of: displayPreferences.taskIDs) { _, fixedIDs in
             // Fixing a Task supersedes a prior local dismissal of the same issue.
             let next = deferred.filter { !fixedIDs.contains($0.key) }
@@ -141,26 +192,31 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                     CorptieAppEnvironment.userDefaults.set(data, forKey: Self.deferredKey)
                 }
             }
-            if isActive { rebuild(reset: false) }
+            if isActive { rebuild() }
         }
         .onDisappear { canvasDrag.cancel() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in canvasDrag.cancel() }
-        .onChange(of: orderedWorks.map(\.id)) { _, _ in canvasDrag.cancel() }
-        .onChange(of: refreshRevision) { _, _ in if isActive { rebuild(reset: true) } }
-        .onChange(of: showsArchive) { _, _ in if isActive { rebuild(reset: false) } }
+        .onChange(of: Set(orderedWorks.map(\.id))) { _, _ in canvasDrag.cancel() }
+        .onChange(of: showsArchive) { _, _ in if isActive { rebuild() } }
+        .onChange(of: query) { _, _ in filteredCanvasPositions = nil }
+        .onChange(of: showsArchive) { _, _ in filteredCanvasPositions = nil }
+        .onChange(of: browsing?.id) { _, next in
+            if next == nil { viewportState.prepareForEntry() }
+        }
         .onChange(of: isActive) { _, active in
-            if active { rebuild(reset: false) } else { canvasDrag.cancel() }
+            if active { viewportState.prepareForEntry(); rebuild() }
+            else { viewportState.cancelAutomaticEntry(); canvasDrag.cancel() }
         }
         .onReceive(AppStateStore.shared.$isReachable.removeDuplicates()) { reachable = $0 }
         .onReceive(AppStateStore.shared.$syncError.removeDuplicates()) { syncError = $0 }
-        .onChange(of: tasks) { _, _ in if isActive { rebuild(reset: false) } }
-        .onChange(of: sessions.map(CardSessionKey.init)) { _, _ in if isActive { rebuild(reset: false) } }
-        .onChange(of: selectedTaskID) { _, _ in if isActive { rebuild(reset: false) } }
-        .onChange(of: works) { _, _ in if isActive { rebuild(reset: false) } }
+        .onChange(of: tasks) { _, _ in if isActive { rebuild() } }
+        .onChange(of: sessions.map(CardSessionKey.init)) { _, _ in if isActive { rebuild() } }
+        .onChange(of: selectedTaskID) { _, _ in if isActive { rebuild() } }
+        .onChange(of: works) { _, _ in if isActive { rebuild() } }
     }
 
     private var canvasOrigin: CGPoint {
-        let points = canvasDrag.snapshot.isEmpty ? Array(canvasPositions.values) : canvasDrag.snapshot.values.map(\.origin)
+        let points = canvasDrag.snapshot.isEmpty ? Array(effectiveCanvasPositions.values) : canvasDrag.snapshot.values.map(\.origin)
         return CGPoint(x: min(0, points.map(\.x).min() ?? 0), y: min(0, points.map(\.y).min() ?? 0))
     }
 
@@ -187,7 +243,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
         }
     }
 
-    private func rebuild(reset: Bool) {
+    private func rebuild() {
         latestActivityByWork = Dictionary(grouping: sessions.filter { $0.lastMessageAt != nil },
                                          by: { $0.workId ?? "" })
             .mapValues { $0.compactMap(\.lastMessageAt).max() ?? "" }
@@ -228,7 +284,6 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                 CorptieAppEnvironment.userDefaults.set(data, forKey: Self.deferredKey)
             }
         }
-        if reset { members = [:]; retainedTasks = [:]; workOrder = [] }
         let existingWorks = Set(works.map(\.id))
         members = members.filter { existingWorks.contains($0.key) }
         workOrder = workOrder.filter { existingWorks.contains($0) }
@@ -275,32 +330,32 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                                 activityAt: { latestActivityByTask[$0.id] }, prioritizesActivity: true)
     }
 
-    private func group(_ work: Work) -> some View {
+    private func group(_ work: Work, availableWidth: CGFloat) -> some View {
+        let visibleTasks = displayedTasks(for: work)
+        return
         CompactWorkCard(work: work, isChatRunning: runningDiscussionWorkIDs.contains(work.id),
                         isChatSelected: discussionSessionIDByWork[work.id].map { selectedSessionID == $0 } ?? false,
                         isActive: isActive, discuss: { discuss(work) }, createTask: { createTask(work) }) {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(displayedTasks(for: work)) { task in
-                    ContentSizedTaskCardLayout { card(task) }
+            WorkTaskCardGrid(itemCount: visibleTasks.count, availableWidth: availableWidth) {
+                ForEach(visibleTasks) { task in
+                    card(task).frame(maxWidth: .infinity, alignment: .topLeading)
                 }
             }
-            .fixedSize(horizontal: true, vertical: true)
         }
-        .modifier(groupInteraction(for: work.id))
+        .modifier(groupInteraction(for: work.id, availableWidth: availableWidth))
     }
 
-    private func groupInteraction(for id: String) -> CanvasGroupCardModifier {
+    private func groupInteraction(for id: String, availableWidth: CGFloat) -> CanvasGroupCardModifier {
         CanvasGroupCardModifier(
             beginDrag: {
+                viewportState.cancelAutomaticEntry()
                 if canvasDrag.begin(id: id, frames: layoutSnapshot.frames, reducedMotion: reduceMotion) { frontWorkID = id }
             },
             updateDrag: { canvasDrag.update(id: id, translation: $0) },
             cancelDrag: { canvasDrag.cancel() },
             finishDrag: {
-                canvasDrag.finish(id: id) { frames in
-                    canvasPositions.merge(frames.mapValues(\.origin), uniquingKeysWith: { _, new in new })
-                    layoutSnapshot.frames = frames
-                    saveCanvasPositions()
+                canvasDrag.finish(id: id, width: availableWidth, order: canvasOrder) { frames in
+                    commitCanvasPositions(frames, anchorID: id)
                 }
             })
     }
@@ -329,7 +384,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                     CorptieAppEnvironment.userDefaults.set(data, forKey: Self.deferredKey)
                 }
                 if selectedTaskID == task.id { returnAfterDeferring(task.id) }
-                rebuild(reset: false)
+                rebuild()
             }
             .disabled(ConsoleAttentionPolicy.input(task, session: session, selected: false, deferred: false).running)
             .help("立即从本机重点面板移出；若正在浏览，返回上次点击的可用卡片。新回复或新事项出现后重新显示。")

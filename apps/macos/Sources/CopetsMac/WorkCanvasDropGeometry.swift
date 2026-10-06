@@ -1,4 +1,93 @@
 import Foundation
+import RectanglePacking
+
+/// Reuse the existing native MaxRects bridge, reserving the dropped card first.
+/// Translate the packing origin, rather than rounding the user's world coordinate.
+/// Runs only on entry/drop; no physics, text reads or per-frame measurement.
+enum WorkCanvasClusterGeometry {
+    static let nativePackingLimit = 256
+    /// World-space density is content-driven, never a viewport-width constraint.
+    static func packingWidth(_ frames: [String: CGRect], active: String) -> CGFloat {
+        guard let anchor = frames[active] else { return 1 }
+        let gap = WorkCanvasDropGeometry.gap
+        let largest = frames.values.map { ceil($0.width) }.max() ?? 1
+        let neighbour = frames.filter { $0.key != active }.values.map { ceil($0.width) }.max()
+        let pairWidth = neighbour.map { ceil(anchor.width) + gap + $0 } ?? largest
+        let area = frames.values.reduce(CGFloat(0)) { $0 + (ceil($1.width) + gap) * (ceil($1.height) + gap) }
+        let rowWidth = frames.values.reduce(CGFloat(0)) { $0 + ceil($1.width) + gap } - gap
+        let densityWidth = area.isFinite ? sqrt(area) * sqrt(1.25) : largest
+        return ceil(min(rowWidth, max(largest, pairWidth, densityWidth)))
+    }
+
+    static func resolve(_ frames: [String: CGRect], active: String,
+                        width _: CGFloat, order: [String] = []) -> [String: CGRect] {
+        guard let anchor = frames[active], frames.values.allSatisfy({
+            $0.minX.isFinite && $0.minY.isFinite && $0.width.isFinite && $0.height.isFinite &&
+                $0.width > 0 && $0.height > 0
+        }) else { return frames }
+        var seen = Set<String>()
+        let ids = (order + frames.keys.sorted()).filter { frames[$0] != nil && seen.insert($0).inserted }
+        let stripWidth = packingWidth(frames, active: active)
+        let centredX = floor((stripWidth - ceil(anchor.width)) / 2)
+        let neighbour = frames.filter { $0.key != active }.values.map { ceil($0.width) }.max() ?? 0
+        // Give the space beside the anchor full usable columns, not two
+        // half-columns. This only translates the bin; its world point is fixed.
+        let slot = neighbour + WorkCanvasDropGeometry.gap
+        let localX = neighbour > 0 ? floor(centredX / slot) * slot : 0
+        let origin = CGPoint(x: anchor.minX - localX, y: anchor.minY)
+        let gap = WorkCanvasDropGeometry.gap
+        if stripWidth + gap <= 32768, ids.count <= nativePackingLimit,
+           ids.allSatisfy({ frames[$0]!.height + gap <= 1_000_000 }),
+           let pinnedIndex = ids.firstIndex(of: active) {
+            let input = ids.map { id -> CorptiePackedRect in
+                let rect = frames[id]!
+                return CorptiePackedRect(x: id == active ? Int32(localX) : -1,
+                    y: id == active ? 0 : -1,
+                    width: Int32(ceil(rect.width) + gap), height: Int32(ceil(rect.height) + gap))
+            }
+            var output = Array(repeating: CorptiePackedRect(), count: ids.count)
+            let success = input.withUnsafeBufferPointer { source in
+                output.withUnsafeMutableBufferPointer {
+                    corptie_pack_rectangles(Int32(stripWidth + gap), source.baseAddress,
+                        Int32(ids.count), Int32(pinnedIndex), $0.baseAddress) == 1
+                }
+            }
+            if success {
+                var result = Dictionary(uniqueKeysWithValues: zip(ids, output).map { id, rect in
+                    (id, CGRect(x: origin.x + CGFloat(rect.x), y: origin.y + CGFloat(rect.y),
+                                width: frames[id]!.width, height: frames[id]!.height))
+                })
+                result[active] = anchor
+                // Mirroring has identical compactness and spacing. Prefer the
+                // orientation with less total travel; ties keep native order.
+                let mirrored = result.mapValues { rect in
+                    CGRect(x: 2 * anchor.midX - rect.maxX, y: rect.minY,
+                           width: rect.width, height: rect.height)
+                }.merging([active: anchor], uniquingKeysWith: { _, pinned in pinned })
+                func travel(_ candidate: [String: CGRect]) -> CGFloat {
+                    ids.reduce(0) { total, id in
+                        total + hypot(candidate[id]!.midX - frames[id]!.midX,
+                                      candidate[id]!.midY - frames[id]!.midY)
+                    }
+                }
+                return travel(mirrored) < travel(result) ? mirrored : result
+            }
+        }
+        // Extreme inventories/native rejection: bounded linear shelf fallback.
+        var result = [active: anchor]
+        var x = origin.x, y = anchor.maxY + gap, rowHeight: CGFloat = 0
+        for id in ids where id != active {
+            let home = frames[id]!
+            if x > origin.x, x + home.width > origin.x + stripWidth {
+                x = origin.x; y += rowHeight + gap; rowHeight = 0
+            }
+            result[id] = CGRect(x: x, y: y, width: home.width, height: home.height)
+            x += home.width + gap
+            rowHeight = max(rowHeight, home.height)
+        }
+        return result
+    }
+}
 
 /// One-shot, axis-aligned minimum translation. Occupied spans are merged before
 /// choosing a direction, so a short move into a third card is never accepted.
@@ -56,7 +145,10 @@ enum WorkCanvasDropGeometry {
     }
 
     static func conflicts(_ a: CGRect, _ b: CGRect) -> Bool {
-        a.minX < b.maxX + gap && b.minX < a.maxX + gap &&
-        a.minY < b.maxY + gap && b.minY < a.maxY + gap
+        // World-space division/mirroring can differ by a floating-point ULP.
+        // A subpixel rounding error at the exact gap is not a collision.
+        let tolerance: CGFloat = 0.000001
+        return a.minX < b.maxX + gap - tolerance && b.minX < a.maxX + gap - tolerance &&
+            a.minY < b.maxY + gap - tolerance && b.minY < a.maxY + gap - tolerance
     }
 }

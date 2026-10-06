@@ -55,14 +55,16 @@ final class WorkCanvasDragController {
         }
     }
 
-    static func landingFrames(_ frames: [String: CGRect], active: String) -> [String: CGRect] {
-        WorkCanvasDropGeometry.resolve(frames, active: active)
+    static func landingFrames(_ frames: [String: CGRect], active: String,
+                              width: CGFloat = 800, order: [String] = []) -> [String: CGRect] {
+        WorkCanvasClusterGeometry.resolve(frames, active: active, width: width, order: order)
     }
 
-    func finish(id: String, onSettled: @escaping ([String: CGRect]) -> Void) {
+    func finish(id: String, width: CGFloat = 800, order: [String] = [],
+                onSettled: @escaping ([String: CGRect]) -> Void) {
         guard activeID == id, completion == nil else { return }
         completion = onSettled
-        let resolved = Self.landingFrames(current, active: id)
+        let resolved = Self.landingFrames(current, active: id, width: width, order: order)
         let changed = resolved != current
         current = resolved
         guard changed, !reducedMotion else { commit(); return }

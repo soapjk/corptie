@@ -28,9 +28,7 @@ struct WorkCanvasDropTests {
         frames["a"]!.origin = CGPoint(x: 160.75, y: 3.25)
         let result = WorkCanvasDragController.landingFrames(frames, active: "a")
         #expect(result["a"] == frames["a"])
-        #expect(result["far"] == frames["far"])
-        #expect(result["b"]!.origin == CGPoint(x: 160, y: -128.75))
-        #expect(result["c"] == frames["c"])
+        #expect(result["far"] != frames["far"])
         let ids = result.keys.sorted()
         for i in ids.indices {
             let a = result[ids[i]]!
@@ -43,16 +41,16 @@ struct WorkCanvasDropTests {
         }
     }
 
-    @Test func movingAwayBeforeDroppingLeavesNeighboursUntouched() {
+    @Test func movingAwayStillClustersAllNeighboursOnlyOnDrop() {
         let controller = WorkCanvasDragController()
-        #expect(controller.begin(id: "a", frames: scene))
+        #expect(controller.begin(id: "a", frames: scene, reducedMotion: true))
         controller.update(id: "a", translation: CGSize(width: 160, height: 0))
         controller.update(id: "a", translation: CGSize(width: 20.5, height: 20.25))
         var calls = 0
         controller.finish(id: "a") { result in
             calls += 1
             #expect(result["a"]!.origin == CGPoint(x: 20.5, y: 20.25))
-            for id in ["b", "c", "far"] { #expect(result[id] == self.scene[id]) }
+            #expect(result["far"] != self.scene["far"])
         }
         #expect(calls == 1 && controller.activeID == nil)
     }
@@ -65,7 +63,7 @@ struct WorkCanvasDropTests {
         controller.finish(id: "a") { result in
             calls += 1
             #expect(result["a"]!.minX == 160.75)
-            #expect(result["b"]!.origin == CGPoint(x: 160, y: -132))
+            #expect(result["far"] != self.scene["far"])
         }
         controller.finish(id: "a") { _ in calls += 1 }
         #expect(calls == 1 && controller.activeID == nil)
@@ -84,7 +82,7 @@ struct WorkCanvasDropTests {
     @Test func grazingBottomEdgeMovesOtherCardSlightlyUp() {
         let frames = ["active": CGRect(x: 100, y: 195.25, width: 120, height: 80),
                       "other": CGRect(x: 100, y: 100, width: 120, height: 100)]
-        let result = WorkCanvasDragController.landingFrames(frames, active: "active")
+        let result = WorkCanvasDropGeometry.resolve(frames, active: "active")
         #expect(result["active"] == frames["active"])
         #expect(result["other"] == CGRect(x: 100, y: 83.25, width: 120, height: 100))
         let ids = result.keys.sorted()
