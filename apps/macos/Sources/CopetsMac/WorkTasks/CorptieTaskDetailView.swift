@@ -178,9 +178,9 @@ struct CorptieTaskDetailView: View {
         VStack(alignment: .leading, spacing: 12) {
             ConversationTaskInformationCard(summary: task.conversationDetailSummary,
                 description: task.description, acceptance: task.acceptanceCriteria,
-                verification: task.verificationCriteria, title: L10n("Task 信息"),
+                title: L10n("Task 信息"),
                 descriptionTitle: L10n("Description"), acceptanceTitle: L10n("Acceptance Criteria"),
-                verificationTitle: L10n("验证所需证据"), expandLabel: L10n("Expand"),
+                expandLabel: L10n("Expand"),
                 collapseLabel: L10n("Collapse"), showsWhenEmpty: true) {
                 Button { showEdit = true } label: { ConversationDetailHeaderIcon(systemName: "pencil") }
                     .buttonStyle(.plain)

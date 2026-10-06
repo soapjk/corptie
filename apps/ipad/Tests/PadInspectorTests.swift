@@ -42,6 +42,8 @@ struct PadInspectorTests {
             .appendingPathComponent("Sources/PadInspectorResources.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         #expect(source.contains("ConversationTaskInformationCard(summary: summary"))
+        #expect(!source.contains("verification: verification"))
+        #expect(!source.contains("label: \"验证标准\""))
         #expect(source.contains("showsWhenEmpty: true"))
         #expect(source.contains("ConversationDetailModuleCard(title: \"引用内容\", systemImage: \"link\", headerActions:"))
         #expect(source.contains("ConversationDetailHeaderIcon(systemName: \"plus\")"))

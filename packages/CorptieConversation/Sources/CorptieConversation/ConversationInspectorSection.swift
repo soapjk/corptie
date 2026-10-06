@@ -237,16 +237,16 @@ public struct ConversationTaskDefinition: View {
     private let titles: [String]
     private let expandLabel: String
     private let collapseLabel: String
-    nonisolated public static func hasContent(description: String, acceptance: String, verification: String) -> Bool {
-        [description, acceptance, verification].contains {
+    nonisolated public static func hasContent(description: String, acceptance: String) -> Bool {
+        [description, acceptance].contains {
             !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
-    public init(description: String, acceptance: String, verification: String,
+    public init(description: String, acceptance: String,
                 descriptionTitle: String = "描述", acceptanceTitle: String = "验收标准",
-                verificationTitle: String = "验证标准", expandLabel: String = "展开", collapseLabel: String = "收起") {
-        values = [description, acceptance, verification]
-        titles = [descriptionTitle, acceptanceTitle, verificationTitle]
+                expandLabel: String = "展开", collapseLabel: String = "收起") {
+        values = [description, acceptance]
+        titles = [descriptionTitle, acceptanceTitle]
         self.expandLabel = expandLabel; self.collapseLabel = collapseLabel
     }
     public var body: some View {
@@ -254,7 +254,7 @@ public struct ConversationTaskDefinition: View {
             ForEach(values.indices, id: \.self) { index in
                 if !values[index].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     ConversationInspectorSection(title: titles[index],
-                        systemImage: ["text.alignleft", "checklist", "checkmark.seal"][index]) {
+                        systemImage: ["text.alignleft", "checklist"][index]) {
                         ConversationDetailText(text: values[index], expandLabel: expandLabel, collapseLabel: collapseLabel)
                     }
                 }
