@@ -1634,6 +1634,41 @@ test("integration commit is traceable and a retry recognizes its persisted job m
   }
 });
 
+test("integration retry removes only the exact legacy Artifact hook pollution signature", async () => {
+  const fixture = await createFixture("integration-hook-pollution", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    const baseHead = (await gitOutput(["rev-parse", "HEAD"], fixture.activeWorktree)).trim();
+    await mkdir(join(fixture.activeWorktree, "corptie-artifact-hooks"));
+    await mkdir(join(fixture.activeWorktree, "info"));
+    await writeFile(join(fixture.activeWorktree, "info", "exclude"), "/.corptie/\n");
+    await git(["update-index", "--add", "--cacheinfo", `160000,${baseHead},corptie-artifact-hooks`], fixture.activeWorktree);
+    await git(["add", "info/exclude"], fixture.activeWorktree);
+    await git(["commit", "-m", "Corptie: preserve changes in task/test", "-m", "Corptie-Integration-Job: job:pollution"], fixture.activeWorktree);
+    const pollutedHead = (await gitOutput(["rev-parse", "HEAD"], fixture.activeWorktree)).trim();
+
+    const result = await manager.commitIntegrationChanges({
+      path: fixture.activeWorktree,
+      expectedHead: baseHead,
+      expectedStatusSummary: "",
+      commitMessage: "Corptie: remove legacy Artifact hook pollution",
+      jobId: "job:pollution"
+    });
+
+    assert.equal(result.committed, true);
+    assert.equal(result.recovered, false);
+    assert.equal(result.legacyHookPollutionRepaired, true);
+    assert.notEqual(result.headOid, pollutedHead);
+    assert.equal((await gitOutput(["ls-tree", "HEAD", "--", "corptie-artifact-hooks", "info/exclude"], fixture.activeWorktree)).trim(), "");
+    assert.equal((await gitOutput(["diff", "--stat", baseHead, "HEAD"], fixture.activeWorktree)).trim(), "");
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("Markdown decisions verify exact content before ignoring or deleting individual files", async () => {
   const fixture = await createFixture("integration-markdown-decisions", { activeFeatureWorktree: true });
   const manager = new GitWorkspaceManager({
