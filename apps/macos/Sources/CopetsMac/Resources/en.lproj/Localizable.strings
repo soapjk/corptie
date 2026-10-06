@@ -1184,6 +1184,9 @@
 "Choose an action for every Markdown file." = "Choose an action for every Markdown file.";
 "Choose one action for each file. Converting creates an Artifact and removes the Worktree file; allowing Git tracking records exact-version approval. No action pushes to a remote." = "Choose one action for each file. Converting creates an Artifact and removes the Worktree file; allowing Git tracking records exact-version approval. No action pushes to a remote.";
 "Selected memories" = "Selected memories";
+"Rejected" = "Rejected";
+"Not included" = "Not included";
+"Injection unknown" = "Injection unknown";
 "Other recall candidates" = "Other recall candidates";
 "Showing first %d of %d recall candidates." = "Showing first %d of %d recall candidates.";
 "Current memories" = "Current memories";
