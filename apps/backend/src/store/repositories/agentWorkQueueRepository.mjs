@@ -191,6 +191,18 @@ export class AgentWorkQueueRepository {
     return this.getAgentTask(taskId);
   }
 
+  cancelQueuedUserAgentTask(sessionId, taskId) {
+    const timestamp = new Date().toISOString();
+    this.db.run(
+      `UPDATE agent_operations SET status = 'cancelled', completed_at = ?, updated_at = ?
+       WHERE task_id = ? AND session_id = ? AND kind = 'user' AND status = 'queued'`,
+      [timestamp, timestamp, taskId, sessionId]
+    );
+    if (this.db.getRowsModified() === 0) return null;
+    this.scheduleSave();
+    return this.getAgentTask(taskId);
+  }
+
   updateAgentTask(taskId, patch = {}) {
     const item = this.getAgentTask(taskId);
     if (!item) return null;

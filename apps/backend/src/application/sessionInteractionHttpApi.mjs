@@ -3,7 +3,7 @@ import { logSessionMessageLatency, logSessionMessageFailure, sessionMessageLaten
 
 export function handleSessionInteractionHttpRequest({
   request, response, url, sendUnifiedSessionMessage, userMessageCommandSource,
-  chatResourceService, requireSessionReference, interruptUnifiedSession,
+  chatResourceService, requireSessionReference, interruptUnifiedSession, cancelQueuedUserMessage,
   respondUnifiedSessionApproval, respondUnifiedSessionUserInput,
   readJson, sendJson, unifiedErrorStatus
 }) {
@@ -39,6 +39,17 @@ export function handleSessionInteractionHttpRequest({
           ...(error.details && typeof error.details === "object" ? { details: error.details } : {})
         });
       });
+    return true;
+  }
+
+  const queuedMessageCancelMatch = url.pathname.match(/^\/sessions\/([^/]+)\/queued-messages\/([^/]+)\/cancel$/);
+  if (request.method === "POST" && queuedMessageCancelMatch) {
+    Promise.resolve()
+      .then(() => cancelQueuedUserMessage(
+        decodeURIComponent(queuedMessageCancelMatch[1]), decodeURIComponent(queuedMessageCancelMatch[2])
+      ))
+      .then((task) => sendJson(response, 200, { task }))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
     return true;
   }
 

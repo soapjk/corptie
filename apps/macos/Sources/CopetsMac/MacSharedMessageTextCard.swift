@@ -463,6 +463,12 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
                        isDestructive: false, kind: .forkMessage(itemID: itemID)))
     }
 
+    @objc private func cancelRepresentedQueuedMessage() {
+        guard let taskID = row?.queuedMessageTaskID else { return }
+        onAction(.init(id: "cancel-queued:\(taskID)", label: L10n("Cancel"),
+                       isDestructive: true, kind: .cancelQueuedMessage(taskID: taskID)))
+    }
+
     @objc private func beginTextSelection() {
         guard row?.nativeStyle != .process else { return }
         guard let host else { return }
@@ -508,6 +514,13 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
             copy.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.copy")
             menu.addItem(copy)
         }
+        if row.queuedMessageTaskID != nil {
+            let cancel = NSMenuItem(title: L10n("Cancel"), action: #selector(cancelRepresentedQueuedMessage), keyEquivalent: "")
+            cancel.target = self
+            cancel.image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: nil)
+            cancel.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.cancel-queued")
+            menu.addItem(cancel)
+        }
         if row.forkItemID != nil {
             let fork = NSMenuItem(title: L10n("Create Branch"), action: #selector(forkRepresentedMessage), keyEquivalent: "")
             fork.target = self
@@ -539,6 +552,11 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         if row.forkItemID != nil {
             actions.append(NSAccessibilityCustomAction(
                 name: L10n("Create Branch"), target: self, selector: #selector(forkRepresentedMessage)
+            ))
+        }
+        if row.queuedMessageTaskID != nil {
+            actions.append(NSAccessibilityCustomAction(
+                name: L10n("Cancel"), target: self, selector: #selector(cancelRepresentedQueuedMessage)
             ))
         }
         setAccessibilityCustomActions(actions)

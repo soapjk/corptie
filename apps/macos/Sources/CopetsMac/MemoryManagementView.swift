@@ -793,6 +793,25 @@ private struct MemoryTagEditor: View {
     }
 }
 
+@MainActor
+enum MemoryRecallRowSummary {
+    static func text(for recall: MemoryRecallAudit) -> String {
+        let count = recall.selectedIds.count
+        let base = "\(recall.phase) · \(recall.mode) · hit \(count)"
+        guard count > 0 else { return base }
+        switch recall.injectionStatus {
+        case "provider_rejected":
+            return "\(base) · \(L10n("Rejected"))"
+        case "budget_omitted":
+            return "\(base) · \(L10n("Not included"))"
+        case "provider_accepted", "context_included":
+            return base
+        default:
+            return "\(base) · \(L10n("Injection unknown"))"
+        }
+    }
+}
+
 struct SessionMemoryDiagnosticsView: View {
     let session: TaskSession
     @State private var recalls: [MemoryRecallAudit] = []
@@ -848,26 +867,11 @@ struct SessionMemoryDiagnosticsView: View {
                         Image(systemName: recall.selectedIds.isEmpty ? "minus.circle" : "checkmark.circle")
                             .foregroundStyle(recall.selectedIds.isEmpty ? Color.secondary : Color.green)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("\(recall.phase) · \(recall.mode)").font(.caption.bold())
-                            Text("\(recall.reason) · hit \(recall.selectedIds.count)/\(recall.candidateIds.count)")
-                                .font(.caption2).foregroundStyle(.secondary)
+                            Text(MemoryRecallRowSummary.text(for: recall))
+                                .font(.caption.bold())
                             if let pending = recall.pendingReviewCount, pending > 0 {
                                 Text(String(format: L10n("%d Memory candidates await review."), pending))
                                     .font(.caption2).foregroundStyle(.secondary)
-                            }
-                            if !recall.selectedIds.isEmpty {
-                                Text(recall.injectionStatus == "provider_accepted"
-                                     ? L10n("Provider accepted Memory context")
-                                     : recall.injectionStatus == "provider_rejected"
-                                     ? L10n("Provider rejected Memory context")
-                                     : recall.injectionStatus == "context_included"
-                                     ? L10n("Included in context")
-                                     : recall.injectionStatus == "budget_omitted"
-                                     ? L10n("Omitted by context budget")
-                                     : L10n("Context inclusion not recorded"))
-                                    .font(.caption2).foregroundStyle(.secondary)
-                                Text(L10n("Selected memories"))
-                                    .font(.caption2.bold()).foregroundStyle(.secondary)
                             }
                             ForEach(recall.selectedEntries ?? []) { entry in
                                 VStack(alignment: .leading, spacing: 2) {

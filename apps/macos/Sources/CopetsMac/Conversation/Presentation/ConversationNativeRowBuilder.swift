@@ -193,6 +193,10 @@ struct ConversationNativeRowBuilder {
             images: images
         )
         row.forkItemID = forkItemID(for: entry)
+        if case .message(let item) = entry.kind, item.type == "userMessage",
+           item.userMessageStatus == "queued" {
+            row.queuedMessageTaskID = item.taskId
+        }
         if row.nativeStyle == .process { row.processLanguageCode = AppLanguageController.shared.languageCode }
         row.forkUnavailableReason = forkUnavailableReason(for: entry)
         if case .message(let item) = entry.kind {
