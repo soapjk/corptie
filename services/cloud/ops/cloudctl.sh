@@ -143,6 +143,13 @@ switch_release() {
 
 command=${1:-}
 case "${command}" in
+  tunnel-status)
+    npc_config=${2:-}
+    test -n "${npc_config}" || die "usage: cloudctl.sh tunnel-status <private-npc-config>"
+    test -x "${MANAGED_NODE}" || die "managed Node runtime is unavailable"
+    # Diagnostic only: never starts NPC or submits forwarding configuration.
+    exec "${MANAGED_NODE}" "${SCRIPT_DIR}/npc-supervisor.mjs" --config "${npc_config}"
+    ;;
   validate-config)
     safe_root
     test -f "${CONFIG_FILE}" || die "missing config: ${CONFIG_FILE}"
@@ -272,6 +279,6 @@ case "${command}" in
     printf 'release=%s\nservice=%s\nready=%s\n' "${current}" "${service}" "${ready}"
     ;;
   *)
-    die "usage: cloudctl.sh {validate-config|validate-templates|install-runtime <node-24-binary>|backup [name]|backup-and-copy [name]|restore <backup> --confirm-data-loss|deploy <revision>|rollback <revision>|status}"
+    die "usage: cloudctl.sh {validate-config|validate-templates|tunnel-status <private-npc-config>|install-runtime <node-24-binary>|backup [name]|backup-and-copy [name]|restore <backup> --confirm-data-loss|deploy <revision>|rollback <revision>|status}"
     ;;
 esac

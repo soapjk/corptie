@@ -25,7 +25,9 @@ test("chart syntax is included once for Worker, Work Chat, and Chat sessions", (
     assert.match(instructions, /do not.*invent data/i);
     assert.match(instructions, /Use \$corptie-collaboration/);
     if (sessionKind === "worker") {
-      assert.match(instructions, /Task Worktree/);
+      // Worker binding is injected by buildWorkSessionContext per Turn, not
+      // duplicated in this provider-neutral presentation contract.
+      assert.doesNotMatch(instructions, /Task Worktree/);
     } else {
       assert.doesNotMatch(instructions, /programmatically binds the Task Worktree/);
       assert.match(instructions, /direct user's requested work takes priority/);

@@ -57,7 +57,10 @@ public struct ClientEvents: Sendable {
     public func subscribeRealtime(
         sessionId: String?,
         stateRevision: Int = 0,
-        timelineRevision: Int = 0
+        timelineRevision: Int = 0,
+        timelineRevisions: [String: Int] = [:],
+        backgroundTimelineLimit: Int? = nil,
+        timelineCoalescing: Bool = false
     ) -> AsyncThrowingStream<ClientRealtimeUpdate, Error> {
         AsyncThrowingStream(bufferingPolicy: .bufferingOldest(64)) { continuation in
             let task = Task { [transport] in
@@ -65,6 +68,19 @@ public struct ClientEvents: Sendable {
                     var query = [URLQueryItem(name: "stateRevision", value: String(stateRevision)),
                                  URLQueryItem(name: "timelineRevision", value: String(timelineRevision))]
                     if let sessionId { query.append(URLQueryItem(name: "sessionId", value: sessionId)) }
+                    if timelineCoalescing { query.append(URLQueryItem(name: "timelineCoalescing", value: "true")) }
+                    if !timelineRevisions.isEmpty {
+                        guard timelineRevisions.count <= 48,
+                              timelineRevisions.allSatisfy({ !$0.key.isEmpty && $0.key.count <= 512 && $0.value >= 0 }) else {
+                            throw ClientConnectionError.invalidResponse
+                        }
+                        let encoded = try JSONEncoder().encode(timelineRevisions)
+                        query.append(URLQueryItem(name: "timelineRevisions", value: String(decoding: encoded, as: UTF8.self)))
+                    }
+                    if let backgroundTimelineLimit {
+                        guard (0...48).contains(backgroundTimelineLimit) else { throw ClientConnectionError.invalidResponse }
+                        query.append(URLQueryItem(name: "backgroundTimelineLimit", value: String(backgroundTimelineLimit)))
+                    }
                     var request = try transport.endpoint.request(path: ["client", "v2", "events"], query: query)
                     request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
                     // CFNetwork on iPadOS rejects an infinite request timeout for

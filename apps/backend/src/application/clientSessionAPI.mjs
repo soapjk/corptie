@@ -77,7 +77,7 @@ function publicPresentationString(value, maximumLength = 4_000) {
 }
 
 function publicClientMessage(item) {
-  return {
+  const message = {
     id: item.id, turnId: item.turnId ?? null, type: item.type,
     text: typeof item.text === "string" ? item.text : "", status: item.status ?? null,
     createdAt: item.createdAt ?? null,
@@ -110,6 +110,8 @@ function publicClientMessage(item) {
           role: typeof option.role === "string" ? option.role.slice(0, 40) : null,
           selected: option.selected === true })) : null,
   };
+  // Optional fields decode identically when absent. Keep all populated data.
+  return Object.fromEntries(Object.entries(message).filter(([, value]) => value != null));
 }
 
 /** v1 text messaging + stop commands. Provider-neutral callbacks, durable at-most-once dispatch. */
@@ -204,14 +206,26 @@ export class ClientSessionAPI {
     // The shared timeline window may include newer rows even for after=0.
     // v1 history pagination is strictly before the anchor, never a mixed window.
     const candidates = anchor ? window.items.slice(0, window.items.findIndex(item => item.id === anchor)) : window.items;
-    const items = candidates.slice(-limit).map(publicClientMessage);
+    const projected = candidates.slice(-limit).map(publicClientMessage);
+    // Bound normal history pages by bytes as well as rows. Keep an oversized
+    // individual item intact (the existing 8MiB safety limit still applies),
+    // rather than silently truncating its text or structured presentation.
+    let bytes = 1024, start = projected.length;
+    while (start > 0) {
+      const nextBytes = Buffer.byteLength(JSON.stringify(projected[start - 1])) + 1;
+      if (start < projected.length && bytes + nextBytes > 128 * 1024) break;
+      bytes += nextBytes;
+      start -= 1;
+    }
+    const items = projected.slice(start);
+    const hasEarlier = window.hasEarlier === true || start > 0;
     const result = { schemaVersion: 1, sessionId, revision: window.revision, items,
-      hasEarlier: window.hasEarlier === true, nextBefore: window.hasEarlier && items.length ? items[0].id : null };
+      hasEarlier, nextBefore: hasEarlier && items.length ? items[0].id : null };
     if (Buffer.byteLength(JSON.stringify(result)) > 8 * 1024 * 1024) throw deviceError("MESSAGE_WINDOW_TOO_LARGE", 413);
     return result;
   }
 
-  async realtimeTimeline(identity, id, after = null, { includeDetail = true } = {}) {
+  async realtimeTimeline(identity, id, after = null, { includeDetail = true, coalesce = false } = {}) {
     const { sessionId } = this.session(id);
     // Resident timelines carry durable usage even when they are not selected.
     // Never call a Provider for every streamed message or background bootstrap.
@@ -221,16 +235,16 @@ export class ClientSessionAPI {
     if (Number.isSafeInteger(localRevision) && localRevision > 0) {
       const envelope = this.store.sessionTimelineChangesAfter(sessionId, localRevision, 200);
       if (!envelope.snapshotRequired) {
+        const lastChanges = new Map(envelope.changes.map((change, index) => [change.itemId, index]));
         return {
           schemaVersion: 2,
           kind: "delta",
           sessionId,
           ...envelope,
           usage,
-          changes: envelope.changes.map(change => ({
-            ...change,
-            item: change.item ? publicClientMessage(change.item) : null
-          }))
+          changes: envelope.changes.map((change, index) => coalesce && lastChanges.get(change.itemId) !== index
+            ? { revision: change.revision, itemId: change.itemId, operation: "noop", item: null }
+            : { ...change, item: change.item ? publicClientMessage(change.item) : null })
         };
       }
     }

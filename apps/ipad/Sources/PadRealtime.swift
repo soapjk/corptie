@@ -5,6 +5,12 @@ import OSLog
 
 extension PadWorkspace {
     private static let realtimeLog = Logger(subsystem: "com.corptie.connection", category: "MobileRealtime")
+    static func realtimeFailureSuggestsStalledChannel(_ error: any Error) -> Bool {
+        if let error = error as? URLError {
+            return [.timedOut, .networkConnectionLost, .cannotConnectToHost, .notConnectedToInternet].contains(error.code)
+        }
+        return (error as? CloudRelayTransportError) == .disconnected
+    }
     /// Capabilities can arrive before the timeline snapshot. They describe
     /// permission, not whether the selected conversation has any message data.
     var selectedTimelineReady: Bool {
@@ -17,6 +23,13 @@ extension PadWorkspace {
         after revision: Int? = nil,
         graceAttempts: Int = 30
     ) async {
+        // A cold selection is no longer necessarily in the small bootstrap
+        // window. Load it on demand instead of waiting for an unrelated update.
+        if revision == nil && !selectedTimelineReady && hasReceivedRealtimeState {
+            guard !Task.isCancelled else { return }
+            await load(connection)
+            return
+        }
         for _ in 0..<graceAttempts {
             if Task.isCancelled { return }
             if let revision {
@@ -40,6 +53,8 @@ extension PadWorkspace {
 
     /// Owned by the scene. Cancellation closes the stream and pending refreshes.
     func runRealtime(_ connection: PadConnection) async {
+        await restorePersistentTimelines(connection)
+        guard !Task.isCancelled else { return }
         let generation = UUID()
         let connectionRevision = connection.recoveryRevision
         refreshWorker?.cancel(); refreshWorker = nil
@@ -58,25 +73,30 @@ extension PadWorkspace {
         }
         var failures = connection.recoveryRevision > 0 ? 1 : 0
         var receivedV2Ready = false
+        var consecutiveTransportFailures = 0
         while !Task.isCancelled && connection.connected && connection.networkAvailable
             && connection.recoveryBlockedMessage == nil && realtimeGeneration == generation
             && connection.recoveryRevision == connectionRevision {
+            var suspectedStalledChannel = false
             do {
                 liveStatus = "正在连接实时更新"
                 realtimeConnected = false
                 let api = ClientEvents(transport: try await connection.transport())
                 Self.realtimeLog.info("Subscribe attempt: generation=\(generation, privacy: .public) recoveryRevision=\(connectionRevision) failures=\(failures)")
-                // The v2 stream pushes resident snapshots and subsequent
-                // deltas for every active Session. Keep it global so changing
-                // the visible Task remains a local projection operation.
+                // Selection prioritizes bootstrap only. The stream still pushes
+                // updates globally; cached timelines resume their own cursors.
                 for try await update in api.subscribeRealtime(
-                    sessionId: nil,
+                    sessionId: selection,
                     stateRevision: realtimeStateRevision,
-                    timelineRevision: 0
+                    timelineRevision: lastTimelineRevision ?? 0,
+                    timelineRevisions: realtimeResumeRevisions,
+                    backgroundTimelineLimit: 0,
+                    timelineCoalescing: true
                 ) {
                     try Task.checkCancellation()
                     guard realtimeGeneration == generation, connection.recoveryRevision == connectionRevision else { return }
                     failures = 0
+                    consecutiveTransportFailures = 0
                     switch update {
                     case .ready:
                         Self.realtimeLog.info("Realtime ready: generation=\(generation, privacy: .public)")
@@ -87,6 +107,19 @@ extension PadWorkspace {
                         realtimePausedAt = nil
                         liveStatus = hasReceivedRealtimeState ? "实时连接正常" : "实时连接已建立，正在同步数据"
                         scheduleInitialStateRecovery(connection)
+                        // Disk cache never restores permissions. Refresh the
+                        // selected Session's live capabilities independently.
+                        if capabilities == nil, lastTimelineRevision != nil, let selected = selection {
+                            Task { @MainActor [weak self] in
+                                guard let self else { return }
+                                do {
+                                    let transport = try await connection.transport()
+                                    let caps = try await ClientSessionAPI(transport: transport).capabilities(sessionId: selected)
+                                    guard self.realtimeGeneration == generation, self.selection == selected else { return }
+                                    self.capabilities = caps
+                                } catch { /* Keep cached messages visible; server remains authority. */ }
+                            }
+                        }
                     case .state(let snapshot):
                         applyRealtimeState(snapshot)
                         liveStatus = "实时连接正常"
@@ -123,6 +156,7 @@ extension PadWorkspace {
                 guard !Task.isCancelled, realtimeGeneration == generation,
                       connection.recoveryRevision == connectionRevision else { return }
                 Self.realtimeLog.error("Realtime failed: generation=\(generation, privacy: .public) reason=\(ConnectionDiagnostic.failure(error), privacy: .public) pulseAgeSeconds=\(self.lastRealtimePulseAt.map { Date().timeIntervalSince($0) } ?? -1) networkAvailable=\(connection.networkAvailable)")
+                suspectedStalledChannel = Self.realtimeFailureSuggestsStalledChannel(error)
                 realtimeConnected = false
                 realtimePausedAt = Date()
                 if connection.stopRecoveryIfUnauthorized(error) {
@@ -140,8 +174,9 @@ extension PadWorkspace {
                 }
             }
             failures = min(failures + 1, 5)
-            connection.invalidateRealtimeTransport()
-            Self.realtimeLog.info("Recovery scheduled: generation=\(generation, privacy: .public) failures=\(failures) rebuildChannel=true")
+            consecutiveTransportFailures = suspectedStalledChannel ? min(consecutiveTransportFailures + 1, 2) : 0
+            let rebuilt = await connection.invalidateFailedRealtimeTransport(force: consecutiveTransportFailures >= 2)
+            Self.realtimeLog.info("Recovery scheduled: generation=\(generation, privacy: .public) failures=\(failures) rebuildChannel=\(rebuilt)")
             // The first interruption is recovery, not a user-facing failure.
             if failures >= 2 { realtimeReconnectFailed = true }
             liveStatus = "连接中断，正在自动重连"
@@ -154,9 +189,11 @@ extension PadWorkspace {
     private func runLegacyRealtime(_ connection: PadConnection, generation: UUID, initialFailures: Int) async {
         let connectionRevision = connection.recoveryRevision
         var failures = initialFailures
+        var consecutiveTransportFailures = 0
         while !Task.isCancelled && connection.connected && connection.networkAvailable
             && connection.recoveryBlockedMessage == nil && realtimeGeneration == generation
             && connection.recoveryRevision == connectionRevision {
+            var suspectedStalledChannel = false
             do {
                 liveStatus = "正在连接兼容模式实时更新"
                 realtimeConnected = false
@@ -165,6 +202,7 @@ extension PadWorkspace {
                     try Task.checkCancellation()
                     guard realtimeGeneration == generation, connection.recoveryRevision == connectionRevision else { return }
                     failures = 0
+                    consecutiveTransportFailures = 0
                     liveStatus = "兼容模式实时连接正常"
                     realtimeConnected = true
                     realtimeReconnectFailed = false
@@ -182,9 +220,11 @@ extension PadWorkspace {
                     realtimeReconnectFailed = true
                     return
                 }
+                suspectedStalledChannel = Self.realtimeFailureSuggestsStalledChannel(error)
             }
             failures = min(failures + 1, 5)
-            connection.invalidateRealtimeTransport()
+            consecutiveTransportFailures = suspectedStalledChannel ? min(consecutiveTransportFailures + 1, 2) : 0
+            _ = await connection.invalidateFailedRealtimeTransport(force: consecutiveTransportFailures >= 2)
             if failures >= 2 { realtimeReconnectFailed = true }
             liveStatus = "兼容模式连接中断，正在自动重连"
             realtimeConnected = false

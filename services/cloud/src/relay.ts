@@ -8,6 +8,8 @@ import type { CloudDevice, CloudDeviceService } from "./devices.js";
 
 const RELAY_PROTOCOL_VERSION = 1;
 const ROUTING_HEADER_BYTES = 17;
+const CLOSED_CONNECTION_TTL_MS = 60_000;
+const MAX_CLOSED_CONNECTIONS_PER_PEER = 256;
 
 interface RelayPeer {
   socket: WebSocket;
@@ -15,6 +17,7 @@ interface RelayPeer {
   device: CloudDevice;
   alive: boolean;
   connectionIds: Set<string>;
+  closedConnectionIds: Map<string, number>;
 }
 
 interface RelayConnection {
@@ -123,7 +126,8 @@ export class RelayHub {
   }
 
   private acceptPeer(socket: WebSocket, accountId: string, device: CloudDevice): void {
-    const peer: RelayPeer = { socket, accountId, device, alive: true, connectionIds: new Set() };
+    const peer: RelayPeer = { socket, accountId, device, alive: true,
+      connectionIds: new Set(), closedConnectionIds: new Map() };
     this.peers.add(peer);
     socket.on("pong", () => { peer.alive = true; });
     socket.on("message", (data, isBinary) => {
@@ -183,10 +187,21 @@ export class RelayHub {
     }
     const connectionId = bytesToUuid(frame.subarray(1, ROUTING_HEADER_BYTES));
     const connection = this.connections.get(connectionId);
+    // A close control message can race frames already queued by either endpoint.
+    // Only this exact peer's recently closed connections qualify; unknown IDs,
+    // other accounts and nonparticipants must still fail authorization.
+    if (!connection) {
+      const expiresAt = sender.closedConnectionIds.get(connectionId);
+      if (expiresAt !== undefined && expiresAt > Date.now()) return;
+      sender.closedConnectionIds.delete(connectionId);
+    }
     if (!connection || connection.accountId !== sender.accountId) throw new Error("unknown relay connection");
     const recipient = sender === connection.mobile ? connection.mac : sender === connection.mac ? connection.mobile : null;
     if (!recipient) throw new Error("sender is not part of relay connection");
-    if (recipient.socket.readyState !== WebSocket.OPEN) throw new Error("relay peer is offline");
+    if (recipient.socket.readyState !== WebSocket.OPEN) {
+      this.closeConnection(connectionId, "relay peer is offline");
+      return;
+    }
     if (recipient.socket.bufferedAmount + frame.length > this.options.config.relayMaxQueuedBytes) {
       this.closeConnection(connectionId, "relay backpressure limit reached");
       return;
@@ -205,6 +220,16 @@ export class RelayHub {
     this.connections.delete(connectionId);
     connection.mobile.connectionIds.delete(connectionId);
     connection.mac.connectionIds.delete(connectionId);
+    const now = Date.now();
+    for (const peer of [connection.mobile, connection.mac]) {
+      for (const [id, expiresAt] of peer.closedConnectionIds) {
+        if (expiresAt <= now) peer.closedConnectionIds.delete(id);
+      }
+      peer.closedConnectionIds.set(connectionId, now + CLOSED_CONNECTION_TTL_MS);
+      while (peer.closedConnectionIds.size > MAX_CLOSED_CONNECTIONS_PER_PEER) {
+        peer.closedConnectionIds.delete(peer.closedConnectionIds.keys().next().value!);
+      }
+    }
     this.sendControl(connection.mobile, { type: "disconnected", connectionId, reason });
     this.sendControl(connection.mac, { type: "disconnected", connectionId, reason });
   }

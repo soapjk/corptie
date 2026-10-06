@@ -4,7 +4,7 @@ import Testing
 
 struct ClientDevicesSettingsTests {
     @Test func deviceInventoryDecodesPendingAndRevokedWithoutCredentials() throws {
-        let data = Data(#"{"devices":[{"id":"d","name":"iPad","revoked":true}],"pending":[{"pairingId":"p","name":"New iPad","expiresAt":1}]}"#.utf8)
+        let data = Data(#"{"devices":[{"id":"d","name":"iPad","revoked":true,"authSource":"local_pairing"}],"pending":[{"pairingId":"p","name":"New iPad","expiresAt":1}]}"#.utf8)
         let result = try JSONDecoder().decode(ClientDeviceInventory.self, from: data)
         #expect(result.devices.first?.revoked == true)
         #expect(result.pending.first?.id == "p")

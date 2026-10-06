@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { ClientEventStream } from "../src/application/clientEventStream.mjs";
+import { ClientEventStream, parseRealtimeResumeQuery } from "../src/application/clientEventStream.mjs";
 
 class Response extends EventEmitter {
   frames = []; destroyed = false; writableLength = 0; writable = true;
@@ -11,6 +11,98 @@ class Response extends EventEmitter {
 }
 const identity = { deviceId: "one" };
 const data = frame => JSON.parse(frame.split("data: ")[1]);
+
+test("realtime resume queries bound untrusted cursor count, IDs and revisions", () => {
+  assert.deepEqual(parseRealtimeResumeQuery(new URLSearchParams()), { timelineRevisions: {}, backgroundTimelineLimit: null, timelineCoalescing: false });
+  assert.deepEqual(parseRealtimeResumeQuery(new URLSearchParams({ timelineRevisions: '{"one":4}', backgroundTimelineLimit: "2" })),
+    { timelineRevisions: { one: 4 }, backgroundTimelineLimit: 2, timelineCoalescing: false });
+  assert.equal(parseRealtimeResumeQuery(new URLSearchParams({ timelineCoalescing: "true" })).timelineCoalescing, true);
+  assert.throws(() => parseRealtimeResumeQuery(new URLSearchParams({ timelineCoalescing: "1" })), { code: "INVALID_QUERY" });
+  for (const value of ["[]", "null", '{"one":-1}', '{"one":"4"}', "{", JSON.stringify(Object.fromEntries(Array.from({length:49}, (_, i) => [String(i), 1])))]) {
+    assert.throws(() => parseRealtimeResumeQuery(new URLSearchParams({ timelineRevisions: value })), { code: "INVALID_QUERY" });
+  }
+  for (const value of ["-1", "49", "1.5", "NaN"]) {
+    assert.throws(() => parseRealtimeResumeQuery(new URLSearchParams({ backgroundTimelineLimit: value })), { code: "INVALID_QUERY" });
+  }
+});
+
+test("reconnect resumes cached timelines and prioritizes selection with bounded new windows", async () => {
+  const reads = [];
+  const hub = new ClientEventStream({
+    stateSnapshot: async () => ({ revision: 1, sessions: ["new", "selected", "cached", "other"].map(id => ({id})) }),
+    timeline: async (_identity, id, after) => {
+      reads.push([id, after]);
+      return { kind: after ? "delta" : "snapshot", sessionId: id, revision: after + 1, hasMore: false };
+    }
+  });
+  try {
+    hub.attachV2(new Response(), () => identity, { sessionId: "selected", timelineRevision: 7,
+      timelineRevisions: { cached: 9, removed: 12 }, backgroundTimelineLimit: 1 });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(reads, [["selected", 7], ["cached", 9], ["new", 0]]);
+  } finally { hub.close(); }
+});
+
+test("on-demand clients skip unrelated history and subscribe without reconnecting", async () => {
+  const reads = [];
+  const hub = new ClientEventStream({
+    stateSnapshot: async () => ({ revision: 1, sessions: ["selected", "other"].map(id => ({ id })) }),
+    timeline: async (_identity, id, after, options) => {
+      reads.push([id, after, options.coalesce]);
+      return { kind: after ? "delta" : "snapshot", sessionId: id, revision: after + 1 };
+    }
+  });
+  const response = new Response();
+  try {
+    hub.attachV2(response, () => identity, { sessionId: "selected", backgroundTimelineLimit: 0, timelineCoalescing: true });
+    await new Promise(resolve => setImmediate(resolve));
+    hub.publishTimeline("other");
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(reads, [["selected", 0, true]]);
+    hub.observeTimeline("wrong-device", "other", 7);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(reads.length, 1);
+    hub.observeTimeline(identity.deviceId, "other", 7);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(reads.at(-1), ["other", 7, true]);
+    hub.publishTimeline("other");
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(reads.at(-1), ["other", 8, true]);
+    assert.equal(hub.clients.size, 1);
+    assert.equal(response.destroyed, false);
+  } finally { hub.close(); }
+});
+
+test("receipt publication bypasses an in-flight history read", async () => {
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const hub = new ClientEventStream({ timeline: async () => { await blocked; return null; } });
+  const response = new Response();
+  try {
+    hub.attachV2(response, () => identity, { sessionId: "selected" });
+    await new Promise(resolve => setImmediate(resolve));
+    hub.publishReceipt(identity.deviceId, { requestId: "message", status: "accepted" });
+    assert.equal(data(response.frames.at(-1)).requestId, "message");
+    assert.match(response.frames.at(-1), /event: command-receipt/);
+  } finally { release(); hub.close(); }
+});
+
+test("a selected Session disappearing does not close the global stream", async () => {
+  const hub = new ClientEventStream({
+    stateSnapshot: async () => ({ revision: 1, sessions: [{ id: "other" }] }),
+    timeline: async (_identity, id) => {
+      if (id === "deleted") throw Object.assign(new Error("unavailable"), { code: "SESSION_NOT_AVAILABLE", status: 404 });
+      return { kind: "snapshot", sessionId: id, revision: 1 };
+    }
+  });
+  const response = new Response();
+  try {
+    hub.attachV2(response, () => identity, { sessionId: "deleted", backgroundTimelineLimit: 1 });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(response.destroyed, false);
+    assert.equal(data(response.frames.at(-1)).sessionId, "other");
+  } finally { hub.close(); }
+});
 
 test("first connect and reconnect always reset; bursts are coalesced with bounded IDs", () => {
   const hub = new ClientEventStream(), response = new Response();
@@ -98,7 +190,7 @@ test("v2 pushes authoritative payloads and receipts without legacy invalidations
       { sessionId: "session:one", stateRevision: 6, timelineRevision: 2 });
     await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(response.frames.map(frame => frame.match(/event: ([^\n]+)/)?.[1]),
-      ["stream-ready", "state-snapshot", "timeline-snapshot", "control-snapshot"]);
+      ["stream-ready", "state-snapshot", "timeline-delta", "control-snapshot"]);
     assert.equal(data(response.frames[1]).after, 0);
 
     hub.invalidate({ inventory: true, control: true, sessionId: "session:one" });
@@ -117,7 +209,7 @@ test("v2 pushes authoritative payloads and receipts without legacy invalidations
     assert.ok(events.includes("state-snapshot"));
     assert.ok(events.includes("control-snapshot"));
     assert.ok(events.includes("command-receipt"));
-    assert.equal(data(response.frames.find(frame => frame.includes("event: timeline-delta"))).baseRevision, 3);
+    assert.equal(data(response.frames.filter(frame => frame.includes("event: timeline-delta")).at(-1)).baseRevision, 3);
   } finally { hub.close(); }
 });
 
@@ -182,7 +274,8 @@ test("v2 connect and reconnect proactively warm the active resident Timeline set
       response.destroy();
     }
     assert.deepEqual(timelineReads.map(read => read.sessionId), [...sessions, ...sessions]);
-    assert.ok(timelineReads.every(read => read.after === 0), "reconnect snapshots repair every resident Session");
+    assert.ok(timelineReads.every(read => read.after === (read.sessionId === "session:selected" ? 9 : 0)),
+      "reconnect supplies the selected cursor and snapshots uncached background Sessions");
   } finally { hub.close(); }
 });
 
@@ -191,6 +284,7 @@ test("v2 bounds background bootstrap residency while preserving newest inventory
   const sessions = Array.from({ length: 8 }, (_, index) => `session:${index}`);
   const hub = new ClientEventStream({
     backgroundTimelineLimit: 3,
+    backgroundTimelineBatchSize: 3,
     stateSnapshot: async () => ({ schemaVersion: 2, revision: 1, works: [], tasks: [],
       sessions: sessions.map(id => ({ id })) }),
     timeline: async (_identity, sessionId, _after, options) => {
@@ -207,6 +301,70 @@ test("v2 bounds background bootstrap residency while preserving newest inventory
     assert.deepEqual(timelineReads, sessions.slice(0, 3).map(sessionId => ({
       sessionId, includeDetail: false
     })));
+  } finally { hub.close(); }
+});
+
+test("background histories are paced batches; live traffic and control do not wait for all history", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const reads = [];
+  const response = new Response();
+  const hub = new ClientEventStream({
+    backgroundTimelineLimit: 5,
+    backgroundTimelineBatchDelayMs: 1000,
+    stateSnapshot: async () => ({ revision: 1, sessions: ["selected", "a", "b", "c", "d", "e"].map(id => ({ id })) }),
+    controlSnapshot: async () => ({ revision: 1 }),
+    timeline: async (_identity, id, after) => {
+      reads.push([id, after]);
+      return { kind: after ? "delta" : "snapshot", sessionId: id, revision: after + 1 };
+    }
+  });
+  try {
+    hub.attachV2(response, () => identity, { sessionId: "selected" });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(reads, [["selected", 0], ["a", 0], ["b", 0]]);
+    assert.ok(response.frames.findIndex(frame => frame.includes("event: control-snapshot"))
+      < response.frames.findIndex(frame => frame.includes('"sessionId":"a"')));
+    hub.publishReceipt(identity.deviceId, { requestId: "message", status: "accepted" });
+    assert.match(response.frames.at(-1), /event: command-receipt/);
+    hub.publishTimeline("selected");
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(reads.at(-1), ["selected", 1]);
+    t.mock.timers.tick(999);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(reads.length, 4);
+    t.mock.timers.tick(1);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(reads.slice(-2), [["c", 0], ["d", 0]]);
+    response.destroy();
+    t.mock.timers.tick(10000);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(reads.some(([id]) => id === "e"), false, "disconnect cancels remaining history");
+  } finally { hub.close(); }
+});
+
+test("large history batches wait according to serialized bytes and resume cached cursors", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const reads = [];
+  const hub = new ClientEventStream({
+    backgroundTimelineBatchSize: 1,
+    backgroundTimelineBatchDelayMs: 10,
+    backgroundTimelineBytesPerSecond: 1000,
+    stateSnapshot: async () => ({ revision: 1, sessions: [{ id: "a" }, { id: "b" }] }),
+    timeline: async (_identity, id, after) => {
+      reads.push([id, after]);
+      return { kind: "delta", sessionId: id, revision: after + 1, content: "x".repeat(5000) };
+    }
+  });
+  try {
+    hub.attachV2(new Response(), () => identity, { timelineRevisions: { a: 7, b: 9 }, backgroundTimelineLimit: 0 });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(reads, [["a", 7]]);
+    t.mock.timers.tick(1000);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(reads.length, 1);
+    t.mock.timers.tick(10000);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(reads, [["a", 7], ["b", 9]]);
   } finally { hub.close(); }
 });
 

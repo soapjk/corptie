@@ -33,11 +33,11 @@ test("device history preserves typed timeline presentation without leaking provi
     const { items } = await api.messages(identity, "session:test", new URLSearchParams());
     for (const [key, value] of Object.entries(presentation)) {
       assert.equal(items[0][key], value);
-      assert.equal(items[1][key], null);
+      assert.equal(Object.hasOwn(items[1], key), false);
     }
     assert.equal(items[0].turnId, "turn:1");
-    assert.equal(items[2].title, null);
-    assert.equal(items[2].turnStatus, null);
+    assert.equal(items[2].title, undefined);
+    assert.equal(items[2].turnStatus, undefined);
     assert.equal(items[3].presentationRole, "collaboration");
     assert.equal(items[3].collaborationDirection, "inbound");
     assert.equal(items[3].collaborationInitiatorSessionTitle, "Source");
@@ -47,6 +47,53 @@ test("device history preserves typed timeline presentation without leaking provi
     for (const key of ["rawMetadataJSON", "rawEventEnvelope", "providerCredentials"]) {
       assert.equal(Object.hasOwn(items[0], key), false);
     }
+  } finally { await f.close(); }
+});
+
+test("negotiated coalescing sends one final payload while preserving every revision and legacy clients", async () => {
+  const f = await fixture();
+  try {
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks, readWindow: async () => ({ items: [] }) });
+    const item = { id: "one", type: "agentMessage", text: "x".repeat(10000) };
+    api.store.sessionTimelineChangesAfter = () => ({ snapshotRequired: false, baseRevision: 1,
+      revision: 4, currentRevision: 4, hasMore: false, changes: [
+        { revision: 2, itemId: "one", operation: "upsert", item },
+        { revision: 3, itemId: "one", operation: "delete", item: null },
+        { revision: 4, itemId: "one", operation: "upsert", item }
+      ] });
+    const legacy = await api.realtimeTimeline(identity, "session:test", 1, { includeDetail: false });
+    const compact = await api.realtimeTimeline(identity, "session:test", 1, { includeDetail: false, coalesce: true });
+    assert.deepEqual(legacy.changes.map(change => change.operation), ["upsert", "delete", "upsert"]);
+    assert.deepEqual(compact.changes.map(change => change.operation), ["noop", "noop", "upsert"]);
+    assert.deepEqual(compact.changes.map(change => change.revision), [2, 3, 4]);
+    assert.equal(compact.changes.filter(change => change.item).length, 1);
+    assert.equal(Object.hasOwn(compact.changes[2].item, "toolExecution"), false);
+    assert.ok(JSON.stringify(compact).length < JSON.stringify(legacy).length * 0.6);
+    api.store.sessionTimelineChangesAfter = () => ({ snapshotRequired: false, baseRevision: 1,
+      revision: 3, currentRevision: 3, hasMore: false, changes: [
+        { revision: 2, itemId: "one", operation: "upsert", item },
+        { revision: 3, itemId: "one", operation: "delete", item: null }
+      ] });
+    const deleted = await api.realtimeTimeline(identity, "session:test", 1, { coalesce: true });
+    assert.deepEqual(deleted.changes.map(change => change.operation), ["noop", "delete"]);
+  } finally { await f.close(); }
+});
+
+test("history pages honor byte budgets and retain complete oversized single items", async () => {
+  const f = await fixture();
+  try {
+    const source = Array.from({ length: 40 }, (_, index) => ({ id: String(index), type: "agentMessage", text: "x".repeat(10000) }));
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks,
+      readWindow: async () => ({ revision: 5, hasEarlier: false, items: source }) });
+    const page = await api.messages(identity, "session:test", new URLSearchParams());
+    assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 128 * 1024);
+    assert.equal(page.items.at(-1).id, "39");
+    assert.equal(page.hasEarlier, true);
+    assert.equal(page.nextBefore, page.items[0].id);
+    source.splice(0, source.length, { id: "large", type: "agentMessage", text: "x".repeat(200000) });
+    const large = await api.messages(identity, "session:test", new URLSearchParams());
+    assert.equal(large.items[0].text.length, 200000);
+    assert.equal(large.hasEarlier, false);
   } finally { await f.close(); }
 });
 
