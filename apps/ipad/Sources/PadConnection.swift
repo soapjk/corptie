@@ -255,11 +255,11 @@ final class PadConnection {
         return try CorptieCloudService.nativeOAuth(clientID: "corptie-ios", developmentBaseURL: override)
     }
 
-    func perform(_ operation: () async throws -> Void) async {
-        guard !busy else { return }
-        busy = true
+    func perform(independent: Bool = false, _ operation: () async throws -> Void) async {
+        guard independent || !busy else { return }
+        if !independent { busy = true }
         notice = ""
-        defer { busy = false }
+        defer { if !independent { busy = false } }
         do { try await operation() }
         catch is CancellationError { }
         catch { notice = Self.explain(error) }

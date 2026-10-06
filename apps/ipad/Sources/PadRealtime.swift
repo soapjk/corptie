@@ -4,6 +4,68 @@ import CorptieClientSecurity
 import OSLog
 
 extension PadWorkspace {
+    var selectedSessionIsRunning: Bool {
+        guard let selection else { return false }
+        let session = sessionsByID[selection] ?? sessions.first { isSelectedTimeline($0.id) }
+        if let state = SessionExecutionState(executionStatus: session?.executionStatus) {
+            return state == .running
+        }
+        // A Task fallback is valid only for its explicitly bound current Session.
+        return tasks.contains { task in
+            task.currentSessionId.map { isSelectedTimeline($0) } == true
+                && SessionExecutionState(executionStatus: task.executionStatus) == .running
+        }
+    }
+
+    func selectedCapabilityKey(_ connection: PadConnection) -> String {
+        "\(selection ?? "")|\(timelineGeneration)|\(connection.serverID)|\(connection.address)|\(connection.deviceID ?? "")|\(connection.connected)|\(connection.recoveryRevision)|\(capabilityRefreshRevision)|\(selectedSessionIsRunning)"
+    }
+
+    func refreshSelectedCapabilities(_ connection: PadConnection) async {
+        guard let selected = selection, connection.connected else { return }
+        let key = selectedCapabilityKey(connection)
+        guard verifiedCapabilityKey != key, capabilityRequestKey != key else { return }
+        let token = UUID()
+        capabilityRequestKey = key; capabilityRequestToken = token
+        refreshingCapabilities = true; capabilityRefreshError = nil
+        defer {
+            if capabilityRequestToken == token {
+                capabilityRequestKey = nil; capabilityRequestToken = nil
+                refreshingCapabilities = false
+            }
+        }
+        do {
+            let api = ClientSessionAPI(transport: try await connection.transport())
+            let result = try await api.capabilities(sessionId: selected)
+            guard !Task.isCancelled, capabilityRequestToken == token,
+                  selectedCapabilityKey(connection) == key else { return }
+            capabilities = result
+            verifiedCapabilityKey = key
+            saveResidentState(for: selected)
+        } catch is CancellationError { }
+        catch {
+            guard !Task.isCancelled, capabilityRequestToken == token,
+                  selectedCapabilityKey(connection) == key else { return }
+            capabilityRefreshError = "停止能力确认失败，请重新连接后重试"
+        }
+    }
+
+    func stopControlEnabled(_ connection: PadConnection) -> Bool {
+        selectedSessionIsRunning && connection.connected && !stopSubmissionInFlight
+            && pending == nil && !refreshingCapabilities
+            && verifiedCapabilityKey == selectedCapabilityKey(connection)
+            && capabilities?.stop.available == true
+    }
+
+    func stopControlReason(_ connection: PadConnection) -> String? {
+        guard selectedSessionIsRunning else { return nil }
+        if stopSubmissionInFlight || pending?.kind == "stop" { return "正在提交停止请求" }
+        if !connection.connected { return "连接恢复后才能停止" }
+        if let capabilityRefreshError { return capabilityRefreshError }
+        if refreshingCapabilities || verifiedCapabilityKey != selectedCapabilityKey(connection) { return "正在确认停止能力" }
+        if capabilities?.stop.available != true { return capabilities?.stop.reason ?? "当前会话不支持停止" }
+        return nil
+    }
     private static let realtimeLog = Logger(subsystem: "com.corptie.connection", category: "MobileRealtime")
     static func realtimeFailureSuggestsStalledChannel(_ error: any Error) -> Bool {
         if let error = error as? URLError {
@@ -107,19 +169,9 @@ extension PadWorkspace {
                         realtimePausedAt = nil
                         liveStatus = hasReceivedRealtimeState ? "实时连接正常" : "实时连接已建立，正在同步数据"
                         scheduleInitialStateRecovery(connection)
-                        // Disk cache never restores permissions. Refresh the
-                        // selected Session's live capabilities independently.
-                        if capabilities == nil, lastTimelineRevision != nil, let selected = selection {
-                            Task { @MainActor [weak self] in
-                                guard let self else { return }
-                                do {
-                                    let transport = try await connection.transport()
-                                    let caps = try await ClientSessionAPI(transport: transport).capabilities(sessionId: selected)
-                                    guard self.realtimeGeneration == generation, self.selection == selected else { return }
-                                    self.capabilities = caps
-                                } catch { /* Keep cached messages visible; server remains authority. */ }
-                            }
-                        }
+                        // The visible conversation owns one capability-only
+                        // refresh, independent of cached timeline readiness.
+                        capabilityRefreshRevision &+= 1
                     case .state(let snapshot):
                         applyRealtimeState(snapshot)
                         liveStatus = "实时连接正常"

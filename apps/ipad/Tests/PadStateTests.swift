@@ -42,6 +42,32 @@ struct PadStateTests {
         #expect(PadTimelineJumpPolicy.isAtLatest(tailMinY: 100, viewportHeight: 600, distanceToBottom: 0))
     }
 
+    @Test func nativeJumpCompletionDoesNotWaitForStaleLazyMeasurements() {
+        #expect(PadTimelineJumpPolicy.correctionCompleted(nativeNearBottom: true,
+            tailMinY: nil, viewportHeight: 0, distanceToBottom: 300))
+        #expect(!PadTimelineJumpPolicy.correctionCompleted(nativeNearBottom: false,
+            tailMinY: 580, viewportHeight: 600, distanceToBottom: 0))
+        #expect(PadTimelineJumpPolicy.correctionCompleted(nativeNearBottom: nil,
+            tailMinY: 580, viewportHeight: 600, distanceToBottom: 0))
+    }
+
+    @Test func explicitJumpHidesButtonIndependentlyOfCompletionMeasurements() {
+        var viewport = ConversationViewportState(followsLatest: false, hasNewMessagesBelow: true)
+        viewport.jumpToLatest()
+        #expect(!viewport.showsJumpToLatest)
+        #expect(!viewport.hasNewMessagesBelow)
+        // Missing geometry means correction is still pending, not that the
+        // user has returned to reading history.
+        #expect(!PadTimelineJumpPolicy.correctionCompleted(nativeNearBottom: nil,
+            tailMinY: nil, viewportHeight: 600, distanceToBottom: 0))
+        #expect(!viewport.showsJumpToLatest)
+        let followsTailUpdate = viewport.timelineTailDidChange()
+        #expect(followsTailUpdate)
+        #expect(!viewport.showsJumpToLatest)
+        viewport.updateFromUserViewport(isNearBottom: false)
+        #expect(viewport.showsJumpToLatest)
+    }
+
     @Test func persistentOutlineSelectionOnlyAppearsInTheThreeColumnLayout() {
         #expect(!PadWorkspaceLayoutPolicy.showsPersistentOutlineSelection(
             isRegularWidth: false,

@@ -225,7 +225,8 @@ struct PadComposer<Header: View>: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(connection.busy || workspace.pending != nil)
+                    .disabled(!workspace.stopControlEnabled(connection))
+                    .accessibilityHint(workspace.stopControlReason(connection) ?? "停止当前运行")
                     .accessibilityLabel("停止当前运行")
                     .accessibilityIdentifier("conversation-stop")
                 }

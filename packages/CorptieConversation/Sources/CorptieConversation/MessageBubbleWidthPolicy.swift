@@ -5,6 +5,12 @@ import SwiftUI
 /// and iPad (SwiftUI timeline). Hosts measure text with their own text engine and
 /// hand the natural widths in; the clamp, padding and image floor live here.
 public enum MessageBubbleWidthPolicy {
+    /// SwiftUI hosts can supply the actual intrinsic card width, including
+    /// scaled fonts, icons, spacing and padding, instead of estimating glyphs.
+    public static func processCardLayoutWidth(naturalWidth: CGFloat, expanded: Bool, laneWidth: CGFloat) -> CGFloat {
+        let available = max(0, laneWidth - 4)
+        return expanded ? min(available, maximumWidth) : min(available, max(minimumWidth, naturalWidth))
+    }
     public static let maximumWidth: CGFloat = 480
     /// A plain message only needs room for its body and card padding.
     public static let minimumWidth: CGFloat = 40
