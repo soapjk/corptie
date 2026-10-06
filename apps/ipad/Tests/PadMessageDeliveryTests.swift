@@ -121,12 +121,14 @@ struct PadMessageDeliveryTests {
         await workspace.enqueueReliableMessage(connection, sessionID: "session", displaySessionID: "session",
             text: "second instruction", images: [], mentions: [], clearsDraft: false)
         let secondID = try #require(await outbox.all().last?.id)
-        let worker = Task { await workspace.runMessageDelivery(connection) }
+        // Submission remains owned by the app even after leaving the scene.
+        workspace.messageDeliverySceneChanged(active: false, connection: connection)
         for _ in 0..<400 {
             if try await outbox.all().isEmpty { break }
             try await Task.sleep(for: .milliseconds(10))
         }
-        worker.cancel(); await worker.value; workspace.refreshWorker?.cancel()
+        await workspace.messageDeliveryLifetime.waitForCurrentWorker()
+        workspace.refreshWorker?.cancel()
         #expect(try await outbox.all().isEmpty)
         #expect(workspace.outgoingStates[ClientSessionAPI.messageID(deviceID: "device", requestID: id)] == "后端已接收")
         #expect(await harness.admissions == 2)

@@ -62,7 +62,9 @@ extension PadWorkspace {
         if stopSubmissionInFlight || pending?.kind == "stop" { return "正在提交停止请求" }
         if !connection.connected { return "连接恢复后才能停止" }
         if let capabilityRefreshError { return capabilityRefreshError }
-        if refreshingCapabilities || verifiedCapabilityKey != selectedCapabilityKey(connection) { return "正在确认停止能力" }
+        // Routine capability verification is background work, not a notice.
+        // stopControlEnabled still fails closed until verification completes.
+        if refreshingCapabilities || verifiedCapabilityKey != selectedCapabilityKey(connection) { return nil }
         if capabilities?.stop.available != true { return capabilities?.stop.reason ?? "当前会话不支持停止" }
         return nil
     }

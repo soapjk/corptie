@@ -30,7 +30,7 @@ import CorptieClientCore
         #expect(workspace.selectedTimelineReady)
         #expect(workspace.selectedSessionIsRunning)
         #expect(!workspace.stopControlEnabled(connection))
-        #expect(workspace.stopControlReason(connection) == "正在确认停止能力")
+        #expect(workspace.stopControlReason(connection) == nil)
         await workspace.refreshSelectedCapabilities(connection)
         #expect(workspace.stopControlEnabled(connection))
         #expect(workspace.messages.first?.id == "cached")
@@ -52,6 +52,19 @@ import CorptieClientCore
         await workspace.refreshSelectedCapabilities(connection)
         #expect(await probe.paths.count == 2)
         #expect(workspace.stopControlEnabled(connection))
+    }
+
+    @Test func verificationInFlightIsSilentAndStillDisablesStop() async throws {
+        let probe = StopCapabilityProbe(delay: true)
+        let (connection, workspace) = try fixture(probe)
+        let refresh = Task { await workspace.refreshSelectedCapabilities(connection) }
+        while await probe.paths.isEmpty { await Task.yield() }
+        #expect(workspace.refreshingCapabilities)
+        #expect(workspace.stopControlReason(connection) == nil)
+        #expect(!workspace.stopControlEnabled(connection))
+        await refresh.value
+        #expect(workspace.stopControlEnabled(connection))
+        #expect(workspace.stopControlReason(connection) == nil)
     }
 
     @Test func oldSelectionResponseCannotOverwriteNewSession() async throws {

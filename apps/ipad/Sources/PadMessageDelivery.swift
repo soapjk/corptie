@@ -2,8 +2,11 @@ import Foundation
 import CorptieClientCore
 import CorptieClientSecurity
 import OSLog
+#if canImport(UIKit)
+import UIKit
+#endif
 
-/// One foreground-owned sender, independent of navigation and model execution.
+/// One application-owned sender, independent of navigation and model execution.
 /// All retries use the same immutable message identity/content. No ordinary
 /// command, approval, stop or scheduled operation passes through this sender.
 extension PadWorkspace {
@@ -13,6 +16,18 @@ extension PadWorkspace {
         "\(connection.serverID)|\(connection.deviceID ?? "")|\(connection.connected)|\(connection.networkAvailable)|\(connection.recoveryBlockedMessage ?? "")|\(connection.recoveryRevision)|\(deliveryRevision)"
     }
 
+    func scheduleMessageDelivery(_ connection: PadConnection) {
+        messageDeliveryLifetime.schedule(key: deliveryKey(connection)) { [weak self, weak connection] in
+            guard let self, let connection else { return }
+            await self.runMessageDelivery(connection)
+        }
+    }
+
+    func messageDeliverySceneChanged(active: Bool, connection: PadConnection) {
+        messageDeliveryLifetime.setActive(active)
+        if active { scheduleMessageDelivery(connection) }
+    }
+
     func enqueueReliableMessage(_ connection: PadConnection, sessionID: String, displaySessionID: String,
                                 text: String, images: [ClientDraftImage], mentions: [ClientDraftMention],
                                 clearsDraft: Bool) async {
@@ -20,6 +35,10 @@ extension PadWorkspace {
             status = "尚未建立可信连接，消息仍保留在草稿中。"
             return
         }
+        // Protect persistence as well as the network attempt before the first
+        // suspension point. The sender takes its own lease before this ends.
+        let lease = messageDeliveryLifetime.acquire()
+        defer { messageDeliveryLifetime.release(lease) }
         outboxSaving = true
         defer { outboxSaving = false }
         let message = ReliableOutgoingMessage(serverID: connection.serverID, deviceID: deviceID,
@@ -36,6 +55,7 @@ extension PadWorkspace {
             recordSessionActivity(sessionID: displaySessionID, timestamp: message.createdAt)
             status = ""
             deliveryRevision += 1
+            scheduleMessageDelivery(connection)
             Self.deliveryLog.info("Message saved: request=\(message.id, privacy: .public)")
         } catch {
             status = "消息未保存，草稿已保留。请检查设备存储空间或稍后重试。"
@@ -62,9 +82,10 @@ extension PadWorkspace {
             guard var record = try await messageOutbox.all().first(where: { $0.id == id }),
                   record.serverID == connection.serverID, record.deviceID == connection.deviceID,
                   record.state != .accepted else { return }
-            deliveryRevision += 1 // cancel the foreground-owned attempt before persisting
+            deliveryRevision += 1 // invalidate the old attempt before persisting
             record.state = .cancelled
             try await messageOutbox.save(record)
+            scheduleMessageDelivery(connection)
             deliveryIssues.removeValue(forKey: displaySessionID)
             projectReliableMessage(record, title: "已停止重试；不代表撤回")
             status = "已停止自动发送，原消息保留在本机；若请求已到达后端，它仍可能执行。"
@@ -220,7 +241,7 @@ extension PadWorkspace {
                     do { try await messageOutbox.remove(message.id) }
                     catch { Self.deliveryLog.error("Accepted message cleanup deferred: request=\(message.id, privacy: .public)") }
                     inventoryDirty = true; messagesDirty = true
-                    scheduleRefresh(connection)
+                    if messageDeliveryLifetime.isActive { scheduleRefresh(connection) }
                     Self.deliveryLog.info("Message accepted: request=\(message.id, privacy: .public)")
                 } catch is CancellationError { return }
                 catch {
@@ -262,13 +283,118 @@ extension PadWorkspace {
                     Self.deliveryLog.info("Message attempt deferred: request=\(message.id, privacy: .public), attempt=\(message.attempts), state=\(message.state.rawValue, privacy: .public) reason=\(ConnectionDiagnostic.failure(error), privacy: .public)")
                 }
             }
-            // Idle/offline workers suspend; network and foreground changes wake
-            // through the root task's identity, not a high-frequency timer.
+            // Idle/offline workers exit; connection changes and foreground
+            // recovery wake the application coordinator without polling.
             if !retryScheduled
                 || !connection.networkAvailable || !connection.connected
                 || connection.recoveryBlockedMessage != nil { return }
             do { try await Task.sleep(for: .seconds(max(0.2, nextWake.timeIntervalSinceNow))) }
             catch { return }
+        }
+    }
+}
+
+/// Finite iOS execution assertion, with a serialized worker handoff. A SwiftUI
+/// task must not own message submission: scene changes cancel those tasks.
+/// Injected assertions keep lifecycle tests host-runnable without UIKit.
+@MainActor
+final class PadMessageDeliveryLifetime {
+    typealias Begin = (@escaping @MainActor @Sendable () -> Void) -> Int?
+    private let begin: Begin
+    private let end: (Int) -> Void
+    private var assertion: Int?
+    private var leases = Set<UUID>()
+    private var active = true
+    private var expired = false
+    private var worker: Task<Void, Never>?
+    private var key: String?
+    private var generation = UUID()
+    var isActive: Bool { active }
+
+    func waitForCurrentWorker() async { await worker?.value }
+    private static let log = Logger(subsystem: "com.corptie.mobile", category: "MessageDeliveryLifetime")
+
+    init(begin: Begin? = nil, end: ((Int) -> Void)? = nil) {
+        self.begin = begin ?? { expiration in
+            #if canImport(UIKit)
+            let id = UIApplication.shared.beginBackgroundTask(withName: "Finish message submission", expirationHandler: expiration)
+            return id == .invalid ? nil : id.rawValue
+            #else
+            return nil
+            #endif
+        }
+        self.end = end ?? { raw in
+            #if canImport(UIKit)
+            UIApplication.shared.endBackgroundTask(UIBackgroundTaskIdentifier(rawValue: raw))
+            #endif
+        }
+    }
+
+    func setActive(_ value: Bool) {
+        active = value
+        if value { expired = false }
+        Self.log.info("Delivery scene active=\(value)")
+    }
+
+    func acquire() -> UUID? {
+        guard active || !expired else { return nil }
+        let token = UUID()
+        leases.insert(token)
+        if assertion == nil {
+            assertion = begin { [weak self] in self?.expire() }
+            if assertion == nil {
+                Self.log.info("Delivery background assertion unavailable")
+                // Foreground sends can still run. Do not keep restarting an
+                // assertion denied by iOS while the app is already inactive.
+                if !active { expire() }
+            }
+        }
+        return leases.contains(token) ? token : nil
+    }
+
+    func release(_ token: UUID?) {
+        guard let token, leases.remove(token) != nil, leases.isEmpty else { return }
+        finishAssertion()
+    }
+
+    private func finishAssertion() {
+        guard let id = assertion else { return }
+        assertion = nil
+        end(id)
+        Self.log.info("Delivery background assertion released")
+    }
+
+    private func expire() {
+        expired = true
+        worker?.cancel()
+        key = nil // Foreground must be able to replace a still-unwinding worker.
+        leases.removeAll()
+        finishAssertion()
+        Self.log.info("Delivery background execution expired; durable queue retained")
+    }
+
+    func schedule(key nextKey: String, operation: @escaping @MainActor () async -> Void) {
+        guard active || !expired else { return }
+        guard key != nextKey || worker == nil else { return }
+        let previous = worker
+        previous?.cancel()
+        let nextGeneration = UUID()
+        generation = nextGeneration
+        key = nextKey
+        // Acquire synchronously so enqueue's protection cannot end before the
+        // new worker begins. Leases overlap during cancellation handoff.
+        let lease = acquire()
+        guard active || !expired else { release(lease); return }
+        // Retain the assertion owner until cleanup, even if the shell itself
+        // disappears. The defer clears the worker and breaks this bounded hold.
+        worker = Task { [self] in
+            await previous?.value
+            defer {
+                self.release(lease)
+                if self.generation == nextGeneration { self.worker = nil; self.key = nil }
+            }
+            guard !Task.isCancelled else { return }
+            await operation()
         }
     }
 }
