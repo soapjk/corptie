@@ -16,6 +16,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private let rawStatusTextView = NSTextView()
     private let disclosureButton = NSButton()
     private var forkItemID: String?
+    private var queuedMessageTaskID: String?
     private var forkUnavailableReason: String?
     private let messageActionBar = NSStackView()
     private let actionStack = NSStackView()
@@ -328,6 +329,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         copiedText = row.copyText
         contextTimestamp = row.contextTimestamp
         forkItemID = row.forkItemID
+        queuedMessageTaskID = row.queuedMessageTaskID
         forkUnavailableReason = row.forkUnavailableReason
         configureContextMenu()
         configureMessageStatus(row.messageStatus)
@@ -706,6 +708,12 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
                         kind: .forkMessage(itemID: forkItemID)))
     }
 
+    @objc private func cancelQueuedMessage() {
+        guard let taskID = queuedMessageTaskID else { return }
+        onAction?(.init(id: "cancel-queued:\(taskID)", label: L10n("Cancel"),
+                        isDestructive: true, kind: .cancelQueuedMessage(taskID: taskID)))
+    }
+
     private func configureContextMenu() {
         guard representedProcessRow == nil else {
             self.menu = nil
@@ -731,6 +739,13 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             copy.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)
             copy.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.copy")
             menu.addItem(copy)
+        }
+        if queuedMessageTaskID != nil {
+            let cancel = NSMenuItem(title: L10n("Cancel"), action: #selector(cancelQueuedMessage), keyEquivalent: "")
+            cancel.target = self
+            cancel.image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: nil)
+            cancel.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.cancel-queued")
+            menu.addItem(cancel)
         }
         if forkItemID != nil {
             let fork = NSMenuItem(title: L10n("Create Branch"), action: #selector(forkMessage), keyEquivalent: "")
@@ -765,6 +780,11 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         if forkItemID != nil {
             accessibilityActions.append(NSAccessibilityCustomAction(
                 name: L10n("Create Branch"), target: self, selector: #selector(forkMessage)
+            ))
+        }
+        if queuedMessageTaskID != nil {
+            accessibilityActions.append(NSAccessibilityCustomAction(
+                name: L10n("Cancel"), target: self, selector: #selector(cancelQueuedMessage)
             ))
         }
         setAccessibilityCustomActions(accessibilityActions)

@@ -1437,6 +1437,28 @@ const {
   scheduleAgentWorkDrain, dispatchSessionChannelDelivery, sendUnifiedSessionMessage, emitEvent,
   syncSessionChannelDeliveriesIntoAgentWorkQueue, syncCollaborationDeliveriesIntoAgentWorkQueue
 });
+function cancelQueuedUserMessage(sessionId, taskId) {
+  const routedSessionId = requireSessionReference(sessionId).sessionId;
+  const task = store.runInTransaction(() => {
+    const cancelled = store.cancelQueuedUserAgentTask(routedSessionId, taskId);
+    if (cancelled?.source?.deliveryId) {
+      store.updateMessageDelivery(cancelled.source.deliveryId, { status: "cancelled" });
+    }
+    return cancelled;
+  });
+  if (!task) {
+    const error = new Error("This message is no longer queued.");
+    error.code = "SESSION_BUSY";
+    throw error;
+  }
+  forgetRuntimeQueuedWork(routedSessionId, taskId);
+  emitEvent("AgentWorkCompleted", { sessionId: routedSessionId, task }, {
+    sessionId: routedSessionId, source: task.source
+  });
+  scheduleAgentWorkDrain(routedSessionId);
+  return task;
+}
+
 const codexSessionCreator = createCodexSessionCreator({
   collaborationCore, codexRuntime, resolvedNewCodexRuntimeConfig,
   collaborationThreadOptionsWithAgentContext, withPersistedCodexToolConfirmation,
@@ -1947,6 +1969,7 @@ const backendHttpPorts = Object.freeze({
   get createSessionThroughApplication() { return createSessionThroughApplication; },
   get publishDshPromptStart() { return publishDshPromptStart; },
   get sendUnifiedSessionMessage() { return sendUnifiedSessionMessage; },
+  get cancelQueuedUserMessage() { return cancelQueuedUserMessage; },
   get publishDshPromptFailure() { return publishDshPromptFailure; },
   get handleBackendHealthHttpRequest() { return handleBackendHealthHttpRequest; },
   get projectCodeIndexStore() { return projectCodeIndexStore; },

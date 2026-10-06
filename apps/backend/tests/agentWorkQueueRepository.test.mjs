@@ -43,3 +43,30 @@ test("queue repository preserves idempotent enqueue and caller-owned claim rollb
     await store.close();
   }
 });
+
+test("only a queued user message in its own Session can be cancelled", async () => {
+  const store = new CorptieStore({
+    dbPath: ":memory:", configPath: "/unused-queue-cancel-config", manageProcessEnvironment: false
+  });
+  try {
+    await store.initialize({ resolveDataPath: false });
+    const core = new CollaborationCore(store);
+    core.registerAgent({ agentId: "agent:cancel", name: "Cancel" });
+    core.bindSession({ agentId: "agent:cancel", sessionId: "session:cancel" });
+    const item = { taskId: "operation:cancel", agentId: "agent:cancel", sessionId: "session:cancel",
+      kind: "user", priority: 10, text: "queued", source: { type: "desktop" } };
+    store.enqueueAgentTask(item);
+    assert.equal(store.cancelQueuedUserAgentTask("session:other", item.taskId), null);
+    assert.equal(store.cancelQueuedUserAgentTask(item.sessionId, item.taskId)?.status, "cancelled");
+    assert.equal(store.cancelQueuedUserAgentTask(item.sessionId, item.taskId), null);
+    assert.equal(store.claimAgentTask(item.taskId), null);
+    store.enqueueAgentTask({ ...item, taskId: "operation:running" });
+    assert.equal(store.claimAgentTask("operation:running")?.status, "running");
+    assert.equal(store.cancelQueuedUserAgentTask(item.sessionId, "operation:running"), null);
+    assert.equal(store.getAgentTask("operation:running").status, "running");
+    store.enqueueAgentTask({ ...item, taskId: "operation:collaboration", kind: "collaboration" });
+    assert.equal(store.cancelQueuedUserAgentTask(item.sessionId, "operation:collaboration"), null);
+  } finally {
+    await store.close();
+  }
+});

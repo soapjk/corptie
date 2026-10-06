@@ -17,6 +17,7 @@ function fixture() {
       removeUnsentImage: record("remove", { removed: true })
     },
     interruptUnifiedSession: record("interrupt", { id: "stored" }),
+    cancelQueuedUserMessage: record("cancel", { taskId: "work:one", status: "cancelled" }),
     respondUnifiedSessionApproval: record("approval", { id: "stored" }),
     respondUnifiedSessionUserInput: record("input", { id: "stored" }),
     readJson: async (request) => { if (request.body instanceof Error) throw request.body; return request.body; },
@@ -52,6 +53,13 @@ test("message dispatch retains source, trace and accepted response", async () =>
   assert.equal(options.latencyTrace.traceId, "trace:test");
   assert.equal(options.latencyTrace.sessionId, "public/id");
   assert.equal(options.text, "hello");
+});
+
+test("queued message cancellation targets the exact Session and work item", async () => {
+  const f = fixture();
+  assert.deepEqual(await f.dispatch("/sessions/public%2Fid/queued-messages/work%3Aone/cancel").result,
+    { status: 200, body: { task: { taskId: "work:one", status: "cancelled" } } });
+  assert.deepEqual(f.calls, [["cancel", "public/id", "work:one"]]);
 });
 
 test("message failures retain request/dispatch stages without logging raw error text", async (t) => {

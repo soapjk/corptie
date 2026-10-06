@@ -1590,6 +1590,9 @@
 "Choose an action for every Markdown file." = "请为每个 Markdown 文件选择操作。";
 "Choose one action for each file. Converting creates an Artifact and removes the Worktree file; allowing Git tracking records exact-version approval. No action pushes to a remote." = "请为每个文件选择一个操作。转为 Artifact 会创建 Artifact 并删除 Worktree 中的文件；允许 Git 追踪会记录精确版本授权。所有操作都不会推送远端。";
 "Selected memories" = "命中的记忆";
+"Rejected" = "已拒收";
+"Not included" = "未注入";
+"Injection unknown" = "注入状态未知";
 "Other recall candidates" = "其他召回候选";
 "Showing first %d of %d recall candidates." = "显示前 %d 条，共 %d 条召回候选。";
 "Current memories" = "当前记忆";

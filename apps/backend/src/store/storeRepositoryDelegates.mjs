@@ -87,7 +87,7 @@ const foundationalDelegates = Object.freeze({
     "getRunningAgentTask", "listAgentTasksForSession", "listQueuedAgentTasks",
     "listQueuedAgentTasksForSession", "listAgentIdsWithQueuedWork",
     "listAgentIdsWithUnsettledWork", "listSessionIdsWithUnsettledAgentWork",
-    "claimAgentTask", "updateAgentTask"
+    "claimAgentTask", "cancelQueuedUserAgentTask", "updateAgentTask"
   ],
   timelineReadRepository: [
     "getItems", "getItemsForTurn", "getFileChangeItemsForTurn",
