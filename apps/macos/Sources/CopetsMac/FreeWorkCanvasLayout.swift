@@ -98,8 +98,7 @@ enum FreeWorkCanvasGeometry {
         }
     }
     private static func conflicts(_ a: CGRect, _ b: CGRect) -> Bool {
-        let gap = 12.0
-        return a.minX < b.maxX + gap && b.minX < a.maxX + gap && a.minY < b.maxY + gap && b.minY < a.maxY + gap
+        WorkCanvasDropGeometry.conflicts(a, b)
     }
     static func moved(_ origin: CGPoint, by delta: CGSize) -> CGPoint {
         CGPoint(x: origin.x + delta.width, y: origin.y + delta.height)

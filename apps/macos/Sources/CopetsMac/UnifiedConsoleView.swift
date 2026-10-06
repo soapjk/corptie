@@ -69,7 +69,6 @@ struct UnifiedConsoleView: View {
     @StateObject var outlineExpansionPreferences = ConsoleOutlineExpansionPreferences()
     @State var cardAttentionCount = 0
     @State var cardSelectionExplicitlyCleared = false
-    @State var cardRefreshRevision = 0
     @State private var didResolveDevelopmentPreviewStart = false
     /// 每个 Tab（SessionCategory）独立记录其上一次选中的 Session，跨窗口/重启恢复，
     /// 避免不同 Tab 的选择相互覆盖。key 形如 `sessions.lastSelectedSessionId.<category>`。
@@ -352,21 +351,18 @@ struct UnifiedConsoleView: View {
 
     var cardWorkspaceSidebar: some View {
         VStack(spacing: 8) {
-            HStack {
-                if cardAttentionCount > 0 {
-                    Text("\(cardAttentionCount) 待处理")
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Spacer()
-                Button("刷新", systemImage: "arrow.clockwise") { cardRefreshRevision &+= 1 }
-                    .labelStyle(.iconOnly).help("刷新重点 Task")
-            }.padding(10)
+            if cardAttentionCount > 0 {
+                Text("\(cardAttentionCount) 待处理")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10).padding(.top, 10)
+            }
             if isSearching { sessionSearchBar.padding(.horizontal, 10) }
             ConsoleCardWorkspace(isActive: navigationMode == .taskCards, works: entityClient.works, tasks: entityClient.tasks,
                 sessions: sessionIndexStore.rows.map(\.session), selectedTaskID: selectedTaskId,
                 selectedSessionID: selectionController.selectedSessionID, query: searchText,
                 sortMode: outlineSort, showsArchive: isShowingWorkerArchive,
-                attentionCount: $cardAttentionCount, refreshRevision: cardRefreshRevision,
+                attentionCount: $cardAttentionCount,
                 openChat: { selectSessionAfterHighlight($0) }, createChat: { showNewSessionCreation = true },
                 openTask: { task, session in
                     openTask(task, session: session)

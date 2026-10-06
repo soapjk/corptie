@@ -6,6 +6,19 @@ struct WorkCanvasCamera: Equatable {
     var scale: CGFloat = 1
     var translation = CGPoint(x: 10, y: 10)
 
+    static func located(frames: [String: CGRect], viewport: CGSize, selectedID: String?) -> WorkCanvasCamera {
+        let valid = frames.filter { $0.value.minX.isFinite && $0.value.minY.isFinite &&
+            $0.value.width.isFinite && $0.value.height.isFinite && $0.value.width > 0 && $0.value.height > 0 }
+        guard viewport.width.isFinite, viewport.height.isFinite, viewport.width > 20, viewport.height > 20,
+              let first = valid.values.first else { return WorkCanvasCamera() }
+        let bounds = valid.values.reduce(first) { $0.union($1) }
+        let fits = bounds.width <= viewport.width - 20 && bounds.height <= viewport.height - 20
+        let target = fits ? bounds : (selectedID.flatMap { valid[$0] } ?? bounds)
+        return WorkCanvasCamera(scale: 1, translation: CGPoint(
+            x: target.width <= viewport.width - 20 ? viewport.width / 2 - target.midX : 10 - target.minX,
+            y: target.height <= viewport.height - 20 ? viewport.height / 2 - target.midY : 10 - target.minY))
+    }
+
     func worldPoint(at screen: CGPoint) -> CGPoint {
         CGPoint(x: (screen.x - translation.x) / scale, y: (screen.y - translation.y) / scale)
     }
@@ -34,8 +47,46 @@ final class WorkCanvasViewportState {
     private(set) var renderScaleMultiplier: CGFloat = 1
     let interactionTransform = WorkCanvasInteractionTransform()
     private var renderScaleUpdate: Task<Void, Never>?
+    @ObservationIgnored private(set) var entryPending = true
+
+    func prepareForEntry() { entryPending = true }
+    func cancelAutomaticEntry() { entryPending = false }
+
+    func initialize(snapshot: WorkCanvasLayoutSnapshot, viewport: CGSize, ids: [String],
+                    selectedID: String?, previousAnchor: String?,
+                    commit: ([String: CGRect], String) -> Void) async {
+        guard viewport.width > 20, viewport.height > 20, !ids.isEmpty else { return }
+        let expectedIDs = Set(ids)
+        // Bounded first-layout handshake, never a recurring model-update timer.
+        for _ in 0..<32 {
+            guard !Task.isCancelled, entryPending else { return }
+            let frames = snapshot.frames
+            if Set(frames.keys) == expectedIDs, frames.values.allSatisfy({
+                $0.width.isFinite && $0.height.isFinite && $0.width > 0 && $0.height > 0
+            }) {
+                let anchor = [selectedID, previousAnchor, ids.first].compactMap { $0 }
+                    .first(where: { frames[$0] != nil })!
+                let clustered = WorkCanvasClusterGeometry.resolve(frames, active: anchor,
+                    width: max(1, viewport.width - 20), order: ids)
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    commit(clustered, anchor)
+                    locate(frames: clustered, viewport: viewport, selectedID: selectedID)
+                }
+                return
+            }
+            do { try await Task.sleep(for: .milliseconds(16)) } catch { return }
+        }
+    }
+
+    func locate(frames: [String: CGRect], viewport: CGSize, selectedID: String?) {
+        reset()
+        camera = WorkCanvasCamera.located(frames: frames, viewport: viewport, selectedID: selectedID)
+    }
 
     func zoom(by factor: CGFloat, at point: CGPoint) {
+        cancelAutomaticEntry()
         var next = camera
         next.zoom(by: factor, at: point)
         guard next != camera else { return }
@@ -45,11 +96,13 @@ final class WorkCanvasViewportState {
     }
 
     func pan(by delta: CGSize) {
+        cancelAutomaticEntry()
         camera.translation.x += delta.width
         camera.translation.y += delta.height
     }
 
     func reset() {
+        cancelAutomaticEntry()
         renderScaleUpdate?.cancel()
         renderScaleUpdate = nil
         renderScaleMultiplier = 1
@@ -89,16 +142,21 @@ struct InfiniteWorkCanvasViewport<Content: View>: View {
     let origin: CGPoint
     let isActive: Bool
     let cardDragging: Bool
+    var layoutSnapshot: WorkCanvasLayoutSnapshot? = nil
+    var selectedCardID: String? = nil
     @ViewBuilder let content: Content
     @State private var viewportState: WorkCanvasViewportState
     @GestureState private var pan = CGSize.zero
 
     init(origin: CGPoint, isActive: Bool, cardDragging: Bool,
          viewportState: WorkCanvasViewportState = WorkCanvasViewportState(),
+         layoutSnapshot: WorkCanvasLayoutSnapshot? = nil, selectedCardID: String? = nil,
          @ViewBuilder content: () -> Content) {
         self.origin = origin
         self.isActive = isActive
         self.cardDragging = cardDragging
+        self.layoutSnapshot = layoutSnapshot
+        self.selectedCardID = selectedCardID
         self.content = content()
         _viewportState = State(initialValue: viewportState)
     }
@@ -111,6 +169,7 @@ struct InfiniteWorkCanvasViewport<Content: View>: View {
                 Color.clear.contentShape(Rectangle())
                     .gesture(DragGesture(minimumDistance: 3, coordinateSpace: .global)
                         .updating($pan) { value, state, _ in state = value.translation }
+                        .onChanged { _ in viewportState.cancelAutomaticEntry() }
                         .onEnded { value in
                             viewportState.pan(by: value.translation)
                         })
@@ -138,7 +197,10 @@ struct InfiniteWorkCanvasViewport<Content: View>: View {
             }
             .overlay(alignment: .bottomTrailing) {
                 Button("\(Int((camera.scale * 100).rounded()))%") {
-                    viewportState.reset()
+                    if let layoutSnapshot {
+                        viewportState.locate(frames: layoutSnapshot.frames, viewport: viewport.size,
+                                             selectedID: selectedCardID)
+                    } else { viewportState.reset() }
                 }
                     .font(.caption2.monospacedDigit()).buttonStyle(.bordered).controlSize(.mini)
                     .help("重置画布位置与缩放").padding(8)
