@@ -914,106 +914,23 @@ struct SessionConversationContent: View {
     private func makeIncrementalTailDisplay(
         for detail: CodexThreadDetail
     ) -> (displayItems: [CodexThreadItem], visibleEntries: [ChatDisplayEntry], totalCount: Int, signature: String, sourceSignature: String)? {
-        let nextDisplayItems = detail.items.filter { !isLowSignalDetailProcessItem($0) }
-        guard requestedRestorationAnchorRowID == nil,
-              cachedSessionId == sessionId,
-              DetailTimelineIncrementalEligibility.canReuseCachedWindow(
-                cachedVisibleMessageLimit: cachedVisibleMessageLimit,
-                requestedVisibleMessageLimit: visibleMessageLimit
-              ),
-              cachedSourceItemCount > 0,
-              nextDisplayItems.count >= cachedSourceItemCount,
-              let cachedLast = cachedSourceTailItem,
-              nextDisplayItems[cachedSourceItemCount - 1].id == cachedLast.id,
-              nextDisplayItems[cachedSourceItemCount - 1].turnId == cachedLast.turnId,
-              (cachedSourceItemCount < 2
-                || nextDisplayItems[cachedSourceItemCount - 2].id == cachedSourcePenultimateItemId) else {
-            return nil
-        }
-
-        let appendedItems = nextDisplayItems.dropFirst(cachedSourceItemCount)
-        if let firstAppended = appendedItems.first,
-           firstAppended.turnId != cachedLast.turnId {
-            // A new source turn is independent from the cached tail. Project
-            // only the appended delta; the bounded visible window may discard
-            // old rows without revisiting the rest of the Session history.
-            guard appendedItems.allSatisfy({ $0.turnId != cachedLast.turnId }) else { return nil }
-            let appendedEntries = makeChatDisplayEntries(from: Array(appendedItems))
-            guard canIncrementallyAppendChatDisplayEntries(
-                cached: cachedDisplayEntries,
-                appended: appendedEntries
-            ) else { return nil }
-            let combined = cachedDisplayEntries + appendedEntries
-            return (
-                displayItems: nextDisplayItems,
-                visibleEntries: visibleDetailEntries(from: combined, limit: visibleMessageLimit),
-                totalCount: cachedTotalDisplayEntryCount
-                    + appendedEntries.reduce(0) { $0 + $1.displayWeight },
-                signature: incrementalDisplaySignature(
-                    previousSignature: cachedItemsSignature,
-                    tailEntries: appendedEntries
-                ),
-                sourceSignature: detailSourceSignature(for: detail)
-            )
-        }
-
-        guard let nextLast = nextDisplayItems.last,
-              nextLast.turnId == cachedLast.turnId else { return nil }
-        let tailItems = nextDisplayItems.reversed().prefix { $0.turnId == nextLast.turnId }.reversed()
-        // Reused or missing provider turn IDs need the full ordered projection
-        // so user-message boundaries can be recovered. The tail-only fast path
-        // would otherwise collapse those recovered turns back into one group.
-        guard tailItems.lazy.filter({ $0.type == "userMessage" }).prefix(2).count < 2 else {
-            return nil
-        }
-        let nextTailEntries = makeChatDisplayEntriesForTurn(
-            stableChronologicalChatItems(Array(tailItems))
-        )
-        guard let oldTailStart = cachedDisplayEntries.firstIndex(where: {
-            chatDisplayEntryTurnId($0) == nextLast.turnId
-        }) else {
-            return nil
-        }
-        let oldTailEntries = cachedDisplayEntries[oldTailStart...]
-        guard oldTailEntries.allSatisfy({ chatDisplayEntryTurnId($0) == nextLast.turnId }) else {
-            return nil
-        }
-
-        let oldTailWeight = oldTailEntries.reduce(0) { $0 + $1.displayWeight }
-        let nextTailWeight = nextTailEntries.reduce(0) { $0 + $1.displayWeight }
-        let combined = Array(cachedDisplayEntries[..<oldTailStart]) + nextTailEntries
-        let visibleEntries = visibleDetailEntries(from: combined, limit: visibleMessageLimit)
-        let totalCount = max(0, cachedTotalDisplayEntryCount - oldTailWeight + nextTailWeight)
-        return (
-            displayItems: nextDisplayItems,
-            visibleEntries: visibleEntries,
-            totalCount: totalCount,
-            signature: incrementalDisplaySignature(
-                previousSignature: cachedItemsSignature,
-                tailEntries: nextTailEntries
-            ),
-            sourceSignature: detailSourceSignature(for: detail)
-        )
+        DetailIncrementalProjection(
+            cachedSessionId: cachedSessionId,
+            cachedSourceItemCount: cachedSourceItemCount,
+            cachedSourcePenultimateItemId: cachedSourcePenultimateItemId,
+            cachedSourceTailItem: cachedSourceTailItem,
+            cachedDisplayEntries: cachedDisplayEntries,
+            cachedTotalDisplayEntryCount: cachedTotalDisplayEntryCount,
+            cachedVisibleMessageLimit: cachedVisibleMessageLimit,
+            cachedItemsSignature: cachedItemsSignature
+        ).project(for: detail, sessionId: sessionId, visibleMessageLimit: visibleMessageLimit,
+                  requestedRestorationAnchorRowID: requestedRestorationAnchorRowID)
     }
 
     private func updateCachedSourceTail(from items: [CodexThreadItem]) {
         cachedSourceItemCount = items.count
         cachedSourcePenultimateItemId = items.dropLast().last?.id
         cachedSourceTailItem = items.last
-    }
-
-    private func incrementalDisplaySignature(
-        previousSignature: String,
-        tailEntries: [ChatDisplayEntry]
-    ) -> String {
-        let tailSignature = tailEntries.map { entry in
-            switch entry.kind {
-            case .message(let item): return detailItemSignature(item)
-            case .process(let turnId, let items):
-                return turnId + ":" + items.suffix(1).map(detailItemSignature).joined()
-            }
-        }.joined(separator: "|")
-        return "\(previousSignature.hashValue):\(tailSignature)"
     }
 
     private var shouldRenderDetailMessages: Bool {
