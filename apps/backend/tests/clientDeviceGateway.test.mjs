@@ -17,6 +17,34 @@ async function fixture() {
   return { dir, authority, advance: ms => { now += ms; }, close: () => rm(dir, { recursive: true, force: true }) };
 }
 
+test("only revoked device records can be deleted; persisted deletion never restores credentials", async () => {
+  const f = await fixture();
+  try {
+    const a = f.authority;
+    const invitation = a.invite();
+    const claim = a.claim({ ...invitation, name: "Old iPad" });
+    a.approve(invitation.pairingId, true);
+    const credentials = await a.exchange(claim);
+    await assert.rejects(a.deleteRevoked(credentials.deviceId), { code: "DEVICE_NOT_REVOKED", status: 409 });
+    await assert.rejects(a.deleteRevoked(null), { code: "INVALID_DEVICE_ID", status: 400 });
+    await assert.rejects(a.deleteRevoked("missing"), { code: "DEVICE_NOT_FOUND", status: 404 });
+    assert.equal(a.authenticate(credentials.accessToken).deviceId, credentials.deviceId);
+    await a.revoke(credentials.deviceId);
+    await a.deleteRevoked(credentials.deviceId);
+    assert.equal(a.list().devices.length, 0);
+    const restored = new ClientDeviceAuthority(join(f.dir, "auth"));
+    await restored.initialize();
+    assert.equal(restored.list().devices.length, 0);
+    assert.throws(() => restored.authenticate(credentials.accessToken), { code: "INVALID_CREDENTIAL" });
+    await assert.rejects(restored.refresh(credentials), { code: "INVALID_CREDENTIAL" });
+    assert.equal(restored.canDeliverScheduledMessage(credentials.deviceId), false);
+    const cloud = await a.registerCloudRelayPeer({ cloudDeviceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "Old phone" });
+    await a.revoke(cloud.deviceId);
+    await a.deleteRevoked(cloud.deviceId);
+    assert.throws(() => a.authenticateCloudRelayPeer("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), { code: "DEVICE_REVOKED" });
+  } finally { await f.close(); }
+});
+
 test("pairing requires local approval, exchanges once, rotates and revokes persisted credentials", async () => {
   const f = await fixture();
   try {
@@ -297,6 +325,10 @@ test("real TLS route boundary and authenticated local approval", async () => {
     assert.equal((await call("/client/v1/pairing/exchange", { method: "POST", value: claim })).status, 403);
     await call("/internal/client-devices/approve", { local: true, token, method: "POST", value: { pairingId: invitation.pairingId, approved: true } });
     const creds = (await call("/client/v1/pairing/exchange", { method: "POST", value: claim })).body;
+    const deleteOptions = { local: true, token, method: "POST", value: { deviceId: creds.deviceId } };
+    assert.equal((await call("/internal/client-devices/delete", { ...deleteOptions, token: undefined })).status, 403);
+    assert.equal((await call("/internal/client-devices/delete", { ...deleteOptions, headers: { origin: "https://evil.test" } })).status, 403);
+    assert.equal((await call("/internal/client-devices/delete", deleteOptions)).status, 409);
     assert.equal((await call("/client/v1/me", { token: creds.accessToken })).body.deviceId, creds.deviceId);
     const reliableRoute = "/client/v1/sessions/session%3Aone/message-deliveries";
     assert.equal((await call(reliableRoute, { method: "POST", value: {} })).status, 401);
@@ -491,6 +523,11 @@ test("real TLS route boundary and authenticated local approval", async () => {
     await streamClosed;
     remoteAgent.destroy();
     assert.equal((await call("/client/v1/me", { token: creds.accessToken })).status, 401);
+    // This route-boundary fixture exercises more than a minute's command
+    // budget; deletion assertions are independent of the limiter test.
+    gateway.buckets.clear();
+    assert.equal((await call("/internal/client-devices/delete", deleteOptions)).status, 200);
+    assert.equal(f.authority.list().devices.some(device => device.id === creds.deviceId), false);
   } finally {
     remoteAgent.destroy();
     await gateway.close();

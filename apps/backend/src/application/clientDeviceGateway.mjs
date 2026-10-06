@@ -483,6 +483,10 @@ export class ClientDeviceGateway {
         await this.authority.revoke((await body(request)).deviceId);
         return reply(response, 200, { revoked: true });
       }
+      if (request.method === "POST" && request.url === "/internal/client-devices/delete") {
+        await this.authority.deleteRevoked((await body(request)).deviceId);
+        return reply(response, 200, { deleted: true });
+      }
       throw deviceError("ROUTE_NOT_AVAILABLE", 404);
     } catch (error) { reply(response, error.status ?? 500, { code: error.code ?? "DEVICE_SERVICE_ERROR" }); }
   }
