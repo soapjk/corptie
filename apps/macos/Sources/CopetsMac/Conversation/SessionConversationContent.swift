@@ -607,6 +607,15 @@ struct SessionConversationContent: View {
 
     private func performNativeTimelineAction(_ action: AppKitChatTimelineRow.Action) {
         switch action.kind {
+        case .cancelQueuedMessage(let taskID):
+            Task {
+                do {
+                    try await backendClient.cancelQueuedMessage(sessionID: sessionId, taskID: taskID)
+                } catch {
+                    backendClient.presentChatImageError(error)
+                }
+                await backendClient.reloadSelectedSessionMessages()
+            }
         case .forkMessage(let itemID):
             pendingFork = SessionForkSelection(sessionID: sessionId, itemID: itemID)
         case .codexApproval(let option):

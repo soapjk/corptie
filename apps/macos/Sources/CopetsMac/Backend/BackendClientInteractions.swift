@@ -5,6 +5,15 @@ import Foundation
 extension BackendClient {
     static let quickMessageCache = ClientQuickMessageCache(defaults: CorptieAppEnvironment.userDefaults)
 
+    func cancelQueuedMessage(sessionID: String, taskID: String) async throws {
+        var request = URLRequest(url: baseURL.appending(path: "sessions/\(sessionID)/queued-messages/\(taskID)/cancel"))
+        request.httpMethod = "POST"
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw BackendError.message(Self.errorMessage(from: data) ?? L10n("Could not cancel queued message."))
+        }
+    }
+
     func quickMessages(for sessionID: String) async throws -> ClientQuickMessageRecommendations {
         let (data, response) = try await URLSession.shared.data(for: URLRequest(
             url: baseURL.appending(path: "sessions/\(sessionID)/quick-messages")))

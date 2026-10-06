@@ -15,7 +15,7 @@ export function routeBackendHttpRequest(request, response, ports) {
     configureChoiceParserRuntime, codexRuntime, handleFeishuHttpRequest, feishuGateway, handleSessionTimelineHttpRequest,
     getStoredSessionSnapshot, getTimelineReadPool, readSessionUsage, readSessionHistory, readSessionTimelineWindow,
     publishStateChangesIfNeeded, handleSessionInteractionHttpRequest, userMessageCommandSource, chatResourceService, requireSessionReference,
-    interruptUnifiedSession, respondUnifiedSessionApproval, respondUnifiedSessionUserInput, handleSessionConfigurationHttpRequest, normalizeCodexSandbox,
+    interruptUnifiedSession, cancelQueuedUserMessage, respondUnifiedSessionApproval, respondUnifiedSessionUserInput, handleSessionConfigurationHttpRequest, normalizeCodexSandbox,
     normalizeCodexApprovalPolicy, handleChoiceParserTestHttpRequest, parseChoiceStageWithConfiguredParser, handleProviderSetupHttpRequest, firstRunSetup,
     handleProjectWorkspaceHttpRequest, projectApplicationService, projectWorktreeIntegrationService, worktreeIntegrationJobService, handleSessionCollectionHttpRequest,
     sessions, listGatewaySessionPage, requestedProviderId, sessionForkService, sessionTitleErrorPayload,
@@ -189,7 +189,7 @@ export function routeBackendHttpRequest(request, response, ports) {
 
   if (handleSessionInteractionHttpRequest({
     request, response, url, sendUnifiedSessionMessage, userMessageCommandSource,
-    chatResourceService, requireSessionReference, interruptUnifiedSession,
+    chatResourceService, requireSessionReference, interruptUnifiedSession, cancelQueuedUserMessage,
     respondUnifiedSessionApproval, respondUnifiedSessionUserInput,
     readJson, sendJson, unifiedErrorStatus
   })) return;
