@@ -283,6 +283,18 @@ export class ClientDeviceAuthority {
     for (const listener of this.listeners) listener(id);
   }
 
+  async deleteRevoked(id) {
+    if (typeof id !== "string" || !id.trim() || id.length > 200) throw deviceError("INVALID_DEVICE_ID", 400);
+    await this.change(state => {
+      const index = state.devices.findIndex(device => device.id === id);
+      if (index < 0) throw deviceError("DEVICE_NOT_FOUND", 404);
+      if (state.devices[index].revoked !== true) throw deviceError("DEVICE_NOT_REVOKED", 409);
+      // Unknown identities fail closed for access, refresh and scheduled sends.
+      // Keep conversation history and message deduplication records untouched.
+      state.devices.splice(index, 1);
+    });
+  }
+
   list() {
     return { devices: this.state.devices.map(({ id, name, createdAt, revoked, authSource = "local_pairing" }) =>
       ({ id, name, createdAt, revoked, authSource })),

@@ -77,6 +77,7 @@ struct ClientDevicesSettingsView: View {
     @State private var confirmation: Action?
     @StateObject private var cloud = CloudRemoteAccessController.shared
     @State private var cloudRevocation: CloudDevice?
+    @State private var deletion: ClientDeviceInventory.Device?
     private struct Action: Identifiable {
         let id: String
         let name: String
@@ -210,7 +211,11 @@ struct ClientDevicesSettingsView: View {
                                 Text(item.id).font(.caption2).foregroundStyle(.tertiary)
                             }
                             Spacer()
-                            if item.revoked { Text("已撤销").foregroundStyle(.secondary) }
+                            if item.revoked {
+                                Text("已撤销").foregroundStyle(.secondary)
+                                Button("删除", role: .destructive) { deletion = item }
+                                    .accessibilityLabel("删除已撤销设备：\(item.name)")
+                            }
                             else {
                                 Button("撤销", role: .destructive) { confirmation = Action(id: item.id, name: item.name, revoke: true) }
                             }
@@ -263,6 +268,18 @@ struct ClientDevicesSettingsView: View {
             }
         } message: {
             Text("\(cloudRevocation?.displayName ?? "") 将立即失去 Cloud 访问权限，现有 Relay 连接会关闭。")
+        }
+        .alert("删除已撤销的设备？", isPresented: Binding(
+            get: { deletion != nil }, set: { if !$0 { deletion = nil } }
+        )) {
+            Button("取消", role: .cancel) { deletion = nil }
+            Button("删除", role: .destructive) {
+                guard let device = deletion else { return }
+                deletion = nil
+                Task { await deleteRevokedDevice(device.id) }
+            }
+        } message: {
+            Text("\(deletion?.name ?? "")\n\(deletion?.id ?? "")\n仅删除本机已撤销的配对记录，不会恢复访问权限，也不会删除会话或消息。此操作不可撤销；再次接入需要重新授权。")
         }
     }
 
@@ -333,6 +350,13 @@ struct ClientDevicesSettingsView: View {
         await perform { root in
             _ = try await LocalDeviceAdminClient.request(dataRoot: root, action: "revoke", body: ["deviceId": id])
             inventory = try JSONDecoder().decode(ClientDeviceInventory.self, from: await LocalDeviceAdminClient.request(dataRoot: root))
+        }
+    }
+    private func deleteRevokedDevice(_ id: String) async {
+        await perform { root in
+            _ = try await LocalDeviceAdminClient.request(dataRoot: root, action: "delete", body: ["deviceId": id])
+            inventory = try JSONDecoder().decode(ClientDeviceInventory.self,
+                from: await LocalDeviceAdminClient.request(dataRoot: root))
         }
     }
 }
