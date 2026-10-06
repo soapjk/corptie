@@ -6,6 +6,30 @@ import CorptieClientCore
 
 @MainActor
 final class AppKitChatTimelineControlTests: XCTestCase {
+    func testCollapsedExecutionSummaryNeverWrapsOrAddsHeight() throws {
+        let row = AppKitChatTimelineRow(
+            id: "single-line-process", contentRevision: 1, nativeText: "details", copyText: "details",
+            nativeStyle: .process, title: "", metadata: "", expandableTurnId: "turn",
+            isExpanded: false, processCount: 123456, processDuration: "123456.78s",
+            processState: .completed, showsHeader: false
+        )
+        for width: CGFloat in [100, 160, 320] {
+            XCTAssertEqual(NativeTimelineLayoutCache.processSummaryExtraHeight(for: row, cardWidth: width), 0)
+            XCTAssertEqual(NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: width).rowHeight, 32)
+            let summaryWidth = ceil((row.processPrimarySummary as NSString).size(withAttributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)
+            ]).width)
+            XCTAssertGreaterThanOrEqual(ChatBubbleWidthPolicy.cardWidth(for: row, availableWidth: width), summaryWidth + 66)
+        }
+        let cell = AppKitChatNativeTextCell(identifier: .init("single-line-process"))
+        cell.setContent(row, availableWidth: 160, onToggleExpansion: { _ in })
+        let summary = try XCTUnwrap(button(in: cell, identifier: "chat.timeline.process"))
+        XCTAssertFalse(summary.cell?.wraps ?? true)
+        XCTAssertEqual(summary.cell?.lineBreakMode, .byClipping)
+        let paragraph = try XCTUnwrap(summary.attributedTitle.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
+        XCTAssertEqual(paragraph.lineBreakMode, .byClipping)
+    }
+
     func testForkMovesIntoContextMenuWithoutChangingMessageHeight() throws {
         let plain = AppKitChatTimelineRow(
             id: "answer", contentRevision: 1, nativeText: "好", copyText: "好",

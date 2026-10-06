@@ -283,7 +283,7 @@ struct PadStateTests {
         await connection.restoreLastConnection()
         #expect(!connection.restoringConnection)
         #expect(!connection.connected)
-        #expect(!connection.notice.isEmpty)
+        #expect(!connection.lanConnectionNotice.isEmpty)
     }
 
     @Test func scanValidatesBeforeReplacingFieldsAndDoesNotPersistSecret() throws {
