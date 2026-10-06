@@ -1,8 +1,62 @@
+import Foundation
 import Testing
 @testable import CorptieConversation
 
 @Suite("Message bubble width policy")
 struct MessageBubbleWidthPolicyTests {
+    @Test("Following collapse handle stays inside a process card visible only at the top")
+    func processCollapseFollowsVisibleCardEnd() {
+        let placement = ProcessCollapsePlacementPolicy.placement(
+            candidates: [ProcessCollapseCandidate(id: "process", frame: CGRect(x: 16, y: -400,
+                width: 480, height: 600), headerHeight: 32)],
+            viewport: CGRect(x: 0, y: 0, width: 600, height: 500),
+            handleSize: CGSize(width: 80, height: 44))
+        #expect(placement?.id == "process")
+        #expect(placement?.origin.y == 146)
+        #expect(placement?.origin.x == 406)
+    }
+
+    @Test("Following collapse handle does not duplicate a visible header or appear on a sliver")
+    func processCollapseVisibilityRules() {
+        let viewport = CGRect(x: 0, y: 0, width: 600, height: 500)
+        let size = CGSize(width: 80, height: 44)
+        #expect(ProcessCollapsePlacementPolicy.placement(candidates: [
+            ProcessCollapseCandidate(id: "header", frame: CGRect(x: 16, y: 10, width: 480,
+                height: 800), headerHeight: 32)
+        ], viewport: viewport, handleSize: size) == nil)
+        #expect(ProcessCollapsePlacementPolicy.placement(candidates: [
+            ProcessCollapseCandidate(id: "sliver", frame: CGRect(x: 16, y: -500, width: 480,
+                height: 540), headerHeight: 32)
+        ], viewport: viewport, handleSize: size) == nil)
+    }
+
+    @Test("Only the process containing the viewport center gets a following handle")
+    func processCollapseChoosesCenterCard() {
+        let placement = ProcessCollapsePlacementPolicy.placement(candidates: [
+            ProcessCollapseCandidate(id: "upper", frame: CGRect(x: 16, y: -600,
+                width: 480, height: 760), headerHeight: 32),
+            ProcessCollapseCandidate(id: "center", frame: CGRect(x: 16, y: -120,
+                width: 480, height: 600), headerHeight: 32)
+        ], viewport: CGRect(x: 0, y: 0, width: 600, height: 500),
+           handleSize: CGSize(width: 80, height: 44))
+        #expect(placement?.id == "center")
+    }
+
+    @Test("Process summary text has no line cap on either platform")
+    func processSummaryDoesNotTruncate() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CorptieConversation/ProcessCard.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+        let start = try #require(contents.range(of: "ProcessCardSummaryLabel(summary:"))
+        let end = try #require(contents.range(of: "if let progressLabel", range: start.upperBound..<contents.endIndex))
+        let summary = contents[start.lowerBound..<end.lowerBound]
+        #expect(summary.contains(".lineLimit(nil)"))
+        #expect(summary.contains(".fixedSize(horizontal: false, vertical: true)"))
+    }
+
     @Test("Collapsed process cards fit their summary without filling the lane")
     func collapsedProcessCard() {
         #expect(MessageBubbleWidthPolicy.processCardWidth(

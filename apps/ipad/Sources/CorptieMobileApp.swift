@@ -3,6 +3,7 @@ import UIKit
 import AuthenticationServices
 import CorptieClientCore
 import CorptieConversation
+import Observation
 
 @main
 struct CorptieMobileApp: App {
@@ -475,6 +476,8 @@ struct ConversationView: View {
     @State private var latestJumpGeneration: UInt64 = 0
     @State private var explicitJumpRevision: UInt64 = 0
     @State private var latestTailGeometry = TimelineTailGeometry()
+    @State private var expandedProcessEntryIDs: Set<String> = []
+    @State private var processCollapseTracker = ProcessCollapseTracker()
     @State private var attachmentPreview: PadAttachmentPreview?
     @State private var composerSheet: ComposerSheet?
     private enum ComposerSheet: String, Identifiable {
@@ -564,20 +567,7 @@ struct ConversationView: View {
                                     .id(message.id)
                             }
                         case .process(_, let items):
-                            if let presentation = workspace.processPresentations[entry.id] {
-                                PadProcessCard(steps: workspace.processSteps[entry.id] ?? [], presentation: presentation,
-                                               laneWidth: cardLaneWidth,
-                                               startedAt: items.contains(where: { $0.processEndedAt != nil })
-                                                   ? nil : ConversationProcessPresentation.startedAt(for: items),
-                                               canAdvance: PadProcessClockPolicy.canAdvance(
-                                                   isActiveProcess: entry.id == workspace.activeProcessEntryID,
-                                                   clientIsOnline: connection.connected,
-                                                   sessionExecutionStatus: workspace.sessions.first(where: {
-                                                       $0.id == sessionID
-                                                   })?.executionStatus,
-                                                   sceneIsActive: scenePhase == .active))
-                                    .id(sessionID + ":" + entry.id)
-                            }
+                            processCard(entryID: entry.id, items: items, laneWidth: cardLaneWidth)
                         }
                         }
                         .id(entry.id)
@@ -686,6 +676,7 @@ struct ConversationView: View {
                 requestEarlierHistoryIfNeeded(reader)
             }
             .onPreferenceChange(TimelineViewportSizeKey.self) { size in
+                processCollapseTracker.updateViewport(size)
                 let roundedWidth = max(0, size.width - 32).rounded(.down)
                 if roundedWidth != laneWidth { laneWidth = roundedWidth }
                 let roundedHeight = size.height.rounded(.down)
@@ -700,6 +691,9 @@ struct ConversationView: View {
                     scheduleLatestPlacement(reader)
                 }
                 requestEarlierHistoryIfNeeded(reader)
+            }
+            .onPreferenceChange(ProcessCollapseCandidateKey.self) { candidates in
+                processCollapseTracker.updateCandidates(candidates)
             }
             .accessibilityIdentifier("conversation-timeline")
             .modifier(CompactPageSwipe(onBack: onBack, onOpenDetail: onOpenDetail,
@@ -748,6 +742,8 @@ struct ConversationView: View {
                 timelineScrollView = nil
                 latestTailGeometry.minY = nil
                 historyViewport = TimelineHistoryViewportState()
+                expandedProcessEntryIDs.removeAll()
+                processCollapseTracker.reset()
                 historyAutoLoadGate = PadHistoryAutoLoadGate()
                 didPlaceInitialTimeline = false
                 cancelPendingTimelinePlacement()
@@ -778,6 +774,9 @@ struct ConversationView: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.85)))
                 }
             }
+            .overlay(alignment: .topLeading) {
+                processCollapseOverlay(reader)
+            }
         }
         .safeAreaInset(edge: .top, spacing: 0) { conversationHeader }
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
@@ -801,6 +800,50 @@ struct ConversationView: View {
 
     private var timelineCoordinateSpace: String {
         "conversation-timeline-\(sessionID)"
+    }
+
+    @ViewBuilder
+    private func processCard(entryID: String, items: [ClientMessage], laneWidth: CGFloat) -> some View {
+        if let presentation = workspace.processPresentations[entryID] {
+            PadProcessCard(entryID: entryID,
+                           steps: workspace.processSteps[entryID] ?? [], presentation: presentation,
+                           laneWidth: laneWidth, coordinateSpace: timelineCoordinateSpace,
+                           startedAt: items.contains(where: { $0.processEndedAt != nil })
+                               ? nil : ConversationProcessPresentation.startedAt(for: items),
+                           canAdvance: PadProcessClockPolicy.canAdvance(
+                               isActiveProcess: entryID == workspace.activeProcessEntryID,
+                               clientIsOnline: connection.connected,
+                               sessionExecutionStatus: workspace.sessions.first(where: { $0.id == sessionID })?.executionStatus,
+                               sceneIsActive: scenePhase == .active),
+                           expanded: expandedProcessEntryIDs.contains(entryID),
+                           toggle: { toggleProcess(entryID) })
+                .id(sessionID + ":" + entryID)
+        }
+    }
+
+    private func toggleProcess(_ entryID: String) {
+        if expandedProcessEntryIDs.contains(entryID) {
+            expandedProcessEntryIDs.remove(entryID)
+        } else {
+            expandedProcessEntryIDs.insert(entryID)
+        }
+    }
+
+    private func processCollapseOverlay(_ reader: ScrollViewProxy) -> some View {
+        ProcessCollapseOverlay(tracker: processCollapseTracker) { entryID in
+            guard expandedProcessEntryIDs.contains(entryID) else { return }
+            cancelPendingTimelinePlacement()
+            viewportState.setFollowsLatest(false)
+            expandedProcessEntryIDs.remove(entryID)
+            let selectedSessionID = sessionID
+            Task { @MainActor in
+                await Task.yield()
+                guard sessionID == selectedSessionID else { return }
+                withTransaction(Transaction(animation: nil)) {
+                    reader.scrollTo(entryID, anchor: .top)
+                }
+            }
+        }
     }
 
     private var followsLatestBinding: Binding<Bool> {
@@ -1303,13 +1346,16 @@ private struct PadCommandConfirmationView: View {
 }
 
 private struct PadProcessCard: View {
+    let entryID: String
     let steps: [ConversationExecutionStep]
     let presentation: ConversationProcessPresentation
-    @Environment(\.locale) private var locale
+    private let languageCode = Locale.preferredLanguages.first ?? "en"
     let laneWidth: CGFloat
+    let coordinateSpace: String
     let startedAt: Date?
     let canAdvance: Bool
-    @State private var expanded = false
+    let expanded: Bool
+    let toggle: () -> Void
     @State private var locallyPausedAt: Date?
     private var latestPlan: ConversationExecutionPlan? { steps.compactMap(\.plan).last }
     private var state: ConversationProcessState { presentation.state }
@@ -1318,7 +1364,7 @@ private struct PadProcessCard: View {
             state: presentation.state,
             count: presentation.count,
             duration: presentation.duration
-        ).summary(languageCode: locale.language.languageCode?.identifier ?? "en")
+        ).summary(languageCode: languageCode)
     }
     private var progressLabel: String? {
         latestPlan.flatMap { plan in
@@ -1378,7 +1424,7 @@ private struct PadProcessCard: View {
 
     private var staticSummary: String {
         ConversationProcessPresentation(state: presentation.state, count: presentation.count,
-            duration: presentation.duration).summary(languageCode: locale.language.languageCode?.identifier ?? "en")
+            duration: presentation.duration).summary(languageCode: languageCode)
     }
 
     private var pausedSummary: String {
@@ -1393,7 +1439,7 @@ private struct PadProcessCard: View {
             startedAt: startedAt, endingAt: date, showSeconds: true)
             ?? presentation.duration
         return ConversationProcessPresentation(state: presentation.state, count: presentation.count,
-            duration: duration).summary(languageCode: locale.language.languageCode?.identifier ?? "en")
+            duration: duration).summary(languageCode: languageCode)
     }
 
     private func processCard(summary: String, liveSummary: ((Date) -> String)? = nil) -> some View {
@@ -1402,7 +1448,7 @@ private struct PadProcessCard: View {
                     symbol: state.symbolName, tint: tint, expanded: expanded,
                     progress: latestPlan?.completionFraction,
                     progressLabel: progressLabel,
-                    toggle: { expanded.toggle() }) {
+                    toggle: toggle) {
             LazyVStack(alignment: .leading, spacing: 10) {
                 ForEach(steps) { step in
                     PadExecutionStepCard(step: step)
@@ -1413,6 +1459,17 @@ private struct PadProcessCard: View {
         .frame(width: max(cardWidth(summary: summary), liveSummary == nil ? 0
             : cardWidth(summary: startedAt.map { self.summary(at: $0.addingTimeInterval(3_599.99), startedAt: $0) } ?? summary)),
             alignment: .leading)
+        .background {
+            if expanded {
+                GeometryReader { proxy in
+                    Color.clear.preference(key: ProcessCollapseCandidateKey.self, value: [
+                        ProcessCollapseCandidate(id: entryID,
+                            frame: proxy.frame(in: .named(coordinateSpace)),
+                            headerHeight: presentation.currentStepTitle == nil ? 32 : 48)
+                    ])
+                }
+            }
+        }
     }
 }
 
@@ -1442,6 +1499,77 @@ private final class TimelineAnchorGeometry {
 /// not invalidate all realized message rows. Only jump completion changes UI.
 private final class TimelineTailGeometry {
     var minY: CGFloat?
+}
+
+/// Scroll preferences update this narrow owner; they do not invalidate the
+/// conversation or its lazy message rows on every pixel of a drag.
+@MainActor @Observable
+private final class ProcessCollapseTracker {
+    private(set) var placement: ProcessCollapsePlacement?
+    @ObservationIgnored private var candidates: [ProcessCollapseCandidate] = []
+    @ObservationIgnored private var viewportSize: CGSize = .zero
+
+    func updateCandidates(_ value: [ProcessCollapseCandidate]) {
+        candidates = value
+        updatePlacement()
+    }
+
+    func updateViewport(_ value: CGSize) {
+        viewportSize = value
+        updatePlacement()
+    }
+
+    func reset() {
+        candidates = []
+        placement = nil
+    }
+
+    private func updatePlacement() {
+        // Leave the existing jump-to-latest control its own bottom-right slot.
+        let viewport = CGRect(x: 0, y: 0, width: viewportSize.width,
+                              height: max(0, viewportSize.height - 56))
+        let next = ProcessCollapsePlacementPolicy.placement(
+            candidates: candidates, viewport: viewport,
+            handleSize: CGSize(width: 80, height: 44))
+        if placement != next { placement = next }
+    }
+}
+
+private struct ProcessCollapseCandidateKey: PreferenceKey {
+    static let defaultValue: [ProcessCollapseCandidate] = []
+    static func reduce(value: inout [ProcessCollapseCandidate], nextValue: () -> [ProcessCollapseCandidate]) {
+        value.append(contentsOf: nextValue())
+    }
+}
+
+private struct ProcessCollapseOverlay: View {
+    let tracker: ProcessCollapseTracker
+    let collapse: (String) -> Void
+    private let isChinese = Locale.preferredLanguages.first?.lowercased().hasPrefix("zh") == true
+
+    var body: some View {
+        GeometryReader { _ in
+            if let placement = tracker.placement {
+                Button {
+                    collapse(placement.id)
+                } label: {
+                    Label(isChinese ? "收起" : "Collapse", systemImage: "chevron.up")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 80, height: 44)
+                        .background(Color(uiColor: .secondarySystemBackground),
+                                    in: RoundedRectangle(cornerRadius: 12))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 12)
+                                .strokeBorder(Color.secondary.opacity(0.25), lineWidth: 1)
+                        }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isChinese ? "收起执行过程" : "Collapse execution process")
+                .accessibilityIdentifier("conversation-process-follow-collapse")
+                .position(x: placement.origin.x + 40, y: placement.origin.y + 22)
+            }
+        }
+    }
 }
 
 private struct TimelineAnchorPositionKey: PreferenceKey {
