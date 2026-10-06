@@ -48,18 +48,33 @@ import CorptieClientSecurity
         let (a, b) = try await (first, second)
         #expect(a === b)
         #expect(probe.channels.count == 1)
+        let identityGeneration = connection.deliveryTransportGeneration
+        #expect(await connection.invalidateFailedRealtimeTransport() == false)
+        #expect(connection.deliveryTransportGeneration == identityGeneration)
+        #expect(try await connection.transport() === a)
         await probe.channels[0].close()
         for _ in 0..<30 {
             if !(await probe.clients[0].isUsable()) { break }
             try await Task.sleep(for: .milliseconds(10))
         }
+        #expect(await connection.invalidateFailedRealtimeTransport() == true)
+        #expect(connection.deliveryTransportGeneration != identityGeneration)
         let fresh = try await connection.transport()
         #expect(fresh !== a)
         #expect(probe.channels.count == 2)
         let cached = try await connection.transport()
         #expect(cached === fresh)
+        #expect(await connection.invalidateFailedRealtimeTransport(force: true))
+        #expect(try await connection.transport() !== fresh)
         for channel in probe.channels { #expect(await channel.methods.allSatisfy { $0 == "GET" }) }
         connection.disconnect()
+    }
+
+    @Test func onlyTransportFailuresQualifyForStalledChannelReplacement() {
+        #expect(PadWorkspace.realtimeFailureSuggestsStalledChannel(URLError(.timedOut)))
+        #expect(PadWorkspace.realtimeFailureSuggestsStalledChannel(CloudRelayTransportError.disconnected))
+        #expect(!PadWorkspace.realtimeFailureSuggestsStalledChannel(ClientServiceFailure(statusCode: 502, code: "UPSTREAM_UNAVAILABLE")))
+        #expect(!PadWorkspace.realtimeFailureSuggestsStalledChannel(ClientConnectionError.httpStatus(403)))
     }
 
     @Test func lateRecoveryCannotOverwriteNewConnectionOrReviveExplicitDisconnect() async throws {

@@ -117,6 +117,8 @@ public enum TimelineRevisionMerger {
             uniquingKeysWith: { _, latest in latest }
         )
         var expectedRevision = localRevision
+        let finalOperations = Dictionary(changes.filter { ["upsert", "delete"].contains($0.operation) }
+            .map { ($0.itemID, $0.revision) }, uniquingKeysWith: max)
         for change in changes {
             guard change.revision == expectedRevision + 1 else { return .requiresSnapshot }
             expectedRevision = change.revision
@@ -128,6 +130,12 @@ public enum TimelineRevisionMerger {
                 itemsByID[change.itemID] = item
             case "delete":
                 itemsByID[change.itemID] = nil
+            case "noop":
+                // Negotiated coalescing retains contiguous revision coverage.
+                guard change.item == nil,
+                      (finalOperations[change.itemID] ?? 0) > change.revision else {
+                    return .requiresSnapshot
+                }
             default:
                 return .requiresSnapshot
             }

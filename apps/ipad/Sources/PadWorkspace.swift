@@ -475,6 +475,22 @@ final class PadWorkspace {
     /// Session timelines, while selection only projects one resident state.
     @ObservationIgnored private var timelineRepository = ClientTimelineRepository(capacity: 48)
 
+    var realtimeResumeRevisions: [String: Int] {
+        var result: [String: Int] = [:]
+        for id in timelineRepository.sessionIDs {
+            if let revision = timelineRepository.peek(sessionID: id)?.revision { result[id] = revision }
+        }
+        if let selection, let revision = lastTimelineRevision { result[selection] = revision }
+        // Selection is pinned; never displace its cursor if aliases fill the cache.
+        if result.count > 48 {
+            for id in result.keys.sorted() where id != selection {
+                result.removeValue(forKey: id)
+                if result.count <= 48 { break }
+            }
+        }
+        return result
+    }
+
     func saveResidentState(for sessionID: String) {
         timelineRepository.store(ClientResidentTimeline(
             messages: messages,
@@ -484,6 +500,40 @@ final class PadWorkspace {
             usage: selectedSessionUsage,
             composer: composerConfiguration
         ), for: sessionID)
+        persistResidentTimeline(sessionID)
+    }
+
+    func persistResidentTimeline(_ sessionID: String) {
+        guard let scope = persistentTimelineScope, let state = timelineRepository.peek(sessionID: sessionID),
+              let revision = state.revision else { return }
+        let recent = Array(state.messages.suffix(200))
+        let cursor = recent.count < state.messages.count ? recent.first?.id : state.before
+        let record = PersistedClientTimeline(sessionID: sessionID, revision: revision, messages: recent, before: cursor)
+        Task { await persistentTimelineCache.save(record, scope: scope) }
+    }
+
+    func restorePersistentTimelines(_ connection: PadConnection) async {
+        guard let deviceID = connection.deviceID, !connection.serverID.isEmpty else { return }
+        let scope = connection.serverID + "|" + deviceID
+        guard persistentTimelineScope != scope else { return }
+        if persistentTimelineScope != nil {
+            timelineRepository = ClientTimelineRepository(capacity: 48)
+            messages = []; before = nil; lastTimelineRevision = nil; capabilities = nil
+            messageRevision += 1
+        }
+        persistentTimelineScope = scope
+        guard let cached = try? await persistentTimelineCache.load(scope: scope),
+              connection.serverID + "|" + (connection.deviceID ?? "") == scope, !Task.isCancelled else { return }
+        for record in cached.sorted(by: { $0.savedAt < $1.savedAt }) {
+            if (timelineRepository.peek(sessionID: record.sessionID)?.revision ?? -1) >= record.revision { continue }
+            timelineRepository.store(ClientResidentTimeline(messages: record.messages, before: record.before,
+                revision: record.revision, capabilities: nil, usage: nil, composer: nil), for: record.sessionID)
+        }
+        timelineRepository.pinSessions(Set([selection].compactMap { $0 }))
+        if let selection, let state = timelineRepository.peek(sessionID: selection),
+           (lastTimelineRevision ?? -1) < (state.revision ?? -1) {
+            applyLatestWindow(state.messages, cursor: state.before, revision: state.revision)
+        }
     }
 
     func hasAuthoritativeMessage(_ messageID: String, sessionID: String) -> Bool {
@@ -585,6 +635,7 @@ final class PadWorkspace {
         recordSessionActivity(sessionID: snapshot.sessionId, messages: snapshot.messages.items)
         let key = residentKey(for: snapshot.sessionId) ?? snapshot.sessionId
         _ = timelineRepository.apply(snapshot, sessionKey: key)
+        persistResidentTimeline(key)
     }
 
     @discardableResult
@@ -593,7 +644,9 @@ final class PadWorkspace {
         recordSessionActivity(sessionID: delta.sessionId, messages: deltaMessages)
         guard let key = residentKey(for: delta.sessionId) else { return false }
         switch timelineRepository.apply(delta, sessionKey: key) {
-        case .applied, .duplicate: return true
+        case .applied, .duplicate:
+            persistResidentTimeline(key)
+            return true
         case .requiresSnapshot: return false
         }
     }
@@ -743,6 +796,8 @@ final class PadWorkspace {
     @ObservationIgnored private var reconciliationRun: UUID?
     @ObservationIgnored private var receiptReadInFlight = false
     @ObservationIgnored let messageOutbox: ReliableMessageOutbox
+    @ObservationIgnored let persistentTimelineCache: PersistentTimelineCache
+    @ObservationIgnored private var persistentTimelineScope: String?
     var outboxSaving = false
     var deliveryRevision = 0
     var deliveryIssues: [String: String] = [:]
@@ -752,11 +807,13 @@ final class PadWorkspace {
     init(
         defaults: UserDefaults = .standard,
         initialStateRecoveryDelay: Duration = .seconds(2),
-        messageOutbox: ReliableMessageOutbox = ReliableMessageOutbox()
+        messageOutbox: ReliableMessageOutbox = ReliableMessageOutbox(),
+        persistentTimelineCache: PersistentTimelineCache? = nil
     ) {
         self.defaults = defaults
         self.initialStateRecoveryDelay = initialStateRecoveryDelay
         self.messageOutbox = messageOutbox
+        self.persistentTimelineCache = persistentTimelineCache ?? PersistentTimelineCache(keyProvider: { try await messageOutbox.timelinePersistenceKey() })
         pending = defaults.data(forKey: "pendingCommand").flatMap { try? JSONDecoder().decode(PendingCommand.self, from: $0) }
     }
 
@@ -845,6 +902,7 @@ final class PadWorkspace {
         messages = state.messages
         applyUsage(state.usage)
         lastTimelineRevision = state.revision
+        saveResidentState(for: selection)
         if previous != state.messages { messageRevision += 1 }
         return true
     }

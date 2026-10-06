@@ -3,6 +3,28 @@ import Foundation
 @testable import CorptieClientCore
 
 struct ResidentTimelineRepositoryTests {
+    @Test func coalescedChangesKeepContiguousRevisionsAndFinalDeletion() throws {
+        var repository = ClientTimelineRepository()
+        repository.store(state(revision: 1), for: "session:test")
+        let delta = try JSONDecoder().decode(ClientTimelineDelta.self, from: Data(#"{"schemaVersion":2,"kind":"delta","sessionId":"session:test","snapshotRequired":false,"baseRevision":1,"revision":3,"currentRevision":3,"hasMore":false,"changes":[{"revision":2,"itemId":"one","operation":"noop"},{"revision":3,"itemId":"one","operation":"delete"}]}"#.utf8))
+        guard case .applied(let updated) = repository.apply(delta) else {
+            Issue.record("Coalescing must preserve revision coverage")
+            return
+        }
+        #expect(updated.revision == 3)
+        #expect(updated.messages.isEmpty)
+    }
+
+    @Test func orphanedCoalescingMarkerRequiresSnapshot() throws {
+        var repository = ClientTimelineRepository()
+        repository.store(state(revision: 1), for: "session:test")
+        let delta = try JSONDecoder().decode(ClientTimelineDelta.self, from: Data(#"{"schemaVersion":2,"kind":"delta","sessionId":"session:test","snapshotRequired":false,"baseRevision":1,"revision":2,"currentRevision":2,"hasMore":false,"changes":[{"revision":2,"itemId":"one","operation":"noop"}]}"#.utf8))
+        guard case .requiresSnapshot = repository.apply(delta) else {
+            Issue.record("A missing final operation must never advance the cursor")
+            return
+        }
+        #expect(repository.peek(sessionID: "session:test")?.revision == 1)
+    }
     @Test func usageOnlyPushUpdatesResidentStateWithoutMovingMessages() throws {
         var repository = ClientTimelineRepository()
         repository.store(state(revision: 3), for: "session:test")

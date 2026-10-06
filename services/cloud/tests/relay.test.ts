@@ -29,7 +29,7 @@ const config: CloudConfig = {
   mail: { mode: "capture" }
 };
 
-test("Relay routes opaque binary frames only between active devices on the same account", async () => {
+test("Relay isolates late frames after revocation while rejecting nonparticipants and unknown connections", { timeout: 10_000 }, async () => {
   const database = openCloudDatabase(":memory:");
   const devices = new CloudDeviceService(database);
   const accountId = "account:relay";
@@ -41,6 +41,10 @@ test("Relay routes opaque binary frames only between active devices on the same 
     kind: "mobile",
     displayName: "Phone",
     publicKey: Buffer.alloc(32, 9).toString("base64")
+  }));
+  const tablet = devices.register(accountId, "session:tablet", createTestDeviceInput({
+    id: randomUUID().toUpperCase(), kind: "mobile", displayName: "Tablet",
+    publicKey: Buffer.alloc(32, 10).toString("base64")
   }));
   const application = createCloudApplication({
     config,
@@ -56,6 +60,7 @@ test("Relay routes opaque binary frames only between active devices on the same 
   });
   let macSocket: WebSocket | undefined;
   let mobileSocket: WebSocket | undefined;
+  let tabletSocket: WebSocket | undefined;
   try {
     const address = await application.listen();
     const relayUrl = `ws://127.0.0.1:${address.port}/v1/relay`;
@@ -88,8 +93,30 @@ test("Relay routes opaque binary frames only between active devices on the same 
     mobileSocket.send(frame, { binary: true });
     assert.deepEqual(await received, frame);
 
+    tabletSocket = new WebSocket(`${relayUrl}?deviceId=${tablet.id.toLowerCase()}`, {
+      headers: { "x-test-account": accountId, "x-test-session": "session:tablet" }
+    });
+    const tabletReady = nextJson(tabletSocket);
+    await nextOpen(tabletSocket);
+    assert.equal((await tabletReady).type, "ready");
+    const tabletConnected = nextJson(tabletSocket);
+    const tabletIncoming = nextJson(macSocket);
+    tabletSocket.send(JSON.stringify({ type: "connect", targetDeviceId: mac.id.toLowerCase() }));
+    const tabletConnectionId = (await tabletConnected).connectionId as string;
+    await tabletIncoming;
+
     const mobileClosed = nextClose(mobileSocket);
     const revokedNotice = nextJson(macSocket);
+    const disconnectedNotice = new Promise<Record<string, unknown>>(resolve => {
+      const listener = (data: RawData, binary: boolean) => {
+        if (binary) return;
+        const control = JSON.parse(data.toString());
+        if (control.type !== "disconnected") return;
+        macSocket!.removeListener("message", listener);
+        resolve(control);
+      };
+      macSocket!.on("message", listener);
+    });
     const revoked = await fetch(`http://127.0.0.1:${address.port}/v1/devices/${mobile.id.toLowerCase()}`, {
       method: "DELETE",
       headers: { "x-test-account": accountId }
@@ -97,9 +124,28 @@ test("Relay routes opaque binary frames only between active devices on the same 
     assert.equal(revoked.status, 200);
     assert.deepEqual(await revokedNotice, { type: "device_revoked", deviceId: mobile.id });
     assert.equal((await mobileClosed).code, 4003);
+    assert.equal((await disconnectedNotice).connectionId, connectionId);
+
+    // A late Mac frame for the revoked phone must not tear down the Mac socket
+    // or the unrelated tablet connection. Ordering is verified by the next frame.
+    const tabletFrame = Buffer.concat([Buffer.from([1]), uuidToBytes(tabletConnectionId), opaqueCiphertext]);
+    const tabletReceived = nextBinary(tabletSocket);
+    macSocket.send(frame, { binary: true });
+    macSocket.send(tabletFrame, { binary: true });
+    assert.deepEqual(await tabletReceived, tabletFrame);
+    assert.equal(macSocket.readyState, WebSocket.OPEN);
+
+    // Another peer cannot reuse the phone's tombstone, even on the same account.
+    const tabletClosed = nextClose(tabletSocket);
+    tabletSocket.send(frame, { binary: true });
+    assert.equal((await tabletClosed).code, 4002);
+    const macClosed = nextClose(macSocket);
+    macSocket.send(Buffer.concat([Buffer.from([1]), uuidToBytes(randomUUID()), opaqueCiphertext]), { binary: true });
+    assert.equal((await macClosed).code, 4002);
   } finally {
     macSocket?.terminate();
     mobileSocket?.terminate();
+    tabletSocket?.terminate();
     await application.close();
     database.close();
   }
