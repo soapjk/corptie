@@ -362,8 +362,18 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
         }, content: {
             ForEach(Array(section("recalls").items.enumerated()), id: \.offset) { _, recall in
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("\(recall["phase"].text ?? "") · \(recall["mode"].text ?? "")").font(.caption.bold())
-                    Text("\(recall["reason"].text ?? "") · hit \(recall["selectedIds"].items.count)/\(recall["candidateIds"].items.count)").font(.caption)
+                    Text("\(recall["phase"].text ?? "") · \(recall["mode"].text ?? "") · hit \(recall["selectedIds"].items.count)")
+                        .font(.caption.bold())
+                    ForEach(recall["selectedEntries"].items, id: \.inspectorID) { entry in
+                        Text(entry["content"].text ?? entry["id"].text ?? "记忆内容不可用")
+                            .font(.caption)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.leading, 8)
+                            .textSelection(.enabled)
+                    }
+                    if !recall["selectedIds"].items.isEmpty && recall["selectedEntries"].items.isEmpty {
+                        Text("记忆内容暂不可用").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
             if section("recalls").items.isEmpty { Text("尚无召回记录").font(.caption).foregroundStyle(.secondary) }
@@ -394,7 +404,41 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
     private var environment: some View {
         let agentID = store.snapshot?.environment["agentId"].text
         let agentName = workspace.directControlSnapshot?.agents.first { $0.id == agentID }?.name ?? agentID
-        return ConversationEnvironmentCard(provider: store.snapshot?.environment["provider"].text,
+        let currentProviderID = store.snapshot?.environment["provider"].text
+        let providers = section("providers").items
+        let currentProviderName = providers.first { $0["id"].text == currentProviderID }?["name"].text
+            ?? currentProviderID ?? "未知"
+        return ConversationEnvironmentCard(provider: {
+            Menu {
+                ForEach(providers, id: \.inspectorID) { provider in
+                    let isCurrent = provider["id"].text == currentProviderID
+                    Button {
+                        confirmation = .init(title: "切换 Provider？", action: "provider.switch", fields: [
+                            "providerId": provider["id"],
+                            "expectedRoutingVersion": store.snapshot?.environment["routingVersion"] ?? .null,
+                            "confirmed": .bool(true)])
+                    } label: {
+                        if isCurrent {
+                            Label(provider["name"].text ?? currentProviderName, systemImage: "checkmark")
+                        } else {
+                            Text(provider["name"].text ?? provider["id"].text ?? "Provider")
+                        }
+                    }
+                    .disabled(isCurrent || !provider["available"].flag)
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Text(currentProviderName).lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down").font(.caption2).foregroundStyle(.secondary)
+                }
+                .font(.caption)
+                .padding(.horizontal, 8)
+                .frame(minHeight: 28)
+                .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 7))
+            }
+            .disabled(locked || providers.isEmpty)
+            .accessibilityLabel("切换 Provider")
+        },
             agent: agentName,
             model: workspace.selection == sessionID ? (workspace.composerConfiguration?.currentModel ?? workspace.selectedSessionUsage?.route?.modelId) : nil,
             reasoning: workspace.selection == sessionID ? workspace.composerConfiguration?.currentReasoningLevel : nil,
@@ -403,16 +447,6 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
                 ShareLink(item: cwd) { ConversationDetailHeaderIcon(systemName: "square.and.arrow.up") }
                     .accessibilityLabel("分享工作空间路径")
             }
-            Menu {
-                ForEach(section("providers").items, id: \.inspectorID) { provider in
-                    Button(provider["name"].text ?? provider["id"].text ?? "Provider") {
-                        confirmation = .init(title: "切换 Provider？", action: "provider.switch", fields: [
-                            "providerId": provider["id"], "expectedRoutingVersion": store.snapshot?.environment["routingVersion"] ?? .null, "confirmed": .bool(true)])
-                    }.disabled(!provider["available"].flag)
-                }
-            } label: { ConversationDetailHeaderIcon(systemName: "arrow.triangle.2.circlepath") }
-                .accessibilityLabel("切换 Provider")
-                .disabled(locked)
         }
     }
     private func perform(_ action: String, id: ClientInspectorValue) {

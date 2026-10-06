@@ -51,6 +51,21 @@ test("task Detail snapshot carries the same definition fields as desktop", async
     assert.equal(workSnapshot.sections.focusTasks[0].taskRevision, task.revision);
   } finally { await f.close(); }
 });
+test("mobile Detail recall snapshot includes the selected memory content", async () => {
+  const f = await fixture();
+  try {
+    const memory = f.store.createMemory({ ownerType: "work", ownerId: "work:test", kind: "fact",
+      content: "Original recall context", sourceType: "user", trustLevel: "trusted", promotionStatus: "active" });
+    f.store.createMemoryRecallAudit({ sessionId: "s", phase: "turn", mode: "lightweight",
+      reason: "routine_context", candidateIds: [memory.id], selectedIds: [memory.id],
+      diagnostics: { selectedEntries: [{ id: memory.id, kind: "fact", content: "Original recall context",
+        ownerType: "work", ownerId: "work:test", snapshotAtRecall: true }] } });
+    f.store.updateMemory(memory.id, { content: "Changed later" });
+    const snapshot = await f.inspector.snapshot(identity, "s");
+    assert.equal(snapshot.sections.recalls[0].selectedEntries[0].content, "Original recall context");
+    assert.equal(snapshot.sections.recalls[0].selectedEntries[0].snapshotAtRecall, true);
+  } finally { await f.close(); }
+});
 test("commands share durable receipts, reject field injection and never replay side effects", async () => {
   const f = await fixture();
   try {

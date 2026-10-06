@@ -116,11 +116,11 @@ struct SessionDetailPanel: View {
             SessionTurnObservabilityView(sessionId: session.id)
                 .modifier(ConversationDetailModuleSurface())
 
-            ConversationEnvironmentCard(provider: currentProviderDisplayName,
+            ConversationEnvironmentCard(provider: { providerPicker },
                 agent: agentDisplayName, model: session.external?.currentModel,
                 reasoning: session.external?.currentReasoningLevel,
                 workspacePath: session.external?.cwd,
-                actions: { compactProviderMenu }, statusContent: { providerSwitchStatus })
+                actions: { EmptyView() }, statusContent: { providerSwitchStatus })
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -283,23 +283,6 @@ struct SessionDetailPanel: View {
         ConversationDetailModuleCard(title: title, systemImage: systemImage, content: content)
     }
 
-    private var compactProviderMenu: some View {
-        Menu {
-            providerMenuItems
-            if alternativeProviders.isEmpty {
-                Text(isLoadingProviderCatalog ? L10n("正在加载 Provider…") : L10n("没有其他可用 Provider"))
-                Button(L10n("重新加载 Provider")) {
-                    Task { await reloadProviderCatalog() }
-                }
-            }
-        } label: { ConversationDetailHeaderIcon(systemName: "arrow.triangle.2.circlepath") }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .disabled(isSwitchingProvider || session.external?.providerSwitchInFlight == true)
-        .help(L10n("切换 Provider"))
-        .accessibilityLabel(L10n("切换 Provider"))
-    }
-
     @ViewBuilder private var providerSwitchStatus: some View {
             if isSwitchingProvider || session.external?.providerSwitchInFlight == true {
                 Text(L10n("正在切换 Provider…")).font(.caption2)
@@ -331,9 +314,6 @@ struct SessionDetailPanel: View {
 
     private var providerPicker: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Provider")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.tertiary)
             if session.external?.providerSwitchInFlight == true || isSwitchingProvider {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
@@ -376,14 +356,10 @@ struct SessionDetailPanel: View {
                     .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 7))
                 }
                 .menuStyle(.borderlessButton)
-            }
-            if let providerSwitchError {
-                Text(providerSwitchError)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.red)
+                .disabled(isSwitchingProvider || session.external?.providerSwitchInFlight == true)
+                .accessibilityLabel(L10n("切换 Provider"))
             }
         }
-        .padding(.bottom, 4)
     }
 
     private var creatableProviders: [AgentProviderDescriptor] {
