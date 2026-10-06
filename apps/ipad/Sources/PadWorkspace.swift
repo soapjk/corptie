@@ -12,6 +12,13 @@ enum PadConversationReadOperation: String {
 }
 
 enum PadTimelineJumpPolicy {
+    /// Native scroll geometry is the primary completion signal on iOS 18+.
+    /// The realized tail + physical offset remain the legacy fallback.
+    static func correctionCompleted(nativeNearBottom: Bool?, tailMinY: CGFloat?,
+                                    viewportHeight: CGFloat, distanceToBottom: CGFloat) -> Bool {
+        if let nativeNearBottom { return nativeNearBottom }
+        return isAtLatest(tailMinY: tailMinY, viewportHeight: viewportHeight, distanceToBottom: distanceToBottom)
+    }
     /// A lazy content-size estimate alone is not proof that the latest row is visible.
     static func isAtLatest(tailMinY: CGFloat?, viewportHeight: CGFloat, distanceToBottom: CGFloat) -> Bool {
         guard let tailMinY, tailMinY.isFinite, viewportHeight.isFinite,
@@ -407,6 +414,13 @@ final class PadWorkspace {
     }
     var before: String?
     var capabilities: ClientSessionCapabilities?
+    var capabilityRefreshRevision = 0
+    var capabilityRefreshError: String?
+    var refreshingCapabilities = false
+    var stopSubmissionInFlight = false
+    @ObservationIgnored var capabilityRequestToken: UUID?
+    @ObservationIgnored var capabilityRequestKey: String?
+    @ObservationIgnored var verifiedCapabilityKey: String?
     /// Usage of the selected Session; re-read once per timeline change, never per frame.
     /// Transient display projection for the selected Session. This is not
     /// Workspace-owned persistence; context and provider/model quota retain
@@ -675,6 +689,11 @@ final class PadWorkspace {
     }
 
     func selectSession(from oldID: String?, to newID: String?) {
+        capabilityRequestToken = nil
+        capabilityRequestKey = nil
+        verifiedCapabilityKey = nil
+        capabilityRefreshError = nil
+        refreshingCapabilities = false
         usageRevision = nil
         if let oldID {
             visibleMessageLimits[oldID] = visibleMessageLimit
@@ -1250,6 +1269,13 @@ final class PadWorkspace {
 
     func command(_ connection: PadConnection, stop: Bool, schedule: ClientMessageSchedule? = nil,
                  confirmation: CommandConfirmation? = nil, suggestedReply: String? = nil) async {
+        if stop {
+            guard !stopSubmissionInFlight, selectedSessionIsRunning,
+                  capabilities?.stop.available == true,
+                  verifiedCapabilityKey == selectedCapabilityKey(connection) else { return }
+            stopSubmissionInFlight = true
+        }
+        defer { if stop { stopSubmissionInFlight = false } }
         if let confirmation, !confirmationMatches(confirmation, connection: connection) {
             commandConfirmation = nil
             status = "命令、草稿或连接已变化，请重新发送并确认。"
@@ -1280,7 +1306,7 @@ final class PadWorkspace {
         let snapshot = submissionSnapshot(sessionID: id)
         let serverID = connection.serverID, address = connection.address, deviceID = connection.deviceID
         var receivedAcknowledgement = false
-        await connection.perform {
+        await connection.perform(independent: stop) {
             let api = ClientSessionAPI(transport: try await connection.transport())
             guard connection.serverID == serverID, connection.address == address, connection.deviceID == deviceID,
                   !Task.isCancelled else { return }
