@@ -49,6 +49,12 @@ final class PadConnection {
         var save: @MainActor (CloudCredential, CloudOAuthConfiguration) async throws -> Void
         var refresh: @MainActor (CloudOAuthTokens, CloudOAuthConfiguration) async throws -> CloudOAuthTokens
     }
+    struct LANAuthDependencies {
+        var load: @MainActor (BackendEndpoint, String) async throws -> DeviceCredentials?
+        var save: @MainActor (DeviceCredentials, BackendEndpoint, String) async throws -> Void
+        var refresh: @MainActor (DeviceCredentials, BackendEndpoint) async throws -> DeviceCredentials
+        var transport: @MainActor (DeviceCredentials, BackendEndpoint) throws -> BackendTransport
+    }
     struct NetworkPath: Equatable, Sendable {
         let available: Bool
         let interfaces: String
@@ -86,6 +92,8 @@ final class PadConnection {
     private var attemptedStartupConnection = false
     var busy = false
     var notice = ""
+    var lanConnecting = false
+    var lanConnectionNotice = ""
     var cloudNotice = ""
     var cloudDevices: [CloudDevice] = []
     private(set) var cloudAccountState: CloudAccountState = .signedOut
@@ -116,7 +124,8 @@ final class PadConnection {
     var deviceID: String? { credentials?.deviceId }
     private var pairingCertificate: String?
     private let vault = DeviceCredentialVault()
-    private var refreshTask: Task<DeviceCredentials, Error>?
+    @ObservationIgnored private let lanAuthDependencies: LANAuthDependencies?
+    @ObservationIgnored private var lanRefreshTasks: [String: (id: UUID, task: Task<DeviceCredentials, Error>)] = [:]
     private var cachedTransport: BackendTransport?
     private var cachedToken: String?
     private let transportOverride: BackendTransport?
@@ -131,11 +140,13 @@ final class PadConnection {
 
     init(transportOverride: BackendTransport? = nil, cloudTargetMacID: UUID? = nil,
          relayFactory: RelayFactory? = nil, credentials: DeviceCredentials? = nil,
-         cloudAuthDependencies: CloudAuthDependencies? = nil) {
+         cloudAuthDependencies: CloudAuthDependencies? = nil,
+         lanAuthDependencies: LANAuthDependencies? = nil) {
         self.transportOverride = transportOverride
         self.cloudTargetMacID = cloudTargetMacID
         self.relayFactory = relayFactory
         self.cloudAuthDependencies = cloudAuthDependencies
+        self.lanAuthDependencies = lanAuthDependencies
         // Injectable identity only accompanies the explicit test transport seam.
         if transportOverride != nil { self.credentials = credentials }
     }
@@ -796,17 +807,25 @@ final class PadConnection {
     }
 
     func reconnect() async {
-        recoveryBlockedMessage = nil
-        await perform {
-            let endpoint = try configuredEndpoint()
-            guard let saved = try await vault.load(endpoint: endpoint, serverId: serverID) else {
+        guard !lanConnecting else { return }
+        guard !busy else { lanConnectionNotice = "正在处理其他连接操作，请稍后重试。"; return }
+        lanConnecting = true; busy = true
+        let attempt = UUID(), generation = connectionGeneration
+        let expectedServer = serverID, expectedAddress = address
+        let started = ContinuousClock.now
+        var phase = "load"
+        lanConnectionNotice = "正在读取已保存的配对…"
+        defer { lanConnecting = false; busy = false }
+        Self.recoveryLog.info("LAN connect started: attempt=\(attempt, privacy: .public)")
+        do {
+            let candidateEndpoint = try configuredEndpoint()
+            guard var saved = try await loadLANCredentials(candidateEndpoint, serverID: expectedServer) else {
                 hasSavedPairing = false
-                notice = "此 Mac 没有已保存的配对，请先配对。"
+                lanConnectionNotice = "此 Mac 没有已保存的配对，请先配对。"
                 return
             }
             hasSavedPairing = true
-            self.endpoint = endpoint
-            credentials = saved
+            guard saved.serverId == expectedServer else { throw CredentialVaultError.invalidIdentity }
             if let validated = saved.cloudValidatedAt, let uptime = saved.cloudValidationUptime {
                 let policy = try CloudOfflineLANPolicy(
                     validatedAt: Date(timeIntervalSince1970: validated / 1000),
@@ -820,26 +839,109 @@ final class PadConnection {
                     isKnownRevoked: false
                 )
             }
-            do {
-                let transport = try BackendTransport(
-                    endpoint: endpoint, bearerToken: saved.accessToken, certificate: saved.certificate
-                )
-                let (_, _) = try await transport.data(for: endpoint.request(path: ["client", "v1", "me"]))
-                if let cloudClient { await cloudClient.close() }
-                cloudClient = nil
-                connectedCloudMacID = nil
-                connectedCloudMacName = nil
-                cachedTransport = transport
-                cachedToken = saved.accessToken
-                remember(endpoint)
-                connected = true
-            } catch let error as DevicePairingFailure where error.code == "INVALID_CREDENTIAL" || error.code == "DEVICE_REVOKED" {
-                hasSavedPairing = false
-                try? await vault.remove(endpoint: endpoint, serverId: serverID)
-                self.credentials = nil
-                throw error
+            var refreshed = false
+            if saved.accessExpiresAt <= Date().timeIntervalSince1970 * 1000 + 30_000 {
+                phase = "refresh"; lanConnectionNotice = "正在刷新设备授权…"
+                saved = try await refreshLANCredentials(saved, endpoint: candidateEndpoint)
+                refreshed = true
             }
+            var candidate = try makeLANTransport(saved, endpoint: candidateEndpoint)
+            phase = "verify"; lanConnectionNotice = "正在验证 Mac…"
+            do { try await verifyLANIdentity(candidate, credentials: saved, attempt: attempt) }
+            catch {
+                let code = (error as? DevicePairingFailure)?.code ?? (error as? ClientServiceFailure)?.code
+                guard !refreshed, Self.lanCredentialRejected(error), code != "DEVICE_REVOKED" else { throw error }
+                phase = "refresh"; lanConnectionNotice = "正在刷新设备授权…"
+                saved = try await refreshLANCredentials(saved, endpoint: candidateEndpoint)
+                candidate = try makeLANTransport(saved, endpoint: candidateEndpoint)
+                phase = "verify"; lanConnectionNotice = "正在验证 Mac…"
+                try await verifyLANIdentity(candidate, credentials: saved, attempt: attempt)
+            }
+            try Task.checkCancellation()
+            guard connectionGeneration == generation, serverID == expectedServer, address == expectedAddress else {
+                throw CancellationError()
+            }
+            // No await in the commit: old requests cannot see a half-switched
+            // LAN identity. Candidate failure leaves the existing channel intact.
+            let previous = cloudClient
+            connectionGeneration = UUID()
+            cloudRecoveryTask?.cancel(); cloudRecoveryTask = nil
+            networkRecoveryTask?.cancel(); networkRecoveryTask = nil
+            cloudClient = nil; cloudTargetMacID = nil
+            connectedCloudMacID = nil; connectedCloudMacName = nil
+            endpoint = candidateEndpoint; credentials = saved
+            cachedTransport = candidate; cachedToken = saved.accessToken
+            recoveryBlockedMessage = nil
+            remember(candidateEndpoint)
+            connected = true; recoveryRevision += 1
+            lanConnectionNotice = "局域网连接成功。"
+            Self.recoveryLog.info("LAN connect accepted: attempt=\(attempt, privacy: .public) elapsed=\(String(describing: started.duration(to: .now)), privacy: .public)")
+            if let previous { await previous.close() }
+        } catch is CancellationError {
+            lanConnectionNotice = "连接操作已取消，请重新连接。"
+        } catch {
+            if Self.lanCredentialRejected(error) {
+                lanConnectionNotice = "设备授权无法恢复或已被撤销，请重新扫码配对。原配对记录已保留。"
+            } else if (error as? ClientServiceFailure)?.code == "LAN_IDENTITY_MISMATCH" {
+                lanConnectionNotice = "Mac 或设备身份与保存的配对不一致，未切换连接。请核对配对地址。"
+            } else if error is CredentialVaultError {
+                lanConnectionNotice = "无法读取或保存配对凭据，请解锁设备后重试。原配对记录已保留。"
+            } else { lanConnectionNotice = Self.explain(error) }
+            Self.recoveryLog.info("LAN connect failed: attempt=\(attempt, privacy: .public) phase=\(phase, privacy: .public) reason=\(ConnectionDiagnostic.failure(error), privacy: .public)")
         }
+    }
+
+    private func loadLANCredentials(_ endpoint: BackendEndpoint, serverID: String) async throws -> DeviceCredentials? {
+        if let dependencies = lanAuthDependencies { return try await dependencies.load(endpoint, serverID) }
+        return try await vault.load(endpoint: endpoint, serverId: serverID)
+    }
+
+    private func makeLANTransport(_ credentials: DeviceCredentials, endpoint: BackendEndpoint) throws -> BackendTransport {
+        if let dependencies = lanAuthDependencies { return try dependencies.transport(credentials, endpoint) }
+        return try BackendTransport(endpoint: endpoint, bearerToken: credentials.accessToken, certificate: credentials.certificate)
+    }
+
+    private func refreshLANCredentials(_ saved: DeviceCredentials, endpoint: BackendEndpoint) async throws -> DeviceCredentials {
+        let scope = "\(endpoint.baseURL.absoluteString)|\(saved.serverId)|\(saved.deviceId)"
+        if lanRefreshTasks[scope] == nil {
+            let id = UUID(), dependencies = lanAuthDependencies, vault = vault
+            let task = Task { @MainActor in
+                var updated: DeviceCredentials
+                if let dependencies { updated = try await dependencies.refresh(saved, endpoint) }
+                else { updated = try await DevicePairingClient(endpoint: endpoint, certificate: saved.certificate).refresh(saved) }
+                guard updated.serverId == saved.serverId, updated.deviceId == saved.deviceId else {
+                    throw ClientServiceFailure(statusCode: 409, code: "LAN_IDENTITY_MISMATCH")
+                }
+                updated.certificate = saved.certificate
+                updated.cloudValidatedAt = saved.cloudValidatedAt
+                updated.cloudValidationUptime = saved.cloudValidationUptime
+                if let dependencies { try await dependencies.save(updated, endpoint, saved.serverId) }
+                else { try await vault.save(updated, endpoint: endpoint, expectedServerId: saved.serverId) }
+                return updated
+            }
+            lanRefreshTasks[scope] = (id, task)
+        }
+        let entry = lanRefreshTasks[scope]!
+        defer { if lanRefreshTasks[scope]?.id == entry.id { lanRefreshTasks.removeValue(forKey: scope) } }
+        return try await entry.task.value
+    }
+
+    private func verifyLANIdentity(_ transport: BackendTransport, credentials: DeviceCredentials, attempt: UUID) async throws {
+        var request = try transport.endpoint.request(path: ["client", "v1", "me"])
+        request.setValue(attempt.uuidString, forHTTPHeaderField: "X-Corptie-Connection-ID")
+        let (data, _) = try await transport.data(for: request)
+        struct Identity: Decodable { let serverId: String; let deviceId: String }
+        let identity = try JSONDecoder().decode(Identity.self, from: data)
+        guard identity.serverId == credentials.serverId, identity.deviceId == credentials.deviceId else {
+            throw ClientServiceFailure(statusCode: 409, code: "LAN_IDENTITY_MISMATCH")
+        }
+    }
+
+    private static func lanCredentialRejected(_ error: Error) -> Bool {
+        let code = (error as? DevicePairingFailure)?.code ?? (error as? ClientServiceFailure)?.code
+        if ["INVALID_CREDENTIAL", "DEVICE_REVOKED"].contains(code ?? "") { return true }
+        if let failure = error as? ClientConnectionError, case .httpStatus(401) = failure { return true }
+        return false
     }
 
     private func remember(_ endpoint: BackendEndpoint) {
@@ -885,26 +987,15 @@ final class PadConnection {
             return try await recoverCloudTransport(to: target)
         }
         guard let endpoint, var credentials else { throw ClientConnectionError.invalidCredential }
+        let generation = connectionGeneration
         if credentials.accessExpiresAt <= Date().timeIntervalSince1970 * 1000 + 30_000 {
-            if refreshTask == nil {
-                let saved = credentials, expectedID = serverID, vault = vault
-                refreshTask = Task {
-                    var updated = try await DevicePairingClient(endpoint: endpoint, certificate: saved.certificate).refresh(saved)
-                    updated.certificate = saved.certificate
-                    updated.cloudValidatedAt = saved.cloudValidatedAt
-                    updated.cloudValidationUptime = saved.cloudValidationUptime
-                    try await vault.save(updated, endpoint: endpoint, expectedServerId: expectedID)
-                    return updated
-                }
-            }
-            let task = refreshTask!
-            defer { refreshTask = nil }
-            credentials = try await task.value
-            guard self.endpoint?.baseURL == endpoint.baseURL, self.credentials?.deviceId == credentials.deviceId else { throw CancellationError() }
+            credentials = try await refreshLANCredentials(credentials, endpoint: endpoint)
+            guard generation == connectionGeneration, self.endpoint?.baseURL == endpoint.baseURL,
+                  self.credentials?.deviceId == credentials.deviceId else { throw CancellationError() }
             self.credentials = credentials
         }
         if cachedTransport == nil || cachedToken != credentials.accessToken {
-            cachedTransport = try BackendTransport(endpoint: endpoint, bearerToken: credentials.accessToken, certificate: credentials.certificate)
+            cachedTransport = try makeLANTransport(credentials, endpoint: endpoint)
             cachedToken = credentials.accessToken
         }
         return cachedTransport!
@@ -958,8 +1049,8 @@ final class PadConnection {
         cloudTargetMacID = nil
         recoveryBlockedMessage = nil
         credentials = nil
-        refreshTask?.cancel()
-        refreshTask = nil
+        for entry in lanRefreshTasks.values { entry.task.cancel() }
+        lanRefreshTasks.removeAll()
         cachedTransport = nil
         cachedToken = nil
         if let cloudClient { Task { await cloudClient.close() } }

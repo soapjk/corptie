@@ -417,6 +417,8 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         label.isHidden = isStandaloneProcess && !row.isExpanded
         processSeparator.isHidden = !hasProcess || isStandaloneProcess
         processButton.isHidden = !hasProcess
+        processButton.cell?.wraps = row.isExpanded
+        processButton.cell?.lineBreakMode = row.isExpanded ? .byWordWrapping : .byClipping
         processSeparatorHeight.constant = hasProcess && !isStandaloneProcess ? 1 : 0
         processButtonHeight.constant = hasProcess ? 22 + NativeTimelineLayoutCache.processSummaryExtraHeight(
             for: row, cardWidth: layout.cardWidth, includesCurrentStep: true) : 0
@@ -485,7 +487,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private func setProcessSummary(_ summary: String, expanded: Bool) {
         processButton.setAccessibilityLabel(summary)
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineBreakMode = .byWordWrapping
+        paragraph.lineBreakMode = expanded ? .byWordWrapping : .byClipping
         processButton.attributedTitle = NSAttributedString(
             string: "  \(summary)    \(expanded ? "⌄" : "›")",
             attributes: [
