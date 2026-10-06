@@ -495,6 +495,7 @@ struct ConversationView: View {
     @State private var historyRestorationTask: Task<Void, Never>?
     @State private var didPlaceInitialTimeline = false
     @State private var pendingLatestJump = false
+    @State private var nativeTimelineNearBottom: Bool?
     @State private var latestJumpGeneration: UInt64 = 0
     @State private var explicitJumpRevision: UInt64 = 0
     @State private var latestTailGeometry = TimelineTailGeometry()
@@ -654,8 +655,11 @@ struct ConversationView: View {
                     }
                 },
                 onBottomProximityChange: { nearBottom in
+                    nativeTimelineNearBottom = nearBottom
                     guard pendingLatestJump else { return }
-                    if nearBottom && isTimelineAtLatest() {
+                    // Native geometry is authoritative on iOS 18+. Do not wait
+                    // for a second, potentially stale lazy-tail measurement.
+                    if nearBottom {
                         pendingLatestJump = false
                     }
                 }
@@ -727,6 +731,9 @@ struct ConversationView: View {
                 if !hadCachedCapabilities || viewportState.followsLatest { placeInitialTimelineIfReady(reader) }
                 await workspace.repairMissingUsage(connection)
             }
+            .task(id: workspace.selectedCapabilityKey(connection)) {
+                await workspace.refreshSelectedCapabilities(connection)
+            }
             .onChange(of: workspace.messageRevision) {
                 if viewportState.timelineTailDidChange() {
                     if didPlaceInitialTimeline { scheduleLatestPlacement(reader) }
@@ -763,6 +770,7 @@ struct ConversationView: View {
                 isUserInteractingWithTimeline = false
                 timelineScrollView = nil
                 latestTailGeometry.minY = nil
+                nativeTimelineNearBottom = nil
                 historyViewport = TimelineHistoryViewportState()
                 expandedProcessEntryIDs.removeAll()
                 processCollapseTracker.reset()
@@ -771,9 +779,12 @@ struct ConversationView: View {
                 cancelPendingTimelinePlacement()
                 pendingLatestJump = false
             }
-            .onDisappear { cancelPendingTimelinePlacement() }
+            .onDisappear {
+                cancelPendingTimelinePlacement()
+                pendingLatestJump = false
+            }
             .overlay(alignment: .bottomTrailing) {
-                if viewportState.showsJumpToLatest || pendingLatestJump {
+                if viewportState.showsJumpToLatest {
                     Button {
                         jumpToLatest(reader)
                     } label: {
@@ -905,10 +916,13 @@ struct ConversationView: View {
         let targetSessionID = sessionID
         latestPlacementTask = Task { @MainActor in
             defer {
-                if generation == latestJumpGeneration { latestPlacementTask = nil }
+                if generation == latestJumpGeneration {
+                    latestPlacementTask = nil
+                    pendingLatestJump = false
+                }
             }
             // Finite post-layout corrections; height measurements never restart
-            // this loop. Failure leaves the button available for another click.
+            // this loop. Correction lifetime never controls button visibility.
             for delay in [32, 64, 128, 256] {
                 do { try await Task.sleep(for: .milliseconds(delay)) } catch { return }
                 guard !Task.isCancelled, generation == latestJumpGeneration,
@@ -959,13 +973,14 @@ struct ConversationView: View {
     }
 
     private func isTimelineAtLatest() -> Bool {
+        if let nativeTimelineNearBottom { return nativeTimelineNearBottom }
         guard let timelineScrollView else { return false }
         let maximumY = max(
             -timelineScrollView.adjustedContentInset.top,
             timelineScrollView.contentSize.height - timelineScrollView.bounds.height
                 + timelineScrollView.adjustedContentInset.bottom
         )
-        return PadTimelineJumpPolicy.isAtLatest(tailMinY: latestTailGeometry.minY,
+        return PadTimelineJumpPolicy.correctionCompleted(nativeNearBottom: nil, tailMinY: latestTailGeometry.minY,
             viewportHeight: historyViewport.viewportHeight,
             distanceToBottom: maximumY - timelineScrollView.contentOffset.y)
     }
@@ -1166,7 +1181,8 @@ struct ConversationView: View {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .disabled(connection.busy || workspace.pending != nil)
+                        .disabled(!workspace.stopControlEnabled(connection))
+                        .accessibilityHint(workspace.stopControlReason(connection) ?? "停止当前运行")
                         .accessibilityLabel("停止当前运行")
                         .accessibilityIdentifier("conversation-stop")
                     }
@@ -1179,10 +1195,7 @@ struct ConversationView: View {
     }
 
     private var canStopCurrentSession: Bool {
-        let session = workspace.sessionsByID[sessionID]
-        let isRunning = SessionExecutionState(executionStatus: session?.executionStatus) == .running
-            || SessionExecutionState(executionStatus: workspace.executionByTaskID[session?.taskId ?? ""]) == .running
-        return isRunning && workspace.capabilities?.stop.available == true
+        workspace.selectedSessionIsRunning
     }
 
     private func stopCurrentSession() {
@@ -1191,6 +1204,10 @@ struct ConversationView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if let reason = workspace.stopControlReason(connection) {
+                Text(reason).font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("conversation-stop-status")
+            }
             if !workspace.conversationNotice.isEmpty {
                 Label(workspace.conversationNotice, systemImage: "exclamationmark.circle")
                     .font(.caption).foregroundStyle(.secondary)
@@ -1394,28 +1411,6 @@ private struct PadProcessCard: View {
                 : "计划 \(plan.steps.filter { $0.status == "completed" }.count)/\(plan.steps.count)"
         }
     }
-    private func cardWidth(summary: String) -> CGFloat {
-        let availableLane = laneWidth > 0 ? laneWidth : MessageBubbleWidthPolicy.maximumWidth
-        let summaryWidth = ceil((summary as NSString).size(withAttributes: [
-            .font: UIFont.systemFont(ofSize: 10.5, weight: .medium)
-        ]).width)
-        let secondaryWidth = presentation.currentStepTitle.map {
-            ceil(($0 as NSString).size(withAttributes: [
-                .font: UIFont.systemFont(ofSize: 9.5)
-            ]).width)
-        } ?? 0
-        let progressWidth = progressLabel.map {
-            ceil(($0 as NSString).size(withAttributes: [
-                .font: UIFont.systemFont(ofSize: 9, weight: .semibold)
-            ]).width)
-        } ?? 0
-        return MessageBubbleWidthPolicy.processCardWidth(
-            summaryWidth: summaryWidth,
-            secondaryWidth: secondaryWidth,
-            progressLabelWidth: progressWidth,
-            expanded: expanded,
-            laneWidth: availableLane)
-    }
     private var tint: Color {
         switch state {
         case .running: .accentColor
@@ -1465,22 +1460,21 @@ private struct PadProcessCard: View {
     }
 
     private func processCard(summary: String, liveSummary: ((Date) -> String)? = nil) -> some View {
-        ProcessCard(summary: summary, liveSummary: liveSummary,
-                    secondary: presentation.currentStepTitle,
-                    symbol: state.symbolName, tint: tint, expanded: expanded,
-                    progress: latestPlan?.completionFraction,
-                    progressLabel: progressLabel,
-                    toggle: toggle) {
-            LazyVStack(alignment: .leading, spacing: 10) {
-                ForEach(steps) { step in
-                    PadExecutionStepCard(step: step)
+        PadProcessCardLayout(expanded: expanded, laneWidth: laneWidth) {
+            ProcessCard(summary: summary, liveSummary: liveSummary,
+                        secondary: presentation.currentStepTitle,
+                        symbol: state.symbolName, tint: tint, expanded: expanded,
+                        progress: latestPlan?.completionFraction,
+                        progressLabel: progressLabel,
+                        toggle: toggle) {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    ForEach(steps) { step in
+                        PadExecutionStepCard(step: step)
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(width: max(cardWidth(summary: summary), liveSummary == nil ? 0
-            : cardWidth(summary: startedAt.map { self.summary(at: $0.addingTimeInterval(3_599.99), startedAt: $0) } ?? summary)),
-            alignment: .leading)
         .background {
             if expanded {
                 GeometryReader { proxy in
@@ -1492,6 +1486,27 @@ private struct PadProcessCard: View {
                 }
             }
         }
+    }
+}
+
+/// Measures only this card, using its actual scaled fonts and current summary.
+/// No preference round-trip, extra timer, or timeline-wide state invalidation.
+private struct PadProcessCardLayout: Layout {
+    let expanded: Bool
+    let laneWidth: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let card = subviews.first else { return .zero }
+        let available = laneWidth > 0 ? laneWidth : (proposal.width ?? MessageBubbleWidthPolicy.maximumWidth)
+        let natural = expanded ? 0 : card.sizeThatFits(.unspecified).width
+        let width = MessageBubbleWidthPolicy.processCardLayoutWidth(
+            naturalWidth: natural, expanded: expanded, laneWidth: available)
+        return CGSize(width: width, height: card.sizeThatFits(.init(width: width, height: proposal.height)).height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading,
+            proposal: .init(width: bounds.width, height: bounds.height))
     }
 }
 
