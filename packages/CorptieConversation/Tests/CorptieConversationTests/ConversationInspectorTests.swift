@@ -45,9 +45,9 @@ struct ConversationInspectorTests {
     }
 
     @Test func taskDefinitionCardAppearsOnlyWithActualContent() {
-        #expect(!ConversationTaskDefinition.hasContent(description: " \n", acceptance: "", verification: "\t"))
-        #expect(ConversationTaskDefinition.hasContent(description: "", acceptance: "验收", verification: ""))
-        #expect(ConversationTaskDefinition.hasContent(description: "描述", acceptance: "", verification: ""))
+        #expect(!ConversationTaskDefinition.hasContent(description: " \n", acceptance: ""))
+        #expect(ConversationTaskDefinition.hasContent(description: "", acceptance: "验收"))
+        #expect(ConversationTaskDefinition.hasContent(description: "描述", acceptance: ""))
     }
 
     @Test func detailHeaderReservesAccessibleNativeActionTargets() throws {

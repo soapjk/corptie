@@ -501,7 +501,8 @@ struct UnifiedConsoleControlSurfaceTests {
         let conversationHeaderSource = try source(named: "Conversation/ConversationHeader.swift")
 
         #expect(taskSource.contains("ConversationTaskInformationCard(summary: task.conversationDetailSummary"))
-        #expect(taskSource.contains("verification: task.verificationCriteria"))
+        #expect(!taskSource.contains("verification: task.verificationCriteria"))
+        #expect(!taskSource.contains("verificationTitle:"))
         #expect(!taskSource.contains("text.isEmpty ? L10n(\"No Content\")"))
         #expect(!taskSource.contains("Text(L10n(\"暂无记忆\"))"))
 

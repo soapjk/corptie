@@ -138,32 +138,28 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
     public let summary: ConversationTaskSummary?
     public let description: String
     public let acceptance: String
-    public let verification: String
     public let title: String
     public let summaryTitle: String
     public let descriptionTitle: String
     public let acceptanceTitle: String
-    public let verificationTitle: String
     public let expandLabel: String
     public let collapseLabel: String
     public let showsWhenEmpty: Bool
     private let actions: Actions
 
     public init(summary: ConversationTaskSummary?, description: String?, acceptance: String?,
-                verification: String?, title: String = "Task 信息", summaryTitle: String = "当前摘要",
+                title: String = "Task 信息", summaryTitle: String = "当前摘要",
                 descriptionTitle: String = "描述", acceptanceTitle: String = "验收标准",
-                verificationTitle: String = "验证标准", expandLabel: String = "展开",
+                expandLabel: String = "展开",
                 collapseLabel: String = "收起", showsWhenEmpty: Bool = false,
                 @ViewBuilder actions: () -> Actions) {
         self.summary = summary
         self.description = description ?? ""
         self.acceptance = acceptance ?? ""
-        self.verification = verification ?? ""
         self.title = title
         self.summaryTitle = summaryTitle
         self.descriptionTitle = descriptionTitle
         self.acceptanceTitle = acceptanceTitle
-        self.verificationTitle = verificationTitle
         self.expandLabel = expandLabel
         self.collapseLabel = collapseLabel
         self.showsWhenEmpty = showsWhenEmpty
@@ -172,13 +168,13 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
 
     public var body: some View {
         if showsWhenEmpty || summary != nil || ConversationTaskDefinition.hasContent(
-            description: description, acceptance: acceptance, verification: verification) {
+            description: description, acceptance: acceptance) {
             ConversationDetailModuleCard(title: title, systemImage: "checklist", headerActions: { actions }) {
                 VStack(alignment: .leading, spacing: 14) {
                     ConversationTaskSummaryView(summary: summary, title: summaryTitle)
-                    ConversationTaskDefinition(description: description, acceptance: acceptance, verification: verification,
+                    ConversationTaskDefinition(description: description, acceptance: acceptance,
                         descriptionTitle: descriptionTitle, acceptanceTitle: acceptanceTitle,
-                        verificationTitle: verificationTitle, expandLabel: expandLabel, collapseLabel: collapseLabel)
+                        expandLabel: expandLabel, collapseLabel: collapseLabel)
                 }
             }
         }
