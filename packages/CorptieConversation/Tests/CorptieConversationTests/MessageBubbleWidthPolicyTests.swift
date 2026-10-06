@@ -57,6 +57,15 @@ struct MessageBubbleWidthPolicyTests {
         #expect(summary.contains(".fixedSize(horizontal: false, vertical: true)"))
     }
 
+    @Test("Intrinsic process width follows current content, not a future clock reserve")
+    func intrinsicProcessWidth() {
+        #expect(MessageBubbleWidthPolicy.processCardLayoutWidth(naturalWidth: 120, expanded: false, laneWidth: 700) == 120)
+        #expect(MessageBubbleWidthPolicy.processCardLayoutWidth(naturalWidth: 140, expanded: false, laneWidth: 700) == 140)
+        #expect(MessageBubbleWidthPolicy.processCardLayoutWidth(naturalWidth: 900, expanded: false, laneWidth: 320) == 316)
+        #expect(MessageBubbleWidthPolicy.processCardLayoutWidth(naturalWidth: 120, expanded: true, laneWidth: 700) == 480)
+        #expect(MessageBubbleWidthPolicy.processCardLayoutWidth(naturalWidth: 120, expanded: true, laneWidth: 320) == 316)
+    }
+
     @Test("Collapsed process cards fit their summary without filling the lane")
     func collapsedProcessCard() {
         #expect(MessageBubbleWidthPolicy.processCardWidth(
