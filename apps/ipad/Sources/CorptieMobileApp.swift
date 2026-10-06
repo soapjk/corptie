@@ -224,6 +224,8 @@ private enum CompactWorkspacePage: Hashable {
 }
 
 struct WorkspaceView: View {
+    @State private var outlineDragActive = false
+    @State private var suppressOutlineTapUntil = Date.distantPast
     let connection: PadConnection
     @Bindable var workspace: PadWorkspace
     let compactOpenSessionRequest: Int
@@ -331,7 +333,26 @@ struct WorkspaceView: View {
 
     private func compactWorkspace(_ commands: PadEntityCommandState) -> some View {
         NavigationStack(path: $compactPath) {
-            workColumn(commands, showsPersistentSelection: false, onOpenSession: openCompactSession)
+            workColumn(commands, showsPersistentSelection: false, onOpenSession: { id in
+                // A Button release can arrive after the drag's end callback.
+                guard !outlineDragActive, Date() >= suppressOutlineTapUntil else { return }
+                openCompactSession(id)
+            })
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 12)
+                        .onChanged { _ in
+                            if !outlineDragActive { outlineDragActive = true }
+                        }
+                        .onEnded { value in
+                            outlineDragActive = false
+                            suppressOutlineTapUntil = Date().addingTimeInterval(0.15)
+                            guard PadWorkReturnSwipePolicy.opensPreviousTask(
+                                horizontal: value.translation.width, vertical: value.translation.height),
+                                let id = workspace.previousMobileTaskSession(connection) else { return }
+                            openCompactSession(id)
+                        }
+                )
+                .onDisappear { outlineDragActive = false }
                 .navigationDestination(for: CompactWorkspacePage.self) { page in
                     switch page {
                     case .conversation(let id):
@@ -354,6 +375,9 @@ struct WorkspaceView: View {
         .accessibilityIdentifier("compact-workspace")
         .onChange(of: compactPath, initial: true) { _, path in
             onCompactRootChange(path.isEmpty)
+            if case .conversation(let id) = path.first {
+                workspace.rememberOpenedMobileTask(connection, sessionID: id)
+            }
         }
         .onChange(of: workspace.selection) { _, id in
             guard let id else { compactPath = []; return }
@@ -366,6 +390,7 @@ struct WorkspaceView: View {
     }
 
     private func openCompactSession(_ id: String) {
+        workspace.rememberOpenedMobileTask(connection, sessionID: id)
         workspace.selection = id
         compactPath = [.conversation(id)]
     }
@@ -722,8 +747,7 @@ struct ConversationView: View {
                 processCollapseTracker.updateCandidates(candidates)
             }
             .accessibilityIdentifier("conversation-timeline")
-            .modifier(CompactPageSwipe(onBack: onBack, onOpenDetail: onOpenDetail,
-                viewportWidth: viewport.size.width))
+            .modifier(CompactPageSwipe(onBack: onBack, onOpenDetail: onOpenDetail))
             .task(id: sessionID) {
                 let hadCachedCapabilities = workspace.capabilities != nil
                 await workspace.waitForRealtimeTimelineOrFallback(connection)
@@ -1271,26 +1295,87 @@ struct ConversationView: View {
 private struct CompactPageSwipe: ViewModifier {
     let onBack: (() -> Void)?
     let onOpenDetail: (() -> Void)?
-    let viewportWidth: CGFloat
 
     @ViewBuilder func body(content: Content) -> some View {
         if onBack != nil || onOpenDetail != nil {
-            content.simultaneousGesture(
-                DragGesture(minimumDistance: 20).onEnded { gesture in
-                    guard viewportWidth > 0 else { return }
-                    let horizontal = gesture.translation.width
-                    guard abs(horizontal) > 64,
-                          abs(horizontal) > abs(gesture.translation.height) * 1.5 else { return }
-                    if horizontal > 0, gesture.startLocation.x <= 48 {
-                        onBack?()
-                    } else if horizontal < 0,
-                              gesture.startLocation.x >= viewportWidth - 48 {
-                        onOpenDetail?()
-                    }
-                }
-            )
+            content.background(CompactConversationPan(onBack: onBack, onOpenDetail: onOpenDetail))
         } else {
             content
+        }
+    }
+}
+
+/// UIKit's delegate can reject a pan before recognition, without stealing
+/// vertical scrolling or content-owned horizontal/selection gestures.
+private struct CompactConversationPan: UIViewRepresentable {
+    let onBack: (() -> Void)?
+    let onOpenDetail: (() -> Void)?
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeUIView(context: Context) -> TimelineScrollViewResolver.ResolverView {
+        let view = TimelineScrollViewResolver.ResolverView()
+        updateUIView(view, context: context)
+        return view
+    }
+    func updateUIView(_ view: TimelineScrollViewResolver.ResolverView, context: Context) {
+        context.coordinator.onBack = onBack
+        context.coordinator.onOpenDetail = onOpenDetail
+        view.onResolve = { [weak coordinator = context.coordinator] in coordinator?.attach(to: $0) }
+        view.resolve()
+    }
+    static func dismantleUIView(_ view: TimelineScrollViewResolver.ResolverView, coordinator: Coordinator) {
+        view.onResolve = nil
+        coordinator.detach()
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var onBack: (() -> Void)?
+        var onOpenDetail: (() -> Void)?
+        private weak var scrollView: UIScrollView?
+        private lazy var pan: UIPanGestureRecognizer = {
+            let value = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+            value.maximumNumberOfTouches = 1
+            value.delegate = self
+            return value
+        }()
+        func attach(to view: UIScrollView) {
+            guard scrollView !== view else { return }
+            detach(); scrollView = view; view.addGestureRecognizer(pan)
+        }
+        func detach() { scrollView?.removeGestureRecognizer(pan); scrollView = nil }
+        func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
+            let velocity = pan.velocity(in: scrollView)
+            guard PadConversationSwipePolicy.isHorizontal(x: velocity.x, y: velocity.y) else { return false }
+            return velocity.x > 0 ? onBack != nil : onOpenDetail != nil
+        }
+        func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            var candidate = touch.view
+            while let view = candidate, view !== scrollView {
+                if view is UIControl { return false }
+                if let text = view as? UITextView,
+                   text.isEditable || text.selectedRange.length > 0
+                    || (text.gestureRecognizers ?? []).contains(where: { $0 is UILongPressGestureRecognizer && $0.isEnabled }) {
+                    return false
+                }
+                if let nested = view as? UIScrollView, nested.isScrollEnabled,
+                   nested.contentSize.width > nested.bounds.width + 1 { return false }
+                candidate = view.superview
+            }
+            return true
+        }
+        func gestureRecognizer(_ recognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            // Only the timeline's vertical pan may run alongside page navigation.
+            other === scrollView?.panGestureRecognizer
+        }
+        @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
+            guard recognizer.state == .ended else { return }
+            let value = recognizer.translation(in: scrollView)
+            switch PadConversationSwipePolicy.destination(horizontal: value.x, vertical: value.y) {
+            case .taskList: onBack?()
+            case .detail: onOpenDetail?()
+            case nil: break
+            }
         }
     }
 }
