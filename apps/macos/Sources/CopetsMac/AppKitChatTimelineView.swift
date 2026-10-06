@@ -138,6 +138,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             initialPosition: initialPosition
         )
         context.coordinator.updateBaseDirectory(baseDirectory)
+        context.coordinator.updateProcessCollapseLocalization()
         context.coordinator.setProcessClockEnabled(canAdvanceProcessClock)
         context.coordinator.onToggleExpansion = onToggleExpansion
         context.coordinator.onAction = onAction
