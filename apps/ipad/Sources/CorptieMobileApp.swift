@@ -32,16 +32,17 @@ struct PairingView: View {
     @State private var scannedPayload: String?
     @State private var cloudSignIn = CloudSignInSession()
     @State private var cloudRevocation: CloudDevice?
+    @State private var cloudLoginTask: Task<Void, Never>?
+    @Environment(\.scenePhase) private var scenePhase
     private enum Scanner: String, Identifiable { case camera; var id: String { rawValue } }
     var body: some View {
         NavigationStack {
             Form {
                 Section("Corptie Cloud") {
                     if connection.cloudSignedIn {
-                        Label("已登录 Corptie Cloud", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
+                        Label(connection.cloudAccountStatus, systemImage: "person.crop.circle")
                         let macs = connection.cloudDevices.filter { $0.kind == .mac && $0.revokedAt == nil }
-                        if macs.isEmpty {
+                        if macs.isEmpty && connection.cloudAccountState == .authenticated {
                             ContentUnavailableView {
                                 Label("没有可连接的 Mac", systemImage: "desktopcomputer.trianglebadge.exclamationmark")
                             } description: {
@@ -74,13 +75,23 @@ struct PairingView: View {
                         Button("退出 Cloud 账号", role: .destructive) {
                             Task { await connection.signOutCloud() }
                         }
+                    } else if connection.cloudAccountState == .storageUnavailable {
+                        Text(connection.cloudAccountStatus)
+                        Button("重试读取账号凭据", systemImage: "arrow.clockwise") {
+                            Task { await connection.retryCloudRestore() }
+                        }
                     } else {
+                        if connection.cloudAccountState == .reauthenticationRequired {
+                            Text(connection.cloudAccountStatus)
+                        }
                         Button("登录 Corptie Cloud", systemImage: "person.crop.circle") { startCloudSignIn() }
                             .buttonStyle(.borderedProminent)
+                            .disabled(connection.cloudSignInPreparing)
                         Text("登录后可在外网连接同账号下的 Mac。账号凭据保存在系统钥匙串，通信内容端到端加密。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     if connection.busy { ProgressView("正在处理 Cloud 登录或连接…") }
+                    if connection.cloudSignInPreparing { ProgressView("正在检查登录服务…") }
                     if !connection.cloudNotice.isEmpty {
                         Text(connection.cloudNotice)
                             .font(.footnote)
@@ -146,6 +157,10 @@ struct PairingView: View {
             .disabled(connection.busy)
             .navigationTitle("连接 Corptie")
             .task(id: connection.claim?.pairingId) { await connection.waitForApproval() }
+            .task(id: "\(scenePhase)-\(connection.cloudAccountNeedsRecovery)") {
+                if scenePhase == .active { await connection.runCloudAccountRecovery() }
+            }
+            .onDisappear { cloudLoginTask?.cancel(); cloudLoginTask = nil }
             .sheet(item: $scanner, onDismiss: consumeScan) { _ in
                 PairingScannerView(onScan: { scannedPayload = $0 })
             }
@@ -164,20 +179,27 @@ struct PairingView: View {
     }
 
     private func startCloudSignIn() {
-        do {
-            let url = try connection.beginCloudSignIn()
-            cloudSignIn.start(url: url) { result in
+        guard cloudLoginTask == nil else { return }
+        cloudLoginTask = Task { @MainActor in
+            defer { cloudLoginTask = nil }
+            do {
+                let url = try await connection.prepareCloudSignIn()
+                try Task.checkCancellation()
+                cloudSignIn.start(url: url) { result in
                 switch result {
                 case .success(let callback):
                     Task { await connection.completeCloudSignIn(callback: callback, deviceName: UIDevice.current.name) }
                 case .failure(let error as ASWebAuthenticationSessionError) where error.code == .canceledLogin:
-                    break
+                    connection.cancelCloudSignIn()
                 case .failure:
+                    connection.cancelCloudSignIn()
                     connection.cloudNotice = "Cloud 登录未完成，请重试。"
                 }
+                }
+            } catch is CancellationError { }
+            catch {
+                connection.cloudNotice = PadConnection.explainCloudSignIn(error)
             }
-        } catch {
-            connection.cloudNotice = "Cloud 登录配置无效，请更新应用后重试。"
         }
     }
 

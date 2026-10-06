@@ -43,6 +43,7 @@ struct CloudOAuthClientTests {
     }
 
     @Test func tokenExchangeIsFormEncodedAndRefreshPreservesRotatingToken() async throws {
+        OAuthStubProtocol.status = 200
         let sessionConfiguration = URLSessionConfiguration.ephemeral
         sessionConfiguration.protocolClasses = [OAuthStubProtocol.self]
         let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -66,6 +67,24 @@ struct CloudOAuthClientTests {
         #expect(refreshed.refreshToken == "refresh-one")
         #expect(OAuthStubProtocol.fields["grant_type"] == "refresh_token")
         #expect(OAuthStubProtocol.fields["refresh_token"] == "refresh-one")
+    }
+
+    @Test func refreshOnlyExplicitInvalidGrantInvalidatesCredentials() async throws {
+        let settings = URLSessionConfiguration.ephemeral
+        settings.protocolClasses = [OAuthStubProtocol.self]
+        let client = CloudOAuthTokenClient(configuration: try config(), session: URLSession(configuration: settings))
+        let tokens = CloudOAuthTokens(accessToken: "test-access", refreshToken: "test-refresh", tokenType: "Bearer", expiresAt: .distantPast, scope: "openid")
+        defer { OAuthStubProtocol.status = 200 }
+        for (status, body) in [(400, #"{"error":"invalid_request"}"#), (502, #"{"error":"invalid_grant"}"#), (400, "bad gateway")] {
+            OAuthStubProtocol.status = status
+            OAuthStubProtocol.response = body
+            await #expect(throws: ClientConnectionError.httpStatus(status)) { try await client.refresh(tokens) }
+        }
+        OAuthStubProtocol.status = 400
+        OAuthStubProtocol.response = #"{"error":"invalid_grant","error_description":"must not be logged"}"#
+        await #expect(throws: CloudOAuthRefreshError.invalidGrant) { try await client.refresh(tokens) }
+        // Authorization-code exchange is a different lifecycle: never invalidate a saved account.
+        await #expect(throws: ClientConnectionError.httpStatus(400)) { try await client.exchange(code: "test", verifier: "test") }
     }
 
     @Test func cloudDeviceDirectoryUsesBearerAndDecodesFractionalDates() async throws {
@@ -109,6 +128,7 @@ struct CloudOAuthClientTests {
 }
 
 private final class OAuthStubProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var status = 200
     nonisolated(unsafe) static var response = ""
     nonisolated(unsafe) static var fields: [String: String] = [:]
     nonisolated(unsafe) static var authorization: String?
@@ -119,7 +139,7 @@ private final class OAuthStubProtocol: URLProtocol, @unchecked Sendable {
         Self.fields = requestBody(request).flatMap { data in
             URLComponents(string: "?" + String(decoding: data, as: UTF8.self))?.queryItems
         }.map { Dictionary(uniqueKeysWithValues: $0.map { ($0.name, $0.value ?? "") }) } ?? [:]
-        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!
+        let response = HTTPURLResponse(url: request.url!, statusCode: Self.status, httpVersion: "HTTP/1.1", headerFields: nil)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(Self.response.utf8))
         client?.urlProtocolDidFinishLoading(self)

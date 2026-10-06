@@ -251,6 +251,12 @@ public actor ReliableMessageOutbox {
         records = recovered; sizes = recoveredSizes; statusSizes = recoveredStatusSizes; loaded = true
     }
 
+    /// Local cache encryption shares the device-only key, with distinct AAD.
+    public func timelinePersistenceKey() throws -> SymmetricKey {
+        try load()
+        return key!
+    }
+
     private func loadKey() throws -> SymmetricKey {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: "com.corptie.client.message-outbox",

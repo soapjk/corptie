@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 
-public struct ClientMessage: Decodable, Sendable, Identifiable, Equatable {
+public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
     public let id: String
     public let turnId: String?
     public let type: String
@@ -183,7 +183,7 @@ public struct ClientMessage: Decodable, Sendable, Identifiable, Equatable {
         processStartedAt = nil; processEndedAt = nil; images = []; executionPlan = nil; toolExecution = nil; changeSet = nil; userInput = nil; options = nil
     }
 }
-public struct ClientApprovalOption: Decodable, Sendable, Equatable, Identifiable {
+public struct ClientApprovalOption: Codable, Sendable, Equatable, Identifiable {
     public let id: String
     public let label: String
     public let role: String?
@@ -210,7 +210,7 @@ public struct ClientUserInputResponse: Decodable, Sendable {
     public let status: String
 }
 /// One managed attachment of a message. `managedPath` is an opaque host token, never a device path.
-public struct ClientMessageImage: Decodable, Sendable, Equatable, Identifiable {
+public struct ClientMessageImage: Codable, Sendable, Equatable, Identifiable {
     public var id: String { managedPath }
     public let managedPath: String
     public let fileName: String?
@@ -459,6 +459,18 @@ public struct ClientSessionAPI: Sendable {
         }
         return try await read(request)
     }
+    /// Small text retries use the durable idempotent endpoint directly, avoiding
+    /// an extra round trip. Attachments still query before uploading again.
+    public func reconcileOrDeliver(sessionId: String, requestId: String, createdAt: String, text: String,
+        images: [ClientDraftImage] = [], mentions: [ClientDraftMention] = [], previousAttempts: Int) async throws -> ClientCommandReceipt {
+        if previousAttempts > 0 && !images.isEmpty {
+            do { return try await receipt(requestId: requestId) }
+            catch let failure as ClientServiceFailure where failure.statusCode == 404 && failure.code == "COMMAND_NOT_FOUND" { }
+        }
+        return try await deliver(sessionId: sessionId, requestId: requestId, createdAt: createdAt,
+            text: text, images: images, mentions: mentions)
+    }
+
     public func receipt(requestId: String) async throws -> ClientCommandReceipt {
         try await read(transport.endpoint.request(path: ["client", "v1", "commands", requestId]))
     }

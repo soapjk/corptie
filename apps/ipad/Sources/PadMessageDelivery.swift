@@ -166,7 +166,7 @@ extension PadWorkspace {
                     let transport = try await connection.transport()
                     let api = ClientSessionAPI(transport: transport)
                     guard !Task.isCancelled, deliveryKey(connection) == generation else { return }
-                    let identityScope = "\(serverID)|\(deviceID)|\(connection.recoveryRevision)"
+                    let identityScope = "\(serverID)|\(deviceID)|\(connection.deliveryTransportGeneration)"
                     if validatedDeliveryIdentityScope != identityScope {
                         let request = try transport.endpoint.request(path: ["client", "v1", "me"])
                         let (data, _) = try await transport.data(for: request)
@@ -195,8 +195,9 @@ extension PadWorkspace {
                             throw ClientServiceFailure(statusCode: 409, code: "LEGACY_MESSAGE_REQUIRES_RECONCILIATION")
                         }
                     } else {
-                        receipt = try await api.deliver(sessionId: message.sessionID, requestId: message.id,
-                            createdAt: message.createdAt, text: message.text, images: message.images, mentions: message.mentions)
+                        receipt = try await api.reconcileOrDeliver(sessionId: message.sessionID, requestId: message.id,
+                            createdAt: message.createdAt, text: message.text, images: message.images,
+                            mentions: message.mentions, previousAttempts: message.attempts)
                     }
                     guard !Task.isCancelled, deliveryKey(connection) == generation else { return }
                     guard receipt.requestId == message.id, receipt.sessionId == message.sessionID,
@@ -258,7 +259,7 @@ extension PadWorkspace {
                     let title = message.state == .rejected ? "发送失败：\(message.errorCode ?? "请求被拒绝")"
                         : message.state == .blocked ? (message.errorCode ?? "等待恢复连接授权") : "等待重试，将自动发送"
                     projectReliableMessage(message, title: title)
-                    Self.deliveryLog.info("Message attempt deferred: request=\(message.id, privacy: .public), attempt=\(message.attempts), state=\(message.state.rawValue, privacy: .public)")
+                    Self.deliveryLog.info("Message attempt deferred: request=\(message.id, privacy: .public), attempt=\(message.attempts), state=\(message.state.rawValue, privacy: .public) reason=\(ConnectionDiagnostic.failure(error), privacy: .public)")
                 }
             }
             // Idle/offline workers suspend; network and foreground changes wake

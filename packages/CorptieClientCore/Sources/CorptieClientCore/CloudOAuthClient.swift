@@ -10,6 +10,12 @@ public enum CloudOAuthError: Error, Equatable, Sendable {
     case invalidTokenResponse
 }
 
+/// Only an explicit OAuth invalid_grant response invalidates a saved refresh token.
+/// A gateway/configuration error must not silently sign the user out.
+public enum CloudOAuthRefreshError: Error, Equatable, Sendable {
+    case invalidGrant
+}
+
 public struct CloudOAuthConfiguration: Equatable, Sendable {
     public let endpoint: BackendEndpoint
     public let clientID: String
@@ -179,7 +185,7 @@ public struct CloudOAuthTokenClient: Sendable {
     }
 
     public func refresh(_ tokens: CloudOAuthTokens) async throws -> CloudOAuthTokens {
-        guard let refreshToken = tokens.refreshToken, !refreshToken.isEmpty else { throw CloudOAuthError.invalidTokenResponse }
+        guard let refreshToken = tokens.refreshToken, !refreshToken.isEmpty else { throw CloudOAuthRefreshError.invalidGrant }
         return try await request([
             "grant_type": "refresh_token", "client_id": configuration.clientID,
             "refresh_token": refreshToken, "resource": configuration.resource.absoluteString
@@ -196,6 +202,12 @@ public struct CloudOAuthTokenClient: Sendable {
         request.httpBody = form.percentEncodedQuery?.data(using: .utf8)
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            if priorRefreshToken != nil, (response as? HTTPURLResponse)?.statusCode == 400,
+               data.count <= 16_384,
+               let failure = try? JSONDecoder().decode(OAuthFailure.self, from: data),
+               failure.error == "invalid_grant" {
+                throw CloudOAuthRefreshError.invalidGrant
+            }
             throw ClientConnectionError.httpStatus((response as? HTTPURLResponse)?.statusCode ?? 0)
         }
         let payload = try JSONDecoder().decode(TokenResponse.self, from: data)
@@ -212,6 +224,8 @@ public struct CloudOAuthTokenClient: Sendable {
         )
     }
 }
+
+private struct OAuthFailure: Decodable { let error: String }
 
 private struct TokenResponse: Decodable {
     let accessToken: String
