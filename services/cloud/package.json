@@ -11,7 +11,7 @@
     "auth:schema:generate": "auth generate --config scripts/better-auth.config.ts --output auth-schema.sql",
     "dev": "tsx watch src/main.ts",
     "start": "node dist/src/main.js",
-    "test": "node --import tsx --test tests/*.test.ts",
+    "test": "node --import tsx --test tests/*.test.ts tests/*.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

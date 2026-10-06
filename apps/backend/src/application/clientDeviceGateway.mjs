@@ -2,7 +2,7 @@ import https from "node:https";
 import { readFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { ClientDeviceAuthority, deviceError } from "./clientDeviceAuthority.mjs";
-import { ClientEventStream } from "./clientEventStream.mjs";
+import { ClientEventStream, parseRealtimeResumeQuery } from "./clientEventStream.mjs";
 import { ClientInspectorStream } from "./clientInspectorStream.mjs";
 
 export const reply = (response, status, body) => {
@@ -292,7 +292,7 @@ export class ClientDeviceGateway {
           throw deviceError("INVALID_QUERY", 400);
         }
         return this.events.attachV2(response, () => this.authenticateRequest(request), {
-          sessionId, stateRevision, timelineRevision
+          sessionId, stateRevision, timelineRevision, ...parseRealtimeResumeQuery(url.searchParams)
         });
       }
       if (conversation && this.sessionAPI) {
@@ -351,6 +351,7 @@ export class ClientDeviceGateway {
         if (request.method === "GET" && conversation[2] === "messages") {
           const result = await this.sessionAPI.messages(identity, sessionId, url.searchParams);
           this.authenticateRequest(request);
+          if (!url.searchParams.has("before")) this.events.observeTimeline(identity.deviceId, result.sessionId, result.revision);
           return reply(response, 200, result);
         }
         if (request.method === "GET" && conversation[2] === "images") {

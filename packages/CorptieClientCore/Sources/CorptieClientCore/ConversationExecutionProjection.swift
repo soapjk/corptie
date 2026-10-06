@@ -1,8 +1,8 @@
 import Foundation
 
 /// Provider-neutral, versioned checklist delivered with a timeline item.
-public struct ConversationExecutionPlan: Decodable, Sendable, Hashable {
-    public struct Step: Decodable, Sendable, Hashable, Identifiable {
+public struct ConversationExecutionPlan: Codable, Sendable, Hashable {
+    public struct Step: Codable, Sendable, Hashable, Identifiable {
         public let stepId: String
         public let ordinal: Int
         public let text: String
@@ -42,7 +42,7 @@ public struct ConversationExecutionPlan: Decodable, Sendable, Hashable {
 }
 
 /// Provider-neutral, bounded input/result summary for one stable tool item.
-public struct ConversationToolExecution: Decodable, Sendable, Hashable {
+public struct ConversationToolExecution: Codable, Sendable, Hashable {
     public let schemaVersion: Int
     public let toolId: String
     public let name: String
@@ -52,8 +52,8 @@ public struct ConversationToolExecution: Decodable, Sendable, Hashable {
 }
 
 /// Read-only file-change summary; actions remain separate Provider capabilities.
-public struct ConversationChangeSet: Decodable, Sendable, Hashable {
-    public struct Change: Decodable, Sendable, Hashable, Identifiable {
+public struct ConversationChangeSet: Codable, Sendable, Hashable {
+    public struct Change: Codable, Sendable, Hashable, Identifiable {
         public let path: String
         public let kind: String
         public let diffPreview: String?
@@ -76,13 +76,13 @@ public struct ConversationChangeSet: Decodable, Sendable, Hashable {
 
 /// Provider-neutral questions and their accepted answers, shown in the
 /// original conversation card just like other user-visible conversation data.
-public struct ConversationUserInput: Decodable, Sendable, Hashable {
-    public struct Option: Decodable, Sendable, Hashable {
+public struct ConversationUserInput: Codable, Sendable, Hashable {
+    public struct Option: Codable, Sendable, Hashable {
         public let label: String
         public let description: String
     }
 
-    public struct Question: Decodable, Sendable, Hashable, Identifiable {
+    public struct Question: Codable, Sendable, Hashable, Identifiable {
         public let id: String
         public let header: String
         public let question: String

@@ -4,6 +4,27 @@ import CorptieClientCore
 @testable import CorptieClientSecurity
 
 struct CloudRelayTransportTests {
+    @Test func closedConnectionWindowRejectsUnknownExpiredAndEvictedIDs() {
+        var window = CloudRelayClosedConnectionWindow()
+        let now = Date(timeIntervalSince1970: 1000), id = UUID()
+        #expect(!window.contains(id, at: now))
+        window.record(id, at: now)
+        #expect(window.contains(id, at: now.addingTimeInterval(59)))
+        #expect(!window.contains(id, at: now.addingTimeInterval(60)))
+        #expect(!window.contains(id, at: now.addingTimeInterval(-1)))
+        for index in 1...256 { window.record(UUID(), at: now.addingTimeInterval(Double(index) / 1000)) }
+        #expect(window.entries.count == 256)
+        #expect(!window.contains(id, at: now.addingTimeInterval(1)))
+        window.record(UUID(), at: now.addingTimeInterval(61))
+        #expect(window.entries.count == 1)
+    }
+    @Test func onlyAllowlistedProtocolCloseReasonsReachLogs() {
+        #expect(ConnectionDiagnostic.closeReason(Data("unknown relay connection".utf8)) == "unknown relay connection")
+        #expect(ConnectionDiagnostic.closeReason(Data("relay peer is offline".utf8)) == "relay peer is offline")
+        #expect(ConnectionDiagnostic.closeReason(Data("Bearer SECRET https://private.invalid".utf8)) == "unclassified")
+        #expect(ConnectionDiagnostic.closeReason(nil) == "absent")
+        #expect(ConnectionDiagnostic.closeReason(Data(repeating: 65, count: 1024)) == "absent")
+    }
     @Test func diagnosticsNeverIncludeErrorDescriptionsURLsOrUnrecognizedServerText() {
         let secret = "Bearer SECRET https://private.invalid/message?token=SECRET"
         #expect(ConnectionDiagnostic.failure(NSError(domain: "private", code: 1,

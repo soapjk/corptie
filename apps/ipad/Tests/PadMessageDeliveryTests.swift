@@ -123,13 +123,15 @@ struct PadMessageDeliveryTests {
         let secondID = try #require(await outbox.all().last?.id)
         let worker = Task { await workspace.runMessageDelivery(connection) }
         for _ in 0..<400 {
-            if await harness.requestIDs.count >= 3, try await outbox.all().isEmpty { break }
+            if try await outbox.all().isEmpty { break }
             try await Task.sleep(for: .milliseconds(10))
         }
         worker.cancel(); await worker.value; workspace.refreshWorker?.cancel()
         #expect(try await outbox.all().isEmpty)
         #expect(workspace.outgoingStates[ClientSessionAPI.messageID(deviceID: "device", requestID: id)] == "后端已接收")
         #expect(await harness.admissions == 2)
+        // Both pre-admission loss and lost acknowledgements retry the same
+        // idempotent text request, while the backend admits it exactly once.
         #expect(await harness.requestIDs == [id, id, secondID])
         #expect(await harness.texts == ["hello", "hello", "second instruction"])
     }
@@ -162,6 +164,28 @@ struct PadMessageDeliveryTests {
         #expect(!PadWorkspace.deliveryFailureIsPermanent(CloudRelayTransportError.disconnected))
         #expect(PadWorkspace.retryInterval(attempt: 1, jitter: 1) == 1)
         #expect(PadWorkspace.retryInterval(attempt: 100, jitter: 1) == 30)
+    }
+
+    @Test func rebuiltTransportCannotReuseAnOldSendingIdentityValidation() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let outbox = ReliableMessageOutbox(directory: directory, key: SymmetricKey(size: .bits256))
+        let record = ReliableOutgoingMessage(serverID: "server", deviceID: "device", sessionID: "session",
+            displaySessionID: "session", text: "must stay local")
+        try await outbox.save(record)
+        let harness = MigrationHarness(wrongIdentity: true)
+        let transport = BackendTransport(endpoint: try BackendEndpoint(URL(string: "http://127.0.0.1")!),
+            data: { request in try await harness.handle(request) }, bytes: { _ in throw URLError(.cancelled) })
+        let connection = PadConnection(transportOverride: transport, credentials: .init(serverId: "server", deviceId: "device",
+            accessToken: "test", refreshToken: "test", accessExpiresAt: 1, refreshExpiresAt: 1))
+        connection.serverID = "server"; connection.connected = true
+        let workspace = PadWorkspace(messageOutbox: outbox)
+        workspace.validatedDeliveryIdentityScope = "server|device|\(connection.deliveryTransportGeneration)"
+        connection.invalidateRealtimeTransport()
+        await workspace.runMessageDelivery(connection)
+        #expect(await harness.posts == 0)
+        #expect(try await outbox.all().first?.state == .blocked)
+        #expect(try await outbox.all().first?.text == "must stay local")
     }
 }
 
@@ -204,6 +228,12 @@ private actor DeliveryHarness {
             if requestIDs.count == 1 && !loseAcknowledgement { throw URLError(.networkConnectionLost) }
             accepted.insert(id)
             if requestIDs.count == 1 { throw URLError(.networkConnectionLost) }
+            response = ["schemaVersion": 1, "sessionId": "session", "requestId": id,
+                "kind": "send", "status": "accepted", "updatedAt": "now",
+                "messageId": ClientSessionAPI.messageID(deviceID: "device", requestID: id)]
+        } else if path.contains("/commands/") {
+            let id = request.url!.lastPathComponent
+            guard accepted.contains(id) else { throw ClientServiceFailure(statusCode: 404, code: "COMMAND_NOT_FOUND") }
             response = ["schemaVersion": 1, "sessionId": "session", "requestId": id,
                 "kind": "send", "status": "accepted", "updatedAt": "now",
                 "messageId": ClientSessionAPI.messageID(deviceID: "device", requestID: id)]

@@ -37,6 +37,18 @@ final class CloudSignInCallbackBridge: @unchecked Sendable {
 
 @MainActor @Observable
 final class PadConnection {
+    enum CloudAccountState: Equatable {
+        case signedOut, restoring, authenticated, temporarilyUnavailable
+        case storageUnavailable, reauthenticationRequired
+        var hasSavedCredential: Bool {
+            self == .restoring || self == .authenticated || self == .temporarilyUnavailable
+        }
+    }
+    struct CloudAuthDependencies {
+        var load: @MainActor (CloudOAuthConfiguration) async throws -> CloudCredential?
+        var save: @MainActor (CloudCredential, CloudOAuthConfiguration) async throws -> Void
+        var refresh: @MainActor (CloudOAuthTokens, CloudOAuthConfiguration) async throws -> CloudOAuthTokens
+    }
     struct NetworkPath: Equatable, Sendable {
         let available: Bool
         let interfaces: String
@@ -76,9 +88,27 @@ final class PadConnection {
     var notice = ""
     var cloudNotice = ""
     var cloudDevices: [CloudDevice] = []
-    var cloudSignedIn = false
+    private(set) var cloudAccountState: CloudAccountState = .signedOut
+    var cloudSignedIn: Bool { cloudAccountState.hasSavedCredential }
+    var cloudAccountNeedsRecovery: Bool {
+        [.temporarilyUnavailable, .storageUnavailable, .restoring].contains(cloudAccountState)
+    }
+    var cloudAccountStatus: String {
+        switch cloudAccountState {
+        case .signedOut: return "尚未登录 Corptie Cloud"
+        case .restoring: return "账号凭据已保存，正在恢复连接…"
+        case .authenticated: return "已登录 Corptie Cloud"
+        case .temporarilyUnavailable: return "账号凭据已保存，Cloud 暂时无法连接"
+        case .storageUnavailable: return "暂时无法读取账号凭据，请重试"
+        case .reauthenticationRequired: return "登录已失效，请重新登录"
+        }
+    }
+    var cloudSignInPreparing = false
     var cloudCurrentDeviceID: UUID? { cloudCredential?.identity.id }
     var connectedThroughCloud: Bool { connected && cloudClient != nil }
+    /// Sending identity is scoped to a concrete transport, not just a network
+    /// recovery request. A dead socket can be replaced without changing that request.
+    var deliveryTransportGeneration: UUID { connectionGeneration }
     private(set) var connectedCloudMacID: UUID?
     private(set) var connectedCloudMacName: String?
     private var endpoint: BackendEndpoint?
@@ -92,14 +122,20 @@ final class PadConnection {
     private let transportOverride: BackendTransport?
     private let cloudVault = CloudCredentialVault()
     private var cloudCredential: CloudCredential?
+    @ObservationIgnored private let cloudAuthDependencies: CloudAuthDependencies?
+    @ObservationIgnored private var cloudAuthGeneration = UUID()
+    @ObservationIgnored private var cloudTokenRefreshTask: (id: UUID, task: Task<CloudCredential, Error>)?
+    @ObservationIgnored private var cloudCredentialNeedsSave = false
     private var cloudAuthorization: CloudOAuthAuthorization?
     private var cloudClient: CloudRelayHTTPClient?
 
     init(transportOverride: BackendTransport? = nil, cloudTargetMacID: UUID? = nil,
-         relayFactory: RelayFactory? = nil, credentials: DeviceCredentials? = nil) {
+         relayFactory: RelayFactory? = nil, credentials: DeviceCredentials? = nil,
+         cloudAuthDependencies: CloudAuthDependencies? = nil) {
         self.transportOverride = transportOverride
         self.cloudTargetMacID = cloudTargetMacID
         self.relayFactory = relayFactory
+        self.cloudAuthDependencies = cloudAuthDependencies
         // Injectable identity only accompanies the explicit test transport seam.
         if transportOverride != nil { self.credentials = credentials }
     }
@@ -167,6 +203,17 @@ final class PadConnection {
         if let previous { Task { await previous.close() } }
     }
 
+    /// An SSE endpoint can fail independently of the shared encrypted channel.
+    /// Preserve healthy channels; repeated transport stalls may force replacement.
+    func invalidateFailedRealtimeTransport(force: Bool = false) async -> Bool {
+        guard let client = cloudClient else { return false }
+        let generation = connectionGeneration
+        let usable = await client.isUsable()
+        guard (force || !usable), generation == connectionGeneration else { return false }
+        invalidateRealtimeTransport()
+        return true
+    }
+
     /// Returns true for an authorization failure that requires user intervention.
     func stopRecoveryIfUnauthorized(_ error: Error) -> Bool {
         let denied: Bool
@@ -176,6 +223,8 @@ final class PadConnection {
             denied = failure == .httpStatus(401) || failure == .httpStatus(403) || failure == .invalidCredential
         } else if let failure = error as? DevicePairingFailure {
             denied = ["INVALID_CREDENTIAL", "DEVICE_REVOKED"].contains(failure.code)
+        } else if error as? CloudOAuthRefreshError == .invalidGrant {
+            denied = true
         } else { denied = false }
         if denied { recoveryBlockedMessage = "连接授权已失效，请在设置中重新登录或配对。" }
         let code = ConnectionDiagnostic.failure(error)
@@ -266,6 +315,13 @@ final class PadConnection {
     }
 
     static func explainCloudSignIn(_ error: Error) -> String {
+        if error as? CloudOAuthRefreshError == .invalidGrant || error as? ClientConnectionError == .invalidCredential {
+            return "登录已失效，请重新登录。"
+        }
+        if error is CredentialVaultError || error is DecodingError {
+            return "账号凭据暂时无法读取或保存。请解锁设备后重试；不会自动清除凭据。"
+        }
+        if error is URLError { return "Cloud 暂时无法连接，请检查网络后重试；保存的账号凭据不会被清除。" }
         if let error = error as? CloudOAuthError {
             switch error {
             case .invalidConfiguration: return "Cloud 登录配置无效，请更新应用后重试。"
@@ -372,6 +428,37 @@ final class PadConnection {
         return authorization.url
     }
 
+    /// One bounded GET before presenting system authentication. Never send credentials
+    /// or PKCE parameters in this probe; the actual authorization remains system-owned.
+    func prepareCloudSignIn(session: URLSession? = nil) async throws -> URL {
+        guard !cloudSignInPreparing else { throw CancellationError() }
+        cloudSignInPreparing = true
+        let started = ContinuousClock.now
+        defer {
+            cloudSignInPreparing = false
+            let elapsed = String(describing: started.duration(to: .now))
+            Self.recoveryLog.info("Cloud login probe completed: duration=\(elapsed, privacy: .public)")
+        }
+        let configuration = try Self.cloudConfiguration()
+        var request = try configuration.endpoint.request(path: ["healthz"])
+        request.timeoutInterval = 5
+        let settings = URLSessionConfiguration.ephemeral
+        settings.timeoutIntervalForResource = 5
+        let probe = session ?? URLSession(configuration: settings)
+        defer { if session == nil { probe.invalidateAndCancel() } }
+        let (_, response) = try await probe.data(for: request)
+        try Task.checkCancellation()
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            Self.recoveryLog.error("Cloud login probe failed: status=\(status)")
+            throw ClientConnectionError.httpStatus(status)
+        }
+        Self.recoveryLog.info("Cloud login probe succeeded")
+        return try beginCloudSignIn()
+    }
+
+    func cancelCloudSignIn() { cloudAuthorization = nil }
+
     func completeCloudSignIn(callback: URL, deviceName: String) async {
         await performCloud {
             guard let authorization = cloudAuthorization else { throw CloudOAuthError.invalidCallback }
@@ -387,9 +474,11 @@ final class PadConnection {
                 privateKey: CloudRelayDeviceKey().privateKeyData
             )
             let credential = CloudCredential(tokens: tokens, identity: identity)
+            resetCloudAuthGeneration()
             try await cloudVault.save(credential, configuration: configuration)
             cloudCredential = credential
-            cloudSignedIn = true
+            cloudCredentialNeedsSave = false
+            cloudAccountState = .authenticated
             UserDefaults.standard.set("cloud", forKey: "connectionMode")
             try await registerCloudDeviceAndRefresh(credential, configuration: configuration)
             let macs = cloudDevices.filter { $0.kind == .mac && $0.revokedAt == nil }
@@ -430,7 +519,7 @@ final class PadConnection {
             let configuration = try Self.cloudConfiguration()
             let credential = try await validCloudCredential(configuration)
             try await registerCloudDeviceAndRefresh(credential, configuration: configuration)
-            cloudSignedIn = true
+            cloudAccountState = .authenticated
             cloudNotice = cloudDevices.contains { $0.kind == .mac && $0.revokedAt == nil }
                 ? "设备列表已更新，请选择要连接的 Mac。"
                 : "已登录 Corptie Cloud；还没有可连接的 Mac。"
@@ -445,6 +534,7 @@ final class PadConnection {
         do { try await operation() }
         catch is CancellationError { }
         catch {
+            recordCloudAuthFailure(error)
             cloudNotice = cloudSignedIn
                 ? "账号已登录，但连接 Mac 或同步设备失败：\(Self.explainCloudSignIn(error))"
                 : Self.explainCloudSignIn(error)
@@ -525,6 +615,7 @@ final class PadConnection {
         guard !busy else { return }
         busy = true
         defer { busy = false }
+        resetCloudAuthGeneration()
         invalidateRealtimeTransport()
         cloudTargetMacID = nil
         if let cloudClient { await cloudClient.close() }
@@ -540,8 +631,9 @@ final class PadConnection {
         connectedCloudMacID = nil
         connectedCloudMacName = nil
         cloudCredential = nil
+        cloudCredentialNeedsSave = false
         cloudDevices = []
-        cloudSignedIn = false
+        cloudAccountState = .signedOut
         connected = false
         cachedTransport = nil
         if let endpoint, !serverID.isEmpty { try? await vault.remove(endpoint: endpoint, serverId: serverID) }
@@ -553,43 +645,142 @@ final class PadConnection {
             : "已退出本机 Cloud 登录；离线时无法确认服务端撤销状态。"
     }
 
-    private func restoreCloudConnection() async {
+    func restoreCloudConnection() async {
+        let generation = cloudAuthGeneration
         do {
             let configuration = try Self.cloudConfiguration()
-            guard let saved = try await cloudVault.load(configuration: configuration) else { return }
-            cloudCredential = saved
-            let credential = try await validCloudCredential(configuration)
-            cloudSignedIn = true
-            try await registerCloudDeviceAndRefresh(credential, configuration: configuration)
-            guard UserDefaults.standard.string(forKey: "connectionMode") == "cloud" else { return }
-            let macs = cloudDevices.filter { $0.kind == .mac && $0.revokedAt == nil }
-            let remembered = UserDefaults.standard.string(forKey: "cloudMacID").flatMap(UUID.init(uuidString:))
-            if let mac = macs.first(where: { $0.id == remembered }) ?? (macs.count == 1 ? macs[0] : nil) {
-                await connectCloud(to: mac)
+            let loaded = cloudCredential == nil ? try await loadCloudCredential(configuration) : cloudCredential
+            guard let saved = cloudCredential ?? loaded else {
+                guard generation == cloudAuthGeneration else { return }
+                cloudAccountState = .signedOut
+                Self.recoveryLog.info("Cloud credential restore: result=absent")
+                return
             }
-        } catch {
+            guard generation == cloudAuthGeneration else { return }
+            cloudCredential = saved
+            cloudAccountState = .restoring
+            Self.recoveryLog.info("Cloud credential restore: result=present")
+            let credential = try await validCloudCredential(configuration)
+            try Task.checkCancellation()
+            guard generation == cloudAuthGeneration else { return }
+            try await registerCloudDeviceAndRefresh(credential, configuration: configuration)
+            if UserDefaults.standard.string(forKey: "connectionMode") == "cloud" {
+                let macs = cloudDevices.filter { $0.kind == .mac && $0.revokedAt == nil }
+                let remembered = UserDefaults.standard.string(forKey: "cloudMacID").flatMap(UUID.init(uuidString:))
+                if let mac = macs.first(where: { $0.id == remembered }) ?? (macs.count == 1 ? macs[0] : nil) {
+                    try await connectCloudImpl(to: mac)
+                }
+            }
+            try Task.checkCancellation()
+            guard generation == cloudAuthGeneration else { return }
+            cloudAccountState = .authenticated
+            cloudNotice = ""
+        } catch is CancellationError { }
+        catch {
+            guard generation == cloudAuthGeneration else { return }
+            recordCloudAuthFailure(error)
             cloudNotice = cloudSignedIn
                 ? "账号已登录，但同步设备失败：\(Self.explainCloudSignIn(error))"
                 : Self.explainCloudSignIn(error)
         }
     }
 
-    private func validCloudCredential(_ configuration: CloudOAuthConfiguration) async throws -> CloudCredential {
+    private func loadCloudCredential(_ configuration: CloudOAuthConfiguration) async throws -> CloudCredential? {
+        if let cloudAuthDependencies { return try await cloudAuthDependencies.load(configuration) }
+        return try await cloudVault.load(configuration: configuration)
+    }
+
+    private func resetCloudAuthGeneration() {
+        cloudAuthGeneration = UUID()
+        cloudTokenRefreshTask?.task.cancel()
+        cloudTokenRefreshTask = nil
+    }
+
+    private func recordCloudAuthFailure(_ error: Error) {
+        if error as? CloudOAuthRefreshError == .invalidGrant || error as? ClientConnectionError == .invalidCredential {
+            cloudAccountState = .reauthenticationRequired
+        } else if cloudCredential == nil {
+            cloudAccountState = .storageUnavailable
+        } else if cloudAccountState != .reauthenticationRequired {
+            cloudAccountState = .temporarilyUnavailable
+        }
+        Self.recoveryLog.error("Cloud auth deferred: state=\(String(describing: self.cloudAccountState), privacy: .public) reason=\(ConnectionDiagnostic.failure(error), privacy: .public)")
+    }
+
+    func retryCloudRestore() async {
+        guard !busy, !connected else { return }
+        busy = true
+        defer { busy = false }
+        await restoreCloudConnection()
+    }
+
+    /// Bounded backoff while the recovery screen is visible; cancellation stops it.
+    func runCloudAccountRecovery() async {
+        var failures = 0
+        while !Task.isCancelled && !connected {
+            guard cloudAccountNeedsRecovery else { return }
+            failures += 1
+            do { try await Task.sleep(for: Self.recoveryDelay(failures: failures)) }
+            catch { return }
+            await retryCloudRestore()
+        }
+    }
+
+    func validCloudCredential(_ configuration: CloudOAuthConfiguration) async throws -> CloudCredential {
+        let generation = cloudAuthGeneration
+        if let pending = cloudTokenRefreshTask { return try await pending.task.value }
         let loaded: CloudCredential?
         if let cloudCredential { loaded = cloudCredential }
-        else { loaded = try await cloudVault.load(configuration: configuration) }
-        guard var credential = loaded else {
+        else { loaded = try await loadCloudCredential(configuration) }
+        try Task.checkCancellation()
+        guard generation == cloudAuthGeneration else { throw CancellationError() }
+        guard let credential = cloudCredential ?? loaded else {
             throw ClientConnectionError.invalidCredential
         }
-        if credential.tokens.isNearExpiry {
-            let tokens: CloudOAuthTokens
-            do { tokens = try await CloudOAuthTokenClient(configuration: configuration).refresh(credential.tokens) }
-            catch ClientConnectionError.httpStatus(400) { throw ClientConnectionError.invalidCredential }
-            credential = CloudCredential(tokens: tokens, identity: credential.identity)
-            try await cloudVault.save(credential, configuration: configuration)
-        }
         cloudCredential = credential
-        return credential
+        guard credential.tokens.isNearExpiry || cloudCredentialNeedsSave else { return credential }
+        if let pending = cloudTokenRefreshTask { return try await pending.task.value }
+        let id = UUID()
+        let task = Task { @MainActor in
+            let started = ContinuousClock.now
+            defer {
+                let elapsed = String(describing: started.duration(to: .now))
+                Self.recoveryLog.info("Cloud token refresh completed: duration=\(elapsed, privacy: .public)")
+            }
+            let tokens: CloudOAuthTokens
+            do {
+                if cloudCredentialNeedsSave {
+                    // A refresh token may rotate before Keychain becomes writable.
+                    // Keep the new credential in memory and retry persistence, not rotation.
+                    tokens = credential.tokens
+                } else if let cloudAuthDependencies {
+                    tokens = try await cloudAuthDependencies.refresh(credential.tokens, configuration)
+                } else {
+                    tokens = try await CloudOAuthTokenClient(configuration: configuration).refresh(credential.tokens)
+                }
+            } catch let error as ClientConnectionError where error == .httpStatus(401) || error == .httpStatus(403) {
+                throw ClientConnectionError.invalidCredential
+            }
+            try Task.checkCancellation()
+            guard generation == cloudAuthGeneration else { throw CancellationError() }
+            let refreshed = CloudCredential(tokens: tokens, identity: credential.identity)
+            cloudCredential = refreshed
+            cloudCredentialNeedsSave = true
+            if let cloudAuthDependencies { try await cloudAuthDependencies.save(refreshed, configuration) }
+            else { try await cloudVault.save(refreshed, configuration: configuration) }
+            try Task.checkCancellation()
+            guard generation == cloudAuthGeneration else { throw CancellationError() }
+            cloudCredentialNeedsSave = false
+            Self.recoveryLog.info("Cloud token refresh: result=saved")
+            return refreshed
+        }
+        cloudTokenRefreshTask = (id, task)
+        defer { if cloudTokenRefreshTask?.id == id { cloudTokenRefreshTask = nil } }
+        do { return try await task.value }
+        catch {
+            if generation == cloudAuthGeneration && !(error is CancellationError) { recordCloudAuthFailure(error) }
+            throw error
+        }
     }
 
     private func registerCloudDeviceAndRefresh(_ credential: CloudCredential, configuration: CloudOAuthConfiguration) async throws {

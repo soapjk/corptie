@@ -6,6 +6,31 @@ import CorptieClientSecurity
 import Foundation
 import OSLog
 
+struct CloudDirectoryRefreshPolicy {
+    private(set) var deviceID: UUID?
+    private(set) var syncedAt: Date?
+    func requiresRegistration(_ id: UUID) -> Bool { deviceID != id }
+    func requiresRefresh(at now: Date = Date()) -> Bool {
+        guard let syncedAt else { return true }
+        return now.timeIntervalSince(syncedAt) >= 300 || now < syncedAt
+    }
+    mutating func reconciled(_ id: UUID, at now: Date = Date()) {
+        deviceID = id; syncedAt = now
+    }
+    mutating func invalidate() { deviceID = nil; syncedAt = nil }
+    static func requiresReauthentication(_ error: any Error, credentialStage: Bool) -> Bool {
+        if error as? CloudOAuthRefreshError == .invalidGrant { return true }
+        if let error = error as? ClientConnectionError {
+            if error == .invalidCredential { return true }
+            if case .httpStatus(let status) = error {
+                return status == 401 || status == 403
+            }
+        }
+        if let error = error as? ClientServiceFailure { return error.statusCode == 401 || error.statusCode == 403 }
+        return false
+    }
+}
+
 final class WebAuthenticationCallbackBridge: @unchecked Sendable {
     typealias Delivery = @MainActor @Sendable (URL?, (any Error)?) -> Void
 
@@ -68,6 +93,9 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
     private var agent: CloudRelayMacAgent?
     private var agentTask: Task<Void, Never>?
     private var restored = false
+    private var directoryPolicy = CloudDirectoryRefreshPolicy()
+    private var directoryTask: Task<Void, Never>?
+    private var directoryGeneration = UUID()
 
     private override init() {
         enabled = CorptieAppEnvironment.userDefaults.bool(forKey: "cloudRemoteAccessEnabled")
@@ -120,6 +148,7 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
             let next = CloudCredential(tokens: tokens, identity: identity)
             try await vault.save(next, configuration: configuration)
             credential = next
+            directoryPolicy.invalidate()
             currentDeviceID = next.identity.id
             signedIn = true
             enabled = true
@@ -193,6 +222,7 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
         }
         catch { status = "无法清除本机 Cloud 凭据"; return }
         credential = nil
+        directoryPolicy.invalidate()
         signedIn = false
         enabled = false
         connected = false
@@ -215,8 +245,10 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
                 do {
                     let configuration = try Self.configuration()
                     let current = try await self.validCredential(configuration)
-                    stage = "directory-registration"
-                    try await self.registerAndLoad(current, configuration: configuration)
+                    if self.directoryPolicy.requiresRegistration(current.identity.id) {
+                        stage = "directory-registration"
+                        try await self.registerAndLoad(current, configuration: configuration)
+                    }
                     stage = "local-admin"
                     guard let dataRoot = BackendClient.shared.settings?.dataRoot, !dataRoot.isEmpty else {
                         throw ClientConnectionError.invalidResponse
@@ -235,6 +267,7 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
                     self.agent = next
                     self.connected = true
                     self.status = "远程连接在线 · 通信内容端到端加密"
+                    self.refreshDirectoryIfNeeded(current, configuration: configuration)
                     delay = 1
                     stage = "cloud-socket-running"
                     Self.connectionLog.info("Mac relay connected: elapsed=\(String(describing: started.duration(to: .now)), privacy: .public)")
@@ -244,6 +277,11 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
                     Self.connectionLog.error("Mac relay recovery: stage=\(stage, privacy: .public) reason=\(ConnectionDiagnostic.failure(error), privacy: .public) elapsed=\(String(describing: started.duration(to: .now)), privacy: .public) retrySeconds=\(delay)")
                     self.connected = false
                     self.agent = nil
+                    if CloudDirectoryRefreshPolicy.requiresReauthentication(error, credentialStage: stage == "credential") {
+                        self.directoryPolicy.invalidate()
+                        self.status = "Cloud 登录授权已失效，请重新登录；本机凭据未清除。"
+                        break
+                    }
                     self.status = "Cloud 连接中断，正在自动重连…"
                     do { try await Task.sleep(for: .seconds(delay)) } catch { break }
                     delay = min(delay * 2, 30)
@@ -256,11 +294,30 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
     }
 
     private func stopAgent() {
+        directoryGeneration = UUID()
+        directoryTask?.cancel(); directoryTask = nil
         agentTask?.cancel()
         agentTask = nil
         if let agent { Task { await agent.close() } }
         agent = nil
         connected = false
+    }
+
+    private func refreshDirectoryIfNeeded(_ current: CloudCredential, configuration: CloudOAuthConfiguration) {
+        guard directoryTask == nil, directoryPolicy.requiresRefresh() else { return }
+        let generation = UUID()
+        directoryGeneration = generation
+        directoryTask = Task { [weak self] in
+            guard let self else { return }
+            defer { if self.directoryGeneration == generation { self.directoryTask = nil } }
+            do {
+                try Task.checkCancellation()
+                try await self.registerAndLoad(current, configuration: configuration)
+            } catch is CancellationError { }
+            catch {
+                Self.connectionLog.error("Directory refresh deferred: reason=\(ConnectionDiagnostic.failure(error), privacy: .public)")
+            }
+        }
     }
 
     private func validCredential(_ configuration: CloudOAuthConfiguration) async throws -> CloudCredential {
@@ -286,15 +343,21 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
             displayName: current.identity.displayName,
             publicKey: key.publicKeyBase64
         ))
-        devices = try await client.list()
+        let refreshedDevices = try await client.list()
+        try Task.checkCancellation()
+        guard credential?.identity.id == current.identity.id else { return }
         guard let dataRoot = BackendClient.shared.settings?.dataRoot, !dataRoot.isEmpty else {
             throw ClientConnectionError.invalidResponse
         }
-        let activeMobileIDs = devices.filter { $0.kind == .mobile && $0.revokedAt == nil }
+        let activeMobileIDs = refreshedDevices.filter { $0.kind == .mobile && $0.revokedAt == nil }
             .map { $0.id.uuidString.lowercased() }
         _ = try await LocalDeviceAdminClient.request(
             dataRoot: dataRoot, action: "cloud-sync", body: ["activeCloudDeviceIds": activeMobileIDs]
         )
+        try Task.checkCancellation()
+        guard credential?.identity.id == current.identity.id else { return }
+        devices = refreshedDevices
+        directoryPolicy.reconciled(current.identity.id)
     }
 
     private func authenticate(at url: URL) async throws -> URL {

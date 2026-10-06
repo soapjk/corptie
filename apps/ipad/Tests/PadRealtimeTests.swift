@@ -1,10 +1,51 @@
 import Foundation
 import Testing
 import CorptieClientCore
+import CorptieClientSecurity
+import CryptoKit
 @testable import CorptieMobileState
 
 @Suite(.serialized) @MainActor
 struct PadRealtimeTests {
+    @Test func diskBaselineRestoresMessagesAndCursorWithoutRestoringPermissions() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let key = SymmetricKey(size: .bits256)
+        let cache = PersistentTimelineCache(directory: directory, keyProvider: { key })
+        await cache.save(PersistedClientTimeline(sessionID: "selected", revision: 8,
+            messages: [ClientMessage(id: "message", text: "cached reply")], before: "message"), scope: "server|device")
+        try await cache.flush()
+        let transport = BackendTransport(endpoint: try BackendEndpoint(URL(string: "http://127.0.0.1")!),
+            data: { _ in throw URLError(.cancelled) }, bytes: { _ in throw URLError(.cancelled) })
+        let connection = PadConnection(transportOverride: transport, credentials: DeviceCredentials(serverId: "server", deviceId: "device",
+            accessToken: "test", refreshToken: "test", accessExpiresAt: .greatestFiniteMagnitude, refreshExpiresAt: .greatestFiniteMagnitude))
+        connection.serverID = "server"
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let workspace = PadWorkspace(defaults: defaults, persistentTimelineCache: cache)
+        workspace.selection = "selected"
+        await workspace.restorePersistentTimelines(connection)
+        #expect(workspace.messages.first?.text == "cached reply")
+        #expect(workspace.realtimeResumeRevisions["selected"] == 8)
+        #expect(workspace.before == "message")
+        #expect(workspace.capabilities == nil)
+        connection.serverID = "other-server"
+        await workspace.restorePersistentTimelines(connection)
+        #expect(workspace.messages.isEmpty)
+        #expect(workspace.realtimeResumeRevisions.isEmpty)
+    }
+    @Test func reconnectCursorsIncludeSelectionAndResidentBackgroundTimelines() {
+        let workspace = PadWorkspace()
+        workspace.selection = "selected"
+        workspace.lastTimelineRevision = 8
+        workspace.saveResidentState(for: "selected")
+        workspace.lastTimelineRevision = 10
+        workspace.saveResidentState(for: "background")
+        workspace.lastTimelineRevision = 8
+        #expect(workspace.realtimeResumeRevisions == ["selected": 8, "background": 10])
+        workspace.lastTimelineRevision = nil
+        workspace.selection = "new"
+        #expect(workspace.realtimeResumeRevisions["new"] == nil)
+    }
     private func fixture() throws -> (PadConnection, PadWorkspace) {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [RealtimeProtocol.self]
@@ -52,7 +93,9 @@ struct PadRealtimeTests {
         #expect(workspace.directControlSnapshot != nil)
         #expect(PushRealtimeProtocol.requests.count == 1)
         #expect(PushRealtimeProtocol.requests.first?.hasPrefix("/client/v2/events") == true)
-        #expect(PushRealtimeProtocol.requests.first?.contains("sessionId=") == false)
+        #expect(PushRealtimeProtocol.requests.first?.contains("sessionId=") == true)
+        #expect(PushRealtimeProtocol.requests.first?.contains("backgroundTimelineLimit=0") == true)
+        #expect(PushRealtimeProtocol.requests.first?.contains("timelineCoalescing=true") == true)
 
         live.cancel()
         await live.value

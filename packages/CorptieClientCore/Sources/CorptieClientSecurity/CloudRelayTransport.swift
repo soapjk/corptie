@@ -4,12 +4,26 @@ import OSLog
 
 /// Deliberately excludes localized descriptions, URLs, bodies and credentials.
 public enum ConnectionDiagnostic {
+    /// WebSocket close reasons are remotely supplied. Only fixed protocol
+    /// reasons may be logged; never emit arbitrary close text.
+    public static func closeReason(_ data: Data?) -> String {
+        guard let data, data.count <= 120, let reason = String(data: data, encoding: .utf8) else { return "absent" }
+        let known = ["unknown relay connection", "relay peer is offline", "relay backpressure limit reached",
+            "invalid encrypted frame header", "sender is not part of relay connection",
+            "account relay connection limit reached", "peer disconnected", "device revoked", "account revoked"]
+        return known.contains(reason) ? reason : "unclassified"
+    }
     public static func failure(_ error: any Error) -> String {
         if error is CancellationError { return "cancelled" }
         if let error = error as? URLError { return "url:\(error.code.rawValue)" }
         if let error = error as? CloudRelayTransportError { return "relay:\(error)" }
         if let error = error as? CloudRelayCryptoError { return "crypto:\(error)" }
         if error is DecodingError { return "protocol-decode" }
+        if error as? CloudOAuthRefreshError == .invalidGrant { return "oauth:invalid-grant" }
+        if let error = error as? CredentialVaultError {
+            if case .keychain(let status) = error { return "keychain:\(status)" }
+            return "keychain:invalid-identity"
+        }
         if let error = error as? ClientServiceFailure {
             let known = ["LOCAL_BACKEND_UNAVAILABLE", "DEVICE_REVOKED", "INVALID_CREDENTIAL", "ROUTE_NOT_AVAILABLE", "RATE_LIMITED", "DEVICE_AUTH_REQUIRED"]
             return "http:\(error.statusCode):\(known.contains(error.code) ? error.code : "other")"
@@ -46,6 +60,21 @@ struct CloudRelaySSEBuffer {
         let event = remainder
         remainder = Data()
         return event
+    }
+}
+
+/// Only exact connection IDs previously owned by this agent can be ignored.
+struct CloudRelayClosedConnectionWindow {
+    private(set) var entries: [UUID: Date] = [:]
+    mutating func record(_ id: UUID, at now: Date = Date()) {
+        entries = entries.filter { $0.value > now }
+        entries[id] = now.addingTimeInterval(60)
+        if entries.count > 256, let oldest = entries.min(by: { $0.value < $1.value })?.key {
+            entries.removeValue(forKey: oldest)
+        }
+    }
+    func contains(_ id: UUID, at now: Date = Date()) -> Bool {
+        entries[id].map { $0 > now && $0.timeIntervalSince(now) <= 60 } ?? false
     }
 }
 
@@ -350,6 +379,7 @@ public actor CloudRelayMobileChannel: CloudRelaySecureChannel {
         let connectionId: UUID?
         let deviceId: UUID?
         let peer: Peer?
+        let reason: String?
     }
 
     private let session: URLSession
@@ -441,14 +471,16 @@ public actor CloudRelayMobileChannel: CloudRelaySecureChannel {
                 switch try await socket.receive() {
                 case .data(let data): return try await cipher.open(data)
                 case .string(let value):
-                    if (try? JSONDecoder().decode(Control.self, from: Data(value.utf8)).type) == "disconnected" {
+                    if let control = try? JSONDecoder().decode(Control.self, from: Data(value.utf8)), control.type == "disconnected" {
+                        Self.log.info("Peer disconnected: reason=\(ConnectionDiagnostic.closeReason(control.reason.map { Data($0.utf8) }), privacy: .public)")
                         throw CloudRelayTransportError.disconnected
                     }
                 @unknown default: throw CloudRelayTransportError.disconnected
                 }
             }
         } catch {
-            Self.log.info("Mobile cloud receive ended: closeCode=\(self.socket.closeCode.rawValue) reason=\(ConnectionDiagnostic.failure(error), privacy: .public)")
+            Self.log.info("Mobile cloud receive ended: closeCode=\(self.socket.closeCode.rawValue) peerReason=\(ConnectionDiagnostic.closeReason(self.socket.closeReason), privacy: .public) reason=\(ConnectionDiagnostic.failure(error), privacy: .public)")
+            if socket.closeCode.rawValue == 4003 { throw ClientConnectionError.invalidCredential }
             throw error
         }
     }
@@ -503,6 +535,7 @@ public actor CloudRelayMacAgent {
         let connectionId: UUID?
         let deviceId: UUID?
         let peer: Peer?
+        let reason: String?
     }
 
     private struct Connection {
@@ -520,6 +553,8 @@ public actor CloudRelayMacAgent {
     private let localTransport: BackendTransport
     private let deviceKey: CloudRelayDeviceKey
     private var connections: [UUID: Connection] = [:]
+    private var closedConnections = CloudRelayClosedConnectionWindow()
+    private let sendScheduler = CloudRelaySendScheduler()
 
     private init(
         session: URLSession,
@@ -585,7 +620,8 @@ public actor CloudRelayMacAgent {
                 }
             }
         } catch {
-            Self.log.error("Mac cloud socket ended: closeCode=\(self.socket.closeCode.rawValue) connections=\(self.connections.count) reason=\(ConnectionDiagnostic.failure(error), privacy: .public)")
+            Self.log.error("Mac cloud socket ended: closeCode=\(self.socket.closeCode.rawValue) peerReason=\(ConnectionDiagnostic.closeReason(self.socket.closeReason), privacy: .public) connections=\(self.connections.count) reason=\(ConnectionDiagnostic.failure(error), privacy: .public)")
+            if socket.closeCode.rawValue == 4003 { throw ClientConnectionError.invalidCredential }
             throw error
         }
     }
@@ -608,6 +644,7 @@ public actor CloudRelayMacAgent {
             return
         }
         if control.type == "disconnected", let id = control.connectionId {
+            Self.log.info("Peer disconnected: connection=\(id, privacy: .public) reason=\(ConnectionDiagnostic.closeReason(control.reason.map { Data($0.utf8) }), privacy: .public)")
             removeConnection(id)
             return
         }
@@ -629,7 +666,10 @@ public actor CloudRelayMacAgent {
             throw CloudRelayCryptoError.invalidFrame
         }
         let connectionID = try uuid(frame.subdata(in: 1..<17))
-        guard var connection = connections[connectionID] else { throw CloudRelayTransportError.invalidControlMessage }
+        guard var connection = connections[connectionID] else {
+            if closedConnections.contains(connectionID) { return }
+            throw CloudRelayTransportError.invalidControlMessage
+        }
         if connection.cipher == nil {
             connection.cipher = try connection.handshake.complete(peerHello: Data(frame.dropFirst(17)))
             connections[connectionID] = connection
@@ -687,6 +727,7 @@ public actor CloudRelayMacAgent {
             let request = try message.path == "/client/v1/cloud/offline-lan-grant"
                 ? cloudGrantRequest(message, peer: connection.peer)
                 : Self.localRequest(message, peerID: connection.peer.id, endpoint: localTransport.endpoint)
+            let responsePriority = CloudRelaySendPriority.response(to: request)
             if request.value(forHTTPHeaderField: "Accept")?.hasPrefix("text/event-stream") == true {
                 let (bytes, response) = try await localTransport.bytes(for: request)
                 Self.log.info("Local stream head: connection=\(connectionID, privacy: .public) request=\(message.id, privacy: .public) status=\(response.statusCode) elapsed=\(String(describing: started.duration(to: .now)), privacy: .public)")
@@ -694,10 +735,16 @@ public actor CloudRelayMacAgent {
                 var buffer = CloudRelaySSEBuffer()
                 var lastFlushLog = ContinuousClock.now
                 var flushedBytes = 0
+                var streamPriority = CloudRelaySendPriority.interactive
                 for try await byte in bytes {
                     try Task.checkCancellation()
                     if let chunk = buffer.append(byte) {
-                        try await send(.chunk(id: message.id, body: chunk, final: false), on: connectionID)
+                        let prefix = String(decoding: chunk.prefix(256), as: UTF8.self)
+                        if prefix.hasPrefix("id:") || prefix.hasPrefix("event:") {
+                            streamPriority = prefix.contains("event: timeline-snapshot") || prefix.contains("event: control-snapshot")
+                                ? .background : (prefix.contains("event: command-receipt") || prefix.contains("event: heartbeat") ? .control : .interactive)
+                        }
+                        try await send(.chunk(id: message.id, body: chunk, final: false), on: connectionID, priority: streamPriority)
                         flushedBytes += chunk.count
                         if lastFlushLog.duration(to: .now) >= .seconds(10) {
                             Self.log.info("Stream relay progress: request=\(message.id, privacy: .public) sentBytes=\(flushedBytes)")
@@ -706,7 +753,25 @@ public actor CloudRelayMacAgent {
                         await Task.yield()
                     }
                 }
-                try await send(.chunk(id: message.id, body: buffer.remainder, final: true), on: connectionID)
+                try await send(.chunk(id: message.id, body: buffer.remainder, final: true), on: connectionID, priority: streamPriority)
+            } else if request.httpMethod == "GET" {
+                // Pull at most one chunk ahead. Awaiting the shared writer
+                // propagates history pacing back to the local HTTP producer.
+                let (bytes, response) = try await localTransport.bytes(for: request)
+                try await send(.response(id: message.id, status: response.statusCode, headers: responseHeaders(response)), on: connectionID)
+                var chunk = Data()
+                var total = 0
+                for try await byte in bytes {
+                    try Task.checkCancellation()
+                    chunk.append(byte); total += 1
+                    guard total <= CloudRelayHTTPClient.maximumResponseBytes else { throw CloudRelayTransportError.responseTooLarge }
+                    if chunk.count == CloudRelayHTTPClient.maximumChunkBytes {
+                        try await send(.chunk(id: message.id, body: chunk, final: false), on: connectionID, priority: responsePriority)
+                        chunk.removeAll(keepingCapacity: true)
+                    }
+                }
+                try await send(.chunk(id: message.id, body: chunk, final: true), on: connectionID, priority: responsePriority)
+                Self.log.info("History response: request=\(message.id, privacy: .public) status=\(response.statusCode) bytes=\(total) elapsed=\(String(describing: started.duration(to: .now)), privacy: .public)")
             } else {
                 let (body, response) = try await localTransport.data(for: request)
                 Self.log.debug("Local response: request=\(message.id, privacy: .public) status=\(response.statusCode) bytes=\(body.count) elapsed=\(String(describing: started.duration(to: .now)), privacy: .public)")
@@ -718,7 +783,7 @@ public actor CloudRelayMacAgent {
                     for offset in stride(from: 0, to: body.count, by: CloudRelayHTTPClient.maximumChunkBytes) {
                         try Task.checkCancellation()
                         let end = min(body.count, offset + CloudRelayHTTPClient.maximumChunkBytes)
-                        try await send(.chunk(id: message.id, body: body.subdata(in: offset..<end), final: end == body.count), on: connectionID)
+                        try await send(.chunk(id: message.id, body: body.subdata(in: offset..<end), final: end == body.count), on: connectionID, priority: responsePriority)
                         await Task.yield()
                     }
                 }
@@ -822,21 +887,32 @@ public actor CloudRelayMacAgent {
         }
     }
 
-    private func send(_ message: CloudRelayApplicationMessage, on connectionID: UUID) async throws {
+    private func send(_ message: CloudRelayApplicationMessage, on connectionID: UUID,
+                      priority: CloudRelaySendPriority = .control) async throws {
+        let plaintext = try JSONEncoder().encode(message)
+        try await sendScheduler.send(bytes: plaintext.count + 41, priority: priority) { [weak self] in
+            guard let self else { throw CloudRelayTransportError.disconnected }
+            try await self.sealAndSend(plaintext, on: connectionID)
+        }
+    }
+
+    private func sealAndSend(_ plaintext: Data, on connectionID: UUID) async throws {
         guard let cipher = connections[connectionID]?.cipher else { throw CloudRelayTransportError.disconnected }
-        try await sendRaw(try await cipher.seal(try JSONEncoder().encode(message)))
+        try await sendRaw(try await cipher.seal(plaintext))
     }
 
     private func sendRaw(_ data: Data) async throws { try await socket.send(.data(data)) }
 
     private func removeConnection(_ id: UUID) {
         guard let removed = connections.removeValue(forKey: id) else { return }
+        closedConnections.record(id)
         Self.log.info("Peer removed: connection=\(id, privacy: .public) requests=\(removed.requests.count) uploads=\(removed.uploads.count)")
         removed.registration?.cancel()
         for task in removed.requests.values { task.cancel() }
     }
 
     private func terminate() {
+        Task { await sendScheduler.close() }
         for id in Array(connections.keys) { removeConnection(id) }
         socket.cancel(with: .normalClosure, reason: nil)
         session.invalidateAndCancel()
