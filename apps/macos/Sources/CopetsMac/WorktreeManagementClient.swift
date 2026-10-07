@@ -3,6 +3,8 @@ import OSLog
 
 @MainActor
 final class WorktreeManagementClient: ObservableObject {
+    static let shared = WorktreeManagementClient()
+
     @Published private(set) var repositories: [ManagedRepository] = []
     @Published private(set) var detail: ManagedRepositoryDetail?
     @Published private(set) var projectStatus: ProjectDevelopmentServiceStatus?
@@ -802,27 +804,31 @@ final class WorktreeManagementClient: ObservableObject {
         force: Bool = false,
         presentsLoadingState: Bool = true
     ) async {
-        if !force, let cached = detailCache[id], now().timeIntervalSince(cached.loadedAt) < cacheLifetime {
+        let cached = !force ? detailCache[id] : nil
+        if let cached {
             apply(cached, repositoryId: id)
-            let metrics = WorktreeLoadMetrics(
-                repositoryId: id,
-                repositoryListMilliseconds: repositoryListMilliseconds,
-                detailMilliseconds: 0,
-                serviceMilliseconds: 0,
-                listAvailableMilliseconds: repositoryListMilliseconds,
-                cacheHit: true
-            )
-            lastLoadMetrics = metrics
-            log(metrics)
-            return
+            if now().timeIntervalSince(cached.loadedAt) < cacheLifetime {
+                let metrics = WorktreeLoadMetrics(
+                    repositoryId: id,
+                    repositoryListMilliseconds: repositoryListMilliseconds,
+                    detailMilliseconds: 0,
+                    serviceMilliseconds: 0,
+                    listAvailableMilliseconds: repositoryListMilliseconds,
+                    cacheHit: true
+                )
+                lastLoadMetrics = metrics
+                log(metrics)
+                return
+            }
         }
         detailGeneration &+= 1
         let generation = detailGeneration
         let startedAt = now()
-        listLoadState = .loading
-        if presentsLoadingState { isLoading = true }
+        let blocksVisibleContent = presentsLoadingState && cached == nil && detail?.repository.id != id
+        if blocksVisibleContent { listLoadState = .loading }
+        if blocksVisibleContent { isLoading = true }
         defer {
-            if presentsLoadingState, generation == detailGeneration { isLoading = false }
+            if blocksVisibleContent, generation == detailGeneration { isLoading = false }
         }
         do {
             async let detailRequest: ManagedRepositoryDetail = get(
