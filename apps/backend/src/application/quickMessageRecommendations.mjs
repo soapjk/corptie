@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const QUICK_MESSAGE_DEFAULTS = ["继续", "开始开发", "给我一个完整方案"];
+export const QUICK_MESSAGE_LIMIT = 8;
 const DEFAULTS = new Set(QUICK_MESSAGE_DEFAULTS);
 const COMMON = new Set([...QUICK_MESSAGE_DEFAULTS, "检查并运行测试", "继续开发", "开始实现", "总结一下", "修复这个问题", "提交更改", "Continue", "Run tests"]);
 const caches = new WeakMap();
@@ -32,14 +33,13 @@ export function rankQuickMessages(taskRows, commonRows, taskId) {
   const items = [], seen = new Set();
   function add(value, scope) {
     const key = value.text.toLocaleLowerCase("en-US");
-    if (seen.has(key) || items.length >= 6) return;
-    // Reserve the three defaults even when learned recommendations fill up.
-    if (!DEFAULTS.has(value.text) && items.filter(item => !DEFAULTS.has(item.text)).length >= 3) return;
+    if (seen.has(key) || items.length >= QUICK_MESSAGE_LIMIT) return;
     seen.add(key);
     items.push({ id: DEFAULTS.has(value.text) ? `default:${value.text}` : createHash("sha256").update(key).digest("hex").slice(0, 20), text: value.text, scope, count: value.count });
   }
-  for (const item of frequencies(taskRows).filter(item => item.count >= 2).slice(0, 4)) add(item, taskId ? "task" : "session");
+  for (const item of frequencies(taskRows).filter(item => item.count >= 2)) add(item, taskId ? "task" : "session");
   for (const item of frequencies(commonRows).filter(item => COMMON.has(item.text) && item.count >= 3 && Math.max(item.tasks.size, item.taskCount) >= 2)) add(item, "common");
+  // Defaults only fill spare slots; learned versions keep their real usage.
   for (const text of QUICK_MESSAGE_DEFAULTS) add({ text, count: 0 }, "default");
   return { schemaVersion: 1, taskId: taskId ?? null, items };
 }

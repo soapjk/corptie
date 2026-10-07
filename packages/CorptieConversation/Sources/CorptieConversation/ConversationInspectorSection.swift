@@ -45,31 +45,20 @@ public struct ConversationDetailCompactPair<Leading: View, Trailing: View>: View
     }
 }
 
-/// Keep the native glass, but clip its final composited output to the card.
-/// Clipping a descendant inside a shared GlassEffectContainer does not clip
-/// the glass that the container lifts into its own rendering layer.
-public struct ConversationDetailGlassSurface: ViewModifier {
+/// Detail uses translucent content color, not navigation glass.
+public struct ConversationDetailContentSurface: ViewModifier {
     private let cornerRadius: CGFloat
 
     public init(cornerRadius: CGFloat) {
         self.cornerRadius = cornerRadius
     }
 
-    @ViewBuilder public func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        if #available(macOS 26.0, iOS 26.0, *) {
-            GlassEffectContainer(spacing: 0) {
-                content.platformGlassSurface(in: shape)
-            }
-            .clipShape(shape)
-        } else {
-            content.platformGlassSurface(in: shape)
-                .clipShape(shape)
-        }
+    public func body(content: Content) -> some View {
+        content.modifier(ConversationContentSurface(cornerRadius: cornerRadius))
     }
 }
 
-/// A locally composited glass surface for each Detail module.
+/// One color background per Detail module; no backdrop compositor.
 public struct ConversationDetailModuleSurface: ViewModifier {
     public init() {}
 
@@ -77,7 +66,7 @@ public struct ConversationDetailModuleSurface: ViewModifier {
         content
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .modifier(ConversationDetailGlassSurface(cornerRadius: 18))
+            .modifier(ConversationDetailContentSurface(cornerRadius: 18))
     }
 }
 
@@ -127,7 +116,8 @@ public struct ConversationDetailHeaderIcon: View {
     }
 }
 
-/// One inexpensive, adaptive full-height Detail card surface on macOS and iPadOS.
+/// Rail framing only. Module cards own their material; the rail must not add
+/// another blur or opaque canvas that hides the user's wallpaper.
 public struct ConversationDetailCardSurface: ViewModifier {
     public let enabled: Bool
 
@@ -141,9 +131,7 @@ public struct ConversationDetailCardSurface: ViewModifier {
             .clipShape(shape)
             .background {
                 if enabled {
-                    shape
-                        .fill(WorkbenchCanvasSurface.defaultColor)
-                        .overlay { shape.fill(Color.primary.opacity(0.045)) }
+                    shape.fill(Color.primary.opacity(0.025))
                 }
             }
             .overlay {

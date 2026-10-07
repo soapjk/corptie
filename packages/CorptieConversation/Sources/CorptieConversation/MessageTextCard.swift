@@ -9,6 +9,7 @@ import UIKit
 /// Adaptive, fully opaque user-message colors shared by SwiftUI cards,
 /// attributed Markdown, and native compatibility renderers.
 public enum MessageTextCardPalette {
+    public enum Role: Sendable { case user, agent, commentary, collaboration }
     struct RGB: Sendable, Equatable {
         let red: Double
         let green: Double
@@ -31,6 +32,24 @@ public enum MessageTextCardPalette {
     static let lightUserForeground = RGB(red: 0.16, green: 0.24, blue: 0.40)
     static let darkUserForeground = RGB(red: 0.90, green: 0.94, blue: 0.99)
     static let commentaryRGB = RGB(red: 0.975, green: 0.955, blue: 0.915)
+    static let agentRGB = RGB(red: 0.952, green: 0.961, blue: 0.941)
+
+    /// Both glass tint and opaque fallback resolve from the original palette.
+    /// Dark companions keep the same hue without a pale slab behind light text.
+    static func backgroundRGB(for role: Role, dark: Bool) -> RGB {
+        switch role {
+        case .user: dark ? darkUserBackground : lightUserBackground
+        case .commentary: dark ? RGB(red: 0.24, green: 0.22, blue: 0.18) : commentaryRGB
+        case .agent: dark ? RGB(red: 0.17, green: 0.21, blue: 0.16) : agentRGB
+        case .collaboration: dark ? RGB(red: 0.20, green: 0.20, blue: 0.29)
+            : RGB(red: 0.945, green: 0.955, blue: 0.995)
+        }
+    }
+
+    public static func background(for role: Role, dark: Bool) -> Color {
+        let rgb = backgroundRGB(for: role, dark: dark)
+        return Color(red: rgb.red, green: rgb.green, blue: rgb.blue)
+    }
 
     static func contrastRatio(foreground: RGB, background: RGB) -> Double {
         let lighter = max(foreground.relativeLuminance, background.relativeLuminance)
@@ -48,6 +67,16 @@ public enum MessageTextCardPalette {
     public static let commentaryNativeBackground = NSColor(
         calibratedRed: commentaryRGB.red, green: commentaryRGB.green, blue: commentaryRGB.blue, alpha: 1)
     public static let commentaryBackground = Color(nsColor: commentaryNativeBackground)
+    public static let agentNativeBackground = adaptiveNativeBackground(.agent)
+    public static let adaptiveCommentaryNativeBackground = adaptiveNativeBackground(.commentary)
+    public static let collaborationNativeBackground = adaptiveNativeBackground(.collaboration)
+
+    private static func adaptiveNativeBackground(_ role: Role) -> NSColor {
+        NSColor(name: nil) { appearance in
+            nativeColor(for: appearance, light: backgroundRGB(for: role, dark: false),
+                dark: backgroundRGB(for: role, dark: true))
+        }
+    }
 
     private static func nativeColor(for appearance: NSAppearance, light: RGB, dark: RGB) -> NSColor {
         let rgb = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
@@ -97,6 +126,7 @@ public struct MessageTextCardMenuConfiguration {
 /// measurement, link handling and clipboard access are injected platform leaves.
 /// No workspace observation, network calls, timers or implicit animations.
 public struct MessageTextCard<Content: View>: View {
+    @Environment(\.colorScheme) private var colorScheme
     public enum Role: Sendable { case user, agent, commentary }
     private let role: Role
     private let messageID: String
@@ -175,10 +205,8 @@ public struct MessageTextCard<Content: View>: View {
             content($selectingText)
                 .padding(10)
                 .frame(width: cardWidth, height: cardHeight, alignment: .topLeading)
-                .background {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(background)
-                }
+                .modifier(ConversationContentSurface(cornerRadius: 14,
+                    tint: background, fallback: background, isMessage: true))
             if showsActions || status != nil {
                 HStack(spacing: 6) {
                     if let status {
@@ -255,11 +283,12 @@ public struct MessageTextCard<Content: View>: View {
     }
 
     private var background: Color {
-        switch role {
-        case .user: MessageTextCardPalette.userBackground
-        case .commentary: MessageTextCardPalette.commentaryBackground
-        case .agent: Color(red: 0.952, green: 0.961, blue: 0.941)
+        let paletteRole: MessageTextCardPalette.Role = switch role {
+        case .user: .user
+        case .commentary: .commentary
+        case .agent: .agent
         }
+        return MessageTextCardPalette.background(for: paletteRole, dark: colorScheme == .dark)
     }
     private func statusColor(_ tone: UserMessageStatusPresentation.Tone) -> Color {
         switch tone {

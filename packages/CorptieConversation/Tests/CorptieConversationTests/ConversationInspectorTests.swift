@@ -98,38 +98,31 @@ struct ConversationInspectorTests {
         #expect(stale?.stateLabel == "旧摘要 · 待更新")
     }
 
-    @Test func detailModulesUseGroupedNativeGlassWithoutNestedCardFills() throws {
+    @Test func detailModulesUseContentColorWithoutNestedGlass() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/CorptieConversation/ConversationInspectorSection.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
-        #expect(source.contains("public struct ConversationDetailGlassSurface: ViewModifier"))
-        #expect(source.contains("GlassEffectContainer(spacing: 0) {"))
-        #expect(source.contains("content.platformGlassSurface(in: shape)"))
-        #expect(source.contains(".modifier(ConversationDetailGlassSurface(cornerRadius: 18))"))
+        #expect(source.contains("public struct ConversationDetailContentSurface: ViewModifier"))
+        #expect(source.contains("ConversationContentSurface(cornerRadius: cornerRadius)"))
+        #expect(!source.contains("GlassEffectContainer"))
+        let contentSource = try String(contentsOf: sourceURL.deletingLastPathComponent()
+            .appendingPathComponent("ConversationContentSurface.swift"), encoding: .utf8)
+        #expect(contentSource.contains("if withMaterial {"))
+        #expect(contentSource.contains(".regularMaterial.opacity(ConversationContentSurfacePolicy.messageMaterialOpacity)"))
+        #expect(source.contains("ConversationContentSurface(cornerRadius: cornerRadius)"))
+        #expect(!contentSource.contains("glassEffect"))
+        #expect(source.contains(".modifier(ConversationDetailContentSurface(cornerRadius: 18))"))
         #expect(source.contains(".clipShape(shape)"))
         #expect(!source.contains(".background(Color.primary.opacity(0.055)"))
         #expect(!source.contains(".shadow("))
     }
 
     #if os(macOS)
-    @MainActor @Test func detailGlassIsClippedAfterNativeComposition() throws {
-        guard #available(macOS 26.0, *) else { return }
+    @MainActor @Test func detailColorLayerCountRemainsStableAfterLayout() throws {
         _ = NSApplication.shared
-
-        // Control: clipping inside the shared container leaves the native
-        // backdrop outside the card's clip. This reproduces the original bug.
-        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
-        let control = GlassEffectContainer(spacing: 0) {
-            Text("Detail").frame(width: 280, height: 140)
-                .platformGlassSurface(in: shape).clipShape(shape)
-        }
-        .padding(40)
-        let controlResult = try inspectGlassLayers(control)
-        #expect(!controlResult.clipped.isEmpty)
-        #expect(controlResult.clipped.allSatisfy { !$0 })
 
         let modules = ConversationDetailDashboard {
             VStack(spacing: 12) {
@@ -142,8 +135,7 @@ struct ConversationInspectorTests {
         }
         .frame(width: 360, height: 560)
         let result = try inspectGlassLayers(modules)
-        #expect(result.clipped.count == 3)
-        #expect(result.clipped.allSatisfy { $0 })
+        #expect(result.layerCount > 0)
         #expect(result.layerCountAfterLayout == result.layerCount)
     }
     #endif

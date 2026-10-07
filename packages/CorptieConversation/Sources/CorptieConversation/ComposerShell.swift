@@ -272,22 +272,12 @@ public struct ConversationComposerChrome<Header: View, Content: View>: View {
         .padding(.horizontal, 6)
         .padding(.vertical, verticalPadding)
         .modifier(ConversationComposerGlassSurface())
-        .shadow(color: .black.opacity(0.06), radius: 4, y: 1.5)
     }
 }
 
 private struct ConversationComposerGlassSurface: ViewModifier {
-    private let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
-
-    @ViewBuilder
     func body(content: Content) -> some View {
-        if #available(macOS 26.0, iOS 26.0, *) {
-            content.glassEffect(.regular, in: shape)
-        } else {
-            content.background(.ultraThinMaterial, in: shape)
-                .overlay(shape.stroke(Color.primary.opacity(0.10), lineWidth: 0.5)
-                    .allowsHitTesting(false))
-        }
+        content.modifier(ConversationFunctionalGlassSurface(cornerRadius: 20))
     }
 }
 

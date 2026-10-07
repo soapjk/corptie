@@ -362,7 +362,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         )
         let card = try XCTUnwrap(view(in: messageCell, identifier: "chat.timeline.card"))
         XCTAssertEqual(card.layer?.cornerRadius, 14)
-        XCTAssertEqual(card.layer?.borderWidth, 0) // Message cards intentionally have no outline.
+        XCTAssertEqual(card.layer?.borderWidth, NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 1 : 0.5)
         XCTAssertEqual(card.layer?.shadowOpacity, 0) // Shadows are clipped by reused timeline rows.
         let messageActions = try XCTUnwrap(view(in: messageCell, identifier: "chat.timeline.message-actions"))
         XCTAssertTrue(messageActions.isHidden)
@@ -375,7 +375,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         )
         let processButton = try XCTUnwrap(button(in: processCell, identifier: "chat.timeline.process"))
         let processCard = try XCTUnwrap(view(in: processCell, identifier: "chat.timeline.card"))
-        XCTAssertEqual(processCard.layer?.borderWidth, 0)
+        XCTAssertEqual(processCard.layer?.borderWidth, NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 1 : 0.5)
         XCTAssertEqual(processCard.layer?.shadowOpacity, 0)
         let expected = ConversationProcessPresentation(state: .completed, count: 3, duration: "1.2s")
             .summary

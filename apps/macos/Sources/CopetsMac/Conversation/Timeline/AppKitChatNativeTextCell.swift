@@ -5,7 +5,7 @@ import CorptieClientCore
 
 @MainActor
 final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
-    private let cardView = NSView()
+    private let cardView = NativeContentCardSurface(frame: .zero)
     private let timeSeparatorLabel = NSTextField(labelWithString: "")
     private let titleLabel = NSTextField(labelWithString: "")
     private let metadataLabel = NSTextField(labelWithString: "")
@@ -432,47 +432,26 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             setProcessSummary(row.processSummary, expanded: row.isExpanded)
         }
         if row.isPendingInteraction {
-            cardView.layer?.borderWidth = 1
             let tint = NSColor.systemOrange
-            cardView.layer?.backgroundColor = tint.withAlphaComponent(0.065).cgColor
-            cardView.layer?.borderColor = tint.withAlphaComponent(0.36).cgColor
+            cardView.configure(tint: tint, opacity: 0.065)
             titleLabel.textColor = tint
         } else if row.isCollaboration {
-            cardView.layer?.borderWidth = 1
-            cardView.layer?.backgroundColor = NSColor(
-                calibratedRed: 0.945,
-                green: 0.955,
-                blue: 0.995,
-                alpha: 1
-            ).cgColor
-            cardView.layer?.borderColor = NSColor(
-                calibratedRed: 0.42,
-                green: 0.47,
-                blue: 0.78,
-                alpha: 0.24
-            ).cgColor
+            cardView.configure(tint: MessageTextCardPalette.collaborationNativeBackground)
         } else {
             switch row.nativeStyle {
             case .user:
-                cardView.layer?.borderWidth = 0
-                cardView.layer?.backgroundColor = NativeTimelineCardPalette.userBackground.cgColor
-                cardView.layer?.borderColor = NativeTimelineCardPalette.userBorder.cgColor
+                cardView.configure(tint: NativeTimelineCardPalette.userBackground)
             case .agent:
-                cardView.layer?.borderWidth = 0
-                cardView.layer?.backgroundColor = (row.isCommentary
-                    ? MessageTextCardPalette.commentaryNativeBackground
-                    : NativeTimelineCardPalette.agentBackground).cgColor
-                cardView.layer?.borderColor = NSColor.black.withAlphaComponent(0.08).cgColor
+                cardView.configure(tint: row.isCommentary
+                    ? MessageTextCardPalette.adaptiveCommentaryNativeBackground
+                    : MessageTextCardPalette.agentNativeBackground)
             case .process:
-                cardView.layer?.borderWidth = 0
                 let tint = row.processState.color
-                cardView.layer?.backgroundColor = tint.withAlphaComponent(row.isExpanded ? 0.055 : 0.035).cgColor
-                cardView.layer?.borderColor = tint.withAlphaComponent(0.16).cgColor
-                cardView.layer?.cornerRadius = row.isExpanded ? 12 : 10
+                cardView.configure(tint: tint, opacity: row.isExpanded ? 0.08 : 0.06,
+                    radius: row.isExpanded ? 12 : 10, isMessage: false)
             }
         }
-        if row.nativeStyle != .process { cardView.layer?.cornerRadius = 14 }
-        processSeparator.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.045).cgColor
+        processSeparator.layer?.backgroundColor = NSColor.separatorColor.cgColor
         needsLayout = true
     }
 
@@ -813,11 +792,11 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
 }
 
 private enum NativeTimelineCardPalette {
-    static let secondaryText = NSColor(calibratedRed: 0.24, green: 0.27, blue: 0.29, alpha: 1)
-    static let mutedText = NSColor(calibratedRed: 0.38, green: 0.41, blue: 0.43, alpha: 1)
+    static let secondaryText = NSColor.labelColor
+    static let mutedText = NSColor.secondaryLabelColor
     static let userText = MessageTextCardPalette.userNativeForeground
-    static let agentText = NSColor(calibratedRed: 0.18, green: 0.48, blue: 0.27, alpha: 1)
-    static let collaborationText = NSColor(calibratedRed: 0.30, green: 0.34, blue: 0.68, alpha: 1)
+    static let agentText = NSColor.labelColor
+    static let collaborationText = NSColor.labelColor
     static let userBackground = MessageTextCardPalette.userNativeBackground
     static let agentBackground = NSColor(calibratedRed: 0.952, green: 0.961, blue: 0.941, alpha: 1)
     static let userBorder = NSColor(calibratedRed: 0.45, green: 0.58, blue: 0.76, alpha: 0.22)
