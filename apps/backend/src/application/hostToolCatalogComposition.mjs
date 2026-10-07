@@ -13,6 +13,7 @@ import { platformDynamicTools, callPlatformDynamicTool } from "./platformDynamic
 import { workChatDynamicTools, callWorkChatDynamicTool } from "./workChatDynamicTools.mjs";
 import { sceneDynamicTools, callSceneDynamicTool } from "../scenes/sceneDynamicTools.mjs";
 import { contextReadDynamicTools, callContextReadDynamicTool } from "./contextReadDynamicTools.mjs";
+import { integrationRegistryDynamicTools, callIntegrationRegistryDynamicTool } from "./integrationRegistryDynamicTools.mjs";
 
 export function createHostToolCatalog({
   memoryOperationService, artifactService, callWorkspaceDynamicTool,
@@ -22,9 +23,16 @@ export function createHostToolCatalog({
   reportTaskAcceptanceForAgent, completeTaskForSession,
   reviseTaskForSession, sceneService,
   getToolMaterializationPort, getPlatformOperationService,
-  getWorkChatOperationService, contextReadService
+  getWorkChatOperationService, contextReadService, mcpRegistryService, onIntegrationChanged
 }) {
   return new HostToolCatalog([
+    {
+      id: "integration-registry",
+      tools: integrationRegistryDynamicTools,
+      authorize: ({ actorId, metadata }) => Boolean(actorId && metadata?.sessionId),
+      execute: (input) => callIntegrationRegistryDynamicTool({ mcpRegistryService,
+        skillRegistryService, onChanged: onIntegrationChanged }, input)
+    },
     {
       id: "memory",
       tools: memoryDynamicTools,
