@@ -6,6 +6,17 @@ import UIKit
 import CorptieClientCore
 import CorptieConversation
 
+private struct PadComposerFocusKey: EnvironmentKey {
+    static let defaultValue: @MainActor @Sendable () -> Void = {}
+}
+
+extension EnvironmentValues {
+    var padComposerFocus: @MainActor @Sendable () -> Void {
+        get { self[PadComposerFocusKey.self] }
+        set { self[PadComposerFocusKey.self] = newValue }
+    }
+}
+
 /// The desktop `MessageComposer` row on iPad: attachment strip, editor, optional
 /// send glyph and more glyph inside one shell, model menu beside it. Draft text / images /
 /// mentions live in the workspace so a submission snapshot can clear them safely.
@@ -109,6 +120,16 @@ struct PadComposer<Header: View>: View {
             }
         } content: {
             editorRow
+        }
+        .environment(\.padComposerFocus, { editor.focus() })
+        .background {
+            // Content-owned buttons/text editing sit above this fallback.
+            // Do not attach a competing parent tap to every child control.
+            Button { editor.focus() } label: {
+                Color.clear.contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHidden(true)
         }
         }
         .task(id: "\(sessionID):\(quickMessageTaskID ?? ""):\(connection.serverID):\(quickMessageRefresh)") {
@@ -383,7 +404,7 @@ struct PadComposer<Header: View>: View {
         guard canAttachImages else { return false }
         for type in [UTType.png, .jpeg, .heic, .gif, .webP] {
             if let data = UIPasteboard.general.data(forPasteboardType: type.identifier) {
-                addImage(data, name: "粘贴的图片.\(type.preferredFilenameExtension ?? "png")")
+                Task { await addPreparedImage(data, name: "粘贴的图片.\(type.preferredFilenameExtension ?? "png")") }
                 return true
             }
         }
@@ -403,7 +424,7 @@ struct PadComposer<Header: View>: View {
             do {
                 if let data = try await photo.loadTransferable(type: Data.self) {
                     guard !Task.isCancelled else { return }
-                    addImage(data, name: "照片.\(photo.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg")")
+                    await addPreparedImage(data, name: "照片.\(photo.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg")")
                 }
             } catch {
                 workspace.conversationNotice = "照片导入失败，请重试。"
@@ -412,6 +433,16 @@ struct PadComposer<Header: View>: View {
     }
 
     private func importFiles(_ result: Result<[URL], Error>) {
+        Task { await importImageFiles(result) }
+    }
+
+    private func importImageFiles(_ result: Result<[URL], Error>) async {
+        importing = true
+        workspace.importingImagesForSession = sessionID
+        defer {
+            importing = false
+            if workspace.importingImagesForSession == sessionID { workspace.importingImagesForSession = nil }
+        }
         do {
             for url in try result.get() {
                 let accessed = url.startAccessingSecurityScopedResource()
@@ -421,7 +452,10 @@ struct PadComposer<Header: View>: View {
                     workspace.conversationNotice = "图片总大小不能超过 20 MB。"
                     continue
                 }
-                addImage(try Data(contentsOf: url, options: .mappedIfSafe), name: url.lastPathComponent)
+                let data = try await Task.detached(priority: .userInitiated) {
+                    try Data(contentsOf: url, options: .mappedIfSafe)
+                }.value
+                await addPreparedImage(data, name: url.lastPathComponent)
             }
         } catch {
             workspace.conversationNotice = "图片文件读取失败。"
@@ -441,6 +475,18 @@ struct PadComposer<Header: View>: View {
             return
         }
         workspace.draftImages[sessionID, default: []].append(ClientDraftImage(fileName: name, data: data))
+    }
+
+    private func addPreparedImage(_ data: Data, name: String) async {
+        do {
+            let image = try await Task.detached(priority: .userInitiated) {
+                try PadImagePreparation.prepare(data, fileName: name)
+            }.value
+            guard !Task.isCancelled else { return }
+            addImage(image.data, name: image.fileName)
+        } catch {
+            workspace.conversationNotice = "图片无法处理或尺寸过大，请选择其他图片。"
+        }
     }
 }
 

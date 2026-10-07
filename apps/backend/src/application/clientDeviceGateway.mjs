@@ -73,13 +73,14 @@ export class ClientDeviceGateway {
     const now = Date.now();
     for (const [key, value] of this.buckets) if (value.until <= now) this.buckets.delete(key);
     const read = request.method === "GET" && /^\/client\/v1\/(works|tasks|sessions|commands|control|worktrees)(\/|\?|$)/.test(request.url);
-    const key = `${request.socket.remoteAddress}:${read ? "read" : "command"}`;
+    const upload = /^\/client\/v1\/sessions\/[^/]+\/image-uploads(?:\/|$)/.test(request.url);
+    const key = `${request.socket.remoteAddress}:${upload ? "upload" : read ? "read" : "command"}`;
     let bucket = this.buckets.get(key);
     if (!bucket) {
       if (this.buckets.size >= 1024) throw deviceError("RATE_LIMITED", 429);
       this.buckets.set(key, bucket = { until: now + 60_000, count: 0 });
     }
-    if (++bucket.count > (read ? 600 : 60)) throw deviceError("RATE_LIMITED", 429);
+    if (++bucket.count > (upload ? 120 : read ? 600 : 60)) throw deviceError("RATE_LIMITED", 429);
   }
 
   authenticateRequest(request) {
@@ -142,6 +143,26 @@ export class ClientDeviceGateway {
       }
       const identity = this.authenticateRequest(request);
       this.sockets.set(request.socket, identity.deviceId);
+      const imageUpload = /^\/client\/v1\/sessions\/([^/]+)\/image-uploads(?:\/([A-Za-z0-9_-]{8,128}))?$/.exec(path);
+      if (imageUpload && this.sessionAPI?.imageUploads) {
+        const sessionId = decode(imageUpload[1], "INVALID_SESSION_ID");
+        const resolved = this.sessionAPI.session(sessionId);
+        if (!this.sessionAPI.capabilities(identity, sessionId).imageUploads) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
+        if (request.method === "POST" && !imageUpload[2]) {
+          const input = await body(request, 4096);
+          return reply(response, 200, this.sessionAPI.imageUploads.begin(this.authenticateRequest(request), resolved.sessionId, input));
+        }
+        if (request.method === "PUT" && imageUpload[2]) {
+          const input = await body(request, 720 * 1024);
+          return reply(response, 200, this.sessionAPI.imageUploads.append(this.authenticateRequest(request), resolved.sessionId, imageUpload[2], input));
+        }
+        if (request.method === "DELETE" && imageUpload[2]) {
+          this.sessionAPI.imageUploads.remove(identity, resolved.sessionId, imageUpload[2]);
+          return reply(response, 200, { schemaVersion: 1 });
+        }
+        if (request.method === "GET" && imageUpload[2]) return reply(response, 200, this.sessionAPI.imageUploads.status(identity, resolved.sessionId, imageUpload[2]));
+        throw deviceError("ROUTE_NOT_AVAILABLE", 404);
+      }
       const inspector = /^\/client\/v1\/sessions\/([^/]+)\/inspector(?:\/(events|read|commands))?$/.exec(path);
       if (inspector && this.sessionAPI?.inspector) {
         const id = decode(inspector[1], "INVALID_SESSION_ID");
