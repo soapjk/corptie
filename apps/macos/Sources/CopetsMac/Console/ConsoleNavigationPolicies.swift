@@ -36,38 +36,6 @@ enum ConsoleNavigationMode: String, CaseIterable {
 
 typealias ConsoleWorkOutlineMetrics = CorptieConversation.ConsoleWorkOutlineMetrics
 
-enum ConsoleWorkToolbarMetrics {
-    static let buttonDiameter: CGFloat = 36
-    static let symbolSize: CGFloat = 16
-    static let spacing: CGFloat = 6
-    static let horizontalInset: CGFloat = 8
-    static let verticalInset: CGFloat = 6
-    static let height = buttonDiameter + verticalInset * 2
-    static let minimumWidth = buttonDiameter * 5 + spacing * 4 + horizontalInset * 2
-}
-
-struct ConsoleWorkToolbar<Content: View>: View {
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        HStack(spacing: 0) { content }
-            .padding(.horizontal, ConsoleWorkToolbarMetrics.horizontalInset)
-            .padding(.vertical, ConsoleWorkToolbarMetrics.verticalInset)
-            .frame(maxWidth: .infinity)
-    }
-}
-
-struct ConsoleWorkToolbarGlyph: View {
-    let symbol: String
-    var body: some View {
-        Image(systemName: symbol)
-            .font(.system(size: ConsoleWorkToolbarMetrics.symbolSize, weight: .medium))
-            .frame(width: ConsoleWorkToolbarMetrics.buttonDiameter, height: ConsoleWorkToolbarMetrics.buttonDiameter)
-            .contentShape(Circle())
-            .platformGlassSurface(in: Circle(), interactive: true, variant: .clear)
-    }
-}
-
 typealias ConsoleWorkFlowingGradientPolicy = CorptieConversation.ConsoleWorkFlowingGradientPolicy
 
 enum ConsoleWorkActivityPolicy {
