@@ -313,9 +313,13 @@ public struct SessionQuotaResetDetails: View {
     private let bankedText: String?
     private let expiryText: String?
     private let expiryHelp: String?
+    private let refreshedText: String?
+    private let fixedWidth: CGFloat?
+    private let rowHeight: CGFloat?
 
     public init(verification: Verification, loadingText: String, failureText: String,
-                resetText: String, bankedText: String?, expiryText: String?, expiryHelp: String? = nil) {
+                resetText: String, bankedText: String?, expiryText: String?, expiryHelp: String? = nil,
+                refreshedText: String? = nil, fixedWidth: CGFloat? = nil, rowHeight: CGFloat? = nil) {
         self.verification = verification
         self.loadingText = loadingText
         self.failureText = failureText
@@ -323,32 +327,46 @@ public struct SessionQuotaResetDetails: View {
         self.bankedText = bankedText
         self.expiryText = expiryText
         self.expiryHelp = expiryHelp
+        self.refreshedText = refreshedText
+        self.fixedWidth = fixedWidth
+        self.rowHeight = rowHeight
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 7) {
+            Group {
             if verification == .loading {
                 Label(loadingText, systemImage: "arrow.clockwise")
                     .foregroundStyle(.secondary)
             } else if verification == .failed {
                 Label(failureText, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
+            } else if let refreshedText {
+                Label(refreshedText, systemImage: "checkmark.circle")
+                    .foregroundStyle(.secondary)
             }
+            }
+            .frame(height: rowHeight, alignment: .leading)
             Label(resetText, systemImage: "clock")
                 .lineLimit(1)
+                .frame(height: rowHeight, alignment: .leading)
             if let bankedText {
                 Label(bankedText, systemImage: "arrow.counterclockwise.circle")
                     .lineLimit(1)
+                    .frame(height: rowHeight, alignment: .leading)
             }
             if let expiryText {
                 Label(expiryText, systemImage: "calendar.badge.clock")
                     .lineLimit(1)
                     .help(expiryHelp ?? expiryText)
+                    .frame(height: rowHeight, alignment: .leading)
             }
         }
         .font(.system(size: 11, weight: .medium))
+        .lineLimit(fixedWidth == nil ? nil : 1)
         .padding(10)
-        .fixedSize(horizontal: true, vertical: true)
+        .frame(width: fixedWidth, alignment: .leading)
+        .fixedSize(horizontal: fixedWidth == nil, vertical: true)
     }
 }
 

@@ -4,6 +4,15 @@ import SwiftUI
 
 @Suite("Message text card palette")
 struct MessageTextCardPaletteTests {
+    @Test func contextPreviewIsExplicitAndNotASnapshotOfTheClippedLane() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/CorptieConversation/MessageTextCard.swift"), encoding: .utf8)
+        #expect(source.contains(".contentShape(.contextMenuPreview"))
+        #expect(source.contains("} preview: {"))
+        #expect(source.contains("cardBody.fixedSize(horizontal: false, vertical: true)"))
+        #expect(!source.contains("scaleEffect("))
+    }
     @Test("Glass and fallback retain the original light message palette")
     func originalMessagePalette() {
         #expect(MessageTextCardPalette.backgroundRGB(for: .user, dark: false)

@@ -36,6 +36,7 @@ struct PadThreadMetaView: View {
 
 /// Desktop `ChatUsageBar`: context tokens and remaining plan quota as 10pt rings.
 private struct PadUsageBar: View {
+    @Environment(\.padComposerFocus) private var focusComposer
     let usage: ClientSessionUsage
     let compact: Bool
     let refreshAccount: () async -> ClientSessionUsage?
@@ -73,10 +74,15 @@ private struct PadUsageBar: View {
             }
             if let quota {
                 // Quota details are supported by the usage data, not a Provider identifier.
-                Button { isResetNoticePresented.toggle() } label: {
-                    quotaSlot(remaining: quota.remaining)
-                }
-                .buttonStyle(.plain)
+                quotaSlot(remaining: quota.remaining)
+                .contentShape(Rectangle())
+                .gesture(LongPressGesture().exclusively(before: TapGesture()).onEnded { result in
+                    switch result {
+                    case .first(true): presentQuotaDetails()
+                    case .second: focusComposer()
+                    default: break
+                    }
+                })
                 .popover(isPresented: $isResetNoticePresented, arrowEdge: .bottom) {
                     resetNoticePopover(window: quota.window)
                         .presentationCompactAdaptation(.popover)
@@ -98,6 +104,10 @@ private struct PadUsageBar: View {
                     }
                 }
                 .accessibilityLabel(quotaAccessibilityLabel(remaining: quota.remaining))
+                .accessibilityAddTraits(.isButton)
+                .accessibilityHint("单击输入，长按查看额度详情")
+                .accessibilityAction { focusComposer() }
+                .accessibilityAction(named: "查看额度详情") { presentQuotaDetails() }
                 .accessibilityIdentifier("conversation-usage-quota")
             }
         }
@@ -113,6 +123,11 @@ private struct PadUsageBar: View {
                 progress: remaining / 100,
                 color: SessionMetaPalette.color(for: SessionUsagePolicy.quotaTone(remainingPercent: remaining)))
         }
+    }
+
+    private func presentQuotaDetails() {
+        verification = .loading
+        isResetNoticePresented = true
     }
 
     private func quotaAccessibilityLabel(remaining: Double) -> String {
@@ -131,14 +146,16 @@ private struct PadUsageBar: View {
         let resetDate = window.resetsAt.map { formattedDate(Date(timeIntervalSince1970: $0)) } ?? "未知"
         return SessionQuotaResetDetails(
             verification: verification,
-            loadingText: "正在刷新已存额度重置；以下为上次记录…",
-            failureText: "无法核实当前已存额度重置；以下为上次记录。",
+            loadingText: "正在刷新",
+            failureText: "刷新失败",
             resetText: "套餐重置：\(resetDate)",
-            bankedText: credits?.availableCount.map { "已存额度重置：剩余 \(max(0, $0)) 次" },
+            bankedText: credits?.availableCount.map { "已存额度重置：剩余 \(max(0, $0)) 次" }
+                ?? "已存额度重置：暂不可用",
             expiryText: (credits?.availableCount ?? 0) > 0
                 ? expirationDates.first.map { "最早过期：\(formattedDate($0))" } ?? "已存额度重置的过期时间暂不可用"
-                : nil,
-            expiryHelp: expirationDates.map(formattedDate).joined(separator: "\n")
+                : "过期时间：暂无可用额度重置",
+            expiryHelp: expirationDates.map(formattedDate).joined(separator: "\n"),
+            refreshedText: "已刷新", fixedWidth: 280, rowHeight: 16
         )
         .accessibilityIdentifier("conversation-usage-quota-details")
     }

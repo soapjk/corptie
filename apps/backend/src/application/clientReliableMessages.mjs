@@ -25,12 +25,29 @@ export function reliableReceipt(store, identity, requestId) {
 export async function acceptReliableMessage(api, identity, targetId, input, authenticate = () => identity) {
   if (!api.admitReliableMessage) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
   if (!input || Array.isArray(input) || input.schemaVersion !== 1
-      || Object.keys(input).some(key => !["schemaVersion", "requestId", "createdAt", "text", "images", "mentions"].includes(key))
+      || Object.keys(input).some(key => !["schemaVersion", "requestId", "createdAt", "text", "images", "imageUploadIds", "mentions"].includes(key))
       || !/^[A-Za-z0-9_-]{8,128}$/.test(input.requestId ?? "")
       || typeof input.text !== "string" || input.text.length > 16000 || parseSlashCommand(input.text)) {
     throw deviceError("INVALID_MESSAGE", 400);
   }
-  const images = input.images ?? [], mentions = input.mentions ?? [];
+  const uploadIds = input.imageUploadIds ?? [];
+  if (!Array.isArray(uploadIds) || uploadIds.length > 8 || new Set(uploadIds).size !== uploadIds.length
+      || uploadIds.some(id => typeof id !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(id))
+      || (uploadIds.length && (input.images?.length ?? 0))) throw deviceError("INVALID_MESSAGE", 400);
+  // Accepted requests reconcile before staging is read: clients can release
+  // uploads after the durable receipt without making a lost-ACK retry fail.
+  const referenceFingerprint = uploadIds.length && Array.isArray(input.mentions ?? [])
+    ? createHash("sha256").update(JSON.stringify([targetId, input.createdAt, input.text,
+      ["uploads", uploadIds], (input.mentions ?? []).map(mention => [mention?.targetType, mention?.targetId, mention?.displayName])])).digest("hex") : null;
+  if (referenceFingerprint) {
+    const committed = api.store.selectOne("SELECT payload_hash FROM client_message_receipts WHERE device_id=? AND request_id=?", [identity.deviceId, input.requestId]);
+    if (committed) {
+      if (committed.payload_hash !== referenceFingerprint) throw deviceError("IDEMPOTENCY_CONFLICT", 409);
+      return reliableReceipt(api.store, identity, input.requestId);
+    }
+  }
+  const images = uploadIds.length ? uploadIds.map(id => api.imageUploads.resolve(identity, api.session(targetId).sessionId, id)) : input.images ?? [];
+  const mentions = input.mentions ?? [];
   if (!Array.isArray(images) || images.length > 8 || images.some(image => !image
       || Object.keys(image).some(key => !["fileName", "dataBase64"].includes(key))
       || typeof image.fileName !== "string" || image.fileName.length > 256
@@ -52,7 +69,7 @@ export async function acceptReliableMessage(api, identity, targetId, input, auth
   }
   // JSON object key order is not intent. Swift encoders may reorder keys on a
   // retry, so fingerprint ordered field tuples rather than raw decoded objects.
-  const fingerprint = createHash("sha256").update(JSON.stringify([targetId, input.createdAt, input.text,
+  const fingerprint = referenceFingerprint ?? createHash("sha256").update(JSON.stringify([targetId, input.createdAt, input.text,
     images.map(image => [image.fileName, image.dataBase64]),
     mentions.map(mention => [mention.targetType, mention.targetId, mention.displayName])])).digest("hex");
   const existing = api.store.selectOne("SELECT * FROM client_message_receipts WHERE device_id=? AND request_id=?",
@@ -92,6 +109,11 @@ export async function acceptReliableMessage(api, identity, targetId, input, auth
     if (!result) throw new Error("Reliable admission did not commit its receipt");
     console.info(`[client-message] request=${input.requestId} phase=accepted`);
     api.onReceiptChanged?.(identity.deviceId, result);
+    // Only release staging after the durable message owns its imported images.
+    for (const id of uploadIds) {
+      try { api.imageUploads.remove(identity, resolved.sessionId, id); }
+      catch { console.warn(`[client-image] upload=${id} phase=cleanup-deferred`); }
+    }
     // Expired requests can never be admitted again, even after their deduplication key is removed.
     api.store.db.run(`DELETE FROM client_message_receipts WHERE rowid IN
       (SELECT rowid FROM client_message_receipts WHERE expires_at < ? LIMIT 100)`,

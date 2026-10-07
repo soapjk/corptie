@@ -1,10 +1,49 @@
 import XCTest
+import AppKit
 import CorptieConversation
 @testable import CorptieMac
 
 /// The composer's geometry, key semantics and mention catalog are shared with the
 /// iPad; these pin the desktop values the shared layer must keep producing.
 final class ComposerShellPolicyTests: XCTestCase {
+    func testEmptyDraftRejectsStaleExpandedHeight() {
+        XCTAssertEqual(ComposerInputLayout.resolvedHeight(text: "", measuredHeight: 96), 30)
+        XCTAssertEqual(ComposerInputLayout.resolvedHeight(text: "", measuredHeight: 400), 30)
+        XCTAssertEqual(ComposerInputLayout.resolvedHeight(text: "new draft", measuredHeight: 60), 60)
+        XCTAssertEqual(ComposerInputLayout.resolvedHeight(text: "a\nb", measuredHeight: 120), 96)
+    }
+
+    @MainActor func testNativeEditorMeasurementAfterClearReturnsMinimumHeight() {
+        let draft = ComposerDraftBuffer()
+        let controller = ComposerEditorController(draft: draft)
+        var heights: [CGFloat] = []
+        let input = ComposerInputTextView(controller: controller, placeholder: "", font: .systemFont(ofSize: 12),
+            onFocusChange: { _ in }, onSendableTextChange: { _ in },
+            onContentHeightChange: { heights.append($0) }, onSubmit: { _ in })
+        let coordinator = input.makeCoordinator()
+        let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 120, height: 500))
+        text.string = String(repeating: "multiline\n", count: 20)
+        coordinator.reportContentHeight(of: text)
+        XCTAssertGreaterThan(heights.last ?? 0, 30)
+        text.string = ""
+        coordinator.reportContentHeight(of: text)
+        XCTAssertEqual(heights.last, 30)
+        text.string = "new"
+        coordinator.reportContentHeight(of: text)
+        XCTAssertEqual(heights.last, 30)
+    }
+
+    func testStopAndSendShareVisualSizeButRetainTouchTarget() throws {
+        let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Sources/CopetsMac")
+        let stop = try String(contentsOf: sources.appendingPathComponent("SessionComposerStopButton.swift"), encoding: .utf8)
+        let send = try String(contentsOf: sources.appendingPathComponent("Conversation/Composer/MessageComposer.swift"), encoding: .utf8)
+        XCTAssertTrue(stop.contains("ComposerShellMetrics.actionVisualEdge"))
+        XCTAssertTrue(send.contains("sendControlEdge = ComposerShellMetrics.actionVisualEdge"))
+        XCTAssertTrue(stop.contains(".frame(width: 44, height: 32)"))
+        XCTAssertEqual(ComposerShellMetrics.actionVisualEdge, 22)
+    }
+
     func testDesktopInputLayoutDelegatesToSharedClamp() {
         XCTAssertEqual(ComposerInputLayout.minimumHeight, 30)
         XCTAssertEqual(ComposerInputLayout.maximumHeight, 96)

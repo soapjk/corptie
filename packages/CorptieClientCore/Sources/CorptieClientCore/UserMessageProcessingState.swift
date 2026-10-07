@@ -26,15 +26,19 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
         case sending, deliveryUnknown, accepted, queued, processing
         case deliveryFailed, processingFailed, cancelled
         case waitingToSend, retrying, deliveryBlocked, retryStopped
+        case uploading, submitting
     }
 
     public let kind: Kind
     public let queuePosition: Int?
     public let failureReason: String?
+    private let transferProgress: String?
 
     public init?(authoritativeStatus: String?, legacyStatus: String?,
                  localDeliveryState: String? = nil, queuePosition: Int? = nil,
                  processingError: String? = nil) {
+        transferProgress = localDeliveryState?.hasPrefix("上传图片 ") == true
+            ? String(localDeliveryState!.dropFirst("上传图片 ".count)) : nil
         if let state = UserMessageProcessingState(
             authoritativeValue: authoritativeStatus, legacyStatus: legacyStatus
         ) {
@@ -61,13 +65,18 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
         if localDeliveryState.hasPrefix("发送失败：") {
             kind = .deliveryFailed
             failureReason = Self.nonempty(String(localDeliveryState.dropFirst("发送失败：".count)))
+        } else if localDeliveryState.hasPrefix("上传图片 ") {
+            kind = .uploading
+            failureReason = nil
         } else {
             switch localDeliveryState {
             case "Sending", "发送中": kind = .sending
+            case "图片已上传，正在提交": kind = .submitting
             case "Sent", "后端已接收": kind = .accepted
             case "已保存，等待发送", "等待网络，恢复后自动发送", "等待前一条消息处理": kind = .waitingToSend
             case "等待重试，将自动发送": kind = .retrying
             case "等待恢复连接授权", "后端不支持可靠发送，请更新后端": kind = .deliveryBlocked
+            case "请更新 Mac 后端以启用图片上传": kind = .deliveryBlocked
             case "发送身份未对齐，请更新 Mac 并重新连接", "旧请求需核对；不会自动重发": kind = .deliveryBlocked
             case "已停止重试；不代表撤回": kind = .retryStopped
             case "送达状态未确认": kind = .deliveryUnknown
@@ -80,7 +89,8 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
 
     public var symbolName: String {
         switch kind {
-        case .sending: "paperplane"
+        case .sending, .submitting: "paperplane"
+        case .uploading: "arrow.up.circle"
         case .deliveryUnknown: "questionmark.circle"
         case .accepted: "checkmark.circle"
         case .queued: "clock"
@@ -108,6 +118,8 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
         let chinese = languageCode.lowercased().hasPrefix("zh")
         switch kind {
         case .sending: return chinese ? "发送中" : "Sending"
+        case .uploading: return chinese ? "上传中 \(transferProgress ?? "")" : "Uploading \(transferProgress ?? "")"
+        case .submitting: return chinese ? "提交中" : "Submitting"
         case .deliveryUnknown: return chinese ? "待确认" : "Unconfirmed"
         case .accepted: return chinese ? "已接收" : "Received"
         case .queued: return chinese ? "排队中" : "Queued"

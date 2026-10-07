@@ -25,7 +25,11 @@ public enum ConnectionDiagnostic {
             return "keychain:invalid-identity"
         }
         if let error = error as? ClientServiceFailure {
-            let known = ["LOCAL_BACKEND_UNAVAILABLE", "DEVICE_REVOKED", "INVALID_CREDENTIAL", "ROUTE_NOT_AVAILABLE", "RATE_LIMITED", "DEVICE_AUTH_REQUIRED"]
+            let known = ["LOCAL_BACKEND_UNAVAILABLE", "DEVICE_REVOKED", "INVALID_CREDENTIAL", "ROUTE_NOT_AVAILABLE", "RATE_LIMITED", "DEVICE_AUTH_REQUIRED",
+                "IMAGE_SIZE_LIMIT", "IMAGE_UPLOAD_REQUIRES_HOST_UPDATE", "IMAGE_CAPABILITY_UNSUPPORTED",
+                "INVALID_IMAGE_UPLOAD", "INVALID_IMAGE_CHUNK", "IMAGE_UPLOAD_OFFSET_CONFLICT",
+                "IMAGE_UPLOAD_HASH_MISMATCH", "IMAGE_UPLOAD_INCOMPLETE", "IMAGE_UPLOAD_STORAGE_FULL",
+                "CHAT_IMAGE_FORMAT_UNSUPPORTED", "CHAT_IMAGE_SIZE_INVALID", "BODY_TOO_LARGE"]
             return "http:\(error.statusCode):\(known.contains(error.code) ? error.code : "other")"
         }
         if let error = error as? ClientConnectionError {
