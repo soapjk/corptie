@@ -214,6 +214,44 @@ final class WorktreeManagementClient: ObservableObject {
         }
     }
 
+    @discardableResult
+    func handleGitOperation(_ action: String, for worktree: ManagedWorktree) async -> Bool {
+        guard let repositoryId = selection.repositoryId,
+              let operation = worktree.operationState,
+              ["continue", "abort"].contains(action) else { return false }
+        operationNotice = nil
+        isMutating = true
+        defer { isMutating = false }
+        do {
+            let envelope: WorktreeGitOperationResultEnvelope = try await post(
+                "worktree-management/repositories/\(repositoryId)/worktrees/\(worktree.worktreeId)/git-operation",
+                body: [
+                    "action": action,
+                    "expectedOperation": operation,
+                    "expectedHead": worktree.headOid ?? ""
+                ]
+            )
+            operationNoticeTitle = action == "continue" ? "Git operation continued" : "Git operation aborted"
+            operationNotice = L10nFormat(
+                action == "continue" ? "Continued the %@ operation in %@." : "Aborted the %@ operation in %@.",
+                envelope.result.operation,
+                worktree.branchName ?? worktree.path
+            )
+            errorMessage = nil
+            detailCache.removeValue(forKey: repositoryId)
+            await loadRepository(repositoryId, force: true)
+            if action == "continue", job?.status == "paused", job?.supports("retry") == true {
+                await retryJob()
+            }
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            detailCache.removeValue(forKey: repositoryId)
+            await loadRepository(repositoryId, force: true)
+            return false
+        }
+    }
+
     func pushWorktreeToGitHub(_ worktree: ManagedWorktree) async {
         guard let repositoryId = selection.repositoryId,
               !pushingWorktreeIds.contains(worktree.worktreeId) else { return }

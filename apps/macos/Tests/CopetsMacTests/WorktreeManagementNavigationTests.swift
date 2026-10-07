@@ -694,6 +694,28 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertFalse(contents.contains("Button(L10n(\"Later\"))"))
     }
 
+    func testGitOperationAndActiveMergeExposeExplicitRecoveryControls() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let view = try String(
+            contentsOf: root.appendingPathComponent("Sources/CopetsMac/WorktreeManagementView.swift"),
+            encoding: .utf8
+        )
+        let client = try String(
+            contentsOf: root.appendingPathComponent("Sources/CopetsMac/WorktreeManagementClient.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(view.contains("worktree.git-operation.continue"))
+        XCTAssertTrue(view.contains("worktree.git-operation.abort"))
+        XCTAssertTrue(view.contains("Cancel this Work merge?"))
+        XCTAssertTrue(view.contains("cancellation_requested"))
+        XCTAssertTrue(client.contains("/git-operation"))
+        XCTAssertTrue(client.contains("force: true"))
+    }
+
     private func repository(_ id: String) -> ManagedRepository {
         ManagedRepository(
             id: id, path: "/repo/.git", name: id, discoveredAt: "now", lastValidatedAt: "now",
