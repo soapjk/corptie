@@ -172,6 +172,10 @@ function memoryFixture({
       }
       return { artifactId: `artifact:${input.relativePath}` };
     },
+    recoverGitOperation: async (input) => {
+      calls.push(`${input.action}:${input.path}`);
+      return { action: input.action, operation: input.expectedOperation, remainingOperation: null };
+    },
     isSessionActive: (session) => session.status === "running",
     commitChanges: async (input) => {
       calls.push(`commit:${input.path}`);
@@ -351,6 +355,25 @@ test("repository listing uses the lightweight summary while preflight keeps the 
   const plan = await service.preflight("repository:1");
   assert.equal(summaryCalls, 1);
   assert.deepEqual(plan.plan.items.map((item) => item.worktreeId), ["wt:main", "wt:feature"]);
+});
+
+test("Git operation recovery is bound to the freshly inspected Worktree state", async () => {
+  const { service, calls } = memoryFixture({ featureConflict: true });
+
+  const result = await service.handleWorktreeGitOperation("repository:1", "wt:feature", {
+    action: "continue",
+    expectedOperation: "merge",
+    expectedHead: "feature:1"
+  });
+
+  assert.equal(result.action, "continue");
+  assert.deepEqual(calls, ["continue:/repo-feature"]);
+  await assert.rejects(
+    () => service.handleWorktreeGitOperation("repository:1", "wt:feature", {
+      action: "abort", expectedOperation: "rebase", expectedHead: "feature:1"
+    }),
+    { code: "GIT_OPERATION_CHANGED", statusCode: 409 }
+  );
 });
 
 async function waitForJob(service, id, status) {
