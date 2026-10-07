@@ -5,6 +5,22 @@ import CorptieClientCore
 
 @MainActor
 struct PadStateTests {
+    @Test func phoneNavigationRemovesExtraEdgeGapsWithoutIgnoringSafeAreas() throws {
+        let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources")
+        let shell = try String(contentsOf: sources.appendingPathComponent("PadAppShell.swift"), encoding: .utf8)
+        let bar = shell.components(separatedBy: "PadBottomTabBar(selection:")[1]
+            .components(separatedBy: ".transition(")[0]
+        #expect(bar.contains(".padding(.top, 8)"))
+        #expect(!bar.contains(".padding(.vertical"))
+        #expect(!bar.contains(".padding(.bottom"))
+        #expect(!bar.contains("ignoresSafeArea"))
+        let outline = try String(contentsOf: sources.appendingPathComponent("PadWorkOutline.swift"), encoding: .utf8)
+        #expect(outline.contains(".padding(.top, UIDevice.current.userInterfaceIdiom == .phone ? 0 : 6)"))
+        let app = try String(contentsOf: sources.appendingPathComponent("CorptieMobileApp.swift"), encoding: .utf8)
+        #expect(app.components(separatedBy: ".padding(.top, UIDevice.current.userInterfaceIdiom == .phone ? 0 : 4)").count - 1 == 2)
+    }
+
     @Test func compactWorkspacePagesExposeTheSingleRootWallpaper() throws {
         let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("Sources")
@@ -61,7 +77,7 @@ struct PadStateTests {
         #expect(PadTimelineLayoutMetrics.laneWidth(viewportWidth: .infinity) == 0)
     }
 
-    @Test func timelineMarginsAreOwnedByScrollViewNotLazyTargetPadding() throws {
+    @Test func timelineMarginsStayOutsideTheScrollingCoordinateSystem() throws {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("Sources/CorptieMobileApp.swift")
         let source = try String(contentsOf: url, encoding: .utf8)
@@ -69,16 +85,47 @@ struct PadStateTests {
             .components(separatedBy: "private var timelineCoordinateSpace")[0]
         #expect(timeline.contains("ScrollView(.vertical)"))
         #expect(timeline.contains(".frame(width: cardLaneWidth)"))
-        #expect(timeline.contains(".contentMargins(.horizontal, PadTimelineLayoutMetrics.horizontalMargin, for: .scrollContent)"))
+        #expect(!timeline.contains(".contentMargins(.horizontal"))
+        #expect(timeline.contains(".padding(.horizontal, PadTimelineLayoutMetrics.horizontalMargin)"))
+        #expect(timeline.contains("PadTimelineLayoutMetrics.scrollContentWidth(viewportWidth: size.width)"))
         #expect(!timeline.contains(".padding(.horizontal, 16)"))
         #expect(!source.contains("ScrollPosition(edge: .bottom)"))
+    }
+
+    @Test func scrollViewportAndLaneShareOneWidthAcrossKeyboardHeights() {
+        for width in [CGFloat(320), 393, 393.75, 430, 768] {
+            let viewportWidth = max(0, width - 2 * PadTimelineLayoutMetrics.horizontalMargin)
+            #expect(PadTimelineLayoutMetrics.scrollContentWidth(viewportWidth: viewportWidth)
+                == PadTimelineLayoutMetrics.laneWidth(viewportWidth: width))
+        }
+        #expect(PadTimelineLayoutMetrics.scrollContentWidth(viewportWidth: .nan) == 0)
+        #expect(PadTimelineLayoutMetrics.scrollContentWidth(viewportWidth: -1) == 0)
+    }
+
+    @Test func layoutRequestsCoalesceWithoutDroppingTheLastInFlightUpdate() {
+        let requests = PadTimelinePlacementRequests()
+        #expect(!requests.take())
+        requests.request()
+        requests.request()
+        #expect(requests.take())
+        #expect(!requests.take())
+        // A keyboard/composer resize arrives while that request executes.
+        requests.request()
+        #expect(requests.take())
+        requests.request()
+        requests.cancel()
+        #expect(!requests.take())
     }
     @Test func initialPlacementRequiresVisibleTailAsWellAsEstimatedBottom() {
         #expect(!PadTimelineJumpPolicy.placementConfirmed(tailVisible: false, nearBottom: true))
         #expect(!PadTimelineJumpPolicy.placementConfirmed(tailVisible: true, nearBottom: false))
         #expect(PadTimelineJumpPolicy.placementConfirmed(tailVisible: true, nearBottom: true))
-        #expect(PadTimelineJumpPolicy.correctionDelays.count == 4)
-        #expect(PadTimelineJumpPolicy.correctionDelays.reduce(0, +) < 1_000)
+        #expect(!PadTimelineJumpPolicy.placementConfirmed(lastEntryID: "last",
+            visibleEntryIDs: ["latest"], nearBottom: true))
+        #expect(!PadTimelineJumpPolicy.placementConfirmed(lastEntryID: nil,
+            visibleEntryIDs: ["last"], nearBottom: true))
+        #expect(PadTimelineJumpPolicy.placementConfirmed(lastEntryID: "last",
+            visibleEntryIDs: ["last"], nearBottom: true))
     }
 
     @Test func lazyTimelineHasStableRowsAndNativeScrollingWithoutBlindCompletion() throws {
@@ -90,12 +137,20 @@ struct PadStateTests {
         #expect(rows.contains("VStack(spacing: 0)"))
         #expect(rows.contains(".id(entry.id)"))
         #expect(!rows.contains(".id(message.id)"))
-        #expect(source.contains("position.scrollTo(edge: .bottom)"))
+        #expect(source.contains("timelinePosition.scrollTo(edge: .bottom)"))
+        #expect(!source.contains("timelinePosition.scrollTo(id: targetID, anchor: .bottom)"))
+        #expect(source.contains(".scrollPosition($timelinePosition)"))
+        #expect(source.contains("&& pendingHistoryViewport == nil ? .bottom : nil, for: .sizeChanges)"))
+        #expect(source.contains(".onScrollTargetVisibilityChange(idType: String.self"))
+        #expect(!source.contains("TimelineRowVisibilityModifier"))
         #expect(source.contains(".scrollTargetLayout()"))
         let automatic = source.components(separatedBy: "private func scheduleLatestPlacement")[1]
             .components(separatedBy: "private func requestSemanticTailScroll")[0]
-        #expect(automatic.contains("didPlaceInitialTimeline = isPlacementConfirmed()"))
-        #expect(!automatic.contains("milliseconds(16)"))
+        #expect(automatic.contains("confirmLatestPlacementIfReady()"))
+        #expect(!automatic.contains("Task.sleep"))
+        #expect(source.contains(".onChange(of: workspace.tailDisplayRevision)"))
+        #expect(source.contains(".onPreferenceChange(TimelineTailRowLayoutKey.self)"))
+        #expect(!source.contains("reader.scrollTo("))
         let resolver = source.components(separatedBy: "private func findScrollView() -> UIScrollView?")[1]
         #expect(resolver.contains("!(scrollView is UITextView)"))
         #expect(resolver.contains("widthMatches && heightMatches"))

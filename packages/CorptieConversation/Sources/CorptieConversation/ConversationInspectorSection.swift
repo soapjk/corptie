@@ -45,7 +45,7 @@ public struct ConversationDetailCompactPair<Leading: View, Trailing: View>: View
     }
 }
 
-/// Detail uses translucent content color, not navigation glass.
+/// Detail uses light content material, not navigation Liquid Glass.
 public struct ConversationDetailContentSurface: ViewModifier {
     private let cornerRadius: CGFloat
 
@@ -54,11 +54,11 @@ public struct ConversationDetailContentSurface: ViewModifier {
     }
 
     public func body(content: Content) -> some View {
-        content.modifier(ConversationContentSurface(cornerRadius: cornerRadius))
+        content.modifier(ConversationContentSurface(cornerRadius: cornerRadius, isPanel: true))
     }
 }
 
-/// One color background per Detail module; no backdrop compositor.
+/// One static material and color surface per Detail module; no nested glass.
 public struct ConversationDetailModuleSurface: ViewModifier {
     public init() {}
 

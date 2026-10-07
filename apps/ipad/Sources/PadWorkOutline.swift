@@ -231,7 +231,8 @@ struct PadWorkOutline: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .padding(.top, UIDevice.current.userInterfaceIdiom == .phone ? 0 : 6)
+        .padding(.bottom, 6)
         .environment(\.layoutDirection, .leftToRight)
     }
 
