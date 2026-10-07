@@ -147,6 +147,7 @@ public struct ClientGitCommitProtectionStatus: Decodable, Equatable, Sendable {
 }
 
 public struct ClientWorktreeJob: Identifiable, Decodable, Equatable, Sendable {
+    public let notification: OperationJobSnapshot?
     public let id: String
     public let repositoryId: String
     public let status: String
@@ -344,6 +345,12 @@ public struct ClientWorktreeAPI: Sendable {
     public func cancel(jobId: String) async throws -> ClientWorktreeJob {
         struct Body: Encodable { let replan = false }
         return try await jobAction(jobId, "cancel", Body())
+    }
+
+    public func deletionNotification(operationId: String) async throws -> OperationJobSnapshot {
+        struct Envelope: Decodable { let notification: OperationJobSnapshot }
+        let response: Envelope = try await get(["client", "v1", "task-deletion-operations", operationId])
+        return response.notification
     }
 
     public func retry(jobId: String) async throws -> ClientWorktreeJob {

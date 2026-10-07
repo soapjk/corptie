@@ -37,6 +37,16 @@ struct PadWorktreeManagementView: View {
             }
         }
         .navigationTitle(repository.name)
+        .onChange(of: manager.detail?.repository.id, initial: true) { _, id in
+            #if canImport(UIKit)
+            PadNotificationManager.shared.visibleOperationRepositoryID = id
+            #endif
+        }
+        .onChange(of: manager.job?.id, initial: true) { _, id in
+            #if canImport(UIKit)
+            PadNotificationManager.shared.visibleOperationJobID = id
+            #endif
+        }
         .toolbar { toolbar }
         .task(id: repository.id) { await manager.load(repository.id, connection: connection) }
         .sheet(item: $operationDraft) { draft in

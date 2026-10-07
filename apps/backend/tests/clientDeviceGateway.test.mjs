@@ -270,6 +270,10 @@ test("real TLS route boundary and authenticated local approval", async () => {
     taskManagement(identity, taskId) {
       return { schemaVersion: 1, task: { id: taskId }, actions: {} };
     },
+    taskDeletionNotification(identity, operationId) {
+      assert.ok(identity.deviceId);
+      return { notification: { schemaVersion: 1, id: operationId, status: "completed" } };
+    },
     async taskDeletionPlan(identity, taskId) {
       return { schemaVersion: 1, taskId, status: "safe" };
     },
@@ -473,6 +477,11 @@ test("real TLS route boundary and authenticated local approval", async () => {
     assert.equal(choices.body.providerId, "provider:test");
     assert.equal((await call(`${createPath}?work=other`, { token: creds.accessToken, method: "POST", value: createInput })).status, 403);
     // Pairing approval exposes every client feature supported by the server.
+    const operationPath = "/client/v1/task-deletion-operations/operation%3Aone";
+    assert.equal((await call(operationPath)).status, 401);
+    assert.equal((await call(operationPath, { token: creds.accessToken })).body.notification.id, "operation:one");
+    assert.equal((await call(operationPath, { token: creds.accessToken, method: "POST", value: {} })).status, 404);
+    assert.equal((await call(operationPath + "?unsafe=1", { token: creds.accessToken })).status, 403);
     const taskPath = "/client/v1/tasks/task%3Aone";
     const workPath = "/client/v1/works/work%3Aone";
     const capabilities = (await call("/client/v1/capabilities", { token: creds.accessToken })).body;
@@ -522,6 +531,8 @@ test("real TLS route boundary and authenticated local approval", async () => {
     assert.ok(authenticatedSockets.every(socket => socket.destroyed));
     await streamClosed;
     remoteAgent.destroy();
+    // Isolate revoked-token authentication from the read budget consumed above.
+    gateway.buckets.clear();
     assert.equal((await call("/client/v1/me", { token: creds.accessToken })).status, 401);
     // This route-boundary fixture exercises more than a minute's command
     // budget; deletion assertions are independent of the limiter test.

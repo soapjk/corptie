@@ -359,7 +359,9 @@ extension SessionCompletionSoundManager {
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         let userInfo = notification.request.content.userInfo
-        if let sessionID = userInfo["sessionId"] as? String, isSessionVisible(sessionID) {
+        if userInfo["destination"] as? String == "operation" {
+            completionHandler(OperationNotificationManager.shared.presentationOptions(userInfo))
+        } else if let sessionID = userInfo["sessionId"] as? String, isSessionVisible(sessionID) {
             completionHandler([])
         } else if userInfo["destination"] as? String == "overview", isOverviewVisible() {
             completionHandler([])
@@ -374,6 +376,11 @@ extension SessionCompletionSoundManager {
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let userInfo = response.notification.request.content.userInfo
+        if userInfo["destination"] as? String == "operation" {
+            OperationNotificationManager.shared.handleResponse(userInfo)
+            completionHandler()
+            return
+        }
         if let automationID = userInfo["automationId"] as? String, !automationID.isEmpty {
             AppTabRouter.shared.openAutomation(automationID)
             completionHandler()

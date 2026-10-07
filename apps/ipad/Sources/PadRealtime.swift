@@ -162,8 +162,11 @@ extension PadWorkspace {
                     failures = 0
                     consecutiveTransportFailures = 0
                     switch update {
+                    case .operation(let job):
+                        PadOperationNotifications.shared.observe(job)
                     case .ready:
                         Self.realtimeLog.info("Realtime ready: generation=\(generation, privacy: .public)")
+                        PadOperationNotifications.shared.recover(connection: connection)
                         receivedV2Ready = true
                         realtimeConnected = true
                         realtimeReconnectFailed = false

@@ -500,12 +500,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         AppTabRouter.shared.selectTab(.console)
     }
 
-    func openWorktreeManagement(repositoryId: String?, worktreeId: String?, worktreePath: String?) {
+    func openWorktreeManagement(repositoryId: String?, worktreeId: String?, worktreePath: String?, jobId: String? = nil) {
         openWarRoom()
         AppTabRouter.shared.openWorktrees(
             repositoryId: repositoryId,
             worktreeId: worktreeId,
-            worktreePath: worktreePath
+            worktreePath: worktreePath, jobId: jobId
         )
     }
 
