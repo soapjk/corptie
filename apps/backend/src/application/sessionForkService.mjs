@@ -21,7 +21,8 @@ export class SessionForkService {
     if (!session || !["worker", "assistantChat"].includes(session.sessionKind)) {
       fail("FORK_KIND_UNSUPPORTED", "仅普通 Chat 和 Task 支持消息分叉。");
     }
-    if (session.archived || ["running", "blocked"].includes(session.status)) {
+    if (session.archived || (["running", "blocked"].includes(session.status)
+      && !this.registry.supports(reference.providerId, AGENT_PROVIDER_CAPABILITIES.SESSION_FORK_WHILE_BUSY))) {
       fail("FORK_SOURCE_BUSY", "请等待当前会话结束执行后再创建分支。");
     }
     this.registry.requireCapability(reference.providerId, AGENT_PROVIDER_CAPABILITIES.SESSION_FORK);
