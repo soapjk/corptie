@@ -216,9 +216,16 @@ extension PadWorkspace {
                             throw ClientServiceFailure(statusCode: 409, code: "LEGACY_MESSAGE_REQUIRES_RECONCILIATION")
                         }
                     } else {
+                        let displayedMessage = message
                         receipt = try await api.reconcileOrDeliver(sessionId: message.sessionID, requestId: message.id,
                             createdAt: message.createdAt, text: message.text, images: message.images,
-                            mentions: message.mentions, previousAttempts: message.attempts)
+                            mentions: message.mentions, previousAttempts: message.attempts,
+                            onProgress: { [weak self, weak connection] title in
+                                await MainActor.run {
+                                    guard let self, let connection, self.deliveryKey(connection) == generation else { return }
+                                    self.projectReliableMessage(displayedMessage, title: title)
+                                }
+                            })
                     }
                     guard !Task.isCancelled, deliveryKey(connection) == generation else { return }
                     guard receipt.requestId == message.id, receipt.sessionId == message.sessionID,
@@ -258,10 +265,19 @@ extension PadWorkspace {
                             ? "发送身份未对齐，请更新 Mac 并重新连接" : "旧请求需核对；不会自动重发"
                     } else if (error as? ClientServiceFailure)?.code == "ROUTE_NOT_AVAILABLE" {
                         message.state = .blocked; message.errorCode = "后端不支持可靠发送，请更新后端"
+                    } else if (error as? ClientServiceFailure)?.code == "IMAGE_UPLOAD_REQUIRES_HOST_UPDATE" {
+                        message.state = .blocked; message.errorCode = "请更新 Mac 后端以启用图片上传"
                     } else if Self.deliveryFailureIsPermanent(error) {
                         message.state = .rejected
-                        message.errorCode = (error as? CloudRelayTransportError) == .responseTooLarge
-                            ? "远程请求超过大小限制，请缩小附件或使用局域网连接"
+                        let code = (error as? ClientServiceFailure)?.code ?? ""
+                        message.errorCode = code == "IMAGE_UPLOAD_REQUIRES_HOST_UPDATE" ? "请更新 Mac 后端以启用图片上传"
+                            : code == "IMAGE_CAPABILITY_UNSUPPORTED" ? "当前会话不支持图片"
+                            : code == "IMAGE_SIZE_LIMIT" ? "图片超过大小限制，请缩小图片"
+                            : code == "CHAT_IMAGE_FORMAT_UNSUPPORTED" ? "图片格式不支持，请使用 PNG 或 JPEG"
+                            : code == "CHAT_IMAGE_SIZE_INVALID" ? "图片文件为空或超过大小限制"
+                            : (error as? CloudRelayTransportError) == .responseTooLarge
+                                || (error as? CloudRelayTransportError) == .unsupportedRequest
+                            ? "远程请求不受支持或附件超过大小限制"
                             : (error as? ClientServiceFailure)?.code ?? "请求被拒绝"
                     } else {
                         message.state = .waiting; message.attempts += 1

@@ -43,7 +43,7 @@ enum ComposerMentionAnchorPolicy {
 }
 
 struct MessageComposer: View {
-    private static let sendControlEdge: CGFloat = 22
+    private static let sendControlEdge = ComposerShellMetrics.actionVisualEdge
 
     @ObservedObject private var archivedSessionState = BackendClient.shared.archivedSessionController
     @ObservedObject private var modelCatalog: ProviderCatalogStore
@@ -606,6 +606,10 @@ enum ComposerInputLayout {
 
     static func resolvedHeight(for contentHeight: CGFloat) -> CGFloat {
         ComposerShellMetrics.resolvedInputHeight(for: contentHeight)
+    }
+
+    static func resolvedHeight(text: String, measuredHeight: CGFloat) -> CGFloat {
+        text.isEmpty ? minimumHeight : resolvedHeight(for: measuredHeight)
     }
 }
 

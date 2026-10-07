@@ -1,5 +1,9 @@
 import Foundation
 import Testing
+import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 @testable import CorptieConversation
 
 private func tables(_ text: String) -> [ConversationMarkdownTable] {
@@ -7,6 +11,36 @@ private func tables(_ text: String) -> [ConversationMarkdownTable] {
         if case .table(let value) = $0.content { return value }; return nil
     }
 }
+
+#if os(macOS)
+@Test @MainActor func nativeTableCellsUseMeasuredWidthsAndContainEveryGlyph() throws {
+    let table = try #require(tables("| 名称 | Description | 数量 |\n| --- | --- | ---: |\n| **很长的中文名字😀** | `averylongidentifierwithoutspaces123456789` 中文说明继续换行 | 123 |\n| 第二行 | [链接](https://example.com) 混合英文 words words words | 4 |\n").first)
+    for width: CGFloat in [180, 320, 600] {
+        let layout = ConversationMarkdownTableLayout.measured(table, width: width)
+        let host = NSHostingView(rootView: ConversationMarkdownTableView(table: table, layout: layout))
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: width, height: layout.height + 20),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        host.frame = CGRect(x: 0, y: 0, width: width, height: layout.height)
+        host.layoutSubtreeIfNeeded()
+        func texts(_ view: NSView) -> [NSTextView] {
+            (view as? NSTextView).map { [$0] } ?? view.subviews.flatMap(texts)
+        }
+        let cells = texts(host)
+        #expect(cells.count == table.rows.flatMap { $0 }.count)
+        for cell in cells {
+            let container = try #require(cell.textContainer)
+            let manager = try #require(cell.layoutManager)
+            manager.ensureLayout(for: container)
+            #expect(abs(container.containerSize.width - cell.bounds.width) <= 1)
+            #expect(manager.usedRect(for: container).height <= cell.bounds.height + 1)
+            #expect(manager.glyphRange(for: container).length == manager.numberOfGlyphs)
+        }
+        window.close()
+    }
+}
+#endif
 
 @Test func gfmTablesRetainAlignmentAndInlineFormatting() throws {
     let source = "前文中文😀\n\n| 名称 | 数量 |\n| :--- | ---: |\n| **BTC** | `42` |\n\n后文"

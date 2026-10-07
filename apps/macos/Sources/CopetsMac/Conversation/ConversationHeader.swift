@@ -135,6 +135,7 @@ struct DetailHeaderView: View {
                         .font(.title3.weight(.semibold))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.75)
                         .truncationMode(.tail)
                         .multilineTextAlignment(.center)
                         .accessibilityAddTraits(.isHeader)

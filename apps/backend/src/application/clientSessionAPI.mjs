@@ -1,6 +1,7 @@
 import { projectTaskDeletionNotification } from "./worktreeIntegrationJobService.mjs";
 import { createHash } from "node:crypto";
 import { ensureReliableMessageSchema, acceptReliableMessage, reliableReceipt } from "./clientReliableMessages.mjs";
+import { ClientImageUploads, imageUploadPolicy } from "./clientImageUploads.mjs";
 import { deviceError } from "./clientDeviceAuthority.mjs";
 import { validateSessionCommand, sessionCommandNeedsConfirmation } from "../commands/sessionCommandCatalog.mjs";
 import { parseSlashCommand } from "../commands/unifiedCommands.mjs";
@@ -121,6 +122,7 @@ export class ClientSessionAPI {
     this.admitReliableMessage = admitReliableMessage;
     this.reliableMessagesInFlight = new Map();
     ensureReliableMessageSchema(store);
+    this.imageUploads = new ClientImageUploads(store);
     this.quickMessageReader = quickMessages;
     this.inspector = inspector;
     Object.assign(this, { store, readWindow, send, stop, actions, resolveSession, composer, images, schedule, conversationCommands });
@@ -471,6 +473,7 @@ export class ClientSessionAPI {
       notReadyReason: readiness?.readiness === "not_ready" ? notReadyReason : null,
       composer: Boolean(this.composer),
       sendImages: Boolean(this.images?.available(resolved.session)),
+      imageUploads: this.admitReliableMessage && this.images?.available(resolved.session) ? imageUploadPolicy : null,
       sendMentions: true,
       reliableMessages: this.admitReliableMessage ? { version: 1, maximumAgeSeconds: 604800, messageIdentityVersion: 2 } : null,
       scheduleMessage: Boolean(this.schedule),

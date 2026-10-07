@@ -247,6 +247,13 @@ public struct ClientCommandReceipt: Decodable, Sendable {
     public let entityResult: ClientEntityCommandResult?
 }
 public struct ClientSessionCapabilities: Decodable, Sendable {
+    public struct ImageUploads: Decodable, Sendable {
+        public let version: Int
+        public let maximumImages: Int
+        public let maximumBytes: Int
+        public let chunkBytes: Int
+        public let maximumAgeSeconds: Int
+    }
     public struct ReliableMessages: Decodable, Sendable {
         public let version: Int
         public let maximumAgeSeconds: Int
@@ -263,6 +270,7 @@ public struct ClientSessionCapabilities: Decodable, Sendable {
     public let stop: Action
     public let composer: Bool?
     public let sendImages: Bool?
+    public let imageUploads: ImageUploads?
     public let sendMentions: Bool?
     public let reliableMessages: ReliableMessages?
     public let scheduleMessage: Bool?
@@ -462,10 +470,15 @@ public struct ClientSessionAPI: Sendable {
     /// Small text retries use the durable idempotent endpoint directly, avoiding
     /// an extra round trip. Attachments still query before uploading again.
     public func reconcileOrDeliver(sessionId: String, requestId: String, createdAt: String, text: String,
-        images: [ClientDraftImage] = [], mentions: [ClientDraftMention] = [], previousAttempts: Int) async throws -> ClientCommandReceipt {
-        if previousAttempts > 0 && !images.isEmpty {
+        images: [ClientDraftImage] = [], mentions: [ClientDraftMention] = [], previousAttempts: Int,
+        onProgress: (@Sendable (String) async -> Void)? = nil) async throws -> ClientCommandReceipt {
+        if !images.isEmpty {
             do { return try await receipt(requestId: requestId) }
             catch let failure as ClientServiceFailure where failure.statusCode == 404 && failure.code == "COMMAND_NOT_FOUND" { }
+        }
+        if !images.isEmpty {
+            return try await uploadAndDeliver(sessionId: sessionId, requestId: requestId, createdAt: createdAt,
+                text: text, images: images, mentions: mentions, onProgress: onProgress)
         }
         return try await deliver(sessionId: sessionId, requestId: requestId, createdAt: createdAt,
             text: text, images: images, mentions: mentions)
@@ -505,18 +518,85 @@ public struct ClientSessionAPI: Sendable {
         try await command(sessionId: sessionId, route: "stop", body: ["requestId": requestId])
     }
     public func deliver(sessionId: String, requestId: String, createdAt: String, text: String,
-                        images: [ClientDraftImage] = [], mentions: [ClientDraftMention] = []) async throws -> ClientCommandReceipt {
+                        images: [ClientDraftImage] = [], mentions: [ClientDraftMention] = [],
+                        imageUploadIds: [String] = []) async throws -> ClientCommandReceipt {
         struct Body: Encodable {
             let schemaVersion = 1
             let requestId: String
             let createdAt: String
             let text: String
             let images: [ClientDraftImage]?
+            let imageUploadIds: [String]?
             let mentions: [ClientDraftMention]?
         }
         return try await command(sessionId: sessionId, route: "message-deliveries", body: Body(
             requestId: requestId, createdAt: createdAt, text: text,
-            images: images.isEmpty ? nil : images, mentions: mentions.isEmpty ? nil : mentions))
+            images: images.isEmpty ? nil : images, imageUploadIds: imageUploadIds.isEmpty ? nil : imageUploadIds,
+            mentions: mentions.isEmpty ? nil : mentions))
+    }
+
+    private struct ImageUploadStatus: Decodable {
+        let schemaVersion: Int
+        let uploadId: String
+        let offset: Int
+        let byteLength: Int
+        let sha256: String
+    }
+    private func uploadAndDeliver(sessionId: String, requestId: String, createdAt: String, text: String,
+        images: [ClientDraftImage], mentions: [ClientDraftMention],
+        onProgress: (@Sendable (String) async -> Void)?) async throws -> ClientCommandReceipt {
+        let capability = try await capabilities(sessionId: sessionId)
+        guard capability.sendImages == true else {
+            throw ClientServiceFailure(statusCode: 409, code: "IMAGE_CAPABILITY_UNSUPPORTED")
+        }
+        guard let policy = capability.imageUploads, policy.version == 1,
+              policy.chunkBytes > 0, policy.chunkBytes <= 512 * 1024,
+              policy.maximumBytes > 0, policy.maximumBytes <= 20 * 1024 * 1024 else {
+            throw ClientServiceFailure(statusCode: 409, code: "IMAGE_UPLOAD_REQUIRES_HOST_UPDATE")
+        }
+        guard images.count <= policy.maximumImages, images.allSatisfy({ !$0.data.isEmpty }),
+              images.reduce(0, { $0 + $1.data.count }) <= policy.maximumBytes else {
+            throw ClientServiceFailure(statusCode: 413, code: "IMAGE_SIZE_LIMIT")
+        }
+        struct Begin: Encodable { let schemaVersion = 1; let uploadId: String; let fileName: String; let byteLength: Int; let sha256: String }
+        struct Chunk: Encodable { let schemaVersion = 1; let offset: Int; let dataBase64: String; let sha256: String }
+        func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
+        var ids: [String] = []
+        let total = images.reduce(0) { $0 + $1.data.count }
+        var completed = 0
+        for (index, image) in images.enumerated() {
+            try Task.checkCancellation()
+            let id = "\(requestId)-\(index)"
+            let sha = digest(image.data)
+            let path = ["client", "v1", "sessions", sessionId, "image-uploads"]
+            var status: ImageUploadStatus = try await uploadRequest(path: path, method: "POST",
+                body: Begin(uploadId: id, fileName: image.fileName, byteLength: image.data.count, sha256: sha))
+            guard status.uploadId == id, status.sha256 == sha, status.byteLength == image.data.count,
+                  status.offset >= 0, status.offset <= image.data.count else { throw ClientConnectionError.invalidResponse }
+            while status.offset < image.data.count {
+                try Task.checkCancellation()
+                await onProgress?("上传图片 \(min(100, (completed + status.offset) * 100 / max(1, total)))%")
+                let start = status.offset
+                let end = min(image.data.count, start + policy.chunkBytes)
+                let bytes = image.data.subdata(in: start..<end)
+                status = try await uploadRequest(path: path + [id], method: "PUT",
+                    body: Chunk(offset: start, dataBase64: bytes.base64EncodedString(), sha256: digest(bytes)))
+                guard status.uploadId == id, status.sha256 == sha, status.byteLength == image.data.count,
+                      status.offset == end else { throw ClientConnectionError.invalidResponse }
+            }
+            completed += image.data.count
+            ids.append(id)
+        }
+        await onProgress?("图片已上传，正在提交")
+        return try await deliver(sessionId: sessionId, requestId: requestId, createdAt: createdAt,
+            text: text, mentions: mentions, imageUploadIds: ids)
+    }
+    private func uploadRequest<Body: Encodable>(path: [String], method: String, body: Body) async throws -> ImageUploadStatus {
+        var request = try transport.endpoint.request(path: path)
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(body)
+        return try await read(request)
     }
     public func respondToApproval(sessionId: String, itemId: String, optionId: String) async throws -> ClientApprovalResponse {
         struct Body: Encodable { let itemId: String; let optionId: String }
