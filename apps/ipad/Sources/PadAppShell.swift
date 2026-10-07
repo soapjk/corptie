@@ -18,7 +18,13 @@ struct PadAppShell: View {
     @State private var wasBackgrounded = false
     private let notificationManager = PadNotificationManager.shared
     @AppStorage("corptie.mobile.navigationRailExpanded") private var navigationRailExpanded = true
-    private enum Sheet: String, Identifiable { case settings; var id: String { rawValue } }
+    private enum Sheet: Identifiable {
+        case settings
+        case operation(OperationNotificationEvent)
+        var id: String {
+            switch self { case .settings: "settings"; case .operation(let event): "operation:" + event.id }
+        }
+    }
 
     private var usesNavigationRail: Bool {
         UIDevice.current.userInterfaceIdiom == .pad
@@ -86,7 +92,12 @@ struct PadAppShell: View {
                 PadUnifiedStatusBarBackdrop()
             }
         }
-        .sheet(item: $sheet) { _ in PadSettingsView(connection: connection, workspace: workspace) }
+        .sheet(item: $sheet) { destination in
+            switch destination {
+            case .settings: PadSettingsView(connection: connection, workspace: workspace)
+            case .operation(let event): PadOperationResultView(event: event)
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             guard !usesNavigationRail else { return }
             withAnimation(.easeInOut(duration: 0.2)) { isKeyboardVisible = true }
@@ -159,7 +170,7 @@ struct PadAppShell: View {
         .onReceive(NotificationCenter.default.publisher(for: .padNotificationNavigationRequested)) { notification in
             navigateFromNotification(notification.userInfo ?? [:])
         }
-        .task {
+        .task(id: "\(connection.serverID)|\(connection.address)") {
             notificationManager.setScope("\(connection.serverID)|\(connection.address)")
             notificationManager.updateVisibility(
                 sessionID: workspace.selection,
@@ -184,6 +195,7 @@ struct PadAppShell: View {
                 tab: tab,
                 sceneIsActive: phase == .active
             )
+            if phase == .active { PadOperationNotifications.shared.recover(connection: connection) }
         }
         .onDisappear { controls.pause() }
     }
@@ -197,7 +209,17 @@ struct PadAppShell: View {
     }
 
     private func navigateFromNotification(_ userInfo: [AnyHashable: Any]) {
-        if let sessionID = userInfo["sessionId"] as? String, !sessionID.isEmpty {
+        if let scope = userInfo["operationScope"] as? String,
+           scope != "\(connection.serverID)|\(connection.address)" { return }
+        if userInfo["destination"] as? String == "operation", let id = userInfo["operationEventId"] as? String,
+           let event = PadOperationNotifications.shared.result(id) { sheet = .operation(event) }
+        if userInfo["destination"] as? String == "operation", let id = userInfo["repositoryId"] as? String {
+            controls.selections[.repositories] = id
+            controls.routes[.worktrees] = PadControlSelection(kind: .repositories, id: id)
+            controls.worktrees.pendingNotificationJobID = userInfo["jobId"] as? String
+            controls.worktrees.pendingNotificationWorktreeID = userInfo["worktreeId"] as? String
+            tab = .worktrees
+        } else if let sessionID = userInfo["sessionId"] as? String, !sessionID.isEmpty {
             workspace.selection = sessionID
             compactOpenSessionRequest &+= 1
             tab = .workspace
@@ -594,11 +616,31 @@ private struct PadDeviceSettingsView: View {
 private struct PadNotificationSettingsView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Bindable private var preferences = PadNotificationPreferences.shared
+    @Bindable private var operations = PadOperationNotifications.shared.preferences
     @State private var authorizationStatus: UNAuthorizationStatus?
     private let manager = PadNotificationManager.shared
 
     var body: some View {
         Form {
+            Section("基础操作通知") {
+                Toggle("启用基础操作通知", isOn: $operations.enabled)
+                Group {
+                    Toggle("操作完成", isOn: $operations.success)
+                    Toggle("操作失败或部分完成", isOn: $operations.failure)
+                    Toggle("需要人工处理", isOn: $operations.attention)
+                    Toggle("操作取消", isOn: $operations.cancellation)
+                    ForEach(OperationNotificationCategory.allCases, id: \.rawValue) { category in
+                        Toggle(operationNotificationLabel(category.title), isOn: Binding(
+                            get: { operations.categoryEnabled(category) },
+                            set: { operations.setCategory(category, enabled: $0) }))
+                    }
+                    Toggle("通知声音", isOn: $operations.sound)
+                    Toggle("隐藏通知中的操作详情", isOn: $operations.hideDetails)
+                    Toggle("正在查看操作时不弹出", isOn: $operations.suppressWhenVisible)
+                }.disabled(!operations.enabled)
+                Text("只通知本设备发起的操作。关闭通知不会停止操作。App 被系统挂起时不保证即时通知。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
             Section {
                 notificationToggle(
                     "计划任务通知",
@@ -705,5 +747,31 @@ private struct PadNotificationSettingsView: View {
     private func openSystemSettings() {
         guard let url = URL(string: UIApplication.openNotificationSettingsURLString) else { return }
         UIApplication.shared.open(url)
+    }
+}
+
+private struct PadOperationResultView: View {
+    @Environment(\.dismiss) private var dismiss
+    let event: OperationNotificationEvent
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    LabeledContent("操作", value: operationNotificationLabel(event.name))
+                    LabeledContent("结果", value: operationNotificationLabel(event.outcome.title))
+                    if !event.summary.isEmpty { Text(event.summary).textSelection(.enabled) }
+                    if let counts = event.counts {
+                        LabeledContent("已完成", value: "\(counts.completed)")
+                        LabeledContent("失败", value: "\(counts.failed)")
+                        LabeledContent("待处理", value: "\(counts.pending)")
+                    }
+                }
+                if event.repositoryID != nil || event.sessionID != nil {
+                    Section { Button("查看详情") { dismiss() } }
+                }
+            }
+            .navigationTitle("操作结果")
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+        }
     }
 }

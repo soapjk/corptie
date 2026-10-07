@@ -2697,6 +2697,7 @@ export function presentJob(job) {
   return {
     ...presented,
     availableActions,
+    notification: projectOperationNotification(presented),
     recovery: integrationJobRecovery(presented, availableActions)
   };
 }
@@ -2735,4 +2736,33 @@ function integrationJobRecovery(job, availableActions) {
     retry: "The operation is paused and can be retried from its preserved state."
   };
   return { kind: action, message: messages[action] ?? "No automatic recovery action is available." };
+}
+
+// Versioned allowlist: no paths, credentials, Git output or Provider diagnostics.
+export function projectOperationNotification(job) {
+  const items = (job.plan?.items ?? []).filter(item => !item.isMain && item.mergeStatus !== "not_needed");
+  const failed = item => [item.mergeStatus, item.convergenceStatus].some(state => ["conflict", "failed"].includes(state));
+  const completed = item => !failed(item) && (job.plan?.operationType === "converge"
+    ? item.convergenceStatus === "completed"
+    : ["completed", "already_integrated", "recovered"].includes(item.mergeStatus));
+  const counts = { completed: items.filter(completed).length, failed: items.filter(failed).length };
+  counts.pending = Math.max(0, items.length - counts.completed - counts.failed);
+  const partial = counts.completed > 0 || items.some(item => ["completed", "recovered"].includes(item.commitStatus));
+  return { schemaVersion: 1, id: job.id, repositoryId: job.repositoryId,
+    status: job.status, phase: job.phase, updatedAt: job.updatedAt,
+    currentWorktreeId: job.currentWorktreeId ?? null,
+    revision: job.audit?.length ?? 0, audit: [], counts,
+    resultKind: job.phase === "failed" && partial ? "partial" : null,
+    attentionKey: job.commitPolicyBlocker?.id ?? job.conflictResolution?.conflictKey ?? null,
+    plan: { operationType: job.plan?.operationType ?? null },
+    conflictAutomation: job.conflictAutomation ? { status: job.conflictAutomation.status } : null,
+    conflictResolution: job.conflictResolution ? { status: job.conflictResolution.status } : null };
+}
+
+export function projectTaskDeletionNotification(operation) {
+  return { schemaVersion: 1, id: operation.operationId, repositoryId: "",
+    status: operation.state === "succeeded" ? "completed" : operation.state,
+    phase: operation.stage, updatedAt: operation.completedAt ?? operation.startedAt ?? operation.createdAt,
+    currentWorktreeId: null, revision: (operation.attempt ?? 0) * 10 + (["succeeded", "failed"].includes(operation.state) ? 2 : 1),
+    audit: [], plan: { operationType: "task_delete" }, conflictAutomation: null, conflictResolution: null };
 }

@@ -172,6 +172,12 @@ struct WorktreeManagementView: View {
         }
         .padding(MainWindowPageLayoutMetrics.outerPadding)
         .toolbar(removing: .sidebarToggle)
+        .onChange(of: client.selection.repositoryId, initial: true) { _, id in
+            OperationNotificationManager.shared.visibleRepositoryID = id
+        }
+        .onChange(of: client.job?.id, initial: true) { _, id in
+            OperationNotificationManager.shared.visibleJobID = id
+        }
         .task(id: worktreeReloadTrigger) {
             guard backendClient.isOnline else {
                 client.dismissError()

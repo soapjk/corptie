@@ -1,4 +1,5 @@
 import AppKit
+import CorptieClientCore
 import SwiftUI
 @preconcurrency import UserNotifications
 
@@ -13,12 +14,14 @@ struct NotificationSettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(L10n("Task Notifications"))
+                    Text(L10n("Notifications"))
                         .font(.system(size: 18, weight: .semibold, design: .rounded))
-                    Text(L10n("Choose which task-state changes should notify you."))
+                    Text(L10n("Choose which operations and task-state changes should notify you."))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(CorptiePalette.secondaryText)
                 }
+
+                OperationNotificationSettingsSection()
 
                 VStack(alignment: .leading, spacing: 12) {
                     notificationToggle(
@@ -209,5 +212,37 @@ struct NotificationSettingsView: View {
         for url in urls where NSWorkspace.shared.open(url) {
             break
         }
+    }
+}
+
+private struct OperationNotificationSettingsSection: View {
+    @Bindable private var preferences = OperationNotificationManager.shared.preferences
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(L10n("Basic Operation Notifications")).font(.headline)
+            Toggle(L10n("Enable operation notifications"), isOn: $preferences.enabled)
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle(L10n("Operation completed"), isOn: $preferences.success)
+                Toggle(L10n("Operation failed or partially completed"), isOn: $preferences.failure)
+                Toggle(L10n("Operation needs attention"), isOn: $preferences.attention)
+                Toggle(L10n("Operation cancelled"), isOn: $preferences.cancellation)
+                Divider()
+                ForEach(OperationNotificationCategory.allCases, id: \.rawValue) { category in
+                    Toggle(L10n(category.title), isOn: Binding(
+                        get: { preferences.categoryEnabled(category) },
+                        set: { preferences.setCategory(category, enabled: $0) }))
+                }
+                Divider()
+                Toggle(L10n("Operation notification sound"), isOn: $preferences.sound)
+                Toggle(L10n("Hide operation details in notifications"), isOn: $preferences.hideDetails)
+                Toggle(L10n("Suppress notifications while viewing the operation"), isOn: $preferences.suppressWhenVisible)
+            }.disabled(!preferences.enabled)
+            Text(L10n("Notifications follow operations started on this device. Closing a page does not stop notifications. Turning notifications off does not stop operations."))
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        .toggleStyle(.checkbox)
+        .padding(14)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
     }
 }

@@ -1,3 +1,4 @@
+import CorptieClientCore
 import Foundation
 
 struct ManagedRepository: Identifiable, Decodable, Equatable, Sendable {
@@ -409,6 +410,7 @@ struct WorktreeGitOperationResult: Decodable, Sendable {
 }
 
 struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
+    let notification: OperationJobSnapshot?
     let id: String
     let repositoryId: String
     let status: String

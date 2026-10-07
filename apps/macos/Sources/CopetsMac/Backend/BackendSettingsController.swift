@@ -1,4 +1,5 @@
 import Foundation
+import CorptieClientCore
 
 struct PendingDataRootMigrationRecovery: Codable, Equatable {
     let operationId: String?
@@ -123,6 +124,16 @@ final class BackendSettingsController: ObservableObject {
         defer { isUpdatingSettings = false }
 
         let migrationRequested = !DataRootMigrationPresentation.pathsEqual(settings?.dataRoot, trimmed)
+        var migrationFailure: OperationNotificationOutcome = .failed
+        var migrationSucceeded = false
+        let notificationID = UUID().uuidString
+        defer {
+            if migrationRequested {
+                let id = dataRootMigration.map { "migration:\($0.operationId)" } ?? notificationID
+                OperationNotificationManager.shared.complete(.init(id: id + (migrationSucceeded ? ":success" : ":failure"),
+                    category: .dataMigration, outcome: migrationSucceeded ? .succeeded : migrationFailure, name: "Data migration"))
+            }
+        }
         if migrationRequested {
             dataRootMigrationPresentationPhase = "preflight"
             persistPendingDataRootMigration(targetDataRoot: trimmed)
@@ -170,13 +181,16 @@ final class BackendSettingsController: ObservableObject {
                 try await completeDataRootMigrationHandoff(operation)
             }
             lastError = nil
+            migrationSucceeded = true
             return true
         } catch {
+            migrationFailure = .errorOutcome(error)
             if migrationRequested,
                let current = settings,
                DataRootMigrationPresentation.pathsEqual(current.dataRoot, trimmed),
                dataRootMigration?.phase == "completed" {
                 lastError = nil
+                migrationSucceeded = true
                 return true
             }
             if migrationRequested,
@@ -186,7 +200,8 @@ final class BackendSettingsController: ObservableObject {
                 do {
                     try await completeDataRootMigrationHandoff(operation)
                     lastError = nil
-                    return true
+                    migrationSucceeded = true
+                return true
                 } catch {
                     lastError = error.localizedDescription
                     return false
@@ -238,6 +253,8 @@ final class BackendSettingsController: ObservableObject {
         defer { dataRootMigrationHandoffTasks.removeValue(forKey: operation.operationId) }
         try await task.value
         completedDataRootMigrationHandoffs.insert(operation.operationId)
+        OperationNotificationManager.shared.complete(.init(id: "migration:\(operation.operationId):success",
+            category: .dataMigration, outcome: .succeeded, name: "Data migration"))
     }
 
     private func reconnectAfterDataRootMigration(operationId: String, targetDataRoot: String) async throws {

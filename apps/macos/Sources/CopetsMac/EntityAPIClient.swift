@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import CorptieClientCore
 
 private struct CorptieTaskCreateResponse: Decodable {
     let task: CorptieTask
@@ -380,6 +381,12 @@ final class EntityAPIClient: ObservableObject {
             body["confirmedBranchName"] = confirmedBranchName ?? ""
         }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        var notificationOutcome: OperationNotificationOutcome = .failed
+        var notificationID = UUID().uuidString
+        defer {
+            OperationNotificationManager.shared.complete(.init(id: "deletion:\(notificationID):\(notificationOutcome.rawValue)",
+                category: .worktree, outcome: notificationOutcome, name: "Task cleanup"))
+        }
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
@@ -390,6 +397,7 @@ final class EntityAPIClient: ObservableObject {
             guard accepted.accepted else {
                 throw EntityLaunchError(message: L10n("CorptieTask deletion was not accepted."), code: "DELETE_NOT_ACCEPTED")
             }
+            notificationID = accepted.operation.operationId
             var operation = accepted.operation
             while operation.state == "queued" || operation.state == "running" {
                 try await Task.sleep(for: .milliseconds(350))
@@ -414,11 +422,13 @@ final class EntityAPIClient: ObservableObject {
                     code: operation.errorCode ?? "DELETE_INCOMPLETE"
                 )
             }
+            notificationOutcome = .succeeded
             await AppStateSyncController.shared.refreshSnapshot()
             if let syncError = appState.syncError { throw EntityLaunchError(message: syncError, code: "STATE_SYNC_FAILED") }
             errorMessage = nil
             return true
         } catch {
+            if notificationOutcome != .succeeded { notificationOutcome = .errorOutcome(error) }
             errorMessage = (error as? EntityLaunchError)?.message ?? error.localizedDescription
             return false
         }
@@ -1063,6 +1073,12 @@ final class EntityAPIClient: ObservableObject {
             sourceSessionId: sourceSessionId,
             dispatchInitialTurn: dispatchInitialTurn ? nil : false
         )
+        var preparationFailure: OperationNotificationOutcome = .failed
+        var preparedSessionID: String?
+        defer {
+            OperationNotificationManager.shared.complete(.init(category: .environment,
+                outcome: preparedSessionID == nil ? preparationFailure : .succeeded, name: "Environment preparation", sessionID: preparedSessionID))
+        }
         do {
             request.httpBody = try JSONEncoder().encode(command)
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -1086,9 +1102,11 @@ final class EntityAPIClient: ObservableObject {
                 )
             }
             let session = created.session
+            preparedSessionID = session.id
             errorMessage = nil
             return .success(session)
         } catch {
+            preparationFailure = .errorOutcome(error)
             let message = error.localizedDescription
             errorMessage = message
             return .failure(message: message)

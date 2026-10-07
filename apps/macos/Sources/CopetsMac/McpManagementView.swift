@@ -1,3 +1,4 @@
+import CorptieClientCore
 import Foundation
 import CryptoKit
 import SwiftUI
@@ -287,8 +288,10 @@ private final class McpManagementModel: ObservableObject {
             let result = try await request("mcp-servers", method: "POST", body: body,
                                            as: McpServerEnvelope.self)
             await load(agentId: agentId)
-            return servers.contains(where: { $0.id == result.server.id })
+            OperationNotificationManager.shared.complete(.init(category: .mcp, outcome: .succeeded, name: "MCP installation"))
+            return true
         } catch {
+            OperationNotificationManager.shared.complete(.init(category: .mcp, outcome: OperationNotificationOutcome.errorOutcome(error), name: "MCP installation"))
             errorMessage = error.localizedDescription
             return false
         }
@@ -350,8 +353,10 @@ private final class McpManagementModel: ObservableObject {
             }
             await load(agentId: agentId)
             if let assignmentFailure { errorMessage = assignmentFailure }
+            OperationNotificationManager.shared.complete(.init(category: .mcp, outcome: assignmentFailure == nil ? .succeeded : .partial, name: "MCP installation"))
             return true
         } catch {
+            OperationNotificationManager.shared.complete(.init(category: .mcp, outcome: OperationNotificationOutcome.errorOutcome(error), name: "MCP installation"))
             errorMessage = error.localizedDescription
             return false
         }
@@ -411,8 +416,10 @@ private final class McpManagementModel: ObservableObject {
             _ = try await request("mcp-servers/\(server.serverId)/package", method: "POST",
                                   body: body, as: McpServerEnvelope.self)
             await load(agentId: agentId)
+            OperationNotificationManager.shared.complete(.init(category: .mcp, outcome: .succeeded, name: "MCP update"))
             return true
         } catch {
+            OperationNotificationManager.shared.complete(.init(category: .mcp, outcome: OperationNotificationOutcome.errorOutcome(error), name: "MCP update"))
             errorMessage = error.localizedDescription
             return false
         }
@@ -429,8 +436,10 @@ private final class McpManagementModel: ObservableObject {
             _ = try await request("mcp-servers/\(server.serverId)/rollback", method: "POST",
                                   body: body, as: McpServerEnvelope.self)
             await load(agentId: agentId)
+            OperationNotificationManager.shared.complete(.init(category: .mcp, outcome: .succeeded, name: "MCP rollback"))
             return true
         } catch {
+            OperationNotificationManager.shared.complete(.init(category: .mcp, outcome: OperationNotificationOutcome.errorOutcome(error), name: "MCP rollback"))
             errorMessage = error.localizedDescription
             return false
         }
