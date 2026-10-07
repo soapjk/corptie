@@ -1,4 +1,5 @@
 import AppKit
+import CorptieConversation
 import SwiftUI
 import Testing
 @testable import CorptieMac
@@ -80,5 +81,18 @@ struct ConsoleWindowSplitViewTests {
         #expect(controller.splitViewItems.count == 2)
         #expect(controller.splitViewItems[0].viewController === original[0])
         #expect(controller.splitViewItems[1].viewController === original[1])
+    }
+
+    @Test
+    func workOutlineDefaultsToSharedIPadColumnWidth() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac/ConsoleWindowSplitView.swift"),
+            encoding: .utf8)
+        #expect(PlatformWorkOutlineLayout.columnWidth == 312)
+        #expect(source.contains("PlatformWorkOutlineLayout.columnWidth"))
+        #expect(source.contains("console.nativeSidebar.listWidth.v2"))
     }
 }

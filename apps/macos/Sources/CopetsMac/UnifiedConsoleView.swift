@@ -277,14 +277,12 @@ struct UnifiedConsoleView: View {
         .frame(maxHeight: .infinity)
         .modifier(ConsoleTopEdgeEffectModifier())
         .safeAreaInset(edge: .top, spacing: 0) {
-            ConsoleWorkToolbar {
-                HStack(spacing: ConsoleWorkToolbarMetrics.spacing) {
-                    outlineSortMenu
-                    navigationModeToggle.labelsHidden()
-                    searchToggleButton
-                    taskArchiveToggle
-                }
-                Spacer(minLength: ConsoleWorkToolbarMetrics.spacing)
+            PlatformWorkOutlineToolbar {
+                outlineSortMenu
+                navigationModeToggle.labelsHidden()
+                searchToggleButton
+                taskArchiveToggle
+            } trailing: {
                 outlineCreationMenu
             }
         }
@@ -306,9 +304,10 @@ struct UnifiedConsoleView: View {
                 }
             }
         } label: {
-            ConsoleWorkToolbarGlyph(symbol: "arrow.up.arrow.down")
+            PlatformWorkOutlineToolbarGlyph(symbol: "arrow.up.arrow.down")
         }
-        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
+        .platformWorkOutlineToolbarControl()
+        .menuIndicator(.hidden)
         .accessibilityLabel("排序方式").accessibilityValue(outlineSort.title)
         .accessibilityIdentifier("work-outline-sort")
         .help("排序方式")
@@ -319,10 +318,11 @@ struct UnifiedConsoleView: View {
             navigationModeOption(.workOutline, title: "分组")
             navigationModeOption(.taskCards, title: "卡片 · 实验")
         } label: {
-            ConsoleWorkToolbarGlyph(symbol: navigationMode == .taskCards ? "rectangle.grid.2x2" : "rectangle.3.group")
+            PlatformWorkOutlineToolbarGlyph(
+                symbol: navigationMode == .taskCards ? "rectangle.grid.2x2" : "rectangle.3.group"
+            )
         }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
+        .platformWorkOutlineToolbarControl()
         .menuIndicator(.hidden)
         .accessibilityLabel("视图")
         .accessibilityValue(navigationMode.accessibilityValue)
@@ -688,9 +688,9 @@ struct UnifiedConsoleView: View {
             }
             isSearchFieldFocused = true
         } label: {
-            ConsoleWorkToolbarGlyph(symbol: "magnifyingglass")
+            PlatformWorkOutlineToolbarGlyph(symbol: "magnifyingglass")
         }
-        .buttonStyle(.plain)
+        .platformWorkOutlineToolbarControl()
         .help(L10n("Search sessions"))
         .accessibilityLabel("搜索").accessibilityIdentifier("work-outline-search")
     }
@@ -808,10 +808,9 @@ struct UnifiedConsoleView: View {
                 isCreatingWork = true
             }
         } label: {
-            ConsoleWorkToolbarGlyph(symbol: "plus")
+            PlatformWorkOutlineToolbarGlyph(symbol: "plus")
         }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
+        .platformWorkOutlineToolbarControl()
         .menuIndicator(.hidden)
         .fixedSize()
         .help(L10n("Create"))
@@ -826,10 +825,12 @@ struct UnifiedConsoleView: View {
         Button {
             setWorkerArchiveVisible(!isShowingWorkerArchive)
         } label: {
-            ConsoleWorkToolbarGlyph(symbol: isShowingWorkerArchive ? "archivebox.fill" : "archivebox")
-                .foregroundStyle(isShowingWorkerArchive ? Color.accentColor : Color.secondary)
+            PlatformWorkOutlineToolbarGlyph(
+                symbol: isShowingWorkerArchive ? "archivebox.fill" : "archivebox",
+                color: isShowingWorkerArchive ? .accentColor : .primary
+            )
         }
-        .buttonStyle(.plain)
+        .platformWorkOutlineToolbarControl()
         .help(isShowingWorkerArchive ? L10n("返回活动 Task") : L10n("查看归档 Task"))
         .accessibilityLabel(isShowingWorkerArchive ? L10n("返回活动 Task") : L10n("查看归档 Task"))
         .accessibilityIdentifier("work-outline-archive")
