@@ -140,9 +140,8 @@ extension UnifiedConsoleView {
             }
             .padding(.horizontal, ConsoleWorkOutlineMetrics.groupHorizontalInset)
             .padding(.vertical, 4)
-            .background(ConsoleOverlayScroller(placeOnLeadingEdge: true))
+            .background(ConsoleOverlayScroller())
         }
-        .contentMargins(.leading, ConsoleOverlayScroller.leadingContentInset, for: .scrollContent)
     }
 
     func outlineChatHeader(hasUnread: Bool) -> some View {
