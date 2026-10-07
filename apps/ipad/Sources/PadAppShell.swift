@@ -77,6 +77,12 @@ struct PadAppShell: View {
                 : Color(uiColor: .systemGroupedBackground))
         }
         .background { PadKeyboardDismissal().frame(width: 0, height: 0) }
+        .modifier(PadUnifiedTopScrollEdges(enabled: usesNavigationRail && tab == .workspace))
+        .overlay(alignment: .top) {
+            if usesNavigationRail, tab == .workspace {
+                PadUnifiedStatusBarBackdrop()
+            }
+        }
         .sheet(item: $sheet) { _ in PadSettingsView(connection: connection, workspace: workspace) }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             guard !usesNavigationRail else { return }
@@ -200,6 +206,48 @@ struct PadAppShell: View {
             tab = .automations
         } else {
             tab = .workspace
+        }
+    }
+}
+
+/// One stationary backdrop for the entire iPad workspace, not one per column.
+private struct PadUnifiedStatusBarBackdrop: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        GeometryReader { geometry in
+            let topInset = geometry.safeAreaInsets.top
+            let height = PadStatusBarBackdropLayout.height(topInset: topInset)
+            Group {
+                if reduceTransparency {
+                    Rectangle().fill(WorkbenchCanvasSurface.defaultColor)
+                } else {
+                    Rectangle().fill(.regularMaterial)
+                }
+            }
+            .frame(height: height)
+            .mask {
+                LinearGradient(stops: [
+                    .init(color: .black, location: 0),
+                    .init(color: .black, location: PadStatusBarBackdropLayout.solidStop(topInset: topInset)),
+                    .init(color: .clear, location: 1)
+                ], startPoint: .top, endPoint: .bottom)
+            }
+            .offset(y: -topInset)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct PadUnifiedTopScrollEdges: ViewModifier {
+    let enabled: Bool
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(iOS 26.0, *), enabled {
+            content.scrollEdgeEffectHidden(true, for: .top)
+        } else {
+            content
         }
     }
 }

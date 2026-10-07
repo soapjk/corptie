@@ -8,16 +8,25 @@ import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { TimelineReadPool } from "../src/store/timelineReadPool.mjs";
 import { ClientSessionAPI } from "../src/application/clientSessionAPI.mjs";
 
-test("exactly three defaults always remain, with stable IDs and no duplicate learned commands", () => {
+test("defaults are cold-start fallback and all eight slots can be learned", () => {
   assert.deepEqual(QUICK_MESSAGE_DEFAULTS, ["继续", "开始开发", "给我一个完整方案"]);
   const empty = rankQuickMessages([], [], "a");
   assert.deepEqual(empty.items.map(item => item.text), QUICK_MESSAGE_DEFAULTS);
   const rows = Array.from({ length: 8 }, (_, index) => ({ text: `常用指令${index}`, count: 4 }));
   const populated = rankQuickMessages(rows, [], "a");
-  assert.equal(populated.items.length, 6);
-  assert.deepEqual(populated.items.filter(item => item.scope === "default"), empty.items);
+  assert.equal(populated.items.length, 8);
+  assert.ok(populated.items.every(item => item.scope === "task"));
   const repeatedDefault = rankQuickMessages([{ text: "继续", count: 5 }], [], "a");
   assert.equal(repeatedDefault.items.find(item => item.text === "继续").id, empty.items[0].id);
+  assert.equal(repeatedDefault.items[0].scope, "task");
+  assert.equal(repeatedDefault.items[0].count, 5);
+  assert.equal(repeatedDefault.items.filter(item => item.text === "继续").length, 1);
+  const partial = rankQuickMessages(rows.slice(0, 6), [], "a");
+  assert.equal(partial.items.length, 8);
+  assert.equal(partial.items.filter(item => item.scope === "default").length, 2);
+  const capped = rankQuickMessages([...rows, { text: "额外指令", count: 2 }], [], null);
+  assert.equal(capped.items.length, 8);
+  assert.ok(capped.items.every(item => item.scope === "session"));
 });
 
 test("short exact repeats rank before common defaults; sensitive/attachment content stays out", () => {
@@ -33,7 +42,7 @@ test("short exact repeats rank before common defaults; sensitive/attachment cont
   assert.equal(result.items[0].count, 3);
   assert.equal(result.items[1].scope, "common");
   assert.equal(new Set(result.items.map(item => item.text)).size, result.items.length);
-  assert.ok(result.items.length <= 6);
+  assert.ok(result.items.length <= 8);
   assert.ok(!result.items.some(item => /secret|图片|一次性/.test(item.text)));
   for (const text of ["/private/path", "https://example.com", "API_KEY=abc", "密码是 abcdef", "联系 user@example.com", "\n继续", "a".repeat(41)]) {
     assert.equal(eligibleQuickMessage(text), null);
@@ -97,6 +106,13 @@ test("real SQLite read worker isolates Tasks, merges their Sessions across Provi
     assert.ok(historical.items.some(item => item.text === "总结一下" && item.scope === "common"),
       "tool traffic does not erase cross-Task common-message history");
     console.log(`quick-message worker: 23k extra history rows, ${elapsed.toFixed(1)}ms, ${historical.items.length} output items`);
+    for (let index = 0; index < 8; index++) {
+      message("a1", `常用操作${index}`); message("a2", `常用操作${index}`);
+    }
+    const full = await api.quickMessages({ deviceId: "d" }, "a2");
+    assert.equal(full.items.length, 8);
+    assert.ok(full.items.every(item => item.scope !== "default"));
+    assert.deepEqual(full, await pool.readQuickMessages({ sessionId: "a1" }));
     await assert.rejects(api.quickMessages({ deviceId: "d" }, "missing"), { code: "SESSION_NOT_AVAILABLE" });
     assert.ok(pool.inFlightByKey.size <= 1);
   } finally {

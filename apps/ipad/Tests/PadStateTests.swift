@@ -5,6 +5,33 @@ import CorptieClientCore
 
 @MainActor
 struct PadStateTests {
+    @Test func initialPlacementRequiresVisibleTailAsWellAsEstimatedBottom() {
+        #expect(!PadTimelineJumpPolicy.placementConfirmed(tailVisible: false, nearBottom: true))
+        #expect(!PadTimelineJumpPolicy.placementConfirmed(tailVisible: true, nearBottom: false))
+        #expect(PadTimelineJumpPolicy.placementConfirmed(tailVisible: true, nearBottom: true))
+        #expect(PadTimelineJumpPolicy.correctionDelays.count == 4)
+        #expect(PadTimelineJumpPolicy.correctionDelays.reduce(0, +) < 1_000)
+    }
+
+    @Test func lazyTimelineHasStableRowsAndNativeScrollingWithoutBlindCompletion() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/CorptieMobileApp.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let rows = source.components(separatedBy: "ForEach(workspace.displayEntries) { entry in")[1]
+            .components(separatedBy: "Color.clear.frame(height: 1).id(\"latest\")")[0]
+        #expect(rows.contains("VStack(spacing: 0)"))
+        #expect(rows.contains(".id(entry.id)"))
+        #expect(!rows.contains(".id(message.id)"))
+        #expect(source.contains("position.scrollTo(edge: .bottom)"))
+        #expect(source.contains(".scrollTargetLayout()"))
+        let automatic = source.components(separatedBy: "private func scheduleLatestPlacement")[1]
+            .components(separatedBy: "private func requestSemanticTailScroll")[0]
+        #expect(automatic.contains("didPlaceInitialTimeline = isPlacementConfirmed()"))
+        #expect(!automatic.contains("milliseconds(16)"))
+        let resolver = source.components(separatedBy: "private func findScrollView() -> UIScrollView?")[1]
+        #expect(resolver.contains("!(scrollView is UITextView)"))
+        #expect(resolver.contains("widthMatches && heightMatches"))
+    }
     @Test func conversationSwipeNavigatesFromAnyStartPositionButNotVerticalOrOwnedContent() {
         #expect(PadConversationSwipePolicy.destination(horizontal: 100, vertical: 8) == .taskList)
         #expect(PadConversationSwipePolicy.destination(horizontal: -100, vertical: 8) == .detail)

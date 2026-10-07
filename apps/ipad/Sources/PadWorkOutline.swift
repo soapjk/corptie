@@ -542,7 +542,7 @@ private struct PadOutlineToolbarControlStyle: ViewModifier {
             .background {
                 Color.clear
                     .frame(width: 36, height: 36)
-                    .padGlassSurface(in: Circle())
+                    .padGlassSurface(in: Circle(), variant: .clear)
                     .allowsHitTesting(false)
             }
             .contentShape(Rectangle())

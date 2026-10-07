@@ -2,6 +2,7 @@ import Foundation
 import CryptoKit
 
 public struct ClientQuickMessage: Codable, Equatable, Identifiable, Sendable {
+    public static let maximumRecommendations = 8
     public let id: String
     public let text: String
     public let scope: String
@@ -55,12 +56,9 @@ public final class ClientQuickMessageCache {
 
     @discardableResult
     public func remember(_ items: [ClientQuickMessage], for scope: String) -> [ClientQuickMessage] {
-        // A temporarily empty response is not a request to clear the row.
-        guard !items.isEmpty else { return self.items(for: scope) }
-        // Backfill an incomplete refresh from the last good learned commands.
-        // New high-frequency recommendations still take precedence, bounded to three.
-        let previous = self.items(for: scope).filter { $0.scope != "default" }
-        let normalized = Self.normalized(items + previous)
+        // A successful refresh replaces the snapshot. Network failures never
+        // call this method, so they still retain the last good recommendations.
+        let normalized = Self.normalized(items)
         let changed = resident[scope] != normalized
         resident[scope] = normalized
         if changed, let data = try? JSONEncoder().encode(normalized) { defaults.set(data, forKey: scope) }
@@ -76,13 +74,16 @@ public final class ClientQuickMessageCache {
     }
 
     private static func normalized(_ items: [ClientQuickMessage]) -> [ClientQuickMessage] {
-        let defaultTexts = Set(ClientQuickMessage.defaults.map(\.text))
         var seen = Set<String>()
         let learned = items.filter { item in
-            item.scope != "default" && !defaultTexts.contains(item.text)
+            item.scope != "default" && !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && seen.insert(item.text.lowercased()).inserted
         }
-        return Array(learned.prefix(3)) + ClientQuickMessage.defaults
+        var result = Array(learned.prefix(ClientQuickMessage.maximumRecommendations))
+        for item in ClientQuickMessage.defaults where result.count < ClientQuickMessage.maximumRecommendations {
+            if seen.insert(item.text.lowercased()).inserted { result.append(item) }
+        }
+        return result
     }
 }
 

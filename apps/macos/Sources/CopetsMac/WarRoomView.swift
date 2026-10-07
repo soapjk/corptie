@@ -202,7 +202,7 @@ struct WarRoomView: View {
         taskDetail
             .frame(width: TwoPaneLayoutMetrics.detailCardWidth)
             .frame(maxHeight: .infinity)
-        .modifier(ConversationDetailGlassSurface(cornerRadius: TwoPaneLayoutMetrics.cardCornerRadius))
+        .modifier(ConversationDetailCardSurface())
         .padding(.vertical, TwoPaneLayoutMetrics.contentPadding)
     }
 
