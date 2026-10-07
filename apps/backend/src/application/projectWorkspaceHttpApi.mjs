@@ -139,6 +139,14 @@ export function handleProjectWorkspaceHttpRequest({
   if (request.method === "POST" && worktreeManagementJobActionMatch) {
     const jobId = decodeURIComponent(worktreeManagementJobActionMatch[1]);
     const action = worktreeManagementJobActionMatch[2];
+    const knownActions = new Set([
+      "confirm", "cancel", "commit-policy-prepare", "commit-policy-decisions",
+      "resolve-conflict", "retry"
+    ]);
+    if (!knownActions.has(action)) {
+      sendJson(response, 404, { error: `Unknown integration job action: ${action}`, code: "JOB_ACTION_NOT_FOUND" });
+      return true;
+    }
     readJson(request)
       .then((input) => action === "confirm"
         ? worktreeIntegrationJobService.confirm(jobId, input)

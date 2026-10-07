@@ -23,15 +23,16 @@ export async function initializeBackendStoreReadiness({
   // Only establish local Artifact directories before readiness. Traversal,
   // orphan audits, FTS rebuilds and usage reconciliation are maintenance.
   await artifactService.initialize({ performMaintenance: false });
-  void Promise.allSettled(store.listGitRepositories().flatMap((repository) => {
-    const paths = new Set([repository.path, ...(store.listGitWorktrees(repository.id) ?? [])
-      .flatMap((item) => [item.path, item.canonicalPath])].filter(Boolean));
-    return [...paths].map(async (path) => {
-      try { await ensureArtifactCommitHook(path, { dbPath: store.dbPath }); }
+  // Development Preview is diagnostic-only: it must never race production to
+  // rewrite repository-local Git configuration. Production installs once per
+  // repository common directory rather than once per linked Worktree.
+  if (!developmentPreview) void Promise.allSettled(store.listGitRepositories().map((repository) => {
+    return (async () => {
+      try { await ensureArtifactCommitHook(repository.path, { dbPath: store.dbPath }); }
       catch (error) {
-        console.error(`[artifact-commit-gate] installation failed repository=${repository.id} path=${path} code=${error.code ?? "ERROR"} message=${error.message}`);
+        console.error(`[artifact-commit-gate] installation failed repository=${repository.id} path=${repository.path} code=${error.code ?? "ERROR"} message=${error.message}`);
       }
-    });
+    })();
   }));
   await chatResourceService.initialize();
   const collaborationMigration = collaborationCore.initialize();

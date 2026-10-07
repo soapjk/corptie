@@ -1251,6 +1251,8 @@ test("Markdown policy decisions apply a different supported action to every file
   await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
   const paused = await waitForJob(service, plan.id, "paused");
 
+  assert.deepEqual(paused.availableActions, ["resolve_commit_policy", "cancel"]);
+  assert.equal(paused.recovery.kind, "resolve_commit_policy");
   assert.deepEqual(paused.commitPolicyBlocker.files[0].supportedActions, [
     "ignore", "delete", "artifact", "track"
   ]);
