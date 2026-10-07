@@ -9,9 +9,10 @@ extension View {
         in shape: S,
         tint: Color? = nil,
         interactive: Bool = false,
-        fallbackUsesMaterial: Bool = true
+        fallbackUsesMaterial: Bool = true,
+        variant: PlatformGlassVariant = .regular
     ) -> some View {
         platformGlassSurface(in: shape, tint: tint, interactive: interactive,
-                             fallbackUsesMaterial: fallbackUsesMaterial)
+                             fallbackUsesMaterial: fallbackUsesMaterial, variant: variant)
     }
 }

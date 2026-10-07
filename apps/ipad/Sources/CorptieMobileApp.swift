@@ -4,6 +4,7 @@ import AuthenticationServices
 import CorptieClientCore
 import CorptieConversation
 import Observation
+import OSLog
 
 @main
 struct CorptieMobileApp: App {
@@ -534,7 +535,10 @@ struct ConversationView: View {
     @State private var nativeTimelineNearBottom: Bool?
     @State private var latestJumpGeneration: UInt64 = 0
     @State private var explicitJumpRevision: UInt64 = 0
+    @State private var tailScrollRevision: UInt64 = 0
+    @State private var tailIsVisible = false
     @State private var latestTailGeometry = TimelineTailGeometry()
+    private static let timelineLog = Logger(subsystem: "com.corptie.mobile", category: "TimelinePlacement")
     @State private var expandedProcessEntryIDs: Set<String> = []
     @State private var processCollapseTracker = ProcessCollapseTracker()
     @State private var attachmentPreview: PadAttachmentPreview?
@@ -581,7 +585,9 @@ struct ConversationView: View {
                             .padding(.vertical, 8)
                     }
                     ForEach(workspace.displayEntries) { entry in
-                        Group {
+                        // Exactly one layout child per entry, even when a process
+                        // presentation is temporarily unavailable.
+                        VStack(spacing: 0) {
                         switch entry.kind {
                         case .message(let message):
                             if message.presentationKind == .collaborationMessage
@@ -591,27 +597,26 @@ struct ConversationView: View {
                                     onSubmitted: {
                                         let revision = workspace.lastTimelineRevision
                                         await workspace.waitForRealtimeTimelineOrFallback(connection, after: revision)
-                                    }).id(message.id)
+                                    })
                             } else if message.presentationKind == .automationEvent
                                         || message.presentationKind == .systemEvent
                                         || message.presentationKind == .unknown {
-                                PadSpecialEventCard(message: message).id(message.id)
+                                PadSpecialEventCard(message: message)
                             } else if message.type == "userInput" {
                                 PadUserInputCard(message: message, connection: connection, sessionID: sessionID,
                                     onSubmitted: {
                                         let revision = workspace.lastTimelineRevision
                                         await workspace.waitForRealtimeTimelineOrFallback(connection, after: revision)
-                                    }).id(message.id)
+                                    })
                             } else if message.type == "choice" || message.type == "approval" {
                                 PadApprovalCard(message: message, connection: connection, sessionID: sessionID,
                                     onSubmitted: {
                                         let revision = workspace.lastTimelineRevision
                                         await workspace.waitForRealtimeTimelineOrFallback(connection, after: revision)
-                                    }).id(message.id)
+                                    })
                             } else if (message.type == "executionPlan" || message.type == "plan"),
                                       let plan = message.executionPlan {
                                 PadExecutionPlanTimelineCard(plan: plan, laneWidth: cardLaneWidth)
-                                    .id(message.id)
                             } else {
                                 MobileMessageBubble(message: message, deliveryState: workspace.outgoingStates[message.id],
                                     timeSeparatorText: workspace.timeSeparatorTextByMessageID[message.id],
@@ -623,13 +628,15 @@ struct ConversationView: View {
                                     sendSuggestedReply: { text in
                                         Task { await workspace.sendSuggestedReply(connection, sessionID: sessionID, text: text) }
                                     })
-                                    .id(message.id)
                             }
                         case .process(_, let items):
                             processCard(entryID: entry.id, items: items, laneWidth: cardLaneWidth)
                         }
                         }
                         .id(entry.id)
+                        .modifier(TimelineRowVisibilityModifier { visible in
+                            latestTailGeometry.setVisible(entry.id, visible: visible)
+                        })
                         .background {
                             if entry.id == workspace.displayEntries.first?.id
                                 || entry.id == pendingHistoryViewport?.entryID {
@@ -646,6 +653,7 @@ struct ConversationView: View {
                         }
                     }
                     Color.clear.frame(height: 1).id("latest")
+                        .modifier(TimelineTailVisibilityModifier { tailIsVisible = $0 })
                         .background {
                             GeometryReader { proxy in
                                 Color.clear.preference(key: TimelineTailPositionKey.self,
@@ -660,6 +668,7 @@ struct ConversationView: View {
                             requestEarlierHistoryIfNeeded(reader)
                         }
                 }
+                .scrollTargetLayout()
                 .padding(.horizontal, 16).padding(.vertical, 12)
                 .background {
                     GeometryReader { proxy in
@@ -671,6 +680,7 @@ struct ConversationView: View {
                 }
             }
             .defaultScrollAnchor(.bottom)
+            .modifier(TimelineSemanticScrollModifier(revision: tailScrollRevision))
             .coordinateSpace(name: timelineCoordinateSpace)
             .background(TimelineScrollViewResolver { scrollView in
                 if timelineScrollView !== scrollView { timelineScrollView = scrollView }
@@ -695,7 +705,8 @@ struct ConversationView: View {
                     guard pendingLatestJump else { return }
                     // Native geometry is authoritative on iOS 18+. Do not wait
                     // for a second, potentially stale lazy-tail measurement.
-                    if nearBottom {
+                    if PadTimelineJumpPolicy.placementConfirmed(tailVisible: tailIsVisible, nearBottom: nearBottom) {
+                        didPlaceInitialTimeline = true
                         pendingLatestJump = false
                     }
                 }
@@ -726,7 +737,10 @@ struct ConversationView: View {
             }
             .onPreferenceChange(TimelineTailPositionKey.self) { minY in
                 latestTailGeometry.minY = minY
-                if pendingLatestJump && isTimelineAtLatest() { pendingLatestJump = false }
+                if pendingLatestJump && isPlacementConfirmed() {
+                    didPlaceInitialTimeline = true
+                    pendingLatestJump = false
+                }
             }
             .onPreferenceChange(TimelineContentHeightKey.self) { height in
                 guard height != historyViewport.contentHeight else { return }
@@ -805,7 +819,9 @@ struct ConversationView: View {
                 isUserInteractingWithTimeline = false
                 timelineScrollView = nil
                 latestTailGeometry.minY = nil
+                latestTailGeometry.visibleEntryIDs.removeAll()
                 nativeTimelineNearBottom = nil
+                tailIsVisible = false
                 historyViewport = TimelineHistoryViewportState()
                 expandedProcessEntryIDs.removeAll()
                 processCollapseTracker.reset()
@@ -817,6 +833,11 @@ struct ConversationView: View {
             .onDisappear {
                 cancelPendingTimelinePlacement()
                 pendingLatestJump = false
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active && viewportState.followsLatest {
+                    scheduleLatestPlacement(reader)
+                }
             }
             .overlay(alignment: .bottomTrailing) {
                 if viewportState.showsJumpToLatest {
@@ -885,7 +906,6 @@ struct ConversationView: View {
                                sceneIsActive: scenePhase == .active),
                            expanded: expandedProcessEntryIDs.contains(entryID),
                            toggle: { toggleProcess(entryID) })
-                .id(sessionID + ":" + entryID)
         }
     }
 
@@ -944,9 +964,8 @@ struct ConversationView: View {
             scrollView.setContentOffset(scrollView.contentOffset, animated: false)
             scrollView.panGestureRecognizer.isEnabled = true
         }
-        withTransaction(Transaction(animation: nil)) {
-            reader.scrollTo("latest", anchor: .bottom)
-        }
+        requestSemanticTailScroll(reader)
+        logTimelinePlacement("explicit-request")
         let generation = latestJumpGeneration
         let targetSessionID = sessionID
         latestPlacementTask = Task { @MainActor in
@@ -958,19 +977,22 @@ struct ConversationView: View {
             }
             // Finite post-layout corrections; height measurements never restart
             // this loop. Correction lifetime never controls button visibility.
-            for delay in [32, 64, 128, 256] {
+            for delay in PadTimelineJumpPolicy.correctionDelays {
                 do { try await Task.sleep(for: .milliseconds(delay)) } catch { return }
                 guard !Task.isCancelled, generation == latestJumpGeneration,
                       workspace.selection == targetSessionID, pendingLatestJump else { return }
-                if isTimelineAtLatest() {
+                if isPlacementConfirmed() {
                     didPlaceInitialTimeline = true
                     pendingLatestJump = false
+                    logTimelinePlacement("explicit-confirmed")
                     return
                 }
-                withTransaction(Transaction(animation: nil)) {
-                    reader.scrollTo("latest", anchor: .bottom)
-                }
+                requestSemanticTailScroll(reader)
             }
+            await Task.yield()
+            guard !Task.isCancelled, generation == latestJumpGeneration else { return }
+            didPlaceInitialTimeline = isPlacementConfirmed()
+            logTimelinePlacement(didPlaceInitialTimeline ? "explicit-confirmed" : "explicit-unconfirmed")
         }
     }
 
@@ -987,16 +1009,53 @@ struct ConversationView: View {
             defer {
                 if generation == latestJumpGeneration { latestPlacementTask = nil }
             }
-            do { try await Task.sleep(for: .milliseconds(16)) } catch { return }
+            await Task.yield()
+            logTimelinePlacement("automatic-request")
+            // One finite request cycle. Geometry callbacks never restart it.
+            for delay in [0] + PadTimelineJumpPolicy.correctionDelays {
+                if delay > 0 {
+                    do { try await Task.sleep(for: .milliseconds(delay)) } catch { return }
+                }
+                guard !Task.isCancelled, generation == latestJumpGeneration,
+                      workspace.selection == targetSessionID,
+                      !isUserInteractingWithTimeline, viewportState.followsLatest,
+                      pendingHistoryViewport == nil, !workspace.displayEntries.isEmpty else { return }
+                if delay > 0 && isPlacementConfirmed() {
+                    didPlaceInitialTimeline = true
+                    logTimelinePlacement("automatic-confirmed")
+                    return
+                }
+                requestSemanticTailScroll(reader)
+            }
+            await Task.yield()
             guard !Task.isCancelled, generation == latestJumpGeneration,
-                  workspace.selection == targetSessionID,
-                  !isUserInteractingWithTimeline, viewportState.followsLatest,
-                  pendingHistoryViewport == nil, !workspace.displayEntries.isEmpty else { return }
-            withTransaction(Transaction(animation: nil)) {
+                  workspace.selection == targetSessionID else { return }
+            didPlaceInitialTimeline = isPlacementConfirmed()
+            logTimelinePlacement(didPlaceInitialTimeline ? "automatic-confirmed" : "automatic-unconfirmed")
+        }
+    }
+
+    private func requestSemanticTailScroll(_ reader: ScrollViewProxy) {
+        withTransaction(Transaction(animation: nil)) {
+            if #available(iOS 18.0, *) {
+                tailScrollRevision &+= 1
+            } else {
                 reader.scrollTo("latest", anchor: .bottom)
             }
-            didPlaceInitialTimeline = true
         }
+    }
+
+    private func isPlacementConfirmed() -> Bool {
+        if #available(iOS 18.0, *) {
+            return PadTimelineJumpPolicy.placementConfirmed(tailVisible: tailIsVisible, nearBottom: isTimelineAtLatest())
+        }
+        return isTimelineAtLatest()
+    }
+
+    private func logTimelinePlacement(_ event: String) {
+        // Only request/end events, never pixel-by-pixel or message contents.
+        let scroll = timelineScrollView
+        Self.timelineLog.info("event=\(event, privacy: .public) session=\(sessionID, privacy: .private(mask: .hash)) generation=\(latestJumpGeneration) revision=\(workspace.lastTimelineRevision ?? -1) messages=\(workspace.messages.count) entries=\(workspace.displayEntries.count) visibleEntries=\(latestTailGeometry.visibleEntryIDs.count) tailVisible=\(tailIsVisible) nearBottom=\(nativeTimelineNearBottom ?? false) viewport=\(historyViewport.viewportHeight) contentHeight=\(scroll?.contentSize.height ?? -1) offset=\(scroll?.contentOffset.y ?? -1) history=\(workspace.isLoadingEarlier) scrollType=\(scroll.map { String(describing: type(of: $0)) } ?? "unresolved", privacy: .public)")
     }
 
     private func cancelPendingTimelinePlacement() {
@@ -1632,6 +1691,15 @@ private final class TimelineAnchorGeometry {
 /// not invalidate all realized message rows. Only jump completion changes UI.
 private final class TimelineTailGeometry {
     var minY: CGFloat?
+    // Diagnostics only; visibility changes never invalidate the timeline.
+    var visibleEntryIDs = Set<String>()
+    func setVisible(_ id: String, visible: Bool) {
+        if visible {
+            if visibleEntryIDs.count < 128 { visibleEntryIDs.insert(id) }
+        } else {
+            visibleEntryIDs.remove(id)
+        }
+    }
 }
 
 /// Scroll preferences update this narrow owner; they do not invalidate the
@@ -1883,6 +1951,53 @@ private struct TimelineFollowLatestModifier: ViewModifier {
     }
 }
 
+/// Modern edge scrolling avoids resolving an off-screen lazy sentinel using
+/// stale height estimates. History restoration still uses stable row IDs.
+private struct TimelineSemanticScrollModifier: ViewModifier {
+    let revision: UInt64
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.modifier(ModernTimelineSemanticScrollModifier(revision: revision))
+        } else {
+            content
+        }
+    }
+}
+
+@available(iOS 18.0, *)
+private struct ModernTimelineSemanticScrollModifier: ViewModifier {
+    let revision: UInt64
+    @State private var position = ScrollPosition(edge: .bottom)
+    func body(content: Content) -> some View {
+        content.scrollPosition($position)
+            .onChange(of: revision) { _, _ in
+                withTransaction(Transaction(animation: nil)) { position.scrollTo(edge: .bottom) }
+            }
+    }
+}
+
+private struct TimelineTailVisibilityModifier: ViewModifier {
+    let onChange: (Bool) -> Void
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.onScrollVisibilityChange(threshold: 0.5, onChange)
+        } else {
+            content
+        }
+    }
+}
+
+private struct TimelineRowVisibilityModifier: ViewModifier {
+    let onChange: (Bool) -> Void
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.onScrollVisibilityChange(threshold: 0.01, onChange)
+        } else {
+            content.onAppear { onChange(true) }.onDisappear { onChange(false) }
+        }
+    }
+}
+
 /// Resolves SwiftUI's native scroll view for physical viewport corrections.
 /// History prepends use a stable row identity and its on-screen offset instead
 /// of the lazy stack's estimated total content height.
@@ -1927,14 +2042,21 @@ private struct TimelineScrollViewResolver: UIViewRepresentable {
         }
 
         private func findScrollView() -> UIScrollView? {
+            // Ancestors win over descendants: UITextView is a UIScrollView,
+            // and rows can also contain horizontal charts/reply scrollers.
             var candidate = superview
             while let view = candidate {
-                if let scrollView = view as? UIScrollView {
+                if let scrollView = view as? UIScrollView, !(scrollView is UITextView) {
                     return scrollView
                 }
-                if let scrollView = findScrollView(in: view) {
-                    return scrollView
-                }
+                candidate = view.superview
+            }
+            // A ScrollView background is sometimes a sibling of the native
+            // scroll view. Match our resolver inside its viewport bounds,
+            // rather than accepting the first scroll view in the entire page.
+            candidate = superview
+            while let view = candidate {
+                if let scrollView = findScrollView(in: view) { return scrollView }
                 candidate = view.superview
             }
             return nil
@@ -1944,7 +2066,14 @@ private struct TimelineScrollViewResolver: UIViewRepresentable {
             for subview in root.subviews {
                 if subview === self { continue }
                 if let scrollView = subview as? UIScrollView {
-                    return scrollView
+                    guard !(scrollView is UITextView),
+                          scrollView.bounds.width > 1, scrollView.bounds.height > 1 else { continue }
+                    let resolverRect = convert(bounds, to: scrollView)
+                    let widthMatches = abs(resolverRect.width - scrollView.bounds.width) < 2
+                    let heightMatches = abs(resolverRect.height - scrollView.bounds.height) < 2
+                    if widthMatches && heightMatches { return scrollView }
+                    // Never descend into row contents to select their scrollers.
+                    continue
                 }
                 if let found = findScrollView(in: subview) {
                     return found
@@ -2018,8 +2147,8 @@ private struct PadApprovalCard: View {
         }
         .frame(maxWidth: 560, alignment: .leading)
         .padding(14)
-        .background(requiresAttention ? Color.orange.opacity(0.065) : Color.secondary.opacity(0.04),
-                    in: RoundedRectangle(cornerRadius: 14))
+        .modifier(ConversationContentSurface(cornerRadius: 14,
+            tint: requiresAttention ? .orange : .secondary, tintOpacity: requiresAttention ? 0.065 : 0.04, isMessage: true))
         .overlay {
             RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(requiresAttention ? Color.orange.opacity(0.36) : Color.secondary.opacity(0.12),
@@ -2059,6 +2188,7 @@ private struct PadApprovalCard: View {
 }
 
 private struct PadCollaborationCard: View {
+    @Environment(\.colorScheme) private var colorScheme
     let message: ClientMessage
     let connection: PadConnection
     let sessionID: String
@@ -2171,7 +2301,9 @@ private struct PadCollaborationCard: View {
         }
         .padding(14)
         .frame(maxWidth: 560, alignment: .leading)
-        .background(Color.orange.opacity(0.065), in: RoundedRectangle(cornerRadius: 14))
+        .modifier(ConversationContentSurface(cornerRadius: 14,
+            tint: presentation?.isConfirmation == true ? .orange : MessageTextCardPalette.background(for: .collaboration, dark: colorScheme == .dark),
+            tintOpacity: presentation?.isConfirmation == true ? 0.065 : ConversationContentSurfacePolicy.tintOpacity, isMessage: true))
         .overlay {
             RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(Color.orange.opacity(0.34), lineWidth: 1)
@@ -2248,7 +2380,7 @@ private struct PadSpecialEventCard: View {
         }
         .padding(14)
         .frame(maxWidth: 560, alignment: .leading)
-        .background(Color.secondary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14))
+        .modifier(ConversationContentSurface(cornerRadius: 14, tint: .secondary, tintOpacity: 0.045, isMessage: true))
         .overlay { RoundedRectangle(cornerRadius: 14).strokeBorder(Color.secondary.opacity(0.14)) }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
@@ -2286,7 +2418,7 @@ private struct PadUserInputCard: View {
         }
         .frame(maxWidth: 560, alignment: .leading)
         .padding(14)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .modifier(ConversationContentSurface(cornerRadius: 14, isMessage: true))
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -2309,7 +2441,7 @@ private struct PadExecutionPlanTimelineCard: View {
         }
         .padding(14)
         .frame(maxWidth: laneWidth > 0 ? min(560, laneWidth) : 560, alignment: .leading)
-        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
+        .modifier(ConversationContentSurface(cornerRadius: 14, tint: .secondary, tintOpacity: 0.06))
         .overlay {
             RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(Color.secondary.opacity(0.2), lineWidth: 1)

@@ -12,6 +12,12 @@ enum PadConversationReadOperation: String {
 }
 
 enum PadTimelineJumpPolicy {
+    /// An estimated bottom offset alone cannot confirm that content was drawn.
+    static func placementConfirmed(tailVisible: Bool, nearBottom: Bool) -> Bool {
+        tailVisible && nearBottom
+    }
+
+    static let correctionDelays = [32, 64, 128, 256]
     /// Native scroll geometry is the primary completion signal on iOS 18+.
     /// The realized tail + physical offset remain the legacy fallback.
     static func correctionCompleted(nativeNearBottom: Bool?, tailMinY: CGFloat?,
@@ -73,6 +79,19 @@ enum PadServerConnectionStatus: Equatable {
 enum PadWorkspaceLayoutPolicy {
     static func showsPersistentOutlineSelection(isRegularWidth: Bool, width: CGFloat) -> Bool {
         isRegularWidth && width >= 1_072
+    }
+}
+
+enum PadStatusBarBackdropLayout {
+    static let fadeHeight: CGFloat = 16
+
+    static func height(topInset: CGFloat) -> CGFloat {
+        topInset > 0 ? topInset + fadeHeight : 0
+    }
+
+    static func solidStop(topInset: CGFloat) -> CGFloat {
+        let total = height(topInset: topInset)
+        return total > 0 ? max(0, min(1, topInset / total)) : 0
     }
 }
 
