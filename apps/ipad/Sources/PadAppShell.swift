@@ -42,7 +42,8 @@ struct PadAppShell: View {
             ZStack {
                 WorkspaceView(connection: connection, workspace: workspace,
                     compactOpenSessionRequest: compactOpenSessionRequest,
-                    onCompactRootChange: { compactWorkspaceIsRoot = $0 })
+                    onCompactRootChange: { compactWorkspaceIsRoot = $0 },
+                    onOpenWorktrees: { tab = .worktrees })
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .opacity(tab == .workspace ? 1 : 0)
                     .allowsHitTesting(tab == .workspace)

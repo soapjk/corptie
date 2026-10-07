@@ -10,7 +10,6 @@ struct DetailHeaderView: View {
     @ObservedObject private var entityClient = EntityAPIClient.shared
     @ObservedObject private var supplementaryData = BackendClient.shared.supplementaryDataController
     @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
-    @ObservedObject private var gitHubPushState = BackendClient.shared.gitHubPushController
     @Environment(\.isLiquidGlass) private var isLiquidGlass
     @State private var didCopySessionTitle = false
     @State private var sessionTitleCopyFeedbackTask: Task<Void, Never>?
@@ -245,7 +244,6 @@ struct DetailHeaderView: View {
     private enum HeaderAction {
         case returnToActiveThread
         case reconnect
-        case gitHubPush
         case manageWorktrees
     }
 
@@ -255,12 +253,6 @@ struct DetailHeaderView: View {
         }
         if canReconnectSelectedSession {
             return .reconnect
-        }
-        if backendClient.isSelectedSessionPushingGitHub {
-            return .gitHubPush
-        }
-        if gitHubPushHasPendingChanges, selectedSessionWorktree != nil {
-            return .gitHubPush
         }
         if shouldSuggestWorktreeManagement {
             return .manageWorktrees
@@ -305,28 +297,6 @@ struct DetailHeaderView: View {
             }
             .buttonStyle(.plain)
             .help(L10n("Reconnect session"))
-        case .gitHubPush:
-            let worktree = selectedSessionWorktree
-            let color = gitHubButtonColor(worktree)
-            if backendClient.isSelectedSessionPushingGitHub {
-                GitHubPushButtonVisual(color: color, state: .pushing, showsSurface: false)
-                    .help(gitHubPushButtonHelp(worktree))
-            } else {
-                Button {
-                    backendClient.prepareGitHubPush()
-                } label: {
-                    GitHubPushButtonVisual(
-                        color: color,
-                        state: backendClient.isPreparingGitHubPush ? .preparing : .ready,
-                        showsSurface: false
-                    )
-                }
-                .buttonStyle(.plain)
-                .disabled(
-                    backendClient.isPreparingGitHubPush || backendClient.isPushingGitHub
-                )
-                .help(gitHubPushButtonHelp(worktree))
-            }
         case .manageWorktrees:
             if let status = supplementaryData.selectedProjectWorktreeStatus {
                 Button {
@@ -359,18 +329,6 @@ struct DetailHeaderView: View {
         }
 
         Button {
-            backendClient.prepareGitHubPush()
-        } label: {
-            Label(L10n("Commit and Push to GitHub"), systemImage: "arrow.up.circle.fill")
-        }
-        .disabled(
-            backendClient.viewingHistoricalThreadId != nil
-                || backendClient.isPreparingGitHubPush
-                || backendClient.isPushingGitHub
-                || !gitHubPushHasPendingChanges
-        )
-
-        Button {
             openWorktreeManagement()
         } label: {
             Label(L10n("Manage project worktrees and service"), systemImage: "arrow.triangle.branch")
@@ -390,14 +348,6 @@ struct DetailHeaderView: View {
         .disabled(workspacePath == nil)
     }
 
-    private func gitHubButtonColor(_ worktree: ProjectWorktreeStatus?) -> Color {
-        if backendClient.isSelectedSessionPushingGitHub {
-            return worktree?.dirty == true ? CorptiePalette.amber : CorptiePalette.connected
-        }
-        guard gitHubPushHasPendingChanges else { return CorptiePalette.mutedText }
-        return worktree?.dirty == true ? CorptiePalette.amber : CorptiePalette.connected
-    }
-
     private func openWorktreeManagement() {
         AppDelegate.shared?.openWorktreeManagement(
             repositoryId: WorktreeNavigationTarget.preferredRepositoryId(
@@ -408,39 +358,6 @@ struct DetailHeaderView: View {
                 ?? backendClient.selectedSession?.external?.workspace?.id,
             worktreePath: workspacePath
         )
-    }
-
-    private var gitHubPushHasPendingChanges: Bool {
-        guard let push = selectedGitHubPushStatus else { return false }
-        return push.available && push.pending
-    }
-
-    private var selectedGitHubPushStatus: GitHubPushStatus? {
-        ProjectGitHubPushSelection.status(
-            for: selectedSessionWorktree,
-            fallback: supplementaryData.selectedProjectWorktreeStatus?.gitHubPush
-        )
-    }
-
-    private func gitHubPushButtonHelp(_ worktree: ProjectWorktreeStatus?) -> String {
-        if backendClient.isSelectedSessionPushingGitHub {
-            return L10n("Pushing to GitHub…")
-        }
-        if let error = backendClient.gitHubPushError {
-            return error
-        }
-        guard let push = selectedGitHubPushStatus else {
-            return L10n("Checking for changes to push")
-        }
-        if !push.available {
-            return push.error ?? L10n("GitHub push is unavailable")
-        }
-        if !push.pending {
-            return L10n("No changes or commits to push")
-        }
-        return worktree?.dirty == true
-            ? L10n("Uncommitted changes — review commit and GitHub push")
-            : L10nFormat("%d commit(s) ready to push", push.unpushedCommitCount)
     }
 
     private func projectServiceStatusHelp(_ status: ProjectWorktreeStatusResponse) -> String {

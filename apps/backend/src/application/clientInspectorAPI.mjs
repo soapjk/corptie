@@ -110,6 +110,17 @@ export class ClientInspectorAPI {
   }
   async read(identity, sessionId, resource, input = {}) {
     const scope = this.scope(sessionId, identity);
+    if (resource === "header") {
+      const external = scope.session.external ?? {};
+      return {
+        schemaVersion: 1,
+        provider: external.provider ?? null,
+        cwd: external.workspace?.path ?? external.cwd ?? null,
+        branchName: external.workspace?.branchName ?? null,
+        continuationState: external.workspace?.continuationState ?? null,
+        transitionStrategy: external.workspace?.transitionStrategy ?? null
+      };
+    }
     if (resource === "artifacts") {
       if (!Number.isSafeInteger(input.offset) || input.offset < 0 || !scope.workId) throw deviceError("INVALID_OFFSET", 400);
       return this.artifactPage(scope, input.offset);

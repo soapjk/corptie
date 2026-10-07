@@ -242,6 +242,7 @@ struct WorkspaceView: View {
     @Bindable var workspace: PadWorkspace
     let compactOpenSessionRequest: Int
     let onCompactRootChange: (Bool) -> Void
+    let onOpenWorktrees: () -> Void
     @State private var expandedWorkIDs = PadWorkExpansionStore().load()
     @State private var isChatExpanded = PadWorkExpansionStore().loadChat()
     @State private var taskCreationRoute: PadTaskCreationRoute?
@@ -372,7 +373,8 @@ struct WorkspaceView: View {
                         ConversationView(connection: connection, workspace: workspace, sessionID: id,
                             messageImages: messageImages,
                             onBack: { if compactPath.last == .conversation(id) { compactPath.removeLast() } },
-                            onOpenDetail: { if compactPath.last == .conversation(id) { compactPath.append(.detail(id)) } })
+                            onOpenDetail: { if compactPath.last == .conversation(id) { compactPath.append(.detail(id)) } },
+                            onOpenWorktrees: onOpenWorktrees)
                             .id(id)
                             .padWorkspaceNavigationBackground()
                     case .detail(let id):
@@ -472,7 +474,7 @@ struct WorkspaceView: View {
         if let id = workspace.selection {
             ConversationView(connection: connection, workspace: workspace, sessionID: id,
                 messageImages: messageImages,
-                onBack: nil, onOpenDetail: nil)
+                onBack: nil, onOpenDetail: nil, onOpenWorktrees: onOpenWorktrees)
                 .id(id)
         } else {
             ContentUnavailableView("选择一个 Task 或会话", systemImage: "bubble.left.and.text.bubble.right",
@@ -519,6 +521,10 @@ struct ConversationView: View {
     let messageImages: PadMessageImageStore
     let onBack: (() -> Void)?
     let onOpenDetail: (() -> Void)?
+    let onOpenWorktrees: () -> Void
+    @State private var headerMetadata: ClientInspectorValue = .null
+    @State private var copiedHeaderItem: HeaderCopiedItem?
+    private enum HeaderCopiedItem: Hashable { case title, workspace }
     @State private var confirmForget = false
     @State private var viewportState = ConversationViewportState()
     @State private var historyViewport = TimelineHistoryViewportState()
@@ -892,6 +898,21 @@ struct ConversationView: View {
             PadAttachmentViewer(connection: connection, preview: preview)
         }
         }
+        .task(id: "\(connection.serverID):\(connection.address):\(sessionID)") {
+            headerMetadata = .null
+            do {
+                let api = ClientInspectorAPI(transport: try await connection.transport())
+                let metadata = try await api.read(sessionID: sessionID, resource: "header")
+                if !Task.isCancelled, metadata["schemaVersion"].number == 1 {
+                    headerMetadata = metadata
+                }
+            } catch { /* Older hosts can still show the title and usage route. */ }
+        }
+        .task(id: copiedHeaderItem) {
+            guard copiedHeaderItem != nil else { return }
+            try? await Task.sleep(for: .seconds(1.5))
+            if !Task.isCancelled { copiedHeaderItem = nil }
+        }
     }
 
     private var timelineCoordinateSpace: String {
@@ -1213,8 +1234,19 @@ struct ConversationView: View {
 
     private var conversationHeader: some View {
         let session = workspace.sessionsByID[sessionID]
-        let title = workspace.tasks.first(where: { $0.id == session?.taskId })?.title
+        let rawTitle = workspace.tasks.first(where: { $0.id == session?.taskId })?.title
             ?? session?.title ?? "会话"
+        let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "会话" : rawTitle
+        let inspector = workspace.inspectorStore(for: sessionID)
+        let snapshot = inspector.snapshot?.sessionId == sessionID ? inspector.snapshot : nil
+        let providerID = snapshot?.environment["provider"].text
+            ?? headerMetadata["provider"].text
+            ?? workspace.selectedSessionUsage?.route?.providerId
+        let providerName = snapshot?.sections["providers"]?.items.first {
+            $0["id"].text == providerID
+        }?["name"].text ?? Self.providerName(providerID)
+        let cwd = snapshot?.environment["cwd"].text ?? headerMetadata["cwd"].text
+        let branch = headerMetadata["branchName"].text
 
         return HStack(spacing: 8) {
             if let onBack {
@@ -1228,17 +1260,92 @@ struct ConversationView: View {
                 .accessibilityLabel("返回 Work")
                 .accessibilityIdentifier("conversation-back")
             }
-            Text(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "会话" : title)
-                .font(.title3.weight(.semibold))
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 5)
-                .padGlassSurface(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .frame(maxWidth: onBack == nil ? 360 : .infinity)
+            VStack(spacing: 3) {
+                Button {
+                    UIPasteboard.general.string = title
+                    copiedHeaderItem = .title
+                    UIAccessibility.post(notification: .announcement, argument: "标题已复制")
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(title)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.center)
+                        if copiedHeaderItem == .title {
+                            Image(systemName: "checkmark")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.green)
+                        }
+                    }
+                    .font(.title3.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("复制标题：\(title)")
                 .accessibilityAddTraits(.isHeader)
                 .accessibilityIdentifier("conversation-task-title")
+
+                HStack(spacing: 6) {
+                    if let providerID, !providerID.isEmpty {
+                        HStack(spacing: 3) {
+                            providerIcon(for: providerID)
+                            Text(providerName).lineLimit(1)
+                        }
+                        .fixedSize(horizontal: true, vertical: false)
+                        .accessibilityElement(children: .combine)
+                    }
+                    if let cwd, !cwd.isEmpty {
+                        Button {
+                            UIPasteboard.general.string = cwd
+                            copiedHeaderItem = .workspace
+                            UIAccessibility.post(notification: .announcement, argument: "工作空间路径已复制")
+                        } label: {
+                            HStack(spacing: 3) {
+                                Text(URL(fileURLWithPath: cwd).lastPathComponent)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                if copiedHeaderItem == .workspace {
+                                    Image(systemName: "checkmark").foregroundStyle(.green)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .frame(minHeight: 36)
+                        .accessibilityLabel("复制工作空间路径：\(cwd)")
+                        .accessibilityIdentifier("conversation-copy-workspace")
+                    }
+                    if let branch, !branch.isEmpty {
+                        Button(action: onOpenWorktrees) {
+                            HStack(spacing: 3) {
+                                Image(systemName: "arrow.triangle.branch")
+                                if UIDevice.current.userInterfaceIdiom == .pad {
+                                    Text(branch).lineLimit(1)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .frame(minHeight: 36)
+                        .accessibilityLabel("打开 Worktree：\(branch)")
+                        .accessibilityIdentifier("conversation-open-worktrees")
+                    }
+                    if headerMetadata["continuationState"].text == "failed" {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                            .accessibilityLabel("Worktree 续接失败")
+                    } else if headerMetadata["transitionStrategy"].text == "handoff" {
+                        Image(systemName: "arrow.triangle.branch")
+                            .accessibilityLabel("上下文移交")
+                    }
+                }
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+            }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .padGlassSurface(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .frame(maxWidth: onBack == nil ? 360 : .infinity)
             if let onOpenDetail {
                 Button(action: onOpenDetail) {
                     Image(systemName: "sidebar.right")
@@ -1255,6 +1362,30 @@ struct ConversationView: View {
         .padding(.horizontal, 16)
         .padding(.top, 4)
         .padding(.bottom, 8)
+    }
+
+    @ViewBuilder private func providerIcon(for providerID: String) -> some View {
+        let asset: String? = switch providerID.lowercased() {
+        case "codex-app-server", "codex": "ProviderCodex"
+        case "claude-sdk", "claude", "claude-code", "claude_code": "ProviderClaudeCode"
+        case "openclacky", "clacky", "open-clacky": "ProviderOpenClacky"
+        default: nil
+        }
+        if let asset {
+            Image(asset).resizable().interpolation(.high).frame(width: 13, height: 13)
+                .accessibilityHidden(true)
+        } else {
+            Image(systemName: "cpu").accessibilityHidden(true)
+        }
+    }
+
+    private static func providerName(_ providerID: String?) -> String {
+        switch providerID?.lowercased() {
+        case "codex-app-server", "codex": "Codex"
+        case "claude-sdk", "claude", "claude-code", "claude_code": "Claude Code"
+        case "openclacky", "clacky", "open-clacky": "OpenClacky"
+        default: providerID ?? ""
+        }
     }
 
     private var conversationStatusRow: some View {
