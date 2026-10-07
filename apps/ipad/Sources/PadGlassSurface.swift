@@ -1,9 +1,19 @@
 import SwiftUI
 import CorptieConversation
 
-/// Uses Apple's native Liquid Glass where available and keeps the iOS 17–25
-/// fallback local to the element instead of introducing a shared toolbar surface.
+/// Mobile surfaces target the latest iOS/iPadOS and use native system APIs.
 extension View {
+    /// Apply to each page *inside* the compact workspace's NavigationStack.
+    /// The wallpaper remains owned by PadAppShell, including during navigation.
+    @ViewBuilder
+    func padWorkspaceNavigationBackground() -> some View {
+        #if os(iOS)
+        containerBackground(.clear, for: .navigation)
+        #else
+        self
+        #endif
+    }
+
     @ViewBuilder
     func padGlassSurface<S: Shape>(
         in shape: S,

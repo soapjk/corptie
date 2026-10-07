@@ -5,6 +5,74 @@ import CorptieClientCore
 
 @MainActor
 struct PadStateTests {
+    @Test func compactWorkspacePagesExposeTheSingleRootWallpaper() throws {
+        let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources")
+        let app = try String(contentsOf: sources.appendingPathComponent("CorptieMobileApp.swift"), encoding: .utf8)
+        let compact = app.components(separatedBy: "private func compactWorkspace(")[1]
+            .components(separatedBy: "private func openCompactSession(")[0]
+        #expect(compact.components(separatedBy: ".padWorkspaceNavigationBackground()").count - 1 == 3)
+        #expect(!app.contains("LocalWallpaperCanvas("))
+        let shell = try String(contentsOf: sources.appendingPathComponent("PadAppShell.swift"), encoding: .utf8)
+        #expect(shell.components(separatedBy: "LocalWallpaperCanvas(").count - 1 == 1)
+        let helper = try String(contentsOf: sources.appendingPathComponent("PadGlassSurface.swift"), encoding: .utf8)
+        #expect(helper.contains("containerBackground(.clear, for: .navigation)"))
+        #expect(!helper.contains("PadLegacyNavigationBackground"))
+        #expect(!helper.contains("#available(iOS"))
+        #expect(!helper.contains(".appearance()"))
+        #expect(!helper.contains("LocalWallpaperCanvas("))
+    }
+
+    @Test func emptyComposerIgnoresStaleExpandedMeasurements() {
+        #expect(PadComposerHeightPolicy.height(text: "", measured: 96, isPhone: true) == 36)
+        #expect(PadComposerHeightPolicy.height(text: "", measured: 96, isPhone: false) == 30)
+        #expect(PadComposerHeightPolicy.height(text: "new draft", measured: 60, isPhone: true) == 60)
+        #expect(PadComposerHeightPolicy.height(text: "a\nb\nc", measured: 140, isPhone: false) == 96)
+    }
+
+    @Test func gesturesAndComposerHeightUseIndependentLifecycleUpdates() throws {
+        let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources")
+        let app = try String(contentsOf: sources.appendingPathComponent("CorptieMobileApp.swift"), encoding: .utf8)
+        let gesture = app.components(separatedBy: "private struct CompactConversationPan:")[1]
+            .components(separatedBy: "private struct CompactBackSwipe:")[0]
+        #expect(!gesture.contains("TimelineScrollViewResolver"))
+        #expect(!gesture.contains("resolutionAttempts"))
+        #expect(gesture.contains("override func layoutSubviews()"))
+        #expect(gesture.contains("override func didMoveToWindow()"))
+        #expect(gesture.contains("coordinator.detach()"))
+        #expect(gesture.contains("region.bounds.contains(touch.location(in: region))"))
+        #expect(gesture.contains("text.isEditable || text.selectedRange.length > 0"))
+        let editor = try String(contentsOf: sources.appendingPathComponent("PadComposerTextView.swift"), encoding: .utf8)
+        #expect(editor.contains("guard !heightReportScheduled"))
+        #expect(editor.contains("DispatchQueue.main.async { [weak self]"))
+        #expect(editor.contains("self.deliverHeight()"))
+        let composer = try String(contentsOf: sources.appendingPathComponent("PadComposer.swift"), encoding: .utf8)
+        #expect(composer.contains("PadComposerHeightPolicy.height("))
+    }
+
+    @Test func timelineWidthReservesBothMarginsBeforeAnyMessageAppears() {
+        #expect(PadTimelineLayoutMetrics.laneWidth(viewportWidth: 393) == 361)
+        #expect(PadTimelineLayoutMetrics.laneWidth(viewportWidth: 393.75) == 361)
+        #expect(PadTimelineLayoutMetrics.laneWidth(viewportWidth: 768) == 736)
+        #expect(PadTimelineLayoutMetrics.laneWidth(viewportWidth: 0) == 0)
+        #expect(PadTimelineLayoutMetrics.laneWidth(viewportWidth: 20) == 0)
+        #expect(PadTimelineLayoutMetrics.laneWidth(viewportWidth: .nan) == 0)
+        #expect(PadTimelineLayoutMetrics.laneWidth(viewportWidth: .infinity) == 0)
+    }
+
+    @Test func timelineMarginsAreOwnedByScrollViewNotLazyTargetPadding() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/CorptieMobileApp.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let timeline = source.components(separatedBy: "struct ConversationView: View")[1]
+            .components(separatedBy: "private var timelineCoordinateSpace")[0]
+        #expect(timeline.contains("ScrollView(.vertical)"))
+        #expect(timeline.contains(".frame(width: cardLaneWidth)"))
+        #expect(timeline.contains(".contentMargins(.horizontal, PadTimelineLayoutMetrics.horizontalMargin, for: .scrollContent)"))
+        #expect(!timeline.contains(".padding(.horizontal, 16)"))
+        #expect(!source.contains("ScrollPosition(edge: .bottom)"))
+    }
     @Test func initialPlacementRequiresVisibleTailAsWellAsEstimatedBottom() {
         #expect(!PadTimelineJumpPolicy.placementConfirmed(tailVisible: false, nearBottom: true))
         #expect(!PadTimelineJumpPolicy.placementConfirmed(tailVisible: true, nearBottom: false))

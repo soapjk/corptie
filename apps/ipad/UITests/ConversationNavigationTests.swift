@@ -44,12 +44,13 @@ final class ConversationNavigationTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(message.frame.minX, timeline.frame.minX - 1)
             XCTAssertLessThanOrEqual(message.frame.maxX, timeline.frame.maxX + 1)
         }
-        let start = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5))
-        let end = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.5))
+        // Start away from screen edges to exercise the page-owned pan.
+        let start = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.5))
+        let end = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5))
         start.press(forDuration: 0.05, thenDragTo: end)
         XCTAssertTrue(app.buttons["conversation-detail-back"].waitForExistence(timeout: 5))
         app.buttons["conversation-detail-back"].tap()
-        let backSwipeStart = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.5))
+        let backSwipeStart = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5))
         backSwipeStart.press(forDuration: 0.05,
             thenDragTo: backSwipeStart.withOffset(CGVector(dx: 120, dy: 0)))
         XCTAssertTrue(session.waitForExistence(timeout: 5))

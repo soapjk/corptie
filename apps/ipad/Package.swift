@@ -2,7 +2,7 @@
 import PackageDescription
 
 // Host-runnable state tests; the iOS/iPadOS application is built with CorptieMobile.xcodeproj.
-let package = Package(name: "CorptieMobileState", platforms: [.macOS(.v14), .iOS(.v17)],
+let package = Package(name: "CorptieMobileState", platforms: [.macOS(.v14), .iOS("27.0")],
     dependencies: [
         .package(path: "../../packages/CorptieClientCore"),
         .package(path: "../../packages/CorptieConversation")

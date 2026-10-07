@@ -365,6 +365,7 @@ struct WorkspaceView: View {
                         }
                 )
                 .onDisappear { outlineDragActive = false }
+                .padWorkspaceNavigationBackground()
                 .navigationDestination(for: CompactWorkspacePage.self) { page in
                     switch page {
                     case .conversation(let id):
@@ -373,6 +374,7 @@ struct WorkspaceView: View {
                             onBack: { if compactPath.last == .conversation(id) { compactPath.removeLast() } },
                             onOpenDetail: { if compactPath.last == .conversation(id) { compactPath.append(.detail(id)) } })
                             .id(id)
+                            .padWorkspaceNavigationBackground()
                     case .detail(let id):
                         PadConversationInspector(workspace: workspace, connection: connection, sessionID: id)
                             .safeAreaInset(edge: .top, spacing: 0) { compactDetailHeader }
@@ -380,6 +382,7 @@ struct WorkspaceView: View {
                             .modifier(CompactBackSwipe {
                                 if compactPath.last == .detail(id) { compactPath.removeLast() }
                             })
+                            .padWorkspaceNavigationBackground()
                     }
                 }
         }
@@ -552,9 +555,9 @@ struct ConversationView: View {
     }
     var body: some View {
         GeometryReader { viewport in
-        let cardLaneWidth = max(0, viewport.size.width - 32).rounded(.down)
+        let cardLaneWidth = PadTimelineLayoutMetrics.laneWidth(viewportWidth: viewport.size.width)
         ScrollViewReader { reader in
-            ScrollView {
+            ScrollView(.vertical) {
                 LazyVStack(spacing: 12) {
                     Color.clear
                         .frame(height: 1)
@@ -669,7 +672,10 @@ struct ConversationView: View {
                         }
                 }
                 .scrollTargetLayout()
-                .padding(.horizontal, 16).padding(.vertical, 12)
+                // The lazy stack must not infer its horizontal extent from
+                // whichever rows happen to be realized during the first jump.
+                .frame(width: cardLaneWidth)
+                .padding(.vertical, 12)
                 .background {
                     GeometryReader { proxy in
                         Color.clear.preference(
@@ -679,6 +685,7 @@ struct ConversationView: View {
                     }
                 }
             }
+            .contentMargins(.horizontal, PadTimelineLayoutMetrics.horizontalMargin, for: .scrollContent)
             .defaultScrollAnchor(.bottom)
             .modifier(TimelineSemanticScrollModifier(revision: tailScrollRevision))
             .coordinateSpace(name: timelineCoordinateSpace)
@@ -753,7 +760,7 @@ struct ConversationView: View {
             }
             .onPreferenceChange(TimelineViewportSizeKey.self) { size in
                 processCollapseTracker.updateViewport(size)
-                let roundedWidth = max(0, size.width - 32).rounded(.down)
+                let roundedWidth = PadTimelineLayoutMetrics.laneWidth(viewportWidth: size.width)
                 if roundedWidth != laneWidth { laneWidth = roundedWidth }
                 let roundedHeight = size.height.rounded(.down)
                 guard roundedHeight != historyViewport.viewportHeight else { return }
@@ -1055,6 +1062,7 @@ struct ConversationView: View {
     private func logTimelinePlacement(_ event: String) {
         // Only request/end events, never pixel-by-pixel or message contents.
         let scroll = timelineScrollView
+        Self.timelineLog.info("event=\(event, privacy: .public) viewportWidth=\(scroll?.bounds.width ?? -1) contentWidth=\(scroll?.contentSize.width ?? -1) offsetX=\(scroll?.contentOffset.x ?? -1) leftInset=\(scroll?.adjustedContentInset.left ?? -1) laneWidth=\(laneWidth)")
         Self.timelineLog.info("event=\(event, privacy: .public) session=\(sessionID, privacy: .private(mask: .hash)) generation=\(latestJumpGeneration) revision=\(workspace.lastTimelineRevision ?? -1) messages=\(workspace.messages.count) entries=\(workspace.displayEntries.count) visibleEntries=\(latestTailGeometry.visibleEntryIDs.count) tailVisible=\(tailIsVisible) nearBottom=\(nativeTimelineNearBottom ?? false) viewport=\(historyViewport.viewportHeight) contentHeight=\(scroll?.contentSize.height ?? -1) offset=\(scroll?.contentOffset.y ?? -1) history=\(workspace.isLoadingEarlier) scrollType=\(scroll.map { String(describing: type(of: $0)) } ?? "unresolved", privacy: .public)")
     }
 
@@ -1382,49 +1390,96 @@ private struct CompactConversationPan: UIViewRepresentable {
     let onOpenDetail: (() -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
-    func makeUIView(context: Context) -> TimelineScrollViewResolver.ResolverView {
-        let view = TimelineScrollViewResolver.ResolverView()
+    func makeUIView(context: Context) -> AttachmentView {
+        let view = AttachmentView()
+        view.isUserInteractionEnabled = false
         updateUIView(view, context: context)
         return view
     }
-    func updateUIView(_ view: TimelineScrollViewResolver.ResolverView, context: Context) {
+    func updateUIView(_ view: AttachmentView, context: Context) {
         context.coordinator.onBack = onBack
         context.coordinator.onOpenDetail = onOpenDetail
-        view.onResolve = { [weak coordinator = context.coordinator] in coordinator?.attach(to: $0) }
-        view.resolve()
+        context.coordinator.region = view
+        view.onAttachmentChange = { [weak coordinator = context.coordinator] in coordinator?.attach(to: $0) }
+        view.refreshAttachment()
     }
-    static func dismantleUIView(_ view: TimelineScrollViewResolver.ResolverView, coordinator: Coordinator) {
-        view.onResolve = nil
+    static func dismantleUIView(_ view: AttachmentView, coordinator: Coordinator) {
+        view.onAttachmentChange = nil
         coordinator.detach()
+    }
+
+    /// Resolve the owning surface from lifecycle events, not timeline size
+    /// estimates or a fixed number of asynchronous retries.
+    final class AttachmentView: UIView {
+        var onAttachmentChange: ((UIView?) -> Void)?
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            refreshAttachment()
+        }
+        override func didMoveToSuperview() {
+            super.didMoveToSuperview()
+            refreshAttachment()
+        }
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            refreshAttachment()
+        }
+        func refreshAttachment() {
+            guard window != nil else { onAttachmentChange?(nil); return }
+            var ancestor = superview
+            while let view = ancestor {
+                if let scroll = view as? UIScrollView, !(scroll is UITextView) {
+                    onAttachmentChange?(scroll)
+                    return
+                }
+                ancestor = view.superview
+            }
+            // SwiftUI may place a background next to, not inside, its scroll
+            // view. Attach to the page owner, restricted to this region below.
+            var responder: UIResponder? = next
+            while let current = responder {
+                if let controller = current as? UIViewController,
+                   let owner = controller.viewIfLoaded, owner.window === window {
+                    onAttachmentChange?(owner)
+                    return
+                }
+                responder = current.next
+            }
+            onAttachmentChange?(nil)
+        }
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var onBack: (() -> Void)?
         var onOpenDetail: (() -> Void)?
-        private weak var scrollView: UIScrollView?
+        weak var region: UIView?
+        private weak var attachmentView: UIView?
         private lazy var pan: UIPanGestureRecognizer = {
             let value = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
             value.maximumNumberOfTouches = 1
             value.delegate = self
             return value
         }()
-        func attach(to view: UIScrollView) {
-            guard scrollView !== view else { return }
-            detach(); scrollView = view; view.addGestureRecognizer(pan)
+        func attach(to view: UIView?) {
+            guard attachmentView !== view else { return }
+            detach()
+            attachmentView = view
+            view?.addGestureRecognizer(pan)
         }
-        func detach() { scrollView?.removeGestureRecognizer(pan); scrollView = nil }
+        func detach() { attachmentView?.removeGestureRecognizer(pan); attachmentView = nil }
         func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
-            let velocity = pan.velocity(in: scrollView)
+            let velocity = pan.velocity(in: attachmentView)
             guard PadConversationSwipePolicy.isHorizontal(x: velocity.x, y: velocity.y) else { return false }
             return velocity.x > 0 ? onBack != nil : onOpenDetail != nil
         }
         func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            guard let region, region.window != nil,
+                  region.bounds.contains(touch.location(in: region)) else { return false }
             var candidate = touch.view
-            while let view = candidate, view !== scrollView {
+            while let view = candidate, view !== attachmentView {
                 if view is UIControl { return false }
                 if let text = view as? UITextView,
-                   text.isEditable || text.selectedRange.length > 0
-                    || (text.gestureRecognizers ?? []).contains(where: { $0 is UILongPressGestureRecognizer && $0.isEnabled }) {
+                   text.isEditable || text.selectedRange.length > 0 {
                     return false
                 }
                 if let nested = view as? UIScrollView, nested.isScrollEnabled,
@@ -1436,11 +1491,13 @@ private struct CompactConversationPan: UIViewRepresentable {
         func gestureRecognizer(_ recognizer: UIGestureRecognizer,
                                shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
             // Only the timeline's vertical pan may run alongside page navigation.
-            other === scrollView?.panGestureRecognizer
+            guard let scroll = other.view as? UIScrollView, !(scroll is UITextView),
+                  other === scroll.panGestureRecognizer else { return false }
+            return scroll.contentSize.width <= scroll.bounds.width + 1
         }
         @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
             guard recognizer.state == .ended else { return }
-            let value = recognizer.translation(in: scrollView)
+            let value = recognizer.translation(in: attachmentView)
             switch PadConversationSwipePolicy.destination(horizontal: value.x, vertical: value.y) {
             case .taskList: onBack?()
             case .detail: onOpenDetail?()
@@ -1967,7 +2024,9 @@ private struct TimelineSemanticScrollModifier: ViewModifier {
 @available(iOS 18.0, *)
 private struct ModernTimelineSemanticScrollModifier: ViewModifier {
     let revision: UInt64
-    @State private var position = ScrollPosition(edge: .bottom)
+    // Initial placement belongs to the readiness-gated request in the host,
+    // not construction of this modifier during the navigation transition.
+    @State private var position = ScrollPosition(idType: String.self)
     func body(content: Content) -> some View {
         content.scrollPosition($position)
             .onChange(of: revision) { _, _ in

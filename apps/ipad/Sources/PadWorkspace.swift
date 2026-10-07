@@ -33,6 +33,22 @@ enum PadTimelineJumpPolicy {
     }
 }
 
+enum PadTimelineLayoutMetrics {
+    static let horizontalMargin: CGFloat = 16
+    static func laneWidth(viewportWidth: CGFloat) -> CGFloat {
+        guard viewportWidth.isFinite else { return 0 }
+        return max(0, viewportWidth - horizontalMargin * 2).rounded(.down)
+    }
+}
+
+enum PadComposerHeightPolicy {
+    static func height(text: String, measured: CGFloat, isPhone: Bool) -> CGFloat {
+        let height = text.isEmpty ? ComposerShellMetrics.minimumInputHeight
+            : ComposerShellMetrics.resolvedInputHeight(for: measured)
+        return isPhone ? max(36, height) : height
+    }
+}
+
 enum PadWorkReturnSwipePolicy {
     static func opensPreviousTask(horizontal: CGFloat, vertical: CGFloat) -> Bool {
         horizontal <= -64 && abs(horizontal) > abs(vertical) * 1.5
