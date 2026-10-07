@@ -740,6 +740,12 @@ struct ConversationView: View {
                 }
             ))
             .scrollDismissesKeyboard(.interactively)
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
+                settleKeyboardViewport(reader)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in
+                settleKeyboardViewport(reader)
+            }
             .overlay {
                 if workspace.displayEntries.isEmpty {
                     ContentUnavailableView(
@@ -819,10 +825,11 @@ struct ConversationView: View {
                 processCollapseTracker.updateCandidates(candidates)
             }
             .accessibilityIdentifier("conversation-timeline")
-            .modifier(CompactPageSwipe(onBack: onBack, onOpenDetail: onOpenDetail))
             // Physical viewport margins cannot be consumed by a semantic
             // scroll target or a keyboard-driven content-inset adjustment.
             .padding(.horizontal, PadTimelineLayoutMetrics.horizontalMargin)
+            // Navigation owns the full lane, including its empty edge gutters.
+            .modifier(CompactPageSwipe(onBack: onBack, onOpenDetail: onOpenDetail))
             .task(id: sessionID) {
                 let hadCachedCapabilities = workspace.capabilities != nil
                 await workspace.waitForRealtimeTimelineOrFallback(connection)
@@ -1040,6 +1047,9 @@ struct ConversationView: View {
             }
             interactionStartDisplayRevision = nil
             finishDeferredHistoryLoadIfReady(reader)
+            // Interactive keyboard dismissal can finish after keyboardDidHide;
+            // settle only once the user's drag/deceleration has relinquished it.
+            correctSettledNativeOffset()
             if pendingHistoryViewport != nil { restoreHistoryViewportIfReady(reader) }
             else if viewportState.followsLatest { scheduleLatestPlacement(reader) }
         }
@@ -1093,6 +1103,7 @@ struct ConversationView: View {
                 await Task.yield()
                 guard !Task.isCancelled, generation == latestJumpGeneration,
                       workspace.selection == targetSessionID else { return }
+                correctSettledNativeOffset()
                 confirmLatestPlacementIfReady()
                 logTimelinePlacement(isPlacementConfirmed() ? "automatic-confirmed" : "automatic-awaiting-layout")
                 auditTimelineVisibility()
@@ -1105,6 +1116,27 @@ struct ConversationView: View {
         withTransaction(Transaction(animation: nil)) {
             timelinePosition.scrollTo(edge: .bottom)
         }
+    }
+
+    private func settleKeyboardViewport(_ reader: ScrollViewProxy) {
+        // Keyboard "did" notifications run after the safe-area animation,
+        // unlike a size preference produced during its intermediate layout.
+        correctSettledNativeOffset()
+        if viewportState.followsLatest { scheduleLatestPlacement(reader) }
+        logTimelinePlacement("keyboard-settled")
+    }
+
+    private func correctSettledNativeOffset() {
+        guard let scroll = timelineScrollView,
+              pendingHistoryViewport == nil else { return }
+        scroll.layoutIfNeeded()
+        let geometry = PadTimelineBottomGeometry(contentHeight: scroll.contentSize.height,
+            viewportHeight: scroll.bounds.height, topInset: scroll.adjustedContentInset.top,
+            bottomInset: scroll.adjustedContentInset.bottom, offset: scroll.contentOffset.y)
+        guard let offset = geometry.settledOffset(followsLatest: viewportState.followsLatest,
+            isInteracting: isUserInteractingWithTimeline || scroll.isDragging || scroll.isDecelerating) else { return }
+        // Preserve horizontal position and the existing lazy row identities.
+        scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: offset), animated: false)
     }
 
     private func isPlacementConfirmed() -> Bool {
@@ -1322,7 +1354,9 @@ struct ConversationView: View {
                 } label: {
                     HStack(spacing: 4) {
                         Text(title)
-                            .lineLimit(2)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                            .truncationMode(.tail)
                             .multilineTextAlignment(.center)
                         if copiedHeaderItem == .title {
                             Image(systemName: "checkmark")
@@ -2223,7 +2257,7 @@ private struct TimelineDragOnlyScrollbar: UIViewRepresentable {
     }
     static func dismantleUIView(_ view: IndicatorView, coordinator: ()) { view.detach() }
 
-    final class IndicatorView: UIView {
+    final class IndicatorView: UIView, UIGestureRecognizerDelegate {
         private weak var scrollView: UIScrollView?
         private var observations: [NSKeyValueObservation] = []
         private let thumb = UIView()
@@ -2240,6 +2274,7 @@ private struct TimelineDragOnlyScrollbar: UIViewRepresentable {
             thumb.layer.cornerRadius = 2
             thumb.isUserInteractionEnabled = false
             addSubview(thumb)
+            pan.delegate = self
             addGestureRecognizer(pan)
             isAccessibilityElement = true
             accessibilityLabel = "消息滚动条"
@@ -2308,6 +2343,13 @@ private struct TimelineDragOnlyScrollbar: UIViewRepresentable {
             // does nothing until UIPanGestureRecognizer recognizes movement.
             !thumb.isHidden && bounds.contains(point)
                 && thumb.frame.insetBy(dx: -20, dy: 0).contains(point)
+        }
+
+        override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            let velocity = pan.velocity(in: self)
+            // A horizontal edge swipe belongs to page navigation, even if it
+            // starts on the thumb. This control owns vertical drags only.
+            return abs(velocity.y) > abs(velocity.x)
         }
 
         @objc private func drag(_ gesture: UIPanGestureRecognizer) {

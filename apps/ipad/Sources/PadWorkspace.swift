@@ -11,6 +11,15 @@ enum PadConversationReadOperation: String {
     case updateComposer = "更新模型设置"
 }
 
+enum PadPhoneNavigationLayout {
+    /// Move into the surplus safe area, but never place a control closer than
+    /// 18pt to the physical bottom. No overlap on devices without that surplus.
+    static func bottomOverlap(safeArea: CGFloat) -> CGFloat {
+        guard safeArea.isFinite else { return 0 }
+        return min(16, max(0, safeArea - 18))
+    }
+}
+
 /// Constant-time geometry for the drag-only message scrollbar. Track taps
 /// have no mapping to a content offset; only a relative thumb drag does.
 struct PadTimelineScrollbarGeometry {
@@ -52,6 +61,17 @@ struct PadTimelineBottomGeometry {
         max(-topInset, contentHeight - viewportHeight + bottomInset)
     }
     var isNearBottom: Bool { abs(maximumOffset - offset) <= 40 }
+
+    /// A shrinking keyboard inset can leave the old offset beyond the new
+    /// physical bottom. Correct that even while reading history, but never
+    /// move an in-range history position or interfere with a live drag.
+    func settledOffset(followsLatest: Bool, isInteracting: Bool) -> CGFloat? {
+        guard !isInteracting, viewportHeight > 1,
+              contentHeight.isFinite, viewportHeight.isFinite,
+              topInset.isFinite, bottomInset.isFinite, offset.isFinite else { return nil }
+        guard followsLatest || offset > maximumOffset + 1 else { return nil }
+        return abs(offset - maximumOffset) > 1 ? maximumOffset : nil
+    }
 
     func tailIsDocked(rowBottom: CGFloat?) -> Bool {
         guard let rowBottom, rowBottom.isFinite, viewportHeight > 1 else { return false }

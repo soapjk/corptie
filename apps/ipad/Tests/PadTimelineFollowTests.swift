@@ -4,6 +4,40 @@ import CorptieClientCore
 @testable import CorptieMobileState
 
 @Suite struct PadTimelineFollowTests {
+    @Test func settledKeyboardOffsetRemovesBlankSpaceWithoutJumpingHistory() {
+        let stale = PadTimelineBottomGeometry(contentHeight: 2000, viewportHeight: 800,
+            topInset: 0, bottomInset: 100, offset: 1600)
+        #expect(stale.settledOffset(followsLatest: true, isInteracting: false) == 1300)
+        #expect(stale.settledOffset(followsLatest: false, isInteracting: false) == 1300)
+        #expect(stale.settledOffset(followsLatest: true, isInteracting: true) == nil)
+        let history = PadTimelineBottomGeometry(contentHeight: 2000, viewportHeight: 800,
+            topInset: 0, bottomInset: 100, offset: 600)
+        #expect(history.settledOffset(followsLatest: false, isInteracting: false) == nil)
+        #expect(history.settledOffset(followsLatest: true, isInteracting: false) == 1300)
+        let docked = PadTimelineBottomGeometry(contentHeight: 2000, viewportHeight: 800,
+            topInset: 0, bottomInset: 100, offset: 1300)
+        #expect(docked.settledOffset(followsLatest: true, isInteracting: false) == nil)
+    }
+
+    @Test func repeatedKeyboardOpenCloseSettlesToEachPhysicalBottom() {
+        for _ in 0..<100 {
+            let open = PadTimelineBottomGeometry(contentHeight: 2000, viewportHeight: 500,
+                topInset: 0, bottomInset: 100, offset: 1300)
+            #expect(open.settledOffset(followsLatest: true, isInteracting: false) == 1600)
+            let closed = PadTimelineBottomGeometry(contentHeight: 2000, viewportHeight: 800,
+                topInset: 0, bottomInset: 100, offset: 1600)
+            #expect(closed.settledOffset(followsLatest: true, isInteracting: false) == 1300)
+        }
+    }
+
+    @Test func settledOffsetHandlesShortContentAndInvalidGeometry() {
+        let short = PadTimelineBottomGeometry(contentHeight: 200, viewportHeight: 700,
+            topInset: 400, bottomInset: 100, offset: -100)
+        #expect(short.settledOffset(followsLatest: true, isInteracting: false) == -400)
+        let invalid = PadTimelineBottomGeometry(contentHeight: 200, viewportHeight: 700,
+            topInset: 0, bottomInset: 100, offset: .nan)
+        #expect(invalid.settledOffset(followsLatest: true, isInteracting: false) == nil)
+    }
     @Test func insetOccludedBottomCannotBeMistakenForLatest() {
         let before = PadTimelineBottomGeometry(contentHeight: 2000, viewportHeight: 800,
             topInset: 0, bottomInset: 250, offset: 1200)
@@ -66,6 +100,8 @@ import CorptieClientCore
         let end = try #require(source.range(of: "private struct TimelineTailVisibilityModifier:"))
         let implementation = String(source[indicator.lowerBound..<end.lowerBound])
         #expect(implementation.contains("UIPanGestureRecognizer"))
+        #expect(implementation.contains("pan.delegate = self"))
+        #expect(implementation.contains("return abs(velocity.y) > abs(velocity.x)"))
         #expect(implementation.contains("thumb.frame.insetBy(dx: -20, dy: 0).contains(point)"))
         #expect(!implementation.contains("UITapGestureRecognizer"))
         #expect(!implementation.contains("@State"))
