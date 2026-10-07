@@ -805,7 +805,18 @@ struct WorktreeManagementView: View {
                     .disabled(client.isMutating)
                     .accessibilityIdentifier("worktree.integrate.resolve-with-agent")
                     manualConflictRetryButton()
-                } else if job.status == "paused" {
+                } else if job.supports("repreflight") {
+                    Button(L10n("Generate New Merge Plan")) {
+                        Task {
+                            guard await client.finishJobForFreshPreflight() else { return }
+                            showingPlan = true
+                            await client.prepareFreshPlan()
+                        }
+                    }
+                    .controlSize(.small)
+                    .disabled(client.isMutating)
+                    .accessibilityIdentifier("worktree.integrate.repreflight")
+                } else if job.supports("retry") {
                     Button(L10n("Retry")) { Task { await client.retryJob() } }
                         .controlSize(.small)
                         .accessibilityIdentifier("worktree.integrate.retry")
@@ -832,7 +843,7 @@ struct WorktreeManagementView: View {
                 .font(.caption)
                 .foregroundStyle(.orange)
             } else if job.requiresPlanRegeneration {
-                Text(L10n("The integration state changed. Cancel this operation and start again."))
+                Text(localizedIntegrationRecovery(job))
                     .font(.caption)
                     .foregroundStyle(.orange)
             } else if job.conflictAutomation?.status == "blocked" {
@@ -1623,6 +1634,17 @@ private func localizedIntegrationPhase(_ value: String) -> String {
     case "canceled_conflict_preserved": L10n("Stopped; conflict preserved")
     case "completed": L10n("Completed")
     default: localizedIntegrationStatus(value)
+    }
+}
+
+@MainActor
+private func localizedIntegrationRecovery(_ job: WorktreeIntegrationJob) -> String {
+    switch job.recovery?.kind {
+    case "resolve_commit_policy": L10n("Choose an action for every blocked Markdown file, then continue.")
+    case "repreflight": L10n("Repository state changed. Generate and review a fresh integration plan.")
+    case "resolve_conflict_with_agent": L10n("Resolve the preserved conflict with an Agent or manually, then retry.")
+    case "retry": L10n("The operation is paused and can be retried from its preserved state.")
+    default: job.recovery?.message ?? L10n("The integration state changed. Generate a new merge plan.")
     }
 }
 

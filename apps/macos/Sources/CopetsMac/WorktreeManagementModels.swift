@@ -415,6 +415,12 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
     let conflictAutomation: WorktreeConflictAutomation?
     let commitProtectionDecisions: [String: WorktreePersistedCommitProtectionDecision]?
     let commitPolicyBlocker: WorktreeCommitPolicyBlocker?
+    let availableActions: [String]?
+    let recovery: WorktreeIntegrationRecovery?
+
+    func supports(_ action: String) -> Bool {
+        availableActions?.contains(action) == true
+    }
 
     var currentConflictResolution: WorktreeConflictResolution? {
         guard let currentWorktreeId,
@@ -431,8 +437,9 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
         return WorktreeIntegrationRecoveryPolicy.requiresRepreflight(status: status, phase: phase, auditCode: code)
     }
     var canCancel: Bool {
-        ["awaiting_confirmation", "queued", "running", "paused"].contains(status)
-            && currentConflictResolution?.status != "running"
+        availableActions?.contains("cancel")
+            ?? (["awaiting_confirmation", "queued", "running", "paused"].contains(status)
+                && currentConflictResolution?.status != "running")
     }
     var hasMergeConflict: Bool {
         status == "paused" && plan.operationType != "sync"
@@ -450,6 +457,11 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
     var canHandleCommitPolicy: Bool {
         isWaitingForCommitPolicyDecision || hasLegacyCommitPolicyFailure
     }
+}
+
+struct WorktreeIntegrationRecovery: Decodable, Equatable, Sendable {
+    let kind: String?
+    let message: String
 }
 
 struct WorktreeCommitPolicyBlocker: Identifiable, Decodable, Equatable, Sendable {

@@ -1669,6 +1669,37 @@ test("integration retry removes only the exact legacy Artifact hook pollution si
   }
 });
 
+test("integration staging rejects an undeclared nested Git repository without changing the real index", async () => {
+  const fixture = await createFixture("integration-candidate-index", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    const nested = join(fixture.activeWorktree, "unexpected-nested-repository");
+    await mkdir(nested);
+    await git(["init", "-b", "main"], nested);
+    await git(["commit", "--allow-empty", "-m", "nested"], nested);
+    const expectedHead = (await gitOutput(["rev-parse", "HEAD"], fixture.activeWorktree)).trim();
+    const expectedStatusSummary = (await gitOutput(["status", "--porcelain=v1"], fixture.activeWorktree)).trim();
+    const indexBefore = await gitOutput(["ls-files", "--stage"], fixture.activeWorktree);
+
+    await assert.rejects(() => manager.commitIntegrationChanges({
+      path: fixture.activeWorktree,
+      expectedHead,
+      expectedStatusSummary,
+      commitMessage: "must not commit nested repository",
+      jobId: "job:candidate-index"
+    }), (error) => error.code === "INTEGRATION_STAGED_TREE_REJECTED"
+      && error.violations.some((violation) => violation.code === "UNDECLARED_GITLINK"));
+
+    assert.equal(await gitOutput(["ls-files", "--stage"], fixture.activeWorktree), indexBefore);
+    assert.equal((await gitOutput(["rev-parse", "HEAD"], fixture.activeWorktree)).trim(), expectedHead);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("Markdown decisions verify exact content before ignoring or deleting individual files", async () => {
   const fixture = await createFixture("integration-markdown-decisions", { activeFeatureWorktree: true });
   const manager = new GitWorkspaceManager({
