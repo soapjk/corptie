@@ -120,9 +120,10 @@ test("model output must be bounded JSON", () => {
   assert.throws(() => parseMemoryModelOutput("not JSON"), { code: "MEMORY_MODEL_INVALID_OUTPUT" });
 });
 
-test("model extraction uses the Session Provider through the common hidden background contract", async () => {
+test("model extraction uses the selected background Provider instead of the source Session Provider", async () => {
   let request;
   const classify = createMemoryModelClassifier({ backgroundAgent: {
+    capabilityProviderId: () => "claude-sdk",
     async run(input) {
       request = input;
       return { validatedOutput: [] };
@@ -132,7 +133,7 @@ test("model extraction uses the Session Provider through the common hidden backg
     scope: { providerId: "test-provider", taskId: "task:a" }, existing: []
   }), []);
   assert.equal(request.executionPolicy, "no-tools");
-  assert.equal(request.preferredProviderId, "test-provider");
+  assert.equal(request.preferredProviderId, "claude-sdk");
   assert.equal(request.allowProviderFallback, false);
   assert.deepEqual(request.allowedRoots, []);
 });

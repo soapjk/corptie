@@ -1,12 +1,3 @@
-// Every listed runtime passed the real loopback-only no-tools App Server probe.
-// Keep this exact allowlist fail-closed; upgrades require the full probe matrix.
-export const CODEX_NO_TOOLS_VERIFIED_VERSIONS = Object.freeze([
-  "0.153.4",
-  "0.155.1",
-  "0.160.0"
-]);
-const VERIFIED_RUNTIME_VERSIONS = new Set(CODEX_NO_TOOLS_VERIFIED_VERSIONS);
-
 export function codexNoToolsConfig(mcpServers = {}) {
   return {
     "features.apps": false, "features.shell_tool": false, "features.unified_exec": false,
@@ -22,14 +13,4 @@ export function codexNoToolsConfig(mcpServers = {}) {
         typeof server.command === "string" ? { command: server.command } : {}), enabled: false }])),
     "memories.generate_memories": false, "memories.use_memories": false
   };
-}
-
-export function assertCodexNoToolsRuntime(userAgent) {
-  const version = String(userAgent ?? "")
-    .match(/^corptie\/([0-9]+\.[0-9]+\.[0-9]+)(?:\s|$)/)?.[1];
-  if (!version || !VERIFIED_RUNTIME_VERSIONS.has(version)) {
-    throw Object.assign(new Error("This Codex runtime has not passed the no-tools protocol verification."), {
-      code: "BACKGROUND_NO_TOOLS_RUNTIME_UNVERIFIED"
-    });
-  }
 }

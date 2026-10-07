@@ -19,7 +19,7 @@ export function createMemoryModelClassifier({ backgroundAgent, cwd = process.cwd
     throw new TypeError("Memory classifier requires the provider-neutral background Agent service.");
   }
   return async (events, { scope, existing }) => {
-    const providerId = backgroundAgent.resolveProviderId?.(scope.providerId) ?? scope.providerId;
+    const providerId = backgroundAgent.capabilityProviderId?.() ?? null;
     backgroundAgent.selectProvider?.(providerId, "read-only", {
       allowFallback: false, executionPolicy: "no-tools"
     });
@@ -33,7 +33,7 @@ export function createMemoryModelClassifier({ backgroundAgent, cwd = process.cwd
       result = await backgroundAgent.run({
         purpose: "memory-extraction", cwd, allowedRoots: [],
         permissionProfile: "read-only", executionPolicy: "no-tools",
-        preferredProviderId: scope.providerId, allowProviderFallback: false,
+        preferredProviderId: providerId, allowProviderFallback: false,
         preferredReasoning: "low", timeoutMs: 90_000,
         developerInstructions: INSTRUCTIONS,
         prompt: JSON.stringify({ scope, events,
