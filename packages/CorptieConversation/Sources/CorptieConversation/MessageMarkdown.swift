@@ -200,7 +200,7 @@ public enum MessageMarkdown {
     }
 
     #if canImport(AppKit)
-    private static let secondaryText = MessageColor(calibratedRed: 0.24, green: 0.27, blue: 0.29, alpha: 1)
+    private static let secondaryText = MessageColor.labelColor
     private static let codeBackground = MessageColor.quaternaryLabelColor
     private static let quoteColor = MessageColor.secondaryLabelColor
     private static let separatorColor = MessageColor.separatorColor
@@ -208,7 +208,7 @@ public enum MessageMarkdown {
         NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
     }
     #else
-    private static let secondaryText = MessageColor(red: 0.24, green: 0.27, blue: 0.29, alpha: 1)
+    private static let secondaryText = MessageColor.label
     private static let codeBackground = MessageColor.quaternaryLabel
     private static let quoteColor = MessageColor.secondaryLabel
     private static let separatorColor = MessageColor.separator

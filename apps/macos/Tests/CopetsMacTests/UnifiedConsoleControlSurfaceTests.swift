@@ -198,6 +198,11 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(ConsoleWorkToolbarMetrics.height == 48)
         #expect(ConsoleWorkToolbarMetrics.minimumWidth == 220)
         #expect(!source.contains("ConsoleSidebarTitlebarControls("))
+        let glyph = try self.source(named: "Console/ConsoleNavigationPolicies.swift")
+        #expect(glyph.contains(".platformGlassSurface(in: Circle(), interactive: true, variant: .clear)"))
+        let mobile = try self.source(named: "../../../../apps/ipad/Sources/PadWorkOutline.swift")
+        #expect(mobile.contains(".padGlassSurface(in: Circle(), variant: .clear)"))
+        #expect(mobile.contains(".frame(width: 44, height: 44)"))
     }
 
     @Test @MainActor
@@ -526,7 +531,7 @@ struct UnifiedConsoleControlSurfaceTests {
         ))
         let detailCard = warRoomSource[detailCardStart.lowerBound..<detailCardEnd.lowerBound]
         #expect(conversationHeaderSource.contains(".platformGlassSurface(in: Capsule())"))
-        #expect(detailCard.contains(".modifier(ConversationDetailGlassSurface("))
+        #expect(detailCard.contains(".modifier(ConversationDetailCardSurface())"))
         #expect(!detailCard.contains(".shadow("))
         #expect(!detailCard.contains("Material"))
         #expect(!detailCard.contains(".overlay"))
@@ -628,7 +633,7 @@ struct UnifiedConsoleControlSurfaceTests {
 
         let source = try source(named: "UnifiedConsoleView.swift")
         let surface = try self.source(named: "../../../../packages/CorptieConversation/Sources/CorptieConversation/WorkDiscussionButton.swift")
-        #expect(surface.contains("Color.primary.opacity(0.065)"))
+        #expect(!surface.contains("Color.primary.opacity(0.065)"))
         #expect(source.contains(".padding(.leading, ConsoleWorkOutlineMetrics.childIndent)"))
         #expect(source.contains("outlineGroupEmptyRow"))
         #expect(source.contains("outlineChildSelectionBackground"))
@@ -640,7 +645,7 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains("DisclosureGroup(isExpanded: outlineAssistantExpandedBinding)"))
         #expect(source.contains("DisclosureGroup(isExpanded: outlineWorkExpandedBinding(work.id))"))
         #expect(source.contains(".disclosureGroupStyle(ConsoleWorkOutlineDisclosureStyle())"))
-        #expect(surface.contains("in: RoundedRectangle(cornerRadius: 8, style: .continuous)"))
+        #expect(surface.contains(".modifier(ConversationContentSurface(cornerRadius: 8))"))
         #expect(source.contains(".transition(.opacity.combined(with: .offset(y: -4)))"))
         #expect(source.components(separatedBy: ".consoleWorkOutlineGroupCard()").count - 1 == 2)
         #expect(!source.contains("ConsoleWorkOutlineCardRowModifier"))

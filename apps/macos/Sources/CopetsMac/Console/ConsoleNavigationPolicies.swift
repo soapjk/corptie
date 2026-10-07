@@ -64,7 +64,7 @@ struct ConsoleWorkToolbarGlyph: View {
             .font(.system(size: ConsoleWorkToolbarMetrics.symbolSize, weight: .medium))
             .frame(width: ConsoleWorkToolbarMetrics.buttonDiameter, height: ConsoleWorkToolbarMetrics.buttonDiameter)
             .contentShape(Circle())
-            .platformGlassSurface(in: Circle(), interactive: true)
+            .platformGlassSurface(in: Circle(), interactive: true, variant: .clear)
     }
 }
 

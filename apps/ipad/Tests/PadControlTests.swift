@@ -5,6 +5,29 @@ import CorptieClientCore
 
 @Suite(.serialized) @MainActor
 struct PadControlTests {
+    @Test func statusBarBackdropUsesSafeAreaAndOnlyAShortFade() {
+        #expect(PadStatusBarBackdropLayout.height(topInset: 24) == 40)
+        #expect(PadStatusBarBackdropLayout.height(topInset: 0) == 0)
+        #expect(PadStatusBarBackdropLayout.height(topInset: -1) == 0)
+        #expect(PadStatusBarBackdropLayout.solidStop(topInset: 24) == 0.6)
+        #expect(PadStatusBarBackdropLayout.solidStop(topInset: 0) == 0)
+    }
+
+    @Test func statusBarBackdropHasOneIPadOnlyOwnerWithoutScrollTracking() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/PadAppShell.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        #expect(source.components(separatedBy: "PadUnifiedStatusBarBackdrop()").count == 2)
+        #expect(source.contains("if usesNavigationRail, tab == .workspace"))
+        #expect(source.contains("content.scrollEdgeEffectHidden(true, for: .top)"))
+        let backdrop = source.components(separatedBy: "private struct PadUnifiedStatusBarBackdrop: View")[1]
+            .components(separatedBy: "private struct PadUnifiedTopScrollEdges")[0]
+        #expect(backdrop.contains(".mask {"))
+        #expect(backdrop.contains(".allowsHitTesting(false)"))
+        #expect(!backdrop.contains("@State"))
+        #expect(!backdrop.contains("onScroll"))
+        #expect(!backdrop.contains(".shadow("))
+    }
     @Test func worktreeErrorsPreserveStageAndServerCode() {
         let rejected = PadWorktreeFailure.describe(
             ClientServiceFailure(statusCode: 400, code: "BRANCH_OPERATION_INVALID"),

@@ -146,14 +146,8 @@ public struct ProcessCard<Details: View>: View {
         .padding(.horizontal, 10)
         .padding(.top, expanded ? 3 : 4)
         .padding(.bottom, expanded ? 13 : 4)
-        .background {
-            RoundedRectangle(cornerRadius: expanded ? 12 : 10)
-                .fill(surfaceColor.opacity(0.88))
-                .overlay {
-                    RoundedRectangle(cornerRadius: expanded ? 12 : 10)
-                        .fill(tint.opacity(expanded ? 0.08 : 0.06))
-                }
-        }
+        .modifier(ConversationContentSurface(cornerRadius: expanded ? 12 : 10,
+            tint: tint, fallback: surfaceColor, tintOpacity: expanded ? 0.08 : 0.06))
         .overlay(alignment: .bottomLeading) {
             if let progress {
                 GeometryReader { geometry in

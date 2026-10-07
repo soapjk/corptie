@@ -20,7 +20,7 @@ public struct ConversationQuickMessages: View {
     public var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             if #available(iOS 26.0, macOS 26.0, *) {
-                GlassEffectContainer(spacing: 0) { chips }
+                GlassEffectContainer(spacing: 6) { chips }
             } else {
                 chips
             }
