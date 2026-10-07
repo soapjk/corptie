@@ -1,4 +1,8 @@
 const DOMAIN_PROFILES = Object.freeze({
+  "integration-registry": profile(
+    ["mcp", "MCP registration", "register MCP", "install MCP", "skill registration", "install skill", "注册 MCP", "安装 MCP", "注册 Skill", "安装技能", "集成管理"],
+    "corptie_integration_list"
+  ),
   artifacts: profile(
     ["artifact", "artifacts", "artifact management", "work artifact", "产物", "工件", "文档"],
     "corptie_artifact_search"
