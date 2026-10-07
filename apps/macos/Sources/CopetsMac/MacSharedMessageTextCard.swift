@@ -75,8 +75,8 @@ struct MacSharedMessageTextCard: View {
         }
         .padding(14)
         .frame(width: layout.cardWidth, alignment: .topLeading)
-        .background(Color.orange.opacity(row.userInputStatus == "pending" ? 0.06 : 0.025),
-                    in: RoundedRectangle(cornerRadius: 14))
+        .modifier(ConversationContentSurface(cornerRadius: 14, tint: .orange,
+            tintOpacity: row.userInputStatus == "pending" ? 0.06 : 0.025, isMessage: true))
         .overlay {
             RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(Color.orange.opacity(row.userInputStatus == "pending" ? 0.38 : 0.16), lineWidth: 1)
