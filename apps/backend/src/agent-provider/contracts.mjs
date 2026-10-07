@@ -1,6 +1,7 @@
 export const AGENT_PROVIDER_CAPABILITIES = Object.freeze({
   SESSION_CREATE: "session.create",
   SESSION_FORK: "session.fork",
+  SESSION_FORK_WHILE_BUSY: "session.fork.whileBusy",
   SESSION_RESUME: "session.resume",
   SESSION_DELETE: "session.delete",
   SESSION_RESTART: "session.restart",
@@ -42,7 +43,8 @@ export const AGENT_PROVIDER_HEARTBEAT_RELIABILITY = Object.freeze({
 });
 
 // EXECUTION_PLAN_EVENTS is an output/projection capability, not a callable
-// Provider method. SESSION_FAILED_BINDING_RECOVERY、SKILL_LAZY_LOAD、SKILL_MCP_DEPENDENCIES 与 TURN_CHANGES_MANAGE
+// Provider method. SESSION_FORK_WHILE_BUSY、SESSION_FAILED_BINDING_RECOVERY、SKILL_LAZY_LOAD、
+// SKILL_MCP_DEPENDENCIES 与 TURN_CHANGES_MANAGE
 // 是「会话编排/上下文组装」型能力，
 // 不映射到具体 Provider 方法，因此未出现在下方 METHOD_BY_CAPABILITY 映射中。
 // 懒加载 Skill 的「工具注入」由 TOOL_HOST_ATTACH（attachTools）独立负责，

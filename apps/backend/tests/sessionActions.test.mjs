@@ -95,6 +95,18 @@ test("restart availability is driven only by the Provider capability", () => {
   assert.equal(unsupported.actions.restart.reason, "CAPABILITY_UNSUPPORTED");
 });
 
+test("completed-turn branching stays available during a running source only when the Provider declares it", () => {
+  const fork = AGENT_PROVIDER_CAPABILITIES.SESSION_FORK;
+  const whileBusy = AGENT_PROVIDER_CAPABILITIES.SESSION_FORK_WHILE_BUSY;
+  for (const status of ["running", "blocked"]) {
+    const session = { sessionKind: "worker", status, archived: false };
+    assert.equal(withSessionActions(session, { capabilities: [fork, whileBusy] }).actions.fork.available, true);
+    assert.equal(withSessionActions(session, { capabilities: [fork] }).actions.fork.reason, "SESSION_BUSY");
+  }
+  assert.equal(withSessionActions({ sessionKind: "worker", status: "running", archived: true },
+    { capabilities: [fork, whileBusy] }).actions.fork.reason, "SESSION_BUSY");
+});
+
 test("stored Session projections resolve Provider capabilities before reaching the client", () => {
   const registry = {
     resolveId: (identity) => identity === "codex-app-server" ? identity : null,

@@ -4,10 +4,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
+import { AGENT_PROVIDER_CAPABILITIES } from "../src/agent-provider/contracts.mjs";
 import { SessionForkService } from "../src/application/sessionForkService.mjs";
 import { WorkApplicationService } from "../src/application/workApplicationService.mjs";
 
-async function fixture(t) {
+async function fixture(t, { forkWhileBusy = true } = {}) {
   const root = await mkdtemp(join(tmpdir(), "corptie-session-fork-"));
   const store = new CorptieStore({ dbPath: join(root, "db.sqlite"), configPath: join(root, "config.json") });
   await store.initialize();
@@ -27,7 +28,11 @@ async function fixture(t) {
       bindingId: binding.bindingId, status: "completed", createdAt: "2026-09-01T00:00:00Z" });
   }
   let creates = 0;
-  const service = new SessionForkService({ store, registry: { requireCapability() {}, get: () => ({ descriptor: { displayName: "Test" } }) },
+  const service = new SessionForkService({ store, registry: {
+    requireCapability() {},
+    supports: (_providerId, capability) => capability === AGENT_PROVIDER_CAPABILITIES.SESSION_FORK_WHILE_BUSY && forkWhileBusy,
+    get: () => ({ descriptor: { displayName: "Test" } })
+  },
     sessionService: { referenceFor: async id => ({ sessionId: id, logicalSessionId: `logical:${id}`,
       bindingId: store.getLogicalSessionByLegacySessionId(id).activeBinding.bindingId, providerId: "test", providerSessionId: id }) },
     workService: new WorkApplicationService({ store }), startWorkSession: async () => { throw new Error("Unexpected Task creation"); },
@@ -49,6 +54,24 @@ test("fork rejects stale binding and pending turns before allocating", async t =
   await assert.rejects(service.create("source", { ...input, sourceBindingId: "stale" }), { code: "FORK_SOURCE_CHANGED" });
   store.db.run("UPDATE session_items SET turn_status='running' WHERE id='a1'");
   await assert.rejects(service.create("source", input), { code: "FORK_POINT_UNAVAILABLE" });
+  assert.equal(creates(), 0);
+});
+test("a running source can fork an older completed turn without copying the active turn", async t => {
+  const { store, service, input, creates } = await fixture(t);
+  store.db.run("UPDATE sessions SET status='running' WHERE id='source'");
+  store.db.run("UPDATE session_items SET turn_status='running' WHERE turn_id='t2'");
+  assert.equal((await service.preview("source", "a1")).turnId, "t1");
+  const result = await service.create("source", input);
+  assert.equal(result.session.id, "target");
+  assert.equal(creates(), 1);
+  assert.deepEqual(store.getItems("target").map(item => item.text).sort(), ["first", "one"]);
+  await assert.rejects(service.preview("source", "a2"), { code: "FORK_POINT_UNAVAILABLE" });
+});
+test("a Provider without parallel fork support still waits for the source turn", async t => {
+  const { store, service, input, creates } = await fixture(t, { forkWhileBusy: false });
+  store.db.run("UPDATE sessions SET status='running' WHERE id='source'");
+  await assert.rejects(service.preview("source", "a1"), { code: "FORK_SOURCE_BUSY" });
+  await assert.rejects(service.create("source", input), { code: "FORK_SOURCE_BUSY" });
   assert.equal(creates(), 0);
 });
 test("fork preview identifies the exact source turn and validates Task priority", async t => {

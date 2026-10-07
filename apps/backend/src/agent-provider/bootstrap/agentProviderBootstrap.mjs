@@ -40,7 +40,7 @@ export function createAgentProviderRuntimeRegistry(options = {}) {
   const codexCapabilities = [
     ...CODEX_APP_SERVER_CAPABILITIES,
     ...(typeof options.codexOperations?.forkSession === "function"
-      ? [AGENT_PROVIDER_CAPABILITIES.SESSION_FORK]
+      ? [AGENT_PROVIDER_CAPABILITIES.SESSION_FORK, AGENT_PROVIDER_CAPABILITIES.SESSION_FORK_WHILE_BUSY]
       : []),
     ...(typeof options.codexOperations?.respondToUserInput === "function"
       ? [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_USER_INPUT]

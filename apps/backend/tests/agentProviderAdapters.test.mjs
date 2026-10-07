@@ -66,8 +66,10 @@ test("bootstrap does not advertise command execution without an implementation",
 
 test("Codex production bootstrap exposes conversation branching only with a fork operation", async () => {
   const calls = [];
+  const claudeManager = recordingManager();
+  claudeManager.fork = async () => ({ id: "claude:forked" });
   const registry = createAgentProviderRuntimeRegistry({
-    claudeProvider: createClaudeAgentSdkProvider(recordingManager()),
+    claudeProvider: createClaudeAgentSdkProvider(claudeManager),
     codexOperations: {
       ...recordingCodexOperations(),
       forkSession: (input, context) => {
@@ -80,7 +82,14 @@ test("Codex production bootstrap exposes conversation branching only with a fork
     sessionKind: "worker", status: "complete", archived: false
   });
   assert.equal(registry.supports("codex-app-server", AGENT_PROVIDER_CAPABILITIES.SESSION_FORK), true);
+  assert.equal(registry.supports("codex-app-server", AGENT_PROVIDER_CAPABILITIES.SESSION_FORK_WHILE_BUSY), true);
   assert.equal(session.actions.fork.available, true);
+  assert.equal(registry.decorateSession("codex-app-server", {
+    sessionKind: "worker", status: "running", archived: false
+  }).actions.fork.available, true);
+  assert.equal(registry.decorateSession("claude-sdk", {
+    sessionKind: "worker", status: "running", archived: false
+  }).actions.fork.reason, "SESSION_BUSY");
   assert.deepEqual(await registry.invoke("codex-app-server", AGENT_PROVIDER_CAPABILITIES.SESSION_FORK,
     { title: "Branch" }, { forkSource: { point: { turnId: "turn:one" } } }), { id: "thread:forked" });
   assert.equal(calls.length, 1);
@@ -90,6 +99,7 @@ test("Codex production bootstrap exposes conversation branching only with a fork
     codexOperations: recordingCodexOperations()
   });
   assert.equal(withoutFork.supports("codex-app-server", AGENT_PROVIDER_CAPABILITIES.SESSION_FORK), false);
+  assert.equal(withoutFork.supports("codex-app-server", AGENT_PROVIDER_CAPABILITIES.SESSION_FORK_WHILE_BUSY), false);
   assert.equal(withoutFork.decorateSession("codex-app-server", {
     sessionKind: "worker", status: "complete", archived: false
   }).actions.fork.reason, "CAPABILITY_UNSUPPORTED");

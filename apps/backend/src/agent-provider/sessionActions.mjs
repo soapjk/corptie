@@ -64,7 +64,10 @@ export function sessionActionAvailability(action, session, providerOrDescriptor,
   const legacy = session.capabilities ?? {};
   if (action === "fork") {
     if (!["worker", "assistantChat"].includes(session.sessionKind)) return unavailable("SESSION_KIND_UNSUPPORTED", false);
-    if (session.archived || ["running", "blocked"].includes(session.status)) return unavailable("SESSION_BUSY", true);
+    if (session.archived || (["running", "blocked"].includes(session.status)
+      && !providerSupports(providerOrDescriptor, AGENT_PROVIDER_CAPABILITIES.SESSION_FORK_WHILE_BUSY))) {
+      return unavailable("SESSION_BUSY", true);
+    }
     return available();
   }
   if (action === "resume") {
