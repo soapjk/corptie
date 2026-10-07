@@ -73,7 +73,7 @@ public struct PlatformNavigationRail: View {
                 }
             }
             .padding(5)
-            .platformGlassSurface(in: Capsule())
+            .platformGlassSurface(in: Capsule(), variant: .clear)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("navigation-tab-capsule")
 
@@ -87,7 +87,7 @@ public struct PlatformNavigationRail: View {
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            .platformGlassSurface(in: Circle(), interactive: true)
+            .platformGlassSurface(in: Circle(), interactive: true, variant: .clear)
             .help(settingsTitle)
             .accessibilityLabel(settingsTitle)
             .accessibilityIdentifier(settingsAccessibilityID)

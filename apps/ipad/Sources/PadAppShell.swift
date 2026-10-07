@@ -67,7 +67,9 @@ struct PadAppShell: View {
                (tab != .workspace || compactWorkspaceIsRoot) {
                 PadBottomTabBar(selection: $tab, settings: { sheet = .settings })
                     .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
+                    // The system already reserves the home-indicator safe
+                    // area. Do not add another gap underneath the capsule.
+                    .padding(.top, 8)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
@@ -340,7 +342,7 @@ private struct PadBottomTabBar: View {
             .padding(.horizontal, 4)
             .padding(.vertical, 4)
             .frame(maxWidth: 360)
-            .padGlassSurface(in: Capsule(), interactive: true)
+            .padGlassSurface(in: Capsule(), interactive: true, variant: .clear)
 
             Button(action: settings) {
                 Image(systemName: "gearshape")
@@ -350,7 +352,7 @@ private struct PadBottomTabBar: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .padGlassSurface(in: Circle(), interactive: true)
+            .padGlassSurface(in: Circle(), interactive: true, variant: .clear)
             .accessibilityLabel("设置")
             .accessibilityIdentifier("navigation-settings")
         }

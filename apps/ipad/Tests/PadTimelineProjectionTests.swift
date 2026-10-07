@@ -13,7 +13,7 @@ struct PadTimelineProjectionTests {
         let contents = try String(contentsOf: source, encoding: .utf8)
         #expect(contents.contains("ProcessCollapseCandidate(id: entryID"))
         #expect(contents.contains("ProcessCollapsePlacementPolicy.placement("))
-        #expect(contents.contains("reader.scrollTo(entryID, anchor: .top)"))
+        #expect(contents.contains("timelinePosition.scrollTo(id: entryID, anchor: .top)"))
         let stepStart = try #require(contents.range(of: "private struct PadExecutionStepCard: View"))
         #expect(!contents[stepStart.lowerBound...].contains("ProcessCollapseCandidate("))
     }

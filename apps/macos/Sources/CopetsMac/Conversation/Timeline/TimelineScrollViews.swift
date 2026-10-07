@@ -42,7 +42,12 @@ final class TimelineIntentScroller: ConsoleThinScroller {
     var onBegin: (() -> Void)?
     var onEnd: (() -> Void)?
 
+    override func testPart(_ point: NSPoint) -> NSScroller.Part {
+        super.testPart(point) == .knob ? .knob : .noPart
+    }
+
     override func mouseDown(with event: NSEvent) {
+        guard testPart(event.locationInWindow) == .knob else { return }
         onBegin?()
         defer { onEnd?() }
         super.mouseDown(with: event)

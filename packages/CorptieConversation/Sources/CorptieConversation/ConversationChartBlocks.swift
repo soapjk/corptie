@@ -52,6 +52,7 @@ enum ConversationChartDataText {
 
 public enum ConversationContentBlock: Equatable, Sendable {
     case markdown(String)
+    case table(ConversationMarkdownTable)
     case chart(ConversationChartSpec, originalText: String)
     case invalidChart(originalText: String, reason: String)
 }
@@ -346,11 +347,14 @@ public final class ConversationChartBlockCache {
         if let previous = entries.removeValue(forKey: messageID) {
             retainedBytes -= previous.byteCount
         }
-        let blocks = ConversationChartBlocks.parseLocated(authoritativeText, messageID: messageID)
+        let blocks = ConversationMarkdownTables.expanding(
+            ConversationChartBlocks.parseLocated(authoritativeText, messageID: messageID),
+            messageID: messageID)
         let bytes = authoritativeText.utf16.count * 2
             + blocks.reduce(0) { total, block in
                 switch block.content {
                 case .markdown(let value): total + value.utf16.count * 2
+                case .table(let table): total + table.originalText.utf16.count * 6 + 512
                 case .chart(_, let original), .invalidChart(let original, _):
                     total + original.utf16.count * 2 + 512
                 }

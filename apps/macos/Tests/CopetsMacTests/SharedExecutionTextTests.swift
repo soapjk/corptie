@@ -115,6 +115,33 @@ final class SharedExecutionTextTests: XCTestCase {
         XCTAssertEqual(mixedLayout.rowHeight, plainLayout.rowHeight + 96, accuracy: 0.5)
     }
 
+    func testMarkdownTableUsesMeasuredRichRowAndKeepsCopySource() {
+        let source = "Before\n\n| Name | Description | Number |\n| --- | --- | ---: |\n| BTC | 很长的说明文字，需要自然换行而不能撑宽消息卡片。 | 42 |\n\nAfter"
+        let row = AppKitChatTimelineRow(id: "message:table", contentRevision: 1,
+            nativeText: source, copyText: source, nativeStyle: .agent,
+            title: "", metadata: "", expandableTurnId: nil, isExpanded: false,
+            showsHeader: false)
+        XCTAssertTrue(MacSharedMessageTextCard.supports(row))
+        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 320)
+        XCTAssertEqual(layout.richBlocks.count, 3)
+        guard case .table(_, let table, let measured) = layout.richBlocks[1] else {
+            return XCTFail("Table must use a rich block instead of raw text")
+        }
+        XCTAssertEqual(table.rows.count, 2)
+        XCTAssertEqual(row.copyText, source)
+        XCTAssertEqual(measured.viewportWidth, floor(layout.cardWidth - 20))
+        XCTAssertGreaterThanOrEqual(layout.textHeight, measured.height)
+        XCTAssertLessThanOrEqual(layout.cardWidth, 320)
+        var samples: [Double] = []
+        for _ in 0..<100 {
+            let start = ProcessInfo.processInfo.systemUptime
+            _ = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 320)
+            samples.append((ProcessInfo.processInfo.systemUptime - start) * 1_000)
+        }
+        samples.sort()
+        print("TABLE_UI_CACHED n=100 p50_ms=\(samples[50]) p95_ms=\(samples[95])")
+    }
+
     func testChartMessageWithActionsKeepsRichBlocksAndActionSpace() {
         let text = "Before\n```corptie-chart\n{\"version\":1,\"type\":\"bar\",\"title\":\"Compare\",\"data\":[{\"label\":\"A\",\"value\":2}]}\n```\nAfter"
         let plain = AppKitChatTimelineRow(id: "message:chart-actions", contentRevision: 1,
