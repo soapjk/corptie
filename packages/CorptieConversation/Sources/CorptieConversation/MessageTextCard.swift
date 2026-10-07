@@ -177,9 +177,23 @@ public struct MessageTextCard<Content: View>: View {
     public var body: some View {
         Group {
             if let contextMenu, !selectingText {
+                #if os(iOS)
+                cardBody
+                    .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .contextMenu {
+                        contextMenuContent(contextMenu)
+                    } preview: {
+                        // A separately hosted native preview is not captured
+                        // from the clipped scroll viewport. Build it only when
+                        // requested, without a second resident message list.
+                        cardBody.fixedSize(horizontal: false, vertical: true)
+                    }
+                #else
                 cardBody
                     .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     .contextMenu { contextMenuContent(contextMenu) }
+                #endif
             } else {
                 cardBody
             }

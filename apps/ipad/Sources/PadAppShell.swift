@@ -29,6 +29,7 @@ struct PadAppShell: View {
     }
 
     private var appContent: some View {
+        GeometryReader { geometry in
         HStack(spacing: 0) {
             if usesNavigationRail {
                 PadNavigationRail(
@@ -68,9 +69,11 @@ struct PadAppShell: View {
                (tab != .workspace || compactWorkspaceIsRoot) {
                 PadBottomTabBar(selection: $tab, settings: { sheet = .settings })
                     .padding(.horizontal, 12)
-                    // The system already reserves the home-indicator safe
-                    // area. Do not add another gap underneath the capsule.
                     .padding(.top, 8)
+                    // Change layout reservation too, not just the drawing
+                    // offset: the list ends above the actual lowered bar.
+                    .padding(.bottom, -PadPhoneNavigationLayout.bottomOverlap(
+                        safeArea: geometry.safeAreaInsets.bottom))
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
@@ -116,6 +119,7 @@ struct PadAppShell: View {
             // backgrounded. iPadOS may suspend the process, but the client must
             // not voluntarily tear down its only notification data source.
             await workspace.runRealtime(connection)
+        }
         }
     }
 

@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import Testing
 @testable import CorptieClientCore
 
@@ -17,7 +18,7 @@ struct ReliableMessageReconciliationTests {
         } catch {
             #expect(receiptStatus == 502)
         }
-        #expect(await probe.methods == (receiptStatus == 404 ? ["GET", "POST"] : ["GET"]))
+        #expect(await probe.methods == (receiptStatus == 404 ? ["GET", "GET", "POST", "PUT", "POST"] : ["GET"]))
     }
 
     @Test func firstAttemptDoesNotAddAReceiptRoundTrip() async throws {
@@ -45,6 +46,17 @@ private actor ReconciliationProbe {
     init(status: Int) { self.status = status }
     func handle(_ request: URLRequest) throws -> (Data, HTTPURLResponse) {
         methods.append(request.httpMethod ?? "GET")
+        let path = request.url!.path
+        if path.hasSuffix("/capabilities") {
+            return (Data(#"{"schemaVersion":1,"sessionId":"session","readMessages":true,"send":{"available":true},"stop":{"available":true},"sendImages":true,"imageUploads":{"version":1,"maximumImages":8,"maximumBytes":20971520,"chunkBytes":524288,"maximumAgeSeconds":604800}}"#.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        }
+        if path.contains("/image-uploads") {
+            let input = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+            let sha = SHA256.hash(data: Data([1])).map { String(format: "%02x", $0) }.joined()
+            let data = try JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "uploadId": "request_123-0",
+                "offset": request.httpMethod == "PUT" ? 1 : 0, "byteLength": 1, "sha256": input["sha256"] ?? sha])
+            return (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        }
         if request.httpMethod == "GET", status != 200 {
             throw ClientServiceFailure(statusCode: status, code: status == 404 ? "COMMAND_NOT_FOUND" : "UPSTREAM_UNAVAILABLE")
         }

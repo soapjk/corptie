@@ -11,6 +11,7 @@ public enum ComposerShellMetrics {
     public static let cornerRadius: CGFloat = 13
     public static let actionGlyphEdge: CGFloat = 24
     public static let actionHitEdge: CGFloat = 28
+    public static let actionVisualEdge: CGFloat = 22
     public static let attachmentStripHeight: CGFloat = 62
     public static let attachmentChipEdge: CGFloat = 48
     public static let attachmentChipCornerRadius: CGFloat = 8
