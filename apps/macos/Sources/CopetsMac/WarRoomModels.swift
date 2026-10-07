@@ -888,6 +888,10 @@ struct MemoryRecallListEnvelope: Codable {
     let recalls: [MemoryRecallAudit]
 }
 
+struct MemoryHitListEnvelope: Codable {
+    let hits: [MemoryRecallEntry]
+}
+
 struct MemoryBackfillProgress: Codable {
     let scannedEvents: Int
     let createdCount: Int

@@ -909,17 +909,16 @@ final class EntityAPIClient: ObservableObject {
         return await mutateMemory(request)
     }
 
-    func memoryRecalls(sessionId: String) async -> [MemoryRecallAudit]? {
-        var components = URLComponents(url: baseURL.appending(path: "memory-recall-audit"), resolvingAgainstBaseURL: false)
+    func memoryHits(sessionId: String) async -> [MemoryRecallEntry]? {
+        var components = URLComponents(url: baseURL.appending(path: "memory-hit"), resolvingAgainstBaseURL: false)
         components?.queryItems = [
-            URLQueryItem(name: "sessionId", value: sessionId),
-            URLQueryItem(name: "limit", value: "8")
+            URLQueryItem(name: "sessionId", value: sessionId)
         ]
         guard let url = components?.url else { return nil }
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
             try validateMemoryResponse(response, data: data)
-            return try decoder.decode(MemoryRecallListEnvelope.self, from: data).recalls
+            return try decoder.decode(MemoryHitListEnvelope.self, from: data).hits
         } catch {
             errorMessage = error.localizedDescription
             return nil

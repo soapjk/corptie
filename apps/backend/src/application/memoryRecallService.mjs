@@ -147,6 +147,19 @@ export function presentMemoryRecallAudit(store, audit) {
   };
 }
 
+export function presentSessionMemoryHits(store, sessionId) {
+  return store.listSessionMemoryHits(sessionId).map((hit) => {
+    const snapshot = Array.isArray(hit.diagnostics?.selectedEntries)
+      ? hit.diagnostics.selectedEntries.find((entry) => entry.id === hit.memoryId)
+      : null;
+    if (snapshot) return snapshot;
+    const current = store.getMemory(hit.memoryId);
+    return current ? memoryRecallEntry(current, false)
+      : { id: hit.memoryId, kind: null, content: null,
+        ownerType: null, ownerId: null, snapshotAtRecall: false };
+  });
+}
+
 function isRecallableMemory(memory) {
   return memory.promotion_status === "active" && isTrustedMemory(memory);
 }

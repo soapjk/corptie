@@ -137,6 +137,27 @@ test("model extraction uses the Session Provider through the common hidden backg
   assert.deepEqual(request.allowedRoots, []);
 });
 
+test("a rejected no-tools runtime refunds the Memory call reservation", async () => {
+  const f = await fixture();
+  try {
+    let dispatched = 0;
+    const classify = createMemoryModelClassifier({ backgroundAgent: {
+      async run() {
+        dispatched += 1;
+        throw Object.assign(new Error("Unverified runtime"), {
+          code: "BACKGROUND_NO_TOOLS_RUNTIME_UNVERIFIED"
+        });
+      }
+    }, claimBudget: (day) => f.store.claimMemoryExtractionDailyCall(day, 1),
+    refundBudget: (day) => f.store.refundMemoryExtractionDailyCall(day) });
+    const input = { scope: { providerId: "test-provider" }, existing: [] };
+    await assert.rejects(classify([], input), { code: "BACKGROUND_NO_TOOLS_RUNTIME_UNVERIFIED" });
+    await assert.rejects(classify([], input), { code: "BACKGROUND_NO_TOOLS_RUNTIME_UNVERIFIED" });
+    assert.equal(dispatched, 2);
+    assert.equal(f.store.selectOne("SELECT calls FROM memory_extraction_daily_budget").calls, 0);
+  } finally { await f.close(); }
+});
+
 test("durable scheduler coalesces Session requests and processes them with one worker", async () => {
   const f = await fixture();
   try {
@@ -163,6 +184,44 @@ test("ordinary Turn completion waits for the low-frequency idle window", async (
     assert.equal(f.store.listMemoryExtractionJobs()[0].reason, "idle_window");
     await new Promise((resolve) => setTimeout(resolve, 25));
     assert.equal(runs, 0);
+    await scheduler.close();
+  } finally { await f.close(); }
+});
+
+test("retry cooldown survives a new Turn and blocked jobs resume only at startup", async () => {
+  const f = await fixture();
+  try {
+    const future = new Date(Date.now() + 60_000).toISOString();
+    f.store.enqueueMemoryExtraction("session:a", "initial", new Date(0).toISOString());
+    const job = f.store.listMemoryExtractionJobs()[0];
+    f.store.finishMemoryExtractionJob("session:a", {
+      error: "MEMORY_DAILY_CALL_BUDGET", retryAt: future, expectedUpdatedAt: job.updated_at
+    });
+    f.store.enqueueMemoryExtraction("session:a", "new_turn", new Date(0).toISOString());
+    assert.equal(f.store.listMemoryExtractionJobs()[0].retry_at, future);
+    f.store.finishMemoryExtractionJob("session:a", {
+      error: "BACKGROUND_NO_TOOLS_RUNTIME_UNVERIFIED", terminalState: "blocked"
+    });
+    f.store.enqueueMemoryExtraction("session:a", "another_turn", new Date(0).toISOString());
+    assert.equal(f.store.listMemoryExtractionJobs()[0].state, "blocked");
+    f.store.resumeBlockedMemoryExtractionJobs();
+    assert.equal(f.store.listMemoryExtractionJobs()[0].state, "queued");
+  } finally { await f.close(); }
+});
+
+test("deleted Sessions cannot enqueue and their old jobs are skipped", async () => {
+  const f = await fixture();
+  try {
+    f.store.enqueueMemoryExtraction("session:a", "before_delete", new Date(0).toISOString());
+    f.store.deleteSession("session:a");
+    const scheduler = new MemoryExtractionScheduler({ store: f.store,
+      extractor: { async extractPageFromSession() {
+        throw Object.assign(new Error("Gone"), { code: "SESSION_NOT_FOUND" });
+      } } });
+    scheduler.request("session:a", "after_delete");
+    scheduler.start();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(f.store.listMemoryExtractionJobs()[0].state, "skipped");
     await scheduler.close();
   } finally { await f.close(); }
 });

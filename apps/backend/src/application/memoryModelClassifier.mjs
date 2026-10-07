@@ -14,7 +14,7 @@ const INSTRUCTIONS = [
 ].join("\n");
 
 export function createMemoryModelClassifier({ backgroundAgent, cwd = process.cwd(),
-  claimBudget = () => true } = {}) {
+  claimBudget = () => true, refundBudget = () => {} } = {}) {
   if (!backgroundAgent || typeof backgroundAgent.run !== "function") {
     throw new TypeError("Memory classifier requires the provider-neutral background Agent service.");
   }
@@ -23,23 +23,33 @@ export function createMemoryModelClassifier({ backgroundAgent, cwd = process.cwd
     backgroundAgent.selectProvider?.(providerId, "read-only", {
       allowFallback: false, executionPolicy: "no-tools"
     });
-    if (!claimBudget()) {
+    const budgetDay = new Date().toISOString().slice(0, 10);
+    if (!claimBudget(budgetDay)) {
       throw Object.assign(new Error("Daily Memory model call budget reached."),
         { code: "MEMORY_DAILY_CALL_BUDGET" });
     }
-    const result = await backgroundAgent.run({
-      purpose: "memory-extraction", cwd, allowedRoots: [],
-      permissionProfile: "read-only", executionPolicy: "no-tools",
-      preferredProviderId: scope.providerId, allowProviderFallback: false,
-      preferredReasoning: "low", timeoutMs: 90_000,
-      developerInstructions: INSTRUCTIONS,
-      prompt: JSON.stringify({ scope, events,
-        existing: compactMemories(existing.filter((memory) =>
-          memory.promotion_status === "active" && !memory.revoked_at), 6000),
-        suppressed: compactMemories(existing.filter((memory) => memory.revoked_at
-          || ["archived", "rolled_back"].includes(memory.promotion_status)), 4000) }),
-      validateOutput: (text) => parseMemoryModelOutput(text)
-    });
+    let result;
+    try {
+      result = await backgroundAgent.run({
+        purpose: "memory-extraction", cwd, allowedRoots: [],
+        permissionProfile: "read-only", executionPolicy: "no-tools",
+        preferredProviderId: scope.providerId, allowProviderFallback: false,
+        preferredReasoning: "low", timeoutMs: 90_000,
+        developerInstructions: INSTRUCTIONS,
+        prompt: JSON.stringify({ scope, events,
+          existing: compactMemories(existing.filter((memory) =>
+            memory.promotion_status === "active" && !memory.revoked_at), 6000),
+          suppressed: compactMemories(existing.filter((memory) => memory.revoked_at
+            || ["archived", "rolled_back"].includes(memory.promotion_status)), 4000) }),
+        validateOutput: (text) => parseMemoryModelOutput(text)
+      });
+    } catch (error) {
+      // These failures occur before a model request can be dispatched. Keep the
+      // daily counter for requests whose dispatch status is uncertain.
+      if (["BACKGROUND_NO_TOOLS_RUNTIME_UNVERIFIED", "BACKGROUND_AGENT_UNAVAILABLE",
+        "BACKGROUND_EXECUTION_DISABLED"].includes(error?.code)) refundBudget(budgetDay);
+      throw error;
+    }
     return result.validatedOutput;
   };
 }
