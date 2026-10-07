@@ -139,7 +139,7 @@ struct WorktreeManagementView: View {
     @EnvironmentObject private var router: AppTabRouter
     @EnvironmentObject private var sidebarState: TabSidebarState
     @ObservedObject private var backendClient = BackendClient.shared
-    @StateObject private var client = WorktreeManagementClient()
+    @StateObject private var client = WorktreeManagementClient.shared
     @State private var showingPlan = false
     @State private var showingSynchronizationConfirmation = false
     @State private var pendingOperation: ManagedWorktree?
@@ -201,7 +201,7 @@ struct WorktreeManagementView: View {
                 router.consumeWorktreeNavigation(request.id)
             }
         }
-        .task(id: client.job.map { "\($0.id):\($0.shouldPoll)" }) {
+        .task(id: client.job?.id) {
             guard let jobId = client.job?.id else { return }
             var unchangedPolls = 0
             // Job changes are infrequent while an Agent works. Back off capped
@@ -1192,6 +1192,13 @@ struct WorktreeManagementView: View {
         if worktree.operationState != nil { return (L10n("Operation in progress"), .orange) }
         if worktree.dirty == true { return (L10n("Working"), .orange) }
         if worktree.isMain { return (L10n("Clean"), .green) }
+        if client.job?.status == "completed",
+           client.job?.plan.operationType == nil,
+           let completedItem = client.job?.plan.items.first(where: { $0.worktreeId == worktree.worktreeId }),
+           completedItem.mergeStatus == "completed",
+           (completedItem.commitHead ?? completedItem.sourceHeadBefore) == worktree.headOid {
+            return (L10n("Merged"), .purple)
+        }
         if worktree.pendingIntegration { return (L10n("Pending merge"), .blue) }
         if worktree.mergedIntoMain == true { return (L10n("Merged"), .purple) }
         return (L10n("Pending merge"), .secondary)

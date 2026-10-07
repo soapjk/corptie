@@ -271,6 +271,34 @@ struct WorktreeManagementLoadingTests {
     }
 
     @MainActor
+    @Test func expiredCacheRemainsVisibleWhileLiveGitStateReloads() async {
+        var currentTime = Date(timeIntervalSince1970: 1_776_297_600)
+        let recorder = RequestRecorder(details: [
+            "repository:one": Self.detail(repositoryId: "repository:one", worktrees: [
+                Self.worktree("wt:main", branch: "main", isMain: true),
+                Self.worktree("wt:cached", branch: "feature/cached")
+            ])
+        ])
+        let client = makeClient(recorder: recorder, cacheLifetime: 15, now: { currentTime })
+        await client.loadRepositories()
+
+        recorder.setDetail(Self.detail(repositoryId: "repository:one", worktrees: [
+            Self.worktree("wt:main", branch: "main", isMain: true),
+            Self.worktree("wt:fresh", branch: "feature/fresh")
+        ]), for: "repository:one")
+        recorder.setResponseDelay(0.1)
+        currentTime.addTimeInterval(16)
+        let reload = Task { await client.loadRepositories(presentsLoadingState: false) }
+        while recorder.count(path: "/worktree-management/repositories") < 2 { await Task.yield() }
+
+        #expect(client.detail?.project.worktrees.map(\.worktreeId) == ["wt:main", "wt:cached"])
+        #expect(client.isLoading == false)
+
+        await reload.value
+        #expect(client.detail?.project.worktrees.map(\.worktreeId) == ["wt:main", "wt:fresh"])
+    }
+
+    @MainActor
     private func makeClient(
         recorder: RequestRecorder,
         cacheLifetime: TimeInterval = 60,
@@ -342,7 +370,7 @@ private final class RequestRecorder: @unchecked Sendable {
     private let repositoryIds: [String]
     private var details: [String: String]
     private var counts: [String: Int] = [:]
-    private let responseDelay: TimeInterval
+    private var responseDelay: TimeInterval
 
     init(
         repositoryIds: [String] = ["repository:one"],
@@ -355,7 +383,8 @@ private final class RequestRecorder: @unchecked Sendable {
     }
 
     func response(for path: String) -> (Int, String) {
-        if responseDelay > 0 { Thread.sleep(forTimeInterval: responseDelay) }
+        let delay = lock.withLock { responseDelay }
+        if delay > 0 { Thread.sleep(forTimeInterval: delay) }
         return lock.withLock {
             counts[path, default: 0] += 1
             if path == "/worktree-management/repositories" {
@@ -383,6 +412,7 @@ private final class RequestRecorder: @unchecked Sendable {
 
     func count(path: String) -> Int { lock.withLock { counts[path, default: 0] } }
     func setDetail(_ detail: String, for id: String) { lock.withLock { details[id] = detail } }
+    func setResponseDelay(_ delay: TimeInterval) { lock.withLock { responseDelay = delay } }
 
     static func pushPath(_ worktreeId: String) -> String {
         "/worktree-management/repositories/repository:one/worktrees/\(worktreeId)/github-push-status"
