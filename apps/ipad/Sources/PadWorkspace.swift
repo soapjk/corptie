@@ -11,13 +11,73 @@ enum PadConversationReadOperation: String {
     case updateComposer = "更新模型设置"
 }
 
+/// Constant-time geometry for the drag-only message scrollbar. Track taps
+/// have no mapping to a content offset; only a relative thumb drag does.
+struct PadTimelineScrollbarGeometry {
+    let minimumOffset: CGFloat
+    let maximumOffset: CGFloat
+    let trackHeight: CGFloat
+    let thumbHeight: CGFloat
+    let thumbY: CGFloat
+
+    init(contentHeight: CGFloat, viewportHeight: CGFloat, topInset: CGFloat,
+         bottomInset: CGFloat, trackHeight: CGFloat, offset: CGFloat) {
+        minimumOffset = -topInset
+        maximumOffset = max(minimumOffset, contentHeight - viewportHeight + bottomInset)
+        self.trackHeight = max(0, trackHeight)
+        let total = max(1, contentHeight + topInset + bottomInset)
+        thumbHeight = min(self.trackHeight, max(36, self.trackHeight * viewportHeight / total))
+        let range = maximumOffset - minimumOffset
+        let fraction = range > 0 ? min(1, max(0, (offset - minimumOffset) / range)) : 0
+        thumbY = fraction * (self.trackHeight - thumbHeight)
+    }
+
+    var isScrollable: Bool { maximumOffset > minimumOffset && trackHeight > thumbHeight }
+
+    func offset(start: CGFloat, translation: CGFloat) -> CGFloat {
+        guard isScrollable else { return minimumOffset }
+        return min(maximumOffset, max(minimumOffset,
+            start + translation * (maximumOffset - minimumOffset) / (trackHeight - thumbHeight)))
+    }
+}
+
+struct PadTimelineBottomGeometry {
+    let contentHeight: CGFloat
+    let viewportHeight: CGFloat
+    let topInset: CGFloat
+    let bottomInset: CGFloat
+    let offset: CGFloat
+
+    var maximumOffset: CGFloat {
+        max(-topInset, contentHeight - viewportHeight + bottomInset)
+    }
+    var isNearBottom: Bool { abs(maximumOffset - offset) <= 40 }
+
+    func tailIsDocked(rowBottom: CGFloat?) -> Bool {
+        guard let rowBottom, rowBottom.isFinite, viewportHeight > 1 else { return false }
+        // Last row → stack spacing → 1pt marker → vertical padding.
+        let expected = viewportHeight - bottomInset - PadTimelineLayoutMetrics.tailClearance
+        return abs(rowBottom - expected) <= 3
+    }
+}
+
+/// Structural viewport changes only; never publish a pixel-by-pixel offset.
+struct PadTimelineViewportInsets: Equatable {
+    let height: CGFloat
+    let top: CGFloat
+    let bottom: CGFloat
+}
+
 enum PadTimelineJumpPolicy {
     /// An estimated bottom offset alone cannot confirm that content was drawn.
     static func placementConfirmed(tailVisible: Bool, nearBottom: Bool) -> Bool {
         tailVisible && nearBottom
     }
 
-    static let correctionDelays = [32, 64, 128, 256]
+    static func placementConfirmed(lastEntryID: String?, visibleEntryIDs: Set<String>, nearBottom: Bool) -> Bool {
+        guard let lastEntryID else { return false }
+        return nearBottom && visibleEntryIDs.contains(lastEntryID)
+    }
     /// Native scroll geometry is the primary completion signal on iOS 18+.
     /// The realized tail + physical offset remain the legacy fallback.
     static func correctionCompleted(nativeNearBottom: Bool?, tailMinY: CGFloat?,
@@ -33,12 +93,70 @@ enum PadTimelineJumpPolicy {
     }
 }
 
+/// Only a real drag may transfer follow ownership. Tracking/tapping, keyboard
+/// resizing, programmatic scrolling and an idle geometry update cannot do so.
+struct PadTimelineFollowGesture {
+    private(set) var isInteracting = false
+    mutating func beginInteraction() { isInteracting = true }
+    mutating func finish(isNearBottom: Bool) -> Bool? {
+        guard isInteracting else { return nil }
+        isInteracting = false
+        return isNearBottom
+    }
+    mutating func reset() { isInteracting = false }
+}
+
+/// Event-only, bounded diagnostics. Neither observation nor message text is
+/// retained here; transient lazy layout gaps are candidates, not proof of loss.
+final class PadTimelineVisibilityAudit {
+    enum State: String { case emptyData, visible, missingRows, outOfBounds }
+    private var last: State?
+    private var transitions = 0
+    private var placementEvents = 0
+    func shouldLogPlacementEvent() -> Bool {
+        guard placementEvents < 100 else { return false }
+        placementEvents += 1
+        return true
+    }
+    func transition(entryCount: Int, visibleCount: Int, offset: CGFloat,
+                    minimum: CGFloat, maximum: CGFloat) -> State? {
+        let next: State = entryCount == 0 ? .emptyData
+            : !offset.isFinite || offset < minimum - 2 || offset > maximum + 2 ? .outOfBounds
+            : visibleCount == 0 ? .missingRows : .visible
+        guard next != last else { return nil }
+        last = next
+        guard transitions < 20 else { return nil }
+        transitions += 1
+        return next
+    }
+}
+
 enum PadTimelineLayoutMetrics {
+    static let rowSpacing: CGFloat = 12
+    static let verticalPadding: CGFloat = 12
+    static let tailClearance: CGFloat = rowSpacing + 1 + verticalPadding
     static let horizontalMargin: CGFloat = 16
     static func laneWidth(viewportWidth: CGFloat) -> CGFloat {
-        guard viewportWidth.isFinite else { return 0 }
-        return max(0, viewportWidth - horizontalMargin * 2).rounded(.down)
+        scrollContentWidth(viewportWidth: viewportWidth - horizontalMargin * 2)
     }
+    /// The scroll viewport already excludes the outer margins.
+    static func scrollContentWidth(viewportWidth: CGFloat) -> CGFloat {
+        guard viewportWidth.isFinite else { return 0 }
+        return max(0, viewportWidth).rounded(.down)
+    }
+}
+
+/// Non-observed, single-slot mailbox: repeated layout/tail requests coalesce,
+/// but a request arriving during placement survives until the next UI turn.
+final class PadTimelinePlacementRequests {
+    private(set) var pending = false
+    func request() { pending = true }
+    @discardableResult func take() -> Bool {
+        let value = pending
+        pending = false
+        return value
+    }
+    func cancel() { pending = false }
 }
 
 enum PadComposerHeightPolicy {
@@ -297,6 +415,7 @@ final class PadWorkspace {
         }
     }
     private(set) var displayEntries: [ConversationEntry<ClientMessage>] = []
+    private(set) var tailDisplayRevision: UInt64 = 0
     private(set) var timeSeparatorTextByMessageID: [String: String] = [:]
     private(set) var processPresentations: [String: ConversationProcessPresentation] = [:]
     private(set) var activeProcessEntryID: String?
@@ -354,6 +473,17 @@ final class PadWorkspace {
         refreshDisplayEntries()
     }
 
+    private static func sameDisplayedTail(_ lhs: ConversationEntry<ClientMessage>?,
+                                          _ rhs: ConversationEntry<ClientMessage>?) -> Bool {
+        switch (lhs?.kind, rhs?.kind) {
+        case (nil, nil): true
+        case (.message(let left)?, .message(let right)?): left == right
+        case (.process(let leftID, let left)?, .process(let rightID, let right)?):
+            leftID == rightID && left == right
+        default: false
+        }
+    }
+
     private func refreshDisplayEntries() {
         let source = visibleMessages
         guard source != projectedMessages || visibleMessageLimit != projectedMessageLimit else { return }
@@ -361,7 +491,10 @@ final class PadWorkspace {
         projectedMessageLimit = visibleMessageLimit
         let allEntries = ConversationTimeline.makeEntries(from: source)
         totalDisplayEntryCount = allEntries.count
-        displayEntries = Self.visibleEntries(from: allEntries, limit: visibleMessageLimit)
+        let nextEntries = Self.visibleEntries(from: allEntries, limit: visibleMessageLimit)
+        let tailChanged = !Self.sameDisplayedTail(displayEntries.last, nextEntries.last)
+        displayEntries = nextEntries
+        if tailChanged { tailDisplayRevision &+= 1 }
         let now = Date()
         var previousMessageDate: Date?
         var separators: [String: String] = [:]

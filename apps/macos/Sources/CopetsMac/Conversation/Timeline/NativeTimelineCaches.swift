@@ -298,10 +298,11 @@ final class NativeTimelineLayoutCache {
         enum RichBlock {
             case markdown(id: String, NSAttributedString, CGFloat)
             case chart(id: String, ConversationChartSpec, CGFloat)
+            case table(id: String, ConversationMarkdownTable, ConversationMarkdownTableLayout)
 
             var id: String {
                 switch self {
-                case .markdown(let id, _, _), .chart(let id, _, _): id
+                case .markdown(let id, _, _), .chart(let id, _, _), .table(let id, _, _): id
                 }
             }
         }
@@ -441,13 +442,13 @@ final class NativeTimelineLayoutCache {
             return layout
         }
 
-        let chartCandidates = row.nativeStyle == .agent && MacSharedMessageTextCard.supports(row)
-            && row.nativeText.contains("```corptie-chart")
+        let chartCandidates = row.nativeStyle != .process && MacSharedMessageTextCard.supports(row)
+            && (row.nativeText.contains("|") || row.nativeText.contains("```corptie-chart"))
             ? ConversationChartBlockCache.shared.locatedBlocks(
                 messageID: row.id, authoritativeText: row.nativeText) : []
         let hasRichBlock = chartCandidates.contains { block in
             switch block.content {
-            case .chart, .invalidChart: true
+            case .chart, .invalidChart, .table: true
             case .markdown: false
             }
         }
@@ -484,6 +485,9 @@ final class NativeTimelineLayoutCache {
                 return .markdown(id: block.id, value, NativeTextKitLayout.height(of: value, width: textWidth))
             case .chart(let spec, _):
                 return .chart(id: block.id, spec, chartHeight(spec, width: textWidth))
+            case .table(let table):
+                return .table(id: block.id, table,
+                    .measured(table, width: textWidth, style: row.nativeStyle == .user ? .user : .agent))
             case .invalidChart(let original, let reason):
                 let value = NativeMarkdownTextCache.shared.value(
                     text: "> \(reason)\n\n\(original)", style: row.nativeStyle)
@@ -498,6 +502,7 @@ final class NativeTimelineLayoutCache {
                 switch block {
                 case .markdown(_, _, let blockHeight): height + blockHeight
                 case .chart(_, _, let chartHeight): height + chartHeight
+                case .table(_, _, let layout): height + layout.height
                 }
             }
         } else if !processBlocks.isEmpty {
