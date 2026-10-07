@@ -30,6 +30,16 @@ struct SessionRestartInteractionTests {
     }
 
     @Test
+    func sessionHeaderHidesGitHubPushEntryButKeepsOtherActions() throws {
+        let source = try contents(of: "Conversation/ConversationHeader.swift")
+        #expect(!source.contains("GitHubPushButtonVisual"))
+        #expect(!source.contains("prepareGitHubPush()"))
+        #expect(!source.contains("Commit and Push to GitHub"))
+        #expect(source.contains("case manageWorktrees"))
+        #expect(source.contains("case reconnect"))
+    }
+
+    @Test
     func sessionHeaderGroupsMetadataInOneGlassCapsuleAndKeepsActionsSeparate() throws {
         let source = try contents(of: "Conversation/ConversationHeader.swift")
         let rowStart = try #require(source.range(of: "private var headerControlRow: some View"))

@@ -2,6 +2,20 @@ import XCTest
 @testable import CorptieMac
 
 final class AgentProviderDescriptorTests: XCTestCase {
+    @MainActor
+    func testProviderBrandIconsResolveKnownProvidersAndAliases() {
+        let providers: [AgentProviderDescriptor] = []
+        XCTAssertEqual(ProviderBrandIcon.assetName(for: "codex-app-server", providers: providers), "codex")
+        XCTAssertEqual(ProviderBrandIcon.assetName(for: "codex", providers: providers), "codex")
+        XCTAssertEqual(ProviderBrandIcon.assetName(for: "claude-sdk", providers: providers), "claude-code")
+        XCTAssertEqual(ProviderBrandIcon.assetName(for: "claude-code", providers: providers), "claude-code")
+        XCTAssertEqual(ProviderBrandIcon.assetName(for: "openclacky", providers: providers), "openclacky")
+        XCTAssertNil(ProviderBrandIcon.assetName(for: "future-provider", providers: providers))
+        XCTAssertNotNil(ProviderBrandIcon.image(for: "codex", providers: providers))
+        XCTAssertNotNil(ProviderBrandIcon.image(for: "claude-sdk", providers: providers))
+        XCTAssertNotNil(ProviderBrandIcon.image(for: "openclacky", providers: providers))
+    }
+
     func testProviderCatalogDecodesCapabilitiesAndConfiguration() throws {
         let data = Data(#"""
         {

@@ -240,8 +240,20 @@ struct SessionProviderIdentity: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            Image(systemName: "cpu")
-                .foregroundStyle(session.accent.color)
+            if let icon = ProviderBrandIcon.image(
+                for: session.external?.provider ?? session.agent,
+                providers: modelCatalog.agentProviders
+            ) {
+                Image(nsImage: icon)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 13, height: 13)
+                    .accessibilityHidden(true)
+            } else {
+                Image(systemName: "cpu")
+                    .foregroundStyle(session.accent.color)
+                    .accessibilityHidden(true)
+            }
             Text(sessionProviderIdentityLabel(
                 providerIdentity: session.external?.provider,
                 legacyAgentLabel: session.agent,
@@ -250,6 +262,45 @@ struct SessionProviderIdentity: View {
             .foregroundStyle(prominentText ? Color.primary : session.accent.color)
         }
         .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+@MainActor
+enum ProviderBrandIcon {
+    // Bundled local copies of the Codex app icon (Product Hunt listing), the
+    // Anthropic-published Claude Code VS Code icon, and OpenClacky's project icon.
+    // Decode once per Provider so session-list scrolling does not reload images.
+    private static let codex = load("codex")
+    private static let claudeCode = load("claude-code")
+    private static let openClacky = load("openclacky")
+
+    static func assetName(for identity: String?, providers: [AgentProviderDescriptor]) -> String? {
+        let canonical = providers.canonicalProviderId(for: identity)
+            ?? identity?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch canonical?.lowercased() {
+        case "codex-app-server", "codex": return "codex"
+        case "claude-sdk", "claude", "claude-code", "claude_code", "claude code": return "claude-code"
+        case "openclacky", "clacky", "open-clacky": return "openclacky"
+        default: return nil
+        }
+    }
+
+    static func image(for identity: String?, providers: [AgentProviderDescriptor]) -> NSImage? {
+        switch assetName(for: identity, providers: providers) {
+        case "codex": return codex
+        case "claude-code": return claudeCode
+        case "openclacky": return openClacky
+        default: return nil
+        }
+    }
+
+    private static func load(_ name: String) -> NSImage? {
+        guard let url = Bundle.module.url(
+            forResource: name,
+            withExtension: "png",
+            subdirectory: "ProviderIcons"
+        ) else { return nil }
+        return NSImage(contentsOf: url)
     }
 }
 
