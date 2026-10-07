@@ -53,7 +53,7 @@ struct PadStateTests {
         #expect(bar.contains(".padding(.bottom, -PadPhoneNavigationLayout.bottomOverlap("))
         #expect(!bar.contains("ignoresSafeArea"))
         let outline = try String(contentsOf: sources.appendingPathComponent("PadWorkOutline.swift"), encoding: .utf8)
-        #expect(outline.contains(".padding(.top, UIDevice.current.userInterfaceIdiom == .phone ? 0 : 6)"))
+        #expect(outline.contains("topInset: isPhone ? 0 : PlatformWorkOutlineLayout.verticalInset"))
         let app = try String(contentsOf: sources.appendingPathComponent("CorptieMobileApp.swift"), encoding: .utf8)
         #expect(app.components(separatedBy: ".padding(.top, UIDevice.current.userInterfaceIdiom == .phone ? 0 : 4)").count - 1 == 2)
     }
