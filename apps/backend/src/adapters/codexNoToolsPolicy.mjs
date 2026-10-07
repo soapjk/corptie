@@ -2,7 +2,8 @@
 // Keep this exact allowlist fail-closed; upgrades require the full probe matrix.
 export const CODEX_NO_TOOLS_VERIFIED_VERSIONS = Object.freeze([
   "0.153.4",
-  "0.155.1"
+  "0.155.1",
+  "0.160.0"
 ]);
 const VERIFIED_RUNTIME_VERSIONS = new Set(CODEX_NO_TOOLS_VERIFIED_VERSIONS);
 
@@ -11,6 +12,7 @@ export function codexNoToolsConfig(mcpServers = {}) {
     "features.apps": false, "features.shell_tool": false, "features.unified_exec": false,
     "features.multi_agent": false, "features.js_repl": false,
     "features.code_mode.enabled": false, "features.token_budget": false,
+    "features.goals": false,
     "features.current_time_reminder": false,
     "tools.update_plan.enabled": false, "tools.experimental_request_user_input.enabled": false,
     "tools.view_image": false, web_search: "disabled",

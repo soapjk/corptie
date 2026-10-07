@@ -70,14 +70,19 @@ struct CorptieTaskMemoryPresentationTests {
         #expect(recall.candidateEntries?.first?.content == "Use the shared contract")
         #expect(recall.injectionStatus == "context_included")
         #expect(recall.pendingReviewCount == 2)
-        #expect(MemoryRecallRowSummary.text(for: recall) == "turn · lightweight · hit 1")
         let rejectedRecall = try decoder.decode(MemoryRecallAudit.self, from: Data("""
         {"id":"memory-recall:rejected","sessionId":"session:one","phase":"turn",
          "mode":"lightweight","reason":"routine_context","candidateIds":["memory:audit"],
          "selectedIds":["memory:audit"],"injectionStatus":"provider_rejected",
          "createdAt":"2026-08-23T00:00:00Z"}
         """.utf8))
-        #expect(MemoryRecallRowSummary.text(for: rejectedRecall).contains(L10n("Rejected")))
+        #expect(rejectedRecall.injectionStatus == "provider_rejected")
+
+        let hits = try decoder.decode(MemoryHitListEnvelope.self, from: Data("""
+        {"hits":[{"id":"memory:audit","kind":"procedure","content":"Use the shared contract",
+          "ownerType":"agent","ownerId":"agent:one","snapshotAtRecall":true}]}
+        """.utf8))
+        #expect(hits.hits.map(\.id) == ["memory:audit"])
 
         let backfill = try decoder.decode(MemoryBackfillProgress.self, from: Data("""
         {"scannedEvents":500,"createdCount":3,"nextSequence":812,"hasMore":true}

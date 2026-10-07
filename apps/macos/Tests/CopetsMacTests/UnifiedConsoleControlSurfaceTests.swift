@@ -539,10 +539,10 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func memoryRecallUsesTheSharedFullRowDisclosure() throws {
+    func memoryHitUsesTheSharedFullRowDisclosure() throws {
         let source = try source(named: "MemoryManagementView.swift")
         #expect(source.contains("ConversationDetailDisclosure(isExpanded: $isExpanded"))
-        #expect(source.contains("Label(L10n(\"Memory recall\")"))
+        #expect(source.contains("Label(L10n(\"Memory Hit\")"))
     }
 
     @Test

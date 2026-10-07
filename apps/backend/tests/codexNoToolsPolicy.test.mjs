@@ -6,7 +6,8 @@ import { CodexAppServerClient } from "../src/adapters/codexAppServer.mjs";
 test("no-tools accepts only explicitly qualified complete runtime versions", () => {
   for (const agent of [
     "corptie/0.153.4 (Mac OS; arm64)",
-    "corptie/0.155.1 (Mac OS 27.0.0; arm64) unknown (corptie; 0.5.4)"
+    "corptie/0.155.1 (Mac OS 27.0.0; arm64) unknown (corptie; 0.5.4)",
+    "corptie/0.160.0 (Mac OS 27.0.0; arm64) unknown (corptie; 0.5.4)"
   ]) assert.doesNotThrow(() => assertCodexNoToolsRuntime(agent));
 
   for (const agent of [
@@ -35,6 +36,7 @@ test("no-tools disables every inherited MCP without copying credentials or inval
     local: { command: "synthetic", enabled: false } });
   assert.equal(policy["orchestrator.skills.enabled"], false);
   assert.equal(policy["features.shell_tool"], false);
+  assert.equal(policy["features.goals"], false);
 });
 
 test("an unverified no-tools runtime never starts a thread or submits a prompt", async () => {

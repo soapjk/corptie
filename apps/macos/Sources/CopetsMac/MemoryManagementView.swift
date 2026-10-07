@@ -231,17 +231,23 @@ struct MemoryManagementView: View {
     }
 
     private var extractionStatus: some View {
-        let pending = extractionJobs.filter { $0.state != "done" }
+        let pending = extractionJobs.filter { $0.state == "queued" || $0.state == "running" }
         let retrying = pending.filter { $0.retryAt != nil }
+        let blocked = extractionJobs.filter { $0.state == "blocked" }
+        let skipped = extractionJobs.filter { $0.state == "skipped" }
         return VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 12) {
                 Label(L10n("Extraction queue"), systemImage: "clock.arrow.circlepath")
                     .font(.caption.bold())
                 Text("\(pending.count) \(L10n("pending")) · \(retrying.count) \(L10n("retrying"))")
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                if !blocked.isEmpty || !skipped.isEmpty {
+                    Text("\(blocked.count) \(L10n("Paused")) · \(skipped.count) \(L10n("Skipped"))")
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                }
                 Spacer()
             }
-            if let failed = retrying.first, let reason = failed.lastError {
+            if let failed = blocked.first ?? retrying.first, let reason = failed.lastError {
                 Text("\(failed.sessionId): \(reason)")
                     .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
@@ -793,120 +799,51 @@ private struct MemoryTagEditor: View {
     }
 }
 
-@MainActor
-enum MemoryRecallRowSummary {
-    static func text(for recall: MemoryRecallAudit) -> String {
-        let count = recall.selectedIds.count
-        let base = "\(recall.phase) · \(recall.mode) · hit \(count)"
-        guard count > 0 else { return base }
-        switch recall.injectionStatus {
-        case "provider_rejected":
-            return "\(base) · \(L10n("Rejected"))"
-        case "budget_omitted":
-            return "\(base) · \(L10n("Not included"))"
-        case "provider_accepted", "context_included":
-            return base
-        default:
-            return "\(base) · \(L10n("Injection unknown"))"
-        }
-    }
-}
-
 struct SessionMemoryDiagnosticsView: View {
     let session: TaskSession
-    @State private var recalls: [MemoryRecallAudit] = []
+    @State private var hits: [MemoryRecallEntry] = []
     @State private var loadFailed = false
     @State private var isExpanded = false
     @State private var isLoading = false
-    @State private var isBackfilling = false
-    @State private var backfillProgress: MemoryBackfillProgress?
-    @State private var backfillError: String?
 
     var body: some View {
         ConversationDetailDisclosure(isExpanded: $isExpanded, header: {
-            Label(L10n("Memory recall"), systemImage: "brain.head.profile")
+            Label(L10n("Memory Hit"), systemImage: "brain.head.profile")
                 .font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
+            if !hits.isEmpty {
+                Text("\(hits.count)").font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+            }
         }, content: {
-            Button { Task { await reloadRecalls() } } label: {
-                Label(L10n("Refresh recall records"), systemImage: "arrow.clockwise")
+            Button { Task { await reloadHits() } } label: {
+                Label(L10n("Refresh Memory hits"), systemImage: "arrow.clockwise")
             }
             .buttonStyle(.link)
             .disabled(isLoading)
-            if backfillProgress?.hasMore != false {
-                Button(backfillProgress == nil
-                       ? L10n("Scan earlier Session memories")
-                       : L10n("Scan next 500 events")) {
-                    Task { await backfillNextPage() }
-                }
-                .buttonStyle(.link)
-                .disabled(isBackfilling)
-            }
-            if isBackfilling { ProgressView().controlSize(.small) }
-            if let backfillError {
-                Text(backfillError).font(.caption2).foregroundStyle(.red)
-            }
-            if let progress = backfillProgress {
-                Text(String(format: L10n("Scanned %d events; found %d candidates this page."),
-                            progress.scannedEvents, progress.createdCount))
-                    .font(.caption2).foregroundStyle(.secondary)
-                if !progress.hasMore {
-                    Text(L10n("Historical scan complete. Review candidates in Memory management."))
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-            }
             if isLoading {
                 ProgressView().controlSize(.small)
             } else if loadFailed {
-                Text(L10n("Could not load recall decisions."))
+                Text(L10n("Could not load Memory hits."))
                     .font(.caption).foregroundStyle(.red)
-            } else if recalls.isEmpty {
-                Text(L10n("No recall decisions recorded yet.")).font(.caption).foregroundStyle(.tertiary)
+            } else if hits.isEmpty {
+                Text(L10n("No Memory hits recorded for this Session."))
+                    .font(.caption).foregroundStyle(.tertiary)
             } else {
-                ForEach(recalls.prefix(8)) { recall in
-                    HStack(alignment: .top, spacing: 6) {
-                        Image(systemName: recall.selectedIds.isEmpty ? "minus.circle" : "checkmark.circle")
-                            .foregroundStyle(recall.selectedIds.isEmpty ? Color.secondary : Color.green)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(MemoryRecallRowSummary.text(for: recall))
-                                .font(.caption.bold())
-                            if let pending = recall.pendingReviewCount, pending > 0 {
-                                Text(String(format: L10n("%d Memory candidates await review."), pending))
-                                    .font(.caption2).foregroundStyle(.secondary)
-                            }
-                            ForEach(recall.selectedEntries ?? []) { entry in
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(entry.content ?? entry.id)
-                                        .font(.caption).lineLimit(4).textSelection(.enabled)
-                                    HStack(spacing: 4) {
-                                        Text(entry.kind ?? L10n("Memory unavailable"))
-                                        if let ownerType = entry.ownerType {
-                                            Text("· \(ownerType)")
-                                        }
-                                        if !entry.snapshotAtRecall {
-                                            Text("· \(L10n("Current content; historical snapshot unavailable"))")
-                                        }
+                LazyVStack(alignment: .leading, spacing: 6) {
+                    ForEach(hits) { entry in
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: "checkmark.circle")
+                                .foregroundStyle(.green)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(entry.content ?? entry.id)
+                                    .font(.caption).lineLimit(4).textSelection(.enabled)
+                                HStack(spacing: 4) {
+                                    Text(entry.kind ?? L10n("Memory unavailable"))
+                                    if let ownerType = entry.ownerType { Text("· \(ownerType)") }
+                                    if !entry.snapshotAtRecall {
+                                        Text("· \(L10n("Current content; historical snapshot unavailable"))")
                                     }
-                                    .font(.caption2).foregroundStyle(.tertiary)
                                 }
-                                .padding(.leading, 6)
-                                .padding(.vertical, 2)
-                            }
-                            let otherCandidates = (recall.candidateEntries ?? [])
-                                .filter { !recall.selectedIds.contains($0.id) }
-                            if !otherCandidates.isEmpty {
-                                Text(L10n("Other recall candidates"))
-                                    .font(.caption2.bold()).foregroundStyle(.secondary)
-                                ForEach(otherCandidates) { entry in
-                                    Text(entry.content ?? entry.id)
-                                        .font(.caption).foregroundStyle(.secondary)
-                                        .lineLimit(3).textSelection(.enabled)
-                                        .padding(.leading, 6)
-                                }
-                            }
-                            if recall.candidateIds.count > (recall.candidateEntries?.count ?? 0) {
-                                Text(String(format: L10n("Showing first %d of %d recall candidates."),
-                                            recall.candidateEntries?.count ?? 0, recall.candidateIds.count))
-                                    .font(.caption2).foregroundStyle(.tertiary)
+                                .font(.caption2).foregroundStyle(.tertiary)
                             }
                         }
                     }
@@ -915,29 +852,15 @@ struct SessionMemoryDiagnosticsView: View {
         })
         .task(id: "\(session.id):\(isExpanded)") {
             guard isExpanded else { return }
-            await reloadRecalls()
+            await reloadHits()
         }
     }
 
-    private func reloadRecalls() async {
+    private func reloadHits() async {
         isLoading = true
         defer { isLoading = false }
-        let loaded = await EntityAPIClient.shared.memoryRecalls(sessionId: session.id)
-        recalls = loaded ?? []
+        let loaded = await EntityAPIClient.shared.memoryHits(sessionId: session.id)
+        hits = loaded ?? []
         loadFailed = loaded == nil
-    }
-
-    private func backfillNextPage() async {
-        isBackfilling = true
-        defer { isBackfilling = false }
-        let result = await EntityAPIClient.shared.backfillSessionMemories(
-            sessionId: session.id
-        )
-        if let result {
-            backfillProgress = result
-            backfillError = nil
-        } else {
-            backfillError = EntityAPIClient.shared.errorMessage ?? L10n("Historical scan failed.")
-        }
     }
 }

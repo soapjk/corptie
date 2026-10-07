@@ -2267,6 +2267,40 @@ test("Memory Inspector HTTP supports global audit, tag update, revoke, and rollb
   }
 });
 
+test("Memory Hit API returns only unique accepted memories for a Session", async () => {
+  const services = await createServices();
+  try {
+    const agent = services.store.createAgent({ name: "Memory Hit Agent" });
+    const sessionId = "session:memory-hit-http";
+    services.store.createSession({ id: sessionId, title: "Memory Hit", provider: "codex-app-server",
+      status: "running", sessionKind: "assistantChat", agentId: agent.agentId });
+    const selected = services.store.createMemory({ ownerType: "global", ownerId: "user:local",
+      kind: "preference", content: "Keep concise", sourceType: "user", trustLevel: "trusted" });
+    const candidate = services.store.createMemory({ ownerType: "global", ownerId: "user:local",
+      kind: "fact", content: "Not selected", sourceType: "user", trustLevel: "trusted" });
+    for (let index = 0; index < 3; index += 1) {
+      const audit = services.store.createMemoryRecallAudit({ sessionId, phase: "turn",
+        mode: "lightweight", reason: "test", candidateIds: [selected.id, candidate.id],
+        selectedIds: [selected.id], diagnostics: { selectedEntries: [{ id: selected.id,
+          kind: "preference", content: "Keep concise", ownerType: "global",
+          ownerId: "user:local", snapshotAtRecall: true }] } });
+      services.store.updateMemoryRecallAuditInjection(audit.id,
+        index === 2 ? "provider_rejected" : "provider_accepted");
+    }
+    const result = await callApi({ method: "GET", pathname: "/memory-hit",
+      search: `?sessionId=${encodeURIComponent(sessionId)}`, ...services });
+    assert.equal(result.statusCode, 200);
+    assert.deepEqual(result.body.hits.map((hit) => hit.id), [selected.id]);
+    assert.equal(result.body.hits[0].content, "Keep concise");
+    const missing = await callApi({ method: "GET", pathname: "/memory-hit",
+      search: "?sessionId=session%3Amissing", ...services });
+    assert.equal(missing.statusCode, 404);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
 test("Memory center merges only trusted memories in the same scope and keeps rollback evidence", async () => {
   const services = await createServices();
   try {
