@@ -95,6 +95,23 @@ test("reads validate ownership and keep one immutable per-document paging identi
   } finally { await f.close(); }
 });
 
+test("header read exposes only authorized presentation metadata", async () => {
+  const f = await fixture();
+  try {
+    const task = f.store.createTask({ workId: "work:test", title: "Header task", mainAgentId: "agent:test" });
+    f.store.createSession({ id: "s:header", workId: "work:test", taskId: task.id, title: "Header",
+      provider: "claude-sdk", cwd: "/project/fallback",
+      raw: { secret: "private", workspace: { path: "/project/active", branchName: "feature/ui",
+        continuationState: "failed", transitionStrategy: "handoff" } } });
+    assert.deepEqual(await f.inspector.read(identity, "s:header", "header"), {
+      schemaVersion: 1,
+      provider: "claude-sdk", cwd: "/project/active", branchName: "feature/ui",
+      continuationState: "failed", transitionStrategy: "handoff"
+    });
+    await assert.rejects(() => f.inspector.read(identity, "missing", "header"), { code: "SESSION_NOT_FOUND" });
+  } finally { await f.close(); }
+});
+
 test("memory operations use shared user provenance, version checks and audited rollback", async () => {
   const f = await fixture();
   try {

@@ -58,4 +58,20 @@ struct PadInspectorTests {
         #expect(!source.contains("ConversationDetailHeaderIcon(systemName: \"arrow.triangle.2.circlepath\")"))
         #expect(source.contains("ConversationDetailDisclosure(isExpanded: $turnExpanded"))
     }
+
+    @Test func conversationHeaderOffersDesktopMetadataAndCopyActions() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CorptieMobileApp.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        #expect(source.contains("resource: \"header\""))
+        #expect(source.contains("UIPasteboard.general.string = title"))
+        #expect(source.contains("UIPasteboard.general.string = cwd"))
+        #expect(source.contains("conversation-copy-workspace"))
+        #expect(source.contains("conversation-open-worktrees"))
+        #expect(source.contains("ProviderCodex"))
+        #expect(source.contains("ProviderClaudeCode"))
+        #expect(source.contains("ProviderOpenClacky"))
+    }
 }
