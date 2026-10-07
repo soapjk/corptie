@@ -230,6 +230,12 @@ struct ComposerInputTextView: NSViewRepresentable {
         }
 
         func reportContentHeight(of textView: NSTextView) {
+            // Clearing can precede TextKit's next layout. Never let the old
+            // multiline usedRect expand an empty editor after submission.
+            if textView.string.isEmpty {
+                onContentHeightChange(ComposerInputLayout.minimumHeight)
+                return
+            }
             guard let layoutManager = textView.layoutManager,
                   let textContainer = textView.textContainer else {
                 return
@@ -237,7 +243,7 @@ struct ComposerInputTextView: NSViewRepresentable {
             layoutManager.ensureLayout(for: textContainer)
             let usedHeight = layoutManager.usedRect(for: textContainer).height
             let contentHeight = usedHeight + (textView.textContainerInset.height * 2)
-            onContentHeightChange(ComposerInputLayout.resolvedHeight(for: contentHeight))
+            onContentHeightChange(ComposerInputLayout.resolvedHeight(text: textView.string, measuredHeight: contentHeight))
         }
     }
 

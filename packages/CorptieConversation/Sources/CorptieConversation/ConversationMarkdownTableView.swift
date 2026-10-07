@@ -36,8 +36,10 @@ public final class ConversationMarkdownTableLayout {
             #endif
         }
         func height(width: CGFloat) -> CGFloat {
-            // All widths wide enough for the natural line share one measurement.
-            let key = max(1, min(width, max(1, naturalWidth)))
+            // Bounding-rect natural width and TextKit wrapping are not identical
+            // at glyph boundaries. Cache the actual container width, not a
+            // clamped estimate that can alias two different line layouts.
+            let key = max(1, width)
             if let value = heights[key] { return value }
             let value = ConversationMarkdownTableLayout.textHeight(text, width: width)
             if heights.count >= 8 { heights.removeAll(keepingCapacity: true) }
@@ -142,6 +144,7 @@ public final class ConversationMarkdownTableLayout {
     private static func textHeight(_ text: NSAttributedString, width: CGFloat) -> CGFloat {
         let storage = NSTextStorage(attributedString: text)
         let manager = NSLayoutManager()
+        manager.usesFontLeading = true
         let container = NSTextContainer(size: CGSize(width: max(1, width), height: CGFloat.greatestFiniteMagnitude))
         container.lineFragmentPadding = 0
         manager.addTextContainer(container); storage.addLayoutManager(manager)
@@ -178,6 +181,8 @@ public struct ConversationMarkdownTableView: View {
                             HStack(alignment: .top, spacing: 0) {
                                 ForEach(layout.cells[row].indices, id: \.self) { column in
                                     TableNativeText(text: layout.cells[row][column],
+                                        size: CGSize(width: layout.columnWidths[column] - 16,
+                                                     height: layout.textHeights[row][column]),
                                         allowsSelection: allowsSelection, openLink: openLink)
                                         .frame(width: layout.columnWidths[column] - 16,
                                                height: layout.textHeights[row][column])
@@ -220,6 +225,7 @@ public struct ConversationMarkdownTableView: View {
 #if os(macOS)
 private struct TableNativeText: NSViewRepresentable {
     let text: NSAttributedString
+    let size: CGSize
     let allowsSelection: Bool
     let openLink: (URL) -> Void
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -232,22 +238,27 @@ private struct TableNativeText: NSViewRepresentable {
     func makeNSView(context: Context) -> NSTextView {
         let storage = NSTextStorage(); let manager = NSLayoutManager()
         let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
-        container.lineFragmentPadding = 0; container.widthTracksTextView = true
+        container.lineFragmentPadding = 0; container.widthTracksTextView = false
+        manager.usesFontLeading = true
         manager.addTextContainer(container); storage.addLayoutManager(manager)
         let view = NSTextView(frame: .zero, textContainer: container)
         view.isEditable = false; view.drawsBackground = false; view.textContainerInset = .zero
+        view.isHorizontallyResizable = false; view.isVerticallyResizable = false
         view.delegate = context.coordinator
         return view
     }
     func updateNSView(_ view: NSTextView, context: Context) {
         context.coordinator.openLink = openLink
         view.isSelectable = allowsSelection
+        view.textContainer?.containerSize = CGSize(width: size.width, height: .greatestFiniteMagnitude)
         if !view.attributedString().isEqual(to: text) { view.textStorage?.setAttributedString(text) }
     }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextView, context: Context) -> CGSize? { size }
 }
 #else
 private struct TableNativeText: UIViewRepresentable {
     let text: NSAttributedString
+    let size: CGSize
     let allowsSelection: Bool
     let openLink: (URL) -> Void
     final class Coordinator: NSObject, UITextViewDelegate {
@@ -262,7 +273,8 @@ private struct TableNativeText: UIViewRepresentable {
     func makeUIView(context: Context) -> UITextView {
         let storage = NSTextStorage(); let manager = NSLayoutManager()
         let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
-        container.lineFragmentPadding = 0; container.widthTracksTextView = true
+        container.lineFragmentPadding = 0; container.widthTracksTextView = false
+        manager.usesFontLeading = true
         manager.addTextContainer(container); storage.addLayoutManager(manager)
         let view = UITextView(frame: .zero, textContainer: container)
         view.isEditable = false; view.isScrollEnabled = false; view.backgroundColor = .clear
@@ -271,6 +283,7 @@ private struct TableNativeText: UIViewRepresentable {
     }
     func updateUIView(_ view: UITextView, context: Context) {
         context.coordinator.openLink = openLink
+        view.textContainer.size = CGSize(width: size.width, height: .greatestFiniteMagnitude)
         view.isSelectable = true
         for case let recognizer as UILongPressGestureRecognizer in view.gestureRecognizers ?? [] {
             recognizer.isEnabled = allowsSelection
@@ -278,5 +291,6 @@ private struct TableNativeText: UIViewRepresentable {
         if !allowsSelection { view.selectedRange = NSRange(location: 0, length: 0) }
         if !view.attributedText.isEqual(to: text) { view.attributedText = text }
     }
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? { size }
 }
 #endif

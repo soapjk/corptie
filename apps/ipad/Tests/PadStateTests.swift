@@ -5,6 +5,43 @@ import CorptieClientCore
 
 @MainActor
 struct PadStateTests {
+    @Test func conversationTitlesStayOnOneLineAndShrinkBeforeTruncatingOnAllClients() throws {
+        let mobile = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let files = [(mobile.appendingPathComponent("Sources/CorptieMobileApp.swift"), "Text(title)"),
+                     (mobile.deletingLastPathComponent().appendingPathComponent("macos/Sources/CopetsMac/Conversation/ConversationHeader.swift"), "Text(selectedTitle)")]
+        for (file, marker) in files {
+            let source = try String(contentsOf: file, encoding: .utf8)
+            let title = try #require(source.components(separatedBy: marker).dropFirst().first)
+                .components(separatedBy: ".multilineTextAlignment")[0]
+            #expect(title.contains(".lineLimit(1)"))
+            #expect(title.contains(".minimumScaleFactor(0.75)"))
+            #expect(title.contains(".truncationMode(.tail)"))
+            #expect(!title.contains(".fixedSize("))
+        }
+    }
+
+    @Test func quotaDetailsUseExclusiveLongPressAndFixedFourRows() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/PadThreadMetaView.swift"), encoding: .utf8)
+        #expect(source.contains("LongPressGesture().exclusively(before: TapGesture())"))
+        #expect(source.contains("case .second: focusComposer()"))
+        #expect(!source.contains("isResetNoticePresented.toggle()"))
+        #expect(source.contains("loadingText: \"正在刷新\""))
+        #expect(source.contains("refreshedText: \"已刷新\", fixedWidth: 280, rowHeight: 16"))
+        #expect(source.contains("?? \"已存额度重置：暂不可用\""))
+        #expect(source.contains(": \"过期时间：暂无可用额度重置\""))
+    }
+
+    @Test func inactiveComposerChromeUsesBackgroundFocusWithoutCompetingParentTap() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/PadComposer.swift"), encoding: .utf8)
+        #expect(source.contains(".environment(\\.padComposerFocus, { editor.focus() })"))
+        #expect(source.contains("Button { editor.focus() } label:"))
+        #expect(!source.contains(".simultaneousGesture(TapGesture()"))
+    }
+
     @Test func phoneNavigationRemovesExtraEdgeGapsWithoutIgnoringSafeAreas() throws {
         let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("Sources")
@@ -13,12 +50,30 @@ struct PadStateTests {
             .components(separatedBy: ".transition(")[0]
         #expect(bar.contains(".padding(.top, 8)"))
         #expect(!bar.contains(".padding(.vertical"))
-        #expect(!bar.contains(".padding(.bottom"))
+        #expect(bar.contains(".padding(.bottom, -PadPhoneNavigationLayout.bottomOverlap("))
         #expect(!bar.contains("ignoresSafeArea"))
         let outline = try String(contentsOf: sources.appendingPathComponent("PadWorkOutline.swift"), encoding: .utf8)
-        #expect(outline.contains(".padding(.top, UIDevice.current.userInterfaceIdiom == .phone ? 0 : 6)"))
+        #expect(outline.contains("topInset: isPhone ? 0 : PlatformWorkOutlineLayout.verticalInset"))
         let app = try String(contentsOf: sources.appendingPathComponent("CorptieMobileApp.swift"), encoding: .utf8)
         #expect(app.components(separatedBy: ".padding(.top, UIDevice.current.userInterfaceIdiom == .phone ? 0 : 4)").count - 1 == 2)
+    }
+
+    @Test func navigationOverlapIsBoundedByActualWindowSafeArea() {
+        #expect(PadPhoneNavigationLayout.bottomOverlap(safeArea: 34) == 16)
+        #expect(PadPhoneNavigationLayout.bottomOverlap(safeArea: 21) == 3)
+        #expect(PadPhoneNavigationLayout.bottomOverlap(safeArea: 0) == 0)
+        #expect(PadPhoneNavigationLayout.bottomOverlap(safeArea: 12) == 0)
+        #expect(PadPhoneNavigationLayout.bottomOverlap(safeArea: 100) == 16)
+        #expect(PadPhoneNavigationLayout.bottomOverlap(safeArea: .nan) == 0)
+    }
+
+    @Test func conversationNavigationGestureOwnsOuterEdgeGutters() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/CorptieMobileApp.swift"), encoding: .utf8)
+        let margin = try #require(source.range(of: ".padding(.horizontal, PadTimelineLayoutMetrics.horizontalMargin)"))
+        let gesture = try #require(source.range(of: ".modifier(CompactPageSwipe(onBack: onBack, onOpenDetail: onOpenDetail))"))
+        #expect(margin.lowerBound < gesture.lowerBound)
     }
 
     @Test func compactWorkspacePagesExposeTheSingleRootWallpaper() throws {
