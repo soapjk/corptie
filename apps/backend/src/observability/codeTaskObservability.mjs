@@ -5,7 +5,7 @@ import { DependencyContractManifest, codedError } from "./dependencyContractMani
 
 export const CODE_TASK_OBSERVATION_SCHEMA_VERSION = 3;
 export const CODE_TASK_REPORT_SCHEMA_VERSION = 4;
-export const CODE_TASK_ANALYSIS_VERSION = "ct-obs-code-task-r4-a1";
+export const CODE_TASK_ANALYSIS_VERSION = "ct-obs-code-task-r4-a2";
 export const INTERVAL_CLASSES = Object.freeze([
   "host.queue", "session.readiness", "worktree.readiness", "context.assembly", "provider.queue",
   "provider.model_sampling", "provider.opaque", "tool.dispatch", "tool.execute", "tool.result_serialization",
@@ -1082,11 +1082,20 @@ function analyzeIntervals(spans, wallStartNano, wallEndNano, finalized, diagnost
     { time: span.clippedStart, kind: "start", span }, { time: span.clippedEnd, kind: "end", span }
   ]).sort((left, right) => left.time < right.time ? -1 : left.time > right.time ? 1 : left.kind === right.kind ? 0 : left.kind === "end" ? -1 : 1);
   const atomicSegments = []; const active = new Map(); let unionNano = 0n; let overlapNano = 0n; let cursor = wallStart;
+  const categoryNano = new Map(); const operationNano = new Map();
   for (let index = 0; index < events.length;) {
     const time = events[index].time;
     if (time > cursor && active.size > 0) {
       const duration = time - cursor; const activeSpans = [...active.values()];
       unionNano += duration; if (activeSpans.length > 1) overlapNano += duration;
+      const groups = new Set(activeSpans.map((span) => timeGroup(span.intervalClass)));
+      const group = groups.size === 1 ? [...groups][0] : "overlap";
+      categoryNano.set(group, (categoryNano.get(group) ?? 0n) + duration);
+      if (group === "tool") {
+        const operations = new Set(activeSpans.map(toolOperation).filter(Boolean));
+        const operation = operations.size === 1 ? [...operations][0] : operations.size > 1 ? "parallel" : "other";
+        operationNano.set(operation, (operationNano.get(operation) ?? 0n) + duration);
+      }
       const activeClassSet = [...new Set(activeSpans.map((span) => span.intervalClass))].sort();
       atomicSegments.push({ startUnixNano: cursor.toString(), endUnixNano: time.toString(), durationMs: nanoMs(duration), activeClassSet,
         intervalIds: activeSpans.map((span) => span.spanId).sort() });
@@ -1104,6 +1113,7 @@ function analyzeIntervals(spans, wallStartNano, wallEndNano, finalized, diagnost
   }
   const wallNano = wallEnd - wallStart; const gapIntervals = gapsFromSegments(wallStart, wallEnd, atomicSegments);
   const unattributedNano = wallNano > unionNano ? wallNano - unionNano : 0n;
+  if (unattributedNano > 0n) categoryNano.set("unattributed", unattributedNano);
   const inclusive = {};
   for (const span of valid) inclusive[span.intervalClass] = round((inclusive[span.intervalClass] ?? 0) + nanoMs(span.clippedEnd - span.clippedStart));
   const wallClockMs = nanoMs(wallNano); const attributedUnionMs = nanoMs(unionNano); const unattributedMs = nanoMs(unattributedNano);
@@ -1112,6 +1122,9 @@ function analyzeIntervals(spans, wallStartNano, wallEndNano, finalized, diagnost
   return { wall: { finalized, startUnixNano: wallStart.toString(), endUnixNano: wallEnd.toString(), wallClockMs: finalized ? wallClockMs : null,
       observedWatermarkMs: finalized ? null : wallClockMs, epsilonMs },
     wallPartition: { attributedUnionMs, unattributedMs, overlapMs: nanoMs(overlapNano), atomicSegments }, inclusive,
+    timeBreakdown: { schemaVersion: 1, policyVersion: "wall-partition-v1", totalMs: wallClockMs,
+      categories: [...categoryNano].map(([id, nano]) => ({ id, durationMs: nanoMs(nano) })),
+      toolOperations: [...operationNano].map(([id, nano]) => ({ id, durationMs: nanoMs(nano) })) },
     unattributed: { durationMs: unattributedMs, gapIntervals } };
 }
 
@@ -1124,7 +1137,7 @@ function buildReport(row, projection, contextGrowth, rawCaptureStatus) {
       bindingGeneration: Number(row.binding_generation), repositoryId: row.repository_id, worktreeId: row.worktree_id },
     sourceIdentity: { sourceCommitOid: row.source_commit_oid, sourceTreeOid: row.source_tree_oid,
       snapshotReceiptId: first?.sourceIdentity?.snapshotReceiptId ?? null }, versions,
-    wall: projection.wall, wallPartition: {
+    wall: projection.wall, timeBreakdown: projection.timeBreakdown, wallPartition: {
       ...projection.wallPartition,
       atomicSegmentCount: projection.wallPartition.atomicSegments.length,
       atomicSegments: projection.wallPartition.atomicSegments.slice(0, 256),
@@ -1219,6 +1232,21 @@ function exactNullable(actual, expected, code) { if (nullable(actual) !== nullab
 function spanPairKey(observation) { return [observation.turnExecutionId, observation.producer, observation.operationRef?.kind ?? "none",
   observation.operationRef?.id ?? "none", observation.safeAttributes.spanKey ?? "default", observation.safeAttributes.attempt ?? 0].join("|"); }
 function normalizedIntervalClass(value) { const normalized = safeText(value); return INTERVAL_CLASSES.includes(normalized) ? normalized : "provider.opaque"; }
+function timeGroup(intervalClass) {
+  if (intervalClass === "provider.model_sampling") return "model";
+  if (intervalClass === "provider.opaque") return "provider";
+  if (intervalClass === "user.wait" || intervalClass === "approval.wait") return "wait";
+  if (intervalClass.startsWith("tool.") || intervalClass.startsWith("process.") || intervalClass === "artifact.operation") return "tool";
+  return "setup";
+}
+function toolOperation(span) {
+  const operations = [span.operation, ...span.operationSet];
+  for (const operation of ["code.edit", "code.search", "code.read", "test", "build", "git", "mcp"]) {
+    if (operations.includes(operation)) return operation;
+  }
+  return { "process.test": "test", "process.build": "build", "process.search": "code.search",
+    "process.version_control": "git", "artifact.operation": "artifact" }[span.intervalClass] ?? null;
+}
 function compareObservation(a, b) { const an = BigInt(a.observedAtUnixNano); const bn = BigInt(b.observedAtUnixNano); return an < bn ? -1 : an > bn ? 1
   : a.producerSequence - b.producerSequence || a.observationId.localeCompare(b.observationId); }
 function compareTimeline(a, b) { const av = BigInt(a.observedAtUnixNano ?? a.startObservedAtUnixNano); const bv = BigInt(b.observedAtUnixNano ?? b.startObservedAtUnixNano);
@@ -1230,7 +1258,9 @@ function gapsFromSegments(start, end, segments) { const gaps = []; let cursor = 
     if (segmentEnd > cursor) cursor = segmentEnd; }
   if (cursor < end) gaps.push({ startUnixNano: cursor.toString(), endUnixNano: end.toString(), durationMs: nanoMs(end - cursor) }); return gaps; }
 function emptyWall(finalized) { return { wall: { finalized, startUnixNano: null, endUnixNano: null, wallClockMs: null, observedWatermarkMs: null, epsilonMs: 1 },
-  wallPartition: { attributedUnionMs: 0, unattributedMs: 0, overlapMs: 0, atomicSegments: [] }, inclusive: {}, unattributed: { durationMs: 0, gapIntervals: [] } }; }
+  wallPartition: { attributedUnionMs: 0, unattributedMs: 0, overlapMs: 0, atomicSegments: [] }, inclusive: {},
+  timeBreakdown: { schemaVersion: 1, policyVersion: "wall-partition-v1", totalMs: 0, categories: [], toolOperations: [] },
+  unattributed: { durationMs: 0, gapIntervals: [] } }; }
 function executionProjection(row) { return { turnExecutionId: row.turn_execution_id, logicalSessionId: row.logical_session_id, turnId: row.turn_id,
   status: row.status, projectionState: row.projection_state, observationCount: Number(row.observation_count), droppedEventCount: Number(row.dropped_event_count),
   providerBindingId: row.provider_binding_id, bindingGeneration: Number(row.binding_generation) }; }

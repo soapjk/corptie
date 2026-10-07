@@ -3,14 +3,6 @@ import SwiftUI
 import CorptieClientCore
 import CorptieConversation
 
-struct TurnTimeCategory: Decodable, Equatable {
-    let inclusiveMs: Double?
-    let estimateMs: Double?
-    let precise: Bool
-
-    var durationMs: Double { inclusiveMs ?? estimateMs ?? 0 }
-}
-
 struct TurnDataCompleteness: Decodable, Equatable {
     let state: String
     let droppedEventCount: Int
@@ -19,7 +11,6 @@ struct TurnDataCompleteness: Decodable, Equatable {
 
     var status: String { state }
     var exact: Bool { state == "complete" }
-    var coverageRatio: Double { exact ? 1 : 0 }
 }
 
 struct TurnObservabilityIdentity: Decodable, Equatable {
@@ -48,6 +39,7 @@ struct TurnTimeSummary: Decodable, Equatable {
     let analysisVersion: String
     let wall: TurnWallSummary
     let wallPartition: TurnWallPartition
+    let timeBreakdown: ConversationTurnTimeBreakdown?
     let inclusive: [String: Double]
     let spanCount: Int
     let completeness: TurnDataCompleteness
@@ -57,13 +49,9 @@ struct TurnTimeSummary: Decodable, Equatable {
     var turnExecutionId: String { identity.turnExecutionId }
     var observabilityLevel: String { completeness.state }
     var wallClockMs: Double { wall.wallClockMs ?? wall.observedWatermarkMs ?? 0 }
-    var displayedCriticalPathMs: Double? { wallPartition.attributedUnionMs }
+    var displayedAttributedMs: Double? { wallPartition.attributedUnionMs }
     var displayedUnattributedMs: Double? { wallPartition.unattributedMs }
     var isBoundaryOnly: Bool { inclusive.keys.contains("provider.opaque") && !inclusive.keys.contains("provider.model_sampling") }
-    var categories: [String: TurnTimeCategory] {
-        inclusive.mapValues { TurnTimeCategory(inclusiveMs: $0, estimateMs: nil, precise: wall.finalized) }
-    }
-    var developmentOperations: [String: TurnTimeCategory]? { nil }
     var dataCompleteness: TurnDataCompleteness { completeness }
 }
 
@@ -184,9 +172,6 @@ struct SessionTurnObservabilityView: View {
     @State private var isAnalysisExpanded = false
     @State private var isTraceExpanded = false
 
-    private let categoryOrder = ["host.queue", "session.readiness", "worktree.readiness", "context.assembly", "provider.queue", "provider.model_sampling", "provider.opaque", "tool.dispatch", "tool.execute", "tool.result_serialization", "process.test", "process.build", "process.search", "process.version_control", "process.service_start", "process.cleanup", "artifact.operation", "user.wait", "approval.wait", "recovery.retry"]
-    private let operationOrder = ["history.read", "code.search", "code.read", "code.edit", "shell", "git", "test", "build", "mcp", "model.reasoning", "persistence", "other"]
-
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             ConversationDetailDisclosure(isExpanded: $isAnalysisExpanded, header: {
@@ -230,20 +215,17 @@ struct SessionTurnObservabilityView: View {
     private func summaryContent(_ summary: TurnTimeSummary) -> some View {
         HStack(spacing: 8) {
             metric("总耗时", summary.wallClockMs)
-            metric("关键路径", summary.displayedCriticalPathMs)
+            metric("已归因", summary.displayedAttributedMs)
             metric("未归因", summary.displayedUnattributedMs)
         }
-        Text(summary.isBoundaryOnly ? "边界观测 · 数值为估算" : "\(summary.observabilityLevel) · 覆盖 \(Int(summary.dataCompleteness.coverageRatio * 100))%")
+        Text(summary.isBoundaryOnly ? "仅有 Provider 边界观测；内部耗时未细分" : summary.observabilityLevel == "complete" ? "观测完整" : "观测不完整")
             .font(.system(size: 9, weight: .medium))
             .foregroundStyle(summary.isBoundaryOnly ? Color.orange : Color.secondary)
-        categoryBars(summary)
-        if let operations = summary.developmentOperations,
-           operations.values.contains(where: { $0.durationMs > 0 }) {
-            Divider().opacity(0.45)
-            Text("开发链路")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.tertiary)
-            operationRows(operations)
+        if let breakdown = summary.timeBreakdown {
+            ConversationTurnTimeBreakdownView(breakdown)
+        } else {
+            Text("旧版摘要不含分类占比")
+                .font(.caption).foregroundStyle(.secondary)
         }
         ConversationDetailDisclosure(isExpanded: $isTraceExpanded, header: {
             Text("详细 Trace（按需加载）")
@@ -260,43 +242,6 @@ struct SessionTurnObservabilityView: View {
             Text(milliseconds.map { durationText($0) } ?? "—").font(.system(size: 10, weight: .semibold, design: .monospaced))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func categoryBars(_ summary: TurnTimeSummary) -> some View {
-        VStack(spacing: 4) {
-            ForEach(categoryOrder, id: \.self) { category in
-                if let value = summary.categories[category], value.durationMs > 0 {
-                    HStack(spacing: 5) {
-                        Text(categoryLabel(category)).frame(width: 42, alignment: .leading)
-                        GeometryReader { geometry in
-                            RoundedRectangle(cornerRadius: 2)
-                                .fill(Color.accentColor.opacity(0.55))
-                                .frame(width: max(2, geometry.size.width * min(1, value.durationMs / max(1, summary.wallClockMs))))
-                        }
-                        .frame(height: 4)
-                        Text(durationText(value.durationMs)).font(.system(size: 8, design: .monospaced)).frame(width: 44, alignment: .trailing)
-                    }
-                    .font(.system(size: 8))
-                }
-            }
-        }
-    }
-
-    private func operationRows(_ operations: [String: TurnTimeCategory]) -> some View {
-        VStack(spacing: 4) {
-            ForEach(operationOrder, id: \.self) { operation in
-                if let value = operations[operation], value.durationMs > 0 {
-                    HStack(spacing: 5) {
-                        Text(operationLabel(operation))
-                            .lineLimit(1)
-                        Spacer(minLength: 4)
-                        Text(durationText(value.durationMs))
-                            .fontDesign(.monospaced)
-                    }
-                    .font(.system(size: 9))
-                }
-            }
-        }
     }
 
     @ViewBuilder
