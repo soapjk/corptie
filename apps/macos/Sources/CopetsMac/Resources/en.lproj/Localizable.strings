@@ -1173,6 +1173,10 @@
 "Historical scan failed." = "Historical scan failed.";
 "%d Memory candidates await review." = "%d Memory candidates await review.";
 "Refresh recall records" = "Refresh recall records";
+"Memory Hit" = "Memory Hit";
+"Refresh Memory hits" = "Refresh Memory hits";
+"Could not load Memory hits." = "Could not load Memory hits.";
+"No Memory hits recorded for this Session." = "No Memory hits recorded for this Session.";
 "Add to Ignore" = "Add to Ignore";
 "Delete File" = "Delete";
 "Convert to Artifact" = "Convert to Artifact";

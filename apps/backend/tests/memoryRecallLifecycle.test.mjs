@@ -6,7 +6,7 @@ import test from "node:test";
 import { HubService } from "../src/application/hubService.mjs";
 import { MemoryExtractor } from "../src/application/memoryExtractor.mjs";
 import { MemoryLifecycleService } from "../src/application/memoryLifecycleService.mjs";
-import { MemoryRecallService, lightweightTrigger, presentMemoryRecallAudit } from "../src/application/memoryRecallService.mjs";
+import { MemoryRecallService, lightweightTrigger, presentMemoryRecallAudit, presentSessionMemoryHits } from "../src/application/memoryRecallService.mjs";
 import { memoryDynamicTools } from "../src/application/memoryDynamicTools.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { createSessionApplicationComposition } from "../src/application/sessionApplicationComposition.mjs";
@@ -107,6 +107,38 @@ test("per-turn trigger is model-free, diagnostic, and Deep Recall degrades expli
     assert.deepEqual(lightweightTrigger("hi"), {
       triggered: false, reason: "no_recall_cue", score: 0, termCount: 1
     });
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("Session Memory hits deduplicate accepted Turns and keep older distinct hits", async () => {
+  const f = await fixture();
+  try {
+    const repeated = memory(f.store, { content: "Shared preference" });
+    const older = memory(f.store, { content: "Older distinct preference" });
+    const candidate = memory(f.store, { content: "Only a candidate" });
+    const record = (selected, status) => {
+      const audit = f.store.createMemoryRecallAudit({
+        sessionId: f.scope.sessionId, phase: "turn", mode: "lightweight",
+        reason: "test", candidateIds: [candidate.id], selectedIds: selected.map((item) => item.id),
+        diagnostics: { selectedEntries: selected.map((item) => ({
+          id: item.id, kind: item.kind, content: item.content,
+          ownerType: item.owner_type, ownerId: item.owner_id, snapshotAtRecall: true
+        })) }
+      });
+      f.store.updateMemoryRecallAuditInjection(audit.id, status);
+    };
+    record([older], "provider_accepted");
+    for (let index = 0; index < 12; index += 1) record([repeated], "provider_accepted");
+    record([candidate], "budget_omitted");
+    record([candidate], "provider_rejected");
+    const hits = presentSessionMemoryHits(f.store, f.scope.sessionId);
+    assert.deepEqual(new Set(hits.map((item) => item.id)), new Set([repeated.id, older.id]));
+    assert.equal(hits.length, 2);
+    assert.equal(hits.find((item) => item.id === older.id)?.content, "Older distinct preference");
+    assert.ok(hits.every((item) => item.snapshotAtRecall));
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });

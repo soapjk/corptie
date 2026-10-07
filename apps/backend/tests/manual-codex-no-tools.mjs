@@ -27,8 +27,9 @@ const server = createServer(async (req, res) => {
   let body;
   try { body = JSON.parse(raw); } catch { body = {}; }
   requests.push({ path: req.url, body });
-  console.log(JSON.stringify({ path: req.url, keys: Object.keys(body), tools: body.tools,
-    toolkits: body.toolkits, toolChoice: body.tool_choice }));
+  console.log(JSON.stringify({ path: req.url, keys: Object.keys(body),
+    tools: body.tools?.map((tool) => tool.name), toolkits: body.toolkits,
+    toolChoice: body.tool_choice }));
   if (process.env.CORPTIE_PROBE_CANCEL === "1") {
     cancellation.abort(Object.assign(new Error("Synthetic cancellation"), { code: "BACKGROUND_CANCELLED" }));
     return;
