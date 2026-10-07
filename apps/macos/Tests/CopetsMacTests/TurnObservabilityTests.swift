@@ -14,10 +14,28 @@ final class TurnTimelineV4Tests: XCTestCase {
         """.utf8)
         let envelope = try JSONDecoder().decode(TurnTimeSummaryEnvelope.self, from: data)
         XCTAssertEqual(envelope.summary.turnExecutionId, "turn_execution:1")
-        XCTAssertEqual(Set(envelope.summary.categories.keys), Set(["host.queue", "process.test"]))
-        XCTAssertEqual(envelope.summary.displayedCriticalPathMs, 95)
+        XCTAssertEqual(Set(envelope.summary.inclusive.keys), Set(["host.queue", "process.test"]))
+        XCTAssertEqual(envelope.summary.displayedAttributedMs, 95)
         XCTAssertEqual(envelope.summary.displayedUnattributedMs, 5)
         XCTAssertTrue(envelope.summary.dataCompleteness.exact)
+        XCTAssertNil(envelope.summary.timeBreakdown)
+    }
+
+    func testSummaryDecodesMutuallyExclusiveTimeBreakdown() throws {
+        let data = Data("""
+        {"summary":{"schemaVersion":4,"analysisVersion":"ct-obs-code-task-r4-a2",
+        "identity":{"logicalSessionId":"session:1","turnId":"turn:1","turnExecutionId":"turn_execution:1",
+        "providerBindingId":"binding:1","bindingGeneration":2},
+        "wall":{"finalized":true,"wallClockMs":100,"observedWatermarkMs":null},
+        "wallPartition":{"attributedUnionMs":80,"unattributedMs":20,"overlapMs":50},
+        "timeBreakdown":{"schemaVersion":1,"policyVersion":"wall-partition-v1","totalMs":100,
+        "categories":[{"id":"model","durationMs":30},{"id":"overlap","durationMs":50},{"id":"unattributed","durationMs":20}],
+        "toolOperations":[]},"inclusive":{},"spanCount":2,
+        "completeness":{"state":"complete","droppedEventCount":0,"missingTerminal":false,"rawCaptureStatus":"available"}}}
+        """.utf8)
+        let summary = try JSONDecoder().decode(TurnTimeSummaryEnvelope.self, from: data).summary
+        XCTAssertEqual(summary.timeBreakdown?.categories.map(\.id), ["model", "overlap", "unattributed"])
+        XCTAssertEqual(summary.timeBreakdown?.totalMs, 100)
     }
 
     func testLargeTraceUsesAggregationTier() {
