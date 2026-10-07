@@ -104,7 +104,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         switch self {
         case .console: "circle.hexagongrid.fill"
         case .automations: "bolt.badge.clock"
-        case .scenes: "house"
+        case .scenes: "camera.macro"
         case .worktrees: "arrow.triangle.branch"
         case .agents: "person.2"
         case .memory: "brain.head.profile"

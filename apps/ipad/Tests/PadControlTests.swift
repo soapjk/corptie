@@ -5,6 +5,16 @@ import CorptieClientCore
 
 @Suite(.serialized) @MainActor
 struct PadControlTests {
+    @Test func compactTabsUseTheSharedPressAnimation() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/PadAppShell.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let bottomBar = source.components(separatedBy: "private struct PadBottomTabBar: View")[1]
+            .components(separatedBy: "private enum PadSettingsTab")[0]
+        #expect(bottomBar.contains("ForEach(PadTab.allCases)"))
+        #expect(bottomBar.contains(".buttonStyle(PlatformTabButtonStyle())"))
+    }
+
     @Test func statusBarBackdropUsesSafeAreaAndOnlyAShortFade() {
         #expect(PadStatusBarBackdropLayout.height(topInset: 24) == 40)
         #expect(PadStatusBarBackdropLayout.height(topInset: 0) == 0)

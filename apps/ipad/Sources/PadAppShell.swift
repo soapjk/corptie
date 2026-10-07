@@ -330,7 +330,7 @@ private struct PadBottomTabBar: View {
                     } label: {
                         compactLabel(symbol: item.symbol, title: item.title, selected: isSelected)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PlatformTabButtonStyle())
                     .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
                     .accessibilityLabel(item.title)
                     .accessibilityAddTraits(isSelected ? .isSelected : [])
