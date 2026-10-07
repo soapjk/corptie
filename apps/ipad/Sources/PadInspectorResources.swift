@@ -388,14 +388,17 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
             if let id = turn["identity"]["turnExecutionId"].text {
                 let duration = turn["wall"]["wallClockMs"].number ?? turn["wall"]["observedWatermarkMs"].number ?? 0
                 LabeledContent("总耗时", value: String(format: "%.2f s", duration / 1000)).monospacedDigit()
-                LabeledContent("关键路径", value: String(format: "%.2f s", (turn["wallPartition"]["attributedUnionMs"].number ?? 0) / 1000)).monospacedDigit()
+                LabeledContent("已归因", value: String(format: "%.2f s", (turn["wallPartition"]["attributedUnionMs"].number ?? 0) / 1000)).monospacedDigit()
                 LabeledContent("未归因", value: String(format: "%.2f s", (turn["wallPartition"]["unattributedMs"].number ?? 0) / 1000)).monospacedDigit()
                 if turn["inclusive"]["provider.opaque"] != .null && turn["inclusive"]["provider.model_sampling"] == .null {
-                    Text("边界观测 · 数值为估算").font(.caption).foregroundStyle(.orange)
+                    Text("仅有 Provider 边界观测；内部耗时未细分").font(.caption).foregroundStyle(.orange)
                 }
-                Text(turn["completeness"]["state"].text ?? "").font(.caption).foregroundStyle(.secondary)
-                ForEach(turn["inclusive"].fields.keys.sorted(), id: \.self) { category in
-                    LabeledContent(category, value: String(format: "%.2f s", (turn["inclusive"][category].number ?? 0) / 1000)).font(.caption).monospacedDigit()
+                Text(turn["completeness"]["state"].text == "complete" ? "观测完整" : "观测不完整")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let breakdown = ConversationTurnTimeBreakdown(inspectorValue: turn["timeBreakdown"]) {
+                    ConversationTurnTimeBreakdownView(breakdown)
+                } else {
+                    Text("旧版摘要不含分类占比").font(.caption).foregroundStyle(.secondary)
                 }
                 Button("详细 Trace（按需加载）") { document = .init(title: "Turn Trace", resource: "trace", value: turn, parameters: ["id": .string(id)]) }
             } else { Text("暂无已完成 Turn 的时间摘要").font(.caption).foregroundStyle(.secondary) }
