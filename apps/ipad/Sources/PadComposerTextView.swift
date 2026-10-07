@@ -137,6 +137,7 @@ struct PadComposerTextView: UIViewRepresentable {
         }
         private let placeholderLabel = UILabel()
         private var lastReportedHeight: CGFloat = 0
+        private var heightReportScheduled = false
         private var lastLayoutWidth: CGFloat = 0
         private var consumedPresses = Set<ObjectIdentifier>()
         private(set) var isHardwareShiftReturn = false
@@ -175,6 +176,18 @@ struct PadComposerTextView: UIViewRepresentable {
 
         /// Content height clamped by the shared 30–96 policy; only forwarded on change.
         func reportHeight() {
+            guard !heightReportScheduled else { return }
+            heightReportScheduled = true
+            // Coalesce layout and text updates, measure the latest buffer, and
+            // never mutate SwiftUI state inside updateUIView/layoutSubviews.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.heightReportScheduled = false
+                self.deliverHeight()
+            }
+        }
+
+        private func deliverHeight() {
             guard bounds.width > 0 else { return }
             // UITextView may report extra empty-document padding on some iOS
             // versions; an empty draft should stay at the shared one-line size.

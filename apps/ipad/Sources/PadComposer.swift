@@ -206,7 +206,8 @@ struct PadComposer<Header: View>: View {
                 allowsEmptyTextSubmission: isPhone && !attachedImages.isEmpty,
                 onPasteImages: pasteImages
             )
-            .frame(height: isPhone ? max(36, inputHeight) : inputHeight)
+            .frame(height: PadComposerHeightPolicy.height(
+                text: draft.wrappedValue, measured: inputHeight, isPhone: isPhone))
         } send: {
             if isPhone {
                 if canStop {
@@ -300,6 +301,9 @@ struct PadComposer<Header: View>: View {
         .photosPicker(isPresented: $showPhotos, selection: $photos,
                       maxSelectionCount: max(1, ComposerShellMetrics.maximumAttachments - attachedImages.count),
                       matching: .images)
+        .onChange(of: draft.wrappedValue) { _, text in
+            if text.isEmpty { inputHeight = ComposerShellMetrics.minimumInputHeight }
+        }
         .task(id: photos) { await importPhotos() }
         .fileImporter(isPresented: $showFiles, allowedContentTypes: [.image], allowsMultipleSelection: true, onCompletion: importFiles)
         .task(id: "\(sessionID)|\(workspace.capabilities?.composer == true)") {
