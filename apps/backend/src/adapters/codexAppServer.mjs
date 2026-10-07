@@ -83,8 +83,7 @@ export class CodexAppServerClient {
       latestAgentMessageText: (...args) => this.latestAgentMessageText(...args),
       notificationCount: () => this.notifications.length,
       notificationsSince: (index) => this.notifications.slice(index),
-      liveThreadCount: () => this.liveThreadCache.threadCount,
-      runtimeUserAgent: () => this.runtimeUserAgent
+      liveThreadCount: () => this.liveThreadCache.threadCount
     });
   }
 
