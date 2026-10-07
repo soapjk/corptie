@@ -194,7 +194,7 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(contents.contains("worktree.repository.column"))
         XCTAssertTrue(contents.contains("worktree.list.column"))
         XCTAssertTrue(contents.contains("worktree.detail.column"))
-        XCTAssertEqual(contents.components(separatedBy: ".mainWindowPageCard()").count - 1, 3)
+        XCTAssertEqual(contents.components(separatedBy: ".mainWindowPageCard(.lightweight)").count - 1, 3)
         XCTAssertTrue(contents.contains(".padding(MainWindowPageLayoutMetrics.outerPadding)"))
         XCTAssertGreaterThanOrEqual(
             contents.components(separatedBy: ".frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)").count - 1,
@@ -212,6 +212,7 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(contents.contains("proxy.scrollTo(request.worktreeId, anchor: .center)"))
         XCTAssertTrue(contents.contains("await client.activate()"))
         XCTAssertFalse(contents.contains(".task { await client.loadRepositories() }"))
+        XCTAssertTrue(AppTab.worktrees.extendsUnderTransparentTitlebar)
     }
 
     func testWorktreeTabPushActionCoversLoadingFeedbackAndDisabledReasons() throws {

@@ -973,7 +973,19 @@ export class WorktreeIntegrationJobService {
       409,
       { violations: paths.map((path) => ({ code: "GIT_MARKDOWN_PROMOTION_REQUIRED", path })) }
     );
-    return presentJob(await this.#pauseForCommitPolicy(job, item, error));
+    const lastIntegrationRetry = [...(job.details.audit ?? [])].reverse()
+      .find((entry) => entry.event === "integration_stage_retry");
+    const resumeStage = lastIntegrationRetry?.failureStage === "merge_source"
+      || (["completed", "recovered", "not_needed"].includes(item.commitStatus)
+        && item.mergeStatus === "failed")
+      ? "merge_source"
+      : "worktree_commit";
+    return presentJob(await this.#pauseForCommitPolicy(job, item, error, {
+      resumeStage,
+      decisionPath: resumeStage === "merge_source"
+        ? (job.details.plan.executionPath ?? job.details.plan.mainPath)
+        : item.path
+    }));
   }
 
   async resolveCommitPolicy(jobId, input = {}) {
@@ -1005,6 +1017,7 @@ export class WorktreeIntegrationJobService {
     }
     const item = job.details.plan.items.find((candidate) => candidate.worktreeId === blocker.worktreeId);
     if (!item) throw new WorktreeIntegrationJobError("WORKTREE_NOT_FOUND", "The blocked Worktree no longer exists.", 404);
+    const decisionItem = { ...item, path: blocker.decisionPath ?? item.path };
     const supportedActions = new Set(["ignore", "delete", "artifact", "track"]);
     for (const file of blocker.files) {
       const action = decisions.get(file.path);
@@ -1026,7 +1039,7 @@ export class WorktreeIntegrationJobService {
     const pendingFiles = blocker.files.filter((file) => !file.appliedAction);
     if (pendingFiles.length > 0) {
       const inspected = await this.inspectCommitPolicyFiles({
-        path: item.path,
+        path: decisionItem.path,
         relativePaths: pendingFiles.map((file) => file.path)
       });
       const inspectedByPath = new Map(inspected.map((file) => [file.path, file]));
@@ -1046,8 +1059,8 @@ export class WorktreeIntegrationJobService {
         jobId: job.id,
         blockerId: blocker.id,
         decisionId: `${job.id}:${blocker.id}:${blocker.version}:${file.path}:${action}`,
-        item,
-        path: item.path,
+        item: decisionItem,
+        path: decisionItem.path,
         relativePath: file.path,
         expectedContentHash: file.contentHash
       };
@@ -1077,12 +1090,14 @@ export class WorktreeIntegrationJobService {
       });
     }
     const refreshed = await this.#refreshWorktreeItem(job, blocker.worktreeId);
-    job = this.#item(refreshed.job, blocker.worktreeId, {
-      commitStatus: "pending",
-      error: null
-    }, "commit_policy_resolved", "commit_policy_decisions_applied", {
+    const resumePatch = blocker.resumeStage === "merge_source"
+      ? { mergeStatus: "pending", error: null }
+      : { commitStatus: "pending", error: null };
+    job = this.#item(refreshed.job, blocker.worktreeId, resumePatch,
+      "commit_policy_resolved", "commit_policy_decisions_applied", {
       auditData: {
         blockerId: blocker.id,
+        resumeStage: blocker.resumeStage ?? "worktree_commit",
         decisions: blocker.files.map((file) => ({ path: file.path, action: decisions.get(file.path) }))
       }
     });
@@ -1402,7 +1417,8 @@ export class WorktreeIntegrationJobService {
         || ["completed", "already_integrated", "recovered"].includes(item.mergeStatus))
         || job.details.conflictResolution?.status === "ready"
         || job.details.convergenceWorkspace != null;
-      if (!completedAny) {
+      const executionProgressed = completedAny || integrationExecutionProgressed(job);
+      if (job.details.executionValidationCompleted !== true && !executionProgressed) {
         const current = await this.inspectRepository(job.repositoryId, {
           forceFresh: true,
           reason: "integration_execution_validation"
@@ -1413,6 +1429,13 @@ export class WorktreeIntegrationJobService {
             mismatch.code, mismatch.message, 409
           );
         }
+      }
+      if (job.details.executionValidationCompleted !== true) {
+        job = this.#update(job, {
+          details: { ...job.details, executionValidationCompleted: true },
+          auditEvent: "execution_validation_completed"
+        });
+        items = job.details.plan.items;
       }
 
       for (const item of items) {
@@ -1600,6 +1623,13 @@ export class WorktreeIntegrationJobService {
               break;
             } catch (error) {
               if (error.code === "MERGE_CONFLICT") throw error;
+              if (error.code === "GIT_ARTIFACT_POLICY_REJECTED") {
+                await this.#pauseForCommitPolicy(job, item, error, {
+                  resumeStage: "merge_source",
+                  decisionPath: job.details.plan.executionPath ?? job.details.plan.mainPath
+                });
+                return;
+              }
               if (!isRecoverableConflictFallbackError(error) || attempt + 1 >= this.maxConflictFallbackAttempts) {
                 throw conflictFallbackFailure(error, "merge_source", attempt + 1);
               }
@@ -1838,11 +1868,14 @@ export class WorktreeIntegrationJobService {
     return updated;
   }
 
-  async #pauseForCommitPolicy(job, item, error) {
+  async #pauseForCommitPolicy(job, item, error, {
+    resumeStage = "worktree_commit",
+    decisionPath = item.path
+  } = {}) {
     const paths = [...new Set((error.violations ?? [])
       .filter((entry) => entry?.code === "GIT_MARKDOWN_PROMOTION_REQUIRED" && typeof entry.path === "string")
       .map((entry) => entry.path))].sort();
-    const inspected = await this.inspectCommitPolicyFiles({ path: item.path, relativePaths: paths });
+    const inspected = await this.inspectCommitPolicyFiles({ path: decisionPath, relativePaths: paths });
     const files = inspected.map((file) => ({
       ...file,
       code: "GIT_MARKDOWN_PROMOTION_REQUIRED",
@@ -1854,14 +1887,17 @@ export class WorktreeIntegrationJobService {
       version,
       worktreeId: item.worktreeId,
       branchName: item.branchName,
+      resumeStage,
+      decisionPath,
       checkedAt: new Date().toISOString(),
       files
     };
-    job = this.#item(job, item.worktreeId, {
-      commitStatus: "blocked",
-      error: "New Markdown files require a decision."
-    }, "awaiting_commit_policy_resolution", "commit_policy_blocked", {
-      auditData: { code: error.code, blockerId: blocker.id, paths }
+    const blockedPatch = resumeStage === "merge_source"
+      ? { mergeStatus: "blocked", error: "New Markdown files require a decision." }
+      : { commitStatus: "blocked", error: "New Markdown files require a decision." };
+    job = this.#item(job, item.worktreeId, blockedPatch,
+      "awaiting_commit_policy_resolution", "commit_policy_blocked", {
+      auditData: { code: error.code, blockerId: blocker.id, paths, resumeStage, decisionPath }
     });
     const updated = this.#update(job, {
       status: "paused",
@@ -2598,6 +2634,12 @@ function legacyCommitPolicyPaths(errorMessage) {
     .filter(Boolean);
 }
 
+function integrationExecutionProgressed(job) {
+  return (job?.details?.audit ?? job?.audit ?? []).some((entry) => [
+    "commit_started", "merge_started", "commit_policy_decisions_applied"
+  ].includes(entry.event));
+}
+
 export function presentJob(job) {
   if (!job) return null;
   const presented = { ...job, ...job.details, details: undefined };
@@ -2622,10 +2664,10 @@ function integrationJobAvailableActions(job) {
     return ["resolve_commit_policy", "cancel"];
   }
   const lastCode = [...(job.audit ?? [])].reverse().find(event => event.code)?.code;
-  if (job.phase === "plan_stale" || new Set([
+  if ((job.phase === "plan_stale" || new Set([
     "PLAN_STALE", "MAIN_HEAD_CHANGED", "MAIN_DIRTY", "WORKTREE_HEAD_CHANGED",
     "WORKTREE_CHANGES_CHANGED", "UNRELATED_MERGE_IN_PROGRESS", "INTEGRATION_INDEX_CHANGED"
-  ]).has(lastCode)) return ["repreflight", "cancel"];
+  ]).has(lastCode)) && !integrationExecutionProgressed(job)) return ["repreflight", "cancel"];
   const current = (job.plan?.items ?? []).find(item => item.worktreeId === job.currentWorktreeId);
   if (job.phase === "conflict" || current?.mergeStatus === "conflict") {
     return ["resolve_conflict_with_agent", "retry", "cancel"];

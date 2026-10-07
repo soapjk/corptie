@@ -27,6 +27,8 @@ function memoryFixture({
   prepareConflictErrors = [],
   launchConflictErrors = [],
   commitErrors = [],
+  mergeErrors = [],
+  mutateWorktreeOnTracking = false,
   candidateTtlMs = undefined,
   now = undefined,
   inspectRepository = null,
@@ -162,6 +164,12 @@ function memoryFixture({
     },
     allowCommitPolicyFileTracking: async (input) => {
       calls.push(`track:${input.relativePath}`);
+      if (mutateWorktreeOnTracking) {
+        const worktree = worktrees.find((entry) => entry.path === input.path);
+        worktree.dirty = true;
+        worktree.statusSummary = `${worktree.statusSummary}\n?? ${input.relativePath}`.trim();
+        worktree.changedFiles = [...new Set([...(worktree.changedFiles ?? []), input.relativePath])];
+      }
       return { artifactId: `artifact:${input.relativePath}` };
     },
     isSessionActive: (session) => session.status === "running",
@@ -181,6 +189,16 @@ function memoryFixture({
     },
     mergeSource: async (input) => {
       calls.push(`merge:${input.sourceHead}`);
+      const mergeError = mergeErrors.shift();
+      if (mergeError) {
+        if (mergeError.code === "GIT_ARTIFACT_POLICY_REJECTED") {
+          worktrees[0].dirty = true;
+          worktrees[0].statusSummary = "M  docs/merge-report.md";
+          worktrees[0].changedFiles = ["docs/merge-report.md"];
+          worktrees[0].operationState = "merge";
+        }
+        throw mergeError;
+      }
       const worktreeIndex = worktrees.findIndex((entry) => !entry.isMain && input.sourceHead.includes(entry.headOid));
       const featureIndex = worktreeIndex - 1;
       if (!input.sourceHead.startsWith("integration:") && remainingConflicts[featureIndex] > 0) {
@@ -191,6 +209,10 @@ function memoryFixture({
         throw error;
       }
       worktrees[0].headOid = `${input.expectedMainHead}:merge`;
+      worktrees[0].dirty = false;
+      worktrees[0].statusSummary = "";
+      worktrees[0].changedFiles = [];
+      worktrees[0].operationState = null;
       worktrees[worktreeIndex].mergedIntoMain = true;
       return {
         merged: true,
@@ -1246,7 +1268,10 @@ test("Markdown policy decisions apply a different supported action to every file
     recoverable: false,
     violations: paths.map((path) => ({ code: "GIT_MARKDOWN_PROMOTION_REQUIRED", path }))
   });
-  const { service, calls, store } = memoryFixture({ commitErrors: [policy] });
+  const { service, calls, store } = memoryFixture({
+    commitErrors: [policy],
+    mutateWorktreeOnTracking: true
+  });
   const plan = await service.preflight("repository:1");
   await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
   const paused = await waitForJob(service, plan.id, "paused");
@@ -1286,6 +1311,42 @@ test("Markdown policy decisions apply a different supported action to every file
   assert.ok(calls.includes(`artifact:${paths[2]}`));
   assert.ok(calls.includes(`track:${paths[3]}`));
   assert.equal(completed.audit.filter((entry) => entry.event === "commit_policy_file_resolved").length, 4);
+  assert.equal(completed.audit.filter((entry) => entry.event === "execution_validation_completed").length, 1);
+});
+
+test("Markdown tracking approval during a main merge resumes the merge without invalidating its own staged state", async () => {
+  const policy = Object.assign(new Error("Artifact Markdown commit policy rejected the staged tree."), {
+    code: "GIT_ARTIFACT_POLICY_REJECTED",
+    recoverable: false,
+    violations: [{ code: "GIT_MARKDOWN_PROMOTION_REQUIRED", path: "docs/merge-report.md" }]
+  });
+  const { service, calls, worktrees } = memoryFixture({
+    mergeErrors: [policy],
+    mutateWorktreeOnTracking: true
+  });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  const paused = await waitForJob(service, plan.id, "paused");
+
+  assert.equal(paused.phase, "awaiting_commit_policy_resolution");
+  assert.equal(paused.commitPolicyBlocker.resumeStage, "merge_source");
+  assert.equal(paused.commitPolicyBlocker.decisionPath, "/repo");
+  assert.equal(paused.plan.items.find((item) => item.worktreeId === "wt:feature").commitStatus, "completed");
+  assert.equal(paused.plan.items.find((item) => item.worktreeId === "wt:feature").mergeStatus, "blocked");
+
+  await service.resolveCommitPolicy(plan.id, {
+    blockerId: paused.commitPolicyBlocker.id,
+    version: paused.commitPolicyBlocker.version,
+    decisions: [{ path: "docs/merge-report.md", action: "track" }]
+  });
+  const completed = await waitForJob(service, plan.id, "completed");
+
+  assert.equal(calls.filter((call) => call === "commit:/repo-feature").length, 1);
+  assert.equal(calls.filter((call) => call.startsWith("merge:")).length, 2);
+  assert.ok(calls.includes("track:docs/merge-report.md"));
+  assert.equal(worktrees[0].dirty, false);
+  assert.equal(worktrees[0].operationState, null);
+  assert.equal(completed.audit.filter((entry) => entry.event === "execution_validation_completed").length, 1);
 });
 
 test("a persisted legacy Markdown failure is upgraded into an actionable blocker", async () => {

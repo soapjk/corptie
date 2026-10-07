@@ -22,47 +22,72 @@ enum MainWindowPageLayoutMetrics {
     static let outerPadding: CGFloat = 6
     static let columnSpacing: CGFloat = 6
     static let cardCornerRadius: CGFloat = 10
-    static let cardShadowRadius: CGFloat = 5
+    static let cardBorderOpacity = 0.10
+    static let increasedContrastCardBorderOpacity = 0.40
+    static let cardBorderWidth: CGFloat = 0.5
+    static let increasedContrastCardBorderWidth: CGFloat = 1
 
     static var halfColumnSpacing: CGFloat { columnSpacing / 2 }
 }
 
+enum MainWindowPageCardAppearance: Equatable {
+    case standard
+    case lightweight
+}
+
 private struct MainWindowPageCardModifier: ViewModifier {
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    let appearance: MainWindowPageCardAppearance
+
+    @ViewBuilder
     func body(content: Content) -> some View {
-        content
+        if appearance == .lightweight {
+            card(content: content, material: .ultraThinMaterial)
+        } else {
+            card(content: content, material: .regularMaterial)
+                .shadow(
+                    color: Color.black.opacity(0.045),
+                    radius: 5,
+                    x: 0,
+                    y: 1
+                )
+        }
+    }
+
+    private func card(content: Content, material: Material) -> some View {
+        let increasedContrast = colorSchemeContrast == .increased
+        let shape = RoundedRectangle(
+            cornerRadius: MainWindowPageLayoutMetrics.cardCornerRadius,
+            style: .continuous
+        )
+
+        return content
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .clipShape(
-                RoundedRectangle(
-                    cornerRadius: MainWindowPageLayoutMetrics.cardCornerRadius,
-                    style: .continuous
-                )
-            )
-            .background(
-                .regularMaterial,
-                in: RoundedRectangle(
-                    cornerRadius: MainWindowPageLayoutMetrics.cardCornerRadius,
-                    style: .continuous
-                )
-            )
+            .clipShape(shape)
+            .background(material, in: shape)
             .overlay {
-                RoundedRectangle(
-                    cornerRadius: MainWindowPageLayoutMetrics.cardCornerRadius,
-                    style: .continuous
+                shape.strokeBorder(
+                    Color.primary.opacity(
+                        appearance == .lightweight
+                            ? (increasedContrast
+                                ? MainWindowPageLayoutMetrics.increasedContrastCardBorderOpacity
+                                : MainWindowPageLayoutMetrics.cardBorderOpacity)
+                            : 0.42
+                    ),
+                    lineWidth: appearance == .lightweight
+                        ? (increasedContrast
+                            ? MainWindowPageLayoutMetrics.increasedContrastCardBorderWidth
+                            : MainWindowPageLayoutMetrics.cardBorderWidth)
+                        : 1
                 )
-                .stroke(Color(nsColor: .separatorColor).opacity(0.42), lineWidth: 1)
+                .allowsHitTesting(false)
             }
-            .shadow(
-                color: Color.black.opacity(0.045),
-                radius: MainWindowPageLayoutMetrics.cardShadowRadius,
-                x: 0,
-                y: 1
-            )
     }
 }
 
 extension View {
-    func mainWindowPageCard() -> some View {
-        modifier(MainWindowPageCardModifier())
+    func mainWindowPageCard(_ appearance: MainWindowPageCardAppearance = .standard) -> some View {
+        modifier(MainWindowPageCardModifier(appearance: appearance))
     }
 }
 
@@ -76,6 +101,10 @@ enum AppTab: String, CaseIterable, Identifiable {
     case memory
 
     var id: String { rawValue }
+
+    var extendsUnderTransparentTitlebar: Bool {
+        self == .console || self == .worktrees
+    }
 
     // Tab 在栏中的顺序，用于判断页面切换的滑动方向（前进/后退）。
     var index: Int {
@@ -405,7 +434,10 @@ private struct MainTabPageHost: NSViewRepresentable {
             }
             let hostingView = NSHostingView(
                 rootView: root
-                    .ignoresSafeArea(.container, edges: tab == .console ? .top : [])
+                    .ignoresSafeArea(
+                        .container,
+                        edges: tab.extendsUnderTransparentTitlebar ? .top : []
+                    )
                     .environmentObject(router)
                     .environmentObject(resizeState)
                     .environmentObject(router.sidebarState(for: tab))
