@@ -17,7 +17,10 @@ export function parseRealtimeResumeQuery(query) {
       || backgroundTimelineLimit > 48)) throw deviceError("INVALID_QUERY", 400);
   const coalescing = query.get("timelineCoalescing");
   if (coalescing != null && !["true", "false"].includes(coalescing)) throw deviceError("INVALID_QUERY", 400);
-  return { timelineRevisions, backgroundTimelineLimit, timelineCoalescing: coalescing === "true" };
+  const operations = query.get("operationNotifications");
+  if (operations != null && !["true", "false"].includes(operations)) throw deviceError("INVALID_QUERY", 400);
+  return { timelineRevisions, backgroundTimelineLimit, timelineCoalescing: coalescing === "true",
+    ...(operations != null ? { operationNotifications: operations === "true" } : {}) };
 }
 
 /** Notification-only v1 stream. Every connection starts with authoritative resync.
@@ -43,6 +46,13 @@ export class ClientEventStream {
     this.backgroundTimelineBatchSize = Math.max(1, Math.min(48, Number(backgroundTimelineBatchSize) || 2));
     this.backgroundTimelineBatchDelayMs = Math.max(0, Number(backgroundTimelineBatchDelayMs) || 0);
     this.backgroundTimelineBytesPerSecond = Math.max(1, Number(backgroundTimelineBytesPerSecond) || 128 * 1024);
+  }
+  publishOperation(operation) {
+    // Projection is constructed at the domain boundary, never raw Provider data.
+    if (operation?.schemaVersion !== 1) return;
+    for (const client of this.clients) {
+      if (client.version === 2 && client.operationNotifications && !client.closed) client.write("operation-job", operation);
+    }
   }
   invalidate({ inventory = false, control = false, sessionId = null, sessionIds = null } = {}) {
     if (!this.clients.size) return;
@@ -87,7 +97,7 @@ export class ClientEventStream {
   }
 
   attachV2(response, authenticate, { sessionId = null, stateRevision = 0, timelineRevision = 0,
-    timelineRevisions = {}, backgroundTimelineLimit = null, timelineCoalescing = false } = {}) {
+    timelineRevisions = {}, backgroundTimelineLimit = null, timelineCoalescing = false, operationNotifications = false } = {}) {
     const identity = authenticate();
     if (this.clients.size >= 16 || [...this.clients].filter(c => c.deviceId === identity.deviceId).length >= 2) {
       throw deviceError("STREAM_LIMIT", 429);
@@ -105,6 +115,7 @@ export class ClientEventStream {
     };
     const client = {
       version: 2,
+      operationNotifications,
       closed: false,
       deviceId: identity.deviceId,
       sessionId,

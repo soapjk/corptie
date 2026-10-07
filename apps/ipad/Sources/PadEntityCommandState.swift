@@ -83,6 +83,10 @@ final class PadEntityCommandState {
             flush()
             let receipt = try await send(api, requestID)
             guard matches(connection) else { return nil }
+            if kind == "task_delete", let operation = receipt.entityResult?.operationId {
+                PadOperationNotifications.shared.track(operation, kind: "task_delete")
+                PadOperationNotifications.shared.recover(connection: connection)
+            }
             accept(receipt)
             return receipt
         } catch {
@@ -109,6 +113,10 @@ final class PadEntityCommandState {
             guard matches(connection), !Task.isCancelled else { return }
             let receipt = try await api.receipt(requestId: pending.requestID)
             guard matches(connection), !Task.isCancelled else { return }
+            if pending.kind == "task_delete", let operation = receipt.entityResult?.operationId {
+                PadOperationNotifications.shared.track(operation, kind: "task_delete")
+                PadOperationNotifications.shared.recover(connection: connection)
+            }
             reconciliationDenied = false
             accept(receipt)
         } catch {

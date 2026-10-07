@@ -72,7 +72,7 @@ export class ClientDeviceGateway {
   limit(request) {
     const now = Date.now();
     for (const [key, value] of this.buckets) if (value.until <= now) this.buckets.delete(key);
-    const read = request.method === "GET" && /^\/client\/v1\/(works|tasks|sessions|commands|control|worktrees)(\/|\?|$)/.test(request.url);
+    const read = request.method === "GET" && /^\/client\/v1\/(works|tasks|sessions|commands|control|worktrees|task-deletion-operations)(\/|\?|$)/.test(request.url);
     const key = `${request.socket.remoteAddress}:${read ? "read" : "command"}`;
     let bucket = this.buckets.get(key);
     if (!bucket) {
@@ -109,6 +109,7 @@ export class ClientDeviceGateway {
       const eventV2 = path === "/client/v2/events";
       const inventory = /^\/client\/v1\/(works|tasks|sessions)$/.exec(path);
       const discussion = /^\/client\/v1\/works\/([^/]+)\/discussion$/.exec(path);
+      const deletionOperation = /^\/client\/v1\/task-deletion-operations\/([^/]+)$/.exec(path);
       const taskEntity = /^\/client\/v1\/tasks\/([^/]+)\/(management|deletion|update|archive|restart|delete)$/.exec(path);
       const workEntity = /^\/client\/v1\/works\/([^/]+)\/(management|update|delete)$/.exec(path);
       const workAvatar = /^\/client\/v1\/works\/([^/]+)\/avatar$/.exec(path);
@@ -191,6 +192,11 @@ export class ClientDeviceGateway {
         const input = await body(request);
         return reply(response, 202, await this.sessionAPI.openDiscussion(this.authenticateRequest(request), workId,
           input, () => this.authenticateRequest(request)));
+      }
+      if (deletionOperation && request.method === "GET" && this.sessionAPI) {
+        const result = this.sessionAPI.taskDeletionNotification(identity, decode(deletionOperation[1], "INVALID_OPERATION_ID"));
+        this.authenticateRequest(request);
+        return reply(response, 200, result);
       }
       if ((taskEntity || workEntity) && this.sessionAPI) {
         let entityId;
@@ -421,7 +427,7 @@ export class ClientDeviceGateway {
           inventoryLists: Boolean(this.readAPI), messages: Boolean(this.sessionAPI),
           controlRead: Boolean(this.controlAPI), controlWrite: Boolean(this.worktreeAPI),
           eventStream: true, eventRecovery: "snapshot-on-connect",
-          realtime: { protocol: "sse-v2", pushPayloads: true, serverSnapshots: true }, remoteFileAccess: false });
+          realtime: { protocol: "sse-v2", pushPayloads: true, serverSnapshots: true, operationNotifications: { schemaVersion: 1 } }, remoteFileAccess: false });
       }
       throw deviceError("ROUTE_NOT_AVAILABLE", 404);
     } catch (error) {

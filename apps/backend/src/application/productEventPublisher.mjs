@@ -1,3 +1,4 @@
+import { projectTaskDeletionNotification } from "./worktreeIntegrationJobService.mjs";
 import { randomUUID } from "node:crypto";
 import { resolveDurableEventSessionId } from "./providerSessionIdentity.mjs";
 import { canonicalSessionIdFromEventPayload } from "./providerSessionProjection.mjs";
@@ -80,6 +81,12 @@ export function createProductEventPublisher({
       } catch (error) {
         logger.warn(`[events] client write failed type=${type}: ${error.message}`);
       }
+    }
+    if (type === "WorktreeIntegrationJobChanged" && payload?.job?.notification) {
+      clientDeviceGateway?.events.publishOperation?.(payload.job.notification);
+    }
+    if (type === "TaskChanged" && payload?.operation?.operationId) {
+      clientDeviceGateway?.events.publishOperation?.(projectTaskDeletionNotification(payload.operation));
     }
     if (outbox) store.markEventOutboxPublished(outbox.outbox_id, now());
     scheduleStateSyncPublish();

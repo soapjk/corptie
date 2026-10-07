@@ -766,3 +766,15 @@ test("message attachments project managed paths only and stream through the owne
     await assert.rejects(noImages.image(identity, "session:test", new URLSearchParams({ path: "a" })), { code: "IMAGE_NOT_AVAILABLE", status: 404 });
   } finally { await f.close(); }
 });
+
+
+test("paired cleanup reads remain available after the Task is gone and reject invalid IDs", () => {
+  const receiver = { store: { getTaskDeletionOperation: id => id === "operation:one" ? {
+    operationId: id, taskId: "deleted-task", state: "succeeded", stage: "completed", createdAt: "2026-10-07T00:00:00.000Z"
+  } : null } };
+  const read = id => ClientSessionAPI.prototype.taskDeletionNotification.call(receiver, { deviceId: "paired" }, id);
+  assert.equal(read("operation:one").notification.status, "completed");
+  assert.throws(() => read("missing"), { code: "TASK_DELETE_OPERATION_NOT_FOUND" });
+  assert.throws(() => read(""), { code: "INVALID_OPERATION_ID" });
+  assert.throws(() => read("x".repeat(513)), { code: "INVALID_OPERATION_ID" });
+});

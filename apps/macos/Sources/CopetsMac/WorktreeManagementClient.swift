@@ -1,4 +1,5 @@
 import Foundation
+import CorptieClientCore
 import OSLog
 
 @MainActor
@@ -168,6 +169,7 @@ final class WorktreeManagementClient: ObservableObject {
                 if !candidateIds.contains(id) { candidateIds.append(id) }
             }
 
+            if target.jobId != nil { candidateIds = hintedRepositoryId.map { [$0] } ?? [] }
             for repositoryId in candidateIds {
                 guard !Task.isCancelled else { return false }
                 if selection.repositoryId != repositoryId {
@@ -183,6 +185,13 @@ final class WorktreeManagementClient: ObservableObject {
                 guard !Task.isCancelled else { return false }
                 guard detail?.repository.id == repositoryId,
                       let worktrees = detail?.project.worktrees else { continue }
+                if let jobId = target.jobId, target.repositoryId == repositoryId {
+                    let envelope: WorktreeIntegrationJobEnvelope = try await get("worktree-management/jobs/\(jobId)")
+                    guard envelope.job.repositoryId == repositoryId else { return false }
+                    job = envelope.job
+                    selection.worktreeId = target.matchingWorktree(in: worktrees)?.worktreeId
+                    return true
+                }
                 if target.worktreeId == nil, target.worktreePath == nil {
                     lastAutomaticRefreshAt = now()
                     return true
@@ -205,7 +214,7 @@ final class WorktreeManagementClient: ObservableObject {
     func synchronizeSelectedWorktree() async {
         guard let repositoryId = selection.repositoryId,
               let worktreeId = selection.worktreeId else { return }
-        await mutate {
+        await mutate(category: .worktree, name: "Worktree synchronization", repositoryID: repositoryId) {
             let _: WorktreeActionAcknowledgement = try await self.post(
                 "projects/\(repositoryId)/workspaces/\(worktreeId)/actions/synchronize",
                 body: [:]
@@ -275,9 +284,11 @@ final class WorktreeManagementClient: ObservableObject {
                 envelope.result.branch,
                 envelope.result.destinationUrl
             )
+            OperationNotificationManager.shared.complete(.init(category: .gitPush, outcome: .succeeded, name: "Git push", summary: worktree.branchName ?? "", repositoryID: repositoryId, worktreeID: worktree.worktreeId))
             errorMessage = nil
             await loadRepository(repositoryId, force: true)
         } catch {
+            OperationNotificationManager.shared.complete(.init(category: .gitPush, outcome: OperationNotificationOutcome.errorOutcome(error), name: "Git push", summary: worktree.branchName ?? "", repositoryID: repositoryId, worktreeID: worktree.worktreeId))
             errorMessage = error.localizedDescription
         }
     }
@@ -298,10 +309,12 @@ final class WorktreeManagementClient: ObservableObject {
                 "Removed %@ and its local branch.",
                 envelope.result.branchName ?? envelope.result.path
             )
+            OperationNotificationManager.shared.complete(.init(category: .worktree, outcome: .succeeded, name: "Worktree cleanup", repositoryID: repositoryId))
             errorMessage = nil
             await loadRepository(repositoryId)
             return true
         } catch {
+            OperationNotificationManager.shared.complete(.init(category: .worktree, outcome: OperationNotificationOutcome.errorOutcome(error), name: "Worktree cleanup", repositoryID: repositoryId))
             errorMessage = error.localizedDescription
             return false
         }
@@ -377,6 +390,10 @@ final class WorktreeManagementClient: ObservableObject {
                 failed: failed.count
             )
         )
+        OperationNotificationManager.shared.complete(.init(category: .worktree,
+            outcome: failed.isEmpty ? .succeeded : (removed.isEmpty ? .failed : .partial),
+            name: "Worktree cleanup", summary: L10nFormat("Removed %d; skipped %d; failed %d", removed.count, skipped.count, failed.count),
+            repositoryID: repositoryId))
         errorMessage = nil
         await loadRepository(repositoryId)
     }
@@ -422,6 +439,8 @@ final class WorktreeManagementClient: ObservableObject {
         guard let repositoryId = selection.repositoryId else { return false }
         isMutating = true
         defer { isMutating = false }
+        var completedSteps = 0
+        var stage = mergeIntoMain ? "Worktree merge" : "Worktree synchronization"
         do {
             if mergeIntoMain {
                 var body: [String: Any] = ["synchronizeSource": synchronizeWithMain]
@@ -438,17 +457,25 @@ final class WorktreeManagementClient: ObservableObject {
                     body: [:]
                 )
             }
+            if mergeIntoMain || synchronizeWithMain { completedSteps += 1 }
             if restartService {
+                stage = "Development service operation"
                 let _: WorktreeActionAcknowledgement = try await post(
                     "projects/\(repositoryId)/workspaces/\(worktree.worktreeId)/actions/restart",
                     body: [:]
                 )
             }
+            OperationNotificationManager.shared.complete(.init(category: .worktree, outcome: .succeeded, name: "Worktree operation", summary: worktree.branchName ?? "", repositoryID: repositoryId, worktreeID: worktree.worktreeId))
             await loadRepository(repositoryId, force: true)
             errorMessage = nil
             return true
         } catch {
             let operationError = error.localizedDescription
+            if !Self.isCancellation(error) {
+                OperationNotificationManager.shared.complete(.init(category: .worktree,
+                    outcome: completedSteps > 0 ? .partial : OperationNotificationOutcome.errorOutcome(error), name: stage, summary: worktree.branchName ?? "",
+                    repositoryID: repositoryId, worktreeID: worktree.worktreeId))
+            }
             await loadRepository(repositoryId)
             errorMessage = operationError
             return false
@@ -493,7 +520,7 @@ final class WorktreeManagementClient: ObservableObject {
 
     func runDevelopmentServiceAction(_ action: String, profileId: String? = nil) async {
         guard let repositoryId = selection.repositoryId else { return }
-        await mutate {
+        await mutate(category: ["start", "restart", "stop"].contains(action) ? .developmentService : nil, name: "Development service operation", repositoryID: repositoryId) {
             var body: [String: Any] = [:]
             if let profileId { body["profileId"] = profileId }
             let _: WorktreeActionAcknowledgement = try await self.post(
@@ -580,6 +607,8 @@ final class WorktreeManagementClient: ObservableObject {
                 "worktree-management/repositories/\(repositoryId)/integration-jobs",
                 body: request.body
             )
+            OperationNotificationManager.shared.track(jobID: envelope.job.id, resourceName: detail?.repository.name)
+            if let notification = envelope.job.notification { OperationNotificationManager.shared.observe(notification) }
             job = envelope.job
             detailCache.removeValue(forKey: repositoryId)
             setCandidateReview(.empty)
@@ -783,6 +812,7 @@ final class WorktreeManagementClient: ObservableObject {
             let envelope: WorktreeIntegrationJobEnvelope = try await get(
                 "worktree-management/jobs/\(current.id)"
             )
+            if let notification = envelope.job.notification { OperationNotificationManager.shared.observe(notification) }
             let changed = envelope.job != current
             if changed { job = envelope.job }
             if current.shouldPoll && !envelope.job.shouldPoll { await refreshSelected() }
@@ -944,13 +974,15 @@ final class WorktreeManagementClient: ObservableObject {
         )
     }
 
-    private func mutate(_ operation: () async throws -> Void) async {
+    private func mutate(category: OperationNotificationCategory? = nil, name: String = "Worktree operation", repositoryID: String? = nil, _ operation: () async throws -> Void) async {
         isMutating = true
         defer { isMutating = false }
         do {
             try await operation()
+            if let category { OperationNotificationManager.shared.complete(.init(category: category, outcome: .succeeded, name: name, repositoryID: repositoryID)) }
             errorMessage = nil
         } catch {
+            if let category, !Self.isCancellation(error) { OperationNotificationManager.shared.complete(.init(category: category, outcome: OperationNotificationOutcome.errorOutcome(error), name: name, repositoryID: repositoryID)) }
             errorMessage = error.localizedDescription
         }
     }

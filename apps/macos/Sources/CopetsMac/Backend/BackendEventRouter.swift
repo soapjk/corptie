@@ -47,6 +47,13 @@ final class BackendEventRouter {
     init(ports: Ports) { self.ports = ports }
 
     func handle(_ eventName: String, data: String) async {
+        if eventName == "WorktreeIntegrationJobChanged" {
+            OperationNotificationManager.shared.observe(data: data)
+            return
+        }
+        if eventName == "EventReplayRequired" || eventName == "BackendStoreReady" {
+            OperationNotificationManager.shared.recoverJobs()
+        }
         if eventName == "SessionChannelMessageSent", let bytes = data.data(using: .utf8),
            let envelope = try? JSONDecoder().decode(TaskCollaborationFlowEvent.Envelope.self, from: bytes) {
             ports.channelMessage(envelope)

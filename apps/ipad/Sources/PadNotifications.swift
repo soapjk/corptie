@@ -358,6 +358,8 @@ final class PadNotificationManager {
     private(set) var sceneIsActive = false
 
     func setScope(_ scope: String) {
+        PadOperationNotifications.shared.setScope(scope)
+        PadOperationNotifications.shared.deliver = { [weak self] event in self?.enqueueOperation(event) }
         guard self.scope != scope else { return }
         self.scope = scope
         sessionReducer = PadSessionNotificationReducer()
@@ -412,8 +414,21 @@ final class PadNotificationManager {
         ))
     }
 
+    var visibleOperationRepositoryID: String?
+    var visibleOperationJobID: String?
+
     func presentationOptions(for notification: UNNotification) -> UNNotificationPresentationOptions {
         let info = notification.request.content.userInfo
+        if info["destination"] as? String == "operation" {
+            let preferences = PadOperationNotifications.shared.preferences
+            if !preferences.enabled { return [] }
+            if let id = info["operationEventId"] as? String, let event = PadOperationNotifications.shared.result(id),
+               !preferences.allows(event) { return [] }
+            if preferences.suppressWhenVisible, sceneIsActive, visibleTab == .worktrees,
+               info["repositoryId"] as? String == visibleOperationRepositoryID,
+               (info["jobId"] == nil || info["jobId"] as? String == visibleOperationJobID) { return [] }
+            return preferences.sound ? [.banner, .list, .sound] : [.banner, .list]
+        }
         if let sessionID = info["sessionId"] as? String,
            sceneIsActive, visibleTab == .workspace, visibleSessionID == sessionID {
             return []
@@ -498,6 +513,29 @@ final class PadNotificationManager {
         }
     }
 
+    private func enqueueOperation(_ event: OperationNotificationEvent) {
+        let eventScope = scope
+        Task { [weak self] in
+            guard let self, self.scope == eventScope, await self.ensureAuthorization(), self.scope == eventScope,
+                  PadOperationNotifications.shared.preferences.allows(event) else { return }
+            let preferences = PadOperationNotifications.shared.preferences
+            let content = UNMutableNotificationContent()
+            content.title = operationNotificationLabel(event.outcome.title)
+            var summary = [event.summary].filter { !$0.isEmpty }
+            if let counts = event.counts { summary.append("完成 \(counts.completed) 个；失败 \(counts.failed) 个；待处理 \(counts.pending) 个") }
+            content.body = preferences.hideDetails ? operationNotificationLabel(event.category.title)
+                : ([operationNotificationLabel(event.name)] + summary).joined(separator: "\n")
+            if preferences.sound { content.sound = .default }
+            var info = ["destination": "operation", "operationEventId": event.id, "operationScope": eventScope]
+            if let id = event.repositoryID { info["repositoryId"] = id }
+            if let id = event.worktreeID { info["worktreeId"] = id }
+            if let id = event.sessionID { info["sessionId"] = id }
+            if let id = event.jobID { info["jobId"] = id }
+            content.userInfo = info
+            try? await self.center.add(UNNotificationRequest(identifier: "operation:\(PadNotificationIdentity.stableDigest(eventScope)):\(event.id)", content: content, trigger: nil))
+        }
+    }
+
     private func ensureAuthorization() async -> Bool {
         let settings = await center.notificationSettings()
         switch settings.authorizationStatus {
@@ -538,3 +576,68 @@ final class PadAppDelegate: NSObject, UIApplicationDelegate, @preconcurrency UNU
     }
 }
 #endif
+
+
+/// Device-scoped operation tracking shared with the desktop policy. It outlives pages.
+@MainActor
+final class PadOperationNotifications {
+    static let shared = PadOperationNotifications()
+    let preferences = OperationNotificationPreferences()
+    private var scope = ""
+    private var ledger: OperationNotificationLedger?
+    private var recovery: Task<Void, Never>?
+    var deliver: ((OperationNotificationEvent) -> Void)?
+
+    func setScope(_ value: String) {
+        guard scope != value else { return }
+        recovery?.cancel(); recovery = nil
+        scope = value
+        ledger = OperationNotificationLedger(defaults: .standard, scope: value)
+    }
+    func result(_ id: String) -> OperationNotificationEvent? { ledger?.results.first { $0.id == id } }
+    func track(_ jobID: String, resourceName: String? = nil, kind: String? = nil) { ledger?.track(jobID: jobID, resourceName: resourceName, kind: kind) }
+    func observe(_ job: OperationJobSnapshot) {
+        if let event = ledger?.observe(job) { complete(event) }
+    }
+    func complete(_ event: OperationNotificationEvent, expectedScope: String? = nil) {
+        if let expectedScope, expectedScope != scope { return }
+        guard ledger?.consume(event) == true, preferences.allows(event),
+              event.outcome != .succeeded || Date().timeIntervalSince(event.occurredAt) < 86400 else { return }
+        deliver?(event)
+    }
+    func recover(connection: PadConnection) {
+        setScope("\(connection.serverID)|\(connection.address)")
+        let deletionIDs = ledger?.deletionJobIDs ?? []
+        guard recovery == nil, let ids = ledger?.recoverableJobIDs, !ids.isEmpty || !deletionIDs.isEmpty else { return }
+        let originalScope = scope
+        recovery = Task { [weak self] in
+            guard let self else { return }
+            defer { if self.scope == originalScope { self.recovery = nil } }
+            do {
+                let api = ClientWorktreeAPI(transport: try await connection.transport())
+                for id in deletionIDs {
+                    guard !Task.isCancelled, self.scope == originalScope else { return }
+                    if let snapshot = try? await api.deletionNotification(operationId: id),
+                       self.scope == originalScope, !Task.isCancelled { self.observe(snapshot) }
+                }
+                for id in ids {
+                    guard !Task.isCancelled, self.scope == originalScope else { return }
+                    if let job = try? await api.job(id), let snapshot = job.notification,
+                       self.scope == originalScope, !Task.isCancelled { self.observe(snapshot) }
+                }
+            } catch { /* Reconnect will retry. Never resend a mutation. */ }
+        }
+    }
+}
+
+func operationNotificationLabel(_ key: String) -> String {
+    ["Basic Operation Notifications": "基础操作通知", "Enable operation notifications": "启用基础操作通知",
+     "Operation completed": "操作完成", "Operation partially completed": "操作部分完成",
+     "Operation failed": "操作失败", "Operation result unconfirmed": "操作结果待确认", "Operation needs attention": "操作需要处理", "Operation cancelled": "操作已取消",
+     "Worktree operations": "Worktree 操作", "Development services": "开发服务",
+     "Data migration": "数据目录迁移", "Git push": "Git 推送", "Environment preparation": "执行环境准备",
+     "MCP installation and maintenance": "MCP 安装与维护", "Task cleanup": "任务清理", "Worktree synchronization": "Worktree 同步",
+     "Worktree convergence": "Worktree 分支收敛", "Worktree integration": "Worktree 整合",
+     "Worktree cleanup": "Worktree 清理", "Worktree operation": "Worktree 操作",
+     "Development service operation": "开发服务操作"][key] ?? key
+}

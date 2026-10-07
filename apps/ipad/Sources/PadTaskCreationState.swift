@@ -180,6 +180,9 @@ final class PadTaskCreationState {
         }
         if receipt.status == "completed", let value = receipt.taskResult, value.workId == workID,
            !value.taskId.isEmpty, !value.sessionId.isEmpty {
+            PadOperationNotifications.shared.complete(.init(id: "environment:\(receipt.requestId)", category: .environment,
+                outcome: .succeeded, name: "Environment preparation", sessionID: value.sessionId),
+                expectedScope: "\(serverID)|\(address)")
             result = value; notice = "Task 与配套会话已创建。"; flush()
         } else {
             notice = receipt.status == "dispatching" ? "正在创建 Task 与配套会话…" : "创建结果尚未确认；请核对已有 Task，不要重复提交。"

@@ -1606,3 +1606,75 @@
 "Repository state changed. Generate and review a fresh integration plan." = "仓库状态已变化，请生成并检查新的合并计划。";
 "Resolve the preserved conflict with an Agent or manually, then retry." = "请让 Agent 或手动处理已保留的冲突，然后重试。";
 "The operation is paused and can be retried from its preserved state." = "操作已暂停，可以从保留的状态继续重试。";
+
+"Basic Operation Notifications" = "基础操作通知";
+
+"Enable operation notifications" = "启用基础操作通知";
+
+"Operation completed" = "操作完成";
+
+"Operation partially completed" = "操作部分完成";
+
+"Operation failed" = "操作失败";
+
+"Operation needs attention" = "操作需要处理";
+
+"Operation cancelled" = "操作已取消";
+
+"Operation failed or partially completed" = "操作失败或部分完成";
+
+"Worktree operations" = "Worktree 操作";
+
+"Development services" = "开发服务";
+
+"Data migration" = "数据目录迁移";
+
+"Git push" = "Git 推送";
+
+"Environment preparation" = "执行环境准备";
+
+"MCP installation and maintenance" = "MCP 安装与维护";
+
+"Operation notification sound" = "基础操作通知声音";
+
+"Hide operation details in notifications" = "隐藏通知中的操作详情";
+
+"Suppress notifications while viewing the operation" = "正在查看操作时不弹出";
+
+"Notifications follow operations started on this device. Closing a page does not stop notifications. Turning notifications off does not stop operations." = "只通知本设备发起的操作。离开页面后仍可收到通知。关闭通知不会停止操作。";
+
+"Worktree synchronization" = "Worktree 同步";
+
+"Worktree convergence" = "Worktree 分支收敛";
+
+"Worktree integration" = "Worktree 整合";
+
+"Worktree operation" = "Worktree 操作";
+
+"Worktree cleanup" = "Worktree 清理";
+
+"Development service operation" = "开发服务操作";
+
+"Task cleanup" = "任务清理";
+
+"Session fork" = "会话 Fork";
+
+"MCP installation" = "MCP 安装";
+
+"MCP update" = "MCP 更新";
+
+"MCP rollback" = "MCP 回滚";
+
+"View operation" = "查看操作";
+
+"Removed %d; skipped %d; failed %d" = "删除 %d 个；跳过 %d 个；失败 %d 个";
+
+"Integrated %d; conflicts %d; failed %d" = "整合 %d 个；冲突 %d 个；失败 %d 个";
+
+"Completed %d; failed %d; pending %d" = "完成 %d 个；失败 %d 个；待处理 %d 个";
+
+"Operation result unconfirmed" = "操作结果待确认";
+
+"Choose which operations and task-state changes should notify you." = "选择哪些操作结果和任务状态变化需要通知。";
+
+"Worktree merge" = "Worktree 合并";

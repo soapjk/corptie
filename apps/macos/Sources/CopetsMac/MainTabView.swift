@@ -813,12 +813,12 @@ final class AppTabRouter: ObservableObject {
         if pendingAutomationId == automationId { pendingAutomationId = nil }
     }
 
-    func openWorktrees(repositoryId: String?, worktreeId: String?, worktreePath: String?) {
+    func openWorktrees(repositoryId: String?, worktreeId: String?, worktreePath: String?, jobId: String? = nil) {
         pendingWorktreeNavigation = WorktreeNavigationRequest(
             target: WorktreeNavigationTarget(
                 repositoryId: repositoryId,
                 worktreeId: worktreeId,
-                worktreePath: worktreePath
+                worktreePath: worktreePath, jobId: jobId
             )
         )
         sidebarState(for: .worktrees).visibility = .all
@@ -872,6 +872,7 @@ struct WorktreeNavigationTarget: Equatable {
     let repositoryId: String?
     let worktreeId: String?
     let worktreePath: String?
+    var jobId: String? = nil
 
     static func preferredRepositoryId(
         sessionRepositoryId: String?,
