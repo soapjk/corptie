@@ -65,7 +65,8 @@ public struct ClientEvents: Sendable {
         AsyncThrowingStream(bufferingPolicy: .bufferingOldest(64)) { continuation in
             let task = Task { [transport] in
                 do {
-                    var query = [URLQueryItem(name: "stateRevision", value: String(stateRevision)),
+                    var query = [URLQueryItem(name: "operationNotifications", value: "true"),
+                                 URLQueryItem(name: "stateRevision", value: String(stateRevision)),
                                  URLQueryItem(name: "timelineRevision", value: String(timelineRevision))]
                     if let sessionId { query.append(URLQueryItem(name: "sessionId", value: sessionId)) }
                     if timelineCoalescing { query.append(URLQueryItem(name: "timelineCoalescing", value: "true")) }
@@ -106,6 +107,7 @@ public struct ClientEvents: Sendable {
                             switch event.name {
                             case "stream-ready": update = .ready(try JSONDecoder().decode(ClientRealtimeReady.self, from: data))
                             case "state-snapshot": update = .state(try JSONDecoder().decode(ClientStateSnapshot.self, from: data))
+                            case "operation-job": update = .operation(try JSONDecoder().decode(OperationJobSnapshot.self, from: data))
                             case "control-snapshot": update = .control(try JSONDecoder().decode(ClientControlSnapshot.self, from: data))
                             case "timeline-snapshot": update = .timelineSnapshot(try JSONDecoder().decode(ClientTimelineSnapshot.self, from: data))
                             case "timeline-delta": update = .timelineDelta(try JSONDecoder().decode(ClientTimelineDelta.self, from: data))
@@ -187,6 +189,7 @@ public enum ClientRealtimeUpdate: Sendable {
     case ready(ClientRealtimeReady)
     case state(ClientStateSnapshot)
     case control(ClientControlSnapshot)
+    case operation(OperationJobSnapshot)
     case timelineSnapshot(ClientTimelineSnapshot)
     case timelineDelta(ClientTimelineDelta)
     case receipt(ClientCommandReceipt)

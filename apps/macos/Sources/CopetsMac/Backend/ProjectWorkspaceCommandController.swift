@@ -1,4 +1,5 @@
 import Foundation
+import CorptieClientCore
 
 struct ProjectWorktreeIntegrationLaunchGate: Equatable {
     private(set) var isRunning = false
@@ -176,6 +177,10 @@ final class ProjectWorkspaceCommandController: ObservableObject {
                     from: data
                 )
                 let counts = selectedProjectIntegrationStatus?.latestRun?.counts
+                OperationNotificationManager.shared.complete(.init(category: .worktree,
+                    outcome: (counts?.conflicts ?? 0) > 0 ? .attention : ((counts?.failed ?? 0) > 0 ? .partial : .succeeded),
+                    name: "Worktree integration", summary: L10nFormat("Integrated %d; conflicts %d; failed %d", counts?.integrated ?? 0, counts?.conflicts ?? 0, counts?.failed ?? 0),
+                    repositoryID: projectId))
                 sendStatusMessage = L10nFormat(
                     "Integrated %d Worktrees; %d have conflicts; %d failed",
                     counts?.integrated ?? 0,
@@ -190,6 +195,7 @@ final class ProjectWorkspaceCommandController: ObservableObject {
                 }
                 await loadProjectWorktreeStatus(for: session)
             } catch {
+                OperationNotificationManager.shared.complete(.init(category: .worktree, outcome: OperationNotificationOutcome.errorOutcome(error), name: "Worktree integration", repositoryID: projectId))
                 recordProjectWorktreeActionError(error.localizedDescription)
             }
         }
@@ -313,8 +319,10 @@ final class ProjectWorkspaceCommandController: ObservableObject {
                     projectID: projectId, action: action,
                     fallback: L10n("Project service action failed.")
                 )
+                OperationNotificationManager.shared.complete(.init(category: .developmentService, outcome: .succeeded, name: "Development service operation", repositoryID: projectId))
                 await loadProjectWorktreeStatus(for: session)
             } catch {
+                OperationNotificationManager.shared.complete(.init(category: .developmentService, outcome: OperationNotificationOutcome.errorOutcome(error), name: "Development service operation", repositoryID: projectId))
                 recordProjectWorktreeActionError(error.localizedDescription)
             }
         }
@@ -549,6 +557,9 @@ final class ProjectWorkspaceCommandController: ObservableObject {
                 }
             }
 
+            OperationNotificationManager.shared.complete(.init(category: .worktree,
+                outcome: failures.isEmpty ? .succeeded : (removedCount == 0 ? .failed : .partial), name: "Worktree cleanup",
+                summary: L10nFormat("Removed %d; skipped %d; failed %d", removedCount, 0, failures.count), repositoryID: projectId))
             if failures.isEmpty {
                 sendStatusMessage = L10nFormat("Removed %d merged Worktrees", removedCount)
             } else {
@@ -580,6 +591,10 @@ final class ProjectWorkspaceCommandController: ObservableObject {
                     sessionID: session.id, projectID: projectId(for: session),
                     worktreeID: worktree.worktreeId, action: action, body: body
                 )
+                if action != "commit" {
+                    OperationNotificationManager.shared.complete(.init(category: action == "restart" ? .developmentService : .worktree,
+                        outcome: .succeeded, name: "Worktree operation", repositoryID: projectId(for: session), worktreeID: worktree.worktreeId))
+                }
                 if action == "commit" {
                     sendStatusMessage = L10n("Worktree changes committed")
                 }
@@ -590,6 +605,10 @@ final class ProjectWorkspaceCommandController: ObservableObject {
                     await loadProjectWorktreeStatus(for: session)
                 }
             } catch {
+                if action != "commit" {
+                    OperationNotificationManager.shared.complete(.init(category: action == "restart" ? .developmentService : .worktree,
+                        outcome: OperationNotificationOutcome.errorOutcome(error), name: "Worktree operation", repositoryID: projectId(for: session), worktreeID: worktree.worktreeId))
+                }
                 recordProjectWorktreeActionError(error.localizedDescription)
             }
         }

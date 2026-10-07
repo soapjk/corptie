@@ -1,3 +1,4 @@
+import CorptieClientCore
 import SwiftUI
 
 struct SessionForkSelection: Identifiable {
@@ -134,10 +135,14 @@ struct SessionForkSheet: View {
                 sourceBindingID: preview.sourceBindingId, title: title,
                 description: description, acceptanceCriteria: acceptanceCriteria,
                 verificationCriteria: verificationCriteria, priority: priority)
+            OperationNotificationManager.shared.complete(.init(category: .environment, outcome: .succeeded, name: "Session fork", sessionID: result.session.id))
             backendClient.acceptCreatedSession(result.session, selectImmediately: false)
             backendClient.select(session: result.session, focusComposer: true)
             dismiss()
-        } catch { errorText = error.localizedDescription }
+        } catch {
+            OperationNotificationManager.shared.complete(.init(category: .environment, outcome: OperationNotificationOutcome.errorOutcome(error), name: "Session fork"))
+            errorText = error.localizedDescription
+        }
     }
 
     private func sourceCard(_ preview: SessionForkPreview) -> some View {

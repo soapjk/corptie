@@ -1,3 +1,4 @@
+import { projectTaskDeletionNotification } from "./worktreeIntegrationJobService.mjs";
 import { createHash } from "node:crypto";
 import { ensureReliableMessageSchema, acceptReliableMessage, reliableReceipt } from "./clientReliableMessages.mjs";
 import { deviceError } from "./clientDeviceAuthority.mjs";
@@ -166,6 +167,12 @@ export class ClientSessionAPI {
     return openClientDiscussion(this, identity, workId, input, revalidateIdentity);
   }
   taskManagement(identity, taskId) { return clientTaskManagement(this, identity, taskId); }
+  taskDeletionNotification(_identity, operationId) {
+    if (typeof operationId !== "string" || !operationId || operationId.length > 512) throw deviceError("INVALID_OPERATION_ID", 400);
+    const operation = this.store.getTaskDeletionOperation(operationId);
+    if (!operation) throw deviceError("TASK_DELETE_OPERATION_NOT_FOUND", 404);
+    return { notification: projectTaskDeletionNotification(operation) };
+  }
   taskDeletionPlan(identity, taskId) { return clientTaskDeletionPlan(this, identity, taskId); }
   workManagement(identity, workId) { return clientWorkManagement(this, identity, workId); }
   workCreationOptions() { return clientWorkCreationOptions(this); }

@@ -40,6 +40,8 @@ final class PadWorktreeStore {
     var service: ClientDevelopmentServiceStatus?
     var job: ClientWorktreeJob?
     var pushStatuses: [String: ClientGitHubPushStatus] = [:]
+    var pendingNotificationJobID: String?
+    var pendingNotificationWorktreeID: String?
     var selectedWorktreeID: String?
     var loading = false
     var busyWorktreeIDs: Set<String> = []
@@ -69,6 +71,7 @@ final class PadWorktreeStore {
     }
 
     func load(_ repositoryID: String, connection: PadConnection, force: Bool = false, afterOperation: String? = nil) async {
+        PadOperationNotifications.shared.setScope("\(connection.serverID)|\(connection.address)")
         let nextKey = "corptie.worktree.job:\(connection.serverID):\(connection.address):\(repositoryID)"
         if jobRecoveryKey != nextKey {
             reset()
@@ -101,7 +104,16 @@ final class PadWorktreeStore {
                 pushStatuses[selectedWorktreeID] = push
             }
             var nextJob = next.latestJob
-            if let savedID = UserDefaults.standard.string(forKey: recoveryKey), savedID != nextJob?.id,
+            let navigatingToJob = pendingNotificationJobID != nil
+            if let id = pendingNotificationJobID, let requested = try? await api.job(id), requested.repositoryId == repositoryID {
+                nextJob = requested
+                pendingNotificationJobID = nil
+            }
+            if let id = pendingNotificationWorktreeID {
+                if next.project.worktrees.contains(where: { $0.worktreeId == id }) { selectedWorktreeID = id }
+                pendingNotificationWorktreeID = nil
+            }
+            if !navigatingToJob, let savedID = UserDefaults.standard.string(forKey: recoveryKey), savedID != nextJob?.id,
                let saved = try? await api.job(savedID), saved.repositoryId == repositoryID {
                 guard token == generation, !Task.isCancelled else { return }
                 if nextJob == nil || saved.updatedAt > nextJob!.updatedAt { nextJob = saved }
@@ -141,8 +153,9 @@ final class PadWorktreeStore {
     }
 
     func push(_ worktree: ClientManagedWorktree, connection: PadConnection) async {
-        await action(worktree, connection: connection) { api, repositoryID in
+        await action(worktree, connection: connection, category: .gitPush) { api, repositoryID in
             let result = try await api.push(repositoryId: repositoryID, worktreeId: worktree.worktreeId)
+            guard result.pushed else { throw ClientConnectionError.invalidResponse }
             return "已将 \(result.branch) 推送到 \(result.destinationUrl)"
         }
     }
@@ -219,6 +232,15 @@ final class PadWorktreeStore {
         let scope = operationScope
         var removed: [String] = []
         var failed: [String] = []
+        var finished = false
+        let notificationScope = "\(connection.serverID)|\(connection.address)"
+        defer {
+            PadOperationNotifications.shared.complete(.init(category: .worktree,
+                outcome: !finished || Task.isCancelled ? (removed.isEmpty ? .cancelled : .partial)
+                    : (failed.isEmpty ? .succeeded : (removed.isEmpty ? .failed : .partial)),
+                name: "Worktree cleanup", summary: "已删除 \(removed.count) 个，未完成 \(failed.count) 个", repositoryID: repositoryID),
+                expectedScope: notificationScope)
+        }
         errorMessage = nil
         let api: ClientWorktreeAPI
         do { api = ClientWorktreeAPI(transport: try await connection.transport()) }
@@ -243,6 +265,7 @@ final class PadWorktreeStore {
             }
         }
         guard scope == operationScope else { return }
+        finished = true
         await load(repositoryID, connection: connection, force: true,
                    afterOperation: removed.isEmpty ? nil : "已清理 \(removed.count) 个 Worktree")
         if !failed.isEmpty {
@@ -260,12 +283,17 @@ final class PadWorktreeStore {
         guard let repositoryID = detail?.repository.id, !serviceBusy else { return }
         serviceBusy = true; errorMessage = nil
         let scope = operationScope
+        let notificationScope = "\(connection.serverID)|\(connection.address)"
         defer { if scope == operationScope { serviceBusy = false } }
         do {
             let api = ClientWorktreeAPI(transport: try await connection.transport())
             try await api.developmentServiceAction(repositoryId: repositoryID, action: actionName, profileId: profileID)
+            if ["start", "restart", "stop"].contains(actionName) {
+                PadOperationNotifications.shared.complete(.init(category: .developmentService, outcome: .succeeded,
+                    name: "Development service operation", repositoryID: repositoryID), expectedScope: notificationScope)
+            }
             guard scope == operationScope else { return }
-            notice = "开发服务操作已提交"
+            notice = "开发服务操作已完成"
             do {
                 let status = try await api.developmentService(repositoryID)
                 guard scope == operationScope else { return }
@@ -275,6 +303,8 @@ final class PadWorktreeStore {
                 notice = "开发服务操作已提交，但状态读取失败。\n" + PadWorktreeFailure.describe(error, stage: "读取开发服务")
             }
         } catch {
+            PadOperationNotifications.shared.complete(.init(category: .developmentService, outcome: OperationNotificationOutcome.errorOutcome(error),
+                name: "Development service operation", repositoryID: repositoryID), expectedScope: notificationScope)
             guard scope == operationScope else { return }
             errorMessage = PadWorktreeFailure.describe(error, stage: "开发服务操作", mutation: true)
         }
@@ -330,6 +360,7 @@ final class PadWorktreeStore {
         do {
             let api = ClientWorktreeAPI(transport: try await connection.transport())
             let updated: ClientWorktreeJob
+            if ["confirm", "retry", "resolve-conflict"].contains(action) { PadOperationNotifications.shared.track(job.id, resourceName: detail?.repository.name) }
             switch action {
             case "confirm": updated = try await api.confirm(job: job, decisions: decisions)
             case "cancel": updated = try await api.cancel(jobId: job.id)
@@ -338,6 +369,10 @@ final class PadWorktreeStore {
             default: return false
             }
             guard token == operationScope else { return false }
+            if ["confirm", "retry", "resolve-conflict"].contains(action) {
+                PadOperationNotifications.shared.track(updated.id, resourceName: detail?.repository.name)
+            }
+            if let snapshot = updated.notification { PadOperationNotifications.shared.observe(snapshot) }
             replaceJob(updated)
             startPollingIfNeeded(job.repositoryId, connection: connection)
             return true
@@ -349,19 +384,31 @@ final class PadWorktreeStore {
     }
 
     private func action(_ worktree: ClientManagedWorktree, connection: PadConnection,
+                        category: OperationNotificationCategory = .worktree,
                         operation: (ClientWorktreeAPI, String) async throws -> String) async {
         guard let repositoryID = detail?.repository.id, !busyWorktreeIDs.contains(worktree.worktreeId) else { return }
         guard detail?.project.worktrees.contains(where: { $0.worktreeId == worktree.worktreeId }) == true else { return }
         busyWorktreeIDs.insert(worktree.worktreeId); errorMessage = nil
         let token = operationScope
+        let notificationScope = "\(connection.serverID)|\(connection.address)"
         defer { if token == operationScope { busyWorktreeIDs.remove(worktree.worktreeId) } }
         do {
             let api = ClientWorktreeAPI(transport: try await connection.transport())
             let completed = try await operation(api, repositoryID)
+            PadOperationNotifications.shared.complete(.init(category: category, outcome: .succeeded,
+                name: category == .gitPush ? "Git push" : "Worktree operation", summary: worktree.branchName ?? "", repositoryID: repositoryID,
+                worktreeID: worktree.worktreeId), expectedScope: notificationScope)
             guard token == operationScope else { return }
             notice = completed
             await load(repositoryID, connection: connection, force: true, afterOperation: completed)
         } catch {
+            if !Task.isCancelled {
+                let step = error as? PadWorktreeStepFailure
+                PadOperationNotifications.shared.complete(.init(category: category,
+                    outcome: step?.completed.isEmpty == false ? .partial : OperationNotificationOutcome.errorOutcome(error),
+                    name: category == .gitPush ? "Git push" : "Worktree operation", summary: worktree.branchName ?? "", repositoryID: repositoryID,
+                    worktreeID: worktree.worktreeId), expectedScope: notificationScope)
+            }
             guard token == operationScope else { return }
             if let failure = error as? PadWorktreeStepFailure {
                 let completed = failure.completed.isEmpty ? "" : "已完成：\(failure.completed.joined(separator: "、"))。\n"
@@ -371,6 +418,7 @@ final class PadWorktreeStore {
     }
 
     private func replaceJob(_ job: ClientWorktreeJob) {
+        if let snapshot = job.notification { PadOperationNotifications.shared.observe(snapshot) }
         // A command response supersedes any inventory read started before it.
         generation += 1
         loading = false

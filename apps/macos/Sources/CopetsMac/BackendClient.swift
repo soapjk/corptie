@@ -571,6 +571,7 @@ final class BackendClient: ObservableObject {
             connected: { [weak self] in
                 guard let self else { return }
                 self.markBackendConnectedFromSessionStream()
+                OperationNotificationManager.shared.recoverJobs()
                 if self.appState.isReachable {
                     await self.reconcileTimelineRevisionIndex()
                     if let selectedSession = self.selectedSession {

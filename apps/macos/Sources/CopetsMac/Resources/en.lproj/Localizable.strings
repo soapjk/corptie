@@ -1200,3 +1200,75 @@
 "Repository state changed. Generate and review a fresh integration plan." = "Repository state changed. Generate and review a fresh integration plan.";
 "Resolve the preserved conflict with an Agent or manually, then retry." = "Resolve the preserved conflict with an Agent or manually, then retry.";
 "The operation is paused and can be retried from its preserved state." = "The operation is paused and can be retried from its preserved state.";
+
+"Basic Operation Notifications" = "Basic Operation Notifications";
+
+"Enable operation notifications" = "Enable operation notifications";
+
+"Operation completed" = "Operation completed";
+
+"Operation partially completed" = "Operation partially completed";
+
+"Operation failed" = "Operation failed";
+
+"Operation needs attention" = "Operation needs attention";
+
+"Operation cancelled" = "Operation cancelled";
+
+"Operation failed or partially completed" = "Operation failed or partially completed";
+
+"Worktree operations" = "Worktree operations";
+
+"Development services" = "Development services";
+
+"Data migration" = "Data migration";
+
+"Git push" = "Git push";
+
+"Environment preparation" = "Environment preparation";
+
+"MCP installation and maintenance" = "MCP installation and maintenance";
+
+"Operation notification sound" = "Operation notification sound";
+
+"Hide operation details in notifications" = "Hide operation details in notifications";
+
+"Suppress notifications while viewing the operation" = "Suppress notifications while viewing the operation";
+
+"Notifications follow operations started on this device. Closing a page does not stop notifications. Turning notifications off does not stop operations." = "Notifications follow operations started on this device. Closing a page does not stop notifications. Turning notifications off does not stop operations.";
+
+"Worktree synchronization" = "Worktree synchronization";
+
+"Worktree convergence" = "Worktree convergence";
+
+"Worktree integration" = "Worktree integration";
+
+"Worktree operation" = "Worktree operation";
+
+"Worktree cleanup" = "Worktree cleanup";
+
+"Development service operation" = "Development service operation";
+
+"Task cleanup" = "Task cleanup";
+
+"Session fork" = "Session fork";
+
+"MCP installation" = "MCP installation";
+
+"MCP update" = "MCP update";
+
+"MCP rollback" = "MCP rollback";
+
+"View operation" = "View operation";
+
+"Removed %d; skipped %d; failed %d" = "Removed %d; skipped %d; failed %d";
+
+"Integrated %d; conflicts %d; failed %d" = "Integrated %d; conflicts %d; failed %d";
+
+"Completed %d; failed %d; pending %d" = "Completed %d; failed %d; pending %d";
+
+"Operation result unconfirmed" = "Operation result unconfirmed";
+
+"Choose which operations and task-state changes should notify you." = "Choose which operations and task-state changes should notify you.";
+
+"Worktree merge" = "Worktree merge";

@@ -1,4 +1,5 @@
 import Foundation
+import CorptieClientCore
 
 /// Owns the three-stage GitHub push interaction independently of session commands.
 @MainActor
@@ -105,13 +106,15 @@ final class GitHubPushController: ObservableObject {
                                           body: JSONSerialization.data(withJSONObject: body),
                                           fallback: L10n("GitHub push failed."))
                 let result = try JSONDecoder().decode(GitHubPushResult.self, from: data)
+                guard result.pushed else { throw BackendError.message(L10n("GitHub did not confirm that the branch was pushed.")) }
                 self.preparation = nil
                 reportStatus(result.committed
                     ? L10n("Changes committed and pushed to GitHub")
                     : L10n("Branch pushed to GitHub"))
-                SessionCompletionSoundManager.playGitHubPushSuccess()
+                OperationNotificationManager.shared.complete(.init(category: .gitPush, outcome: .succeeded, name: "Git push", sessionID: session.id))
                 if selectedSession()?.id == session.id { await refreshStatus(session) }
             } catch {
+                OperationNotificationManager.shared.complete(.init(category: .gitPush, outcome: OperationNotificationOutcome.errorOutcome(error), name: "Git push", sessionID: session.id))
                 self.error = error.localizedDescription
                 reportError(error.localizedDescription)
                 reportStatus(L10nFormat("GitHub push failed: %@", error.localizedDescription))
