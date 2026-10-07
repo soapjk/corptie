@@ -23,10 +23,10 @@ struct MacSharedMessageTextCard: View {
         row.userInput != nil || row.executionPlan != nil || supportsProcess(row) || (row.nativeStyle != .process && !row.showsHeader && !row.isCollaboration
             && row.collaborationRoute == nil && row.processCount == nil && row.expandableTurnId == nil
             && (row.actions.isEmpty || (row.nativeStyle == .agent
-                && row.nativeText.contains("```corptie-chart")))
+                && (row.nativeText.contains("```corptie-chart") || row.nativeText.contains("|"))))
             && !row.showsCollaborationSentStatus
             && (row.images.isEmpty || (row.nativeStyle == .agent
-                && row.nativeText.contains("```corptie-chart")))
+                && (row.nativeText.contains("```corptie-chart") || row.nativeText.contains("|"))))
             && row.rawStatusText.isEmpty)
     }
 
@@ -157,6 +157,9 @@ struct MacSharedMessageTextCard: View {
                                 ConversationChartView(spec: spec)
                                     .frame(width: layout.cardWidth - 20,
                                            height: height)
+                            case .table(_, let table, let tableLayout):
+                                ConversationMarkdownTableView(table: table, layout: tableLayout,
+                                    openLink: { _ = MessageLinkOpener.handle($0, baseDirectory: baseDirectory) })
                             }
                         }
                     }

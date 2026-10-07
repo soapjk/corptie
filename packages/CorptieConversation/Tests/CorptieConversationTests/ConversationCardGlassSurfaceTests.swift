@@ -3,6 +3,24 @@ import Testing
 
 @Suite("Card glass accessibility policy")
 struct ConversationCardGlassSurfaceTests {
+    @Test func panelMaterialStaysLighterThanMessagesAndRespectsAccessibility() {
+        #expect(ConversationContentSurfacePolicy.panelMaterialOpacity == 0.60)
+        #expect(ConversationContentSurfacePolicy.panelMaterialOpacity < ConversationContentSurfacePolicy.messageMaterialOpacity)
+        #expect(ConversationContentSurfacePolicy.usesPanelMaterial(isPanel: true, reduceTransparency: false, increasedContrast: false))
+        #expect(!ConversationContentSurfacePolicy.usesPanelMaterial(isPanel: false, reduceTransparency: false, increasedContrast: false))
+        #expect(!ConversationContentSurfacePolicy.usesPanelMaterial(isPanel: true, reduceTransparency: true, increasedContrast: false))
+        #expect(!ConversationContentSurfacePolicy.usesPanelMaterial(isPanel: true, reduceTransparency: false, increasedContrast: true))
+        for dark in [false, true] {
+            let panel = ConversationContentSurfacePolicy.backgroundOpacity(dark: dark, reduceTransparency: false, increasedContrast: false, isPanel: true)
+            let plain = ConversationContentSurfacePolicy.backgroundOpacity(dark: dark, reduceTransparency: false, increasedContrast: false)
+            let message = ConversationContentSurfacePolicy.backgroundOpacity(dark: dark, reduceTransparency: false, increasedContrast: false, isMessage: true, withMaterial: true)
+            #expect(panel > plain)
+            #expect(panel < message)
+            #expect(ConversationContentSurfacePolicy.backgroundOpacity(dark: dark, reduceTransparency: true, increasedContrast: false, isPanel: true) == 1)
+            #expect(ConversationContentSurfacePolicy.backgroundOpacity(dark: dark, reduceTransparency: false, increasedContrast: true, isPanel: true) == 0.85)
+        }
+    }
+
     @Test("Only supported systems without reduced transparency use native glass")
     func availability() {
         #expect(ConversationFunctionalGlassSurface.usesNativeGlass(supported: true, reduceTransparency: false))

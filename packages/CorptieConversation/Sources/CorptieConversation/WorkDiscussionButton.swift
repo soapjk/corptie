@@ -67,6 +67,6 @@ public struct WorkGroupCardSurface: ViewModifier {
     public func body(content: Content) -> some View {
         content.padding(.horizontal, 6).padding(.vertical, 5)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .modifier(ConversationContentSurface(cornerRadius: 8))
+            .modifier(ConversationContentSurface(cornerRadius: 8, isPanel: true))
     }
 }

@@ -6,6 +6,34 @@ import Testing
 
 @MainActor
 struct ConsoleOverlayScrollerTests {
+    @Test func timelineTrackClicksAreIgnoredWithoutChangingReaderIntent() throws {
+        let scroller = TimelineIntentScroller(frame: NSRect(x: 0, y: 0, width: 16, height: 400))
+        let window = NSWindow(contentRect: scroller.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = scroller
+        defer { window.orderOut(nil) }
+        scroller.scrollerStyle = .legacy
+        scroller.isEnabled = true
+        scroller.knobProportion = 0.2
+        scroller.doubleValue = 0.5
+        var begins = 0
+        var ends = 0
+        scroller.onBegin = { begins += 1 }
+        scroller.onEnd = { ends += 1 }
+        let knob = scroller.rect(for: .knob)
+        #expect(!knob.isEmpty)
+        let knobPoint = scroller.convert(NSPoint(x: knob.midX, y: knob.midY), to: nil)
+        #expect(scroller.testPart(knobPoint) == .knob)
+        let trackPoint = scroller.convert(NSPoint(x: knob.midX, y: max(1, knob.minY - 10)), to: nil)
+        #expect(scroller.testPart(trackPoint) == .noPart)
+        let event = try #require(NSEvent.mouseEvent(with: .leftMouseDown, location: trackPoint,
+            modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+            eventNumber: 0, clickCount: 1, pressure: 1))
+        scroller.mouseDown(with: event)
+        #expect(scroller.doubleValue == 0.5)
+        #expect(begins == 0)
+        #expect(ends == 0)
+    }
+
     @Test func hostedWorkOutlineKeepsScrollerLeftAndOutsideContentAfterResize() throws {
         let host = NSHostingView(rootView: ScrollView {
             VStack {

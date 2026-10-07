@@ -164,6 +164,7 @@ import SwiftUI
     let reconstructed = blocks.map { block in
         switch block {
         case .markdown(let text): text
+        case .table(let table): table.originalText
         case .chart(_, let original), .invalidChart(let original, _): original
         }
     }.joined()
