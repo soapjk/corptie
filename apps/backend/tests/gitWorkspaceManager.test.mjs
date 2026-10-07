@@ -1813,6 +1813,53 @@ test("replanning aborts only the recorded task-owned integration merge and resto
   }
 });
 
+test("Git operation recovery continues only the exact displayed operation and HEAD", async () => {
+  const fixture = await createFixture("git-operation-recovery", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    await writeFile(join(fixture.repository, "shared.txt"), "main\n");
+    await git(["add", "shared.txt"], fixture.repository);
+    await git(["commit", "-m", "main version"], fixture.repository);
+    await writeFile(join(fixture.activeWorktree, "shared.txt"), "feature\n");
+    await git(["add", "shared.txt"], fixture.activeWorktree);
+    await git(["commit", "-m", "feature version"], fixture.activeWorktree);
+    const expectedMainHead = (await gitOutput(["rev-parse", "HEAD"], fixture.repository)).trim();
+    const sourceHead = (await gitOutput(["rev-parse", "HEAD"], fixture.activeWorktree)).trim();
+    await assert.rejects(
+      () => manager.mergeIntegrationSource({
+        mainPath: fixture.repository, sourceHead, expectedMainHead, jobId: "job:recover"
+      }),
+      { code: "MERGE_CONFLICT" }
+    );
+    await writeFile(join(fixture.repository, "shared.txt"), "resolved\n");
+    await git(["add", "shared.txt"], fixture.repository);
+
+    const result = await manager.recoverGitOperation({
+      path: fixture.repository,
+      action: "continue",
+      expectedOperation: "merge",
+      expectedHead: expectedMainHead
+    });
+
+    assert.equal(result.operation, "merge");
+    assert.equal(result.remainingOperation, null);
+    await assert.rejects(
+      () => manager.recoverGitOperation({
+        path: fixture.repository,
+        action: "abort",
+        expectedOperation: "merge",
+        expectedHead: result.headAfter
+      }),
+      { code: "GIT_OPERATION_NOT_FOUND" }
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("one-way synchronization rebases only the source Worktree onto the frozen target head", async () => {
   const fixture = await createFixture("one-way-rebase", { activeFeatureWorktree: true });
   const manager = new GitWorkspaceManager({

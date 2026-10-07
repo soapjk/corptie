@@ -396,6 +396,18 @@ struct WorktreeIntegrationStartEnvelope: Decodable, Sendable {
     let job: WorktreeIntegrationJob
 }
 
+struct WorktreeGitOperationResultEnvelope: Decodable, Sendable {
+    let result: WorktreeGitOperationResult
+}
+
+struct WorktreeGitOperationResult: Decodable, Sendable {
+    let action: String
+    let operation: String
+    let headBefore: String
+    let headAfter: String
+    let remainingOperation: String?
+}
+
 struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
     let id: String
     let repositoryId: String

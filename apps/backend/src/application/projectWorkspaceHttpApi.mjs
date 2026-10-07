@@ -11,6 +11,9 @@ export function handleProjectWorkspaceHttpRequest({
   const worktreeManagementGitHubPushStatusMatch = url.pathname.match(
     /^\/worktree-management\/repositories\/([^/]+)\/worktrees\/([^/]+)\/github-push-status$/
   );
+  const worktreeManagementGitOperationMatch = url.pathname.match(
+    /^\/worktree-management\/repositories\/([^/]+)\/worktrees\/([^/]+)\/git-operation$/
+  );
   const worktreeManagementPreflightMatch = url.pathname.match(
     /^\/worktree-management\/repositories\/([^/]+)\/integration-plans$/
   );
@@ -68,6 +71,20 @@ export function handleProjectWorkspaceHttpRequest({
       .then((result) => sendJson(response, 200, result))
       .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
         error: error.message, code: error.code
+      }));
+    return true;
+  }
+  if (request.method === "POST" && worktreeManagementGitOperationMatch) {
+    const repositoryId = decodeURIComponent(worktreeManagementGitOperationMatch[1]);
+    const worktreeId = decodeURIComponent(worktreeManagementGitOperationMatch[2]);
+    readJson(request)
+      .then((input) => worktreeIntegrationJobService.handleWorktreeGitOperation(repositoryId, worktreeId, input))
+      .then((result) => {
+        emitEvent("WorktreeGitOperationChanged", { repositoryId, worktreeId, result });
+        sendJson(response, 200, { result });
+      })
+      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
+        error: error.message, code: error.code, conflictFiles: error.conflictFiles
       }));
     return true;
   }
