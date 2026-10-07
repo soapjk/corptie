@@ -12,7 +12,7 @@ struct MainTabContentLayoutTests {
         #expect(AppTab.worktrees.index == 3)
         #expect(AppTab.agents.index == 4)
         #expect(AppTab.console.systemImage == "circle.hexagongrid.fill")
-        #expect(AppTab.scenes.systemImage == "house")
+        #expect(AppTab.scenes.systemImage == "camera.macro")
     }
 
     @MainActor
