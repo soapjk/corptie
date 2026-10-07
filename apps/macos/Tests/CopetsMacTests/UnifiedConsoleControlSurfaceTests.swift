@@ -159,6 +159,8 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(MainWindowPageLayoutMetrics.outerPadding == 6)
         #expect(MainWindowPageLayoutMetrics.columnSpacing == 6)
         #expect(MainWindowPageLayoutMetrics.cardCornerRadius == 10)
+        #expect(MainWindowPageLayoutMetrics.cardBorderOpacity == 0.10)
+        #expect(MainWindowPageLayoutMetrics.cardBorderWidth == 0.5)
 
         let source = try source(named: "UnifiedConsoleView.swift")
         #expect(!source.contains(".padding(.leading, MainWindowPageLayoutMetrics.outerPadding)"))
@@ -252,15 +254,23 @@ struct UnifiedConsoleControlSurfaceTests {
 
     @Test
     func automationAndWorktreePagesShareCompactCardGeometry() throws {
+        let mainTab = try source(named: "MainTabView.swift")
         let automation = try source(named: "AutomationsView.swift")
         let worktree = try source(named: "WorktreeManagementView.swift")
+
+        #expect(mainTab.contains("card(content: content, material: .ultraThinMaterial)"))
+        #expect(mainTab.contains("shape.strokeBorder("))
+        #expect(mainTab.contains("tab.extendsUnderTransparentTitlebar ? .top : []"))
+        #expect(AppTab.worktrees.extendsUnderTransparentTitlebar)
+        #expect(AppTab.console.extendsUnderTransparentTitlebar)
+        #expect(!AppTab.automations.extendsUnderTransparentTitlebar)
 
         #expect(automation.contains(".padding(MainWindowPageLayoutMetrics.outerPadding)"))
         #expect(automation.components(separatedBy: ".mainWindowPageCard()").count - 1 == 2)
         #expect(automation.contains("MainWindowPageLayoutMetrics.halfColumnSpacing"))
 
         #expect(worktree.contains(".padding(MainWindowPageLayoutMetrics.outerPadding)"))
-        #expect(worktree.components(separatedBy: ".mainWindowPageCard()").count - 1 == 3)
+        #expect(worktree.components(separatedBy: ".mainWindowPageCard(.lightweight)").count - 1 == 3)
         #expect(worktree.components(
             separatedBy: "MainWindowPageLayoutMetrics.halfColumnSpacing"
         ).count - 1 == 3)

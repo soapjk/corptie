@@ -149,16 +149,16 @@ struct WorktreeManagementView: View {
         NavigationSplitView(columnVisibility: $sidebarState.visibility) {
             repositoryColumn
                 .navigationSplitViewColumnWidth(min: 230, ideal: 280, max: 360)
-                .mainWindowPageCard()
+                .mainWindowPageCard(.lightweight)
                 .padding(.trailing, MainWindowPageLayoutMetrics.halfColumnSpacing)
         } content: {
             worktreeColumn
                 .navigationSplitViewColumnWidth(min: 320, ideal: 390, max: 520)
-                .mainWindowPageCard()
+                .mainWindowPageCard(.lightweight)
                 .padding(.horizontal, MainWindowPageLayoutMetrics.halfColumnSpacing)
         } detail: {
             detailColumn
-                .mainWindowPageCard()
+                .mainWindowPageCard(.lightweight)
                 .padding(.leading, MainWindowPageLayoutMetrics.halfColumnSpacing)
         }
         .padding(MainWindowPageLayoutMetrics.outerPadding)
