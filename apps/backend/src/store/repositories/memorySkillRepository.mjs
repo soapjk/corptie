@@ -90,12 +90,20 @@ export class MemorySkillRepository {
     const now = createdAtFromOrNow();
     this.db.run(`INSERT INTO memory_extraction_jobs
       (session_id, reason, state, attempts, retry_at, created_at, updated_at)
-      VALUES (?, ?, 'queued', 0, ?, ?, ?)
+      SELECT ?, ?, 'queued', 0, ?, ?, ?
+      WHERE EXISTS (SELECT 1 FROM sessions WHERE id = ? AND deleted_at IS NULL)
       ON CONFLICT(session_id) DO UPDATE SET
         reason = excluded.reason,
-        state = CASE WHEN memory_extraction_jobs.state = 'running' THEN 'running' ELSE 'queued' END,
-        retry_at = excluded.retry_at, updated_at = excluded.updated_at`,
-    [sessionId, reason, retryAt, now, now]);
+        state = CASE WHEN memory_extraction_jobs.state IN ('running', 'blocked', 'skipped')
+          THEN memory_extraction_jobs.state ELSE 'queued' END,
+        retry_at = CASE WHEN memory_extraction_jobs.state IN ('blocked', 'skipped')
+          THEN memory_extraction_jobs.retry_at
+          WHEN memory_extraction_jobs.state = 'queued' AND memory_extraction_jobs.last_error IS NOT NULL
+            AND memory_extraction_jobs.retry_at > excluded.retry_at
+          THEN memory_extraction_jobs.retry_at ELSE excluded.retry_at END,
+        updated_at = CASE WHEN memory_extraction_jobs.state IN ('blocked', 'skipped')
+          THEN memory_extraction_jobs.updated_at ELSE excluded.updated_at END`,
+    [sessionId, reason, retryAt, now, now, sessionId]);
     this.scheduleSave();
   }
 
@@ -105,14 +113,32 @@ export class MemorySkillRepository {
       ORDER BY created_at ASC LIMIT 1`, [now]);
   }
 
+  nextMemoryExtractionWakeAt() {
+    return this.selectOne(`SELECT MIN(COALESCE(retry_at, '1970-01-01T00:00:00.000Z')) AS retry_at
+      FROM memory_extraction_jobs WHERE state IN ('queued', 'running')`)?.retry_at ?? null;
+  }
+
+  countPendingMemoryExtractionJobs() {
+    return Number(this.selectOne(`SELECT COUNT(*) AS count FROM memory_extraction_jobs
+      WHERE state IN ('queued', 'running')`)?.count ?? 0);
+  }
+
+  resumeBlockedMemoryExtractionJobs() {
+    const now = createdAtFromOrNow();
+    this.db.run(`UPDATE memory_extraction_jobs SET state = 'queued', retry_at = ?, updated_at = ?
+      WHERE state = 'blocked' AND last_error = 'BACKGROUND_NO_TOOLS_RUNTIME_UNVERIFIED'
+        AND EXISTS (SELECT 1 FROM sessions WHERE id = session_id AND deleted_at IS NULL)`, [now, now]);
+    this.scheduleSave();
+  }
+
   finishMemoryExtractionJob(sessionId, { error = null, retryAt = null, hasMore = false,
-    expectedUpdatedAt = null } = {}) {
+    terminalState = null, expectedUpdatedAt = null } = {}) {
     const now = createdAtFromOrNow();
     this.db.run(`UPDATE memory_extraction_jobs SET
       state = ?, attempts = attempts + 1, retry_at = ?, last_error = ?, updated_at = ?,
       created_at = CASE WHEN ? THEN ? ELSE created_at END
       WHERE session_id = ? AND (? IS NULL OR updated_at = ?)`,
-    [error || hasMore ? "queued" : "done", retryAt, error, now,
+    [terminalState ?? (error || hasMore ? "queued" : "done"), retryAt, error, now,
       hasMore ? 1 : 0, now, sessionId, expectedUpdatedAt, expectedUpdatedAt]);
     this.scheduleSave();
   }
@@ -129,6 +155,12 @@ export class MemorySkillRepository {
       ON CONFLICT(day) DO UPDATE SET calls = calls + 1`, [day]);
     this.scheduleSave();
     return true;
+  }
+
+  refundMemoryExtractionDailyCall(day) {
+    this.db.run(`UPDATE memory_extraction_daily_budget SET calls = calls - 1
+      WHERE day = ? AND calls > 0`, [day]);
+    this.scheduleSave();
   }
 
   getMemoryBySourceEvent({ ownerType, ownerId, sourceSessionId, sourceEventSequence }) {
@@ -450,6 +482,29 @@ export class MemorySkillRepository {
       scope: safeJsonValue(row.scope_json, {}), candidateIds: safeJsonValue(row.candidate_ids_json, []),
       selectedIds: safeJsonValue(row.selected_ids_json, []), diagnostics: safeJsonValue(row.diagnostics_json, {}),
       createdAt: row.created_at
+    }));
+  }
+
+  listSessionMemoryHits(sessionId) {
+    // Only accepted context is a hit. Rank in SQLite so repeated Turns do not
+    // grow the Detail payload or hide older distinct memories behind a limit.
+    const rows = this.selectAll(`WITH hits AS (
+      SELECT CAST(selected.value AS TEXT) AS memory_id,
+        audit.diagnostics_json, audit.created_at,
+        ROW_NUMBER() OVER (PARTITION BY selected.value
+          ORDER BY audit.created_at DESC, audit.rowid DESC) AS rank
+      FROM memory_recall_audit AS audit
+      JOIN json_each(audit.selected_ids_json) AS selected
+      WHERE audit.session_id = ?
+        AND json_extract(audit.diagnostics_json, '$.injection.status')
+          IN ('provider_accepted', 'context_included')
+    )
+    SELECT memory_id, diagnostics_json, created_at FROM hits
+    WHERE rank = 1 ORDER BY created_at DESC, memory_id`, [sessionId]);
+    return rows.map((row) => ({
+      memoryId: row.memory_id,
+      diagnostics: safeJsonValue(row.diagnostics_json, {}),
+      lastHitAt: row.created_at
     }));
   }
 

@@ -1579,6 +1579,10 @@
 "Historical scan failed." = "历史扫描失败。";
 "%d Memory candidates await review." = "%d 条记忆候选等待审核。";
 "Refresh recall records" = "刷新召回记录";
+"Memory Hit" = "记忆命中";
+"Refresh Memory hits" = "刷新记忆命中";
+"Could not load Memory hits." = "无法加载记忆命中。";
+"No Memory hits recorded for this Session." = "此会话尚无记忆命中。";
 "Add to Ignore" = "加入 Ignore";
 "Delete File" = "删除";
 "Convert to Artifact" = "转为 Artifact";

@@ -14,7 +14,7 @@ import {
 import { assertPlatformAssistantPatch, isPlatformAssistant } from "../utils/platformAssistantIdentity.mjs";
 import { presentTaskAcceptance } from "./taskAcceptance.mjs";
 import { presentMemory, createUserMemory, reviewExtractedMemory } from "./memoryOperationService.mjs";
-import { presentMemoryRecallAudit } from "./memoryRecallService.mjs";
+import { presentMemoryRecallAudit, presentSessionMemoryHits } from "./memoryRecallService.mjs";
 import { validateEntityName, validateWorkInput } from "../domain/workTaskValidation.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
@@ -152,7 +152,7 @@ export function handleEntityHttpRequest({
     path === "/repositories" || path === "/repositories/detect" ||
     path === "/workspaces" || path === "/workspaces/detect" || path.startsWith("/workspaces/") ||
     path === "/memories" || path.startsWith("/memories/") || path === "/memory-audit" ||
-    path.startsWith("/memory-audit/") || path === "/memory-recall-audit" || path === "/memory-recall" ||
+    path.startsWith("/memory-audit/") || path === "/memory-recall-audit" || path === "/memory-hit" || path === "/memory-recall" ||
     path === "/agents" || path.startsWith("/agents/") ||
     path === "/skills" || path.startsWith("/skills/") ||
     path === "/assistant/chat" || path === "/assist/draft" || path === "/assist/form-draft" ||
@@ -1242,6 +1242,16 @@ export function handleEntityHttpRequest({
             memoryId: url.searchParams.get("memoryId"), limit
           })
             .map((audit) => presentMemoryRecallAudit(hubService.store, audit))
+        });
+      }
+      if (request.method === "GET" && path === "/memory-hit") {
+        const sessionId = url.searchParams.get("sessionId");
+        if (!sessionId) throw apiError("INVALID_INPUT", "sessionId is required.", 400);
+        if (!hubService.store.getSession(sessionId)) {
+          throw apiError("SESSION_NOT_FOUND", "Session not found.", 404);
+        }
+        return sendJson(response, 200, {
+          hits: presentSessionMemoryHits(hubService.store, sessionId)
         });
       }
       if (request.method === "GET" && path === "/memory-recall") {

@@ -1231,7 +1231,8 @@ const backgroundAgentService = new BackgroundAgentService({
   }
 });
 memoryExtractor.classifyMany = createMemoryModelClassifier({ backgroundAgent: backgroundAgentService,
-  claimBudget: () => store.claimMemoryExtractionDailyCall(new Date().toISOString().slice(0, 10), 24) });
+  claimBudget: (day) => store.claimMemoryExtractionDailyCall(day, 24),
+  refundBudget: (day) => store.refundMemoryExtractionDailyCall(day) });
 if (!developmentPreview) memoryExtractionScheduler.start();
 const taskSummaryService = new TaskSummaryService({ store, backgroundAgent: backgroundAgentService,
   isEnabled: () => !developmentPreview });

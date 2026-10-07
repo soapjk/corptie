@@ -12,7 +12,7 @@ export class MemoryExtractionScheduler {
   }
 
   request(sessionId, reason = "session_end", { delayMs = 0 } = {}) {
-    if (this.closed) return;
+    if (this.closed || !this.store.getSession(sessionId)) return;
     const boundedDelay = Math.max(0, Math.min(24 * 60 * 60 * 1000, Number(delayMs) || 0));
     this.store.enqueueMemoryExtraction(sessionId, reason,
       new Date(this.clock() + boundedDelay).toISOString());
@@ -30,7 +30,10 @@ export class MemoryExtractionScheduler {
     }
   }
 
-  start() { this.#wake(); }
+  start() {
+    this.store.resumeBlockedMemoryExtractionJobs();
+    this.#wake();
+  }
 
   async close() {
     this.closed = true;
@@ -40,8 +43,7 @@ export class MemoryExtractionScheduler {
   }
 
   get pendingCount() {
-    return this.store.listMemoryExtractionJobs(500)
-      .filter((job) => job.state !== "done").length;
+    return this.store.countPendingMemoryExtractionJobs();
   }
 
   #wake(delay = 0) {
@@ -78,6 +80,10 @@ export class MemoryExtractionScheduler {
             hasMore: result.hasMore, expectedUpdatedAt: job.updated_at });
           if (result.memories.length) this.onMemories(job.session_id, result.memories);
         } catch (error) {
+          const terminalState = error.code === "BACKGROUND_NO_TOOLS_RUNTIME_UNVERIFIED"
+            ? "blocked"
+            : ["SESSION_NOT_FOUND", "MEMORY_SESSION_KIND_UNSUPPORTED", "INVALID_TASK_SESSION",
+              "WORK_NOT_FOUND"].includes(error.code) ? "skipped" : null;
           const attempts = Number(job.attempts ?? 0) + 1;
           const day = now.slice(0, 10);
           const tomorrow = new Date(`${day}T00:00:00.000Z`).getTime() + 86_400_000;
@@ -86,7 +92,8 @@ export class MemoryExtractionScheduler {
             : Math.min(3_600_000, this.retryBaseMs * 2 ** Math.min(attempts - 1, 6));
           this.store.finishMemoryExtractionJob(job.session_id, {
             error: String(error.code ?? error.message ?? error).slice(0, 500),
-            retryAt: new Date(this.clock() + delay).toISOString(),
+            retryAt: terminalState ? null : new Date(this.clock() + delay).toISOString(),
+            terminalState,
             expectedUpdatedAt: job.updated_at
           });
         }
@@ -94,11 +101,8 @@ export class MemoryExtractionScheduler {
     } finally {
       this.running = false;
       if (!this.closed) {
-        const jobs = this.store.listMemoryExtractionJobs(500).filter((job) => job.state !== "done");
-        if (jobs.length) {
-          const next = Math.min(...jobs.map((job) => Date.parse(job.retry_at ?? new Date(this.clock()).toISOString())));
-          this.#wake(Math.max(0, next - this.clock()));
-        }
+        const next = this.store.nextMemoryExtractionWakeAt();
+        if (next) this.#wake(Math.max(0, Date.parse(next) - this.clock()));
       }
     }
   }
