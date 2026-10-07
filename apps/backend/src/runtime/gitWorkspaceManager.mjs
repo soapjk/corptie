@@ -541,6 +541,65 @@ export class GitWorkspaceManager {
     return null;
   }
 
+  async recoverGitOperation(input) {
+    const path = absolutePath(input.path);
+    const requestedAction = String(input.action ?? "").trim();
+    if (!["continue", "abort"].includes(requestedAction)) {
+      throw integrationGitError("GIT_OPERATION_ACTION_INVALID", "Choose continue or abort for the Git operation.");
+    }
+    const operation = await this.integrationOperationState(path);
+    if (!operation) {
+      throw integrationGitError("GIT_OPERATION_NOT_FOUND", "The Git operation has already finished or was aborted.");
+    }
+    const expectedOperation = String(input.expectedOperation ?? "").trim();
+    if (expectedOperation && operation !== expectedOperation) {
+      throw integrationGitError(
+        "GIT_OPERATION_CHANGED",
+        `The Git operation changed from ${expectedOperation} to ${operation}. Refresh before acting.`
+      );
+    }
+    const headBefore = (await this.gitOutput(path, ["rev-parse", "--verify", "HEAD"])).trim();
+    const expectedHead = String(input.expectedHead ?? "").trim();
+    if (expectedHead && headBefore !== expectedHead) {
+      throw integrationGitError("GIT_OPERATION_CHANGED", "HEAD changed after this Git operation was displayed. Refresh before acting.");
+    }
+    const conflicts = (await this.gitOutput(path, ["diff", "--name-only", "--diff-filter=U"]))
+      .split(/\r?\n/u).map((value) => value.trim()).filter(Boolean);
+    if (requestedAction === "continue" && conflicts.length > 0) {
+      const error = integrationGitError(
+        "GIT_OPERATION_HAS_CONFLICTS",
+        `Resolve and stage the remaining conflicts before continuing: ${conflicts.join(", ")}`
+      );
+      error.conflictFiles = conflicts;
+      throw error;
+    }
+    const command = operation === "cherry_pick" ? "cherry-pick" : operation;
+    if (requestedAction === "continue") await this.ensureCommitGate?.(path);
+    const repositoryId = input.repositoryId ?? this.#repositoryIdForPath(path);
+    if (repositoryId) this.invalidateInspectionCache(repositoryId, `git_${operation}_${requestedAction}`);
+    try {
+      await this.execFile("git", ["-C", path, command, `--${requestedAction}`], {
+        encoding: "utf8",
+        maxBuffer: 4 * 1024 * 1024,
+        env: { ...process.env, GIT_EDITOR: "true", GIT_SEQUENCE_EDITOR: "true" }
+      });
+    } catch (error) {
+      throw integrationGitError(
+        requestedAction === "continue" ? "GIT_OPERATION_CONTINUE_FAILED" : "GIT_OPERATION_ABORT_FAILED",
+        safeGitError(error, `Could not ${requestedAction} the ${operation} operation`)
+      );
+    } finally {
+      if (repositoryId) this.invalidateInspectionCache(repositoryId, `git_${operation}_${requestedAction}_completed`);
+    }
+    return {
+      action: requestedAction,
+      operation,
+      headBefore,
+      headAfter: (await this.gitOutput(path, ["rev-parse", "--verify", "HEAD"])).trim(),
+      remainingOperation: await this.integrationOperationState(path)
+    };
+  }
+
   async commitIntegrationChanges(input) {
     const legacyHookRepair = await this.repairLegacyArtifactHookPollution(input.path);
     const currentHead = (await this.gitOutput(input.path, ["rev-parse", "--verify", "HEAD"])).trim();

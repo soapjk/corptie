@@ -128,6 +128,13 @@ struct WorktreeNavigationTaskTrigger: Equatable {
     }
 }
 
+private struct PendingGitOperationAction: Identifiable {
+    let worktree: ManagedWorktree
+    let action: String
+
+    var id: String { "\(worktree.worktreeId):\(action)" }
+}
+
 struct WorktreeManagementView: View {
     @EnvironmentObject private var router: AppTabRouter
     @EnvironmentObject private var sidebarState: TabSidebarState
@@ -144,6 +151,8 @@ struct WorktreeManagementView: View {
     @State private var selectedWorktreeIds: [String] = []
     @State private var batchOperationDraft: WorktreeBatchOperationDraft?
     @State private var showingCommitPolicyResolution = false
+    @State private var pendingGitOperationAction: PendingGitOperationAction?
+    @State private var showingIntegrationCancellation = false
 
     var body: some View {
         NavigationSplitView(columnVisibility: $sidebarState.visibility) {
@@ -236,6 +245,47 @@ struct WorktreeManagementView: View {
             Button(L10n("Cancel"), role: .cancel) {}
         } message: {
             Text(L10n("This fast-forwards an already integrated Worktree to the current main revision. Uncommitted or unmerged changes are never overwritten."))
+        }
+        .confirmationDialog(
+            L10n("Update this Git operation?"),
+            isPresented: Binding(
+                get: { pendingGitOperationAction != nil },
+                set: { if !$0 { pendingGitOperationAction = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingGitOperationAction
+        ) { request in
+            Button(
+                request.action == "continue" ? L10n("Continue Git Operation") : L10n("Abort Git Operation"),
+                role: request.action == "abort" ? .destructive : nil
+            ) {
+                pendingGitOperationAction = nil
+                Task { _ = await client.handleGitOperation(request.action, for: request.worktree) }
+            }
+            Button(L10n("Cancel"), role: .cancel) { pendingGitOperationAction = nil }
+        } message: { request in
+            Text(request.action == "continue"
+                ? L10nFormat(
+                    "Corptie will continue the %@ operation only if the displayed HEAD and operation still match. Unresolved conflicts must be staged first.",
+                    localizedGitOperation(request.worktree.operationState ?? "")
+                )
+                : L10nFormat(
+                    "Git will abort the %@ operation in %@. Changes created by that operation may be discarded; Corptie will refuse if the displayed repository state is stale.",
+                    localizedGitOperation(request.worktree.operationState ?? ""),
+                    request.worktree.branchName ?? request.worktree.path
+                ))
+        }
+        .confirmationDialog(
+            L10n("Cancel this Work merge?"),
+            isPresented: $showingIntegrationCancellation,
+            titleVisibility: .visible
+        ) {
+            Button(L10n("Cancel Work Merge"), role: .destructive) {
+                Task { await client.cancelIntegration() }
+            }
+            Button(L10n("Keep Running"), role: .cancel) {}
+        } message: {
+            Text(L10n("Corptie will stop at a safe boundary and preserve completed commits and unresolved repository state. You can refresh and start a new merge plan afterward."))
         }
         .confirmationDialog(
             L10n("Delete this Worktree?"),
@@ -578,6 +628,31 @@ struct WorktreeManagementView: View {
                             )
                             .help(worktreePushExplanation(worktree))
                             .accessibilityIdentifier("worktree.push-github.\(worktree.worktreeId)")
+                            if worktree.operationState != nil {
+                                Button {
+                                    pendingGitOperationAction = PendingGitOperationAction(
+                                        worktree: worktree,
+                                        action: "continue"
+                                    )
+                                } label: {
+                                    Label(L10n("Continue Git Operation"), systemImage: "play.fill")
+                                }
+                                .disabled(client.isMutating || !worktree.conflictFiles.isEmpty)
+                                .help(worktree.conflictFiles.isEmpty
+                                    ? L10n("Continue the current Git operation after validating its live state.")
+                                    : L10n("Resolve and stage all conflicts before continuing."))
+                                .accessibilityIdentifier("worktree.git-operation.continue.\(worktree.worktreeId)")
+                                Button(role: .destructive) {
+                                    pendingGitOperationAction = PendingGitOperationAction(
+                                        worktree: worktree,
+                                        action: "abort"
+                                    )
+                                } label: {
+                                    Label(L10n("Abort Git Operation"), systemImage: "xmark.circle")
+                                }
+                                .disabled(client.isMutating)
+                                .accessibilityIdentifier("worktree.git-operation.abort.\(worktree.worktreeId)")
+                            }
                             if !worktree.isMain, (worktree.behindMain ?? 0) > 0 {
                                 Button {
                                     showingSynchronizationConfirmation = true
@@ -823,7 +898,7 @@ struct WorktreeManagementView: View {
                 }
                 if job.canCancel {
                     Button(L10n("Cancel"), role: .destructive) {
-                        Task { await client.cancelIntegration() }
+                        showingIntegrationCancellation = true
                     }
                     .controlSize(.small)
                     .disabled(client.isMutating)
@@ -831,6 +906,15 @@ struct WorktreeManagementView: View {
                 }
             }
             ProgressView(value: job.progress.fraction)
+            if job.status == "cancellation_requested" {
+                Text(L10n("Cancellation requested. Corptie is stopping at the next safe boundary; repository changes are preserved."))
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if job.isActive {
+                Text(L10n("This Work merge is active. You can leave it running, or cancel it safely with the Cancel button above."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             if let current = job.currentWorktreeId,
                let item = job.plan.items.first(where: { $0.worktreeId == current }) {
                 Text(item.branchName ?? item.path).font(.caption).foregroundStyle(.secondary)

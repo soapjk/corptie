@@ -172,6 +172,7 @@ export function createWorktreeIntegrationServices({
   const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
     store,
     inspectGitHubPushStatus: (input) => gitHubPushes.branchStatus(input),
+    recoverGitOperation: (input) => gitWorkspaces.recoverGitOperation(input),
     inspectRepositorySummary: async (repositoryId, options = {}) => {
       const path = store.resolveWorkspacePath(repositoryId);
       if (!path) {

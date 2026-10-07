@@ -28,6 +28,7 @@ export class WorktreeIntegrationJobService {
     this.inspectRepository = options.inspectRepository;
     this.inspectRepositorySummary = options.inspectRepositorySummary ?? options.inspectRepository;
     this.inspectGitHubPushStatus = options.inspectGitHubPushStatus ?? null;
+    this.recoverGitOperation = options.recoverGitOperation;
     this.commitChanges = options.commitChanges;
     this.inspectCommitPolicyFiles = options.inspectCommitPolicyFiles;
     this.ignoreCommitPolicyFile = options.ignoreCommitPolicyFile;
@@ -67,6 +68,7 @@ export class WorktreeIntegrationJobService {
       "deleteCommitPolicyFile",
       "convertCommitPolicyFileToArtifact",
       "allowCommitPolicyFileTracking",
+      "recoverGitOperation",
       "mergeSource",
       "abortMerge",
       "prepareConflictResolution",
@@ -130,6 +132,54 @@ export class WorktreeIntegrationJobService {
       worktreeId: worktree.worktreeId,
       gitHubPush: await this.#gitHubPushStatus(worktree)
     };
+  }
+
+  async handleWorktreeGitOperation(repositoryId, worktreeId, input = {}) {
+    const repository = this.#requireRepository(repositoryId);
+    const inspection = await this.inspectRepository(repository.id, { forceFresh: true });
+    const worktree = inspection.worktrees.find((entry) => entry.worktreeId === worktreeId);
+    if (!worktree) {
+      throw new WorktreeIntegrationJobError("WORKTREE_NOT_FOUND", "The selected Worktree no longer exists.", 404);
+    }
+    if (worktree.availability !== "available") {
+      throw new WorktreeIntegrationJobError("WORKTREE_UNAVAILABLE", "The selected Worktree is unavailable.", 409);
+    }
+    if (!worktree.operationState) {
+      throw new WorktreeIntegrationJobError(
+        "GIT_OPERATION_NOT_FOUND",
+        "The Git operation has already finished or was aborted. Refreshing will clear this state.",
+        409
+      );
+    }
+    const action = String(input.action ?? "").trim();
+    const expectedOperation = String(input.expectedOperation ?? "").trim();
+    if (!["continue", "abort"].includes(action)) {
+      throw new WorktreeIntegrationJobError("GIT_OPERATION_ACTION_INVALID", "Choose continue or abort.", 400);
+    }
+    if (!expectedOperation || expectedOperation !== worktree.operationState) {
+      throw new WorktreeIntegrationJobError(
+        "GIT_OPERATION_CHANGED",
+        "The Git operation changed after it was displayed. Refresh before acting.",
+        409
+      );
+    }
+    try {
+      return await this.recoverGitOperation({
+        repositoryId: repository.id,
+        path: worktree.path,
+        action,
+        expectedOperation,
+        expectedHead: input.expectedHead
+      });
+    } catch (error) {
+      if (error instanceof WorktreeIntegrationJobError) throw error;
+      throw new WorktreeIntegrationJobError(
+        error?.code ?? "GIT_OPERATION_RECOVERY_FAILED",
+        error?.message ?? "The Git operation could not be updated.",
+        409,
+        { conflictFiles: error?.conflictFiles }
+      );
+    }
   }
 
   async deleteWorktree(repositoryId, worktreeId) {
