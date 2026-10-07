@@ -2,14 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createCodexBackgroundOperations } from "../src/adapters/codexBackgroundOperations.mjs";
 
-function fixture({ complete = true } = {}) {
+function fixture({ complete = true, config = { mcp_servers: {} } } = {}) {
   const calls = [];
   const notifications = [];
   const operations = createCodexBackgroundOperations({
     initialize: async () => { calls.push(["initialize"]); },
     request: async (method, params) => {
       calls.push([method, params]);
-      if (method === "config/read") return { config: { mcp_servers: {} } };
+      if (method === "config/read") return { config };
       return {};
     },
     startThread: async (options) => {
@@ -29,8 +29,7 @@ function fixture({ complete = true } = {}) {
     latestAgentMessageText: () => "answer",
     notificationCount: () => notifications.length,
     notificationsSince: (index) => notifications.slice(index),
-    liveThreadCount: () => 0,
-    runtimeUserAgent: () => "corptie/0.155.1"
+    liveThreadCount: () => 0
   });
   return { operations, calls };
 }
@@ -49,6 +48,18 @@ test("no-tools verifies configuration and unsubscribes a completed ephemeral thr
   assert.deepEqual(start.runtimeWorkspaceRoots, []);
   assert.equal(start.ephemeral, true);
   assert.equal(start.approvalPolicy, "never");
+});
+
+test("no-tools has no Codex version gate but requires readable inherited configuration", async () => {
+  const available = fixture();
+  assert.equal((await available.operations.runEphemeralPrompt({
+    executionPolicy: "no-tools", cwd: "/workspace"
+  })).text, "answer");
+  const missing = fixture({ config: null });
+  await assert.rejects(missing.operations.runEphemeralPrompt({
+    executionPolicy: "no-tools", cwd: "/workspace"
+  }), { code: "BACKGROUND_NO_TOOLS_RUNTIME_UNVERIFIED" });
+  assert.deepEqual(missing.calls.map(([method]) => method), ["initialize", "config/read"]);
 });
 
 test("no-tools timeout interrupts the active turn before unsubscribing", async () => {

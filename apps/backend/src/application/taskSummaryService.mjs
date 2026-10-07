@@ -250,8 +250,8 @@ export class TaskSummaryService {
     } catch (error) {
       if (error.code === "BACKGROUND_NO_TOOLS_RUNTIME_UNVERIFIED"
         && selectedProviderId === this.configuredProviderId()) {
-        // A version mismatch is not a transient generation error. Do not keep
-        // trying on every message; re-evaluate after a Provider change/restart.
+        // Missing no-tools configuration is not a transient generation error.
+        // Re-evaluate after a Provider change or restart.
         this.unverifiedRuntimeProvider = this.configuredProviderId();
         if (this.repository.get(claim.taskID)?.generation === claim.generation) {
           this.repository.block(claim.taskID, error.code);

@@ -1,12 +1,12 @@
 import { defaultWorkspacePath } from "../utils/workspacePaths.mjs";
-import { assertCodexNoToolsRuntime, codexNoToolsConfig } from "./codexNoToolsPolicy.mjs";
+import { codexNoToolsConfig } from "./codexNoToolsPolicy.mjs";
 
 // Background-only workflows use adapter ports; they never publish an ordinary
 // user conversation or bypass the adapter's execution-policy checks.
 export function createCodexBackgroundOperations({
   initialize, request, startThread, startTurn, unsubscribeThread, deleteThread,
   latestAgentMessageText, notificationCount, notificationsSince,
-  liveThreadCount, runtimeUserAgent
+  liveThreadCount
 }) {
   async function runChoiceParser(options = {}) {
     const timeoutMs = options.timeoutMs ?? 30000;
@@ -81,7 +81,6 @@ export function createCodexBackgroundOperations({
         throw Object.assign(new Error("No-tools background requests must be read-only."), { code: "CAPABILITY_UNSUPPORTED" });
       }
       await initialize();
-      assertCodexNoToolsRuntime(runtimeUserAgent());
       const configuration = await request("config/read", { includeLayers: false,
         cwd: options.cwd ?? defaultWorkspacePath() });
       if (!configuration?.config || typeof configuration.config !== "object") {
