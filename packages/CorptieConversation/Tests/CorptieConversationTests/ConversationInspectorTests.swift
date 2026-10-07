@@ -151,6 +151,10 @@ struct ConversationInspectorTests {
         #expect(source.contains(".accessibilityIdentifier(\"navigation-tab-capsule\")"))
         #expect(source.contains(".accessibilityIdentifier(item.accessibilityID)"))
         #expect(source.contains(".accessibilityValue(selected ? \"selected\" : \"not-selected\")"))
+        #expect(source.contains(".buttonStyle(PlatformTabButtonStyle())"))
+        #expect(source.contains("@Environment(\\.accessibilityReduceMotion)"))
+        #expect(source.contains(".scaleEffect(configuration.isPressed && !reduceMotion ? 0.94 : 1)"))
+        #expect(source.contains(".opacity(configuration.isPressed ? 0.76 : 1)"))
     }
 }
 

@@ -1,5 +1,21 @@
 import SwiftUI
 
+/// A compositor-only press response shared by every top-level navigation tab.
+/// Keeping it in the shared package makes macOS, iPad and compact mobile tabs
+/// feel identical without introducing timers or page-level animation state.
+public struct PlatformTabButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    public init() {}
+
+    public func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.94 : 1)
+            .opacity(configuration.isPressed ? 0.76 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
 public struct PlatformNavigationItem: Identifiable {
     public let id: String
     public let title: String
@@ -64,7 +80,7 @@ public struct PlatformNavigationRail: View {
                         }
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PlatformTabButtonStyle())
                     .help(item.title)
                     .accessibilityLabel(item.title)
                     .accessibilityAddTraits(selected ? .isSelected : [])
