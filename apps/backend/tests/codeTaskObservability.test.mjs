@@ -88,6 +88,10 @@ test("production Provider ingestion persists queryable lifecycle and Tool spans 
     assert.equal(result.observability.report.wallPartition.attributedUnionMs, 80);
     assert.equal(result.observability.report.wallPartition.unattributedMs, 20);
     assert.equal(result.observability.report.wallPartition.overlapMs, 50);
+    assert.deepEqual(Object.fromEntries(result.observability.report.timeBreakdown.categories.map(({ id, durationMs }) => [id, durationMs])),
+      { unattributed: 20, model: 30, overlap: 50 });
+    assert.equal(result.observability.report.timeBreakdown.totalMs, 100);
+    assert.deepEqual(result.observability.report.timeBreakdown.toolOperations, []);
     assert.equal(result.observability.report.inclusive["tool.execute"], 50);
     assert.equal(result.observability.report.inclusive["provider.model_sampling"], 80);
     assert.equal(result.observability.report.completeness.state, "complete");
@@ -104,6 +108,7 @@ test("production Provider ingestion persists queryable lifecycle and Tool spans 
     const httpSummary = JSON.parse(httpResponse.body).summary;
     assert.equal(httpSummary.identity.turnExecutionId, result.observability.report.identity.turnExecutionId);
     assert.equal(httpSummary.inclusive["tool.execute"], 50);
+    assert.deepEqual(httpSummary.timeBreakdown, result.observability.report.timeBreakdown);
     assert.equal(f.store.selectOne("SELECT finalized FROM observation_turn_summaries WHERE turn_execution_id = ?",
       [result.observability.report.identity.turnExecutionId]).finalized, 1);
 
@@ -183,6 +188,11 @@ test("wall partition uses interval union, closes exactly, and diagnoses legal ov
     assert.equal(report.wall.wallClockMs, report.wallPartition.attributedUnionMs + report.wallPartition.unattributedMs);
     assert.equal(report.inclusive["process.test"], 70);
     assert.equal(report.inclusive["process.build"], 70);
+    assert.deepEqual(Object.fromEntries(report.timeBreakdown.categories.map(({ id, durationMs }) => [id, durationMs])),
+      { tool: 90, unattributed: 10 });
+    assert.deepEqual(Object.fromEntries(report.timeBreakdown.toolOperations.map(({ id, durationMs }) => [id, durationMs])),
+      { test: 20, parallel: 50, build: 20 });
+    assert.equal(report.timeBreakdown.categories.reduce((sum, category) => sum + category.durationMs, 0), report.timeBreakdown.totalMs);
     assert.ok(report.diagnostics.some((item) => item.code === "INTERVAL_OVERLAP" && item.legalParallel));
     assert.equal(report.completeness.state, "complete");
   } finally { await f.close(); }
