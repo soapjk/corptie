@@ -1440,6 +1440,9 @@ export class WorktreeIntegrationJobService {
               await this.#pauseForCommitPolicy(job, commitInputItem, error);
               return;
             }
+            if (["INTEGRATION_STAGED_TREE_REJECTED", "INTEGRATION_INDEX_CHANGED"].includes(error?.code)) {
+              throw error;
+            }
             if (!isRecoverableConflictFallbackError(error) || attempt + 1 >= this.maxConflictFallbackAttempts) {
               throw conflictFallbackFailure(error, "worktree_commit", attempt + 1);
             }
@@ -2597,5 +2600,47 @@ function legacyCommitPolicyPaths(errorMessage) {
 
 export function presentJob(job) {
   if (!job) return null;
-  return { ...job, ...job.details, details: undefined };
+  const presented = { ...job, ...job.details, details: undefined };
+  const availableActions = integrationJobAvailableActions(presented);
+  return {
+    ...presented,
+    availableActions,
+    recovery: integrationJobRecovery(presented, availableActions)
+  };
+}
+
+function integrationJobAvailableActions(job) {
+  if (job.status === "completed") return [];
+  if (job.status === "canceled") return ["repreflight"];
+  if (job.status === "awaiting_confirmation") return ["confirm", "cancel"];
+  if (["queued", "running", "cancellation_requested", "replanning"].includes(job.status)) {
+    return ["cancel"];
+  }
+  if (job.status !== "paused") return [];
+  if (job.conflictResolution?.status === "running") return ["open_agent_session"];
+  if (job.commitPolicyBlocker || legacyCommitPolicyPaths(job.error).length > 0) {
+    return ["resolve_commit_policy", "cancel"];
+  }
+  const lastCode = [...(job.audit ?? [])].reverse().find(event => event.code)?.code;
+  if (job.phase === "plan_stale" || new Set([
+    "PLAN_STALE", "MAIN_HEAD_CHANGED", "MAIN_DIRTY", "WORKTREE_HEAD_CHANGED",
+    "WORKTREE_CHANGES_CHANGED", "UNRELATED_MERGE_IN_PROGRESS", "INTEGRATION_INDEX_CHANGED"
+  ]).has(lastCode)) return ["repreflight", "cancel"];
+  const current = (job.plan?.items ?? []).find(item => item.worktreeId === job.currentWorktreeId);
+  if (job.phase === "conflict" || current?.mergeStatus === "conflict") {
+    return ["resolve_conflict_with_agent", "retry", "cancel"];
+  }
+  return ["retry", "cancel"];
+}
+
+function integrationJobRecovery(job, availableActions) {
+  if (!["paused", "canceled"].includes(job.status)) return null;
+  const action = availableActions[0] ?? null;
+  const messages = {
+    resolve_commit_policy: "Choose an action for every blocked Markdown file, then continue.",
+    repreflight: "Repository state changed. Generate and review a fresh integration plan.",
+    resolve_conflict_with_agent: "Resolve the preserved conflict with an Agent or manually, then retry.",
+    retry: "The operation is paused and can be retried from its preserved state."
+  };
+  return { kind: action, message: messages[action] ?? "No automatic recovery action is available." };
 }

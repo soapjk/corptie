@@ -32,6 +32,7 @@ export class ArtifactService {
     this.store = options.store;
     this.clock = options.clock ?? (() => new Date().toISOString());
     this.idFactory = options.idFactory ?? randomUUID;
+    this.ensureCommitHook = options.ensureCommitHook ?? ensureArtifactCommitHook;
     this.contentRoot = options.contentRoot ?? null;
     this.sessionAuthorizationResolver = options.sessionAuthorizationResolver
       ?? new SessionAuthorizationResolver({ store: this.store });
@@ -1325,7 +1326,7 @@ export class ArtifactService {
     this.#readableArtifact(current, artifactId);
     const authorization = authorize();
     const session = this.store.getSession(current.sessionId);
-    await ensureArtifactCommitHook(session?.external?.cwd, { dbPath: this.store.dbPath });
+    await this.ensureCommitHook(session?.external?.cwd, { dbPath: this.store.dbPath });
     this.context(contextInput);
     this.#readableArtifact(current, artifactId);
     authorize();
@@ -1381,7 +1382,7 @@ export class ArtifactService {
       || sha256(repositoryContent) !== version.contentHash) {
       throw artifactError("ARTIFACT_VERSION_HASH_MISMATCH", "The repository file no longer matches the approved Artifact version.", 409);
     }
-    await ensureArtifactCommitHook(repositoryPath, { dbPath: this.store.dbPath });
+    await this.ensureCommitHook(repositoryPath, { dbPath: this.store.dbPath });
     const promotionId = `artifact_promotion:worktree:${sha256(Buffer.from(decisionId, "utf8"))}`;
     const existing = this.store.selectOne(
       "SELECT * FROM artifact_repository_promotions WHERE promotion_id=?",

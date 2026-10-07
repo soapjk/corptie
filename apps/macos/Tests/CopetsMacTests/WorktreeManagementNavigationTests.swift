@@ -489,6 +489,11 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(models.contains("cancellation_requested"))
         XCTAssertTrue(models.contains("replanning"))
         XCTAssertTrue(models.contains("phase == \"plan_stale\""))
+        XCTAssertTrue(models.contains("let availableActions: [String]?"))
+        XCTAssertTrue(models.contains("func supports(_ action: String) -> Bool"))
+        XCTAssertTrue(view.contains("job.supports(\"repreflight\")"))
+        XCTAssertTrue(view.contains("worktree.integrate.repreflight"))
+        XCTAssertTrue(client.contains("func finishJobForFreshPreflight() async -> Bool"))
     }
 
     func testMergeConflictCanLaunchAndOpenAProviderNeutralAgentSession() throws {

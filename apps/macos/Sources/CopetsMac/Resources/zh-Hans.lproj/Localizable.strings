@@ -1596,3 +1596,9 @@
 "Other recall candidates" = "其他召回候选";
 "Showing first %d of %d recall candidates." = "显示前 %d 条，共 %d 条召回候选。";
 "Current memories" = "当前记忆";
+"Generate New Merge Plan" = "生成新的合并计划";
+"The integration state changed. Generate a new merge plan." = "仓库状态已变化，请生成新的合并计划。";
+"Choose an action for every blocked Markdown file, then continue." = "请为每个被阻断的 Markdown 文件选择操作，然后继续。";
+"Repository state changed. Generate and review a fresh integration plan." = "仓库状态已变化，请生成并检查新的合并计划。";
+"Resolve the preserved conflict with an Agent or manually, then retry." = "请让 Agent 或手动处理已保留的冲突，然后重试。";
+"The operation is paused and can be retried from its preserved state." = "操作已暂停，可以从保留的状态继续重试。";
