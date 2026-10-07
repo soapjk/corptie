@@ -5,6 +5,16 @@ import CorptieClientCore
 
 @Suite(.serialized) @MainActor
 struct PadControlTests {
+    @Test func workOutlineUsesTheSharedPlatformToolbar() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/PadWorkOutline.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        #expect(source.contains("PlatformWorkOutlineToolbar("))
+        #expect(source.contains("PlatformWorkOutlineToolbarGlyph("))
+        #expect(source.contains(".platformWorkOutlineToolbarControl()"))
+        #expect(!source.contains("PadOutlineToolbarControlStyle"))
+    }
+
     @Test func compactTabsUseTheSharedPressAnimation() throws {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("Sources/PadAppShell.swift")

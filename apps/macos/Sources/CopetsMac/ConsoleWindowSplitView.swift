@@ -175,7 +175,7 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
     }
 
     private var widthKey: String {
-        mode == .taskCards ? "console.nativeSidebar.cardsWidth" : "console.nativeSidebar.listWidth"
+        mode == .taskCards ? "console.nativeSidebar.cardsWidth" : "console.nativeSidebar.listWidth.v2"
     }
 
     private func restoreWidth() {
@@ -183,7 +183,7 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
         saveWork?.cancel()
         isRestoring = true
         let stored = CorptieAppEnvironment.userDefaults.double(forKey: widthKey)
-        let preferred = stored > 0 ? stored : (mode == .taskCards ? 540 : 364)
+        let preferred = stored > 0 ? stored : (mode == .taskCards ? 540 : PlatformWorkOutlineLayout.columnWidth)
         let maximum = max(284, splitView.bounds.width - 581)
         splitView.setPosition(min(max(284, preferred), maximum), ofDividerAt: 0)
         isRestoring = false

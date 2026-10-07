@@ -159,15 +159,17 @@ struct PadWorkOutline: View {
 
     private var outlineToolbar: some View {
         VStack(spacing: 4) {
-        HStack(spacing: 8) {
+        PlatformWorkOutlineToolbar(
+            topInset: isPhone ? 0 : PlatformWorkOutlineLayout.verticalInset
+        ) {
             Menu {
                 Picker("排序方式", selection: $sortRaw) {
                     ForEach(PadOutlineSort.allCases, id: \.rawValue) { mode in
                         Text(mode.title).tag(mode.rawValue)
                     }
                 }
-            } label: { toolbarGlyph("arrow.up.arrow.down") }
-            .modifier(PadOutlineToolbarControlStyle())
+            } label: { PlatformWorkOutlineToolbarGlyph(symbol: "arrow.up.arrow.down") }
+            .platformWorkOutlineToolbarControl()
             .accessibilityLabel("排序方式")
             .accessibilityValue(sort.title)
             .accessibilityIdentifier("work-outline-sort")
@@ -176,27 +178,33 @@ struct PadWorkOutline: View {
                     Text("Work 分组").tag("groups")
                     Text("卡片").tag("tasks")
                 }
-            } label: { toolbarGlyph(viewMode == "tasks" ? "rectangle.grid.2x2" : "rectangle.3.group") }
-            .modifier(PadOutlineToolbarControlStyle())
+            } label: {
+                PlatformWorkOutlineToolbarGlyph(
+                    symbol: viewMode == "tasks" ? "rectangle.grid.2x2" : "rectangle.3.group"
+                )
+            }
+            .platformWorkOutlineToolbarControl()
             .accessibilityLabel("切换视图")
             .accessibilityValue(viewMode == "tasks" ? "卡片" : "Work 分组")
             .accessibilityIdentifier("work-outline-view")
             Button {
                 isSearching = true
                 searchFocused = true
-            } label: { toolbarGlyph("magnifyingglass") }
-            .modifier(PadOutlineToolbarControlStyle())
+            } label: { PlatformWorkOutlineToolbarGlyph(symbol: "magnifyingglass") }
+            .platformWorkOutlineToolbarControl()
             .accessibilityLabel("搜索").accessibilityIdentifier("work-outline-search")
             Button {
                 showingArchived.toggle()
             } label: {
-                toolbarGlyph(showingArchived ? "archivebox.fill" : "archivebox",
-                             color: showingArchived ? .accentColor : .primary)
+                PlatformWorkOutlineToolbarGlyph(
+                    symbol: showingArchived ? "archivebox.fill" : "archivebox",
+                    color: showingArchived ? .accentColor : .primary
+                )
             }
-            .modifier(PadOutlineToolbarControlStyle())
+            .platformWorkOutlineToolbarControl()
             .accessibilityLabel(showingArchived ? "返回活动 Task" : "查看归档 Task")
             .accessibilityIdentifier("work-outline-archive")
-            Spacer(minLength: 0)
+        } trailing: {
             Menu {
                 Button("新增 Work", systemImage: "folder.badge.plus") { onEntityRoute(.createWork) }
                 if let work = workspace.works.first(where: { $0.id == selectedWorkID }) {
@@ -206,8 +214,8 @@ struct PadWorkOutline: View {
                     ForEach(orderedWorks) { work in Button(work.name) { createTask(work) } }
                 }
                 .disabled(orderedWorks.isEmpty)
-            } label: { toolbarGlyph("plus") }
-            .modifier(PadOutlineToolbarControlStyle())
+            } label: { PlatformWorkOutlineToolbarGlyph(symbol: "plus") }
+            .platformWorkOutlineToolbarControl()
             .disabled(entityCommands.isBusy)
             .accessibilityLabel("新增 Work 或 Task")
             .accessibilityIdentifier("work-outline-create")
@@ -227,20 +235,12 @@ struct PadWorkOutline: View {
             }
             .padding(8)
             .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, PlatformWorkOutlineLayout.horizontalInset)
+            .padding(.bottom, PlatformWorkOutlineLayout.verticalInset)
         }
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 12)
-        .padding(.top, UIDevice.current.userInterfaceIdiom == .phone ? 0 : 6)
-        .padding(.bottom, 6)
         .environment(\.layoutDirection, .leftToRight)
-    }
-
-    private func toolbarGlyph(_ symbol: String, color: Color = .primary) -> some View {
-        Image(systemName: symbol)
-            .font(.system(size: 16, weight: .medium))
-            .foregroundStyle(color)
-            .frame(width: 36, height: 36)
     }
 
     // MARK: Chat group (independent Sessions)
@@ -530,22 +530,5 @@ struct PadWorkOutline: View {
             .foregroundStyle(.secondary)
             .padding(.leading, ConsoleWorkOutlineMetrics.childIndent + 24)
             .padding(.vertical, WorkOutlineMetrics.rowPadding)
-    }
-}
-
-/// Draw outside the label so Menu and Button cannot size the glass differently.
-private struct PadOutlineToolbarControlStyle: ViewModifier {
-    func body(content: Content) -> some View {
-        content
-            .menuStyle(.borderlessButton)
-            .buttonStyle(.plain)
-            .frame(width: 44, height: 44)
-            .background {
-                Color.clear
-                    .frame(width: 36, height: 36)
-                    .padGlassSurface(in: Circle(), variant: .clear)
-                    .allowsHitTesting(false)
-            }
-            .contentShape(Rectangle())
     }
 }

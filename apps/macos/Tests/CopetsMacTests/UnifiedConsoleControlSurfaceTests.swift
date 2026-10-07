@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import CorptieConversation
 import SwiftUI
 import Testing
 @testable import CorptieMac
@@ -190,41 +191,49 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(searchPosition.lowerBound < archivePosition.lowerBound)
         #expect(archivePosition.lowerBound < createPosition.lowerBound)
         #expect(source.contains("Menu {\n            navigationModeOption(.workOutline, title: \"分组\")"))
-        #expect(source.contains(".buttonStyle(.plain)\n        .menuIndicator(.hidden)"))
+        #expect(source.contains(".platformWorkOutlineToolbarControl()\n        .menuIndicator(.hidden)"))
         #expect(source.contains(".modifier(ConsoleTopEdgeEffectModifier())"))
-        #expect(controls.contains("ConsoleWorkToolbar {"))
-        #expect(controls.contains("Spacer(minLength: ConsoleWorkToolbarMetrics.spacing)"))
+        #expect(controls.contains("PlatformWorkOutlineToolbar {"))
         #expect(!controls.contains(".padding(.top, 3)"))
-        #expect(ConsoleWorkToolbarMetrics.buttonDiameter == 36)
-        #expect(ConsoleWorkToolbarMetrics.symbolSize == 16)
-        #expect(ConsoleWorkToolbarMetrics.height == 48)
-        #expect(ConsoleWorkToolbarMetrics.minimumWidth == 220)
+        #expect(PlatformWorkOutlineLayout.controlSize == 44)
+        #expect(PlatformWorkOutlineLayout.controlSurfaceDiameter == 36)
+        #expect(PlatformWorkOutlineLayout.symbolSize == 16)
+        #expect(PlatformWorkOutlineLayout.toolbarHeight == 56)
+        #expect(PlatformWorkOutlineLayout.minimumToolbarWidth == 276)
+        #expect(PlatformWorkOutlineLayout.columnWidth == 312)
         #expect(!source.contains("ConsoleSidebarTitlebarControls("))
-        let glyph = try self.source(named: "Console/ConsoleNavigationPolicies.swift")
-        #expect(glyph.contains(".platformGlassSurface(in: Circle(), interactive: true, variant: .clear)"))
         let mobile = try self.source(named: "../../../../apps/ipad/Sources/PadWorkOutline.swift")
-        #expect(mobile.contains(".padGlassSurface(in: Circle(), variant: .clear)"))
-        #expect(mobile.contains(".frame(width: 44, height: 44)"))
+        #expect(mobile.contains("PlatformWorkOutlineToolbar("))
+        #expect(mobile.contains(".platformWorkOutlineToolbarControl()"))
+        #expect(source.contains(".platformWorkOutlineToolbarControl()"))
     }
 
     @Test @MainActor
     func workToolbarFitsNarrowSidebarWithoutShrinkingButtons() {
-        let host = NSHostingView(rootView: ConsoleWorkToolbar {
-            HStack(spacing: ConsoleWorkToolbarMetrics.spacing) {
-                ForEach(["arrow.up.arrow.down", "rectangle.3.group", "magnifyingglass", "archivebox"], id: \.self) { symbol in
-                    Button {} label: { ConsoleWorkToolbarGlyph(symbol: symbol) }.buttonStyle(.plain)
-                }
+        let host = NSHostingView(rootView: PlatformWorkOutlineToolbar {
+            ForEach(["arrow.up.arrow.down", "rectangle.3.group", "magnifyingglass", "archivebox"], id: \.self) { symbol in
+                Button {} label: { PlatformWorkOutlineToolbarGlyph(symbol: symbol) }
+                    .platformWorkOutlineToolbarControl()
             }
-            Spacer(minLength: ConsoleWorkToolbarMetrics.spacing)
-            Menu {} label: { ConsoleWorkToolbarGlyph(symbol: "plus") }
-                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
+        } trailing: {
+            Menu {} label: { PlatformWorkOutlineToolbarGlyph(symbol: "plus") }
+                .platformWorkOutlineToolbarControl()
+                .menuIndicator(.hidden)
         })
-        for width in [220.0, 300.0, 420.0] {
-            host.frame = NSRect(x: 0, y: 0, width: width, height: ConsoleWorkToolbarMetrics.height)
+        for width in [276.0, 312.0, 420.0] {
+            host.frame = NSRect(x: 0, y: 0, width: width, height: PlatformWorkOutlineLayout.toolbarHeight)
             host.layoutSubtreeIfNeeded()
-            #expect(host.fittingSize.height == ConsoleWorkToolbarMetrics.height)
+            #expect(host.fittingSize.height == PlatformWorkOutlineLayout.toolbarHeight)
             #expect(host.fittingSize.width <= width)
         }
+    }
+
+    @Test
+    func workOutlineMatchesIPadLeadingEdgeAndScrollerPlacement() throws {
+        let source = try source(named: "Console/UnifiedConsoleOutline.swift")
+        #expect(source.contains(".background(ConsoleOverlayScroller())"))
+        #expect(!source.contains("ConsoleOverlayScroller(placeOnLeadingEdge: true)"))
+        #expect(!source.contains(".contentMargins(.leading"))
     }
 
     @Test
