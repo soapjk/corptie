@@ -666,6 +666,7 @@ let platformOperationService = null;
 let toolMaterializationPort = null;
 const platformConfirmationService = new PlatformConfirmationService({ store });
 const hostToolCatalog = createHostToolCatalog({
+  mcpRegistryService, onIntegrationChanged: (type, payload) => emitEvent(type, payload),
   memoryOperationService, artifactService, callWorkspaceDynamicTool,
   validateProjectCodeHostRoute,
   getProjectCodeApplicationService: () => projectCodeApplicationService,
