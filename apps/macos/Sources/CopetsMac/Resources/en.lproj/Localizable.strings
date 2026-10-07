@@ -1190,3 +1190,9 @@
 "Other recall candidates" = "Other recall candidates";
 "Showing first %d of %d recall candidates." = "Showing first %d of %d recall candidates.";
 "Current memories" = "Current memories";
+"Generate New Merge Plan" = "Generate New Merge Plan";
+"The integration state changed. Generate a new merge plan." = "The integration state changed. Generate a new merge plan.";
+"Choose an action for every blocked Markdown file, then continue." = "Choose an action for every blocked Markdown file, then continue.";
+"Repository state changed. Generate and review a fresh integration plan." = "Repository state changed. Generate and review a fresh integration plan.";
+"Resolve the preserved conflict with an Agent or manually, then retry." = "Resolve the preserved conflict with an Agent or manually, then retry.";
+"The operation is paused and can be retried from its preserved state." = "The operation is paused and can be retried from its preserved state.";

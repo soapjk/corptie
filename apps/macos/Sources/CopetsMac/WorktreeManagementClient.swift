@@ -634,13 +634,34 @@ final class WorktreeManagementClient: ObservableObject {
     }
 
     func retryJob() async {
-        guard let job, job.status == "paused" else { return }
+        guard let job, job.status == "paused", job.supports("retry") else { return }
         await mutate {
             let envelope: WorktreeIntegrationJobEnvelope = try await self.post(
                 "worktree-management/jobs/\(job.id)/retry",
                 body: [:]
             )
             self.job = envelope.job
+        }
+    }
+
+    @discardableResult
+    func finishJobForFreshPreflight() async -> Bool {
+        guard let job, job.supports("repreflight") else { return false }
+        if job.status == "canceled" { return true }
+        isMutating = true
+        defer { isMutating = false }
+        do {
+            let envelope: WorktreeIntegrationJobEnvelope = try await post(
+                "worktree-management/jobs/\(job.id)/cancel",
+                body: ["replan": false]
+            )
+            self.job = envelope.job
+            errorMessage = nil
+            return envelope.job.status == "canceled"
+        } catch {
+            errorMessage = error.localizedDescription
+            await refreshSelected()
+            return false
         }
     }
 

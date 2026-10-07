@@ -8,6 +8,7 @@ import {
   DEFAULT_SHARED_AGENT_CONFIGURATION_PATHS,
   linkSharedAgentConfiguration
 } from "./sharedAgentConfiguration.mjs";
+import { stageValidatedIntegrationTree } from "./integrationStagedTreeValidator.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -564,11 +565,12 @@ export class GitWorkspaceManager {
     }
     try {
       if (typeof input.prepare === "function") await input.prepare();
-      await this.runGit(input.path, ["add", "--all"]);
+      await stageValidatedIntegrationTree({ cwd: input.path, execFile: this.execFile });
       await this.runGit(input.path, ["commit", "-m", input.commitMessage, "-m", marker]);
     } catch (error) {
       const policyError = artifactMarkdownPolicyError(error);
       if (policyError) throw policyError;
+      if (["INTEGRATION_STAGED_TREE_REJECTED", "INTEGRATION_INDEX_CHANGED"].includes(error?.code)) throw error;
       throw integrationGitError("WORKTREE_COMMIT_FAILED", safeGitError(error, "Could not commit Worktree changes"));
     }
     const headOid = (await this.gitOutput(input.path, ["rev-parse", "--verify", "HEAD"])).trim();
@@ -577,10 +579,14 @@ export class GitWorkspaceManager {
 
   async repairLegacyArtifactHookPollution(path) {
     const head = (await this.gitOutput(path, ["rev-parse", "--verify", "HEAD"])).trim();
-    const parents = (await this.gitOutput(path, ["show", "-s", "--format=%P", head])).trim().split(/\s+/u).filter(Boolean);
+    const introduction = (await this.gitOutput(path, [
+      "log", "--diff-filter=A", "-n", "1", "--format=%H", "--", "corptie-artifact-hooks"
+    ])).trim();
+    if (!introduction) return { repaired: false };
+    const parents = (await this.gitOutput(path, ["show", "-s", "--format=%P", introduction])).trim().split(/\s+/u).filter(Boolean);
     if (parents.length !== 1) return { repaired: false };
     const parent = parents[0];
-    const body = await this.gitOutput(path, ["show", "-s", "--format=%B", head]);
+    const body = await this.gitOutput(path, ["show", "-s", "--format=%B", introduction]);
     if (!body.startsWith("Corptie: preserve changes in ") || !body.includes("Corptie-Integration-Job:")) {
       return { repaired: false };
     }
@@ -591,10 +597,17 @@ export class GitWorkspaceManager {
       || await this.gitSucceeds(path, ["cat-file", "-e", `${parent}:info/exclude`])) {
       return { repaired: false };
     }
+    const gitmodules = await this.gitOutput(path, ["show", `${head}:.gitmodules`]).catch(() => "");
+    if ([...gitmodules.matchAll(/^\s*path\s*=\s*(.+?)\s*$/gmu)]
+      .some((match) => match[1] === "corptie-artifact-hooks")) return { repaired: false };
     const exclude = await this.gitOutput(path, ["show", `${head}:info/exclude`]).catch(() => null);
     if (exclude !== "/.corptie/\n") return { repaired: false };
     await this.runGit(path, ["rm", "--force", "--", "corptie-artifact-hooks", "info/exclude"]);
-    return { repaired: true, paths: ["corptie-artifact-hooks", "info/exclude"] };
+    return {
+      repaired: true,
+      paths: ["corptie-artifact-hooks", "info/exclude"],
+      proof: { introductionCommit: introduction, gitlinkTarget: match[1], expectedParent: parent }
+    };
   }
 
   async ignoreIntegrationMarkdownFile(input) {
