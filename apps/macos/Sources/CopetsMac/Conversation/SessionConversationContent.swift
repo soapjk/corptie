@@ -53,6 +53,7 @@ struct SessionConversationContent: View {
     let onTimelinePositionChange: (AppKitChatTimelinePosition) -> Void
     let showsHeader: Bool
     let allowsModelSwitch: Bool
+    let topChromeClearance: CGFloat
     let presentation: SessionConversationPresentation
 
     init(
@@ -64,6 +65,7 @@ struct SessionConversationContent: View {
         onTimelinePositionChange: @escaping (AppKitChatTimelinePosition) -> Void = { _ in },
         showsHeader: Bool = true,
         allowsModelSwitch: Bool = true,
+        topChromeClearance: CGFloat = 0,
         presentation: SessionConversationPresentation = .standard
     ) {
         self.sessionId = sessionId
@@ -77,6 +79,7 @@ struct SessionConversationContent: View {
         self.onTimelinePositionChange = onTimelinePositionChange
         self.showsHeader = showsHeader
         self.allowsModelSwitch = allowsModelSwitch
+        self.topChromeClearance = topChromeClearance
         self.presentation = presentation
         let presentationState = presentationCache.state(for: sessionId)
         _presentationState = ObservedObject(wrappedValue: presentationState)
@@ -423,7 +426,7 @@ struct SessionConversationContent: View {
                 scrollToTurnID: scrollTargetTurnID,
                 scrollToTurnRevision: scrollTargetTurnRevision,
                 historyRequestEpoch: historyRequestEpoch,
-                topClearance: headerClearance,
+                topClearance: max(headerClearance, topChromeClearance),
                 bottomClearance: composerClearance
             )
             .sheet(item: $pendingFork) { selection in

@@ -43,6 +43,34 @@ struct DetachedChatWindowTests {
     }
 
     @Test
+    func taskAndChatMenusOfferTheSameSessionScopedWindowToggle() throws {
+        let taskList = try contents(of: "Console/UnifiedConsoleWorkTaskList.swift")
+        let chatMenu = try contents(of: "Floating/SessionList/SessionListRows.swift")
+        let manager = try contents(of: "DetachedChatWindowManager.swift")
+
+        #expect(taskList.contains("DetachedChatWindowMenuButton(session: session)"))
+        #expect(chatMenu.contains("DetachedChatWindowMenuButton(session: session)"))
+        #expect(manager.contains("func isOpen(sessionID: String) -> Bool"))
+        #expect(manager.contains("manager.toggle(session: session)"))
+        #expect(manager.contains("Close Floating Window"))
+        #expect(manager.contains("Open Floating Window"))
+    }
+
+    @Test
+    func detachedHeaderUsesAnIndependentWorkIdentityGlassCapsule() throws {
+        let source = try contents(of: "DetachedChatWindowManager.swift")
+
+        #expect(source.contains("DetachedChatWindowTitle(session: session)"))
+        #expect(source.contains("ObjectiveAvatarView(objectiveID: work.id"))
+        #expect(source.contains("Text(work.name)"))
+        #expect(source.contains(".platformGlassSurface(in: Capsule(), variant: .clear)"))
+        #expect(!source.contains(".background(.regularMaterial)"))
+        #expect(source.contains("PersistentRedWindowCloseButton(action: close)"))
+        #expect(source.contains("ZStack(alignment: .top)"))
+        #expect(source.contains("topChromeClearance: 62"))
+    }
+
+    @Test
     func detachedWindowPresetsUseTheCurrentScreensVisibleFrame() {
         let screen = NSRect(x: 100, y: 50, width: 3_200, height: 1_800)
         let minimum = NSSize(width: 220, height: 420)

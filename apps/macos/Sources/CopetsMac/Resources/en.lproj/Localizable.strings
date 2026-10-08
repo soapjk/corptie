@@ -1272,3 +1272,7 @@
 "Choose which operations and task-state changes should notify you." = "Choose which operations and task-state changes should notify you.";
 
 "Worktree merge" = "Worktree merge";
+
+"Open Floating Window" = "Open Floating Window";
+
+"Close Floating Window" = "Close Floating Window";

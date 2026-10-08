@@ -2,13 +2,25 @@ import AppKit
 import SwiftUI
 
 @MainActor
-final class DetachedChatWindowManager {
+final class DetachedChatWindowManager: ObservableObject {
     static let shared = DetachedChatWindowManager()
 
     private var controllers: [String: DetachedChatWindowController] = [:]
 
     var hasKeyWindow: Bool {
         controllers.values.contains(where: \.isKeyWindow)
+    }
+
+    func isOpen(sessionID: String) -> Bool {
+        controllers[sessionID] != nil
+    }
+
+    func toggle(session: TaskSession) {
+        if isOpen(sessionID: session.id) {
+            close(sessionID: session.id)
+        } else {
+            show(session: session)
+        }
     }
 
     func show(session: TaskSession) {
@@ -21,16 +33,25 @@ final class DetachedChatWindowManager {
             sessionID: session.id,
             cascadeIndex: controllers.count,
             close: { [weak self] sessionID in
-                self?.controllers[sessionID] = nil
+                self?.removeController(sessionID: sessionID)
             }
         )
+        objectWillChange.send()
         controllers[session.id] = controller
         controller.show()
     }
 
     func close(sessionID: String) {
+        guard controllers[sessionID] != nil else { return }
+        objectWillChange.send()
         guard let controller = controllers.removeValue(forKey: sessionID) else { return }
         controller.close()
+    }
+
+    private func removeController(sessionID: String) {
+        guard controllers[sessionID] != nil else { return }
+        objectWillChange.send()
+        controllers[sessionID] = nil
     }
 
     func returnToMain(sessionID: String) {
@@ -43,9 +64,29 @@ final class DetachedChatWindowManager {
     }
 
     func closeAll() {
+        guard !controllers.isEmpty else { return }
+        objectWillChange.send()
         let openControllers = Array(controllers.values)
         controllers.removeAll()
         openControllers.forEach { $0.close() }
+    }
+}
+
+struct DetachedChatWindowMenuButton: View {
+    @ObservedObject private var manager = DetachedChatWindowManager.shared
+    let session: TaskSession?
+
+    var body: some View {
+        let isOpen = session.map { manager.isOpen(sessionID: $0.id) } ?? false
+        Button {
+            guard let session else { return }
+            manager.toggle(session: session)
+        } label: {
+            Label(isOpen ? L10n("Close Floating Window") : L10n("Open Floating Window"),
+                  systemImage: isOpen ? "macwindow" : "macwindow.on.rectangle")
+        }
+        .disabled(session == nil)
+        .accessibilityIdentifier("session.context.floating-window")
     }
 }
 
@@ -312,60 +353,7 @@ private struct DetachedChatWindowView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                PersistentRedWindowCloseButton(action: close)
-
-                DetachedWindowTrafficLightButton(
-                    color: Color(red: 1, green: 0.741, blue: 0.180),
-                    systemImage: "arrow.uturn.backward",
-                    help: L10n("Return to main window"),
-                    action: returnToMain
-                )
-
-                DetachedWindowTrafficLightButton(
-                    color: Color(red: 0.188, green: 0.784, blue: 0.251),
-                    systemImage: "rectangle.3.group",
-                    help: L10n("Window size and position"),
-                    action: { showsWindowPresets.toggle() }
-                )
-                .popover(isPresented: $showsWindowPresets, arrowEdge: .bottom) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(DetachedChatWindowPreset.allCases, id: \.self) { preset in
-                            Button {
-                                showsWindowPresets = false
-                                applyWindowPreset(preset)
-                            } label: {
-                                Label(preset.title, systemImage: preset.systemImage)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 6)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(6)
-                    .frame(minWidth: 180)
-                }
-
-                ZStack(alignment: .leading) {
-                    DetachedChatWindowDragArea()
-
-                    Text(session?.title ?? L10n("Chat"))
-                        .font(.system(size: 12, weight: .semibold))
-                        .lineLimit(1)
-                        .allowsHitTesting(false)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-
-            }
-            .padding(.horizontal, 10)
-            .frame(height: 38)
-            .background(.regularMaterial)
-
-            Divider()
-
+        ZStack(alignment: .top) {
             if let session {
                 DetailView(
                     sessionId: session.id,
@@ -373,7 +361,8 @@ private struct DetachedChatWindowView: View {
                     composerDraftRepository: draftRepository,
                     initialTimelinePosition: SessionViewportController.shared.position(for: session.id),
                     showsHeader: false,
-                    allowsModelSwitch: false
+                    allowsModelSwitch: false,
+                    topChromeClearance: 62
                 )
                 .padding(10)
             } else {
@@ -382,6 +371,55 @@ private struct DetachedChatWindowView: View {
                     systemImage: "bubble.left.and.exclamationmark.bubble.right"
                 )
             }
+
+            HStack(alignment: .top, spacing: 8) {
+                HStack(spacing: 8) {
+                    PersistentRedWindowCloseButton(action: close)
+
+                    DetachedWindowTrafficLightButton(
+                        color: Color(red: 1, green: 0.741, blue: 0.180),
+                        systemImage: "arrow.uturn.backward",
+                        help: L10n("Return to main window"),
+                        action: returnToMain
+                    )
+
+                    DetachedWindowTrafficLightButton(
+                        color: Color(red: 0.188, green: 0.784, blue: 0.251),
+                        systemImage: "rectangle.3.group",
+                        help: L10n("Window size and position"),
+                        action: { showsWindowPresets.toggle() }
+                    )
+                    .popover(isPresented: $showsWindowPresets, arrowEdge: .bottom) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(DetachedChatWindowPreset.allCases, id: \.self) { preset in
+                                Button {
+                                    showsWindowPresets = false
+                                    applyWindowPreset(preset)
+                                } label: {
+                                    Label(preset.title, systemImage: preset.systemImage)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 6)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(6)
+                        .frame(minWidth: 180)
+                    }
+                }
+                .padding(.top, 9)
+
+                Spacer(minLength: 0)
+                DetachedChatWindowTitle(session: session)
+                    .frame(maxWidth: 360)
+                Spacer(minLength: 0)
+                Color.clear.frame(width: 76, height: 1)
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+            .frame(height: 62, alignment: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
@@ -400,6 +438,48 @@ private struct DetachedChatWindowView: View {
             guard let session else { return }
             await backendClient.loadSessionMessages(session)
         }
+    }
+}
+
+private struct DetachedChatWindowTitle: View {
+    @ObservedObject private var entityClient = EntityAPIClient.shared
+    let session: TaskSession?
+
+    private var work: Work? {
+        guard let session else { return nil }
+        let workID = session.workId ?? session.taskId.flatMap { taskID in
+            entityClient.tasks.first(where: { $0.id == taskID })?.workId
+        }
+        return entityClient.works.first(where: { $0.id == workID })
+    }
+
+    var body: some View {
+        ZStack {
+            DetachedChatWindowDragArea()
+            VStack(spacing: 2) {
+                Text(session?.title ?? L10n("Chat"))
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                    .accessibilityAddTraits(.isHeader)
+                if let work {
+                    HStack(spacing: 5) {
+                        ObjectiveAvatarView(objectiveID: work.id, name: work.name,
+                                            avatarPath: work.avatarPath, size: 14)
+                        Text(work.name)
+                            .lineLimit(1)
+                    }
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 7)
+            .allowsHitTesting(false)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .platformGlassSurface(in: Capsule(), variant: .clear)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("detached-chat-title")
     }
 }
 
