@@ -37,7 +37,7 @@ struct PadComposer<Header: View>: View {
     @State private var showPhotos = false
     @State private var showFiles = false
     @State private var importing = false
-    @State private var isKeyboardVisible = false
+    @Environment(\.padKeyboardViewport) private var keyboardViewport
     @State private var quickMessages = ClientQuickMessage.defaults
     @State private var quickMessageRefresh = 0
     @State private var quickMessageScope = ""
@@ -45,19 +45,6 @@ struct PadComposer<Header: View>: View {
 
     private var isPhone: Bool { UIDevice.current.userInterfaceIdiom == .phone }
     private var quickMessageTaskID: String? { workspace.sessionsByID[sessionID]?.taskId }
-    private var phoneBottomOffset: CGFloat {
-        guard isPhone, !isKeyboardVisible else { return 0 }
-        let bottomInset = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow)?.safeAreaInsets.bottom
-            ?? UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
-            .first?.safeAreaInsets.bottom
-            ?? 34
-        return bottomInset > 0 ? 10 : 0
-    }
 
     private var draft: Binding<String> {
         Binding(get: { workspace.drafts[sessionID] ?? "" }, set: { workspace.drafts[sessionID] = $0 })
@@ -154,7 +141,6 @@ struct PadComposer<Header: View>: View {
                 // Read-only recommendation failure must not block the composer.
             }
         }
-        .offset(y: phoneBottomOffset)
         .confirmationDialog("停止后续重试？", isPresented: $confirmStopRetries, titleVisibility: .visible) {
             Button("停止重试", role: .destructive) {
                 Task { await workspace.stopReliableRetries(connection, displaySessionID: sessionID) }
@@ -162,14 +148,6 @@ struct PadComposer<Header: View>: View {
             Button("继续自动发送", role: .cancel) {}
         } message: {
             Text("消息内容仍保留在本机。这不会撤回已经到达后端的请求，后端仍可能执行。")
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-            guard isPhone else { return }
-            withAnimation(.easeInOut(duration: 0.2)) { isKeyboardVisible = true }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            guard isPhone else { return }
-            withAnimation(.easeInOut(duration: 0.2)) { isKeyboardVisible = false }
         }
         // Outside the glass and above the entire module, without presenting a
         // controller or stealing first responder from the editor.

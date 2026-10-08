@@ -1,8 +1,11 @@
 name: CorptieMobile
 options:
   deploymentTarget:
-    iOS: '17.0'
+    iOS: '27.0'
 packages:
+  ChatLayout:
+    url: https://github.com/ekazaev/ChatLayout.git
+    exactVersion: 2.5.2
   CorptieConversation:
     path: ../../packages/CorptieConversation
   CorptieClientCore:
@@ -42,6 +45,8 @@ targets:
           - UIInterfaceOrientationLandscapeRight
     sources: [Sources]
     dependencies:
+      - package: ChatLayout
+        product: ChatLayout
       - package: CorptieConversation
         product: CorptieConversation
       - package: CorptieClientCore
@@ -63,6 +68,18 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.corptie.ipad.uitests
         GENERATE_INFOPLIST_FILE: YES
         TEST_TARGET_NAME: CorptieMobile
+  CorptieMobileNativeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [NativeTests]
+    dependencies:
+      - target: CorptieMobile
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.corptie.ipad.native-tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/CorptieMobile.app/CorptieMobile
+        BUNDLE_LOADER: $(TEST_HOST)
 schemes:
   CorptieMobile:
     build:
@@ -70,3 +87,12 @@ schemes:
         CorptieMobile: all
     test:
       targets: [CorptieMobileUITests]
+  CorptieMobileNativeTests:
+    build:
+      targets:
+        CorptieMobile: all
+        CorptieMobileNativeTests: [test]
+    test:
+      targets: [CorptieMobileNativeTests]
+      environmentVariables:
+        CORPTIE_NATIVE_LAYOUT_TESTS: '1'
