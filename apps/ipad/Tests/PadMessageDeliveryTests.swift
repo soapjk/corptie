@@ -3,10 +3,82 @@ import CryptoKit
 import Testing
 import CorptieClientCore
 import CorptieClientSecurity
+import CorptieClientSecurity
 @testable import CorptieMobileState
 
 @MainActor
 struct PadMessageDeliveryTests {
+    private func deletionConnection() throws -> PadConnection {
+        let transport = BackendTransport(endpoint: try BackendEndpoint(URL(string: "http://127.0.0.1")!),
+            data: { _ in throw URLError(.cancelled) }, bytes: { _ in throw URLError(.cancelled) })
+        let connection = PadConnection(transportOverride: transport,
+            credentials: DeviceCredentials(serverId: "server", deviceId: "device",
+                accessToken: "test", refreshToken: "test", accessExpiresAt: .greatestFiniteMagnitude,
+                refreshExpiresAt: .greatestFiniteMagnitude))
+        connection.serverID = "server"
+        return connection
+    }
+    @Test func rejectedLocalMessageDeletionRemovesDurablePayloadAndCard() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let name = "delete-message-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let outbox = ReliableMessageOutbox(directory: directory, key: SymmetricKey(size: .bits256))
+        let workspace = PadWorkspace(defaults: defaults, messageOutbox: outbox)
+        let connection = try deletionConnection()
+        workspace.selection = "session"
+        var record = ReliableOutgoingMessage(serverID: "server", deviceID: "device", sessionID: "session",
+            displaySessionID: "session", text: "failed")
+        record.state = .rejected
+        try await outbox.save(record)
+        workspace.outgoingMessages["session"] = [ClientMessage(id: record.messageID, text: "failed")]
+        workspace.outgoingStates[record.messageID] = "发送失败：INVALID_MESSAGE"
+        await workspace.deleteUnreceivedMessage(connection, sessionID: "session", messageID: record.messageID)
+        #expect(workspace.visibleMessages.isEmpty)
+        #expect(try await outbox.all().isEmpty)
+        #expect(workspace.outgoingStates[record.messageID] == nil)
+    }
+
+    @Test func terminalTimelineDeletionSurvivesRefreshAndRestartButNotScopeOrStatusChange() async throws {
+        let name = "delete-message-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let outbox = ReliableMessageOutbox(directory: directory, key: SymmetricKey(size: .bits256))
+        let connection = try deletionConnection()
+        let data = Data(#"{"id":"cancelled","type":"userMessage","text":"body","userMessageStatus":"cancelled"}"#.utf8)
+        let message = try JSONDecoder().decode(ClientMessage.self, from: data)
+        let workspace = PadWorkspace(defaults: defaults, messageOutbox: outbox)
+        workspace.selection = "session"; workspace.messages = [message]
+        #expect(workspace.canDeleteUnreceivedMessage(message))
+        await workspace.deleteUnreceivedMessage(connection, sessionID: "session", messageID: message.id)
+        #expect(workspace.visibleMessages.isEmpty)
+        workspace.messages = [message]
+        #expect(workspace.visibleMessages.isEmpty)
+        let restored = PadWorkspace(defaults: defaults, messageOutbox: outbox)
+        restored.prepareDeletedMessageScope(connection)
+        restored.selection = "session"; restored.messages = [message]
+        #expect(restored.visibleMessages.isEmpty)
+        let acceptedData = Data(#"{"id":"cancelled","type":"userMessage","text":"body","userMessageStatus":"processing"}"#.utf8)
+        restored.messages = [try JSONDecoder().decode(ClientMessage.self, from: acceptedData)]
+        #expect(restored.visibleMessages.count == 1)
+        connection.serverID = "other"
+        restored.prepareDeletedMessageScope(connection); restored.messages = [message]
+        #expect(restored.visibleMessages.count == 1)
+    }
+
+    @Test func activeAndUnconfirmedLocalCardsCannotBeDeleted() {
+        let workspace = PadWorkspace()
+        let message = ClientMessage(id: "local", text: "body")
+        for state in ["Sending", "Sent", "送达状态未确认", "等待重试，将自动发送", "等待恢复连接授权"] {
+            workspace.outgoingStates[message.id] = state
+            #expect(!workspace.canDeleteUnreceivedMessage(message))
+        }
+        workspace.outgoingStates[message.id] = "已停止重试；不代表撤回"
+        #expect(workspace.canDeleteUnreceivedMessage(message))
+    }
     @Test(arguments: [false, true])
     func authoritativeAndReceiptArrivalOrderLeavesOneCard(timelineFirst: Bool) throws {
         let name = "identity-tests-\(UUID().uuidString)"

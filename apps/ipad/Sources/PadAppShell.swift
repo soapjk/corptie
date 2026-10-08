@@ -12,7 +12,7 @@ struct PadAppShell: View {
     @State private var controls = PadControlStore()
     @State private var tab = PadTab.workspace
     @State private var sheet: Sheet?
-    @State private var isKeyboardVisible = false
+    @State private var keyboardViewport = PadKeyboardViewport()
     @State private var compactWorkspaceIsRoot = true
     @State private var compactOpenSessionRequest = 0
     @State private var wasBackgrounded = false
@@ -71,7 +71,7 @@ struct PadAppShell: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if !usesNavigationRail, !isKeyboardVisible,
+            if !usesNavigationRail, !keyboardViewport.isVisible,
                (tab != .workspace || compactWorkspaceIsRoot) {
                 PadBottomTabBar(selection: $tab, settings: { sheet = .settings })
                     .padding(.horizontal, 12)
@@ -101,13 +101,12 @@ struct PadAppShell: View {
             case .operation(let event): PadOperationResultView(event: event)
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-            guard !usesNavigationRail else { return }
-            withAnimation(.easeInOut(duration: 0.2)) { isKeyboardVisible = true }
+        .environment(\.padKeyboardViewport, keyboardViewport)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
+            updateKeyboardViewport(notification, changing: true)
         }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            guard !usesNavigationRail else { return }
-            withAnimation(.easeInOut(duration: 0.2)) { isKeyboardVisible = false }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidChangeFrameNotification)) { notification in
+            updateKeyboardViewport(notification, changing: false)
         }
         .task(id: scenePhase == .active ? workspace.reconciliationKey(connection) : nil) {
             guard scenePhase == .active else { return }
@@ -132,6 +131,20 @@ struct PadAppShell: View {
             await workspace.runRealtime(connection)
         }
         }
+    }
+
+    private func updateKeyboardViewport(_ notification: Notification, changing: Bool) {
+        guard let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
+              let window = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene })
+                .flatMap(\.windows).first(where: \.isKeyWindow) else { return }
+        let localFrame = window.convert(frame, from: window.screen.coordinateSpace)
+        let visible = window.bounds.intersection(localFrame).height > 1
+        guard visible != keyboardViewport.isVisible || changing != keyboardViewport.isChanging else { return }
+        // System safe-area propagation owns the keyboard animation. Do not
+        // run a second, independently timed composer/navigation animation.
+        keyboardViewport.isVisible = visible
+        keyboardViewport.isChanging = changing
+        keyboardViewport.revision &+= 1
     }
 
     private var synchronizedContent: some View {

@@ -154,6 +154,15 @@ public actor ReliableMessageOutbox {
         statusSizes.removeValue(forKey: id)
     }
 
+    /// Atomic terminal-state check: UI deletion must never discard a waiting,
+    /// ambiguous or accepted record after a stale menu was presented.
+    public func discardTerminal(_ id: String) throws -> Bool {
+        try load()
+        guard let record = records[id], record.state == .rejected || record.state == .cancelled else { return false }
+        try remove(id)
+        return true
+    }
+
     public func acceptedIdentities() throws -> [ReliableMessageAcknowledgement] {
         try load(); try loadAcknowledgements()
         return Array(acknowledgements.values)
