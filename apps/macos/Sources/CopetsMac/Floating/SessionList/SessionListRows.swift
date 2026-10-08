@@ -336,6 +336,8 @@ struct SessionContextMenuContent: View {
             Label(L10n("Settings…"), systemImage: "gearshape")
         }
 
+        DetachedChatWindowMenuButton(session: session)
+
         if let agentID = session.agentId {
             Button {
                 NotificationCenter.default.post(

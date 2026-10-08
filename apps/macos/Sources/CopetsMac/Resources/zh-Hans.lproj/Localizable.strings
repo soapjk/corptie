@@ -1678,3 +1678,7 @@
 "Choose which operations and task-state changes should notify you." = "选择哪些操作结果和任务状态变化需要通知。";
 
 "Worktree merge" = "Worktree 合并";
+
+"Open Floating Window" = "开启悬浮窗";
+
+"Close Floating Window" = "关闭悬浮窗";
