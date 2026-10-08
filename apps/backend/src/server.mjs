@@ -1233,7 +1233,6 @@ const backgroundAgentService = new BackgroundAgentService({
 memoryExtractor.classifyMany = createMemoryModelClassifier({ backgroundAgent: backgroundAgentService,
   claimBudget: (day) => store.claimMemoryExtractionDailyCall(day, 24),
   refundBudget: (day) => store.refundMemoryExtractionDailyCall(day) });
-if (!developmentPreview) memoryExtractionScheduler.start();
 const taskSummaryService = new TaskSummaryService({ store, backgroundAgent: backgroundAgentService,
   isEnabled: () => !developmentPreview });
 skillRegistryService.setDiscoveryAssistant(createSkillPackageDiscoveryAssistant({
@@ -2173,6 +2172,7 @@ function startBackendRuntime() {
     console.log("[development-preview] read-only browsing; recovery, providers, schedules and integrations disabled");
     return;
   }
+  memoryExtractionScheduler.start();
   taskSummaryService.start();
   startClientDeviceGateway({
     store, environmentName, developmentPreview, worktreeIntegrationJobService, projectApplicationService,
