@@ -17,6 +17,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     var onUnderfilledHistory: () -> Void = {}
     var initialPosition: AppKitChatTimelinePosition? = nil
     var onPositionChange: (AppKitChatTimelinePosition) -> Void = { _ in }
+    var searchRowID: String? = nil
+    var searchRowRevision = 0
     var scrollToTurnID: String? = nil
     var scrollToTurnRevision: Int = 0
     var historyRequestEpoch: Int = 0
@@ -76,6 +78,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         context.coordinator.lastScrollToBottomRevision = scrollToBottomRevision
         context.coordinator.lastScrollToTurnRevision = scrollToTurnRevision
         context.coordinator.lastHistoryRequestEpoch = historyRequestEpoch
+        context.coordinator.applySearchTarget(rowID: searchRowID, revision: searchRowRevision)
         return scrollView
     }
 
@@ -158,6 +161,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             context.coordinator.lastScrollToBottomRevision = scrollToBottomRevision
             context.coordinator.jumpToLatest()
         }
+        context.coordinator.applySearchTarget(rowID: searchRowID, revision: searchRowRevision)
         if context.coordinator.lastScrollToTurnRevision != scrollToTurnRevision {
             context.coordinator.lastScrollToTurnRevision = scrollToTurnRevision
             if let scrollToTurnID { context.coordinator.scrollToTurn(scrollToTurnID) }

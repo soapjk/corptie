@@ -1678,3 +1678,22 @@
 "Choose which operations and task-state changes should notify you." = "选择哪些操作结果和任务状态变化需要通知。";
 
 "Worktree merge" = "Worktree 合并";
+
+"Search Work, Task and chat history" = "搜索 Work、Task 和聊天记录";
+"Search scope" = "搜索范围";
+"Titles" = "标题";
+"Chat history" = "聊天记录";
+"Current Work only" = "仅当前 Work";
+"Historical messages are being indexed. Results may be incomplete." = "历史记录正在建立索引，搜索结果可能尚不完整。";
+"No search results" = "没有搜索结果";
+"Search unavailable. Try again." = "搜索暂时不可用，请重试。";
+"This conversation no longer exists." = "该会话已不存在。";
+"This Task no longer exists." = "该 Task 已不存在。";
+"This Work no longer exists." = "该 Work 已不存在。";
+"This message no longer exists." = "该消息已不存在。";
+"Could not locate this message. Try again." = "无法定位该消息，请重试。";
+"Search match" = "搜索命中";
+"Previous match" = "上一处";
+"Next match" = "下一处";
+"Refresh results" = "刷新结果";
+"Showing the first 300 results. Refine your search to find more." = "已显示前 300 条结果，请缩小搜索范围以查找更多记录。";

@@ -1272,3 +1272,22 @@
 "Choose which operations and task-state changes should notify you." = "Choose which operations and task-state changes should notify you.";
 
 "Worktree merge" = "Worktree merge";
+
+"Search Work, Task and chat history" = "Search Work, Task and chat history";
+"Search scope" = "Search scope";
+"Titles" = "Titles";
+"Chat history" = "Chat history";
+"Current Work only" = "Current Work only";
+"Historical messages are being indexed. Results may be incomplete." = "Historical messages are being indexed. Results may be incomplete.";
+"No search results" = "No search results";
+"Search unavailable. Try again." = "Search unavailable. Try again.";
+"This conversation no longer exists." = "This conversation no longer exists.";
+"This Task no longer exists." = "This Task no longer exists.";
+"This Work no longer exists." = "This Work no longer exists.";
+"This message no longer exists." = "This message no longer exists.";
+"Could not locate this message. Try again." = "Could not locate this message. Try again.";
+"Search match" = "Search match";
+"Previous match" = "Previous match";
+"Next match" = "Next match";
+"Refresh results" = "Refresh results";
+"Showing the first 300 results. Refine your search to find more." = "Showing the first 300 results. Refine your search to find more.";

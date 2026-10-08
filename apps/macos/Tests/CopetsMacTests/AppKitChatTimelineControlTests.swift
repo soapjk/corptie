@@ -2152,6 +2152,43 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(receivedActionID, "approval:approve")
     }
 
+    func testSearchTargetWaitsForItsMessageAndNeverSelectsAnUnrelatedRow() {
+        let harness = makeHarness(followsLatest: true, height: 180)
+        harness.coordinator.apply(rows: [row(id: "message:other", text: "Other")])
+        harness.coordinator.applySearchTarget(rowID: "message:target", revision: 1)
+        XCTAssertEqual(harness.tableView.selectedRow, -1)
+        harness.coordinator.apply(rows: [row(id: "message:other", text: "Other"), row(id: "message:target", text: "Target")])
+        harness.coordinator.applySearchTarget(rowID: "message:target", revision: 1)
+        XCTAssertEqual(harness.tableView.selectedRow, 1)
+        XCTAssertFalse(harness.followState.value)
+        harness.coordinator.switchSessionIfNeeded(to: "different-session", initialPosition: nil)
+        harness.coordinator.apply(rows: [row(id: "message:unrelated", text: "Unrelated")])
+        harness.coordinator.applySearchTarget(rowID: nil, revision: 0)
+        XCTAssertEqual(harness.tableView.selectionHighlightStyle, .none)
+        XCTAssertEqual(harness.tableView.selectedRow, -1)
+    }
+
+    func testWarmSessionSwitchPreservesCachedNativeCells() throws {
+        let harness = makeHarness(followsLatest: false, useSharedTextCards: true, height: 360)
+        let first = (0..<40).map { row(id: "cached-first-\($0)", text: "First \($0)") }
+        let second = (0..<40).map { row(id: "cached-second-\($0)", text: "Second \($0)") }
+        func install(_ session: String, _ rows: [AppKitChatTimelineRow]) {
+            harness.coordinator.switchSessionIfNeeded(to: session, initialPosition: .init(
+                rowID: rows[24].id, offset: 4, absoluteScrollY: 0, followsLatest: false))
+            harness.coordinator.apply(rows: rows)
+            harness.window.layoutIfNeeded()
+            harness.scrollView.layoutSubtreeIfNeeded()
+        }
+        install("first", first)
+        let cell = try XCTUnwrap(harness.tableView.view(atColumn: 0, row: 24, makeIfNecessary: true) as? AppKitChatNativeTextCell)
+        let configurations = cell.contentConfigurationCount
+        install("second", second)
+        install("first", first)
+        let returned = try XCTUnwrap(harness.tableView.view(atColumn: 0, row: 24, makeIfNecessary: true) as? AppKitChatNativeTextCell)
+        XCTAssertTrue(returned === cell)
+        XCTAssertEqual(returned.contentConfigurationCount, configurations)
+    }
+
     func testWarmSessionHostSwitchStaysWithinOneFrame() async {
         let rowsBySession = (0..<3).map { sessionIndex in
             (0..<40).map { index in
@@ -2175,6 +2212,8 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             harness.window.layoutIfNeeded()
             harness.scrollView.layoutSubtreeIfNeeded()
             coldSamples.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
+            harness.window.close()
+            harness.window.contentView = nil
         }
 
         let host = makeHarness(followsLatest: false, height: 360)
@@ -2193,9 +2232,17 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             host.window.layoutIfNeeded()
             host.scrollView.layoutSubtreeIfNeeded()
         }
+        func processCPUMilliseconds() -> Double {
+            var usage = rusage()
+            getrusage(RUSAGE_SELF, &usage)
+            return Double(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) * 1_000
+                + Double(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1_000
+        }
         var warmSamples: [Double] = []
+        var warmDiagnostics: [(wall: Double, cpu: Double, rebind: Double, apply: Double, layout: Double)] = []
         for index in 0..<60 {
             let sessionIndex = index % rowsBySession.count
+            let cpuStart = processCPUMilliseconds()
             let start = DispatchTime.now().uptimeNanoseconds
             host.coordinator.switchSessionIfNeeded(
                 to: "session-\(sessionIndex)",
@@ -2206,10 +2253,14 @@ final class AppKitChatTimelineControlTests: XCTestCase {
                     followsLatest: false
                 )
             )
+            let rebound = DispatchTime.now().uptimeNanoseconds
             host.coordinator.apply(rows: rowsBySession[sessionIndex])
+            let applied = DispatchTime.now().uptimeNanoseconds
             host.window.layoutIfNeeded()
             host.scrollView.layoutSubtreeIfNeeded()
-            warmSamples.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
+            let wall = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+            warmSamples.append(wall)
+            warmDiagnostics.append((wall, processCPUMilliseconds() - cpuStart, Double(rebound - start) / 1_000_000, Double(applied - rebound) / 1_000_000, wall - Double(applied - start) / 1_000_000))
         }
         coldSamples.sort()
         warmSamples.sort()
@@ -2218,6 +2269,10 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let warmP95 = warmSamples[Int(Double(warmSamples.count - 1) * 0.95)]
         let warmHitches = warmSamples.filter { $0 > 16.67 }.count
         print("[perf] session switch cold-p50=\(String(format: "%.2f", coldP50))ms warm-p50=\(String(format: "%.2f", warmP50))ms warm-p95=\(String(format: "%.2f", warmP95))ms warm-hitches=\(warmHitches)/\(warmSamples.count)")
+
+        for sample in warmDiagnostics.sorted(by: { $0.wall > $1.wall }).prefix(3) {
+            print("[perf] slow switch wall=\(String(format: "%.2f", sample.wall))ms process-cpu=\(String(format: "%.2f", sample.cpu))ms rebind=\(String(format: "%.2f", sample.rebind))ms apply=\(String(format: "%.2f", sample.apply))ms layout=\(String(format: "%.2f", sample.layout))ms")
+        }
 
         XCTAssertLessThan(warmP95, 16)
         XCTAssertEqual(warmHitches, 0)
@@ -2365,6 +2420,11 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             backing: .buffered,
             defer: false
         )
+        window.isReleasedWhenClosed = false
+        addTeardownBlock { @MainActor in
+            window.close()
+            window.contentView = nil
+        }
         window.contentView = scrollView
         window.layoutIfNeeded()
         return (window, scrollView, tableView, coordinator, state)

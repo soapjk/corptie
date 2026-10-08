@@ -25,7 +25,7 @@ struct DetachedChatWindowTests {
         #expect(source.contains("PersistentRedWindowCloseButton(action: close)"))
         #expect(source.contains("Color(red: 1, green: 0.373, blue: 0.341)"))
         #expect(source.contains(".frame(width: 14, height: 14)"))
-        #expect(source.contains(".frame(width: 22, height: 22)"))
+        #expect(source.contains(".frame(width: 20, height: 22)"))
         #expect(source.contains("systemImage: \"arrow.uturn.backward\""))
         #expect(source.contains("func returnToMain(sessionID: String)"))
         #expect(source.contains("close(sessionID: sessionID)"))

@@ -64,7 +64,7 @@ extension UnifiedConsoleView {
         )
 
         return ScrollView {
-            LazyVStack(alignment: .leading, spacing: 8) {
+            LazyVStack(alignment: .leading, spacing: 4) {
                 DisclosureGroup(isExpanded: outlineAssistantExpandedBinding) {
                     VStack(alignment: .leading, spacing: 2) {
                         if assistantSessionRows.isEmpty {

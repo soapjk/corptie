@@ -72,7 +72,7 @@ export class ClientDeviceGateway {
   limit(request) {
     const now = Date.now();
     for (const [key, value] of this.buckets) if (value.until <= now) this.buckets.delete(key);
-    const read = request.method === "GET" && /^\/client\/v1\/(works|tasks|sessions|commands|control|worktrees|task-deletion-operations)(\/|\?|$)/.test(request.url);
+    const read = request.method === "GET" && /^\/client\/v1\/(works|tasks|sessions|commands|control|worktrees|task-deletion-operations|search)(\/|\?|$)/.test(request.url);
     const upload = /^\/client\/v1\/sessions\/[^/]+\/image-uploads(?:\/|$)/.test(request.url);
     const key = `${request.socket.remoteAddress}:${upload ? "upload" : read ? "read" : "command"}`;
     let bucket = this.buckets.get(key);
@@ -107,6 +107,7 @@ export class ClientDeviceGateway {
       }
       const url = new URL(request.url, "https://client.invalid");
       const path = url.pathname;
+      const search = path === "/client/v1/search";
       const eventV2 = path === "/client/v2/events";
       const inventory = /^\/client\/v1\/(works|tasks|sessions)$/.exec(path);
       const discussion = /^\/client\/v1\/works\/([^/]+)\/discussion$/.exec(path);
@@ -129,7 +130,7 @@ export class ClientDeviceGateway {
       const worktreeJobAction = /^\/client\/v1\/worktrees\/jobs\/([^/]+)\/actions\/([^/]+)$/.exec(path);
       const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|message-deliveries|quick-messages|stop|capabilities|composer|conversation-commands|tasks|read-receipt|images|usage|approval|user-input|collaboration-confirmation)$/.exec(path);
       const commandReceipt = /^\/client\/v1\/commands\/([A-Za-z0-9_-]{8,128})$/.exec(path);
-      if (url.search && !inventory && !control && !eventV2 && !worktreeRepository
+      if (url.search && !search && !inventory && !control && !eventV2 && !worktreeRepository
           && !(["messages", "tasks", "images", "usage"].includes(conversation?.[2]) && request.method === "GET")) {
         throw deviceError("REQUEST_NOT_ALLOWED", 403);
       }
@@ -307,6 +308,11 @@ export class ClientDeviceGateway {
         this.authenticateRequest(request);
         return reply(response, 200, result);
       }
+      if (request.method === "GET" && search && this.sessionAPI?.search) {
+        const result = await this.sessionAPI.search(identity, url.searchParams);
+        this.authenticateRequest(request);
+        return reply(response, 200, result);
+      }
       if (request.method === "GET" && path === "/client/v1/events") {
         return this.events.attach(response, () => this.authenticateRequest(request));
       }
@@ -445,6 +451,7 @@ export class ClientDeviceGateway {
           taskManagement: Boolean(this.sessionAPI?.entityCommands),
           workManagement: Boolean(this.sessionAPI?.entityCommands),
           workCreation: Boolean(this.sessionAPI?.entityCommands?.createWork),
+          search: this.sessionAPI?.search ? { schemaVersion: 1 } : null,
           inventoryLists: Boolean(this.readAPI), messages: Boolean(this.sessionAPI),
           controlRead: Boolean(this.controlAPI), controlWrite: Boolean(this.worktreeAPI),
           eventStream: true, eventRecovery: "snapshot-on-connect",

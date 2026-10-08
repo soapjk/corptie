@@ -36,7 +36,8 @@ export function startClientDeviceGateway({
       projects: projectApplicationService,
       emit: emitEvent
     }),
-    sessionAPIFactory: () => new ClientSessionAPI({ store, readWindow: readSessionTimelineWindow,
+    sessionAPIFactory: () => new ClientSessionAPI({ store,
+      searchPage: query => getTimelineReadPool().readUnifiedSearch({ query: query.toString() }), readWindow: readSessionTimelineWindow,
       quickMessages: sessionId => getTimelineReadPool().readQuickMessages({ sessionId }),
       inspector: new ClientInspectorAPI({ store, resolveSession: requireSessionReference,
         references: sessionContextReferenceService, artifacts: artifactService,

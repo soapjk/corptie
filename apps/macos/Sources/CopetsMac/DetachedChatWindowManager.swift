@@ -314,39 +314,41 @@ private struct DetachedChatWindowView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                PersistentRedWindowCloseButton(action: close)
+                HStack(spacing: 0) {
+                    PersistentRedWindowCloseButton(action: close)
 
-                DetachedWindowTrafficLightButton(
-                    color: Color(red: 1, green: 0.741, blue: 0.180),
-                    systemImage: "arrow.uturn.backward",
-                    help: L10n("Return to main window"),
-                    action: returnToMain
-                )
+                    DetachedWindowTrafficLightButton(
+                        color: Color(red: 1, green: 0.741, blue: 0.180),
+                        systemImage: "arrow.uturn.backward",
+                        help: L10n("Return to main window"),
+                        action: returnToMain
+                    )
 
-                DetachedWindowTrafficLightButton(
-                    color: Color(red: 0.188, green: 0.784, blue: 0.251),
-                    systemImage: "rectangle.3.group",
-                    help: L10n("Window size and position"),
-                    action: { showsWindowPresets.toggle() }
-                )
-                .popover(isPresented: $showsWindowPresets, arrowEdge: .bottom) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(DetachedChatWindowPreset.allCases, id: \.self) { preset in
-                            Button {
-                                showsWindowPresets = false
-                                applyWindowPreset(preset)
-                            } label: {
-                                Label(preset.title, systemImage: preset.systemImage)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 6)
-                                    .contentShape(Rectangle())
+                    DetachedWindowTrafficLightButton(
+                        color: Color(red: 0.188, green: 0.784, blue: 0.251),
+                        systemImage: "rectangle.3.group",
+                        help: L10n("Window size and position"),
+                        action: { showsWindowPresets.toggle() }
+                    )
+                    .popover(isPresented: $showsWindowPresets, arrowEdge: .bottom) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(DetachedChatWindowPreset.allCases, id: \.self) { preset in
+                                Button {
+                                    showsWindowPresets = false
+                                    applyWindowPreset(preset)
+                                } label: {
+                                    Label(preset.title, systemImage: preset.systemImage)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 6)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
                         }
+                        .padding(6)
+                        .frame(minWidth: 180)
                     }
-                    .padding(6)
-                    .frame(minWidth: 180)
                 }
 
                 ZStack(alignment: .leading) {
@@ -461,10 +463,11 @@ private struct DetachedWindowTrafficLightLabel: View {
                 .frame(width: 14, height: 14)
 
             Image(systemName: systemImage)
-                .font(.system(size: 6.5, weight: .bold))
+                .font(.system(size: 6, weight: .semibold))
                 .foregroundStyle(.black.opacity(0.62))
         }
-        .frame(width: 22, height: 22)
+        // Keep a 20-point hit target: 14-point circles with a 6-point visual gap.
+        .frame(width: 20, height: 22)
         .contentShape(Rectangle())
     }
 }

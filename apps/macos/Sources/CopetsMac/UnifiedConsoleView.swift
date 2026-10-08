@@ -59,6 +59,7 @@ struct UnifiedConsoleView: View {
     /// 搜索交互状态。
     @State var isSearching = false
     @State var searchText = ""
+    @State var searchSubmitRevision = 0
     @FocusState var isSearchFieldFocused: Bool
     @AppStorage(
         "console.navigationCard.navigationMode",
@@ -261,7 +262,20 @@ struct UnifiedConsoleView: View {
     }
 
 
+    @ViewBuilder
     var consoleNavigationContent: some View {
+        if isSearching, !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            VStack(spacing: 8) {
+                sessionSearchBar.padding(.horizontal, 8)
+                UnifiedSearchResultsView(query: searchText, currentWorkID: selectedWorkId,
+                                         submitRevision: searchSubmitRevision, open: openSearchHit)
+            }.frame(maxHeight: .infinity)
+        } else {
+            normalConsoleNavigationContent
+        }
+    }
+
+    var normalConsoleNavigationContent: some View {
         HStack(spacing: 0) {
             if navigationMode == .workOutline {
                 unifiedWorkOutlineSidebar
@@ -700,9 +714,11 @@ struct UnifiedConsoleView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
-            TextField(L10n("Search sessions"), text: $searchText)
+            TextField(L10n("Search Work, Task and chat history"), text: $searchText)
                 .textFieldStyle(.plain)
                 .focused($isSearchFieldFocused)
+                .onSubmit { searchSubmitRevision &+= 1 }
+                .onKeyPress(.escape) { searchText = ""; isSearching = false; return .handled }
             Button {
                 searchText = ""
                 withAnimation(.easeInOut(duration: 0.15)) {
@@ -1039,7 +1055,9 @@ struct UnifiedConsoleView: View {
             HStack(spacing: MainWindowPageLayoutMetrics.columnSpacing) {
                 // All navigation modes share the full conversation surface.
                 // Keep details present without replacing the editor or timeline.
-                DetailView(
+                VStack(spacing: 6) {
+                    SearchMessageNavigationBar(sessionID: session.id)
+                    DetailView(
                     sessionId: session.id,
                     presentationCache: presentationCache,
                     composerDraftRepository: composerDraftRepository,
@@ -1049,6 +1067,7 @@ struct UnifiedConsoleView: View {
                     }
                 )
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
+                }
 
                 SessionDetailPanel(session: session, railWidth: 320)
                     .frame(maxHeight: .infinity)
