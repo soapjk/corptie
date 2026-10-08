@@ -1256,6 +1256,35 @@ test("a recoverable commit failure re-detects state and retries without manual i
     && entry.retryCount === 1));
 });
 
+test("unsafe staged-tree rejection preserves structured paths for recovery", async () => {
+  const rejection = Object.assign(new Error("Integration staged-tree validation rejected 1 unsafe path(s)."), {
+    code: "INTEGRATION_STAGED_TREE_REJECTED",
+    violations: [{
+      code: "SYMLINK_ESCAPES_REPOSITORY",
+      path: ".venv",
+      mode: "120000",
+      target: "/repo/.venv"
+    }]
+  });
+  const { service } = memoryFixture({ commitErrors: [rejection] });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  const paused = await waitForJob(service, plan.id, "paused");
+
+  assert.deepEqual(paused.stagedTreeBlocker, {
+    worktreeId: "wt:feature",
+    branchName: "feature/one",
+    violations: [{
+      code: "SYMLINK_ESCAPES_REPOSITORY",
+      path: ".venv",
+      mode: "120000",
+      target: "/repo/.venv"
+    }]
+  });
+  assert.equal(paused.recovery.kind, "review_staged_tree");
+  assert.deepEqual(paused.availableActions, ["retry", "cancel"]);
+});
+
 test("Markdown policy rejection pauses once for a user decision and resumes after ignore", async () => {
   const policy = Object.assign(new Error("Markdown approval required"), {
     code: "GIT_ARTIFACT_POLICY_REJECTED",

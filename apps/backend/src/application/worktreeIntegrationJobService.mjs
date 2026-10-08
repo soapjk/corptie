@@ -984,7 +984,9 @@ export class WorktreeIntegrationJobService {
       );
     }
     const updated = this.#update(job, {
-      status: "queued", phase: "retry_queued", error: null, auditEvent: "retry_requested"
+      status: "queued", phase: "retry_queued", error: null,
+      details: { ...job.details, stagedTreeBlocker: null },
+      auditEvent: "retry_requested"
     });
     this.#schedule(updated.id);
     return presentJob(updated);
@@ -1900,17 +1902,26 @@ export class WorktreeIntegrationJobService {
       status: "paused",
       phase: error.code === "MERGE_CONFLICT" ? "conflict" : "failed",
       error: error.message,
-      details: automation ? {
+      details: {
         ...job.details,
-        conflictAutomation: shouldBlockAutomation
-          ? blockedConflictAutomation(job, currentItem, error)
-          : {
-              ...automation,
-              currentWorktreeId: currentItem?.worktreeId ?? null,
-              completedWorktreeIds: completedMergeWorktreeIds(job.details.plan.items),
-              conflictFiles: [...(currentItem?.conflictFiles ?? [])]
-            }
-      } : job.details,
+        ...(error.code === "INTEGRATION_STAGED_TREE_REJECTED" ? {
+          stagedTreeBlocker: {
+            worktreeId: currentItem?.worktreeId ?? job.details.currentWorktreeId ?? null,
+            branchName: currentItem?.branchName ?? null,
+            violations: structuredStagedTreeViolations(error.violations)
+          }
+        } : {}),
+        ...(automation ? {
+          conflictAutomation: shouldBlockAutomation
+            ? blockedConflictAutomation(job, currentItem, error)
+            : {
+                ...automation,
+                currentWorktreeId: currentItem?.worktreeId ?? null,
+                completedWorktreeIds: completedMergeWorktreeIds(job.details.plan.items),
+                conflictFiles: [...(currentItem?.conflictFiles ?? [])]
+              }
+        } : {})
+      },
       auditEvent: "execution_paused",
       auditData: { code: error.code ?? "INTEGRATION_FAILED" }
     });
@@ -2735,7 +2746,25 @@ function integrationJobRecovery(job, availableActions) {
     resolve_conflict_with_agent: "Resolve the preserved conflict with an Agent or manually, then retry.",
     retry: "The operation is paused and can be retried from its preserved state."
   };
+  if (job.stagedTreeBlocker) {
+    return {
+      kind: "review_staged_tree",
+      message: "Review the unsafe staged paths, correct them in the named Worktree, then revalidate and continue."
+    };
+  }
   return { kind: action, message: messages[action] ?? "No automatic recovery action is available." };
+}
+
+function structuredStagedTreeViolations(violations) {
+  return (Array.isArray(violations) ? violations : []).flatMap((violation) => {
+    if (!violation || typeof violation.path !== "string" || typeof violation.code !== "string") return [];
+    return [{
+      code: violation.code,
+      path: violation.path,
+      ...(typeof violation.mode === "string" ? { mode: violation.mode } : {}),
+      ...(typeof violation.target === "string" ? { target: violation.target } : {})
+    }];
+  });
 }
 
 // Versioned allowlist: no paths, credentials, Git output or Provider diagnostics.

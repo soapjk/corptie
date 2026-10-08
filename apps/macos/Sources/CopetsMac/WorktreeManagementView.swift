@@ -898,7 +898,9 @@ struct WorktreeManagementView: View {
                     .disabled(client.isMutating)
                     .accessibilityIdentifier("worktree.integrate.repreflight")
                 } else if job.supports("retry") {
-                    Button(L10n("Retry")) { Task { await client.retryJob() } }
+                    Button(job.stagedTreeBlocker == nil ? L10n("Retry") : L10n("Revalidate and Continue")) {
+                        Task { await client.retryJob() }
+                    }
                         .controlSize(.small)
                         .accessibilityIdentifier("worktree.integrate.retry")
                 }
@@ -970,6 +972,8 @@ struct WorktreeManagementView: View {
                 .font(.caption)
                 .foregroundStyle(.orange)
                 .textSelection(.enabled)
+            } else if let blocker = job.stagedTreeBlocker {
+                stagedTreeBlockerDetails(blocker)
             } else if let error = job.error {
                 Text(error).font(.caption).foregroundStyle(.red)
             }
@@ -986,6 +990,40 @@ struct WorktreeManagementView: View {
         .padding(10)
         .background((job.status == "paused" ? Color.orange : Color.accentColor).opacity(0.08))
         .accessibilityIdentifier("worktree.integration.progress")
+    }
+
+    @ViewBuilder
+    private func stagedTreeBlockerDetails(_ blocker: WorktreeStagedTreeBlocker) -> some View {
+        Text(L10n("Git rejected unsafe paths in the pending commit. Correct the listed paths in this Worktree, then revalidate and continue."))
+            .font(.caption)
+            .foregroundStyle(.orange)
+        ForEach(blocker.violations) { violation in
+            VStack(alignment: .leading, spacing: 2) {
+                Text(violation.path)
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+                Text(localizedStagedTreeViolation(violation))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+    }
+
+    private func localizedStagedTreeViolation(_ violation: WorktreeStagedTreeViolation) -> String {
+        switch violation.code {
+        case "CORPTIE_INTERNAL_PATH_STAGED":
+            return L10n("Corptie internal state must not be tracked by Git.")
+        case "UNDECLARED_GITLINK":
+            return L10n("Nested Git repository is not declared as a submodule.")
+        case "SYMLINK_ESCAPES_REPOSITORY":
+            if let target = violation.target, !target.isEmpty {
+                return L10nFormat("Symbolic link points outside the repository: %@", target)
+            }
+            return L10n("Symbolic link points outside the repository.")
+        default:
+            return violation.code
+        }
     }
 
     @ViewBuilder

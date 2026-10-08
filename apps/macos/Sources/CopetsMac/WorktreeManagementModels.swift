@@ -429,6 +429,7 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
     let conflictAutomation: WorktreeConflictAutomation?
     let commitProtectionDecisions: [String: WorktreePersistedCommitProtectionDecision]?
     let commitPolicyBlocker: WorktreeCommitPolicyBlocker?
+    let stagedTreeBlocker: WorktreeStagedTreeBlocker?
     let availableActions: [String]?
     let recovery: WorktreeIntegrationRecovery?
 
@@ -471,6 +472,20 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
     var canHandleCommitPolicy: Bool {
         isWaitingForCommitPolicyDecision || hasLegacyCommitPolicyFailure
     }
+}
+
+struct WorktreeStagedTreeBlocker: Decodable, Equatable, Sendable {
+    let worktreeId: String?
+    let branchName: String?
+    let violations: [WorktreeStagedTreeViolation]
+}
+
+struct WorktreeStagedTreeViolation: Identifiable, Decodable, Equatable, Sendable {
+    var id: String { "\(code):\(path)" }
+    let code: String
+    let path: String
+    let mode: String?
+    let target: String?
 }
 
 struct WorktreeIntegrationRecovery: Decodable, Equatable, Sendable {
