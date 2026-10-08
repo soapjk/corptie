@@ -44,6 +44,11 @@ struct SessionConversationContent: View {
     @ObservedObject private var timelineState: SessionTimelineState
     @State private var displaysLoadingDetail: Bool
     @State private var displayedWorkspaceRecoveryStatus: WorkspaceRecoveryStatus?
+    @ObservedObject private var searchNavigation = UnifiedSearchNavigation.shared
+    @State private var appliedSearchToken: UUID?
+    @State private var loadingSearchToken: UUID?
+    @State private var searchRowID: String?
+    @State private var searchRowRevision = 0
     @State private var scrollTargetTurnID: String?
     @State private var scrollTargetTurnRevision = 0
     @State private var pendingFork: SessionForkSelection?
@@ -372,6 +377,10 @@ struct SessionConversationContent: View {
             guard backendClient.selectedSession?.id == sessionId else { return }
             displayedWorkspaceRecoveryStatus = status
         }
+        .task(id: searchNavigation.target?.token) { await applySearchTargetIfNeeded() }
+        .onChange(of: appKitDetailRevision) { _, _ in
+            Task { await applySearchTargetIfNeeded() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .scrollSessionTimelineToTurn)) { notification in
             guard notification.userInfo?["sessionId"] as? String == sessionId,
                   let turnID = notification.userInfo?["turnId"] as? String else { return }
@@ -420,6 +429,8 @@ struct SessionConversationContent: View {
                     }
                     onTimelinePositionChange(position)
                 },
+                searchRowID: searchRowID,
+                searchRowRevision: searchRowRevision,
                 scrollToTurnID: scrollTargetTurnID,
                 scrollToTurnRevision: scrollTargetTurnRevision,
                 historyRequestEpoch: historyRequestEpoch,
@@ -702,6 +713,36 @@ struct SessionConversationContent: View {
                 }
             }
         }
+    }
+
+    private func applySearchTargetIfNeeded() async {
+        guard let target = searchNavigation.target, target.sessionID == sessionId,
+              appliedSearchToken != target.token, loadingSearchToken == nil,
+              let session = backendClient.selectedSession, session.id == sessionId,
+              displayedDetail != nil,
+              let generation = backendClient.selectionGenerationToken(for: sessionId) else { return }
+        loadingSearchToken = target.token
+        defer {
+            loadingSearchToken = nil
+            if searchNavigation.target?.token != target.token {
+                Task { await applySearchTargetIfNeeded() }
+            }
+        }
+        let rowID = "message:" + target.messageID
+        let result = await backendClient.loadTimelineWindow(for: session, anchorRowID: rowID,
+                                                            expectedSelectionGeneration: generation)
+        guard !Task.isCancelled, searchNavigation.target == target,
+              backendClient.selectedSession?.id == sessionId else { return }
+        appliedSearchToken = target.token
+        guard result == .found, let detail = displayedDetail else {
+            searchNavigation.error = L10n(result == .missing ? "This message no longer exists." : "Could not locate this message. Try again.")
+            return
+        }
+        let position = AppKitChatTimelinePosition(rowID: rowID, offset: 0, absoluteScrollY: 0, followsLatest: false)
+        timelineRestorationIntent.reset(initialPosition: position)
+        updateCachedDisplayEntries(for: detail)
+        searchRowID = rowID
+        searchRowRevision &+= 1
     }
 
     private func restoreMissingHistoryAnchorIfNeeded() {

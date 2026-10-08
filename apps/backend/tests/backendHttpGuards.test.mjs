@@ -15,7 +15,7 @@ function check(guard, path, method = "GET", overrides = {}) {
 }
 
 test("preview permits only the existing read surfaces and denies writes even on readable paths", () => {
-  for (const path of ["/health", "/settings", "/first-run", "/events", "/sessions", "/state/snapshot", "/state/changes", "/state/events",
+  for (const path of ["/health", "/settings", "/first-run", "/events", "/sessions", "/search", "/state/snapshot", "/state/changes", "/state/events",
     "/session-timelines/revisions", "/works", "/tasks", "/agents", "/workspaces", "/repositories", "/artifacts", "/memories",
     "/automations", "/scheduled-tasks", "/scheduled-session-tasks", "/scene-templates", "/scenes",
     "/sessions/id/stored-snapshot", "/sessions/id/timeline/window", "/sessions/id/fork", "/sessions/id/images", "/sessions/id/quick-messages",

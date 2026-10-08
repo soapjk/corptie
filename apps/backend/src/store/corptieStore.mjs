@@ -1,3 +1,4 @@
+import { initializeUnifiedSearch } from "./unifiedSearch.mjs";
 import { randomUUID } from "node:crypto";
 import { createStoreRepositories } from "./createStoreRepositories.mjs";
 import { installStoreRepositoryDelegates } from "./storeRepositoryDelegates.mjs";
@@ -163,7 +164,10 @@ export class CorptieStore {
     this.db = new NativeDatabase(this.dbPath, { readOnly });
     try {
       configureStoreDatabase(this.db, options);
-      if (!readOnly && options.performMigrations !== false) this.migrate();
+      if (!readOnly && options.performMigrations !== false) {
+        this.migrate();
+        initializeUnifiedSearch(this);
+      }
     } catch (error) {
       this.db.close();
       this.db = null;
