@@ -119,7 +119,7 @@ curl --fail http://127.0.0.1:47322/health
 scripts/package-macos-installer.sh
 ```
 
-产物写入 `dist/`。当前脚本使用 `arm64-apple-macosx` 构建产物路径；未设置 `CORPTIE_APP_SIGNING_IDENTITY` 时使用 ad-hoc 应用签名。有 Developer ID Application 证书时，可通过该变量指定签名身份。
+产物写入 `dist/`。当前脚本使用 `arm64-apple-macosx` 构建产物路径。`make production` 是本机安装入口，在没有签名身份时默认允许 ad-hoc 签名；可设置 `CORPTIE_ALLOW_ADHOC_PACKAGE=0` 强制要求稳定签名。直接运行打包脚本或 `make package` 时，必须设置 `CORPTIE_APP_SIGNING_IDENTITY`；仅在明确需要本地专用产物时，才可设置 `CORPTIE_ALLOW_ADHOC_PACKAGE=1`。
 
 ## 代码导航
 

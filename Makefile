@@ -29,7 +29,7 @@ backend-prod: ## 单独启动正式版后端
 	./scripts/start-backend-production.sh
 
 production: ## 重建 + 安装 + 重启正式版
-	./scripts/rebuild-install-restart-production.sh
+	CORPTIE_ALLOW_ADHOC_PACKAGE="$${CORPTIE_ALLOW_ADHOC_PACKAGE:-1}" ./scripts/rebuild-install-restart-production.sh
 
 check-production: ## 只检查正式版是否有未完成会话
 	./scripts/rebuild-install-restart-production.sh --check-only
