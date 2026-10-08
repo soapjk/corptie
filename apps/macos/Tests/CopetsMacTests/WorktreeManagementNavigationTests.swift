@@ -732,6 +732,22 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(view.contains("mergeStatus == \"completed\""))
     }
 
+    func testUnsafeStagedTreeFailureShowsStructuredPathRecovery() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let view = try String(
+            contentsOf: root.appendingPathComponent("Sources/CopetsMac/WorktreeManagementView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(view.contains("job.stagedTreeBlocker"))
+        XCTAssertTrue(view.contains("stagedTreeBlockerDetails"))
+        XCTAssertTrue(view.contains("SYMLINK_ESCAPES_REPOSITORY"))
+        XCTAssertTrue(view.contains("Revalidate and Continue"))
+    }
+
     private func repository(_ id: String) -> ManagedRepository {
         ManagedRepository(
             id: id, path: "/repo/.git", name: id, discoveredAt: "now", lastValidatedAt: "now",

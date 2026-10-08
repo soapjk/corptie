@@ -1700,6 +1700,37 @@ test("integration staging rejects an undeclared nested Git repository without ch
   }
 });
 
+test("integration staging does not reject an unchanged historical unsafe symlink", async () => {
+  const fixture = await createFixture("integration-historical-symlink", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    const linkTarget = join(fixture.repository, ".venv");
+    await symlink(linkTarget, join(fixture.activeWorktree, ".venv"));
+    await git(["add", ".venv"], fixture.activeWorktree);
+    await git(["commit", "-m", "historical local environment link"], fixture.activeWorktree);
+    await writeFile(join(fixture.activeWorktree, "safe.txt"), "safe change\n");
+    const expectedHead = (await gitOutput(["rev-parse", "HEAD"], fixture.activeWorktree)).trim();
+    const expectedStatusSummary = (await gitOutput(["status", "--porcelain=v1"], fixture.activeWorktree)).trim();
+
+    const result = await manager.commitIntegrationChanges({
+      path: fixture.activeWorktree,
+      expectedHead,
+      expectedStatusSummary,
+      commitMessage: "commit unrelated safe change",
+      jobId: "job:historical-symlink"
+    });
+
+    assert.equal(result.committed, true);
+    assert.equal((await gitOutput(["show", "HEAD:.venv"], fixture.activeWorktree)).trim(), linkTarget);
+    assert.equal((await gitOutput(["show", "HEAD:safe.txt"], fixture.activeWorktree)).trim(), "safe change");
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("Markdown decisions verify exact content before ignoring or deleting individual files", async () => {
   const fixture = await createFixture("integration-markdown-decisions", { activeFeatureWorktree: true });
   const manager = new GitWorkspaceManager({

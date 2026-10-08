@@ -25,9 +25,15 @@ export async function stageValidatedIntegrationTree({ cwd, execFile }) {
     }
     await git(execFile, cwd, ["add", "--all"], environment);
     const entries = parseStagedEntries(await git(execFile, cwd, ["ls-files", "--stage", "-z"], environment));
+    const changedPaths = await stagedChangePaths(execFile, cwd, environment, entries);
     const declaredSubmodules = await declaredSubmodulePaths(execFile, cwd, environment);
     const violations = [];
     for (const entry of entries) {
+      // Validate what this commit introduces or changes. A repository may
+      // contain a historical entry that no longer satisfies today's safety
+      // policy; blocking every unrelated commit would make the repository
+      // impossible to repair incrementally.
+      if (!changedPaths.has(entry.path)) continue;
       if (FORBIDDEN_INTERNAL_PATHS.has(entry.path) || entry.path === ".corptie" || entry.path.startsWith(".corptie/")) {
         violations.push({ code: "CORPTIE_INTERNAL_PATH_STAGED", path: entry.path, mode: entry.mode });
       }
@@ -64,6 +70,16 @@ export async function stageValidatedIntegrationTree({ cwd, execFile }) {
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
+}
+
+async function stagedChangePaths(execFile, cwd, environment, entries) {
+  if (!await gitSucceeds(execFile, cwd, ["rev-parse", "--verify", "HEAD"])) {
+    return new Set(entries.map((entry) => entry.path));
+  }
+  const output = await git(execFile, cwd, [
+    "diff", "--cached", "--name-only", "--diff-filter=ACMRTUXB", "-z", "HEAD"
+  ], environment);
+  return new Set(String(output).split("\0").filter(Boolean));
 }
 
 async function declaredSubmodulePaths(execFile, cwd, environment) {
