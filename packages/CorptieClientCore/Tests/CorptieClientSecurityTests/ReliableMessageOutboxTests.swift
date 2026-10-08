@@ -5,6 +5,23 @@ import CorptieClientCore
 @testable import CorptieClientSecurity
 
 struct ReliableMessageOutboxTests {
+    @Test func onlyTerminalRejectedOrCancelledPayloadsCanBeDiscarded() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let key = SymmetricKey(size: .bits256)
+        let outbox = ReliableMessageOutbox(directory: directory, key: key)
+        for state in [ReliableOutgoingMessage.State.waiting, .blocked, .accepted, .rejected, .cancelled] {
+            var message = ReliableOutgoingMessage(serverID: "server", deviceID: "device", sessionID: "session",
+                displaySessionID: "session", text: "body", images: [.init(fileName: "image", data: Data([1, 2]))])
+            message.state = state
+            try await outbox.save(message)
+            let discarded = try await outbox.discardTerminal(message.id)
+            #expect(discarded == (state == .rejected || state == .cancelled))
+            let remaining = try await outbox.all().contains(where: { $0.id == message.id })
+            #expect(remaining == !discarded)
+        }
+        #expect(try await ReliableMessageOutbox(directory: directory, key: key).all().count == 3)
+    }
     @Test func identityJournalHasABoundedRetentionIndependentOfPayloads() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

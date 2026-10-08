@@ -5,17 +5,17 @@ import CorptieClientCore
 
 @MainActor
 struct PadTimelineProjectionTests {
-    @Test func longProcessCollapseTracksOnlyExpandedCardBoundaries() throws {
+    @Test func processCollapseRemainsInlineWithoutFloatingControlOrFrameTracking() throws {
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/CorptieMobileApp.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
-        #expect(contents.contains("ProcessCollapseCandidate(id: entryID"))
-        #expect(contents.contains("ProcessCollapsePlacementPolicy.placement("))
-        #expect(contents.contains("timelinePosition.scrollTo(id: entryID, anchor: .top)"))
-        let stepStart = try #require(contents.range(of: "private struct PadExecutionStepCard: View"))
-        #expect(!contents[stepStart.lowerBound...].contains("ProcessCollapseCandidate("))
+        #expect(!contents.contains("ProcessCollapseOverlay"))
+        #expect(!contents.contains("ProcessCollapseTracker"))
+        #expect(!contents.contains("ProcessCollapseCandidate("))
+        #expect(contents.contains("tracksVisibleFrames: false"))
+        #expect(contents.contains("toggle: toggle"))
     }
 
     @Test func processSummaryUsesTheUsersPreferredLanguage() throws {
@@ -25,7 +25,7 @@ struct PadTimelineProjectionTests {
             .appendingPathComponent("Sources/CorptieMobileApp.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
         let start = try #require(contents.range(of: "private struct PadProcessCard: View"))
-        let end = try #require(contents.range(of: "private struct TimelineHistoryViewportState"))
+        let end = try #require(contents.range(of: "private struct PadProcessCardLayout"))
         let card = contents[start.lowerBound..<end.lowerBound]
         #expect(card.contains("Locale.preferredLanguages.first ?? \"en\""))
         #expect(!card.contains("locale.language.languageCode"))

@@ -4,40 +4,76 @@ import CorptieClientCore
 @testable import CorptieMobileState
 
 @Suite struct PadTimelineFollowTests {
-    @Test func settledKeyboardOffsetRemovesBlankSpaceWithoutJumpingHistory() {
-        let stale = PadTimelineBottomGeometry(contentHeight: 2000, viewportHeight: 800,
-            topInset: 0, bottomInset: 100, offset: 1600)
-        #expect(stale.settledOffset(followsLatest: true, isInteracting: false) == 1300)
-        #expect(stale.settledOffset(followsLatest: false, isInteracting: false) == 1300)
-        #expect(stale.settledOffset(followsLatest: true, isInteracting: true) == nil)
-        let history = PadTimelineBottomGeometry(contentHeight: 2000, viewportHeight: 800,
-            topInset: 0, bottomInset: 100, offset: 600)
-        #expect(history.settledOffset(followsLatest: false, isInteracting: false) == nil)
-        #expect(history.settledOffset(followsLatest: true, isInteracting: false) == 1300)
-        let docked = PadTimelineBottomGeometry(contentHeight: 2000, viewportHeight: 800,
-            topInset: 0, bottomInset: 100, offset: 1300)
-        #expect(docked.settledOffset(followsLatest: true, isInteracting: false) == nil)
+    @Test func interactiveKeyboardDismissalPreservesFollowDespiteTransientBottomGeometry() {
+        var gesture = PadTimelineFollowGesture()
+        gesture.beginInteraction(followsLatest: true, viewportHeight: 350, keyboardVisible: true)
+        #expect(gesture.finish(isNearBottom: false, translationY: 200, viewportHeight: 650, keyboardChanged: true) == true)
     }
 
-    @Test func repeatedKeyboardOpenCloseSettlesToEachPhysicalBottom() {
+    @Test func repeatedKeyboardGesturesDoNotTurnIntoHistoryIntent() {
         for _ in 0..<100 {
-            let open = PadTimelineBottomGeometry(contentHeight: 2000, viewportHeight: 500,
-                topInset: 0, bottomInset: 100, offset: 1300)
-            #expect(open.settledOffset(followsLatest: true, isInteracting: false) == 1600)
-            let closed = PadTimelineBottomGeometry(contentHeight: 2000, viewportHeight: 800,
-                topInset: 0, bottomInset: 100, offset: 1600)
-            #expect(closed.settledOffset(followsLatest: true, isInteracting: false) == 1300)
+            var gesture = PadTimelineFollowGesture()
+            gesture.beginInteraction(followsLatest: true, viewportHeight: 350, keyboardVisible: true)
+            #expect(gesture.finish(isNearBottom: false, translationY: 250, viewportHeight: 650, keyboardChanged: true) == true)
         }
     }
 
-    @Test func settledOffsetHandlesShortContentAndInvalidGeometry() {
-        let short = PadTimelineBottomGeometry(contentHeight: 200, viewportHeight: 700,
-            topInset: 400, bottomInset: 100, offset: -100)
-        #expect(short.settledOffset(followsLatest: true, isInteracting: false) == -400)
-        let invalid = PadTimelineBottomGeometry(contentHeight: 200, viewportHeight: 700,
-            topInset: 0, bottomInset: 100, offset: .nan)
-        #expect(invalid.settledOffset(followsLatest: true, isInteracting: false) == nil)
+    @Test func intentionalHistoryDragStillExitsFollowIncludingAfterKeyboardDismissal() {
+        var gesture = PadTimelineFollowGesture()
+        gesture.beginInteraction(followsLatest: true, viewportHeight: 350, keyboardVisible: true)
+        #expect(gesture.finish(isNearBottom: false, translationY: 400, viewportHeight: 650, keyboardChanged: true) == false)
+        gesture.beginInteraction(followsLatest: true, viewportHeight: 650)
+        #expect(gesture.finish(isNearBottom: false, translationY: 30, viewportHeight: 650) == false)
+        gesture.beginInteraction(followsLatest: false, viewportHeight: 350)
+        #expect(gesture.finish(isNearBottom: false, translationY: 0, viewportHeight: 650) == false)
     }
+    @Test func endedRecognizerReturningZeroCannotHideHistoryButton() {
+        var gesture = PadTimelineFollowGesture()
+        gesture.beginInteraction(followsLatest: true, viewportHeight: 650)
+        gesture.record(translationY: 180)
+        #expect(gesture.hasHistoryDrag)
+        #expect(gesture.finish(isNearBottom: false, translationY: 0, viewportHeight: 650) == false)
+        // Even if no UIKit sample was delivered, non-keyboard geometry wins.
+        gesture.beginInteraction(followsLatest: true, viewportHeight: 650)
+        #expect(gesture.finish(isNearBottom: false, translationY: 0, viewportHeight: 650) == false)
+    }
+
+    @Test func keyboardProtectionRequiresActualKeyboardTransitionAndRetainsRecordedHistoryDrag() {
+        var gesture = PadTimelineFollowGesture()
+        gesture.beginInteraction(followsLatest: true, viewportHeight: 350, keyboardVisible: true)
+        gesture.record(translationY: 450)
+        #expect(!gesture.hasHistoryDrag)
+        #expect(gesture.finish(isNearBottom: false, viewportHeight: 650, keyboardChanged: true) == false)
+        gesture.beginInteraction(followsLatest: true, viewportHeight: 350, keyboardVisible: true)
+        #expect(gesture.finish(isNearBottom: false, viewportHeight: 350, keyboardChanged: false) == false)
+        gesture.beginInteraction(followsLatest: true, viewportHeight: 350)
+        #expect(gesture.finish(isNearBottom: false, viewportHeight: 650, keyboardChanged: true) == false)
+    }
+
+    @Test func jumpPresentationSeparatesIntentPositionAndTransientLayout() {
+        #expect(PadTimelineJumpPresentation.showsButton(followsLatest: false, docked: false,
+            layoutChanging: false, interacting: true, initiallyPlaced: true, placementExhausted: false))
+        #expect(!PadTimelineJumpPresentation.showsButton(followsLatest: false, docked: true,
+            layoutChanging: false, interacting: false, initiallyPlaced: true, placementExhausted: false))
+        #expect(!PadTimelineJumpPresentation.showsButton(followsLatest: true, docked: false,
+            layoutChanging: true, interacting: false, initiallyPlaced: true, placementExhausted: true))
+        #expect(!PadTimelineJumpPresentation.showsButton(followsLatest: true, docked: false,
+            layoutChanging: false, interacting: false, initiallyPlaced: false, placementExhausted: true))
+        #expect(PadTimelineJumpPresentation.showsButton(followsLatest: true, docked: false,
+            layoutChanging: false, interacting: false, initiallyPlaced: true, placementExhausted: true))
+        #expect(!PadTimelineJumpPresentation.showsButton(followsLatest: true, docked: true,
+            layoutChanging: false, interacting: false, initiallyPlaced: true, placementExhausted: true))
+    }
+
+    @Test func gestureSamplingIsPassiveAndDoesNotObserveEachPixel() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("Sources/PadNativeTimeline.swift"), encoding: .utf8)
+        #expect(source.contains("func scrollViewDidScroll"))
+        #expect(source.contains("if self.reportedJump != show"))
+        #expect(source.contains("@ObservationIgnored var currentPosition"))
+        #expect(!source.contains("@State"))
+    }
+
     @Test func insetOccludedBottomCannotBeMistakenForLatest() {
         let before = PadTimelineBottomGeometry(contentHeight: 2000, viewportHeight: 800,
             topInset: 0, bottomInset: 250, offset: 1200)
@@ -59,7 +95,9 @@ import CorptieClientCore
         #expect(keyboard.tailIsDocked(rowBottom: 375))
         let expanded = PadTimelineBottomGeometry(contentHeight: 2000, viewportHeight: 800,
             topInset: 0, bottomInset: 100, offset: 1600)
-        #expect(!expanded.isNearBottom)
+        // Offset beyond the newly reduced range is bottom overscroll. The
+        // physical button is hidden, but row docking must still be corrected.
+        #expect(expanded.isNearBottom)
         #expect(!expanded.tailIsDocked(rowBottom: 375))
         let corrected = PadTimelineBottomGeometry(contentHeight: 2000, viewportHeight: 800,
             topInset: 0, bottomInset: 100, offset: 1300)
@@ -93,11 +131,10 @@ import CorptieClientCore
     }
 
     @Test func messageScrollbarUsesOnlyThumbPanAndDoesNotObserveSwiftUIOffsetState() throws {
-        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Sources/CorptieMobileApp.swift"), encoding: .utf8)
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("Sources/CorptieMobileApp.swift"), encoding: .utf8)
         let indicator = try #require(source.range(of: "private struct TimelineDragOnlyScrollbar:"))
-        let end = try #require(source.range(of: "private struct TimelineTailVisibilityModifier:"))
+        let end = try #require(source.range(of: "private struct PadApprovalCard:"))
         let implementation = String(source[indicator.lowerBound..<end.lowerBound])
         #expect(implementation.contains("UIPanGestureRecognizer"))
         #expect(implementation.contains("pan.delegate = self"))
@@ -107,7 +144,6 @@ import CorptieClientCore
         #expect(!implementation.contains("@State"))
         #expect(implementation.contains("observations.removeAll()"))
         #expect(implementation.contains("dragGeometry = nil\n                pan.isEnabled = false"))
-        #expect(source.contains(".scrollIndicators(.hidden)"))
     }
 
     @Test func idleKeyboardAndContentGrowthNeverExitFollowing() {
@@ -183,6 +219,40 @@ import CorptieClientCore
         }
         #expect(count == 20)
         #expect((0..<1_000).filter { _ in audit.shouldLogPlacementEvent() }.count == 100)
+    }
+
+    @Test func diagnosticBudgetRenewsForLaterFailuresWithoutGrowingMemory() {
+        let audit = PadTimelineVisibilityAudit()
+        #expect((0..<1_000).filter { _ in audit.shouldLogPlacementEvent(now: 0) }.count == 100)
+        #expect(!audit.shouldLogPlacementEvent(now: 59))
+        #expect(audit.shouldLogPlacementEvent(now: 60))
+        #expect((0..<1_000).filter { _ in audit.shouldLogPlacementEvent(now: 60) }.count == 99)
+    }
+
+    @Test func streamingTailAndKeyboardCompletionRearmBoundedSemanticPlacement() {
+        var gate = PadTimelinePlacementGate()
+        for revision in UInt64(0)..<1_000 {
+            let key = PadTimelinePlacementKey(width: 361, height: 500, topInset: 80,
+                bottomInset: 120, tailRevision: revision, tailHeight: CGFloat(revision), keyboardRevision: 2)
+            #expect(gate.admit(key) == true)
+            #expect(gate.admit(key) == true)
+            #expect(gate.admit(key) == false)
+        }
+        let finalKeyboard = PadTimelinePlacementKey(width: 361, height: 500, topInset: 80,
+            bottomInset: 120, tailRevision: 999, tailHeight: 999, keyboardRevision: 3)
+        #expect(gate.admit(finalKeyboard) == true)
+    }
+
+    @Test func keyboardHasOneOwnerAndNoIndependentFixedDurationAnimation() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let shell = try String(contentsOf: root.appendingPathComponent("Sources/PadAppShell.swift"), encoding: .utf8)
+        let composer = try String(contentsOf: root.appendingPathComponent("Sources/PadComposer.swift"), encoding: .utf8)
+        #expect(shell.contains(".environment(\\.padKeyboardViewport, keyboardViewport)"))
+        #expect(shell.contains("keyboardWillChangeFrameNotification"))
+        #expect(shell.contains("keyboardDidChangeFrameNotification"))
+        #expect(!composer.contains("keyboardWillShowNotification"))
+        #expect(!composer.contains("keyboardWillHideNotification"))
+        #expect(!shell.contains("withAnimation(.easeInOut(duration: 0.2)) { isKeyboardVisible"))
     }
 
     @Test @MainActor func localPlaceholderChangesDrivePresentationRevision() {

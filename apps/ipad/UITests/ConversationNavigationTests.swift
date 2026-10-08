@@ -2,6 +2,138 @@ import XCTest
 
 final class ConversationNavigationTests: XCTestCase {
     @MainActor
+    func testJumpWorksAfterFastHistoryFlickWithoutKeyboard() throws {
+        let app = XCUIApplication()
+        app.launch()
+        let session = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "outline-session-")).firstMatch
+        guard session.waitForExistence(timeout: 20) else {
+            throw XCTSkip("Requires a paired iPhone with scrollable history")
+        }
+        session.tap()
+        let timeline = app.scrollViews["conversation-timeline"].firstMatch
+        XCTAssertTrue(timeline.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        let start = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25))
+        let end = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
+        start.press(forDuration: 0.01, thenDragTo: end, withVelocity: .fast, thenHoldForDuration: 0)
+        let jump = app.buttons["conversation-jump-to-latest"]
+        XCTAssertTrue(jump.exists, "The button must not wait for an idle-only presentation rule")
+        jump.tap()
+        assertLatestDocked(app.otherElements["conversation-latest-entry"].firstMatch,
+            timeline: timeline, composer: app.otherElements["conversation-composer"].firstMatch)
+        XCTAssertFalse(jump.exists)
+        // XCTest may wait for quiescence between commands; a second-finger
+        // tap DURING an active drag still requires explicit manual acceptance.
+    }
+    @MainActor
+    func testHistoryReadingPositionSurvivesLeavingConversation() throws {
+        let app = XCUIApplication()
+        app.launch()
+        let session = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "outline-session-")
+        ).firstMatch
+        guard session.waitForExistence(timeout: 20) else {
+            throw XCTSkip("Requires a paired iPhone with scrollable conversation history")
+        }
+        session.tap()
+        let back = app.buttons["conversation-back"]
+        guard back.waitForExistence(timeout: 3) else { throw XCTSkip("Requires compact layout") }
+        let timeline = app.scrollViews["conversation-timeline"].firstMatch
+        XCTAssertTrue(timeline.waitForExistence(timeout: 10))
+        timeline.swipeDown()
+        timeline.swipeDown()
+        XCTAssertTrue(app.buttons["conversation-jump-to-latest"].waitForExistence(timeout: 5))
+        let rows = app.otherElements.matching(NSPredicate(format: "identifier BEGINSWITH %@", "conversation-entry-"))
+        let anchor = try XCTUnwrap(rows.allElementsBoundByIndex.first {
+            $0.frame.intersects(timeline.frame) && $0.frame.minY >= timeline.frame.minY
+        }, "Requires a visible historical row")
+        let identity = anchor.identifier
+        let relativeY = anchor.frame.minY - timeline.frame.minY
+        back.tap()
+        XCTAssertTrue(session.waitForExistence(timeout: 5))
+        session.tap()
+        let restored = app.otherElements[identity].firstMatch
+        let matched = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            restored.exists && abs(restored.frame.minY - timeline.frame.minY - relativeY) < 8
+        }, object: restored)
+        XCTAssertEqual(XCTWaiter.wait(for: [matched], timeout: 10), .completed)
+        XCTAssertTrue(app.buttons["conversation-jump-to-latest"].exists)
+    }
+
+    @MainActor
+    func testHistoryDragShowsJumpAndConfirmedJumpHidesIt() throws {
+        let app = XCUIApplication()
+        app.launch()
+        let session = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "outline-session-")
+        ).firstMatch
+        guard session.waitForExistence(timeout: 20) else {
+            throw XCTSkip("Requires a paired device and a conversation with scrollable history")
+        }
+        session.tap()
+        let timeline = app.scrollViews["conversation-timeline"].firstMatch
+        XCTAssertTrue(timeline.waitForExistence(timeout: 10))
+        let jump = app.buttons["conversation-jump-to-latest"]
+        if jump.exists { jump.tap() }
+        for _ in 0..<3 {
+            timeline.swipeDown()
+            XCTAssertTrue(jump.waitForExistence(timeout: 5), "History reading must show the jump control after deceleration")
+            jump.tap()
+            let hidden = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: jump)
+            XCTAssertEqual(XCTWaiter.wait(for: [hidden], timeout: 5), .completed)
+            assertLatestDocked(app.otherElements["conversation-latest-entry"].firstMatch,
+                timeline: timeline, composer: app.otherElements["conversation-composer"].firstMatch)
+        }
+    }
+
+    @MainActor
+    func testLatestCardsRemainVisibleAndDockedAcrossKeyboardCycles() throws {
+        let app = XCUIApplication()
+        app.launch()
+        let session = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "outline-session-")
+        ).firstMatch
+        guard session.waitForExistence(timeout: 20) else {
+            throw XCTSkip("A paired test device with message history is required")
+        }
+        session.tap()
+        guard app.buttons["conversation-back"].waitForExistence(timeout: 3) else {
+            throw XCTSkip("This regression exercises the compact iPhone conversation")
+        }
+        let timeline = app.scrollViews["conversation-timeline"].firstMatch
+        let composer = app.otherElements["conversation-composer"].firstMatch
+        let latest = app.otherElements["conversation-latest-entry"].firstMatch
+        let input = app.descendants(matching: .any)["conversation-composer-input"].firstMatch
+        XCTAssertTrue(timeline.waitForExistence(timeout: 10))
+        XCTAssertTrue(latest.waitForExistence(timeout: 10), "Require a real message row, not a tail sentinel")
+        for _ in 0..<10 {
+            let jump = app.buttons["conversation-jump-to-latest"]
+            if jump.exists { jump.tap() }
+            input.tap()
+            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+            assertLatestDocked(latest, timeline: timeline, composer: composer)
+            timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.01, dy: 0.05)).tap()
+            let hidden = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),
+                object: app.keyboards.firstMatch)
+            XCTAssertEqual(XCTWaiter.wait(for: [hidden], timeout: 5), .completed)
+            assertLatestDocked(latest, timeline: timeline, composer: composer)
+            XCTAssertFalse(app.buttons["conversation-jump-to-latest"].exists,
+                "Keyboard-only layout changes must not show a history jump control")
+        }
+    }
+
+    @MainActor
+    private func assertLatestDocked(_ latest: XCUIElement, timeline: XCUIElement, composer: XCUIElement,
+                                    file: StaticString = #filePath, line: UInt = #line) {
+        let docked = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            latest.exists && composer.exists && latest.frame.intersects(timeline.frame)
+                && abs(latest.frame.maxY - composer.frame.minY) <= 60
+        }, object: latest)
+        XCTAssertEqual(XCTWaiter.wait(for: [docked], timeout: 5), .completed,
+            "Real cards must remain visible; latest must be above composer, not mid-screen", file: file, line: line)
+    }
+
+    @MainActor
     func testCompactWorkbenchReusesConversationAndDetailPages() throws {
         let app = XCUIApplication()
         app.launch()

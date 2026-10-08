@@ -12,6 +12,6 @@ let package = Package(name: "CorptieMobileState", platforms: [.macOS(.v14), .iOS
             .product(name: "CorptieClientCore", package: "CorptieClientCore"),
             .product(name: "CorptieClientSecurity", package: "CorptieClientCore"),
             .product(name: "CorptieConversation", package: "CorptieConversation")],
-            path: "Sources", exclude: ["CorptieMobileApp.swift", "CloudSignInSession.swift", "PadAppShell.swift", "PadControlView.swift", "PairingScannerView.swift", "PadKeyboardDismissal.swift", "PadComposerExtras.swift", "PadComposer.swift", "PadComposerTextView.swift", "PadThreadMetaView.swift", "PadMessageText.swift", "PadTaskCreationSheet.swift", "PadWorkAvatars.swift", "PadWorkOutline.swift", "PadMessageImages.swift", "PadMessageLayout.swift", "PadEntityMenus.swift"]),
+            path: "Sources", exclude: ["PadStandardTimeline.swift", "PadStandardTimelineFixture.swift", "PadNativeTimeline.swift", "CorptieMobileApp.swift", "CloudSignInSession.swift", "PadAppShell.swift", "PadControlView.swift", "PairingScannerView.swift", "PadKeyboardDismissal.swift", "PadComposerExtras.swift", "PadComposer.swift", "PadComposerTextView.swift", "PadThreadMetaView.swift", "PadMessageText.swift", "PadTaskCreationSheet.swift", "PadWorkAvatars.swift", "PadWorkOutline.swift", "PadMessageImages.swift", "PadMessageLayout.swift", "PadEntityMenus.swift"]),
         .testTarget(name: "CorptieMobileStateTests", dependencies: ["CorptieMobileState"], path: "Tests")
     ])

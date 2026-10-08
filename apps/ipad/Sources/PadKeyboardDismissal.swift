@@ -1,6 +1,17 @@
 import SwiftUI
 import UIKit
 
+private struct PadKeyboardViewportKey: EnvironmentKey {
+    static let defaultValue = PadKeyboardViewport()
+}
+
+extension EnvironmentValues {
+    var padKeyboardViewport: PadKeyboardViewport {
+        get { self[PadKeyboardViewportKey.self] }
+        set { self[PadKeyboardViewportKey.self] = newValue }
+    }
+}
+
 /// One passive observer per window, not a gesture on every message row.
 struct PadKeyboardDismissal: UIViewRepresentable {
     func makeUIView(context: Context) -> Observer { Observer() }
@@ -29,7 +40,7 @@ struct PadKeyboardDismissal: UIViewRepresentable {
             var target = touch.view
             while let view = target {
                 // Read-only message TextKit leaves are not composer inputs.
-                if (view as? UITextView)?.isEditable == true || view is UITextField { return false }
+                if (view as? UITextView)?.isEditable == true || view is UITextField || view is UIControl { return false }
                 target = view.superview
             }
             return true

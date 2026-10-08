@@ -60,18 +60,7 @@ struct PadTimelineBottomGeometry {
     var maximumOffset: CGFloat {
         max(-topInset, contentHeight - viewportHeight + bottomInset)
     }
-    var isNearBottom: Bool { abs(maximumOffset - offset) <= 40 }
-
-    /// A shrinking keyboard inset can leave the old offset beyond the new
-    /// physical bottom. Correct that even while reading history, but never
-    /// move an in-range history position or interfere with a live drag.
-    func settledOffset(followsLatest: Bool, isInteracting: Bool) -> CGFloat? {
-        guard !isInteracting, viewportHeight > 1,
-              contentHeight.isFinite, viewportHeight.isFinite,
-              topInset.isFinite, bottomInset.isFinite, offset.isFinite else { return nil }
-        guard followsLatest || offset > maximumOffset + 1 else { return nil }
-        return abs(offset - maximumOffset) > 1 ? maximumOffset : nil
-    }
+    var isNearBottom: Bool { maximumOffset - offset <= 2 }
 
     func tailIsDocked(rowBottom: CGFloat?) -> Bool {
         guard let rowBottom, rowBottom.isFinite, viewportHeight > 1 else { return false }
@@ -86,6 +75,21 @@ struct PadTimelineViewportInsets: Equatable {
     let height: CGFloat
     let top: CGFloat
     let bottom: CGFloat
+}
+
+/// Only a stable message identity and viewport-relative position, never text.
+struct PadTimelineReadingPosition: Codable, Equatable {
+    let followsLatest: Bool
+    let entryID: String?
+    let minY: Double
+    let updatedAt: Date
+
+    init(followsLatest: Bool, entryID: String?, minY: Double, updatedAt: Date = Date()) {
+        self.followsLatest = followsLatest
+        self.entryID = entryID
+        self.minY = minY.isFinite ? minY : 0
+        self.updatedAt = updatedAt
+    }
 }
 
 enum PadTimelineJumpPolicy {
@@ -117,13 +121,121 @@ enum PadTimelineJumpPolicy {
 /// resizing, programmatic scrolling and an idle geometry update cannot do so.
 struct PadTimelineFollowGesture {
     private(set) var isInteracting = false
-    mutating func beginInteraction() { isInteracting = true }
-    mutating func finish(isNearBottom: Bool) -> Bool? {
+    private var startedFollowing = false
+    private var startTranslation: CGFloat = 0
+    private var startViewportHeight: CGFloat = 0
+    private var keyboardWasVisible = false
+    private var maximumTranslation: CGFloat = 0
+    mutating func beginInteraction(followsLatest: Bool = false, translationY: CGFloat = 0,
+                                  viewportHeight: CGFloat = 0, keyboardVisible: Bool = false) {
+        isInteracting = true
+        startedFollowing = followsLatest
+        startTranslation = translationY
+        startViewportHeight = viewportHeight
+        keyboardWasVisible = keyboardVisible
+        maximumTranslation = translationY
+    }
+    mutating func record(translationY: CGFloat) {
+        guard isInteracting, translationY.isFinite else { return }
+        maximumTranslation = max(maximumTranslation, translationY)
+    }
+    var hasHistoryDrag: Bool {
+        isInteracting && !keyboardWasVisible && maximumTranslation - startTranslation > 12
+    }
+    mutating func finish(isNearBottom: Bool, translationY: CGFloat = 0,
+                         viewportHeight: CGFloat = 0, keyboardChanged: Bool = false) -> Bool? {
         guard isInteracting else { return nil }
+        record(translationY: translationY)
         isInteracting = false
-        return isNearBottom
+        // A downward finger drag deliberately reveals history. Resizing the
+        // viewport while dismissing the keyboard is not that intent.
+        // Outside an actual keyboard transition, physical end position wins.
+        // In particular an ended recognizer returning zero must not re-enable
+        // following after the user has moved into history.
+        guard keyboardWasVisible, keyboardChanged else { return isNearBottom }
+        let revealedViewport = max(0, viewportHeight - startViewportHeight)
+        let movedTowardHistory = maximumTranslation - startTranslation - revealedViewport > 12
+        return isNearBottom || (startedFollowing && !movedTowardHistory)
     }
     mutating func reset() { isInteracting = false }
+}
+
+struct PadKeyboardViewport: Equatable {
+    var isVisible = false
+    var isChanging = false
+    var revision: UInt64 = 0
+}
+
+/// Only structural layout and tail mutations admit a new positioning cycle.
+/// Estimated content height and content offset deliberately are not keys.
+struct PadTimelinePlacementKey: Equatable {
+    let width: CGFloat
+    let height: CGFloat
+    let topInset: CGFloat
+    let bottomInset: CGFloat
+    let tailRevision: UInt64
+    let tailHeight: CGFloat
+    let keyboardRevision: UInt64
+}
+
+struct PadTimelinePlacementGate {
+    private var key: PadTimelinePlacementKey?
+    private var attempts = 0
+    var isExhausted: Bool { attempts >= 2 }
+    mutating func admit(_ next: PadTimelinePlacementKey) -> Bool {
+        if next != key { key = next; attempts = 0 }
+        guard attempts < 2 else { return false }
+        attempts += 1
+        return true
+    }
+    mutating func reset() { key = nil; attempts = 0 }
+}
+
+enum PadTimelineJumpPresentation {
+    static func showsButton(hasMessages: Bool, atBottom: Bool) -> Bool {
+        hasMessages && !atBottom
+    }
+    static func showsButton(followsLatest: Bool, docked: Bool, layoutChanging: Bool,
+                            interacting: Bool, initiallyPlaced: Bool, placementExhausted: Bool) -> Bool {
+        if !followsLatest { return !docked }
+        return initiallyPlaced && !docked && !layoutChanging && !interacting && placementExhausted
+    }
+}
+
+/// The single owner of reading intent. Geometry and button visibility are
+/// facts, not commands; an old idle callback cannot revoke an explicit jump.
+struct PadTimelineScrollController: Equatable {
+    enum Mode: Equatable { case followingLatest, readingHistory, restoring, jumpingLatest }
+    private(set) var mode: Mode = .followingLatest
+    private(set) var hasNewMessagesBelow = false
+    var followsLatest: Bool { mode == .followingLatest || mode == .jumpingLatest }
+    var isJumping: Bool { mode == .jumpingLatest }
+
+    mutating func reset(followsLatest: Bool = true) {
+        mode = followsLatest ? .followingLatest : .readingHistory
+        hasNewMessagesBelow = false
+    }
+    mutating func beginRestore() { mode = .restoring }
+    mutating func finishRestore() { if mode == .restoring { mode = .readingHistory } }
+    mutating func beginUserScroll() { mode = .readingHistory }
+    mutating func setFollowsLatest(_ value: Bool) {
+        guard !isJumping, mode != .restoring else { return }
+        mode = value ? .followingLatest : .readingHistory
+        if value { hasNewMessagesBelow = false }
+    }
+    mutating func prepareForHistoryPrepend(preservingLatestFollow: Bool) {
+        if !preservingLatestFollow { setFollowsLatest(false) }
+    }
+    @discardableResult mutating func timelineTailDidChange() -> Bool {
+        if followsLatest { return true }
+        hasNewMessagesBelow = true
+        return false
+    }
+    mutating func jumpToLatest() { mode = .jumpingLatest; hasNewMessagesBelow = false }
+    mutating func confirmLatest() {
+        guard followsLatest else { return }
+        mode = .followingLatest
+    }
 }
 
 /// Event-only, bounded diagnostics. Neither observation nor message text is
@@ -133,13 +245,24 @@ final class PadTimelineVisibilityAudit {
     private var last: State?
     private var transitions = 0
     private var placementEvents = 0
-    func shouldLogPlacementEvent() -> Bool {
+    private var windowStartedAt: TimeInterval?
+    private func renewBudget(now: TimeInterval) {
+        if windowStartedAt == nil || now - (windowStartedAt ?? now) >= 60 {
+            windowStartedAt = now
+            transitions = 0
+            placementEvents = 0
+        }
+    }
+    func shouldLogPlacementEvent(now: TimeInterval = Date.timeIntervalSinceReferenceDate) -> Bool {
+        renewBudget(now: now)
         guard placementEvents < 100 else { return false }
         placementEvents += 1
         return true
     }
     func transition(entryCount: Int, visibleCount: Int, offset: CGFloat,
-                    minimum: CGFloat, maximum: CGFloat) -> State? {
+                    minimum: CGFloat, maximum: CGFloat,
+                    now: TimeInterval = Date.timeIntervalSinceReferenceDate) -> State? {
+        renewBudget(now: now)
         let next: State = entryCount == 0 ? .emptyData
             : !offset.isFinite || offset < minimum - 2 || offset > maximum + 2 ? .outOfBounds
             : visibleCount == 0 ? .missingRows : .visible
@@ -164,19 +287,6 @@ enum PadTimelineLayoutMetrics {
         guard viewportWidth.isFinite else { return 0 }
         return max(0, viewportWidth).rounded(.down)
     }
-}
-
-/// Non-observed, single-slot mailbox: repeated layout/tail requests coalesce,
-/// but a request arriving during placement survives until the next UI turn.
-final class PadTimelinePlacementRequests {
-    private(set) var pending = false
-    func request() { pending = true }
-    @discardableResult func take() -> Bool {
-        let value = pending
-        pending = false
-        return value
-    }
-    func cancel() { pending = false }
 }
 
 enum PadComposerHeightPolicy {
@@ -457,7 +567,95 @@ final class PadWorkspace {
         let received = Set(messages.map(\.id))
         return Self.merge(messages, (outgoingMessages[selection ?? ""] ?? []).filter { item in
             !received.contains(item.id)
-        })
+        }).filter { item in
+            !(deletedMessageIDs[selection ?? ""] ?? []).contains(item.id) || !canDeleteUnreceivedMessage(item)
+        }
+    }
+
+    private var deletedMessageIDs: [String: Set<String>] = [:] {
+        didSet { refreshDisplayEntries() }
+    }
+    @ObservationIgnored private var deletedMessageScope: String?
+
+    private func readingPositionKey(serverID: String, deviceID: String?) -> String {
+        // Length-prefixed components avoid delimiter collisions.
+        let device = deviceID ?? ""
+        return "timelineReadingPositions:v1:\(serverID.utf8.count):\(serverID):\(device)"
+    }
+
+    func readingPosition(serverID: String, deviceID: String?, sessionID: String) -> PadTimelineReadingPosition? {
+        defaults.data(forKey: readingPositionKey(serverID: serverID, deviceID: deviceID))
+            .flatMap { try? JSONDecoder().decode([String: PadTimelineReadingPosition].self, from: $0) }?[sessionID]
+    }
+
+    func saveReadingPosition(_ position: PadTimelineReadingPosition,
+                             serverID: String, deviceID: String?, sessionID: String) {
+        guard !serverID.isEmpty, !sessionID.isEmpty,
+              position.followsLatest || position.entryID != nil else { return }
+        let key = readingPositionKey(serverID: serverID, deviceID: deviceID)
+        var records = defaults.data(forKey: key)
+            .flatMap { try? JSONDecoder().decode([String: PadTimelineReadingPosition].self, from: $0) } ?? [:]
+        records[sessionID] = position
+        if records.count > 100 {
+            records = Dictionary(uniqueKeysWithValues: records.sorted {
+                $0.value.updatedAt > $1.value.updatedAt
+            }.prefix(100).map { ($0.key, $0.value) })
+        }
+        if let data = try? JSONEncoder().encode(records) { defaults.set(data, forKey: key) }
+    }
+
+    func prepareDeletedMessageScope(_ connection: PadConnection) {
+        let scope = connection.serverID + "|" + (connection.deviceID ?? "")
+        guard scope != deletedMessageScope else { return }
+        deletedMessageScope = scope
+        deletedMessageIDs = defaults.data(forKey: "deletedUnreceivedMessages:" + scope)
+            .flatMap { try? JSONDecoder().decode([String: Set<String>].self, from: $0) } ?? [:]
+    }
+
+    func canDeleteUnreceivedMessage(_ message: ClientMessage) -> Bool {
+        guard message.presentationKind == .userMessage else { return false }
+        let status = UserMessageStatusPresentation(authoritativeStatus: message.userMessageStatus,
+            legacyStatus: message.status, localDeliveryState: outgoingStates[message.id])
+        switch status?.kind {
+        case .deliveryFailed, .processingFailed, .cancelled, .retryStopped: return true
+        default: return false
+        }
+    }
+
+    func deleteUnreceivedMessage(_ connection: PadConnection, sessionID: String, messageID: String) async {
+        guard connection.deviceID != nil, !connection.serverID.isEmpty else { return }
+        prepareDeletedMessageScope(connection)
+        let scope = deletedMessageScope
+        let current = sessionID == selection ? messages.first(where: { $0.id == messageID }) : nil
+        guard let message = current ?? outgoingMessages[sessionID]?.first(where: { $0.id == messageID }),
+              canDeleteUnreceivedMessage(message) else { return }
+        defer { scheduleMessageDelivery(connection) }
+        do {
+            // Invalidate old sender callbacks before crossing the actor boundary.
+            deliveryRevision &+= 1
+            let records = try await messageOutbox.all()
+            if let record = records.first(where: {
+                $0.serverID == connection.serverID && $0.deviceID == connection.deviceID
+                    && $0.displaySessionID == sessionID
+                    && ($0.messageID == messageID || $0.authoritativeMessageID == messageID)
+            }) {
+                guard try await messageOutbox.discardTerminal(record.id) else { return }
+                if deliveryIssues[sessionID] == record.id { deliveryIssues.removeValue(forKey: sessionID) }
+            }
+            guard deletedMessageScope == scope,
+                  scope == connection.serverID + "|" + (connection.deviceID ?? "") else { return }
+            // Recheck against any authoritative update received while deleting.
+            let latest = sessionID == selection ? messages.first(where: { $0.id == messageID }) : nil
+            guard canDeleteUnreceivedMessage(latest ?? message) else { return }
+            var next = deletedMessageIDs
+            next[sessionID, default: []].insert(messageID)
+            let encoded = try JSONEncoder().encode(next)
+            defaults.set(encoded, forKey: "deletedUnreceivedMessages:" + (scope ?? ""))
+            deletedMessageIDs = next
+            outgoingMessages[sessionID]?.removeAll { $0.id == messageID }
+            outgoingStates.removeValue(forKey: messageID)
+            status = "已删除本机消息；未撤回或删除后端记录。"
+        } catch { status = "删除失败，消息仍保留，请稍后重试。" }
     }
 
     func reconcileAuthoritativeOutgoing() {
@@ -752,6 +950,7 @@ final class PadWorkspace {
     }
 
     func restorePersistentTimelines(_ connection: PadConnection) async {
+        prepareDeletedMessageScope(connection)
         guard let deviceID = connection.deviceID, !connection.serverID.isEmpty else { return }
         let scope = connection.serverID + "|" + deviceID
         guard persistentTimelineScope != scope else { return }

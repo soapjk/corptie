@@ -113,12 +113,15 @@ public struct MessageTextCardMenuConfiguration {
     public let copyTitle: String
     public let selectTextTitle: String
     public let canCopy: Bool
+    public let delete: (() -> Void)?
 
-    public init(timestampTitle: String?, copyTitle: String, selectTextTitle: String, canCopy: Bool = true) {
+    public init(timestampTitle: String?, copyTitle: String, selectTextTitle: String, canCopy: Bool = true,
+                delete: (() -> Void)? = nil) {
         self.timestampTitle = timestampTitle
         self.copyTitle = copyTitle
         self.selectTextTitle = selectTextTitle
         self.canCopy = canCopy
+        self.delete = delete
     }
 }
 
@@ -221,6 +224,7 @@ public struct MessageTextCard<Content: View>: View {
                 .frame(width: cardWidth, height: cardHeight, alignment: .topLeading)
                 .modifier(ConversationContentSurface(cornerRadius: 14,
                     tint: background, fallback: background, isMessage: true))
+                .accessibilityIdentifier("message-card-\(messageID)")
             if showsActions || status != nil {
                 HStack(spacing: 6) {
                     if let status {
@@ -294,6 +298,13 @@ public struct MessageTextCard<Content: View>: View {
         }
         .accessibilityIdentifier("chat.timeline.context.select-text")
         #endif
+        if let delete = configuration.delete {
+            Divider()
+            Button(role: .destructive, action: delete) {
+                Label("删除", systemImage: "trash")
+            }
+            .accessibilityIdentifier("chat.timeline.context.delete")
+        }
     }
 
     private var background: Color {

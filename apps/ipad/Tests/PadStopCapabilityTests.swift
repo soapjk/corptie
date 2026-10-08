@@ -55,13 +55,14 @@ import CorptieClientCore
     }
 
     @Test func verificationInFlightIsSilentAndStillDisablesStop() async throws {
-        let probe = StopCapabilityProbe(delay: true)
+        let probe = StopCapabilityProbe(holdResponse: true)
         let (connection, workspace) = try fixture(probe)
         let refresh = Task { await workspace.refreshSelectedCapabilities(connection) }
         while await probe.paths.isEmpty { await Task.yield() }
         #expect(workspace.refreshingCapabilities)
         #expect(workspace.stopControlReason(connection) == nil)
         #expect(!workspace.stopControlEnabled(connection))
+        await probe.releaseResponse()
         await refresh.value
         #expect(workspace.stopControlEnabled(connection))
         #expect(workspace.stopControlReason(connection) == nil)
@@ -146,12 +147,23 @@ private actor StopCapabilityProbe {
     let delay: Bool
     let denied: Bool
     let failure: Bool
-    init(delay: Bool = false, denied: Bool = false, failure: Bool = false) {
+    private var holdResponse: Bool
+    private var responseContinuation: CheckedContinuation<Void, Never>?
+    init(delay: Bool = false, denied: Bool = false, failure: Bool = false, holdResponse: Bool = false) {
         self.delay = delay; self.denied = denied; self.failure = failure
+        self.holdResponse = holdResponse
+    }
+    func releaseResponse() {
+        holdResponse = false
+        responseContinuation?.resume()
+        responseContinuation = nil
     }
     func handle(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let path = request.url!.path
         paths.append(path)
+        if holdResponse {
+            await withCheckedContinuation { responseContinuation = $0 }
+        }
         if delay { try await Task.sleep(for: .milliseconds(50)) }
         if failure { throw URLError(.timedOut) }
         let id = request.url!.pathComponents.dropLast().last!
