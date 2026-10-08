@@ -1697,3 +1697,7 @@
 "Next match" = "下一处";
 "Refresh results" = "刷新结果";
 "Showing the first 300 results. Refine your search to find more." = "已显示前 300 条结果，请缩小搜索范围以查找更多记录。";
+
+"Open Floating Window" = "开启悬浮窗";
+
+"Close Floating Window" = "关闭悬浮窗";
