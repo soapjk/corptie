@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "${ROOT}/scripts/macos-signing-policy.sh"
 PACKAGE_SCRIPT="${ROOT}/scripts/package-macos-installer.sh"
+MAKEFILE="${ROOT}/Makefile"
 
 if CORPTIE_APP_SIGNING_IDENTITY=- CORPTIE_ALLOW_ADHOC_PACKAGE=0 \
   corptie_validate_macos_signing_config >/dev/null 2>&1; then
@@ -25,6 +26,7 @@ grep -Fq 'embedded.provisionprofile' "${PACKAGE_SCRIPT}"
 grep -Fq 'CorptieCloudDataProtectionKeychain' "${PACKAGE_SCRIPT}"
 grep -Fq 'corptie_find_cloud_keychain_profile' "${PACKAGE_SCRIPT}"
 grep -Fq 'Cloud credentials will use the legacy keychain' "${PACKAGE_SCRIPT}"
+grep -Fq 'CORPTIE_ALLOW_ADHOC_PACKAGE="$${CORPTIE_ALLOW_ADHOC_PACKAGE:-1}"' "${MAKEFILE}"
 
 resolved="$(CORPTIE_APP_SIGNING_IDENTITY="Apple Development: Example (TEAMID)" \
   corptie_resolve_macos_signing_identity)"
