@@ -165,6 +165,8 @@ extension UnifiedConsoleView {
         .disabled(session?.actions?.restart?.available != true
             || pendingTaskRestartIds.contains(task.id)
             || task.deletionStatus == "deleting")
+        DetachedChatWindowMenuButton(session: session)
+            .disabled(task.deletionStatus == "deleting")
         Button(task.archived == true ? L10n("恢复 Task") : L10n("归档 Task"), systemImage: "archivebox") {
             Task { await setTaskArchived(task.archived != true, task: task) }
         }
