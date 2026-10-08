@@ -121,6 +121,25 @@ test("SQLite migration cannot block the fixed-cost transport event loop", async 
   assert.match(source.slice(migrationIndex, mainStoreOpenIndex), /dbPath: store\.dbPath/);
 });
 
+test("memory extraction starts only after the main Store connection is ready", async () => {
+  const source = await readFile(new URL("../src/server.mjs", import.meta.url), "utf8");
+  const mainStoreOpenIndex = source.indexOf(
+    "await store.initialize({ resolveDataPath: false, performMigrations: false })"
+  );
+  const schedulerStartIndex = source.indexOf("memoryExtractionScheduler.start()", mainStoreOpenIndex);
+  const readyIndex = source.indexOf("backendStoreReady = true", mainStoreOpenIndex);
+  const runtimeStartIndex = source.indexOf("startBackendRuntime();", readyIndex);
+
+  assert.ok(mainStoreOpenIndex >= 0, "the main Store connection must be opened during startup");
+  assert.ok(schedulerStartIndex > mainStoreOpenIndex,
+    "the memory scheduler must not query SQLite before the main Store connection opens");
+  assert.equal(source.match(/memoryExtractionScheduler\.start\(\)/g)?.length, 1,
+    "the memory scheduler must have one runtime-owned startup call");
+  assert.ok(runtimeStartIndex > readyIndex,
+    "the runtime containing the memory scheduler must start only after Store readiness");
+  assert.equal(source.slice(0, mainStoreOpenIndex).includes("memoryExtractionScheduler.start()"), false);
+});
+
 test("full-database query planner optimization is absent from application startup", async () => {
   const [serverSource, workerSource] = await Promise.all([
     readFile(new URL("../src/server.mjs", import.meta.url), "utf8"),
@@ -216,7 +235,7 @@ test("startup migrations run in place without creating full database backups", a
     store.indexOf("\n  reconcileInterruptedSessionExecutionAtStartup(")
   );
 
-  assert.match(initialize, /performMigrations !== false\) this\.migrate\(\)/);
+  assert.match(initialize, /performMigrations !== false\)[\s\S]*this\.migrate\(\)/);
   assert.doesNotMatch(initialize, /backup\(/);
   assert.doesNotMatch(initialize, /MigrationBackup/);
   assert.doesNotMatch(store, /pre-task-domain-v1\.backup/);
