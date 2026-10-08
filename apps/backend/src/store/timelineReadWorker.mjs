@@ -1,3 +1,4 @@
+import { unifiedSearch } from "./unifiedSearch.mjs";
 import { parentPort, workerData } from "node:worker_threads";
 import { readQuickMessages } from "../application/quickMessageRecommendations.mjs";
 
@@ -41,6 +42,8 @@ parentPort?.on("message", (message) => {
 
 function execute(operation, input) {
   switch (operation) {
+    case "unifiedSearch":
+      return unifiedSearch(store, new URLSearchParams(input.query));
     case "quickMessages":
       return readQuickMessages(store, input.sessionId);
     case "storedTimelineSnapshot": {

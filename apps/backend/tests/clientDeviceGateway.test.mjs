@@ -270,6 +270,10 @@ test("real TLS route boundary and authenticated local approval", async () => {
     taskManagement(identity, taskId) {
       return { schemaVersion: 1, task: { id: taskId }, actions: {} };
     },
+    search(identity, query) {
+      assert.ok(identity.deviceId);
+      return { schemaVersion: 1, query: query.get("q"), indexState: "ready", items: [], nextCursor: null };
+    },
     taskDeletionNotification(identity, operationId) {
       assert.ok(identity.deviceId);
       return { notification: { schemaVersion: 1, id: operationId, status: "completed" } };
@@ -477,6 +481,9 @@ test("real TLS route boundary and authenticated local approval", async () => {
     assert.equal(choices.body.providerId, "provider:test");
     assert.equal((await call(`${createPath}?work=other`, { token: creds.accessToken, method: "POST", value: createInput })).status, 403);
     // Pairing approval exposes every client feature supported by the server.
+    assert.equal((await call("/client/v1/search?q=history")).status, 401);
+    assert.equal((await call("/client/v1/search?q=history", { token: creds.accessToken })).body.query, "history");
+    assert.equal((await call("/client/v1/search", { token: creds.accessToken, method: "POST", value: {} })).status, 404);
     const operationPath = "/client/v1/task-deletion-operations/operation%3Aone";
     assert.equal((await call(operationPath)).status, 401);
     assert.equal((await call(operationPath, { token: creds.accessToken })).body.notification.id, "operation:one");
@@ -527,6 +534,8 @@ test("real TLS route boundary and authenticated local approval", async () => {
     const streamClosed = new Promise(resolve => stream.once("close", resolve));
     const authenticatedSockets = [...gateway.sockets].filter(([, owner]) => owner === creds.deviceId).map(([socket]) => socket);
     assert.ok(authenticatedSockets.length > 0);
+    // Keep authorization revocation independent of this fixture's command budget.
+    gateway.buckets.clear();
     await call("/internal/client-devices/revoke", { local: true, token, method: "POST", value: { deviceId: creds.deviceId } });
     assert.ok(authenticatedSockets.every(socket => socket.destroyed));
     await streamClosed;

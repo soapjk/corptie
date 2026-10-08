@@ -1,3 +1,4 @@
+import { unifiedSearch } from "../store/unifiedSearch.mjs";
 import { projectTaskDeletionNotification } from "./worktreeIntegrationJobService.mjs";
 import { createHash } from "node:crypto";
 import { ensureReliableMessageSchema, acceptReliableMessage, reliableReceipt } from "./clientReliableMessages.mjs";
@@ -118,12 +119,13 @@ function publicClientMessage(item) {
 
 /** v1 text messaging + stop commands. Provider-neutral callbacks, durable at-most-once dispatch. */
 export class ClientSessionAPI {
-  constructor({ quickMessages = null, store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null, respondToApproval = null, respondToUserInput = null, respondToCollaborationConfirmation = null, respondToSessionChannelRequest = null, onReceiptChanged = null, inspector = null, admitReliableMessage = null }) {
+  constructor({ searchPage = null, quickMessages = null, store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null, respondToApproval = null, respondToUserInput = null, respondToCollaborationConfirmation = null, respondToSessionChannelRequest = null, onReceiptChanged = null, inspector = null, admitReliableMessage = null }) {
     this.admitReliableMessage = admitReliableMessage;
     this.reliableMessagesInFlight = new Map();
     ensureReliableMessageSchema(store);
     this.imageUploads = new ClientImageUploads(store);
     this.quickMessageReader = quickMessages;
+    this.searchPage = searchPage;
     this.inspector = inspector;
     Object.assign(this, { store, readWindow, send, stop, actions, resolveSession, composer, images, schedule, conversationCommands });
     // Optional host projections: Session readiness (desktop ThreadMetaView light) and usage (context / quota).
@@ -190,6 +192,8 @@ export class ClientSessionAPI {
   taskCreationOptions(identity, sourceSessionId, query) {
     return clientTaskCreationCatalog(this, identity, sourceSessionId, query);
   }
+
+  search(_identity, query) { return this.searchPage ? this.searchPage(query) : unifiedSearch(this.store, query); }
 
   async messages(identity, sessionId, query) {
     sessionId = this.session(sessionId).sessionId;

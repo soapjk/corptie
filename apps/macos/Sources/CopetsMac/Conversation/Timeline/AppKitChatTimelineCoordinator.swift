@@ -161,6 +161,12 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         nearTopSuppressionGeneration &+= 1
         suppressesNearTopTrigger = false
         representedSessionID = sessionID
+        pendingSearchRowID = nil
+        lastSearchRevision = -1
+        if searchHighlightActive {
+            tableView?.selectionHighlightStyle = .none
+            searchHighlightActive = false
+        }
         rows.removeAll(keepingCapacity: true)
         hasExpandedProcessRows = false
         visibleProcessCollapseRowID = nil
@@ -1166,6 +1172,31 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         guard !isProcessingUserScrollEvent else { return }
         prepareInitialPosition(position)
         schedulePendingInitialViewportRestoreIfNeeded()
+    }
+
+    private var searchHighlightActive = false
+    private var lastSearchRevision = -1
+    private var pendingSearchRowID: String?
+    func applySearchTarget(rowID: String?, revision: Int) {
+        if lastSearchRevision != revision {
+            lastSearchRevision = revision
+            pendingSearchRowID = rowID
+        }
+        guard let id = pendingSearchRowID,
+              let row = rows.firstIndex(where: { $0.id == id }), let tableView else { return }
+        pendingSearchRowID = nil
+        scrollToRow(row)
+        // Native selection provides a short focus cue without a new row layer.
+        searchHighlightActive = true
+        tableView.selectionHighlightStyle = .regular
+        tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        let sessionID = representedSessionID
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self, weak tableView] in
+            guard let self, self.representedSessionID == sessionID, self.lastSearchRevision == revision else { return }
+            self.searchHighlightActive = false
+            tableView?.deselectAll(nil)
+            tableView?.selectionHighlightStyle = .none
+        }
     }
 
     func scrollToTurn(_ turnID: String) {

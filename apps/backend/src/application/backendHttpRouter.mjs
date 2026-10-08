@@ -72,6 +72,14 @@ export function routeBackendHttpRequest(request, response, ports) {
     request, response, url, backendStoreReady, store, dataRootMigrationCoordinator, sendJson
   })) return;
 
+  if (request.method === "GET" && url.pathname === "/search") {
+    const failed = error => sendJson(response, error.statusCode ?? 500, { code: error.code ?? "SEARCH_FAILED", error: error.statusCode === 400 ? error.message : "Search unavailable." });
+    try { void getTimelineReadPool().readUnifiedSearch({ query: url.searchParams.toString() })
+      .then(result => sendJson(response, 200, result)).catch(failed); }
+    catch (error) { failed(error); }
+    return;
+  }
+
   if (handleSceneHttpRequest({ request, response, url, service: sceneService })) return;
 
   const taskSummaryRefreshMatch = url.pathname.match(/^\/tasks\/([^/]+)\/summary-refresh$/);
