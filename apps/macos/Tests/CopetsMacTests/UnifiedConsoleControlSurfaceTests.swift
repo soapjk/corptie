@@ -331,7 +331,7 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(body.contains(".padding(.bottom, composerClearance + 10)"))
         #expect(body.contains("ConversationChromeFramePreferenceKey.self"))
         #expect(body.contains("headerClearance = clearances.top"))
-        #expect(timeline.contains("topClearance: headerClearance"))
+        #expect(timeline.contains("topClearance: max(headerClearance, topChromeClearance)"))
         #expect(timeline.contains("bottomClearance: composerClearance"))
         #expect(!body.contains(".safeAreaInset(edge: .bottom"))
         let nativeTimeline = try self.source(named: "AppKitChatTimelineView.swift")
