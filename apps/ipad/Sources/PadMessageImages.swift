@@ -2,6 +2,7 @@ import SwiftUI
 import Observation
 import UIKit
 import QuickLook
+import ImageIO
 import CorptieClientCore
 import CorptieConversation
 
@@ -62,7 +63,7 @@ struct PadMessageResourceViewer: View {
     }
 }
 
-private struct PadResourceQuickLook: UIViewControllerRepresentable {
+struct PadResourceQuickLook: UIViewControllerRepresentable {
     let url: URL
     final class Coordinator: NSObject, QLPreviewControllerDataSource {
         let url: URL
@@ -87,13 +88,25 @@ private struct PadResourceQuickLook: UIViewControllerRepresentable {
 final class PadMessageImageStore {
     enum Entry: Equatable { case loading, loaded(UIImage), missing }
     /// 88pt @3x is 264px; 320px keeps the thumbnail crisp without keeping the original raster.
-    nonisolated static let thumbnailEdge: CGFloat = 320
+    nonisolated static let thumbnailEdge: CGFloat = 1024
     nonisolated static let capacity = 160
 
     private(set) var entries: [String: Entry] = [:]
     @ObservationIgnored private var order: [String] = []
     @ObservationIgnored private var inflight: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var scope = ""
+    @ObservationIgnored private var pending: [(String, @MainActor () async -> UIImage?)] = []
+    @ObservationIgnored private var byteCosts: [String: Int] = [:]
+    @ObservationIgnored private var totalBytes = 0
+    private static let maximumBytes = 64 * 1024 * 1024
+
+    func retry(sessionID: String, managedPath: String, connection: PadConnection, itemID: String? = nil) {
+        let key = Self.key(sessionID, managedPath, itemID: itemID)
+        guard entries[key] == .missing else { return }
+        entries[key] = nil
+        order.removeAll { $0 == key }
+        ensure(sessionID: sessionID, managedPath: managedPath, connection: connection, itemID: itemID)
+    }
 
     private static func key(_ sessionID: String, _ path: String, itemID: String? = nil) -> String {
         sessionID + "\u{0}" + (itemID ?? "") + "\u{0}" + path
@@ -105,11 +118,11 @@ final class PadMessageImageStore {
 
     /// Idempotent per (scope, session, path): safe to call from every card appearance.
     func ensure(sessionID: String, managedPath: String, connection: PadConnection, itemID: String? = nil) {
-        let currentScope = "\(connection.serverID)|\(connection.address)"
+        let currentScope = "\(connection.serverID)|\(connection.deviceID ?? "")|\(connection.address)"
         if currentScope != scope {
             scope = currentScope
             for task in inflight.values { task.cancel() }
-            inflight = [:]; order = []
+            inflight = [:]; order = []; pending = []; byteCosts = [:]; totalBytes = 0
             if !entries.isEmpty { entries = [:] }
         }
         let key = Self.key(sessionID, managedPath, itemID: itemID)
@@ -120,10 +133,15 @@ final class PadMessageImageStore {
             let evicted = order.removeFirst()
             inflight.removeValue(forKey: evicted)?.cancel()
             entries[evicted] = nil
+            pending.removeAll { $0.0 == evicted }
+            totalBytes -= byteCosts.removeValue(forKey: evicted) ?? 0
         }
-        inflight[key] = Task { [weak self] in
-            let image: UIImage? = await {
+        pending.append((key, {
                 do {
+                    if let url = URL(string: managedPath), ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+                        let data = try await ClientRemoteImageDownload.read(url)
+                        return await Self.decode(data)
+                    }
                     let api = ClientSessionAPI(transport: try await connection.transport())
                     if let itemID {
                         let data = try await api.resource(sessionId: sessionID, itemId: itemID, path: managedPath)
@@ -132,19 +150,44 @@ final class PadMessageImageStore {
                     guard let payload = try await api.image(sessionId: sessionID, managedPath: managedPath) else { return nil }
                     return await Self.decode(payload.data)
                 } catch { return nil }
-            }()
-            guard let self, !Task.isCancelled, self.entries[key] == .loading else { return }
-            self.inflight[key] = nil
-            self.entries[key] = image.map(Entry.loaded) ?? .missing
+        }))
+        drain()
+    }
+
+    private func drain() {
+        while inflight.count < 3, !pending.isEmpty {
+            let (key, load) = pending.removeFirst()
+            inflight[key] = Task { [weak self] in
+                let image = await load()
+                guard let self, !Task.isCancelled, self.entries[key] == .loading else { return }
+                self.inflight[key] = nil
+                let cost = image?.cgImage.map { $0.bytesPerRow * $0.height } ?? 0
+                self.byteCosts[key] = cost
+                self.totalBytes += cost
+                self.entries[key] = image.map(Entry.loaded) ?? .missing
+                while self.totalBytes > Self.maximumBytes, let evicted = self.order.first {
+                    self.order.removeFirst()
+                    self.inflight.removeValue(forKey: evicted)?.cancel()
+                    self.pending.removeAll { $0.0 == evicted }
+                    self.entries[evicted] = nil
+                    self.totalBytes -= self.byteCosts.removeValue(forKey: evicted) ?? 0
+                }
+                self.drain()
+            }
         }
     }
 
     nonisolated static func decode(_ data: Data) async -> UIImage? {
-        guard !data.isEmpty, let source = UIImage(data: data) else { return nil }
-        let size = source.size
-        guard size.width > 0, size.height > 0 else { return nil }
-        let scale = min(1, thumbnailEdge / max(size.width, size.height))
-        let target = CGSize(width: max(1, size.width * scale), height: max(1, size.height * scale))
-        return await source.byPreparingThumbnail(ofSize: target) ?? source
+        let bitmap = await Task.detached(priority: .utility) {
+            guard !data.isEmpty, data.count <= 20 * 1024 * 1024,
+                  let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil as CGImage? }
+            return CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: thumbnailEdge,
+                kCGImageSourceShouldCacheImmediately: true
+            ] as CFDictionary)
+        }.value
+        return bitmap.map { UIImage(cgImage: $0) }
     }
 }

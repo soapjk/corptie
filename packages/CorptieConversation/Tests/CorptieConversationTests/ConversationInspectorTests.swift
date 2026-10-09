@@ -110,7 +110,7 @@ struct ConversationInspectorTests {
         #expect(!source.contains("GlassEffectContainer"))
         let contentSource = try String(contentsOf: sourceURL.deletingLastPathComponent()
             .appendingPathComponent("ConversationContentSurface.swift"), encoding: .utf8)
-        #expect(contentSource.contains("if withMaterial {"))
+        #expect(contentSource.contains("if withMaterial && !ConversationContentSurfacePolicy.suppressMessageMaterialForProfiling {"))
         #expect(contentSource.contains(".regularMaterial.opacity(ConversationContentSurfacePolicy.messageMaterialOpacity)"))
         #expect(source.contains("ConversationContentSurface(cornerRadius: cornerRadius, isPanel: true)"))
         #expect(!contentSource.contains("glassEffect"))

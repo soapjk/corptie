@@ -545,6 +545,7 @@ final class PadWorkspace {
         }
     }
     private(set) var displayEntries: [ConversationEntry<ClientMessage>] = []
+    private(set) var displayEntryByID: [String: ConversationEntry<ClientMessage>] = [:]
     private(set) var tailDisplayRevision: UInt64 = 0
     private(set) var timeSeparatorTextByMessageID: [String: String] = [:]
     private(set) var processPresentations: [String: ConversationProcessPresentation] = [:]
@@ -772,6 +773,7 @@ final class PadWorkspace {
         let nextEntries = Self.visibleEntries(from: allEntries, limit: visibleMessageLimit)
         let tailChanged = !Self.sameDisplayedTail(displayEntries.last, nextEntries.last)
         displayEntries = nextEntries
+        displayEntryByID = Dictionary(uniqueKeysWithValues: nextEntries.map { ($0.id, $0) })
         if tailChanged { tailDisplayRevision &+= 1 }
         let now = Date()
         var previousMessageDate: Date?

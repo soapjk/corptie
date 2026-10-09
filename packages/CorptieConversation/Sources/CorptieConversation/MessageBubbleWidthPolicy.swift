@@ -90,16 +90,62 @@ public enum MessageImageStripMetrics {
     public static let bottomSpacing: CGFloat = 7
 }
 
+/// Deterministic gallery geometry shared by UIKit/SwiftUI and AppKit. Loading
+/// never changes these slots, so image completion cannot move message rows.
+public enum MessageImageGalleryLayout {
+    public static let preferredBodyWidth: CGFloat = 340
+    public static let spacing: CGFloat = 4
+    public static func frames(count: Int, width: CGFloat) -> [CGRect] {
+        let width = max(1, min(preferredBodyWidth, width.isFinite ? width : preferredBodyWidth))
+        let count = min(4, max(0, count))
+        guard count > 0 else { return [] }
+        if count == 1 { return [CGRect(x: 0, y: 0, width: width, height: min(260, width * 0.75))] }
+        let half = max(1, (width - spacing) / 2)
+        if count == 2 {
+            return [CGRect(x: 0, y: 0, width: half, height: half),
+                    CGRect(x: half + spacing, y: 0, width: half, height: half)]
+        }
+        let height = min(300, width)
+        let halfHeight = max(1, (height - spacing) / 2)
+        if count == 3 {
+            let main = max(1, (width - spacing) * 2 / 3)
+            let small = max(1, width - main - spacing)
+            return [CGRect(x: 0, y: 0, width: main, height: height),
+                    CGRect(x: main + spacing, y: 0, width: small, height: halfHeight),
+                    CGRect(x: main + spacing, y: halfHeight + spacing, width: small, height: halfHeight)]
+        }
+        return (0..<4).map { index in CGRect(x: CGFloat(index % 2) * (half + spacing),
+            y: CGFloat(index / 2) * (halfHeight + spacing), width: half, height: halfHeight) }
+    }
+    public static func height(count: Int, width: CGFloat) -> CGFloat {
+        frames(count: count, width: width).map(\.maxY).max() ?? 0
+    }
+
+    public static func bodyText(_ text: String, hasImages: Bool) -> String {
+        guard hasImages else { return text }
+        let placeholders: Set<String> = ["[localImage]", "[local image]", "[image]"]
+        return text.components(separatedBy: "\n").filter {
+            !placeholders.contains($0.trimmingCharacters(in: .whitespaces))
+        }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 /// Thumbnail slot of the strip. The host supplies the decoded image (or nil while
 /// loading / when missing) so no decoding or networking happens in the view.
 public struct MessageImageThumbnail: View {
     public enum State { case loading, loaded(Image), missing }
     private let state: State
     private let index: Int
+    private let size: CGSize
+    private let fits: Bool
+    private let extraCount: Int
 
-    public init(state: State, index: Int) {
+    public init(state: State, index: Int, size: CGSize = .init(width: 88, height: 88), fits: Bool = false, extraCount: Int = 0) {
         self.state = state
         self.index = index
+        self.size = size
+        self.fits = fits
+        self.extraCount = extraCount
     }
 
     public var body: some View {
@@ -110,12 +156,16 @@ public struct MessageImageThumbnail: View {
             case .loading:
                 Image(systemName: "photo").foregroundStyle(.secondary)
             case .loaded(let image):
-                image.resizable().aspectRatio(contentMode: .fill)
+                image.resizable().aspectRatio(contentMode: fits ? .fit : .fill)
             case .missing:
-                Image(systemName: "exclamationmark.triangle").foregroundStyle(.secondary)
+                Label("点击重试", systemImage: "arrow.clockwise").font(.caption).foregroundStyle(.secondary)
+            }
+            if extraCount > 0 {
+                Color.black.opacity(0.4)
+                Text("+\(extraCount)").font(.title2.bold()).foregroundStyle(.white)
             }
         }
-        .frame(width: MessageImageStripMetrics.thumbnailEdge, height: MessageImageStripMetrics.thumbnailEdge)
+        .frame(width: size.width, height: size.height)
         .clipShape(RoundedRectangle(cornerRadius: MessageImageStripMetrics.cornerRadius, style: .continuous))
         .accessibilityLabel("Attached image \(index + 1)")
     }

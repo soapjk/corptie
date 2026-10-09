@@ -13,10 +13,12 @@ public protocol ConversationTimelineItem: Sendable {
     var collaborationDirection: String? { get }
     var processStartedAt: String? { get set }
     var processEndedAt: String? { get set }
+    var timelineHasImages: Bool { get }
 }
 
 public extension ConversationTimelineItem {
     var collaborationDirection: String? { nil }
+    var timelineHasImages: Bool { false }
 }
 
 public struct ConversationEntry<Item: ConversationTimelineItem>: Identifiable, Sendable {
@@ -388,6 +390,9 @@ private static func isTerminalTurnStatus(_ status: String) -> Bool {
 }
 
 private static func isDetailProcessItem<Item: ConversationTimelineItem>(_ item: Item) -> Bool {
+    // Materialized image output must be directly visible, not hidden inside
+    // an execution disclosure. The same shared rule governs every client.
+    if item.type == "imageView", item.timelineHasImages { return false }
     let kind = ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole)
     if kind == .collaborationMessage || kind == .collaborationConfirmation { return false }
     switch item.type {

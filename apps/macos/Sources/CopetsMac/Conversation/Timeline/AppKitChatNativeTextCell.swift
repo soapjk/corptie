@@ -73,6 +73,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private var representedContentRevision: Int?
     private var representedProcessRow: AppKitChatTimelineRow?
     private var representedImages: [ChatTimelineImage] = []
+    private var failedImageIndices: Set<Int> = []
     private(set) var contentConfigurationCount = 0
     private(set) var widthLayoutUpdateCount = 0
 
@@ -328,7 +329,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         self.onAction = onAction
         configureActions(row.actions)
         configureCollaborationSentStatus(row.showsCollaborationSentStatus)
-        configureImages(row.images, rowID: row.id)
+        configureImages(row.images, rowID: row.id, width: layout.cardWidth - MessageBubbleWidthPolicy.horizontalPadding)
         copiedText = row.copyText
         contextTimestamp = row.contextTimestamp
         forkItemID = row.forkItemID
@@ -575,17 +576,25 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         }
     }
 
-    private func configureImages(_ images: [ChatTimelineImage], rowID: String) {
-        representedImages = Array(images.prefix(4))
+    private func configureImages(_ images: [ChatTimelineImage], rowID: String, width: CGFloat) {
+        representedImages = images
+        failedImageIndices = []
         imageStack.arrangedSubviews.forEach {
             imageStack.removeArrangedSubview($0)
             $0.removeFromSuperview()
         }
         let visible = Array(images.prefix(4))
+        let frames = MessageImageGalleryLayout.frames(count: images.count, width: width)
         imageStack.isHidden = visible.isEmpty
-        imageStackHeightConstraint.constant = visible.isEmpty ? 0 : 88
+        imageStackHeightConstraint.constant = frames.map(\.maxY).max() ?? 0
+        let gallery = NativeImageGalleryCanvas(frame: CGRect(x: 0, y: 0,
+            width: frames.map(\.maxX).max() ?? 0, height: imageStackHeightConstraint.constant))
+        gallery.translatesAutoresizingMaskIntoConstraints = false
+        gallery.widthAnchor.constraint(equalToConstant: gallery.frame.width).isActive = true
+        gallery.heightAnchor.constraint(equalToConstant: gallery.frame.height).isActive = true
+        if !visible.isEmpty { imageStack.addArrangedSubview(gallery) }
         for (index, attachment) in visible.enumerated() {
-            let button = NSButton()
+            let button = NSButton(frame: frames[index])
             button.isBordered = false
             button.imagePosition = .imageOnly
             button.imageScaling = .scaleProportionallyUpOrDown
@@ -600,12 +609,21 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
                 : "Reveal original image in Finder"
             button.setAccessibilityLabel("Attached image \(index + 1)")
             button.image = NSImage(systemSymbolName: "photo", accessibilityDescription: nil)
-            button.widthAnchor.constraint(equalToConstant: 88).isActive = true
-            button.heightAnchor.constraint(equalToConstant: 88).isActive = true
-            imageStack.addArrangedSubview(button)
+            gallery.addSubview(button)
+            if index == 3, images.count > 4 {
+                let more = NSTextField(labelWithString: "+\(images.count - 4)")
+                more.font = .systemFont(ofSize: 22, weight: .bold)
+                more.textColor = .white
+                more.backgroundColor = NSColor.black.withAlphaComponent(0.55)
+                more.drawsBackground = true
+                more.alignment = .center
+                more.frame = CGRect(x: 0, y: 0, width: frames[index].width, height: 30)
+                button.addSubview(more)
+            }
             guard let url = attachment.displayURL else { continue }
             ChatTimelineImageLoader.shared.load(url) { [weak self, weak button] image in
                 guard self?.representedRowID == rowID else { return }
+                if image == nil { self?.failedImageIndices.insert(index) }
                 button?.image = image ?? NSImage(
                     systemSymbolName: "exclamationmark.triangle",
                     accessibilityDescription: "Image is missing"
@@ -619,21 +637,17 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         // index always maps to the current row's attachment.
         guard sender.tag < representedImages.count else { return }
         let image = representedImages[sender.tag]
-        if let originalPath = image.originalPath,
-           FileManager.default.fileExists(atPath: originalPath) {
-            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: originalPath)])
-        } else if image.originalPath != nil, let url = image.displayURL {
-            let alert = NSAlert()
-            alert.messageText = "Original image is missing"
-            alert.informativeText = "Corptie kept a managed copy for this conversation."
-            alert.addButton(withTitle: "View managed copy")
-            alert.addButton(withTitle: "Cancel")
-            if alert.runModal() == .alertFirstButtonReturn {
-                NSWorkspace.shared.open(url)
+        if failedImageIndices.contains(sender.tag), let url = image.displayURL {
+            let rowID = representedRowID
+            let index = sender.tag
+            ChatTimelineImageLoader.shared.load(url) { [weak self, weak sender] image in
+                guard self?.representedRowID == rowID else { return }
+                if let image { sender?.image = image; self?.failedImageIndices.remove(index) }
             }
-        } else if let url = image.displayURL {
-            NSWorkspace.shared.open(url)
+            return
         }
+        ChatImageGalleryViewer.shared.show(representedImages, selected: sender.tag)
+        return
     }
 
     override func viewDidMoveToSuperview() {
@@ -828,6 +842,10 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         guard timelineActions.indices.contains(sender.tag) else { return }
         onAction?(timelineActions[sender.tag])
     }
+}
+
+private final class NativeImageGalleryCanvas: NSView {
+    override var isFlipped: Bool { true }
 }
 
 private enum NativeTimelineCardPalette {

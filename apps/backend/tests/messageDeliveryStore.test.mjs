@@ -151,6 +151,19 @@ test("message image references persist in Timeline metadata without storing imag
     const item = store.getSessionItem("session:one", "message:image");
     assert.deepEqual(item.images, [image]);
     assert.equal(JSON.stringify(item).includes("data:image"), false);
+    store.upsertTimelineItemProjection("session:one", {
+      ...item, text: "[localImage]", rawMetadataJSON: JSON.stringify({ provider: "echo", status: "completed" })
+    });
+    assert.deepEqual(store.getSessionItem("session:one", "message:image").images, [image]);
+    const revision = store.sessionTimelineRevision("session:one");
+    store.upsertTimelineItemProjection("session:one", {
+      ...item, text: "[localImage]", rawMetadataJSON: JSON.stringify({ provider: "echo", status: "completed" })
+    });
+    assert.equal(store.sessionTimelineRevision("session:one"), revision);
+    store.upsertTimelineItemProjection("session:one", {
+      ...item, rawMetadataJSON: JSON.stringify({ images: [] })
+    });
+    assert.deepEqual(store.getSessionItem("session:one", "message:image").images, []);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
