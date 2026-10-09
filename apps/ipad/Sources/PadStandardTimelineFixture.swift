@@ -21,16 +21,18 @@ struct PadStandardTimelineFixture: View {
                     .accessibilityIdentifier("standard-fixture-open")
             }
         }
-        .overlay(alignment: .topTrailing) {
+        .overlay(alignment: .trailing) {
             if opened {
-                HStack {
+                VStack(spacing: 12) {
+                    Button("发") { model.sendLocalDraft() }
+                        .accessibilityIdentifier("standard-fixture-send")
                     Button("＋") { model.appendReply() }
                         .accessibilityIdentifier("standard-fixture-append")
                     Button("流") { model.streamReply() }
                         .accessibilityIdentifier("standard-fixture-stream")
                     Button("图") { model.appendRichReply() }
                         .accessibilityIdentifier("standard-fixture-rich")
-                }.padding(.trailing, 80)
+                }.padding(12).background(.regularMaterial)
             }
         }
         .background(PadKeyboardDismissal())
@@ -59,6 +61,14 @@ struct PadStandardTimelineFixture: View {
     private var stream: Task<Void, Never>?
     private func decode(_ row: [String: Any]) -> ClientMessage {
         try! JSONDecoder().decode(ClientMessage.self, from: JSONSerialization.data(withJSONObject: row))
+    }
+    func sendLocalDraft() {
+        let text = workspace.drafts["standard-fixture"] ?? ""
+        workspace.drafts["standard-fixture"] = ""
+        workspace.outgoingMessages["standard-fixture", default: []].append(
+            ClientMessage(id: "standard:\(nextReply)", text: text.isEmpty ? "本地发送验收" : text))
+        workspace.scrollRequest += 1
+        nextReply += 1
     }
     func appendRichReply() {
         workspace.messages.append(decode(["id": "fixture:tool:\(nextReply)", "turnId": "turn:rich:\(nextReply)",
@@ -124,6 +134,21 @@ struct PadStandardTimelineFixture: View {
         }
         workspace.messages = try! JSONDecoder().decode([ClientMessage].self,
             from: JSONSerialization.data(withJSONObject: rows))
+        if ProcessInfo.processInfo.environment["CORPTIE_STATUS_LIGHT_FIXTURE"] == "1" {
+            let lights: [(String, String?, String?)] = [
+                ("发送中 · 蓝色呼吸", nil, "Sending"),
+                ("待确认 · 紫色常亮", nil, "送达状态未确认"),
+                ("排队中 · 橙色常亮", "queued", nil),
+                ("处理中 · 绿色呼吸", "processing", nil),
+                ("失败 · 红色常亮", "failed", nil)]
+            for (index, item) in lights.enumerated() {
+                let id = "light:\(index)"
+                var row: [String: Any] = ["id": id, "type": "userMessage", "text": item.0]
+                if let state = item.1 { row["userMessageStatus"] = state }
+                workspace.messages.append(decode(row))
+                if let delivery = item.2 { workspace.outgoingStates[id] = delivery }
+            }
+        }
         // All fixture data is resident. Product history still reveals batches.
     }
 }

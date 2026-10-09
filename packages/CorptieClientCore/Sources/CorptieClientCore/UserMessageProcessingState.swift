@@ -104,6 +104,18 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
     }
 
     public enum Tone: Sendable { case neutral, amber, green, red }
+    public enum Light: Sendable, Equatable { case blue, purple, orange, green, red, off }
+    public var light: Light {
+        switch kind {
+        case .sending, .uploading, .submitting, .waitingToSend, .retrying: .blue
+        case .deliveryUnknown, .accepted, .deliveryBlocked: .purple
+        case .queued: .orange
+        case .processing: .green
+        case .deliveryFailed, .processingFailed: .red
+        case .cancelled, .retryStopped: .off
+        }
+    }
+    public var lightPulses: Bool { light == .blue || light == .green }
     public var tone: Tone {
         switch kind {
         case .queued: .amber

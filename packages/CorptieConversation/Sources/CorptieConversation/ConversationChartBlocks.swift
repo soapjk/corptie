@@ -17,6 +17,7 @@ public struct ConversationChartSpec: Hashable, Sendable {
         public let label: String?
         public let x: X?
         public let value: Double
+        public var series: String? = nil
     }
 
     public let kind: Kind
@@ -32,9 +33,10 @@ public struct ConversationChartSpec: Hashable, Sendable {
 enum ConversationChartDataText {
     static func label(for point: ConversationChartSpec.Datum, index: Int) -> String {
         if let label = point.label { return label }
+        let prefix = point.series.map { "\($0) · " } ?? ""
         switch point.x {
-        case .number(let value): return number(value)
-        case .date(_, let source): return source
+        case .number(let value): return prefix + number(value)
+        case .date(_, let source): return prefix + source
         case nil: return "\(index + 1)"
         }
     }
@@ -215,6 +217,7 @@ public enum ConversationChartBlocks {
         let label: String?
         let x: RawX?
         let value: Double
+        let series: String?
     }
 
     private enum RawX: Decodable {
@@ -238,8 +241,9 @@ public enum ConversationChartBlocks {
 
         var points: [ConversationChartSpec.Datum] = []
         var lineXKind: Int?
-        var previousNumber: Double?
-        var previousDate: Date?
+        var previousNumbers: [String: Double] = [:]
+        var previousDates: [String: Date] = [:]
+        var seriesNames = Set<String>()
         var categoryLabels = Set<String>()
         let dateParser = ISO8601DateFormatter()
         dateParser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -253,9 +257,13 @@ public enum ConversationChartBlocks {
 
         for item in raw.data {
             guard item.value.isFinite else { return nil }
+            guard item.series.map({ validText($0, limit: 80) }) ?? true else { return nil }
+            let series = item.series ?? ""
+            seriesNames.insert(series)
+            guard seriesNames.count <= 8 else { return nil }
             switch raw.type {
             case .bar, .pie:
-                guard let label = item.label, validText(label, limit: 100), item.x == nil,
+                guard let label = item.label, validText(label, limit: 100), item.x == nil, item.series == nil,
                       raw.type != .pie || item.value > 0 else { return nil }
                 // Swift Charts stacks bars with the same categorical Y value
                 // and assigns equal pie labels the same style. V1 has no
@@ -269,24 +277,25 @@ public enum ConversationChartBlocks {
                 switch x {
                 case .number(let number):
                     guard number.isFinite, lineXKind == nil || lineXKind == 0,
-                          previousNumber.map({ number > $0 }) ?? true else { return nil }
+                          previousNumbers[series].map({ number > $0 }) ?? true else { return nil }
                     lineXKind = 0
-                    previousNumber = number
+                    previousNumbers[series] = number
                     projected = .number(number)
                 case .text(let value):
                     guard value.count <= 40, lineXKind == nil || lineXKind == 1,
                           strictISO8601DateText(value, dayParser: dateOnlyParser),
                           let date = dateParser.date(from: value) ?? basicDateParser.date(from: value)
                             ?? dateOnlyParser.date(from: value),
-                          previousDate.map({ date > $0 }) ?? true else { return nil }
+                          previousDates[series].map({ date > $0 }) ?? true else { return nil }
                     lineXKind = 1
-                    previousDate = date
+                    previousDates[series] = date
                     projected = .date(date, source: value)
                 }
-                points.append(.init(label: nil, x: projected, value: item.value))
+                points.append(.init(label: nil, x: projected, value: item.value, series: item.series))
             }
         }
         guard raw.type != .pie || points.reduce(0, { $0 + $1.value }).isFinite else { return nil }
+        guard seriesNames.count <= 1 || !seriesNames.contains("") else { return nil }
         return .init(kind: raw.type, title: raw.title, unit: raw.unit,
                      sourceNote: raw.sourceNote, data: points)
     }
@@ -380,7 +389,9 @@ public struct ConversationChartView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ScaledMetric(relativeTo: .caption) private var titleSize: CGFloat = 11
     @State private var showsData = false
+    @State private var showsExpanded = false
     private let measuresLayoutOnly: Bool
+    private var expandedHeight: CGFloat? = nil
 
     public init(spec: ConversationChartSpec) {
         self.spec = spec
@@ -422,6 +433,25 @@ public struct ConversationChartView: View {
     #endif
 
     public var body: some View {
+        content
+        #if os(iOS)
+            .fullScreenCover(isPresented: $showsExpanded) { expandedViewer }
+        #else
+            .sheet(isPresented: $showsExpanded) { expandedViewer.frame(minWidth: 620, minHeight: 440) }
+        #endif
+    }
+
+    private var expandedViewer: some View {
+        ConversationChartExpandedView(spec: spec)
+    }
+
+    fileprivate init(spec: ConversationChartSpec, expandedHeight: CGFloat) {
+        self.spec = spec
+        self.expandedHeight = expandedHeight
+        self.measuresLayoutOnly = false
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: symbol)
@@ -439,12 +469,12 @@ public struct ConversationChartView: View {
             }
             if showsData {
                 ScrollView { dataRows.frame(maxWidth: .infinity, alignment: .leading) }
-                    .frame(height: Self.contentHeight)
+                    .frame(height: expandedHeight ?? Self.contentHeight)
             } else if measuresLayoutOnly {
                 Color.clear.frame(height: Self.contentHeight)
             } else {
                 chartPlot
-                .frame(height: Self.contentHeight)
+                .frame(height: expandedHeight ?? Self.contentHeight)
                 .accessibilityLabel("\(spec.title)，\(spec.data.count) 个数据点")
             }
 
@@ -458,6 +488,10 @@ public struct ConversationChartView: View {
                 .lineLimit(1)
                 .accessibilityValue(showsData ? "数据已展开" : "数据已收起")
                 Button("复制数据", systemImage: "doc.on.doc") { copyData() }
+                if expandedHeight == nil {
+                    Button("放大", systemImage: "arrow.up.left.and.arrow.down.right") { showsExpanded = true }
+                        .accessibilityIdentifier("conversation-chart-expand")
+                }
             }
             .font(.caption2)
             .buttonStyle(.plain)
@@ -488,10 +522,10 @@ public struct ConversationChartView: View {
                         switch x {
                         case .number(let value):
                             LineMark(x: .value("X", value), y: .value("数值", spec.data[index].value))
-                                .foregroundStyle(.tint)
+                                .foregroundStyle(by: .value("系列", spec.data[index].series ?? spec.title))
                         case .date(let value, _):
                             LineMark(x: .value("时间", value), y: .value("数值", spec.data[index].value))
-                                .foregroundStyle(.tint)
+                                .foregroundStyle(by: .value("系列", spec.data[index].series ?? spec.title))
                         }
                     }
                 }
@@ -504,7 +538,7 @@ public struct ConversationChartView: View {
             plot.chartScrollableAxes(.vertical)
                 .chartYVisibleDomain(length: 7)
         } else {
-            plot
+            plot.chartLegend(spec.kind == .line && spec.data.allSatisfy({ $0.series == nil }) ? .hidden : .automatic)
         }
     }
 
@@ -543,5 +577,28 @@ public struct ConversationChartView: View {
         #else
         UIPasteboard.general.string = rows.joined(separator: "\n")
         #endif
+    }
+}
+
+private struct ConversationChartExpandedView: View {
+    let spec: ConversationChartSpec
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            GeometryReader { geometry in
+                ScrollView {
+                    ConversationChartView(spec: spec, expandedHeight: max(150, geometry.size.height - 140))
+                        .padding()
+                }
+            }
+            .navigationTitle(spec.title)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+        .accessibilityIdentifier("conversation-chart-expanded")
     }
 }

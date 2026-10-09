@@ -18,6 +18,7 @@ export class TimelineMutationRepository {
   }
 
   upsertTimelineItemProjection(sessionId, item) {
+    if (this.selectOne("SELECT 1 FROM deleted_user_messages WHERE session_id=? AND message_id=?", [sessionId, item.id])) return false;
     const createdAt = createdAtFromOrNow(item);
     const rawMetadataJSON = typeof item.rawMetadataJSON === "string" ? item.rawMetadataJSON : null;
     this.db.run(

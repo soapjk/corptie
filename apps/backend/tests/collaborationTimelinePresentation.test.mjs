@@ -13,6 +13,8 @@ function fixture() {
   ]);
   const deliveries = new Map();
   const store = {
+    selectOne: () => null,
+    getSessionItem: () => null,
     getLogicalSession: id => logical.get(id),
     getLogicalSessionByLegacySessionId: id => [...logical.values()].find(row => row.legacySessionId === id),
     getSession: id => sessions.get(id),

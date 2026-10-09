@@ -1,5 +1,6 @@
 import { unifiedSearch } from "../store/unifiedSearch.mjs";
 import { projectTaskDeletionNotification } from "./worktreeIntegrationJobService.mjs";
+import { boundedUnicodeText } from "../utils/unicodeText.mjs";
 import { createHash } from "node:crypto";
 import { ensureReliableMessageSchema, acceptReliableMessage, reliableReceipt } from "./clientReliableMessages.mjs";
 import { ClientImageUploads, imageUploadPolicy } from "./clientImageUploads.mjs";
@@ -42,12 +43,12 @@ function publicExecutionPlan(value) {
     planId: value.planId,
     revision: value.revision,
     lifecycle: typeof value.lifecycle === "string" ? value.lifecycle : "unknown",
-    explanation: typeof value.explanation === "string" ? value.explanation.slice(0, 2_000) : null,
+    explanation: typeof value.explanation === "string" ? boundedUnicodeText(value.explanation, 2_000) : null,
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : "",
     steps: value.steps.map((step, ordinal) => ({
-      stepId: String(step?.stepId ?? "").slice(0, 200),
+      stepId: boundedUnicodeText(step?.stepId ?? "", 200),
       ordinal,
-      text: String(step?.text ?? "").slice(0, 2_000),
+      text: boundedUnicodeText(step?.text ?? "", 2_000),
       status: typeof step?.status === "string" ? step.status : "unknown"
     }))
   };
@@ -71,12 +72,13 @@ const PUBLIC_PRESENTATION_STRING_FIELDS = [
   "collaborationAuthorizationKind", "collaborationChannelId",
   "automationId", "automationName", "automationTriggerType", "automationEventType",
   "automationEventSource", "automationRunId", "automationEventOccurredAt",
+  "automationRunStatus", "automationRunError", "messageOrigin",
   "automationScheduleType", "automationRunAt", "automationNextRunAt", "automationExpiresAt",
   "systemEventKind", "systemEventReason", "systemEventSource"
 ];
 
 function publicPresentationString(value, maximumLength = 4_000) {
-  return typeof value === "string" ? value.slice(0, maximumLength) : null;
+  return typeof value === "string" ? boundedUnicodeText(value, maximumLength) : null;
 }
 
 function publicClientMessage(item) {
@@ -85,6 +87,9 @@ function publicClientMessage(item) {
     text: typeof item.text === "string" ? item.text : "", status: item.status ?? null,
     createdAt: item.createdAt ?? null,
     userMessageStatus: item.userMessageStatus ?? null, queuePosition: item.queuePosition ?? null,
+    deletionAvailable: item.deletionAvailable === true,
+    queuedMessageTaskId: item.type === "userMessage" && item.userMessageStatus === "queued"
+      && typeof item.taskId === "string" ? item.taskId : null,
     ...Object.fromEntries(PUBLIC_PRESENTATION_STRING_FIELDS.map(key => [key,
       publicPresentationString(item[key], key === "presentationText" ? 200_000 : 4_000)])),
     collaborationRoutingVersion: Number.isSafeInteger(item.collaborationRoutingVersion)
@@ -119,7 +124,9 @@ function publicClientMessage(item) {
 
 /** v1 text messaging + stop commands. Provider-neutral callbacks, durable at-most-once dispatch. */
 export class ClientSessionAPI {
-  constructor({ searchPage = null, quickMessages = null, store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null, respondToApproval = null, respondToUserInput = null, respondToCollaborationConfirmation = null, respondToSessionChannelRequest = null, onReceiptChanged = null, inspector = null, admitReliableMessage = null }) {
+  constructor({ searchPage = null, deleteUserMessage = null, cancelQueuedMessage = null, quickMessages = null, store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null, respondToApproval = null, respondToUserInput = null, respondToCollaborationConfirmation = null, respondToSessionChannelRequest = null, onReceiptChanged = null, inspector = null, admitReliableMessage = null }) {
+    this.deleteUserMessage = deleteUserMessage;
+    this.cancelQueuedMessageHandler = cancelQueuedMessage;
     this.admitReliableMessage = admitReliableMessage;
     this.reliableMessagesInFlight = new Map();
     ensureReliableMessageSchema(store);
@@ -161,6 +168,27 @@ export class ClientSessionAPI {
     const session = sessionId ? this.store.getSession(sessionId) : null;
     if (!session || session.archived === true) throw deviceError("SESSION_NOT_AVAILABLE", 404);
     return { sessionId, session };
+  }
+
+  async cancelQueuedMessage(identity, id, input) {
+    const { sessionId } = this.session(id);
+    if (!this.cancelQueuedMessageHandler) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
+    if (typeof input?.taskId !== "string" || !input.taskId.trim() || input.taskId.length > 512) {
+      throw deviceError("INVALID_TASK_ID", 400);
+    }
+    try {
+      await this.cancelQueuedMessageHandler(sessionId, input.taskId);
+    } catch (error) {
+      if (error?.code === "SESSION_BUSY") throw deviceError("MESSAGE_NOT_QUEUED", 409);
+      throw error;
+    }
+    return { schemaVersion: 1, status: "cancelled" };
+  }
+
+  async deleteMessage(identity, id, messageId) {
+    const { sessionId } = this.session(id);
+    if (!this.deleteUserMessage) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
+    return this.deleteUserMessage(sessionId, messageId);
   }
 
   createTask(identity, sourceSessionId, input, revalidateIdentity = null) {
@@ -427,6 +455,16 @@ export class ClientSessionAPI {
   }
 
   /** Bytes of one managed attachment of this Session. Same ownership check as the desktop image route. */
+  async resource(identity, id, query) {
+    const { sessionId } = this.session(id);
+    if ([...query.keys()].some(key => !["itemId", "path"].includes(key))
+      || query.getAll("itemId").length !== 1 || query.getAll("path").length !== 1
+      || !this.images?.readResource) throw deviceError("RESOURCE_NOT_AVAILABLE", 404);
+    try {
+      return await this.images.readResource(sessionId, query.get("itemId"), query.get("path"));
+    } catch { throw deviceError("RESOURCE_NOT_AVAILABLE", 404); }
+  }
+
   async image(identity, id, query) {
     const { sessionId } = this.session(id);
     if ([...query.keys()].some(k => k !== "path") || query.getAll("path").length !== 1) throw deviceError("INVALID_QUERY", 400);
@@ -476,6 +514,8 @@ export class ClientSessionAPI {
       readiness: readiness?.readiness === "ready" ? "ready" : readiness?.readiness === "not_ready" ? "not_ready" : null,
       notReadyReason: readiness?.readiness === "not_ready" ? notReadyReason : null,
       composer: Boolean(this.composer),
+      cancelQueuedMessage: Boolean(this.cancelQueuedMessageHandler),
+      deleteUnreceivedMessage: Boolean(this.deleteUserMessage),
       sendImages: Boolean(this.images?.available(resolved.session)),
       imageUploads: this.admitReliableMessage && this.images?.available(resolved.session) ? imageUploadPolicy : null,
       sendMentions: true,

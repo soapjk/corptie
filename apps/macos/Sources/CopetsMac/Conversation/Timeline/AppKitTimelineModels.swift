@@ -6,6 +6,8 @@ import CorptieClientCore
 struct AppKitChatTimelineRow: Identifiable {
     var forkItemID: String? = nil
     var queuedMessageTaskID: String? = nil
+    var deletableMessageID: String? = nil
+    var scheduledMessageSource: String? = nil
     var forkUnavailableReason: String? = nil
     var timeSeparatorText: String? = nil
     var isWorkspaceCard = false
@@ -20,6 +22,7 @@ struct AppKitChatTimelineRow: Identifiable {
     struct Action: Identifiable {
         enum Kind {
             case cancelQueuedMessage(taskID: String)
+            case deleteUnreceivedMessage(messageID: String)
             case forkMessage(itemID: String)
             case codexApproval(CodexApprovalOption)
             case ptyChoice(CodexApprovalOption, choiceID: String)

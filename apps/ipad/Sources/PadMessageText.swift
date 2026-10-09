@@ -8,13 +8,15 @@ struct PadMessageText: UIViewRepresentable {
     let text: String
     let fromUser: Bool
     var steps: [ConversationExecutionStep]? = nil
+    var openLink: ((URL) -> Void)? = nil
     @Binding var isTextSelectionEnabled: Bool
 
     init(text: String, fromUser: Bool, steps: [ConversationExecutionStep]? = nil,
-         isTextSelectionEnabled: Binding<Bool> = .constant(false)) {
+         isTextSelectionEnabled: Binding<Bool> = .constant(false), openLink: ((URL) -> Void)? = nil) {
         self.text = text
         self.fromUser = fromUser
         self.steps = steps
+        self.openLink = openLink
         _isTextSelectionEnabled = isTextSelectionEnabled
     }
 
@@ -23,6 +25,13 @@ struct PadMessageText: UIViewRepresentable {
         var fromUser: Bool?
         var steps: [ConversationExecutionStep]?
         var isTextSelectionEnabled: Binding<Bool>?
+        var openLink: ((URL) -> Void)?
+
+        func textView(_ textView: UITextView, primaryActionFor textItem: UITextItem,
+                      defaultAction: UIAction) -> UIAction? {
+            guard case .link(let url) = textItem.content, let openLink else { return defaultAction }
+            return UIAction { _ in openLink(url) }
+        }
 
         func textViewDidEndEditing(_ textView: UITextView) {
             guard isTextSelectionEnabled?.wrappedValue == true else { return }
@@ -46,6 +55,7 @@ struct PadMessageText: UIViewRepresentable {
     }
 
     func updateUIView(_ view: UITextView, context: Context) {
+        context.coordinator.openLink = openLink
         context.coordinator.isTextSelectionEnabled = $isTextSelectionEnabled
         configureTextSelection(view, enabled: isTextSelectionEnabled)
         // Width changes and unrelated workspace updates must not reparse Markdown.

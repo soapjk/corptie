@@ -8,6 +8,8 @@ struct CloudRelaySendSchedulerTests {
         #expect(CloudRelaySendPriority.response(to: request) == .control)
         request = URLRequest(url: URL(string: "http://127.0.0.1/client/v1/sessions/session/messages")!)
         #expect(CloudRelaySendPriority.response(to: request) == .background)
+        request = URLRequest(url: URL(string: "http://127.0.0.1/client/v1/sessions/session/resources")!)
+        #expect(CloudRelaySendPriority.response(to: request) == .background)
         request.httpMethod = "POST"
         #expect(CloudRelaySendPriority.response(to: request) == .control)
         request = URLRequest(url: URL(string: "http://127.0.0.1/client/v1/sessions")!)

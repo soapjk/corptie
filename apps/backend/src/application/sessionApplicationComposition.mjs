@@ -1,6 +1,7 @@
 import { SessionApplicationService } from "../agent-provider/sessionApplicationService.mjs";
 import { persistProviderSessionProjection, persistSessionModelSelection } from "./providerSessionProjection.mjs";
 import { buildWorkSessionContext, mergeWorkerSessionContexts } from "./workSessionContext.mjs";
+import { CHART_PRESENTATION_INSTRUCTIONS } from "./chartPresentationInstructions.mjs";
 import { sessionResponsibilityInstructions } from "./sessionResponsibilityInstructions.mjs";
 import { conversationMessageText, normalizeConversationMessage } from "./conversationMessage.mjs";
 import { resolveMessageMentionContext } from "./messageMentionContext.mjs";
@@ -143,7 +144,10 @@ export function createSessionApplicationComposition({
       const skillRoutingContext = skillMcpTurnContext(
         mcpAssignmentRevisionForAgent(session?.agentId)
       );
-      const contexts = [baseContext, skillRoutingContext, mentionContext, directUserIntentContext, memoryContext]
+      // Refresh presentation capabilities at Turn boundaries, including already
+      // running/resumed Sessions whose Provider thread predates this contract.
+      const presentationContext = { prompt: `<corptie_message_presentation>\n${CHART_PRESENTATION_INSTRUCTIONS}\n</corptie_message_presentation>` };
+      const contexts = [baseContext, skillRoutingContext, presentationContext, mentionContext, directUserIntentContext, memoryContext]
         .filter((item) => item?.prompt);
       const recordInjection = (included) => {
         if (!recallDecision) return;
@@ -162,7 +166,7 @@ export function createSessionApplicationComposition({
           memoryContext,
           mentionContext,
           referenceContext,
-          requiredContexts: [skillRoutingContext].filter(Boolean)
+          requiredContexts: [skillRoutingContext, presentationContext].filter(Boolean)
         });
         recordInjection(Boolean(result.memoryRecall));
         return result;

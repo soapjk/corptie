@@ -1,5 +1,7 @@
+import { clientSafeJSONStringify } from "../utils/unicodeText.mjs";
+
 export function sendJson(response, statusCode, body) {
-  const json = JSON.stringify(body);
+  const json = clientSafeJSONStringify(body);
   response.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(json)

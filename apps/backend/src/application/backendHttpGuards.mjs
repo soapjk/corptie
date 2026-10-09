@@ -6,7 +6,7 @@ export function rejectDevelopmentPreviewWrite({ request, response, url, developm
       "/state/snapshot", "/state/changes", "/state/events", "/session-timelines/revisions",
       "/works", "/tasks", "/agents", "/workspaces", "/repositories", "/artifacts", "/memories",
       "/automations", "/scheduled-tasks", "/scheduled-session-tasks"].includes(url.pathname)
-      || /^\/sessions\/[^/]+\/(stored-snapshot|history|timeline\/window|timeline\/changes|events|usage|quick-messages|context-references|images|fork)$/.test(url.pathname)
+      || /^\/sessions\/[^/]+\/(stored-snapshot|history|timeline\/window|timeline\/changes|events|usage|quick-messages|context-references|images|resources|fork)$/.test(url.pathname)
       || /^\/works\/[^/]+(?:\/(tasks|artifacts))?$/.test(url.pathname)
       || /^\/tasks\/[^/]+(?:\/(sessions|snapshots|artifacts))?$/.test(url.pathname)
       || /^\/artifacts\/[^/]+$/.test(url.pathname)
