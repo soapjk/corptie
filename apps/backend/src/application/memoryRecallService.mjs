@@ -14,7 +14,7 @@ export class MemoryRecallService {
 
   async startup(scope = {}, options = {}) {
     const limit = boundedLimit(options.limit, DEFAULT_STARTUP_LIMIT, 12);
-    const visible = this.#visible(scope);
+    const visible = this.#visible(scope).filter((memory) => !options.excludeIds?.has(memory.id));
     const candidates = visible.filter(isRecallableMemory);
     const ranked = await this.hubService.rankMemory("", candidates, { allowEmbedding: false });
     return this.#record({
@@ -51,7 +51,7 @@ export class MemoryRecallService {
 
     const deepRequested = options.deepRecall === true;
     const allowEmbedding = deepRequested && typeof this.hubService.embedder === "function";
-    const visible = this.#visible(scope);
+    const visible = this.#visible(scope).filter((memory) => !options.excludeIds?.has(memory.id));
     const candidates = visible.filter(isRecallableMemory);
     const ranked = await this.hubService.rankMemory(intent, candidates, { allowEmbedding });
     const selected = ranked.filter((entry) => entry.score > 0)
@@ -77,6 +77,25 @@ export class MemoryRecallService {
       limit: options.limit ?? 20,
       deepRecall: options.deepRecall === true,
       explicit: true
+    });
+  }
+
+  globalPreferences(scope = {}) {
+    const selected = this.#visible(scope).filter((memory) =>
+      memory.owner_type === "global" && memory.kind === "preference"
+      && memory.source_type === "user" && isRecallableMemory(memory));
+    if (!selected.length) return null;
+    selected.sort((left, right) => String(left.created_at).localeCompare(String(right.created_at))
+      || left.id.localeCompare(right.id));
+    return this.#record({
+      sessionId: scope.sessionId,
+      phase: "global_preference",
+      mode: "always_on",
+      reason: "user_saved_global_preference",
+      candidates: selected,
+      selected,
+      scope,
+      touch: true
     });
   }
 

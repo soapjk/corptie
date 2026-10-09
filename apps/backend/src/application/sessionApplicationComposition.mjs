@@ -116,17 +116,28 @@ export function createSessionApplicationComposition({
       }
       let memoryContext = null;
       let recallDecision = null;
-      if (session?.agentId) {
-        const recallScope = {
-          sessionId: session.id,
-          agentId: session.agentId,
-          workId: session.workId ?? null,
-          taskId: session.taskId ?? null
+      let globalPreferenceContext = null;
+      const recallScope = session ? {
+        sessionId: session.id,
+        agentId: session.agentId ?? null,
+        workId: session.workId ?? null,
+        taskId: session.taskId ?? null
+      } : null;
+      const globalPreferences = recallScope
+        ? memoryRecallService?.globalPreferences?.(recallScope) : null;
+      if (globalPreferences?.memories.length) {
+        const lines = globalPreferences.memories.map((memory) => `- ${memory.content}`);
+        globalPreferenceContext = {
+          prompt: `<corptie_global_preferences>\nThese user-saved preferences apply to this Session's work. Follow them unless the current direct user explicitly changes them or a higher-priority rule conflicts.\n${lines.join("\n")}\n</corptie_global_preferences>`,
+          globalPreferenceRecall: globalPreferences
         };
+      }
+      if (session?.agentId) {
+        const excludeIds = new Set(globalPreferences?.memories.map((memory) => memory.id) ?? []);
         const recall = memoryRecallService.hasStartupRecall?.(session.id) === false
-          ? await memoryRecallService.startup(recallScope)
+          ? await memoryRecallService.startup(recallScope, { excludeIds })
           : await memoryRecallService.turn(conversationMessageText(messageContext.message), recallScope,
-            { deepRecall: messageContext.deepRecall === true });
+            { deepRecall: messageContext.deepRecall === true, excludeIds });
         recallDecision = recall;
         if (recall.memories.length > 0) {
           const lines = recall.memories.map((memory) => `- [${memory.kind}] ${memory.content}`);
@@ -143,16 +154,19 @@ export function createSessionApplicationComposition({
       const skillRoutingContext = skillMcpTurnContext(
         mcpAssignmentRevisionForAgent(session?.agentId)
       );
-      const contexts = [baseContext, skillRoutingContext, mentionContext, directUserIntentContext, memoryContext]
+      const contexts = [baseContext, globalPreferenceContext, skillRoutingContext,
+        mentionContext, directUserIntentContext, memoryContext]
         .filter((item) => item?.prompt);
-      const recordInjection = (included) => {
+      const recordInjection = (globalIncluded, recallIncluded) => {
+        if (globalPreferences) memoryRecallService.markInjection?.(globalPreferences,
+          globalIncluded ? "context_included" : "budget_omitted");
         if (!recallDecision) return;
         const status = recallDecision.memories.length === 0 ? "not_selected"
-          : included ? "context_included" : "budget_omitted";
+          : recallIncluded ? "context_included" : "budget_omitted";
         memoryRecallService.markInjection?.(recallDecision, status);
       };
       if (contexts.length === 0) {
-        recordInjection(false);
+        recordInjection(false, false);
         return null;
       }
       if (session?.sessionKind === "worker") {
@@ -162,17 +176,18 @@ export function createSessionApplicationComposition({
           memoryContext,
           mentionContext,
           referenceContext,
-          requiredContexts: [skillRoutingContext].filter(Boolean)
+          requiredContexts: [globalPreferenceContext, skillRoutingContext].filter(Boolean)
         });
-        recordInjection(Boolean(result.memoryRecall));
-        return result;
+        recordInjection(Boolean(result), Boolean(result.memoryRecall));
+        return { ...result, globalPreferenceRecall: globalPreferences };
       }
-      recordInjection(Boolean(memoryContext));
-      if (contexts.length === 1) return contexts[0];
+      recordInjection(true, Boolean(memoryContext));
+      if (contexts.length === 1) return { ...contexts[0], globalPreferenceRecall: globalPreferences };
       return {
         ...baseContext,
         prompt: contexts.map((item) => item.prompt).join("\n\n"),
-        memoryRecall: memoryContext?.memoryRecall ?? null
+        memoryRecall: memoryContext?.memoryRecall ?? null,
+        globalPreferenceRecall: globalPreferences
       };
     },
     observeMemoryDispatch: (recall, status) => memoryRecallService.markInjection?.(recall, status),
