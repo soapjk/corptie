@@ -18,6 +18,7 @@ function fixture() {
     },
     interruptUnifiedSession: record("interrupt", { id: "stored" }),
     cancelQueuedUserMessage: record("cancel", { taskId: "work:one", status: "cancelled" }),
+    deleteUserMessage: record("delete", { schemaVersion: 1, messageId: "message:one", status: "deleted" }),
     respondUnifiedSessionApproval: record("approval", { id: "stored" }),
     respondUnifiedSessionUserInput: record("input", { id: "stored" }),
     readJson: async (request) => { if (request.body instanceof Error) throw request.body; return request.body; },
@@ -60,6 +61,16 @@ test("queued message cancellation targets the exact Session and work item", asyn
   assert.deepEqual(await f.dispatch("/sessions/public%2Fid/queued-messages/work%3Aone/cancel").result,
     { status: 200, body: { task: { taskId: "work:one", status: "cancelled" } } });
   assert.deepEqual(f.calls, [["cancel", "public/id", "work:one"]]);
+});
+
+test("message deletion decodes exact identities and preserves refusal status", async () => {
+  const f = fixture();
+  assert.equal((await f.dispatch("/sessions/public%2Fid/messages/message%3Aone", "DELETE").result).status, 200);
+  assert.deepEqual(f.calls, [["delete", "public/id", "message:one"]]);
+  f.dependencies.deleteUserMessage = () => { throw Object.assign(new Error("unsafe"), {code: "MESSAGE_MAY_HAVE_BEEN_RECEIVED", status: 409}); };
+  const denied = await f.dispatch("/sessions/public%2Fid/messages/message%3Aone", "DELETE").result;
+  assert.equal(denied.status, 409);
+  assert.equal(denied.body.code, "MESSAGE_MAY_HAVE_BEEN_RECEIVED");
 });
 
 test("message failures retain request/dispatch stages without logging raw error text", async (t) => {

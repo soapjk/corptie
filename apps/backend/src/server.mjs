@@ -1,4 +1,5 @@
 import http from "node:http";
+import { deleteUnreceivedUserMessage } from "./application/userMessageDeletion.mjs";
 import { routeBackendHttpRequest } from "./application/backendHttpRouter.mjs";
 import { createProductEventPublisher } from "./application/productEventPublisher.mjs";
 import { createStartupRecoveryOperations } from "./application/startupRecoveryOperations.mjs";
@@ -1465,6 +1466,10 @@ function cancelQueuedUserMessage(sessionId, taskId) {
   return task;
 }
 
+function deleteUserMessage(sessionId, messageId) {
+  return deleteUnreceivedUserMessage(store, requireSessionReference(sessionId).sessionId, messageId);
+}
+
 const codexSessionCreator = createCodexSessionCreator({
   collaborationCore, codexRuntime, resolvedNewCodexRuntimeConfig,
   collaborationThreadOptionsWithAgentContext, withPersistedCodexToolConfirmation,
@@ -1976,6 +1981,7 @@ const backendHttpPorts = Object.freeze({
   get publishDshPromptStart() { return publishDshPromptStart; },
   get sendUnifiedSessionMessage() { return sendUnifiedSessionMessage; },
   get cancelQueuedUserMessage() { return cancelQueuedUserMessage; },
+  get deleteUserMessage() { return deleteUserMessage; },
   get publishDshPromptFailure() { return publishDshPromptFailure; },
   get handleBackendHealthHttpRequest() { return handleBackendHealthHttpRequest; },
   get projectCodeIndexStore() { return projectCodeIndexStore; },
@@ -2181,7 +2187,7 @@ function startBackendRuntime() {
     turnObservability, agentProviderRegistry, switchSessionProvider, workService,
     inspectTaskWorktree, reclaimTaskWorktree, sendUnifiedSessionMessage,
     admitReliableMessage: sessionMessageOperation.admitReliableMessage,
-    interruptUnifiedSession, respondUnifiedSessionApproval, respondUnifiedSessionUserInput,
+    interruptUnifiedSession, cancelQueuedUserMessage, deleteUserMessage, respondUnifiedSessionApproval, respondUnifiedSessionUserInput,
     resolveCollaborationConfirmation, resolveSessionChannelRequest,
     publishStateChangesIfNeeded, workDiscussionService, sessionApplicationService,
     workSessionStartApplicationService, chatResourceService, decorateSessionForClient,

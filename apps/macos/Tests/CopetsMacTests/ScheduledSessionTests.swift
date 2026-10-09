@@ -278,7 +278,9 @@ struct ScheduledSessionBackendClientTests {
         #expect(ScheduledSessionEventMapping.authoritativeEventNames.contains("ScheduledSessionRunFailed"))
         #expect(ScheduledSessionEventMapping.authoritativeEventNames.contains("ScheduledSessionRunMissed"))
         #expect(ScheduledSessionEventMapping.timelineCardEventNames == [
-            "ScheduledSessionTaskCreated", "ScheduledSessionTaskDue", "ScheduledSessionRunQueued"
+            "ScheduledSessionTaskCreated", "ScheduledSessionTaskDue", "ScheduledSessionRunQueued",
+            "ScheduledSessionRunStarted", "ScheduledSessionRunCompleted", "ScheduledSessionRunFailed",
+            "ScheduledSessionRunCancelled", "ScheduledSessionRunMissed"
         ])
     }
 

@@ -6,6 +6,7 @@ import CorptieClientCore
 @MainActor
 final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private let cardView = NativeContentCardSurface(frame: .zero)
+    private var messageGlow: NSHostingView<MessageStatusGlow>?
     private let timeSeparatorLabel = NSTextField(labelWithString: "")
     private let titleLabel = NSTextField(labelWithString: "")
     private let metadataLabel = NSTextField(labelWithString: "")
@@ -17,6 +18,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private let disclosureButton = NSButton()
     private var forkItemID: String?
     private var queuedMessageTaskID: String?
+    private var deletableMessageID: String?
     private var forkUnavailableReason: String?
     private let messageActionBar = NSStackView()
     private let actionStack = NSStackView()
@@ -330,10 +332,11 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         contextTimestamp = row.contextTimestamp
         forkItemID = row.forkItemID
         queuedMessageTaskID = row.queuedMessageTaskID
+        deletableMessageID = row.deletableMessageID
         forkUnavailableReason = row.forkUnavailableReason
         configureContextMenu()
         configureMessageStatus(row.messageStatus)
-        let showsMessageStatus = row.showsMessageStatusBar
+        let showsMessageStatus = false // Status light never reserves a footer.
         NSLayoutConstraint.deactivate([
             cardBottomStandardConstraint,
             cardBottomWithMessageActionsConstraint,
@@ -633,15 +636,33 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     }
 
     private func configureMessageStatus(_ status: UserMessageStatusPresentation?) {
-        hasVisibleMessageStatus = status != nil
+        hasVisibleMessageStatus = false
+        messageStatusButton.isHidden = true
         guard let status else {
-            messageStatusButton.isHidden = true
+            messageGlow?.removeFromSuperview()
+            messageGlow = nil
+            cardView.toolTip = nil
             messageStatusDetail = ""
             return
         }
+        if let messageGlow {
+            messageGlow.rootView = MessageStatusGlow(status: status)
+        } else {
+            let glow = NSHostingView(rootView: MessageStatusGlow(status: status))
+            glow.sizingOptions = []
+            glow.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(glow, positioned: .below, relativeTo: cardView)
+            NSLayoutConstraint.activate([
+                glow.leadingAnchor.constraint(equalTo: cardView.leadingAnchor),
+                glow.trailingAnchor.constraint(equalTo: cardView.trailingAnchor),
+                glow.topAnchor.constraint(equalTo: cardView.topAnchor),
+                glow.bottomAnchor.constraint(equalTo: cardView.bottomAnchor)
+            ])
+            messageGlow = glow
+        }
         let language = Locale.current.language.languageCode?.identifier ?? "en"
         messageStatusDetail = status.detail(languageCode: language)
-        messageStatusButton.isHidden = false
+        cardView.toolTip = messageStatusDetail
         messageStatusButton.title = status.shortLabel(languageCode: language)
         messageStatusButton.image = NSImage(
             systemSymbolName: status.symbolName,
@@ -689,6 +710,12 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
                         kind: .forkMessage(itemID: forkItemID)))
     }
 
+    @objc private func deleteUnreceivedMessage() {
+        guard let id = deletableMessageID else { return }
+        onAction?(.init(id: "delete:\(id)", label: "删除", isDestructive: true,
+            kind: .deleteUnreceivedMessage(messageID: id)))
+    }
+
     @objc private func cancelQueuedMessage() {
         guard let taskID = queuedMessageTaskID else { return }
         onAction?(.init(id: "cancel-queued:\(taskID)", label: L10n("Cancel"),
@@ -705,6 +732,12 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             return
         }
         let menu = NSMenu()
+        if deletableMessageID != nil {
+            let deletion = NSMenuItem(title: "删除", action: #selector(deleteUnreceivedMessage), keyEquivalent: "")
+            deletion.target = self
+            deletion.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
+            menu.addItem(deletion)
+        }
         if !contextTimestamp.isEmpty {
             let timestamp = NSMenuItem(title: L10nFormat("Time: %@", contextTimestamp), action: nil, keyEquivalent: "")
             timestamp.image = NSImage(systemSymbolName: "clock", accessibilityDescription: nil)

@@ -253,6 +253,14 @@ extension PadWorkspace {
                 } catch is CancellationError { return }
                 catch {
                     guard !Task.isCancelled, deliveryKey(connection) == generation else { return }
+                    if (error as? ClientServiceFailure)?.code == "MESSAGE_DELETED" {
+                        do { try await messageOutbox.remove(message.id) } catch { return }
+                        let removedID = message.authoritativeMessageID ?? message.messageID
+                        outgoingMessages[message.displaySessionID]?.removeAll { $0.id == removedID }
+                        outgoingStates.removeValue(forKey: removedID)
+                        messagesDirty = true
+                        continue
+                    }
                     if message.state == .accepted {
                         status = "后端已接收，但本地回执保存未完成。原记录已保留，稍后继续核对。"
                         return

@@ -544,7 +544,7 @@ final class NativeTimelineLayoutCache {
                 let footerHeight: CGFloat = row.processCount == nil ? 0 : 24
                 let actionHeight: CGFloat = row.actions.isEmpty ? 0 : 34
                 let sentStatusHeight: CGFloat = row.showsCollaborationSentStatus ? 30 : 0
-                let messageStatusBarHeight: CGFloat = row.showsMessageStatusBar ? 27 : 0
+                let messageStatusBarHeight: CGFloat = 0 // Shared and native cards use a non-layout glow.
                 // Replaces the ordinary 6pt title-to-body gap with
                 // 8pt + 92pt summary + 10pt, for a net 104pt addition.
                 let collaborationRouteHeight: CGFloat = row.collaborationRoute == nil ? 0 : 104

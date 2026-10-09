@@ -5,6 +5,20 @@ import CorptieClientCore
 @testable import CorptieClientSecurity
 
 struct ReliableMessageOutboxTests {
+    @Test func authoritativeDeletionIsScopedAndSurvivesRestart() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let key = SymmetricKey(size: .bits256)
+        let outbox = ReliableMessageOutbox(directory: directory, key: key)
+        let message = ReliableOutgoingMessage(serverID: "server", deviceID: "device", sessionID: "session",
+            displaySessionID: "display", text: "body")
+        try await outbox.save(message)
+        try await outbox.removeDeletedMessages(serverID: "other", deviceID: "device", sessionID: "session", messageIDs: [message.messageID])
+        #expect(try await outbox.all().count == 1)
+        try await outbox.removeDeletedMessages(serverID: "server", deviceID: "device", sessionID: "display", messageIDs: [message.messageID])
+        let restored = ReliableMessageOutbox(directory: directory, key: key)
+        #expect(try await restored.all().isEmpty)
+    }
     @Test func onlyTerminalRejectedOrCancelledPayloadsCanBeDiscarded() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
