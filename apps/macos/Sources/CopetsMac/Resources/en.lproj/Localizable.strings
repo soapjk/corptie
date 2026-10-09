@@ -1313,3 +1313,6 @@
 "Choose a recovery action for every Markdown file." = "Choose a recovery action for every Markdown file.";
 "A previous Markdown decision left %d uncommitted Ignore change(s). Resolve each file before integration continues." = "A previous Markdown decision left %d uncommitted Ignore change(s). Resolve each file before integration continues.";
 "The merge commit completed but left these target Worktree changes uncommitted. Review or preserve them, make the target clean, then retry." = "The merge commit completed but left these target Worktree changes uncommitted. Review or preserve them, make the target clean, then retry.";
+"首次授权并发送" = "Authorize and send for the first time";
+"正在提交…" = "Submitting…";
+"首次与此会话建立通道，或原通道已撤销。授权仅适用于这两个 Session。" = "This is the first Channel to this Session, or the previous Channel was revoked. Authorization applies only to these two Sessions.";

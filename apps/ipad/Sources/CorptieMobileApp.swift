@@ -1895,12 +1895,12 @@ private struct PadCollaborationCard: View {
     @State private var errorText: String?
 
     private var presentation: ClientCollaborationPresentation? { message.collaborationPresentation }
-    private var status: String { resolvedStatus ?? presentation?.status ?? "queued" }
+    private var status: String { submitting ? "submitting" : (resolvedStatus ?? presentation?.status ?? "queued") }
     private var isPending: Bool {
         presentation?.isConfirmation == true && status.lowercased() == "pending"
     }
     private var title: String {
-        if presentation?.isChannelAuthorization == true { return "授权 Session 通信渠道" }
+        if presentation?.isChannelAuthorization == true { return "首次授权并发送" }
         if presentation?.isConfirmation == true { return "确认发送协作任务" }
         return "跨会话协作 · \(kindLabel)"
     }
@@ -1917,7 +1917,8 @@ private struct PadCollaborationCard: View {
     private var statusLabel: String {
         switch status.lowercased() {
         case "sent", "delivered": return "已发送"
-        case "confirmed": return presentation?.isChannelAuthorization == true ? "已授权" : "已确认"
+        case "confirmed": return "已发送"
+        case "submitting": return "正在提交…"
         case "completed", "complete": return "已处理"
         case "running", "processing": return "处理中"
         case "failed": return "处理失败"
@@ -1946,6 +1947,10 @@ private struct PadCollaborationCard: View {
                 Text("\(source) → \(target)")
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
                     .accessibilityLabel("来源 Session：\(source)，目标 Session：\(target)")
+            }
+            if presentation?.isChannelAuthorization == true, isPending {
+                Text("首次与此会话建立通道，或原通道已撤销。授权仅适用于这两个 Session，不会由同名会话或同一 Work 继承。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             if let body = presentation?.body, !body.isEmpty {
                 PadMessageText(text: body, fromUser: false, isTextSelectionEnabled: .constant(true))
@@ -1991,7 +1996,6 @@ private struct PadCollaborationCard: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            if submitting { Text("正在提交，等待会话同步…").font(.caption).foregroundStyle(.secondary) }
             if let errorText { Text(errorText).font(.caption).foregroundStyle(.red) }
         }
         .padding(14)
