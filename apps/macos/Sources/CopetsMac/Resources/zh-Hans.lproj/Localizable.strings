@@ -1678,3 +1678,18 @@
 "Choose which operations and task-state changes should notify you." = "选择哪些操作结果和任务状态变化需要通知。";
 
 "Worktree merge" = "Worktree 合并";
+
+"Auto Fill" = "自动填写";
+"Enter your own message, or choose Auto Fill to generate one." = "直接输入提交信息，或点击“自动填写”生成。";
+"Checking protected-file rules…" = "正在检查受保护文件规则…";
+
+"Choose Action" = "选择操作";
+"Finish Markdown Recovery" = "完成 Markdown 恢复";
+"A previous integration applied Ignore choices but stopped before committing them. Choose an explicit recovery action for every affected file." = "上一次整合已应用 Ignore 选择，但在提交前中断。请为每个受影响文件明确选择恢复操作。";
+"Keep Ignored" = "保持忽略";
+"Allow Git Tracking Current Version" = "允许 Git 追踪当前版本";
+"Recovery action for %@" = "%@ 的恢复操作";
+"Keep Ignored commits the exact Ignore rule. Allow Git Tracking removes that rule and commits the current file version after authorization. No action pushes to a remote." = "保持忽略会提交对应的 Ignore 规则；允许 Git 追踪会移除该规则，并在授权后提交文件当前版本。所有操作都不会推送到远端。";
+"Choose a recovery action for every Markdown file." = "请为每个 Markdown 文件选择恢复操作。";
+"A previous Markdown decision left %d uncommitted Ignore change(s). Resolve each file before integration continues." = "上一次 Markdown 决策留下了 %d 个未提交的 Ignore 变更。请逐个处理后再继续整合。";
+"The merge commit completed but left these target Worktree changes uncommitted. Review or preserve them, make the target clean, then retry." = "合并提交已经完成，但目标 Worktree 仍有以下未提交变更。请检查或保留这些变更，将目标恢复为干净状态后重试。";

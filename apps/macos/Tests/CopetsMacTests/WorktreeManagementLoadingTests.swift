@@ -244,6 +244,33 @@ struct WorktreeManagementLoadingTests {
     }
 
     @MainActor
+    @Test func openingIndividualCommitOnlyChecksProtectionUntilAutoFillIsRequested() async {
+        let worktree = Self.worktree("wt:dirty", branch: "feature/dirty", dirty: true)
+        let recorder = RequestRecorder(details: [
+            "repository:one": Self.detail(repositoryId: "repository:one", worktrees: [worktree])
+        ])
+        let client = makeClient(recorder: recorder)
+        await client.loadRepositories()
+        guard let selected = client.selectedWorktree else {
+            Issue.record("Expected the dirty Worktree to be selected")
+            return
+        }
+        let preparePath = "/projects/repository:one/workspaces/wt:dirty/actions/commit-prepare"
+        let messagePath = "/projects/repository:one/workspaces/wt:dirty/actions/commit-message"
+
+        let preparation = await client.prepareIndividualOperation(for: selected)
+
+        #expect(preparation?.protection?.requiresDecision == false)
+        #expect(recorder.count(path: preparePath) == 1)
+        #expect(recorder.count(path: messagePath) == 0)
+
+        let suggestion = await client.generateIndividualCommitMessage(for: selected)
+
+        #expect(suggestion == "Generated only on request")
+        #expect(recorder.count(path: messagePath) == 1)
+    }
+
+    @MainActor
     @Test func expiredCacheAutomaticallyReloadsChangedWorktreeData() async {
         var currentTime = Date(timeIntervalSince1970: 1_776_297_600)
         let recorder = RequestRecorder(details: [
@@ -352,10 +379,12 @@ struct WorktreeManagementLoadingTests {
         _ id: String,
         branch: String,
         isMain: Bool = false,
-        headOid: String? = "abc123"
+        headOid: String? = "abc123",
+        dirty: Bool = false
     ) -> String {
         let encodedHeadOid = headOid.map { "\"\($0)\"" } ?? "null"
-        return "{\"worktreeId\":\"\(id)\",\"path\":\"/tmp/\(id)\",\"isMain\":\(isMain),\"availability\":\"available\",\"headOid\":\(encodedHeadOid),\"branchName\":\"\(branch)\",\"isDetached\":false,\"isLocked\":false,\"lockReason\":null,\"state\":\"\(isMain ? "main" : "synced")\",\"dirty\":false,\"statusSummary\":\"\",\"diffStat\":\"\",\"changedFiles\":[],\"operationState\":null,\"conflictFiles\":[],\"mergedIntoMain\":true,\"synchronizedWithMain\":true,\"aheadOfMain\":0,\"behindMain\":0,\"pendingIntegration\":false,\"associations\":[]}"
+        let changedFiles = dirty ? "[\"file.txt\"]" : "[]"
+        return "{\"worktreeId\":\"\(id)\",\"path\":\"/tmp/\(id)\",\"isMain\":\(isMain),\"availability\":\"available\",\"headOid\":\(encodedHeadOid),\"branchName\":\"\(branch)\",\"isDetached\":false,\"isLocked\":false,\"lockReason\":null,\"state\":\"\(isMain ? "main" : "synced")\",\"dirty\":\(dirty),\"statusSummary\":\"\(dirty ? " M file.txt" : "")\",\"diffStat\":\"\",\"changedFiles\":\(changedFiles),\"operationState\":null,\"conflictFiles\":[],\"mergedIntoMain\":true,\"synchronizedWithMain\":true,\"aheadOfMain\":0,\"behindMain\":0,\"pendingIntegration\":false,\"associations\":[]}"
     }
 
     private static func worktreeId(from json: String) -> String? {
@@ -401,6 +430,14 @@ private final class RequestRecorder: @unchecked Sendable {
                 return (200, """
                 {"repositoryId":"\(repositoryId)","worktreeId":"\(worktreeId)","gitHubPush":{"available":true,"pending":true,"dirty":false,"unpushedCommitCount":1,"branch":"feature","destinationUrl":"https://github.com/example/repository","error":null}}
                 """)
+            }
+            if path.hasSuffix("/actions/commit-prepare") {
+                return (200, """
+                {"result":{"repositoryRoot":"/tmp/repository","protectedPaths":[],"localSymlinkPaths":[],"suggestedIgnorePatterns":[],"warningEnabled":true,"requiresDecision":false}}
+                """)
+            }
+            if path.hasSuffix("/actions/commit-message") {
+                return (200, "{\"result\":{\"commitMessage\":\"Generated only on request\"}}")
             }
             let id = String(path.split(separator: "/").last ?? "")
             guard let detail = details[id] else {
