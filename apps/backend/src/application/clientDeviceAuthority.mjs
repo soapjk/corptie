@@ -7,6 +7,11 @@ const hash = (value) => createHash("sha256").update(value).digest("hex");
 const validToken = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
 export const deviceError = (code, status = 401) => Object.assign(new Error(code), { code, status });
 
+/** Canonical user actor for an authenticated paired device; never a Session identity. */
+export function pairedDeviceActor(identity) {
+  return { type: "user", id: `user:paired-device:${identity.deviceId}` };
+}
+
 /** Device credentials authorize client access, never impersonate a Session or Agent. */
 export class ClientDeviceAuthority {
   constructor(directory, { now = Date.now, rotationGraceMs = 30_000 } = {}) {

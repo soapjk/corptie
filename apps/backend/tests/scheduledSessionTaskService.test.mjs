@@ -94,6 +94,17 @@ async function cleanup(value) {
   await rm(value.directory, { recursive: true, force: true });
 }
 
+test("scoped scheduled-task reads distinguish empty results from revoked authorization", async () => {
+  const f = await fixture();
+  try {
+    assert.deepEqual(f.service.list({ logicalSessionId: "logical:stable", status: "active" }, f.actor), []);
+    f.revokeAuthorization();
+    assert.throws(() => f.service.list({ logicalSessionId: "logical:stable", status: "active" }, f.actor),
+      { code: "AUTHORIZATION_REVOKED" });
+    assert.deepEqual(f.service.list({}, f.actor), []);
+  } finally { await cleanup(f); }
+});
+
 test("collection and run-history queries use their covering sort indexes", async () => {
   const f = await fixture();
   try {
