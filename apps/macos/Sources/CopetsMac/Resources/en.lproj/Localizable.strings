@@ -1297,3 +1297,18 @@
 "Close Floating Window" = "Close Floating Window";
 
 "Press Return to send; Shift-Return for a new line" = "Press Return to send; Shift-Return for a new line";
+
+"Auto Fill" = "Auto Fill";
+"Enter your own message, or choose Auto Fill to generate one." = "Enter your own message, or choose Auto Fill to generate one.";
+"Checking protected-file rules…" = "Checking protected-file rules…";
+
+"Choose Action" = "Choose Action";
+"Finish Markdown Recovery" = "Finish Markdown Recovery";
+"A previous integration applied Ignore choices but stopped before committing them. Choose an explicit recovery action for every affected file." = "A previous integration applied Ignore choices but stopped before committing them. Choose an explicit recovery action for every affected file.";
+"Keep Ignored" = "Keep Ignored";
+"Allow Git Tracking Current Version" = "Allow Git Tracking Current Version";
+"Recovery action for %@" = "Recovery action for %@";
+"Keep Ignored commits the exact Ignore rule. Allow Git Tracking removes that rule and commits the current file version after authorization. No action pushes to a remote." = "Keep Ignored commits the exact Ignore rule. Allow Git Tracking removes that rule and commits the current file version after authorization. No action pushes to a remote.";
+"Choose a recovery action for every Markdown file." = "Choose a recovery action for every Markdown file.";
+"A previous Markdown decision left %d uncommitted Ignore change(s). Resolve each file before integration continues." = "A previous Markdown decision left %d uncommitted Ignore change(s). Resolve each file before integration continues.";
+"The merge commit completed but left these target Worktree changes uncommitted. Review or preserve them, make the target clean, then retry." = "The merge commit completed but left these target Worktree changes uncommitted. Review or preserve them, make the target clean, then retry.";
