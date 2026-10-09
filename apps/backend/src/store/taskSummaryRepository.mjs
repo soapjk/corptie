@@ -117,10 +117,10 @@ export class TaskSummaryRepository {
       }
       const time = new Date().toISOString();
       let titleChange = null;
-      if (summary.suggestedTitle) {
+      const task = this.store.getTask(claim.taskID);
+      if (summary.suggestedTitle && task.auto_title_enabled !== 0) {
         validateEntityName(summary.suggestedTitle, "title", "Task");
         if (summary.suggestedTitle.length > 64) throw new Error("Suggested title exceeds limit.");
-        const task = this.store.getTask(claim.taskID);
         if (task.title !== summary.suggestedTitle) {
           titleChange = { from: task.title, to: summary.suggestedTitle };
           // Local product-owned projection, not a tool granted to the background

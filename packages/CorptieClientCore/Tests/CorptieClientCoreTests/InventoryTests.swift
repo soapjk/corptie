@@ -16,10 +16,12 @@ struct InventoryTests {
         let legacyTask = try decoder.decode(ClientTask.self,
             from: Data(#"{"id":"task:1","title":"T","workId":"work:1","lifecycleState":"active","executionStatus":"idle","currentSessionId":null,"updatedAt":"now"}"#.utf8))
         #expect(legacyTask.hasPendingScheduledWake == false)
+        #expect(legacyTask.autoTitleEnabled == true)
         #expect(legacyTask.deletionStatus == nil)
         let task = try decoder.decode(ClientTask.self,
-            from: Data(#"{"id":"task:1","title":"T","workId":"work:1","lifecycleState":"active","executionStatus":"idle","currentSessionId":"session:1","hasPendingScheduledWake":true,"deletionStatus":"deleting","updatedAt":"now"}"#.utf8))
+            from: Data(#"{"id":"task:1","title":"T","autoTitleEnabled":false,"workId":"work:1","lifecycleState":"active","executionStatus":"idle","currentSessionId":"session:1","hasPendingScheduledWake":true,"deletionStatus":"deleting","updatedAt":"now"}"#.utf8))
         #expect(task.hasPendingScheduledWake == true)
+        #expect(task.autoTitleEnabled == false)
         #expect(task.deletionStatus == "deleting")
         #expect(task.currentSessionId == "session:1")
 

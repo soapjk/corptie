@@ -9,7 +9,7 @@ const WORK_UPDATE_FIELDS = WORK_CREATE_FIELDS.filter(
 
 const TASK_CREATE_FIELDS = [
   "id", "workId", "title", "description", "acceptanceCriteria",
-  "verificationCriteria", "priority", "lifecycleState", "mainAgentId"
+  "verificationCriteria", "priority", "lifecycleState", "mainAgentId", "autoTitleEnabled"
 ];
 
 const TASK_UPDATE_FIELDS = TASK_CREATE_FIELDS.filter(
@@ -109,6 +109,12 @@ export function validateTaskInput(input, operation = "create") {
     throw new EntityValidationError("INVALID_LIFECYCLE_STATE", "lifecycleState", TASK_LIFECYCLE_STATES.join(" | "), input.lifecycleState);
   }
   if (has(input, "mainAgentId")) normalized.mainAgentId = optionalString(input.mainAgentId, "mainAgentId", { trim: true });
+  if (has(input, "autoTitleEnabled")) {
+    if (typeof input.autoTitleEnabled !== "boolean") {
+      throw new EntityValidationError("INVALID_FIELD_TYPE", "autoTitleEnabled", "boolean", input.autoTitleEnabled);
+    }
+    normalized.autoTitleEnabled = input.autoTitleEnabled;
+  }
 
   if (operation === "create" && !has(input, "workId")) {
     throw new EntityValidationError("INVALID_FIELD_TYPE", "workId", "non-empty string", undefined, "Task workId is required.");
