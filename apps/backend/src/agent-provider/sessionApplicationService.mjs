@@ -726,11 +726,13 @@ export class SessionApplicationService {
   }
 
   #recordMemoryDispatch(sessionContext, status) {
-    if (!sessionContext?.memoryRecall?.id || !sessionContext.memoryRecall.memories?.length) return;
-    try {
-      this.observeMemoryDispatch?.(sessionContext.memoryRecall, status);
-    } catch (error) {
-      console.warn(`[session-memory] dispatch audit failed: ${error?.message ?? error}`);
+    for (const recall of [sessionContext?.memoryRecall, sessionContext?.globalPreferenceRecall]) {
+      if (!recall?.id || !recall.memories?.length) continue;
+      try {
+        this.observeMemoryDispatch?.(recall, status);
+      } catch (error) {
+        console.warn(`[session-memory] dispatch audit failed: ${error?.message ?? error}`);
+      }
     }
   }
 

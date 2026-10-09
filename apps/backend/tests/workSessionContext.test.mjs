@@ -233,6 +233,17 @@ test("Turn-level merging keeps Task and direct-user evidence complete and drops 
   assert.ok(Buffer.byteLength(merged.prompt) <= WORKER_SESSION_CONTEXT_LIMITS.turnMaxUtf8Bytes);
 });
 
+test("Worker Turn retains required Global preferences when optional recall exceeds its budget", () => {
+  const baseContext = workerContext();
+  const requiredPreference = { prompt: "<corptie_global_preferences>Complete development before testing.</corptie_global_preferences>" };
+  const merged = mergeWorkerSessionContexts({ baseContext,
+    requiredContexts: [requiredPreference],
+    memoryContext: { prompt: "m".repeat(32_768), memoryRecall: { id: "optional" } } });
+  assert.match(merged.prompt, /Complete development before testing/);
+  assert.equal(merged.contextBudget.memoryContextOmitted, true);
+  assert.ok(Buffer.byteLength(merged.prompt) <= WORKER_SESSION_CONTEXT_LIMITS.turnMaxUtf8Bytes);
+});
+
 test("Worker Turn includes selected references without truncating Task authority or direct evidence", () => {
   const baseContext = workerContext();
   const referenceContext = {
