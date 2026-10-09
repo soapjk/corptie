@@ -91,6 +91,9 @@ export class ScheduledSessionTaskService {
     this.#expireDueTasks(this.now());
     phases.expirationMs = roundedMilliseconds(performance.now() - phaseStartedAt);
     phaseStartedAt = performance.now();
+    // A scoped Detail read must report denied access, not disguise it as an empty card.
+    // Unscoped lists still filter each task independently to avoid leaking other Sessions.
+    if (options.logicalSessionId) this.#authorize(actor, options.logicalSessionId, "read");
     const tasks = this.store.listScheduledSessionTasks({
       environment: this.environment,
       logicalSessionId: options.logicalSessionId,

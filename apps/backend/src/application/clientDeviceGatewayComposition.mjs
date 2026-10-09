@@ -8,6 +8,7 @@ import { inspectorFileImporter } from "./clientInspectorFiles.mjs";
 import { ClientControlReadAPI } from "./clientControlReadAPI.mjs";
 import { ClientWorktreeManagementAPI } from "./clientWorktreeManagementAPI.mjs";
 import { ClientSessionAPI } from "./clientSessionAPI.mjs";
+import { pairedDeviceActor } from "./clientDeviceAuthority.mjs";
 
 export function startClientDeviceGateway({
   store, environmentName, developmentPreview, worktreeIntegrationJobService, projectApplicationService, emitEvent,
@@ -123,7 +124,7 @@ export function startClientDeviceGateway({
         scheduleType: schedule.intervalSeconds ? "interval" : "at",
         runAt: schedule.runAt, expiresAt: schedule.expiresAt,
         ...(schedule.intervalSeconds ? { intervalSeconds: schedule.intervalSeconds } : {})
-      }, { type: "user", id: `user:paired-device:${identity.deviceId}` }),
+      }, pairedDeviceActor(identity)),
       images: {
         available: session => decorateSessionForClient(session).capabilities?.canSendImages === true,
         import: (id, image) => chatResourceService.importImageData(requireSessionReference(id),

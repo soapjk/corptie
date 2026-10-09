@@ -52,7 +52,9 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
             if store.snapshot?.taskDefinition?["lifecycleState"].text == "done" { taskWorktree }
             if store.snapshot?.workId != nil { artifacts; memories }
             references
-            if !section("schedules").items.isEmpty { schedules }
+            if let scheduleError = store.snapshot?.errors["schedules"] {
+                scheduleFailure(scheduleError)
+            } else if !section("schedules").items.isEmpty { schedules }
             if !section("recalls").items.isEmpty { recalls.modifier(ConversationDetailModuleSurface()) }
             if section("turn")["identity"]["turnExecutionId"] != .null {
                 turnAnalysis.modifier(ConversationDetailModuleSurface())
@@ -105,7 +107,7 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
             Text(store.pending?.requestID ?? "").font(.caption2.monospaced()).textSelection(.enabled)
             Button("已人工核对，处理未知结果…") { acknowledgingUnknown = true }.disabled(store.busy)
         }
-        ForEach(store.snapshot?.errors.keys.sorted() ?? [], id: \.self) { key in
+        ForEach((store.snapshot?.errors.keys.sorted() ?? []).filter { $0 != "schedules" }, id: \.self) { key in
             Text("\(key)：\(store.snapshot?.errors[key] ?? "")（保留旧数据）").font(.caption).foregroundStyle(.orange)
         }
     }
@@ -319,6 +321,14 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
                     Text(task["nextRunAt"].text ?? task["runAt"].text ?? "").font(.caption).foregroundStyle(.secondary)
                 }
             }
+        }
+    }
+    private func scheduleFailure(_ code: String) -> some View {
+        ConversationDetailModuleCard(title: "定时任务", systemImage: "clock.badge") {
+            Label(code == "AUTHORIZATION_REVOKED" ? "计划任务权限已失效" : "计划任务暂不可用",
+                  systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.orange)
         }
     }
     private var taskWorktree: some View {
