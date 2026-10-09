@@ -10,6 +10,13 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
     public let createdAt: String?
     public let userMessageStatus: String?
     public let queuePosition: Int?
+    public let deletionAvailable: Bool?
+    public let queuedMessageTaskId: String?
+    public var cancellableQueuedMessageTaskID: String? {
+        guard type == "userMessage", userMessageStatus == "queued",
+              let queuedMessageTaskId, !queuedMessageTaskId.isEmpty else { return nil }
+        return queuedMessageTaskId
+    }
     /// Additive timeline presentation fields. Older backends may omit them.
     public let turnStatus: String?
     public let title: String?
@@ -47,6 +54,15 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
     public let collaborationChannelId: String?
     public let collaborationAcceptanceCriteria: [String]?
     public let automationName: String?
+    public var messageOrigin: String? = nil
+    public var automationRunId: String? = nil
+    public var automationRunStatus: String? = nil
+    public var automationRunError: String? = nil
+    public var automationTriggerType: String? = nil
+    public var automationScheduleType: String? = nil
+    public var automationIntervalSeconds: Double? = nil
+    public var automationConditionCheckIntervalSeconds: Double? = nil
+    public var automationProcessPollIntervalSeconds: Double? = nil
     public let automationEventType: String?
     public let automationEventOccurredAt: String?
     public let automationRunAt: String?
@@ -66,7 +82,7 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
     public let options: [ClientApprovalOption]?
 
     enum CodingKeys: String, CodingKey {
-        case id, turnId, type, text, status, createdAt, userMessageStatus, queuePosition
+        case id, turnId, type, text, status, createdAt, userMessageStatus, queuePosition, queuedMessageTaskId, deletionAvailable
         case turnStatus, title, presentationRole, presentationText, sourceType, localVisibility, processingError
         case collaborationDirection, collaborationSenderAgentId, collaborationSenderName
         case collaborationRecipientAgentId, collaborationRecipientName
@@ -78,6 +94,8 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
         case collaborationProcessingStatus, collaborationConfirmationId, collaborationConfirmationStatus
         case collaborationAuthorizationKind, collaborationChannelId, collaborationAcceptanceCriteria
         case automationName, automationEventType, automationEventOccurredAt, automationRunAt, automationNextRunAt
+        case messageOrigin, automationRunId, automationRunStatus, automationRunError
+        case automationTriggerType, automationScheduleType, automationIntervalSeconds, automationConditionCheckIntervalSeconds, automationProcessPollIntervalSeconds
         case automationExpiresAt, systemEventKind, systemEventReason, systemEventSource
         case processStartedAt, processEndedAt, images, executionPlan, toolExecution, changeSet, userInput, options
     }
@@ -91,6 +109,8 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
         createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
         userMessageStatus = try container.decodeIfPresent(String.self, forKey: .userMessageStatus)
         queuePosition = try container.decodeIfPresent(Int.self, forKey: .queuePosition)
+        deletionAvailable = try container.decodeIfPresent(Bool.self, forKey: .deletionAvailable)
+        queuedMessageTaskId = try container.decodeIfPresent(String.self, forKey: .queuedMessageTaskId)
         turnStatus = try container.decodeIfPresent(String.self, forKey: .turnStatus)
         title = try container.decodeIfPresent(String.self, forKey: .title)
         presentationRole = try container.decodeIfPresent(String.self, forKey: .presentationRole)
@@ -127,6 +147,15 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
         collaborationChannelId = try container.decodeIfPresent(String.self, forKey: .collaborationChannelId)
         collaborationAcceptanceCriteria = try container.decodeIfPresent([String].self, forKey: .collaborationAcceptanceCriteria)
         automationName = try container.decodeIfPresent(String.self, forKey: .automationName)
+        messageOrigin = try container.decodeIfPresent(String.self, forKey: .messageOrigin)
+        automationRunId = try container.decodeIfPresent(String.self, forKey: .automationRunId)
+        automationRunStatus = try container.decodeIfPresent(String.self, forKey: .automationRunStatus)
+        automationRunError = try container.decodeIfPresent(String.self, forKey: .automationRunError)
+        automationTriggerType = try container.decodeIfPresent(String.self, forKey: .automationTriggerType)
+        automationScheduleType = try container.decodeIfPresent(String.self, forKey: .automationScheduleType)
+        automationIntervalSeconds = try container.decodeIfPresent(Double.self, forKey: .automationIntervalSeconds)
+        automationConditionCheckIntervalSeconds = try container.decodeIfPresent(Double.self, forKey: .automationConditionCheckIntervalSeconds)
+        automationProcessPollIntervalSeconds = try container.decodeIfPresent(Double.self, forKey: .automationProcessPollIntervalSeconds)
         automationEventType = try container.decodeIfPresent(String.self, forKey: .automationEventType)
         automationEventOccurredAt = try container.decodeIfPresent(String.self, forKey: .automationEventOccurredAt)
         automationRunAt = try container.decodeIfPresent(String.self, forKey: .automationRunAt)
@@ -148,6 +177,7 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
     public init(id: String, text: String) {
         self.id = id; self.text = text; type = "userMessage"
         turnId = nil; status = nil; createdAt = nil; userMessageStatus = nil; queuePosition = nil
+        queuedMessageTaskId = nil; deletionAvailable = nil
         turnStatus = nil; title = nil; presentationRole = nil; presentationText = nil
         sourceType = nil; localVisibility = nil; processingError = nil
         collaborationDirection = nil; collaborationSenderAgentId = nil; collaborationSenderName = nil
@@ -166,7 +196,7 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
     public init(commandMessageID: String, result: ClientConversationCommandResult) {
         id = commandMessageID; text = result.text; type = "commandExecution"
         turnId = commandMessageID; status = "completed"; createdAt = nil
-        userMessageStatus = nil; queuePosition = nil
+        userMessageStatus = nil; queuePosition = nil; queuedMessageTaskId = nil; deletionAvailable = nil
         turnStatus = nil; title = nil; presentationRole = nil; presentationText = nil
         sourceType = nil; localVisibility = nil; processingError = nil
         collaborationDirection = nil; collaborationSenderAgentId = nil; collaborationSenderName = nil
@@ -247,6 +277,8 @@ public struct ClientCommandReceipt: Decodable, Sendable {
     public let entityResult: ClientEntityCommandResult?
 }
 public struct ClientSessionCapabilities: Decodable, Sendable {
+    public let cancelQueuedMessage: Bool?
+    public let deleteUnreceivedMessage: Bool?
     public struct ImageUploads: Decodable, Sendable {
         public let version: Int
         public let maximumImages: Int
@@ -447,6 +479,22 @@ public struct ClientSessionAPI: Sendable {
     public func capabilities(sessionId: String) async throws -> ClientSessionCapabilities {
         try await read(transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "capabilities"]))
     }
+    public func cancelQueuedMessage(sessionId: String, taskId: String) async throws {
+        struct Result: Decodable { let schemaVersion: Int; let status: String }
+        var request = try transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "cancel-queued-message"])
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(["taskId": taskId])
+        let result: Result = try await read(request)
+        guard result.status == "cancelled" else { throw ClientConnectionError.invalidResponse }
+    }
+    public func deleteUnreceivedMessage(sessionId: String, messageId: String) async throws {
+        struct Result: Decodable { let schemaVersion: Int; let messageId: String; let status: String }
+        var request = try transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "messages", messageId])
+        request.httpMethod = "DELETE"
+        let result: Result = try await read(request)
+        guard result.status == "deleted", result.messageId == messageId else { throw ClientConnectionError.invalidResponse }
+    }
     public func quickMessages(sessionId: String) async throws -> ClientQuickMessageRecommendations {
         let result: ClientQuickMessageRecommendations = try await read(
             transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "quick-messages"]))
@@ -635,6 +683,12 @@ public struct ClientSessionAPI: Sendable {
         return try await read(request)
     }
     /// Raw bytes of one managed attachment (`nil` when the host no longer has it). Callers decode off-main.
+    public func resource(sessionId: String, itemId: String, path: String) async throws -> Data {
+        let request = try transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "resources"],
+            query: [URLQueryItem(name: "itemId", value: itemId), URLQueryItem(name: "path", value: path)])
+        return try await transport.data(for: request).0
+    }
+
     public func image(sessionId: String, managedPath: String) async throws -> (data: Data, contentType: String?)? {
         let request = try transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "images"],
             query: [URLQueryItem(name: "path", value: managedPath)])
@@ -686,9 +740,10 @@ public struct ClientSessionAPI: Sendable {
     }
     private func read<Value: Decodable>(_ request: URLRequest) async throws -> Value {
         let (data, _) = try await transport.data(for: request)
-        guard try JSONDecoder().decode(Version.self, from: data).schemaVersion == 1 else {
+        guard try ClientDecodingDiagnostics.decode(Version.self, from: data,
+            context: request.url?.path ?? "client-api").schemaVersion == 1 else {
             throw ClientConnectionError.invalidResponse
         }
-        return try JSONDecoder().decode(Value.self, from: data)
+        return try ClientDecodingDiagnostics.decode(Value.self, from: data, context: request.url?.path ?? "client-api")
     }
 }

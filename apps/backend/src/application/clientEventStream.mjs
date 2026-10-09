@@ -1,4 +1,5 @@
 import { deviceError } from "./clientDeviceAuthority.mjs";
+import { clientSafeJSONStringify } from "../utils/unicodeText.mjs";
 
 export function parseRealtimeResumeQuery(query) {
   const raw = query.get("timelineRevisions");
@@ -86,7 +87,7 @@ export class ClientEventStream {
     const client = { deviceId: identity.deviceId, close, write: (event, payload) => {
       try {
         authenticate();
-        if (response.writableLength > 65536 || !response.write(`id: ${++this.sequence}\nevent: ${event}\ndata: ${JSON.stringify(payload)}\n\n`)) close();
+        if (response.writableLength > 65536 || !response.write(`id: ${++this.sequence}\nevent: ${event}\ndata: ${clientSafeJSONStringify(payload)}\n\n`)) close();
       } catch { close(); }
     } };
     const heartbeat = setInterval(() => client.write("heartbeat", { schemaVersion: 1, inventory: false, sessions: [], allSessions: false }), this.heartbeatMs);
@@ -137,7 +138,7 @@ export class ClientEventStream {
         if (client.closed || response.destroyed) return true;
         try {
           authenticate();
-          const frame = `id: ${++this.sequence}\nevent: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
+          const frame = `id: ${++this.sequence}\nevent: ${event}\ndata: ${clientSafeJSONStringify(payload)}\n\n`;
           if (Buffer.byteLength(frame) > 8 * 1024 * 1024 || response.writableLength > 2 * 1024 * 1024) {
             close();
             return true;

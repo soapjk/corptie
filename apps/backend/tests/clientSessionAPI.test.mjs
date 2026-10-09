@@ -8,6 +8,79 @@ import { ClientSessionAPI, approvalRequestIsCurrent } from "../src/application/c
 
 const identity = { deviceId: "device:one" };
 
+test("scheduled messages remain user messages with explicit source and run state metadata", async () => {
+  const f = await fixture();
+  try {
+    const api = new ClientSessionAPI({store: f.store, ...callbacks,
+      readWindow: async () => ({revision: 1, items: [
+        {id: "m", type: "userMessage", text: "instruction", messageOrigin: "scheduled_task",
+          automationRunId: "run", automationName: "Original", userMessageStatus: "queued", taskId: "operation"},
+        {id: "automation-run:run", type: "automationEvent", text: "", automationRunId: "run", automationRunStatus: "running"}
+      ]})});
+    const page = await api.messages(identity, "session:test", new URLSearchParams());
+    assert.equal(page.items[0].type, "userMessage");
+    assert.equal(page.items[0].messageOrigin, "scheduled_task");
+    assert.equal(page.items[0].queuedMessageTaskId, "operation");
+    assert.equal(page.items[0].automationRunId, page.items[1].automationRunId);
+    assert.equal(page.items[1].automationRunStatus, "running");
+  } finally { await f.close(); }
+});
+
+test("deletion capability is explicit and session resolution precedes mutation", async () => {
+  const f = await fixture();
+  try {
+    const calls = [];
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks,
+      deleteUserMessage: async (...args) => { calls.push(args); return { schemaVersion: 1, status: "deleted", messageId: args[1] }; } });
+    assert.equal(api.capabilities(identity, "session:test").deleteUnreceivedMessage, true);
+    assert.equal((await api.deleteMessage(identity, "session:test", "message:1")).status, "deleted");
+    await assert.rejects(api.deleteMessage(identity, "session:missing", "message:1"), { code: "SESSION_NOT_AVAILABLE" });
+    assert.deepEqual(calls, [["session:test", "message:1"]]);
+    const unsupported = new ClientSessionAPI({ store: f.store, ...callbacks });
+    assert.equal(unsupported.capabilities(identity, "session:test").deleteUnreceivedMessage, false);
+    await assert.rejects(unsupported.deleteMessage(identity, "session:test", "message:1"), { code: "CAPABILITY_UNSUPPORTED" });
+  } finally { await f.close(); }
+});
+
+test("queued cancellation is capability gated, scoped, and never interrupts execution", async () => {
+  const f = await fixture();
+  try {
+    const calls = [];
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks,
+      cancelQueuedMessage: async (session, task) => {
+        calls.push([session, task]);
+        if (task === "running") throw Object.assign(new Error("busy"), { code: "SESSION_BUSY" });
+      }, stop: () => assert.fail("queue cancellation must not stop a session") });
+    assert.equal(api.capabilities(identity, "session:test").cancelQueuedMessage, true);
+    assert.deepEqual(await api.cancelQueuedMessage(identity, "session:test", { taskId: "queued" }),
+      { schemaVersion: 1, status: "cancelled" });
+    await assert.rejects(api.cancelQueuedMessage(identity, "session:test", { taskId: "running" }),
+      { code: "MESSAGE_NOT_QUEUED" });
+    await assert.rejects(api.cancelQueuedMessage(identity, "session:missing", { taskId: "queued" }),
+      { code: "SESSION_NOT_AVAILABLE" });
+    await assert.rejects(api.cancelQueuedMessage(identity, "session:test", {}), { code: "INVALID_TASK_ID" });
+    assert.deepEqual(calls, [["session:test", "queued"], ["session:test", "running"]]);
+    const unsupported = new ClientSessionAPI({ store: f.store, ...callbacks });
+    assert.equal(unsupported.capabilities(identity, "session:test").cancelQueuedMessage, false);
+    await assert.rejects(unsupported.cancelQueuedMessage(identity, "session:test", { taskId: "queued" }),
+      { code: "CAPABILITY_UNSUPPORTED" });
+  } finally { await f.close(); }
+});
+
+test("only queued user messages expose their cancellable operation identity", async () => {
+  const f = await fixture();
+  try {
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks,
+      readWindow: async () => ({ revision: 1, items: [
+        { id: "1", type: "userMessage", text: "a", userMessageStatus: "queued", taskId: "operation:1" },
+        { id: "2", type: "userMessage", text: "b", userMessageStatus: "processing", taskId: "operation:2" },
+        { id: "3", type: "agentMessage", text: "c", userMessageStatus: "queued", taskId: "operation:3" }
+      ] }) });
+    const page = await api.messages(identity, "session:test", new URLSearchParams());
+    assert.deepEqual(page.items.map(item => item.queuedMessageTaskId ?? null), ["operation:1", null, null]);
+  } finally { await f.close(); }
+});
+
 test("device history preserves typed timeline presentation without leaking provider envelopes", async () => {
   const f = await fixture();
   try {

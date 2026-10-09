@@ -94,6 +94,22 @@ async function cleanup(value) {
   await rm(value.directory, { recursive: true, force: true });
 }
 
+test("cancelling a queued instruction cancels its run, not completes it", async () => {
+  const f = await fixture();
+  try {
+    const task = f.service.create({logicalSessionId: "logical:stable", message: "check",
+      scheduleType: "once", runAt: "2026-08-22T12:01:00Z"}, f.actor);
+    await f.service.runNow(task.taskId, f.actor);
+    const operation = f.queued[0];
+    assert.equal(operation.source.automationName, "Test automation");
+    const cancelled = f.store.cancelQueuedUserAgentTask(operation.sessionId, operation.taskId);
+    const result = f.service.handleAgentWorkEvent("AgentWorkCompleted", cancelled);
+    assert.equal(result.status, "cancelled");
+    assert.ok(result.completedAt);
+    assert.equal(f.service.handleAgentWorkEvent("AgentWorkStarted", operation).status, "cancelled");
+  } finally { await cleanup(f); }
+});
+
 test("collection and run-history queries use their covering sort indexes", async () => {
   const f = await fixture();
   try {

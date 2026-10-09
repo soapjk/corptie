@@ -154,6 +154,20 @@ public actor ReliableMessageOutbox {
         statusSizes.removeValue(forKey: id)
     }
 
+    /// Called only after an authoritative deletion response or timeline delta.
+    public func removeDeletedMessages(serverID: String, deviceID: String, sessionID: String,
+                                      messageIDs: Set<String>) throws {
+        guard !messageIDs.isEmpty else { return }
+        try load()
+        let ids = records.values.filter {
+            $0.serverID == serverID && $0.deviceID == deviceID
+                && ($0.sessionID == sessionID || $0.displaySessionID == sessionID)
+                && (messageIDs.contains($0.messageID)
+                    || $0.authoritativeMessageID.map(messageIDs.contains) == true)
+        }.map(\.id)
+        for id in ids { try remove(id) }
+    }
+
     /// Atomic terminal-state check: UI deletion must never discard a waiting,
     /// ambiguous or accepted record after a stale menu was presented.
     public func discardTerminal(_ id: String) throws -> Bool {

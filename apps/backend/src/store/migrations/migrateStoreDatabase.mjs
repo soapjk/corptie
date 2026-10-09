@@ -11,6 +11,7 @@ import { migrateSessionAssociationGuards } from "./sessionAssociationMigrations.
 import { sessionRuntimeSchemaSql, workDomainSchemaSql } from "./index.mjs";
 import { migrateTaskDomainV1, migrateTaskGoalRemovalV1 } from "../taskSchemaMigration.mjs";
 import { migrateSshWorkspaces } from "../sshWorkspaceRepository.mjs";
+import { migrateAutomationTimelineV2 } from "./automationTimelineV2.mjs";
 
 // Ordered schema/data upgrade composition. Store retains connection and transaction ownership.
 // Steps are explicit migration capabilities, not the Store object.
@@ -192,6 +193,12 @@ export function migrateStoreDatabase({ db, selectAll, selectOne, ensureColumn, r
     steps.backfillSessionItemPresentation();
     steps.backfillSessionItemBindings();
     steps.migrateSessionItemIdentity();
+    // Identity migration can replace session_items and drop its old triggers.
+    db.run(`CREATE TRIGGER IF NOT EXISTS deleted_user_message_no_reprojection
+      BEFORE INSERT ON session_items
+      WHEN EXISTS (SELECT 1 FROM deleted_user_messages d
+        WHERE d.session_id=NEW.session_id AND d.message_id=NEW.id)
+      BEGIN SELECT RAISE(IGNORE); END`);
     steps.pruneHistoricalAutomationTimelineItems();
     ensureColumn("feishu_bindings", "chat_id", "TEXT");
     ensureColumn("feishu_bots", "app_id", "TEXT");
@@ -227,6 +234,26 @@ export function migrateStoreDatabase({ db, selectAll, selectOne, ensureColumn, r
     steps.ensureSkillTables();
     steps.ensureStateSyncTables();
     steps.ensureProviderEventPipelineTables();
+    migrateAutomationTimelineV2({ db, selectAll, selectOne, runDataMigrationOnce });
+    runDataMigrationOnce("unreceived-message-delete-capability-v1", () => {
+      db.run(`UPDATE session_items SET raw_metadata_json=json_set(
+        CASE WHEN json_valid(raw_metadata_json) THEN raw_metadata_json ELSE '{}' END,
+        '$.deletionAvailable', json('true'))
+        WHERE type='userMessage'
+          AND EXISTS (SELECT 1 FROM message_deliveries d
+            WHERE d.session_id=session_items.session_id AND d.message_id=session_items.id
+              AND d.status IN ('failed','cancelled') AND d.attempt_count=0
+              AND d.last_attempt_at IS NULL AND d.provider_turn_id IS NULL
+              AND d.provider_acknowledged_at IS NULL)
+          AND EXISTS (SELECT 1 FROM agent_operations a
+            WHERE a.session_id=session_items.session_id
+              AND (a.task_id=session_items.id OR json_extract(a.source_json,'$.messageId')=session_items.id))
+          AND NOT EXISTS (SELECT 1 FROM agent_operations a
+            WHERE a.session_id=session_items.session_id
+              AND (a.task_id=session_items.id OR json_extract(a.source_json,'$.messageId')=session_items.id)
+              AND (a.kind!='user' OR a.status NOT IN ('failed','cancelled')
+                OR a.started_at IS NOT NULL OR a.target_turn_id IS NOT NULL))`);
+    });
     steps.repairRegressedTerminalSessionTurns();
     dropColumnIfExists("agents", "provider");
     steps.ensureAssistantAgent();

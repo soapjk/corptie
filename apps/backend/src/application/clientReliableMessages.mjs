@@ -16,6 +16,10 @@ export function ensureReliableMessageSchema(store) {
 export function reliableReceipt(store, identity, requestId) {
   const row = store.selectOne("SELECT * FROM client_message_receipts WHERE device_id=? AND request_id=?",
     [identity.deviceId, requestId]);
+  const messageId = `client:${createHash("sha256").update(`${identity.deviceId}:${requestId}`).digest("hex")}`;
+  if (row && store.selectOne("SELECT 1 FROM deleted_user_messages WHERE session_id=? AND message_id=?", [row.session_id, messageId])) {
+    throw deviceError("MESSAGE_DELETED", 410);
+  }
   return row ? { schemaVersion: 1, requestId, sessionId: row.session_id, kind: "send",
     status: "accepted", errorCode: null, updatedAt: row.accepted_at,
     messageId: `client:${createHash("sha256").update(`${identity.deviceId}:${requestId}`).digest("hex")}` } : null;

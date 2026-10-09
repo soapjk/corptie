@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readMessageResource } from "./messageResources.mjs";
 import { constants } from "node:fs";
 import { access, copyFile, mkdir, open, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, resolve, sep } from "node:path";
@@ -6,6 +7,9 @@ import { basename, extname, isAbsolute, join, resolve, sep } from "node:path";
 export const CHAT_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
 
 export class ChatResourceService {
+  async readMessageResource(reference, itemId, path) {
+    return readMessageResource({ store: this.store, environmentRoot: this.environmentRoot, reference, itemId, path });
+  }
   constructor(options = {}) {
     this.store = options.store ?? null;
     this.idFactory = options.idFactory ?? randomUUID;

@@ -5,6 +5,13 @@ import {
   collaborationEnvelopeFailure
 } from "../src/utils/sessionEventPresentation.mjs";
 
+test("unnamed automation leaves localization to clients without changing an explicit Automation title", () => {
+  const make = name => automationTimelineItems([{type: "ScheduledSessionTaskCreated", eventId: "e",
+    payload: {task: {taskId: "task", ...(name === undefined ? {} : {name})}}}])[0];
+  assert.equal(make(undefined).automationName, null);
+  assert.equal(make("Automation").automationName, "Automation");
+});
+
 test("Automation creation projects a user-facing card without internal event or run metadata", () => {
   const [item] = automationTimelineItems([{
     eventId: "event:create",
@@ -35,13 +42,13 @@ test("Automation creation projects a user-facing card without internal event or 
   assert.equal(item.automationEventOccurredAt, "2026-08-24T00:56:04.649Z");
   assert.equal(item.automationProcessPollIntervalSeconds, 5);
   assert.equal(item.automationExpiresAt, "2026-08-25T00:56:04.649Z");
-  assert.equal(item.automationRunId, undefined);
+  assert.equal(item.automationRunId, null);
   assert.equal(item.automationEventSource, undefined);
   assert.equal(item.createdAt, "2026-08-24T00:56:04.649Z");
   assert.equal(JSON.stringify(item).includes("81987e95-5beb-4740-9326-6d072362b182"), false);
 });
 
-test("Automation queued cards retain authoritative queue time without exposing run identity", () => {
+test("Automation queued cards carry stable run identity and state", () => {
   const [item] = automationTimelineItems([{
     eventId: "event:run",
     sequence: 22,
@@ -58,13 +65,15 @@ test("Automation queued cards retain authoritative queue time without exposing r
   }]);
 
   assert.equal(item.sourceType, "automation");
-  assert.equal(item.automationRunId, undefined);
+  assert.equal(item.automationRunId, "scheduled_run:one");
+  assert.equal(item.id, "automation-run:scheduled_run:one");
+  assert.equal(item.automationRunStatus, "queued");
   assert.equal(item.automationTriggerType, "after");
   assert.equal(item.automationEventOccurredAt, "2026-08-24T01:56:04.500Z");
   assert.notEqual(item.presentationRole, "collaboration");
 });
 
-test("Automation timeline projection only admits created, due, and queued events", () => {
+test("unlinked legacy events only retain the existing created, due and queued cards", () => {
   const eventTypes = [
     "ScheduledSessionTaskCreated", "ScheduledSessionTaskDue", "ScheduledSessionRunQueued",
     "ScheduledSessionRunStarted", "ScheduledSessionRunCompleted", "ScheduledSessionRunFailed",
@@ -98,4 +107,21 @@ test("collaboration cards require a queryable task and complete envelope", () =>
   assert.equal(collaborationEnvelopeFailure({ task, collaborationTask: null, envelope }), "task_not_found");
   assert.equal(collaborationEnvelopeFailure({ task, collaborationTask, envelope: { ...envelope, message: { ...envelope.message, body: "" } } }), "missing_message_body");
   assert.equal(collaborationEnvelopeFailure({ task: { ...task, source: {} }, collaborationTask, envelope }), "missing_task_id");
+});
+
+test("every lifecycle event updates one run identity without duplicating instruction text", () => {
+  const states = [["TaskDue", "pending"], ["RunQueued", "queued"], ["RunStarted", "running"],
+    ["RunCompleted", "completed"], ["RunFailed", "failed"], ["RunCancelled", "cancelled"]];
+  const items = states.map(([event, status], i) => automationTimelineItems([{
+    eventId: `e:${i}`, type: `ScheduledSession${event}`, createdAt: `event:${i}`,
+    payload: {task: {taskId: "task", name: "Keep name", message: {text: "private instruction"}},
+      run: {runId: "run", status, createdAt: "original"}}
+  }])[0]);
+  assert.deepEqual(new Set(items.map(item => item.id)), new Set(["automation-run:run"]));
+  assert.ok(items.every(item => item.text === "" && item.presentationText === "" && item.createdAt === "original"));
+  assert.deepEqual(items.map(item => item.automationRunStatus), states.map(([, status]) => status));
+  const [resolved] = automationTimelineItems([{eventId: "old", type: "ScheduledSessionRunQueued",
+    payload: {task: {taskId: "task"}, run: {runId: "run", status: "queued"}}}],
+    {resolveRun: () => ({runId: "run", status: "completed", createdAt: "original"})});
+  assert.equal(resolved.automationRunStatus, "completed");
 });
