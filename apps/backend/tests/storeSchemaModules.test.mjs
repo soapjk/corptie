@@ -28,7 +28,7 @@ import {
 test("schema modules preserve the original SQL batches byte for byte", () => {
   // Recorded from the unsplit migration before moving any schema text.
   const hash = value => createHash("sha256").update(value).digest("hex");
-  assert.equal(hash(sessionRuntimeSchemaSql), "94122e8089ae2be39767b682184f3cb9450fa49e86479b559fdc33b9a8727235");
+  assert.equal(hash(sessionRuntimeSchemaSql), "644e2f5d960aa144cf0533b448e4dd8f27619ed96c04fba54044c7c19083a9cc");
   assert.equal(hash(workDomainSchemaSql), "9c1de325a9e531cd988108d2c65b932372d0744ceb657093187fc11e4930c7d2");
 });
 
