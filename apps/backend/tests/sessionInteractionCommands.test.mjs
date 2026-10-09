@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createSessionInteractionCommands } from "../src/application/sessionInteractionCommands.mjs";
 
-function fixture() {
+function fixture(options = {}) {
   const calls = [];
   const session = { id: "stored", external: { activeTurnId: "turn" } };
   let item = { id: "question", type: "userInput", status: "pending", bindingId: "binding",
@@ -30,7 +30,8 @@ function fixture() {
     handleCommittedProviderTerminalLifecycle: () => calls.push(["terminal"]),
     sendUnifiedSessionMessage: async () => {},
     emitEvent: (...args) => calls.push(["event", ...args]),
-    now: () => "2026-01-01T00:00:00Z"
+    now: () => "2026-01-01T00:00:00Z",
+    ...options
   });
   return { commands, calls, service, session, setItem: (next) => { item = next; }, getItem: () => item };
 }
@@ -49,6 +50,37 @@ test("unrelated interrupt failures are propagated without fabricating cancellati
   const f = fixture();
   f.service.interrupt = async () => { throw Object.assign(new Error("transport"), { code: "TRANSPORT_FAILED" }); };
   await assert.rejects(f.commands.interruptUnifiedSession("public"), { code: "TRANSPORT_FAILED" });
+  assert.deepEqual(f.calls, []);
+});
+
+test("confirmed absent Provider turn reconciles the exact persisted turn", async () => {
+  const f = fixture();
+  f.service.interrupt = async () => { throw Object.assign(new Error("inactive"), {
+    code: "PROVIDER_TURN_NOT_ACTIVE", turnId: "turn", providerSessionId: "native"
+  }); };
+  await f.commands.interruptUnifiedSession("public");
+  const event = f.calls.find(([name]) => name === "ingest")[1];
+  assert.equal(event.bindingId, "binding");
+  assert.equal(event.turnId, "turn");
+  assert.equal(event.payload.error.code, "PROVIDER_TURN_NOT_ACTIVE");
+});
+
+test("absence evidence from a different turn cannot cancel this turn", async () => {
+  const f = fixture();
+  f.service.interrupt = async () => { throw Object.assign(new Error("inactive"), {
+    code: "PROVIDER_TURN_NOT_ACTIVE", turnId: "other", providerSessionId: "native"
+  }); };
+  await assert.rejects(f.commands.interruptUnifiedSession("public"), { code: "PROVIDER_TURN_NOT_ACTIVE" });
+  assert.deepEqual(f.calls, []);
+});
+
+test("stop timeout is bounded and late acknowledgement cannot fabricate cancellation", async () => {
+  const f = fixture({ interruptTimeoutMs: 10 });
+  let finish;
+  f.service.interrupt = () => new Promise(resolve => { finish = resolve; });
+  await assert.rejects(f.commands.interruptUnifiedSession("public"), { code: "SESSION_INTERRUPT_TIMEOUT" });
+  finish(f.session);
+  await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(f.calls, []);
 });
 

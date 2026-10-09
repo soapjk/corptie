@@ -97,6 +97,28 @@ test("interrupt uses the active turn without fabricating a terminal projection",
   await assert.rejects(f.commands.interruptCodexProviderSession(f.reference), { code: "NO_ACTIVE_RUN" });
 });
 
+test("native no-active-turn response maps to scoped absence, not transport failure", async () => {
+  const reference = { providerSessionId: "native", metadata: { session: { external: { activeTurnId: "turn" } } } };
+  for (const payload of [
+    { code: -32600, message: "no active turn to interrupt" },
+    { code: -32603, message: "no active turn to interrupt" },
+    { code: -32600, message: "connection failed" }
+  ]) {
+    const original = new Error(JSON.stringify(payload));
+    const commands = createCodexSessionCommands({ codexRuntime: {
+      interruptTurn: async () => { throw original; }
+    } });
+    await assert.rejects(commands.interruptCodexProviderSession(reference), error => {
+      if (payload.code === -32600 && payload.message === "no active turn to interrupt") {
+        assert.equal(error.code, "PROVIDER_TURN_NOT_ACTIVE");
+        assert.equal(error.turnId, "turn");
+        assert.equal(error.providerSessionId, "native");
+      } else assert.equal(error, original);
+      return true;
+    });
+  }
+});
+
 test("approval clears the choice prompt only after transport acknowledgement", async () => {
   const f = fixture();
   assert.equal(await f.commands.respondCodexProviderApproval(f.reference, {
