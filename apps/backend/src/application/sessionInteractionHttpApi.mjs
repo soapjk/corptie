@@ -3,11 +3,32 @@ import { logSessionMessageLatency, logSessionMessageFailure, sessionMessageLaten
 
 export function handleSessionInteractionHttpRequest({
   request, response, url, sendUnifiedSessionMessage, userMessageCommandSource,
-  chatResourceService, requireSessionReference, interruptUnifiedSession, cancelQueuedUserMessage,
+  chatResourceService, requireSessionReference, interruptUnifiedSession, cancelQueuedUserMessage, deleteUserMessage,
   respondUnifiedSessionApproval, respondUnifiedSessionUserInput,
   readJson, sendJson, unifiedErrorStatus
 }) {
   const sessionMessagesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/messages$/);
+  const resourceMatch = url.pathname.match(/^\/sessions\/([^/]+)\/resources$/);
+  if (request.method === "GET" && resourceMatch) {
+    Promise.resolve().then(() => chatResourceService.readMessageResource(
+      requireSessionReference(decodeURIComponent(resourceMatch[1])),
+      url.searchParams.get("itemId"), url.searchParams.get("path")))
+      .then(resource => {
+        response.writeHead(200, { "content-type": resource.mimeType, "content-length": resource.byteLength,
+          "cache-control": "no-store", "x-content-type-options": "nosniff",
+          "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(resource.fileName)}` });
+        response.end(resource.data);
+      })
+      .catch(error => sendJson(response, error.statusCode ?? 500, { code: error.code ?? "RESOURCE_UNAVAILABLE" }));
+    return true;
+  }
+  const deletion = url.pathname.match(/^\/sessions\/([^/]+)\/messages\/([^/]+)$/);
+  if (request.method === "DELETE" && deletion) {
+    Promise.resolve().then(() => deleteUserMessage(decodeURIComponent(deletion[1]), decodeURIComponent(deletion[2])))
+      .then(result => sendJson(response, 200, result))
+      .catch(error => sendJson(response, error.status ?? unifiedErrorStatus(error), { error: error.message, code: error.code }));
+    return true;
+  }
   if (request.method === "POST" && sessionMessagesMatch) {
     const sessionId = decodeURIComponent(sessionMessagesMatch[1]);
     const latencyTrace = sessionMessageLatencyTraceFromHeaders(request.headers, {

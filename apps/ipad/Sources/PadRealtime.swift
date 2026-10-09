@@ -186,6 +186,11 @@ extension PadWorkspace {
                     case .timelineSnapshot(let snapshot):
                         applyRealtimeTimeline(snapshot)
                     case .timelineDelta(let delta):
+                        let deleted = Set(delta.changes.filter { $0.operation == "delete" }.map(\.itemId))
+                        if !deleted.isEmpty, let deviceID = connection.deviceID {
+                            try await messageOutbox.removeDeletedMessages(serverID: connection.serverID,
+                                deviceID: deviceID, sessionID: delta.sessionId, messageIDs: deleted)
+                        }
                         if !applyRealtimeTimeline(delta) {
                             // A verified revision gap is one of the few allowed
                             // fallback reads; normal updates never reach this path.

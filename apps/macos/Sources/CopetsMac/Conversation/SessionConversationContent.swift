@@ -458,6 +458,9 @@ struct SessionConversationContent: View {
                 }
             }
             .onChange(of: locale.identifier, initial: true) { _, _ in
+                // Rebuild localized event presentation on the rare language change,
+                // preserving message identity and the current viewport.
+                cachedAppKitRows = cachedDisplayEntries.map { appKitRow($0) }
                 let language = AppLanguageController.shared.languageCode
                 guard cachedAppKitRows.contains(where: {
                     $0.nativeStyle == .process && $0.processLanguageCode != language
@@ -607,6 +610,18 @@ struct SessionConversationContent: View {
 
     private func performNativeTimelineAction(_ action: AppKitChatTimelineRow.Action) {
         switch action.kind {
+        case .deleteUnreceivedMessage(let messageID):
+            let alert = NSAlert()
+            alert.messageText = "删除这条消息？"
+            alert.informativeText = "仅能删除确认未交给模型的消息。删除后所有设备都会移除，无法恢复。"
+            alert.addButton(withTitle: "删除")
+            alert.addButton(withTitle: "取消")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            Task {
+                do { try await backendClient.deleteUnreceivedMessage(sessionID: sessionId, messageID: messageID) }
+                catch { backendClient.presentChatImageError(error) }
+                await backendClient.reloadSelectedSessionMessages()
+            }
         case .cancelQueuedMessage(let taskID):
             Task {
                 do {

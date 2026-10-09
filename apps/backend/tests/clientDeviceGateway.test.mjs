@@ -213,6 +213,12 @@ test("real TLS route boundary and authenticated local approval", async () => {
     developmentServiceAction: async (repositoryId, action, input) => ({ repositoryId, action, input }),
     jobAction: async (jobId, action, input) => ({ job: { id: jobId, action, input } })
   }, sessionAPI: {
+    cancelQueuedMessage(identity, sessionId, input) {
+      assert.ok(identity.deviceId);
+      assert.equal(sessionId, "session:test");
+      assert.equal(input.taskId, "operation:queued");
+      return { schemaVersion: 1, status: "cancelled" };
+    },
     inspector: {
       scope: (id, identity) => ({ sessionId: id, deviceId: identity.deviceId }),
       snapshot: async (_identity, id) => ({ schemaVersion: 1, sessionId: id, sections: {}, errors: {} })
@@ -261,6 +267,12 @@ test("real TLS route boundary and authenticated local approval", async () => {
     image(identity, sessionId, query) {
       if (query.get("path") !== "chat-resources/session/a.png") throw Object.assign(new Error("IMAGE_NOT_AVAILABLE"), { code: "IMAGE_NOT_AVAILABLE", status: 404 });
       return { data: Buffer.from("png-bytes"), contentType: "image/png", byteLength: 9 };
+    },
+    resource(identity, sessionId, query) {
+      assert.ok(identity.deviceId);
+      assert.equal(sessionId, "session:test");
+      assert.equal(query.get("itemId"), "message:one");
+      return { data: Buffer.from("csv-bytes"), mimeType: "text/csv", byteLength: 9, fileName: "latency.csv" };
     },
     async usage(identity, sessionId, options) {
       usageReads.push(options);
@@ -437,6 +449,14 @@ test("real TLS route boundary and authenticated local approval", async () => {
     assert.equal(image.headers["content-type"], "image/png");
     assert.equal(image.headers["x-content-type-options"], "nosniff");
     assert.equal(image.raw.toString(), "png-bytes");
+    const resourcePath = "/client/v1/sessions/session%3Atest/resources?itemId=message%3Aone&path=%2Ftmp%2Flatency.csv";
+    assert.equal((await call(resourcePath)).status, 401);
+    const resource = await call(resourcePath, { token: creds.accessToken });
+    assert.equal(resource.status, 200);
+    assert.equal(resource.raw.toString(), "csv-bytes");
+    assert.equal(resource.headers["cache-control"], "no-store");
+    assert.equal(resource.headers["x-content-type-options"], "nosniff");
+    assert.match(resource.headers["content-disposition"], /latency.csv/);
     assert.equal((await call("/client/v1/sessions/session%3Atest/images?path=other.png", { token: creds.accessToken })).status, 404);
     // Query strings are only tolerated on GET; other verbs never reach the route.
     assert.equal((await call(imagePath, { token: creds.accessToken, method: "POST", value: {} })).status, 403);
@@ -468,6 +488,15 @@ test("real TLS route boundary and authenticated local approval", async () => {
     assert.equal((await call(`${newWorkPath}?x=1`, { token: creds.accessToken })).status, 403);
     assert.equal((await call(newWorkPath, { token: creds.accessToken, method: "DELETE" })).status, 404);
     const createInput = { requestId: "create_123", title: "Task" };
+    const cancelPath = "/client/v1/sessions/session%3Atest/cancel-queued-message";
+    // Route coverage is independent of the production burst-limit test.
+    gateway.buckets.clear();
+    assert.equal((await call(cancelPath, { method: "POST", value: {} })).status, 401);
+    assert.equal((await call(cancelPath, { token: creds.accessToken })).status, 404);
+    const cancelled = await call(cancelPath, { token: creds.accessToken, method: "POST",
+      value: { taskId: "operation:queued" } });
+    assert.equal(cancelled.status, 200);
+    assert.equal(cancelled.body.status, "cancelled");
     const created = await call(createPath, { token: creds.accessToken, method: "POST", value: createInput });
     assert.equal(created.status, 202);
     assert.equal(created.body.kind, "create_task");

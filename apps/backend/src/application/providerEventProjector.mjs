@@ -322,6 +322,10 @@ export class ProviderEventProjector {
         rawMetadataJSON: mergedItemMetadata(existing?.rawMetadataJSON, item.rawMetadataJSON, {
           taskId: task.taskId,
           sourceChannel: task.source?.type ?? null,
+          ...(task.source?.type === "scheduled_session_task" ? {
+            messageOrigin: "scheduled_task", automationId: task.source.automationId ?? task.source.scheduledTaskId,
+            automationRunId: task.source.scheduledRunId, automationName: task.source.automationName ?? null
+          } : {}),
           collaborationRequestId: task.source?.taskId ?? null
         })
       };

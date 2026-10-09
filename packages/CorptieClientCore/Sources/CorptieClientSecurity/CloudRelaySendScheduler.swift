@@ -7,7 +7,8 @@ enum CloudRelaySendPriority: Int, Sendable {
     static func response(to request: URLRequest) -> Self {
         let path = request.url?.path ?? ""
         if request.httpMethod != "GET" || path.contains("/commands/") || path.hasSuffix("/me") { return .control }
-        if path.hasSuffix("/messages") || path.hasSuffix("/images") || path.contains("/inspector") { return .background }
+        if path.hasSuffix("/messages") || path.hasSuffix("/images") || path.hasSuffix("/resources")
+            || path.contains("/inspector") { return .background }
         return .interactive
     }
 }

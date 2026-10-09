@@ -2,11 +2,12 @@ import { collaborationMessagePresentationRoute } from "./collaborationPresentati
 import { collaborationWorkPresentation } from "./collaborationWorkPresentation.mjs";
 import { collaborationEnvelopeFailure } from "../utils/sessionEventPresentation.mjs";
 import { userMessageStatusForAgentWork } from "../utils/agentWorkQueue.mjs";
+import { userMessageDeletionEligibility } from "../application/userMessageDeletion.mjs";
 
 // Read-only presentation: event publishing and delivery execution stay with their owners.
 export function createCollaborationTimelinePresentation({ store, collaborationCore, sessionChannelService }) {
   function agentWorkTimelineItem(task, sessionId, queuePosition = null) {
-    if (!task?.taskId) return null;
+    if (!task?.taskId || task.source?.deleted === true) return null;
     const presentation = collaborationPresentationForTask(task, sessionId);
     const userMessageStatus = userMessageStatusForAgentWork(task.status);
     const canonicalId = task.kind === "user"
@@ -26,6 +27,8 @@ export function createCollaborationTimelinePresentation({ store, collaborationCo
       images: task.source?.messageContent?.images ?? [],
       status: task.status,
       userMessageStatus,
+      deletionAvailable: task.kind === "user" && ["failed", "cancelled"].includes(task.status)
+        && userMessageDeletionEligibility(store, sessionId, canonicalId).available,
       queuePosition: Number(queuePosition) > 0 ? Number(queuePosition) : null,
       processingError: task.lastError ?? null,
       createdAt: task.createdAt,
@@ -34,6 +37,12 @@ export function createCollaborationTimelinePresentation({ store, collaborationCo
       localVisibility: task.localVisibility,
       feishuVisibility: task.source?.type === "feishu" ? "hidden" : null,
       taskId: task.taskId,
+      ...(task.kind === "user" && task.source?.type === "scheduled_session_task" ? {
+        messageOrigin: "scheduled_task",
+        automationId: task.source.automationId ?? task.source.scheduledTaskId,
+        automationRunId: task.source.scheduledRunId,
+        automationName: task.source.automationName ?? null
+      } : {}),
       collaborationRequestId: task.source?.taskId ?? null,
       ...presentation
     };

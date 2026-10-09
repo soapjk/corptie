@@ -14,7 +14,7 @@ export function startClientDeviceGateway({
   readSessionTimelineWindow, getTimelineReadPool, requireSessionReference, sessionContextReferenceService,
   artifactService, scheduledSessionTaskService, turnObservability, agentProviderRegistry,
   switchSessionProvider, workService, inspectTaskWorktree, reclaimTaskWorktree,
-  sendUnifiedSessionMessage, admitReliableMessage, interruptUnifiedSession, respondUnifiedSessionApproval,
+  sendUnifiedSessionMessage, admitReliableMessage, interruptUnifiedSession, cancelQueuedUserMessage, deleteUserMessage, respondUnifiedSessionApproval,
   respondUnifiedSessionUserInput, resolveCollaborationConfirmation, resolveSessionChannelRequest,
   publishStateChangesIfNeeded, workDiscussionService,
   sessionApplicationService, workSessionStartApplicationService, chatResourceService,
@@ -37,6 +37,8 @@ export function startClientDeviceGateway({
       emit: emitEvent
     }),
     sessionAPIFactory: () => new ClientSessionAPI({ store, readWindow: readSessionTimelineWindow,
+      cancelQueuedMessage: cancelQueuedUserMessage,
+      deleteUserMessage,
       quickMessages: sessionId => getTimelineReadPool().readQuickMessages({ sessionId }),
       inspector: new ClientInspectorAPI({ store, resolveSession: requireSessionReference,
         references: sessionContextReferenceService, artifacts: artifactService,
@@ -127,7 +129,8 @@ export function startClientDeviceGateway({
         available: session => decorateSessionForClient(session).capabilities?.canSendImages === true,
         import: (id, image) => chatResourceService.importImageData(requireSessionReference(id),
           Buffer.from(image.dataBase64, "base64"), image.fileName),
-        read: (id, managedPath) => chatResourceService.readImage(requireSessionReference(id), managedPath)
+        read: (id, managedPath) => chatResourceService.readImage(requireSessionReference(id), managedPath),
+        readResource: (id, itemId, path) => chatResourceService.readMessageResource(requireSessionReference(id), itemId, path)
       },
       composer: {
         read: id => sessionApplicationService.listModelsForSession(id),

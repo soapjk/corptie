@@ -2,7 +2,12 @@ const AUTOMATION_EVENT_PREFIXES = ["ScheduledSession", "Automation"];
 export const AUTOMATION_TIMELINE_EVENT_TYPES = new Set([
   "ScheduledSessionTaskCreated",
   "ScheduledSessionTaskDue",
-  "ScheduledSessionRunQueued"
+  "ScheduledSessionRunQueued",
+  "ScheduledSessionRunStarted",
+  "ScheduledSessionRunCompleted",
+  "ScheduledSessionRunFailed",
+  "ScheduledSessionRunCancelled",
+  "ScheduledSessionRunMissed"
 ]);
 
 export function isAutomationSessionEvent(event) {
@@ -21,31 +26,40 @@ export function automationTimelineItems(events = [], options = {}) {
     const task = event.payload?.task
       ?? (referencedAutomationId && options.resolveAutomation?.(referencedAutomationId))
       ?? {};
-    const run = event.payload?.run ?? null;
+    const suppliedRun = event.payload?.run ?? null;
+    const run = (suppliedRun?.runId && options.resolveRun?.(suppliedRun.runId)) ?? suppliedRun;
     const automationId = normalizedText(task.automationId ?? task.taskId) ?? referencedAutomationId;
     if (!automationId) return null;
     const trigger = task.trigger ?? task.triggerSpec ?? {};
     const triggerType = normalizedText(run?.triggerKind ?? trigger.type ?? task.scheduleType) ?? "unknown";
     const eventType = normalizedText(event.type) ?? "AutomationEvent";
+    const runId = normalizedText(run?.runId ?? event.payload?.runId ?? event.runId);
+    const isRun = eventType !== "ScheduledSessionTaskCreated" && runId != null;
+    // Unlinked legacy lifecycle events must not create duplicate run cards.
+    if (!isRun && !["ScheduledSessionTaskCreated", "ScheduledSessionTaskDue", "ScheduledSessionRunQueued"].includes(eventType)) return null;
+    const identity = isRun ? `automation-run:${runId}` : `automation-event:${event.eventId ?? event.sequence}`;
     const message = normalizedText(task.message?.text);
     const eventOccurredAt = automationEventOccurredAt(eventType, event, run);
     return {
-      id: `automation-event:${event.eventId ?? event.sequence}`,
-      turnId: `automation-event:${event.eventId ?? event.sequence}`,
+      id: identity,
+      turnId: identity,
       turnStatus: "completed",
       type: "automationEvent",
       title: "Automation",
-      text: message ?? "",
-      status: task.status ?? run?.status ?? null,
-      createdAt: event.createdAt ?? null,
+      text: isRun ? "" : message ?? "",
+      status: isRun ? run.status : task.status ?? null,
+      createdAt: isRun ? run.createdAt ?? run.scheduledFor ?? event.createdAt : event.createdAt ?? null,
       sourceType: "automation",
       presentationRole: "automation",
-      presentationText: message ?? "",
+      presentationText: isRun ? "" : message ?? "",
       automationId,
-      automationName: normalizedText(task.name) ?? message ?? "Automation",
+      automationRunId: isRun ? runId : null,
+      automationRunStatus: isRun ? run.status : null,
+      automationRunError: isRun && run.status === "failed" ? "execution_failed" : null,
+      automationName: normalizedText(task.name) ?? message ?? null,
       automationTriggerType: normalizedText(trigger.type ?? task.scheduleType) ?? triggerType,
       automationEventType: eventType,
-      automationEventOccurredAt: eventOccurredAt,
+      automationEventOccurredAt: isRun ? run.createdAt ?? run.scheduledFor ?? eventOccurredAt : eventOccurredAt,
       automationScheduleType: normalizedText(task.scheduleType ?? trigger.type),
       automationRunAt: normalizedText(task.runAt ?? trigger.at),
       automationNextRunAt: normalizedText(task.nextRunAt),

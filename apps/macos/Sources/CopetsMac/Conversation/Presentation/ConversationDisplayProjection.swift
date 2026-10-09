@@ -152,6 +152,9 @@ private func detailSourceItemSignature(_ item: CodexThreadItem) -> String {
             item.automationRunId ?? ""
     ]
     signatureParts.append(item.automationEventOccurredAt ?? "")
+    signatureParts.append(item.messageOrigin ?? "")
+    signatureParts.append(item.automationRunStatus ?? "")
+    signatureParts.append(item.automationRunError ?? "")
     signatureParts.append(item.automationScheduleType ?? "")
     signatureParts.append(item.automationRunAt ?? "")
     signatureParts.append(item.automationNextRunAt ?? "")
@@ -421,14 +424,21 @@ func nativeCollaborationCardPresentation(
 
 @MainActor
 func nativeAutomationCardPresentation(for item: CodexThreadItem) -> NativeSpecialEventCardPresentation? {
-    guard ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole) == .automationEvent,
-          let name = nonEmptyPresentationValue(item.automationName),
-          let eventType = nonEmptyPresentationValue(item.automationEventType),
-          ScheduledSessionEventMapping.timelineCardEventNames.contains(eventType) else { return nil }
+    guard ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole) == .automationEvent else { return nil }
+    let eventType = item.automationEventType ?? ""
+    let name = nonEmptyPresentationValue(item.automationName)
+        ?? ConversationEventText(languageCode: AppLanguageController.shared.languageCode).automationTitle
     let message = nonEmptyPresentationValue(item.presentationText) ?? nonEmptyPresentationValue(item.text) ?? ""
-    var lines = ["**\(L10n("事件类型"))**  \(automationEventLabel(eventType))"]
+    let words = ConversationEventText(languageCode: AppLanguageController.shared.languageCode)
+    let state = item.automationRunId == nil ? automationEventLabel(eventType) : words.runStatus(item.automationRunStatus)
+    var lines = ["**\(L10n("事件类型"))**  \(state)"]
+    if item.automationRunError != nil {
+        lines.append(words.text("本次运行失败，请查看执行记录。", "This run failed. Check its execution history."))
+    }
     if let eventTime = AutomationTimelinePresentation.eventTime(for: item) {
-        lines.append("**\(AutomationTimelinePresentation.eventTimeLabel(for: eventType))**  \(eventTime)")
+        let timeLabel = item.automationRunId == nil ? AutomationTimelinePresentation.eventTimeLabel(for: eventType)
+            : words.text("触发时间", "Triggered at")
+        lines.append("**\(timeLabel)**  \(eventTime)")
     }
     if let plan = AutomationTimelinePresentation.executionPlan(for: item) {
         lines.append("**\(L10n("执行计划"))**  \(plan)")
@@ -441,7 +451,7 @@ func nativeAutomationCardPresentation(for item: CodexThreadItem) -> NativeSpecia
     }
     return NativeSpecialEventCardPresentation(
         title: name,
-        metadata: automationEventLabel(eventType),
+        metadata: state,
         bodyMarkdown: lines.joined(separator: "\n"),
         messageText: message
     )
@@ -458,19 +468,20 @@ private func automationMarkdownEscaped(_ source: String) -> String {
 
 @MainActor
 func nativeSystemEventCardPresentation(for item: CodexThreadItem) -> NativeSpecialEventCardPresentation? {
-    guard ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole) == .systemEvent,
-          let reason = nonEmptyPresentationValue(item.systemEventReason) else { return nil }
-    let source = nonEmptyPresentationValue(item.systemEventSource) ?? L10n("未知")
+    guard ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole) == .systemEvent else { return nil }
+    let reason = item.systemEventReason
+    let words = ConversationEventText(languageCode: AppLanguageController.shared.languageCode)
+    let source = words.source(item.systemEventSource)
     let taskID = nonEmptyPresentationValue(item.collaborationTaskId)
     var lines = [
-        "**\(L10n("事件类型"))**  \(item.systemEventKind ?? "system_event")",
+        "**\(L10n("事件类型"))**  \(words.systemKind(item.systemEventKind))",
         "**\(L10n("事件来源"))**  \(source)",
-        "**Reason**  \(reason)"
+        "**\(words.reasonLabel)**  \(words.reason(reason))"
     ]
-    if let taskID { lines.append("**Task ID**  \(taskID)") }
-    lines.append("\nThis event is not an executable collaboration request.")
+    if let taskID { lines.append("**\(words.text("任务 ID", "Task ID"))**  \(taskID)") }
+    lines.append("\n\(words.systemNotice)")
     return NativeSpecialEventCardPresentation(
-        title: "System Event · Invalid collaboration envelope",
+        title: words.systemKind(item.systemEventKind),
         metadata: nativeEventTimestamp(item.createdAt),
         bodyMarkdown: lines.joined(separator: "\n"),
         messageText: item.presentationText ?? item.text
@@ -489,12 +500,7 @@ private func nativeEventTimestamp(_ value: String?) -> String {
 
 @MainActor
 private func automationEventLabel(_ type: String) -> String {
-    switch type {
-    case "ScheduledSessionTaskCreated": L10n("已创建")
-    case "ScheduledSessionTaskDue": L10n("已触发")
-    case "ScheduledSessionRunQueued": L10n("已触发")
-    default: L10n("计划任务事件")
-    }
+    ConversationEventText(languageCode: AppLanguageController.shared.languageCode).eventLabel(type)
 }
 
 func nativeTimelineAllowsChoiceActions(type: String, status: String?) -> Bool {

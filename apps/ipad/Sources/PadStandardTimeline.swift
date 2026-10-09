@@ -56,8 +56,9 @@ struct PadStandardTimeline<Row: View, Composer: View>: View {
             .scrollClipDisabled()
             .scrollDismissesKeyboard(.interactively)
             .coordinateSpace(name: coordinate)
-            .onScrollGeometryChange(for: CGSize.self) { geometry in
-                CGSize(width: geometry.contentSize.height, height: geometry.containerSize.height)
+            .onScrollGeometryChange(for: StandardTimelineLayoutSize.self) { geometry in
+                StandardTimelineLayoutSize(content: geometry.contentSize.height,
+                    viewport: geometry.containerSize.height, bottomInset: geometry.contentInsets.bottom)
             } action: { _, _ in
                 diagnose("layout", limited: true)
                 bindFollowingTail(force: true)
@@ -272,6 +273,14 @@ struct PadStandardTimeline<Row: View, Composer: View>: View {
         var transaction = Transaction(animation: nil); transaction.disablesAnimations = true
         withTransaction(transaction, action)
     }
+}
+
+/// Safe-area inset changes can settle after the content/viewport size update.
+/// Offsets are intentionally excluded: ordinary scrolling must not rebind the tail.
+private struct StandardTimelineLayoutSize: Equatable {
+    let content: CGFloat
+    let viewport: CGFloat
+    let bottomInset: CGFloat
 }
 private struct StandardTimelineMetrics: Equatable {
     var size: CGSize = .zero

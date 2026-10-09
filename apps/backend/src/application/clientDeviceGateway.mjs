@@ -1,4 +1,5 @@
 import https from "node:https";
+import { clientSafeJSONStringify } from "../utils/unicodeText.mjs";
 import { readFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { ClientDeviceAuthority, deviceError } from "./clientDeviceAuthority.mjs";
@@ -8,7 +9,7 @@ import { ClientInspectorStream } from "./clientInspectorStream.mjs";
 export const reply = (response, status, body) => {
   response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store",
     "x-content-type-options": "nosniff" });
-  response.end(JSON.stringify(body));
+  response.end(clientSafeJSONStringify(body));
 };
 export const bearer = request => /^Bearer ([A-Za-z0-9_-]{43})$/.exec(request.headers.authorization ?? "")?.[1];
 const decode = (value, code) => {
@@ -127,10 +128,10 @@ export class ClientDeviceGateway {
       const worktreeRepositoryJobs = /^\/client\/v1\/worktrees\/repositories\/([^/]+)\/integration-jobs$/.exec(path);
       const worktreeJob = /^\/client\/v1\/worktrees\/jobs\/([^/]+)$/.exec(path);
       const worktreeJobAction = /^\/client\/v1\/worktrees\/jobs\/([^/]+)\/actions\/([^/]+)$/.exec(path);
-      const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|message-deliveries|quick-messages|stop|capabilities|composer|conversation-commands|tasks|read-receipt|images|usage|approval|user-input|collaboration-confirmation)$/.exec(path);
+      const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|message-deliveries|quick-messages|stop|capabilities|composer|conversation-commands|tasks|read-receipt|images|resources|usage|approval|user-input|collaboration-confirmation)$/.exec(path);
       const commandReceipt = /^\/client\/v1\/commands\/([A-Za-z0-9_-]{8,128})$/.exec(path);
       if (url.search && !inventory && !control && !eventV2 && !worktreeRepository
-          && !(["messages", "tasks", "images", "usage"].includes(conversation?.[2]) && request.method === "GET")) {
+          && !(["messages", "tasks", "images", "resources", "usage"].includes(conversation?.[2]) && request.method === "GET")) {
         throw deviceError("REQUEST_NOT_ALLOWED", 403);
       }
       if (request.method === "POST" && path === "/client/v1/pairing/claim") {
@@ -144,6 +145,17 @@ export class ClientDeviceGateway {
       }
       const identity = this.authenticateRequest(request);
       this.sockets.set(request.socket, identity.deviceId);
+      const deleteMessage = /^\/client\/v1\/sessions\/([^/]+)\/messages\/([^/]+)$/.exec(path);
+      if (deleteMessage && request.method === "DELETE" && this.sessionAPI) {
+        return reply(response, 200, await this.sessionAPI.deleteMessage(identity,
+          decode(deleteMessage[1], "INVALID_SESSION_ID"), decode(deleteMessage[2], "INVALID_MESSAGE_ID")));
+      }
+      const cancelQueued = /^\/client\/v1\/sessions\/([^/]+)\/cancel-queued-message$/.exec(path);
+      if (cancelQueued && request.method === "POST" && this.sessionAPI) {
+        const input = await body(request, 4096);
+        return reply(response, 200, await this.sessionAPI.cancelQueuedMessage(
+          this.authenticateRequest(request), decode(cancelQueued[1], "INVALID_SESSION_ID"), input));
+      }
       const imageUpload = /^\/client\/v1\/sessions\/([^/]+)\/image-uploads(?:\/([A-Za-z0-9_-]{8,128}))?$/.exec(path);
       if (imageUpload && this.sessionAPI?.imageUploads) {
         const sessionId = decode(imageUpload[1], "INVALID_SESSION_ID");
@@ -380,6 +392,15 @@ export class ClientDeviceGateway {
           this.authenticateRequest(request);
           if (!url.searchParams.has("before")) this.events.observeTimeline(identity.deviceId, result.sessionId, result.revision);
           return reply(response, 200, result);
+        }
+        if (conversation[2] === "resources") {
+          if (request.method !== "GET") throw deviceError("ROUTE_NOT_AVAILABLE", 404);
+          const resource = await this.sessionAPI.resource(identity, sessionId, url.searchParams);
+          this.authenticateRequest(request);
+          response.writeHead(200, { "content-type": resource.mimeType, "content-length": resource.byteLength,
+            "cache-control": "no-store", "x-content-type-options": "nosniff",
+            "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(resource.fileName)}` });
+          return response.end(resource.data);
         }
         if (request.method === "GET" && conversation[2] === "images") {
           const image = await this.sessionAPI.image(identity, sessionId, url.searchParams);

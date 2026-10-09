@@ -1490,6 +1490,7 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     var processStartedAt: String? = nil
     var processEndedAt: String? = nil
     var userMessageStatus: String? = nil
+    var deletionAvailable: Bool? = nil
     var queuePosition: Int? = nil
     var processingError: String? = nil
     var sourceType: String? = nil
@@ -1528,6 +1529,9 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     var collaborationAcceptanceCriteria: [String]? = nil
     var automationId: String? = nil
     var automationName: String? = nil
+    var messageOrigin: String? = nil
+    var automationRunStatus: String? = nil
+    var automationRunError: String? = nil
     var automationTriggerType: String? = nil
     var automationEventType: String? = nil
     var automationEventSource: String? = nil

@@ -90,9 +90,11 @@ struct ConversationNativeRowBuilder {
             )
             let isOrdinaryMessage = collaboration == nil && specialEvent == nil
                 && (item.type == "userMessage" || item.type == "agentMessage")
-            title = collaboration?.title ?? specialEvent?.title ?? (isOrdinaryMessage ? "" : item.title)
+            let scheduledSource = item.messageOrigin == "scheduled_task"
+                ? ConversationEventText(languageCode: AppLanguageController.shared.languageCode).messageSource(name: item.automationName) : nil
+            title = scheduledSource ?? collaboration?.title ?? specialEvent?.title ?? (isOrdinaryMessage ? "" : item.title)
             metadata = collaboration?.metadata ?? specialEvent?.metadata ?? (isOrdinaryMessage ? "" : nativeTimelineMetadata(for: item))
-            showsHeader = !isOrdinaryMessage
+            showsHeader = !isOrdinaryMessage || scheduledSource != nil
             contextTimestamp = isOrdinaryMessage ? nativeTimelineMetadata(for: item) : ""
             messageDate = isOrdinaryMessage
                 ? item.createdAt.flatMap(ISO8601DateFormatter.corptieThreadItemDate(from:))
@@ -193,6 +195,14 @@ struct ConversationNativeRowBuilder {
             images: images
         )
         row.forkItemID = forkItemID(for: entry)
+        if case .message(let item) = entry.kind, item.messageOrigin == "scheduled_task" {
+            row.scheduledMessageSource = ConversationEventText(languageCode: AppLanguageController.shared.languageCode)
+                .messageSource(name: item.automationName)
+        }
+        if case .message(let item) = entry.kind, item.type == "userMessage",
+           item.deletionAvailable == true {
+            row.deletableMessageID = item.id
+        }
         if case .message(let item) = entry.kind, item.type == "userMessage",
            item.userMessageStatus == "queued" {
             row.queuedMessageTaskID = item.taskId
@@ -354,6 +364,7 @@ struct ConversationNativeRowBuilder {
     ) -> Int {
         var hasher = Hasher()
         hasher.combine(entry.id)
+        hasher.combine(AppLanguageController.shared.languageCode)
         hasher.combine(forkItemID(for: entry))
         hasher.combine(forkUnavailableReason(for: entry))
         switch entry.kind {
@@ -406,6 +417,10 @@ struct ConversationNativeRowBuilder {
             item.type,
             item.status ?? "",
             item.userMessageStatus ?? "",
+            item.messageOrigin ?? "",
+            item.automationName ?? "",
+            item.automationRunStatus ?? "",
+            item.automationRunError ?? "",
             item.queuePosition.map(String.init) ?? "",
             item.turnStatus,
             item.executionPlan.map { "plan:\($0.revision)" } ?? "",

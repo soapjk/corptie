@@ -1,4 +1,5 @@
 import Foundation
+import CorptieClientCore
 
 enum BackendResponseDecoder {
     static func sessions(from data: Data) async throws -> [TaskSession] {
@@ -14,7 +15,8 @@ enum BackendResponseDecoder {
         workspacePath: String? = nil
     ) async throws -> CodexThreadDetail {
         try await Task.detached(priority: .userInitiated) {
-            let snapshot = try JSONDecoder().decode(UnifiedSessionSnapshotResponse.self, from: data).session
+            let snapshot = try ClientDecodingDiagnostics.decode(UnifiedSessionSnapshotResponse.self, from: data,
+                context: "stored-snapshot:\(threadId)").session
             return CodexThreadDetail(
                 id: threadId,
                 title: snapshot.title,

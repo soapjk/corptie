@@ -33,6 +33,24 @@ final class StandardTimelineFixtureTests: XCTestCase {
         let image = XCTAttachment(screenshot: app.screenshot())
         image.name = "standard-real-touch-latest"; image.lifetime = .keepAlways; add(image)
     }
+    @MainActor func testSendingWhileKeyboardOpenKeepsMessageAboveQuickReplies() throws {
+        let app = try open()
+        assertDocked(app)
+        let editor = app.textViews["conversation-composer-input"].firstMatch
+        for index in 0..<3 {
+            editor.tap()
+            editor.typeText("Long message for local send validation with enough text to expand the input to multiple lines.")
+            app.buttons["standard-fixture-send"].tap()
+            XCTAssertTrue(app.descendants(matching: .any)["message-card-standard:\(180 + index)"].firstMatch.waitForExistence(timeout: 5))
+            assertDocked(app)
+            let tail = app.otherElements["conversation-latest-entry"].firstMatch
+            let quick = app.scrollViews["conversation-quick-messages"].firstMatch
+            XCTAssertTrue(quick.exists)
+            XCTAssertLessThanOrEqual(tail.frame.maxY, quick.frame.minY)
+        }
+        let image = XCTAttachment(screenshot: app.screenshot())
+        image.name = "sent-message-above-quick-replies"; image.lifetime = .keepAlways; add(image)
+    }
     @MainActor func testActualMarkdownBackgroundGapsAfterRealDragging() throws {
         let app = try open(); let timeline = app.scrollViews["conversation-timeline"]
         var checked = 0
@@ -132,6 +150,23 @@ final class StandardTimelineFixtureTests: XCTestCase {
     }
     @MainActor func testScrollPerformanceOfComplexLocalCards() throws {
         let app = try open(); let timeline = app.scrollViews["conversation-timeline"]
+        let options = XCTMeasureOptions(); options.iterationCount = 3
+        measure(metrics: [XCTClockMetric(), XCTOSSignpostMetric.scrollDecelerationMetric], options: options) {
+            timeline.swipeDown(velocity: .fast); timeline.swipeUp(velocity: .fast)
+        }
+    }
+    @MainActor func testStatusLightsScrollAndLayout() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["CORPTIE_STANDARD_TIMELINE_FIXTURE"] = "1"
+        app.launchEnvironment["CORPTIE_STATUS_LIGHT_FIXTURE"] = "1"
+        app.launch()
+        XCTAssertTrue(app.buttons["standard-fixture-open"].waitForExistence(timeout: 10))
+        app.buttons["standard-fixture-open"].tap()
+        assertDocked(app)
+        XCTAssertFalse(app.buttons["message-processing-state"].exists)
+        let image = XCTAttachment(screenshot: app.screenshot())
+        image.name = "message-status-lights"; image.lifetime = .keepAlways; add(image)
+        let timeline = app.scrollViews["conversation-timeline"]
         let options = XCTMeasureOptions(); options.iterationCount = 3
         measure(metrics: [XCTClockMetric(), XCTOSSignpostMetric.scrollDecelerationMetric], options: options) {
             timeline.swipeDown(velocity: .fast); timeline.swipeUp(velocity: .fast)
