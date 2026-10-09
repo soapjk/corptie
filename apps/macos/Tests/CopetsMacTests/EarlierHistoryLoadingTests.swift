@@ -98,6 +98,29 @@ struct EarlierHistoryLoadingTests {
         #expect(readAPI.contains("request.timeoutInterval = timeoutInterval"))
     }
 
+    @Test func detachedTimelineCanPageAnUnselectedSession() throws {
+        let sourceRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac")
+        let view = try String(contentsOf: sourceRoot.appendingPathComponent(
+            "Conversation/SessionConversationContent.swift"), encoding: .utf8)
+        let history = try String(contentsOf: sourceRoot.appendingPathComponent(
+            "Backend/SessionTimelineHistoryController.swift"), encoding: .utf8)
+        let client = try String(contentsOf: sourceRoot.appendingPathComponent(
+            "BackendClient.swift"), encoding: .utf8)
+
+        let pageMethod = try #require(view.components(separatedBy: "private func loadEarlierMessages(preservingLatestFollow: Bool) {").last)
+            .components(separatedBy: "private func restoreMissingHistoryAnchorIfNeeded()").first ?? ""
+        #expect(pageMethod.contains("let session = selectedSession"))
+        #expect(!pageMethod.contains("guard backendClient.selectedSession?.id == sessionId"))
+        #expect(history.contains("let current = detailForSession(session.id)"))
+        #expect(history.contains("SessionTimelineBindingReconciler.sameRoute(liveSession, session)"))
+        #expect(history.contains("publishSessionDetail(merged, session.id)"))
+        #expect(client.contains("self.storeCachedDetail(detail, for: id)"))
+    }
+
     private func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [EarlierHistoryURLProtocol.self]
@@ -132,4 +155,147 @@ private final class EarlierHistoryURLProtocol: URLProtocol, @unchecked Sendable 
     }
 
     override func stopLoading() {}
+}
+
+@Suite(.serialized)
+@MainActor
+struct DetachedHistoryControllerTests {
+    @Test func removedWindowSessionDiscardsAnInFlightHistoryPage() async {
+        let selection = SessionSelectionController()
+        let windowSession = session("window")
+        selection.select("main")
+        var windowDetail = detail("window", items: [item("newest")], hasMore: true)
+        var sessionExists = true
+        let controller = SessionTimelineHistoryController(
+            baseURL: URL(string: "http://127.0.0.1:9999")!,
+            selection: selection,
+            sessionForID: { id in
+                id == windowSession.id && sessionExists ? windowSession : nil
+            },
+            detailForSession: { $0 == windowSession.id ? windowDetail : nil },
+            publishSessionDetail: { updated, _ in windowDetail = updated },
+            requestEarlierHistoryPage: { _ in
+                sessionExists = false
+                return SessionHistoryResponse(
+                    sessionId: windowSession.id, logicalSessionId: nil,
+                    items: [item("older")], hasMoreHistory: false,
+                    historyItemsCount: nil, cursorStatus: nil
+                )
+            }
+        )
+
+        #expect(await controller.loadEarlierMessages(for: windowSession) == .idle)
+        #expect(windowDetail.items.map(\.id) == ["newest"])
+    }
+
+    @Test func unselectedWindowRestoresAnUncachedHistoryAnchor() async {
+        let selection = SessionSelectionController()
+        let mainSession = session("main")
+        let windowSession = session("window")
+        selection.select(mainSession.id)
+        var windowDetail = detail("window", items: [item("newest")], hasMore: true)
+        var requestedAnchor: String?
+        let controller = SessionTimelineHistoryController(
+            baseURL: URL(string: "http://127.0.0.1:9999")!,
+            selection: selection,
+            sessionForID: { $0 == windowSession.id ? windowSession : nil },
+            detailForSession: { $0 == windowSession.id ? windowDetail : nil },
+            publishSessionDetail: { updated, id in
+                #expect(id == windowSession.id)
+                windowDetail = updated
+            },
+            requestTimelineWindow: { url in
+                requestedAnchor = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                    .queryItems?.first(where: { $0.name == "anchor" })?.value
+                return SessionTimelineWindowResponse(
+                    protocolVersion: nil, revision: nil,
+                    sessionId: windowSession.id, logicalSessionId: nil,
+                    items: [item("anchor")],
+                    anchor: SessionTimelineAnchorResolution(
+                        kind: "item", requestedId: "anchor", resolvedId: "anchor", status: "found"
+                    ),
+                    hasEarlier: false, hasLater: true
+                )
+            },
+            requestEarlierHistoryPage: { _ in
+                Issue.record("Anchor restoration must use the timeline window endpoint")
+                throw URLError(.badURL)
+            }
+        )
+
+        let result = await controller.loadTimelineWindow(
+            for: windowSession, anchorRowID: "message:anchor",
+            expectedSelectionGeneration: nil
+        )
+        #expect(result == .found)
+        #expect(requestedAnchor == "anchor")
+        #expect(windowDetail.items.map(\.id) == ["anchor", "newest"])
+    }
+
+    @Test func unselectedWindowLoadsConsecutiveHistoryPages() async {
+        let selection = SessionSelectionController()
+        let mainSession = session("main")
+        let windowSession = session("window")
+        selection.select(mainSession.id)
+        var windowDetail = detail("window", items: [item("newest")], hasMore: true)
+        var requestedCursors: [String] = []
+        let controller = SessionTimelineHistoryController(
+            baseURL: URL(string: "http://127.0.0.1:9999")!,
+            selection: selection,
+            sessionForID: { $0 == windowSession.id ? windowSession : nil },
+            detailForSession: { $0 == windowSession.id ? windowDetail : nil },
+            publishSessionDetail: { updated, id in
+                #expect(id == windowSession.id)
+                windowDetail = updated
+            },
+            requestEarlierHistoryPage: { url in
+                let cursor = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                    .queryItems?.first(where: { $0.name == "before" })?.value ?? ""
+                requestedCursors.append(cursor)
+                return SessionHistoryResponse(
+                    sessionId: windowSession.id, logicalSessionId: nil,
+                    items: [item(cursor == "newest" ? "older" : "oldest")],
+                    hasMoreHistory: cursor == "newest", historyItemsCount: nil,
+                    cursorStatus: nil
+                )
+            }
+        )
+
+        #expect(await controller.loadEarlierMessages(for: windowSession) == .idle)
+        #expect(windowDetail.items.map(\.id) == ["older", "newest"])
+        #expect(await controller.loadEarlierMessages(for: windowSession) == .exhausted)
+        #expect(windowDetail.items.map(\.id) == ["oldest", "older", "newest"])
+        #expect(requestedCursors == ["newest", "older"])
+        #expect(selection.selectedSessionID == mainSession.id)
+    }
+
+    private func session(_ id: String) -> TaskSession {
+        TaskSession(
+            id: id, title: id, agent: "Agent", agentId: nil,
+            status: .complete, progress: 1, summary: "", suggestedOptions: nil,
+            suggestedPrompt: nil, activityStatus: nil,
+            updatedAt: "2026-08-19T00:00:00Z", accent: .cyan,
+            archived: false, pinned: false, sortOrder: nil,
+            capabilities: nil, external: nil
+        )
+    }
+
+    private func detail(_ id: String, items: [CodexThreadItem], hasMore: Bool) -> CodexThreadDetail {
+        CodexThreadDetail(
+            id: id, title: id, status: .complete, source: nil,
+            connectionStatus: nil, currentModel: nil, currentReasoningLevel: nil,
+            activityStatus: nil, cwd: nil,
+            createdAt: "2026-08-19T00:00:00Z", updatedAt: "2026-08-19T00:00:00Z",
+            canSend: true, sendUnavailableReason: nil, capabilities: nil,
+            turnCount: items.count, items: items, hasMoreHistory: hasMore
+        )
+    }
+
+    private func item(_ id: String) -> CodexThreadItem {
+        CodexThreadItem(
+            id: id, turnId: "turn:\(id)", turnStatus: "complete",
+            type: "agentMessage", title: "Agent", text: id,
+            options: nil, status: nil, createdAt: "2026-08-19T00:00:00Z"
+        )
+    }
 }

@@ -1941,6 +1941,35 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(historyRequests, 1, "A scrollbar drag is explicit user intent")
     }
 
+    func testConsecutiveScrollsToTopRequestSuccessiveHistoryPagesWithoutLosingAnchor() async {
+        var historyRequests = 0
+        let harness = makeHarness(
+            followsLatest: false,
+            height: 180,
+            onNearTop: { historyRequests += 1 }
+        )
+        let initial = (0..<40).map { row(id: "history-\($0)", text: "Row \($0)") }
+        harness.coordinator.apply(rows: initial)
+        await settleMainQueue()
+
+        harness.scrollView.contentView.scroll(to: NSPoint(x: 0, y: 120))
+        harness.coordinator.userScrollEventWillBegin()
+        harness.scrollView.contentView.scroll(to: .zero)
+        harness.coordinator.userScrollEventDidEnd()
+        XCTAssertEqual(historyRequests, 1)
+
+        let prepended = (0..<8).map { row(id: "older-\($0)", text: "Earlier \($0)") } + initial
+        harness.coordinator.apply(rows: prepended)
+        await settleMainQueue()
+        XCTAssertEqual(visibleAnchor(in: harness.tableView, rows: prepended).id, initial[0].id)
+
+        harness.coordinator.userScrollEventWillBegin()
+        harness.coordinator.viewportDidScroll(userInitiated: true)
+        harness.scrollView.contentView.scroll(to: .zero)
+        harness.coordinator.userScrollEventDidEnd()
+        XCTAssertEqual(historyRequests, 2, "A second upward gesture must load the next page")
+    }
+
     func testFailedHistoryRequestCanBeRearmedWhileViewportRemainsAtTop() async {
         var historyRequests = 0
         let harness = makeHarness(
