@@ -14,7 +14,21 @@ export function createCodexSessionCommands({
       error.code = "NO_ACTIVE_RUN";
       throw error;
     }
-    await codexRuntime.interruptTurn(reference.providerSessionId, activeTurnId);
+    try {
+      await codexRuntime.interruptTurn(reference.providerSessionId, activeTurnId);
+    } catch (error) {
+      // Narrow native protocol mapping, only for this exact interrupt request.
+      // Transport failures and a missing local turn id are NOT absence evidence.
+      let nativeError;
+      try { nativeError = JSON.parse(error.message); } catch {}
+      if (nativeError?.code === -32600 && nativeError.message === "no active turn to interrupt") {
+        throw Object.assign(new Error("Provider confirmed no active turn for the interrupted Session."), {
+          code: "PROVIDER_TURN_NOT_ACTIVE", turnId: activeTurnId,
+          providerSessionId: reference.providerSessionId
+        });
+      }
+      throw error;
+    }
     // Command acknowledgement is not an execution-state event. The persisted
     // turn.cancelled Provider event owns the terminal Session projection.
     return store.getSession(reference.sessionId) ?? summary;

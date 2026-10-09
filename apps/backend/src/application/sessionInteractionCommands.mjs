@@ -5,7 +5,8 @@ import { validateInteractionAnswers, withSubmittedUserInputAnswers } from "./int
 // instance, while durable item status stays in the shared timeline authority.
 export function createSessionInteractionCommands({
   store, requireSessionReference, sessionApplicationService, providerEventIngestion,
-  handleCommittedProviderTerminalLifecycle, sendUnifiedSessionMessage, emitEvent, now
+  handleCommittedProviderTerminalLifecycle, sendUnifiedSessionMessage, emitEvent, now,
+  interruptTimeoutMs = 15_000
 }) {
   async function interruptUnifiedSession(sessionId, source = { type: "desktop" }) {
     const reference = requireSessionReference(sessionId);
@@ -15,11 +16,26 @@ export function createSessionInteractionCommands({
       ?? store.listUnsettledSessionTurns(reference.sessionId).at(-1)?.turn_id
       ?? null;
     let session;
+    let timeout;
+    console.info(`[session-interrupt] requested session=${reference.sessionId} binding=${reference.bindingId} turn=${activeTurnId}`);
     try {
-      session = await sessionApplicationService.interrupt(sessionId, { summary, source });
+      session = await Promise.race([
+        sessionApplicationService.interrupt(sessionId, { summary, source }),
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(Object.assign(
+            new Error("Stop acknowledgement timed out; Provider execution state is unknown. No cancellation has been confirmed."),
+            { code: "SESSION_INTERRUPT_TIMEOUT", statusCode: 504 }
+          )), interruptTimeoutMs);
+        })
+      ]);
     } catch (error) {
-      if (error?.code !== "PROVIDER_SESSION_UNAVAILABLE" || !activeTurnId) throw error;
-      session = settleUnavailableProviderSessionInterrupt(reference, activeTurnId, source);
+      console.warn(`[session-interrupt] result session=${reference.sessionId} turn=${activeTurnId} code=${error?.code ?? "UNKNOWN"}`);
+      const inactive = error?.code === "PROVIDER_TURN_NOT_ACTIVE"
+        && error.turnId === activeTurnId && error.providerSessionId === reference.providerSessionId;
+      if ((!inactive && error?.code !== "PROVIDER_SESSION_UNAVAILABLE") || !activeTurnId) throw error;
+      session = settleUnavailableProviderSessionInterrupt(reference, activeTurnId, source, inactive);
+    } finally {
+      clearTimeout(timeout);
     }
     emitEvent("SessionRunInterrupted", {
       sessionId: reference.sessionId,
@@ -30,7 +46,7 @@ export function createSessionInteractionCommands({
     return session;
   }
 
-  function settleUnavailableProviderSessionInterrupt(reference, activeTurnId, source) {
+  function settleUnavailableProviderSessionInterrupt(reference, activeTurnId, source, inactive = false) {
     const timestamp = now();
     const ingestion = providerEventIngestion.ingest({
       schemaVersion: 1,
@@ -49,8 +65,10 @@ export function createSessionInteractionCommands({
         nativeType: "corptie.interrupt.provider_session_unavailable",
         status: "cancelled",
         error: {
-          code: "PROVIDER_SESSION_UNAVAILABLE",
-          message: "The Provider Session no longer exists; Corptie settled its persisted run as interrupted."
+          code: inactive ? "PROVIDER_TURN_NOT_ACTIVE" : "PROVIDER_SESSION_UNAVAILABLE",
+          message: inactive
+            ? "The Provider confirmed no active turn; Corptie reconciled this persisted run after the user's stop request. Original completion outcome is unknown."
+            : "The Provider Session no longer exists; Corptie settled its persisted run as interrupted."
         },
         source
       },
