@@ -53,6 +53,19 @@ export const sessionSchemaSql = `
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
       );
 
+      CREATE TABLE IF NOT EXISTS deleted_user_messages (
+        session_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        deleted_at TEXT NOT NULL,
+        PRIMARY KEY(session_id, message_id)
+      );
+      CREATE TRIGGER IF NOT EXISTS deleted_user_message_no_reprojection
+      BEFORE INSERT ON session_items
+      WHEN EXISTS (SELECT 1 FROM deleted_user_messages d
+        WHERE d.session_id = NEW.session_id AND d.message_id = NEW.id)
+      BEGIN SELECT RAISE(IGNORE); END;
+
       CREATE TABLE IF NOT EXISTS session_fork_operations (
         request_id TEXT PRIMARY KEY,
         fingerprint TEXT NOT NULL,

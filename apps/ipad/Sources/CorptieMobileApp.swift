@@ -853,6 +853,10 @@ struct ConversationView: View {
                                     }, delete: workspace.canDeleteUnreceivedMessage(message) ? {
                                         Task { await workspace.deleteUnreceivedMessage(connection,
                                             sessionID: sessionID, messageID: message.id) }
+                                    } : nil, cancelQueued: workspace.capabilities?.cancelQueuedMessage == true
+                                        && message.cancellableQueuedMessageTaskID != nil ? {
+                                        Task { await workspace.cancelQueuedMessage(connection,
+                                            sessionID: sessionID, messageID: message.id) }
                                     } : nil)
                             }
                         case .process(_, let items):
@@ -2036,12 +2040,14 @@ private struct PadCollaborationCard: View {
 
 private struct PadSpecialEventCard: View {
     let message: ClientMessage
+    @Environment(\.locale) private var locale
+    private var words: ConversationEventText { .init(languageCode: locale.identifier) }
 
     private var isSystemEvent: Bool { message.presentationKind == .systemEvent }
     private var title: String {
-        if message.presentationKind == .automationEvent { return message.automationName ?? "自动化事件" }
-        if isSystemEvent { return "System Event · \(message.systemEventKind ?? "diagnostic")" }
-        return message.title ?? "Timeline 事件"
+        if message.presentationKind == .automationEvent { return message.automationName ?? words.automationTitle }
+        if isSystemEvent { return words.systemKind(message.systemEventKind) }
+        return message.title ?? words.systemTitle
     }
     private var bodyText: String {
         ConversationMessageDisplayText.resolve(text: message.text,
@@ -2057,16 +2063,35 @@ private struct PadSpecialEventCard: View {
                 Text(title).font(.headline)
             }
             if let eventType = message.automationEventType {
-                Text(eventType).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text(message.automationRunId == nil ? words.eventLabel(eventType) : words.runStatus(message.automationRunStatus))
+                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    .frame(height: 18)
+                if message.automationRunError != nil {
+                    Text(words.text("本次运行失败，请查看执行记录。", "This run failed. Check its execution history."))
+                        .font(.caption).foregroundStyle(.red)
+                }
+                if let date = eventDate(message.automationEventOccurredAt ?? message.createdAt) {
+                    LabeledContent(message.automationRunId == nil ? words.timeLabel(eventType)
+                        : words.text("触发时间", "Triggered at"), value: date).font(.caption)
+                }
+                if let plan = words.executionPlan(trigger: message.automationTriggerType ?? message.automationScheduleType,
+                    runAt: message.automationRunAt, nextRunAt: message.automationNextRunAt,
+                    interval: message.automationIntervalSeconds, conditionInterval: message.automationConditionCheckIntervalSeconds,
+                    processInterval: message.automationProcessPollIntervalSeconds, formatDate: eventDate) {
+                    LabeledContent(words.text("执行计划", "Execution plan"), value: plan).font(.caption)
+                }
+                if let expires = eventDate(message.automationExpiresAt) {
+                    LabeledContent(words.text("过期时间", "Expires at"), value: expires).font(.caption)
+                }
             }
-            if !bodyText.isEmpty {
+            if !isSystemEvent && message.automationRunId == nil && !bodyText.isEmpty {
                 PadMessageText(text: bodyText, fromUser: false, isTextSelectionEnabled: .constant(true))
             }
             if let reason = message.systemEventReason {
-                LabeledContent("Reason", value: reason).font(.caption).textSelection(.enabled)
+                LabeledContent(words.reasonLabel, value: words.reason(reason)).font(.caption).textSelection(.enabled)
             }
             if isSystemEvent {
-                Text("此事件不可作为协作请求执行。").font(.caption).foregroundStyle(.secondary)
+                Text(words.systemNotice).font(.caption).foregroundStyle(.secondary)
             }
         }
         .padding(14)
@@ -2076,6 +2101,11 @@ private struct PadSpecialEventCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(isSystemEvent ? "conversation-system-event" : "conversation-special-event")
+    }
+
+    private func eventDate(_ value: String?) -> String? {
+        guard let value, let date = ConversationTimestampText.date(from: value) else { return nil }
+        return date.formatted(Date.FormatStyle(date: .numeric, time: .shortened).locale(locale))
     }
 }
 
@@ -2152,6 +2182,21 @@ private struct MobileMessageBubble: View {
     let canSendSuggestedReply: Bool
     let sendSuggestedReply: (String) -> Void
     var delete: (() -> Void)? = nil
+    var cancelQueued: (() -> Void)? = nil
+    @State private var selectedResource: ConversationLocalResource?
+    @State private var linkFailed = false
+
+    private var localResources: [ConversationLocalResource] {
+        ConversationLocalResourceCache.shared.resources(messageID: message.id, text: displayText)
+    }
+
+    private func openMessageLink(_ url: URL) {
+        if let resource = ConversationLocalResource(url: url) {
+            selectedResource = resource
+        } else if ["https", "http"].contains(url.scheme?.lowercased() ?? "") {
+            UIApplication.shared.open(url) { success in if !success { linkFailed = true } }
+        } else { linkFailed = true }
+    }
 
     private var fromUser: Bool { message.presentationKind == .userMessage }
     private var displayText: String {
@@ -2213,16 +2258,21 @@ private struct MobileMessageBubble: View {
                         timestampTitle: timestamp.isEmpty ? nil : "时间：\(timestamp)",
                         copyTitle: "复制消息", selectTextTitle: "选择文本",
                         canCopy: !copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                        delete: fromUser ? delete : nil),
+                        delete: fromUser ? delete : nil, cancelQueued: fromUser ? cancelQueued : nil),
                     copy: { UIPasteboard.general.string = copyText }) { isTextSelectionEnabled in
                         VStack(alignment: .leading, spacing: MessageImageStripMetrics.bottomSpacing) {
+                            if message.messageOrigin == "scheduled_task" {
+                                Label(ConversationEventText(languageCode: Locale.preferredLanguages.first ?? "en")
+                                    .messageSource(name: message.automationName), systemImage: "clock")
+                                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                            }
                             if fromUser && !attachments.isEmpty { attachmentStrip }
                             ForEach(contentBlocks) { block in
                                 switch block.content {
                                 case .markdown(let text):
                                     if !text.isEmpty {
                                         PadMessageText(text: text, fromUser: fromUser,
-                                            isTextSelectionEnabled: isTextSelectionEnabled)
+                                            isTextSelectionEnabled: isTextSelectionEnabled, openLink: openMessageLink)
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                     }
                                 case .chart(let spec, _):
@@ -2233,7 +2283,7 @@ private struct MobileMessageBubble: View {
                                         layout: .measured(table, width: cardWidth - MessageBubbleWidthPolicy.horizontalPadding,
                                             style: fromUser ? .user : .agent),
                                         allowsSelection: isTextSelectionEnabled.wrappedValue,
-                                        openLink: { UIApplication.shared.open($0) },
+                                        openLink: openMessageLink,
                                         selectText: { isTextSelectionEnabled.wrappedValue = true })
                                 case .invalidChart(let original, let reason):
                                     VStack(alignment: .leading, spacing: 4) {
@@ -2245,6 +2295,26 @@ private struct MobileMessageBubble: View {
                                 }
                             }
                             if !fromUser && !attachments.isEmpty { attachmentStrip }
+                            ForEach(localResources.prefix(8)) { resource in
+                                Button { selectedResource = resource } label: {
+                                    HStack {
+                                        if resource.isImage {
+                                            MessageImageThumbnail(state: resourceThumbnail(resource), index: 0)
+                                                .frame(width: 88, height: 88)
+                                        }
+                                        Label(resource.fileName, systemImage: resource.isImage ? "photo" : "doc")
+                                        .font(.caption).lineLimit(1)
+                                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                    }
+                                }
+                                .buttonStyle(.plain).foregroundStyle(.tint)
+                                .onAppear {
+                                    if resource.isImage {
+                                        images.ensure(sessionID: sessionID, managedPath: resource.path,
+                                            connection: connection, itemID: message.id)
+                                    }
+                                }
+                            }
                             if !suggestedReplies.isEmpty {
                                 ScrollView(.horizontal) {
                                     HStack(spacing: 6) {
@@ -2269,6 +2339,21 @@ private struct MobileMessageBubble: View {
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("conversation-message")
+        .fullScreenCover(item: $selectedResource) { resource in
+            PadMessageResourceViewer(connection: connection, sessionID: sessionID,
+                itemID: message.id, resource: resource)
+        }
+        .alert("无法打开链接", isPresented: $linkFailed) {
+            Button("好", role: .cancel) { }
+        } message: { Text("链接格式不受支持，或当前没有可打开它的应用。") }
+    }
+
+    private func resourceThumbnail(_ resource: ConversationLocalResource) -> MessageImageThumbnail.State {
+        switch images.entry(sessionID: sessionID, managedPath: resource.path, itemID: message.id) {
+        case .loaded(let image): .loaded(Image(uiImage: image))
+        case .missing: .missing
+        case .loading, nil: .loading
+        }
     }
 
     private var attachmentStrip: some View {

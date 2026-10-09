@@ -20,7 +20,7 @@ struct MacSharedMessageTextCard: View {
     }
 
     static func supports(_ row: AppKitChatTimelineRow) -> Bool {
-        row.userInput != nil || row.executionPlan != nil || supportsProcess(row) || (row.nativeStyle != .process && !row.showsHeader && !row.isCollaboration
+        row.userInput != nil || row.executionPlan != nil || supportsProcess(row) || (row.nativeStyle != .process && (!row.showsHeader || row.scheduledMessageSource != nil) && !row.isCollaboration
             && row.collaborationRoute == nil && row.processCount == nil && row.expandableTurnId == nil
             && (row.actions.isEmpty || (row.nativeStyle == .agent
                 && (row.nativeText.contains("```corptie-chart") || row.nativeText.contains("|"))))
@@ -133,9 +133,14 @@ struct MacSharedMessageTextCard: View {
         MessageTextCard(messageID: row.id, role: row.nativeStyle == .user ? .user : (row.isCommentary ? .commentary : .agent),
             timestamp: "", showsActions: false,
             actionsAlwaysVisible: false, cardWidth: layout.cardWidth,
-            cardHeight: layout.rowHeight - row.timeSeparatorHeight - (row.showsMessageStatusBar ? 28 : 2),
+            cardHeight: layout.rowHeight - row.timeSeparatorHeight - 2,
             status: presentedMessageStatus, copy: copy) {
             VStack(alignment: .leading, spacing: 0) {
+                if let source = row.scheduledMessageSource {
+                    Label(source, systemImage: "clock").font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary).lineLimit(1)
+                        .frame(height: 19, alignment: .topLeading)
+                }
                 if row.nativeStyle == .user && !row.images.isEmpty {
                     attachmentStrip.padding(.bottom, 8)
                 }
@@ -471,6 +476,11 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         onAction(.init(id: "cancel-queued:\(taskID)", label: L10n("Cancel"),
                        isDestructive: true, kind: .cancelQueuedMessage(taskID: taskID)))
     }
+    @objc private func deleteRepresentedMessage() {
+        guard let id = row?.deletableMessageID else { return }
+        onAction(.init(id: "delete:\(id)", label: "删除", isDestructive: true,
+            kind: .deleteUnreceivedMessage(messageID: id)))
+    }
 
     @objc private func beginTextSelection() {
         guard row?.nativeStyle != .process else { return }
@@ -501,6 +511,12 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
             return
         }
         let menu = NSMenu()
+        if row.deletableMessageID != nil {
+            let deletion = NSMenuItem(title: "删除", action: #selector(deleteRepresentedMessage), keyEquivalent: "")
+            deletion.target = self
+            deletion.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
+            menu.addItem(deletion)
+        }
         if !row.contextTimestamp.isEmpty {
             let timestamp = NSMenuItem(title: L10nFormat("Time: %@", row.contextTimestamp), action: nil, keyEquivalent: "")
             timestamp.image = NSImage(systemSymbolName: "clock", accessibilityDescription: nil)

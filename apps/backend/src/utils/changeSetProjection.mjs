@@ -1,3 +1,4 @@
+import { boundedUnicodeText } from "./unicodeText.mjs";
 const MAX_CHANGES = 50;
 const MAX_PATH = 1_024;
 const MAX_DIFF_PREVIEW = 2_000;
@@ -36,7 +37,7 @@ export function publicChangeSet(value) {
     const kind = normalizeKind(change.kind);
     const diff = typeof change.diffPreview === "string" ? change.diffPreview : null;
     const previewLength = Math.min(diff?.length ?? 0, MAX_DIFF_PREVIEW, remainingDiffCharacters);
-    const diffPreview = previewLength > 0 ? diff.slice(0, previewLength) : null;
+    const diffPreview = previewLength > 0 ? boundedUnicodeText(diff, previewLength) : null;
     remainingDiffCharacters -= previewLength;
     return [{ path: change.path, kind,
       diffPreview,

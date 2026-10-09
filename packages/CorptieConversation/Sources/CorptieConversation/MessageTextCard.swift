@@ -114,14 +114,16 @@ public struct MessageTextCardMenuConfiguration {
     public let selectTextTitle: String
     public let canCopy: Bool
     public let delete: (() -> Void)?
+    public let cancelQueued: (() -> Void)?
 
     public init(timestampTitle: String?, copyTitle: String, selectTextTitle: String, canCopy: Bool = true,
-                delete: (() -> Void)? = nil) {
+                delete: (() -> Void)? = nil, cancelQueued: (() -> Void)? = nil) {
         self.timestampTitle = timestampTitle
         self.copyTitle = copyTitle
         self.selectTextTitle = selectTextTitle
         self.canCopy = canCopy
         self.delete = delete
+        self.cancelQueued = cancelQueued
     }
 }
 
@@ -143,8 +145,8 @@ public struct MessageTextCard<Content: View>: View {
     private let contextMenu: MessageTextCardMenuConfiguration?
     private let content: (Binding<Bool>) -> Content
     @State private var hovering = false
-    @State private var showingStatusDetail = false
     @State private var selectingText = false
+    @State private var confirmingDeletion = false
 
     public init(messageID: String, role: Role, timestamp: String, showsActions: Bool,
                 actionsAlwaysVisible: Bool, cardWidth: CGFloat? = nil, cardHeight: CGFloat? = nil,
@@ -214,6 +216,13 @@ public struct MessageTextCard<Content: View>: View {
         .onChange(of: messageID) {
             hovering = false
             selectingText = false
+            confirmingDeletion = false
+        }
+        .confirmationDialog("删除这条消息？", isPresented: $confirmingDeletion, titleVisibility: .visible) {
+            if let delete = contextMenu?.delete { Button("删除", role: .destructive, action: delete) }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("服务端确认未交给模型的消息将从所有设备移除，无法恢复。尚未发出的消息只需清理本机记录。")
         }
     }
 
@@ -225,32 +234,16 @@ public struct MessageTextCard<Content: View>: View {
                 .modifier(ConversationContentSurface(cornerRadius: 14,
                     tint: background, fallback: background, isMessage: true))
                 .accessibilityIdentifier("message-card-\(messageID)")
-            if showsActions || status != nil {
-                HStack(spacing: 6) {
+                .background {
                     if let status {
-                        Button { showingStatusDetail = true } label: {
-                            Label {
-                                Text(status.shortLabel(languageCode: Locale.current.language.languageCode?.identifier ?? "en"))
-                                    .lineLimit(1)
-                            } icon: {
-                                Image(systemName: status.symbolName)
-                            }
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(statusColor(status.tone))
-                        }
-                        .buttonStyle(.plain)
-                        .help(status.detail(languageCode: Locale.current.language.languageCode?.identifier ?? "en"))
-                        .accessibilityLabel(status.detail(languageCode: Locale.current.language.languageCode?.identifier ?? "en"))
-                        .accessibilityIdentifier("message-processing-state")
-                        .popover(isPresented: $showingStatusDetail) {
-                            Text(status.detail(languageCode: Locale.current.language.languageCode?.identifier ?? "en"))
-                                .font(.caption)
-                                .padding(12)
-                                .frame(maxWidth: 260, alignment: .leading)
-                        }
+                        MessageStatusGlow(status: status)
                     }
+                }
+                .accessibilityValue(status?.detail(languageCode: Locale.current.language.languageCode?.identifier ?? "en") ?? "")
+            if showsActions {
+                HStack(spacing: 6) {
                     if showsActions {
-                        if !timestamp.isEmpty && status == nil {
+                        if !timestamp.isEmpty {
                             Text(timestamp).font(.system(size: 9, weight: .medium))
                                 .foregroundStyle(Color(red: 0.38, green: 0.41, blue: 0.43))
                                 .lineLimit(1)
@@ -276,6 +269,15 @@ public struct MessageTextCard<Content: View>: View {
 
     @ViewBuilder
     private func contextMenuContent(_ configuration: MessageTextCardMenuConfiguration) -> some View {
+        if let status {
+            Text(status.detail(languageCode: Locale.current.language.languageCode?.identifier ?? "en"))
+        }
+        if let cancel = configuration.cancelQueued {
+            Button(role: .destructive, action: cancel) {
+                Label("取消排队", systemImage: "xmark.circle")
+            }
+            .accessibilityIdentifier("chat.timeline.context.cancel-queued")
+        }
         if let timestampTitle = configuration.timestampTitle, !timestampTitle.isEmpty {
             Button(action: {}) {
                 Label(timestampTitle, systemImage: "clock")
@@ -300,7 +302,7 @@ public struct MessageTextCard<Content: View>: View {
         #endif
         if let delete = configuration.delete {
             Divider()
-            Button(role: .destructive, action: delete) {
+            Button(role: .destructive, action: { confirmingDeletion = true }) {
                 Label("删除", systemImage: "trash")
             }
             .accessibilityIdentifier("chat.timeline.context.delete")
@@ -315,12 +317,44 @@ public struct MessageTextCard<Content: View>: View {
         }
         return MessageTextCardPalette.background(for: paletteRole, dark: colorScheme == .dark)
     }
-    private func statusColor(_ tone: UserMessageStatusPresentation.Tone) -> Color {
-        switch tone {
-        case .neutral: .secondary
-        case .amber: .orange
+}
+
+/// An overlay only: receipt changes must never resize a message or its neighbours.
+public struct MessageStatusGlow: View {
+    let status: UserMessageStatusPresentation
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var visible = false
+    @State private var bright = false
+
+    public init(status: UserMessageStatusPresentation) { self.status = status }
+
+    private var active: Bool { visible && !reduceMotion && scenePhase == .active && status.lightPulses }
+    private var color: Color {
+        switch status.light {
+        case .blue: .blue
+        case .purple: .purple
+        case .orange: .orange
         case .green: .green
         case .red: .red
+        case .off: .clear
         }
+    }
+    public var body: some View {
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .stroke(color, lineWidth: 5)
+            .blur(radius: 4)
+            .opacity(active ? (bright ? 0.85 : 0.25) : 0.65)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .onChange(of: active, initial: true) { _, running in
+                var reset = Transaction(); reset.disablesAnimations = true
+                withTransaction(reset) { bright = false }
+                if running {
+                    withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { bright = true }
+                }
+            }
+        .onAppear { visible = true }
+        .onDisappear { visible = false }
     }
 }

@@ -107,6 +107,8 @@ test("Worker message context injects bounded selected references after authorita
     emitEvent: () => {}
   });
   const context = await service.resolveMessageContext(reference, { message: { text: "Use the reference" } });
+  assert.match(context.prompt, /corptie_message_presentation/);
+  assert.match(context.prompt, /prefer a native fenced/);
   assert.deepEqual(calls, [[session.id, { characterBudget: 4_096 }]]);
   assert.match(context.prompt, /Authoritative bound Task definition/);
   assert.match(context.prompt, /Reference: test document/);

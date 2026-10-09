@@ -1,4 +1,5 @@
 import Foundation
+import CorptieClientCore
 
 enum ScheduledSessionScheduleType: String, Codable, CaseIterable, Sendable {
     case once
@@ -568,7 +569,8 @@ enum ScheduledSessionEventMapping {
     static let timelineCardEventNames: Set<String> = [
         "ScheduledSessionTaskCreated",
         "ScheduledSessionTaskDue",
-        "ScheduledSessionRunQueued"
+        "ScheduledSessionRunQueued", "ScheduledSessionRunStarted", "ScheduledSessionRunCompleted",
+        "ScheduledSessionRunFailed", "ScheduledSessionRunCancelled", "ScheduledSessionRunMissed"
     ]
 
     static let terminalNotificationEventNames: Set<String> = [
@@ -613,53 +615,14 @@ enum AutomationTimelinePresentation {
     }
 
     static func eventTimeLabel(for eventType: String) -> String {
-        switch eventType {
-        case "ScheduledSessionTaskCreated": L10n("创建时间")
-        case "ScheduledSessionTaskDue": L10n("触发时间")
-        case "ScheduledSessionRunQueued": L10n("排队时间")
-        default: L10n("事件时间")
-        }
+        ConversationEventText(languageCode: AppLanguageController.shared.languageCode).timeLabel(eventType)
     }
 
     static func executionPlan(for item: CodexThreadItem) -> String? {
-        let trigger = item.automationTriggerType ?? item.automationScheduleType ?? ""
-        switch trigger {
-        case "at", "once":
-            guard let at = localizedDate(item.automationRunAt ?? item.automationNextRunAt) else { return nil }
-            return L10nFormat("于 %@ 执行", at)
-        case "after":
-            guard let at = localizedDate(item.automationRunAt ?? item.automationNextRunAt) else { return nil }
-            return L10nFormat("延时至 %@ 执行", at)
-        case "interval":
-            guard let seconds = item.automationIntervalSeconds, seconds > 0 else { return nil }
-            let interval = duration(seconds)
-            if let at = localizedDate(item.automationNextRunAt ?? item.automationRunAt) {
-                return L10nFormat("每 %@ 执行；下次执行：%@", interval, at)
-            }
-            return L10nFormat("每 %@ 执行", interval)
-        case "condition":
-            if let seconds = item.automationConditionCheckIntervalSeconds, seconds > 0 {
-                return L10nFormat("条件满足时执行；每 %@ 检查一次", duration(seconds))
-            }
-            return L10n("条件满足时执行")
-        case "processExit", "process":
-            if let seconds = item.automationProcessPollIntervalSeconds, seconds > 0 {
-                return L10nFormat("监控的进程退出时执行；每 %@ 检查一次", duration(seconds))
-            }
-            return L10n("监控的进程退出时执行")
-        default:
-            return nil
-        }
-    }
-
-    private static func duration(_ seconds: Double) -> String {
-        let rounded = Int(seconds.rounded())
-        if rounded.isMultiple(of: 3_600) {
-            return L10nFormat("%lld 小时", Int64(rounded / 3_600))
-        }
-        if rounded.isMultiple(of: 60) {
-            return L10nFormat("%lld 分钟", Int64(rounded / 60))
-        }
-        return L10nFormat("%lld 秒", Int64(rounded))
+        ConversationEventText(languageCode: AppLanguageController.shared.languageCode).executionPlan(
+            trigger: item.automationTriggerType ?? item.automationScheduleType,
+            runAt: item.automationRunAt, nextRunAt: item.automationNextRunAt,
+            interval: item.automationIntervalSeconds, conditionInterval: item.automationConditionCheckIntervalSeconds,
+            processInterval: item.automationProcessPollIntervalSeconds, formatDate: localizedDate)
     }
 }
