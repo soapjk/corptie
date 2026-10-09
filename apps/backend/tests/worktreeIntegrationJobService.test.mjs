@@ -172,6 +172,21 @@ function memoryFixture({
       }
       return { artifactId: `artifact:${input.relativePath}` };
     },
+    resolveCommitPolicyResidueFile: async (input) => {
+      for (const decision of input.decisions) {
+        calls.push(`residue:${decision.action}:${decision.relativePath}`);
+      }
+      const main = worktrees[0];
+      main.dirty = true;
+      main.statusSummary = "M  .gitignore";
+      main.changedFiles = [".gitignore"];
+      return {
+        headOid: main.headOid,
+        statusSummary: main.statusSummary,
+        relativePath: input.relativePath,
+        action: input.action
+      };
+    },
     recoverGitOperation: async (input) => {
       calls.push(`${input.action}:${input.path}`);
       return { action: input.action, operation: input.expectedOperation, remainingOperation: null };
@@ -1285,6 +1300,24 @@ test("unsafe staged-tree rejection preserves structured paths for recovery", asy
   assert.deepEqual(paused.availableActions, ["retry", "cancel"]);
 });
 
+test("a dirty integration postcondition pauses once with exact target paths", async () => {
+  const rejection = Object.assign(new Error("target remained dirty"), {
+    code: "INTEGRATION_POSTCONDITION_DIRTY",
+    recoverable: false,
+    changedFiles: [".gitignore"],
+    statusSummary: "M  .gitignore"
+  });
+  const { service, calls } = memoryFixture({ featureDirty: false, mergeErrors: [rejection] });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  const paused = await waitForJob(service, plan.id, "paused");
+
+  assert.deepEqual(paused.integrationPostconditionBlocker.changedFiles, [".gitignore"]);
+  assert.equal(paused.integrationPostconditionBlocker.statusSummary, "M  .gitignore");
+  assert.equal(calls.filter((call) => call.startsWith("merge:")).length, 1);
+  assert.deepEqual(paused.availableActions, ["retry", "cancel"]);
+});
+
 test("Markdown policy rejection pauses once for a user decision and resumes after ignore", async () => {
   const policy = Object.assign(new Error("Markdown approval required"), {
     code: "GIT_ARTIFACT_POLICY_REJECTED",
@@ -1431,6 +1464,62 @@ test("a persisted legacy Markdown failure is upgraded into an actionable blocker
   const completed = await waitForJob(service, plan.id, "completed");
   assert.ok(calls.includes("ignore:backtest_viewer/README.md"));
   assert.equal(completed.commitPolicyBlocker, undefined);
+});
+
+test("a legacy uncommitted Ignore residue requires explicit per-file recovery and resumes", async () => {
+  const { service, store, calls, worktrees } = memoryFixture({ featureDirty: false });
+  const plan = await service.preflight("repository:1");
+  const stored = store.getWorktreeIntegrationJob(plan.id);
+  const items = stored.details.plan.items.map((item) => item.worktreeId === "wt:feature" ? {
+    ...item,
+    commitStatus: "not_needed",
+    commitHead: "feature:1",
+    mergeStatus: "completed",
+    mergeMainHead: "main:1"
+  } : item);
+  worktrees[0].dirty = true;
+  worktrees[0].statusSummary = " M .gitignore";
+  worktrees[0].changedFiles = [".gitignore"];
+  store.updateWorktreeIntegrationJob(plan.id, {
+    status: "paused",
+    phase: "failed",
+    error: "main gained uncommitted changes while integrating.",
+    details: {
+      ...stored.details,
+      executionValidationCompleted: true,
+      currentWorktreeId: "wt:feature",
+      plan: { ...stored.details.plan, items },
+      audit: [
+        ...(stored.details.audit ?? []),
+        {
+          at: "2026-01-01T00:00:00.000Z",
+          event: "commit_policy_decisions_applied",
+          worktreeId: "wt:feature",
+          resumeStage: "merge_source",
+          decisions: [{ path: "docs/ignored.md", action: "ignore" }]
+        },
+        { at: "2026-01-01T00:00:01.000Z", event: "execution_paused", code: "MAIN_DIRTY" }
+      ]
+    }
+  });
+
+  const paused = service.get(plan.id);
+  assert.deepEqual(paused.commitPolicyResidue.paths, ["docs/ignored.md"]);
+  assert.deepEqual(paused.availableActions, ["resolve_commit_policy_residue", "cancel"]);
+  await assert.rejects(
+    service.resolveCommitPolicyResidue(plan.id, { decisions: [] }),
+    { code: "COMMIT_POLICY_RESIDUE_DECISION_INCOMPLETE" }
+  );
+
+  const queued = await service.resolveCommitPolicyResidue(plan.id, {
+    decisions: [{ path: "docs/ignored.md", action: "keep_ignore" }]
+  });
+  assert.equal(queued.status, "queued");
+  assert.ok(calls.includes("residue:keep_ignore:docs/ignored.md"));
+  assert.ok(calls.includes("commit:/repo"));
+  const completed = await waitForJob(service, plan.id, "completed");
+  assert.equal(completed.commitPolicyResidue, null);
+  assert.equal(completed.audit.filter((entry) => entry.event === "commit_policy_residue_resolved").length, 1);
 });
 
 test("recoverable commit retry revalidates the protected-path digest", async () => {

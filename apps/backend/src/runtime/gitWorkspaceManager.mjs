@@ -695,6 +695,10 @@ export class GitWorkspaceManager {
       await writeFile(ignorePath, `${current}${separator}${rule}\n`, "utf8");
     }
     await this.runGit(repositoryRoot, ["reset", "--quiet", "HEAD", "--", relativePath]).catch(() => {});
+    // The ignore rule is part of the user's integration decision. Stage it
+    // immediately so a resumed merge cannot commit the source changes while
+    // leaving its policy side effect behind as a dirty main Worktree.
+    await this.runGit(repositoryRoot, ["add", "--", ".gitignore"]);
     this.invalidateInspectionCache(input.repositoryId, "commit_policy_ignore");
     return { relativePath, contentHash, ignoreRule: rule };
   }
@@ -718,6 +722,69 @@ export class GitWorkspaceManager {
     await unlink(absolute);
     this.invalidateInspectionCache(input.repositoryId, "commit_policy_delete");
     return { relativePath, contentHash, deleted: true };
+  }
+
+  async resolveIntegrationMarkdownResidue(input) {
+    const repositoryRoot = await realpath((await this.gitOutput(input.path, ["rev-parse", "--show-toplevel"])).trim());
+    const ignorePath = resolve(repositoryRoot, ".gitignore");
+    const statusBefore = (await this.gitOutput(repositoryRoot, ["status", "--porcelain=v1"])).trim();
+    const changedBefore = changedFilesFromPorcelain(statusBefore);
+    if (changedBefore.some((path) => path !== ".gitignore")) {
+      throw integrationGitError(
+        "COMMIT_POLICY_RESIDUE_STATE_CHANGED",
+        "main contains changes other than the recorded Markdown Ignore residue. Review it before recovery."
+      );
+    }
+    let current = "";
+    try { current = await readFile(ignorePath, "utf8"); }
+    catch (error) { if (error?.code !== "ENOENT") throw error; }
+    let lines = current.split(/\r?\n/u);
+    const decisions = [];
+    for (const entry of input.decisions ?? []) {
+      const relativePath = safeRepositoryRelativePath(entry.relativePath);
+      const rule = gitignoreExactRule(relativePath);
+      if (!lines.includes(rule)) {
+        throw integrationGitError(
+          "COMMIT_POLICY_RESIDUE_NOT_FOUND",
+          `${relativePath} no longer has the recorded Ignore rule.`
+        );
+      }
+      const action = String(entry.action ?? "");
+      let contentHash = null;
+      if (action === "track") {
+        const absolute = resolve(repositoryRoot, relativePath);
+        if (!pathContains(repositoryRoot, absolute)) {
+          throw integrationGitError("COMMIT_POLICY_PATH_INVALID", "The Markdown path is outside the repository.");
+        }
+        const bytes = await readFile(absolute);
+        contentHash = createHash("sha256").update(bytes).digest("hex");
+        if (entry.expectedContentHash && entry.expectedContentHash !== contentHash) {
+          throw integrationGitError(
+            "COMMIT_POLICY_FILE_CHANGED",
+            `${relativePath} changed after the recovery decision was presented.`
+          );
+        }
+      } else if (action !== "keep_ignore") {
+        throw integrationGitError("COMMIT_POLICY_RESIDUE_ACTION_UNSUPPORTED", `Unsupported residue action: ${action || "missing"}.`);
+      }
+      decisions.push({ relativePath, rule, action, contentHash });
+    }
+    for (const decision of decisions) {
+      if (decision.action !== "track") continue;
+      lines = lines.filter((line) => line !== decision.rule);
+    }
+    const next = lines.join("\n").replace(/\n+$/u, "");
+    await writeFile(ignorePath, next ? `${next}\n` : "", "utf8");
+    await this.runGit(repositoryRoot, ["add", "--", ".gitignore"]);
+    for (const decision of decisions) {
+      if (decision.action === "track") {
+        await this.runGit(repositoryRoot, ["add", "-f", "--", decision.relativePath]);
+      }
+    }
+    const headOid = (await this.gitOutput(repositoryRoot, ["rev-parse", "--verify", "HEAD"])).trim();
+    const statusSummary = (await this.gitOutput(repositoryRoot, ["status", "--porcelain=v1"])).trim();
+    this.invalidateInspectionCache(input.repositoryId, "commit_policy_residue_resolution");
+    return { repositoryRoot, decisions, headOid, statusSummary };
   }
 
   async readIntegrationMarkdownFile(input) {
@@ -755,6 +822,7 @@ export class GitWorkspaceManager {
   async mergeIntegrationSource(input) {
     if (await this.gitSucceeds(input.mainPath, ["merge-base", "--is-ancestor", input.sourceHead, "HEAD"])) {
       const mainHead = (await this.gitOutput(input.mainPath, ["rev-parse", "--verify", "HEAD"])).trim();
+      await this.#assertIntegrationPostconditionClean(input.mainPath);
       return { merged: false, alreadyMerged: true, recovered: mainHead !== input.expectedMainHead, mainHead };
     }
     const operationState = await this.integrationOperationState(input.mainPath);
@@ -776,6 +844,7 @@ export class GitWorkspaceManager {
         throw integrationGitError("MERGE_COMMIT_FAILED", safeGitError(error, "Could not finish the resolved merge"));
       }
       const mainHead = (await this.gitOutput(input.mainPath, ["rev-parse", "--verify", "HEAD"])).trim();
+      await this.#assertIntegrationPostconditionClean(input.mainPath);
       return { merged: true, alreadyMerged: false, recovered: true, mainHead };
     }
     if (operationState) {
@@ -800,7 +869,21 @@ export class GitWorkspaceManager {
       throw integrationGitError("MERGE_FAILED", safeGitError(error, "Could not merge the Worktree into main"));
     }
     const updatedHead = (await this.gitOutput(input.mainPath, ["rev-parse", "--verify", "HEAD"])).trim();
+    await this.#assertIntegrationPostconditionClean(input.mainPath);
     return { merged: true, alreadyMerged: false, recovered: false, mainHead: updatedHead };
+  }
+
+  async #assertIntegrationPostconditionClean(path) {
+    const status = (await this.gitOutput(path, ["status", "--porcelain=v1"])).trim();
+    if (!status) return;
+    const error = integrationGitError(
+      "INTEGRATION_POSTCONDITION_DIRTY",
+      "The integration commit completed but left uncommitted changes in the target Worktree."
+    );
+    error.changedFiles = changedFilesFromPorcelain(status);
+    error.statusSummary = status;
+    error.recoverable = false;
+    throw error;
   }
 
   async rebaseIntegrationSource(input) {

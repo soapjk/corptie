@@ -33,7 +33,7 @@ export function handleProjectWorkspaceHttpRequest({
     /^\/worktree-management\/jobs\/([^/]+)$/
   );
   const worktreeManagementJobActionMatch = url.pathname.match(
-    /^\/worktree-management\/jobs\/([^/]+)\/(confirm|retry|cancel|resolve-conflict|commit-policy-prepare|commit-policy-decisions)$/
+    /^\/worktree-management\/jobs\/([^/]+)\/(confirm|retry|cancel|resolve-conflict|commit-policy-prepare|commit-policy-decisions|commit-policy-residue)$/
   );
   const projectWorkspaceActionMatch = url.pathname.match(
     /^\/projects\/([^/]+)\/workspaces\/([^/]+)\/actions\/([^/]+)$/
@@ -157,7 +157,7 @@ export function handleProjectWorkspaceHttpRequest({
     const jobId = decodeURIComponent(worktreeManagementJobActionMatch[1]);
     const action = worktreeManagementJobActionMatch[2];
     const knownActions = new Set([
-      "confirm", "cancel", "commit-policy-prepare", "commit-policy-decisions",
+      "confirm", "cancel", "commit-policy-prepare", "commit-policy-decisions", "commit-policy-residue",
       "resolve-conflict", "retry"
     ]);
     if (!knownActions.has(action)) {
@@ -173,6 +173,8 @@ export function handleProjectWorkspaceHttpRequest({
             ? worktreeIntegrationJobService.prepareCommitPolicyResolution(jobId)
           : action === "commit-policy-decisions"
             ? worktreeIntegrationJobService.resolveCommitPolicy(jobId, input)
+          : action === "commit-policy-residue"
+            ? worktreeIntegrationJobService.resolveCommitPolicyResidue(jobId, input)
           : action === "resolve-conflict"
             ? worktreeIntegrationJobService.resolveConflictWithAgent(jobId)
             : worktreeIntegrationJobService.retry(jobId))

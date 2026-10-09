@@ -1755,6 +1755,7 @@ test("Markdown decisions verify exact content before ignoring or deleting indivi
     });
     assert.equal(await readFile(join(fixture.activeWorktree, "docs", "keep.md"), "utf8"), "keep\n");
     assert.match(await readFile(join(fixture.activeWorktree, ".gitignore"), "utf8"), /^\/docs\/keep\.md$/m);
+    assert.match(await gitOutput(["diff", "--cached", "--name-only"], fixture.activeWorktree), /^\.gitignore$/m);
 
     await manager.deleteIntegrationMarkdownFile({
       repositoryId: fixture.repositoryId,
@@ -1763,6 +1764,74 @@ test("Markdown decisions verify exact content before ignoring or deleting indivi
       expectedContentHash: byPath.get("docs/remove.md").contentHash
     });
     await assert.rejects(readFile(join(fixture.activeWorktree, "docs", "remove.md")), { code: "ENOENT" });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("Markdown Ignore residue can be committed as-is or replaced by exact-version Git tracking", async () => {
+  const fixture = await createFixture("integration-markdown-residue", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    await mkdir(join(fixture.activeWorktree, "docs"));
+    await writeFile(join(fixture.activeWorktree, "docs", "recover.md"), "recover\n");
+    const [file] = await manager.inspectIntegrationMarkdownFiles({
+      path: fixture.activeWorktree,
+      relativePaths: ["docs/recover.md"]
+    });
+    await manager.ignoreIntegrationMarkdownFile({
+      repositoryId: fixture.repositoryId,
+      path: fixture.activeWorktree,
+      relativePath: file.path,
+      expectedContentHash: file.contentHash
+    });
+
+    const kept = await manager.resolveIntegrationMarkdownResidue({
+      repositoryId: fixture.repositoryId,
+      path: fixture.activeWorktree,
+      decisions: [{ relativePath: file.path, action: "keep_ignore" }]
+    });
+    assert.match(kept.statusSummary, /\.gitignore/u);
+
+    const tracked = await manager.resolveIntegrationMarkdownResidue({
+      repositoryId: fixture.repositoryId,
+      path: fixture.activeWorktree,
+      decisions: [{
+        relativePath: file.path,
+        action: "track",
+        expectedContentHash: file.contentHash
+      }]
+    });
+    assert.doesNotMatch(await readFile(join(fixture.activeWorktree, ".gitignore"), "utf8"), /recover\.md/u);
+    assert.match(tracked.statusSummary, /docs\/recover\.md/u);
+    assert.match(await gitOutput(["diff", "--cached", "--name-only"], fixture.activeWorktree), /docs\/recover\.md/u);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("integration merge rejects a dirty target even when the source is already merged", async () => {
+  const fixture = await createFixture("integration-postcondition-dirty", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    const mainHead = (await gitOutput(["rev-parse", "HEAD"], fixture.repository)).trim();
+    await writeFile(join(fixture.repository, "residue.txt"), "left behind\n");
+    await assert.rejects(
+      () => manager.mergeIntegrationSource({
+        mainPath: fixture.repository,
+        sourceHead: mainHead,
+        expectedMainHead: mainHead,
+        jobId: "job:postcondition"
+      }),
+      (error) => error.code === "INTEGRATION_POSTCONDITION_DIRTY"
+        && error.changedFiles.includes("residue.txt")
+    );
   } finally {
     await fixture.close();
   }
