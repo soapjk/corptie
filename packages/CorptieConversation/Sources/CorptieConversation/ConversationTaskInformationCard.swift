@@ -145,6 +145,10 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
     public let expandLabel: String
     public let collapseLabel: String
     public let showsWhenEmpty: Bool
+    public let autoTitleEnabled: Bool?
+    public let autoTitleLabel: String
+    public let autoTitleUpdating: Bool
+    private let onAutoTitleChange: ((Bool) -> Void)?
     private let actions: Actions
 
     public init(summary: ConversationTaskSummary?, description: String?, acceptance: String?,
@@ -152,6 +156,8 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
                 descriptionTitle: String = "描述", acceptanceTitle: String = "验收标准",
                 expandLabel: String = "展开",
                 collapseLabel: String = "收起", showsWhenEmpty: Bool = false,
+                autoTitleEnabled: Bool? = nil, autoTitleLabel: String = "自动更新 Task 标题",
+                autoTitleUpdating: Bool = false, onAutoTitleChange: ((Bool) -> Void)? = nil,
                 @ViewBuilder actions: () -> Actions) {
         self.summary = summary
         self.description = description ?? ""
@@ -163,6 +169,10 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
         self.expandLabel = expandLabel
         self.collapseLabel = collapseLabel
         self.showsWhenEmpty = showsWhenEmpty
+        self.autoTitleEnabled = autoTitleEnabled
+        self.autoTitleLabel = autoTitleLabel
+        self.autoTitleUpdating = autoTitleUpdating
+        self.onAutoTitleChange = onAutoTitleChange
         self.actions = actions()
     }
 
@@ -175,6 +185,12 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
                     ConversationTaskDefinition(description: description, acceptance: acceptance,
                         descriptionTitle: descriptionTitle, acceptanceTitle: acceptanceTitle,
                         expandLabel: expandLabel, collapseLabel: collapseLabel)
+                    if let autoTitleEnabled, let onAutoTitleChange {
+                        Toggle(autoTitleLabel, isOn: Binding(
+                            get: { autoTitleEnabled }, set: { onAutoTitleChange($0) }
+                        ))
+                        .disabled(autoTitleUpdating)
+                    }
                 }
             }
         }

@@ -68,6 +68,7 @@ function projectTask(task) {
   return { id: task.id, workId: task.work_id, title: task.title, description: task.description ?? "",
     acceptanceCriteria: task.acceptance_criteria ?? "", verificationCriteria: task.verification_criteria ?? "",
     priority: task.priority, lifecycleState: task.lifecycle_state, archived: Boolean(task.archived),
+    autoTitleEnabled: task.auto_title_enabled !== 0,
     mainAgentId: task.main_agent_id ?? null,
     deletionStatus: ["deleting", "delete_failed"].includes(task.deletion_status) ? task.deletion_status : null };
 }
@@ -219,9 +220,13 @@ function validateTaskCommand(api, task, command, input) {
   const code = "INVALID_TASK_COMMAND";
   switch (command) {
     case "update": {
-      knownFields(input, ["requestId", "title", ...TASK_TEXT_FIELDS, "priority", "mainAgentId"], code);
+      knownFields(input, ["requestId", "title", ...TASK_TEXT_FIELDS, "priority", "mainAgentId", "autoTitleEnabled"], code);
       const fields = {};
       if ("title" in input) fields.title = name(input.title, "title", "Task", code);
+      if ("autoTitleEnabled" in input) {
+        if (typeof input.autoTitleEnabled !== "boolean") throw deviceError(code, 400);
+        fields.autoTitleEnabled = input.autoTitleEnabled;
+      }
       for (const key of TASK_TEXT_FIELDS) if (key in input) fields[key] = text(input[key], code);
       if ("priority" in input) {
         if (!TASK_PRIORITIES.includes(input.priority)) throw deviceError(code, 400);

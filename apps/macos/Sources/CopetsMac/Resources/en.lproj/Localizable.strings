@@ -1139,6 +1139,7 @@
 "Updating banked resets; showing the last known value…" = "Updating banked resets; showing the last known value…";
 "Banked resets could not be verified; showing the last known value." = "Banked resets could not be verified; showing the last known value.";
 "Task 信息" = "Task Information";
+"自动更新 Task 标题" = "Automatically update Task title";
 "Artifact 引用" = "Artifact References";
 "Add Artifact" = "Add Artifact";
 "Check Worktree status" = "Check Worktree status";

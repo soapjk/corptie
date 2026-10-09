@@ -3,6 +3,7 @@ export function migrateTaskProjectionColumns({ ensureColumn, db, migrateTaskSumm
     ensureColumn("tasks", "acceptance_criteria", "TEXT NOT NULL DEFAULT ''");
     ensureColumn("tasks", "verification_criteria", "TEXT NOT NULL DEFAULT ''");
     ensureColumn("tasks", "lifecycle_state", "TEXT NOT NULL DEFAULT 'todo'");
+    ensureColumn("tasks", "auto_title_enabled", "INTEGER NOT NULL DEFAULT 1");
     ensureColumn("tasks", "current_snapshot_id", "TEXT");
     ensureColumn("tasks", "revision", "INTEGER NOT NULL DEFAULT 1");
     migrateTaskSummary();

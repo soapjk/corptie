@@ -75,6 +75,7 @@ test("invalid acceptance objects are rejected without changing the canonical Tas
     verificationCriteria: "Verification",
     priority: 3,
     lifecycleState: "in_progress",
+    autoTitleEnabled: true,
     archived: false,
     mainAgentId: "agent:1",
     currentSessionId: "session:1",

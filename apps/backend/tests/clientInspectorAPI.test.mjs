@@ -63,6 +63,11 @@ test("task Detail snapshot carries the same definition fields as desktop", async
     assert.equal(snapshot.taskDefinition.acceptanceCriteria, "Accepted");
     assert.equal(snapshot.taskDefinition.verificationCriteria, "Verified");
     assert.equal(snapshot.taskDefinition.revision, task.revision);
+    assert.equal(snapshot.taskDefinition.autoTitleEnabled, true);
+    assert.throws(() => f.store.updateTask(task.id, { autoTitleEnabled: "false" }), { code: "INVALID_FIELD_TYPE" });
+    f.store.updateTask(task.id, { autoTitleEnabled: false });
+    assert.equal((await f.inspector.snapshot(identity, "s:task")).taskDefinition.autoTitleEnabled, false);
+    assert.equal(f.store.getTask(task.id).auto_title_enabled, 0);
     const workSnapshot = await f.inspector.snapshot(identity, "s");
     assert.equal(workSnapshot.sections.focusTasks[0].id, task.id);
     assert.equal(workSnapshot.sections.focusTasks[0].taskRevision, task.revision);

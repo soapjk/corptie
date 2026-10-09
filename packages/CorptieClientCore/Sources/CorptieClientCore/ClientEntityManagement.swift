@@ -88,6 +88,7 @@ public struct ClientWorkManagement: Decodable, Sendable {
 public struct ClientTaskUpdate: Codable, Sendable, Equatable {
     public let requestId: String
     public var title: String?
+    public var autoTitleEnabled: Bool?
     public var description: String?
     public var acceptanceCriteria: String?
     public var verificationCriteria: String?
