@@ -132,6 +132,9 @@ private func detailSourceItemSignature(_ item: CodexThreadItem) -> String {
             item.queuePosition.map(String.init) ?? "",
             item.turnStatus,
             item.presentationRole ?? "",
+            item.collaborationConfirmationStatus ?? "",
+            item.collaborationAuthorizationKind ?? "",
+            item.collaborationChannelId ?? "",
             item.collaborationProcessingStatus ?? "",
             item.collaborationSenderName ?? "",
             item.collaborationRecipientName ?? "",
@@ -348,9 +351,8 @@ func nativeCollaborationCardPresentation(
         ?? "queued").lowercased()
     let status: String = switch statusSource {
     case "sent", "delivered": L10n("已发送")
-    case "confirmed": isConfirmation
-        ? (item.collaborationAuthorizationKind == "session_channel" ? L10n("已授权") : L10n("已确认"))
-        : L10n("已处理")
+    case "confirmed": isConfirmation ? L10n("已发送") : L10n("已处理")
+    case "submitting", "rejecting": L10n("正在提交…")
     case "completed", "complete": L10n("已处理")
     case "running", "processing": L10n("处理中")
     case "failed": L10n("处理失败")
@@ -387,6 +389,9 @@ func nativeCollaborationCardPresentation(
         fallback: L10n("未命名协作任务")
     )
     var lines = ["**\(L10n("消息"))**", message]
+    if isConfirmation, item.collaborationAuthorizationKind == "session_channel", statusSource == "pending" {
+        lines.insert(L10n("首次与此会话建立通道，或原通道已撤销。授权仅适用于这两个 Session。"), at: 0)
+    }
     if let criteria = item.collaborationAcceptanceCriteria, !criteria.isEmpty {
         lines.append("")
         lines.append("**\(L10n("验收标准"))**")
@@ -403,7 +408,8 @@ func nativeCollaborationCardPresentation(
         .flatMap(ISO8601DateFormatter.corptieThreadItemDate(from:))
         .map { $0.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute()) }
     return NativeCollaborationCardPresentation(
-        title: "\(L10n("跨会话协作")) · \(kind)",
+        title: isConfirmation && item.collaborationAuthorizationKind == "session_channel"
+            ? L10n("首次授权并发送") : "\(L10n("跨会话协作")) · \(kind)",
         metadata: [status, timestamp].compactMap { $0 }.joined(separator: " · "),
         bodyMarkdown: lines.joined(separator: "\n"),
         messageText: message,
@@ -552,6 +558,9 @@ func detailItemSignature(_ item: CodexThreadItem) -> String {
     let rawMetadataSuffix = String(rawMetadata.suffix(96))
     let imageSignature = (item.images ?? []).map(\.managedPath).joined(separator: ",")
     let collaborationSignature = [
+        item.collaborationConfirmationStatus ?? "",
+        item.collaborationAuthorizationKind ?? "",
+        item.collaborationChannelId ?? "",
         item.collaborationProcessingStatus ?? "",
         item.collaborationSenderName ?? "",
         item.collaborationRecipientName ?? "",

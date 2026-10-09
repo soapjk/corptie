@@ -4,8 +4,11 @@ import Combine
 @MainActor
 final class CollaborationConfirmationController: ObservableObject {
     @Published private(set) var pendingBySessionID: [String: PendingCollaborationConfirmation] = [:]
+    private var localStatuses: [String: [String: String]] = [:]
+    private var inFlight = Set<String>()
 
     private let baseURL: URL
+    private let urlSession: URLSession
     private let commands: SessionCommandController
     private let activeSessions: () -> [TaskSession]
     private let cachedDetail: (String) -> CodexThreadDetail?
@@ -20,9 +23,11 @@ final class CollaborationConfirmationController: ObservableObject {
         cachedDetail: @escaping (String) -> CodexThreadDetail?,
         storeDetail: @escaping (CodexThreadDetail, String, Int?) -> Void,
         loadMessages: @escaping (TaskSession) async -> Void,
-        reportError: @escaping (String) -> Void
+        reportError: @escaping (String) -> Void,
+        urlSession: URLSession = .shared
     ) {
         self.baseURL = baseURL
+        self.urlSession = urlSession
         self.commands = commands
         self.activeSessions = activeSessions
         self.cachedDetail = cachedDetail
@@ -44,6 +49,43 @@ final class CollaborationConfirmationController: ObservableObject {
 
     func removePendingConfirmation(for sessionID: String) {
         pendingBySessionID[sessionID] = nil
+        localStatuses[sessionID] = nil
+    }
+
+    // Retain a local HTTP acknowledgement until the authoritative timeline
+    // catches up. A delayed pending snapshot must not resurrect its buttons.
+    func reconcile(_ detail: CodexThreadDetail, for sessionID: String) -> CodexThreadDetail {
+        guard let statuses = localStatuses[sessionID], !statuses.isEmpty else { return detail }
+        let reconciled = SessionTimelineLocalOverlay.detailReplacingItems(detail) { item in
+            guard let id = item.collaborationConfirmationId, let status = statuses[id] else { return item }
+            let authoritative = item.collaborationConfirmationStatus ?? item.status ?? "pending"
+            if ["confirmed", "rejected", "failed"].contains(authoritative) {
+                localStatuses[sessionID]?[id] = nil
+                return item
+            }
+            return Self.replacingStatus(item, with: status)
+        }
+        if localStatuses[sessionID]?.isEmpty == true { localStatuses[sessionID] = nil }
+        return reconciled
+    }
+
+    nonisolated static func replacingStatus(_ item: CodexThreadItem, with status: String) -> CodexThreadItem {
+        var resolvedItem = item
+        resolvedItem.collaborationConfirmationStatus = status
+        return resolvedItem
+    }
+
+    private func publishStatus(_ status: String?, confirmationID: String, sessionID: String) {
+        localStatuses[sessionID, default: [:]][confirmationID] = status
+        if localStatuses[sessionID]?.isEmpty == true { localStatuses[sessionID] = nil }
+        guard let detail = cachedDetail(sessionID) else { return }
+        let updated = SessionTimelineLocalOverlay.detailReplacingItems(detail) { item in
+            guard item.collaborationConfirmationId == confirmationID else { return item }
+            // On failure restore only our transient state, never a terminal event.
+            if status == nil, !["submitting", "rejecting"].contains(item.collaborationConfirmationStatus ?? "") { return item }
+            return Self.replacingStatus(item, with: status ?? "pending")
+        }
+        storeDetail(updated, sessionID, SessionTimelineRepository.shared.timelineRevision(for: sessionID))
     }
 
     func respondToCollaborationConfirmation(confirmationId: String, approve: Bool, in session: TaskSession? = nil) {
@@ -54,9 +96,13 @@ final class CollaborationConfirmationController: ObservableObject {
         let sourceSession = session ?? sourceSessionID.flatMap { sourceSessionID in
             activeSessions().first(where: { $0.id == sourceSessionID })
         }
+        guard inFlight.insert(confirmationId).inserted else { return }
+        if let sourceSessionID {
+            publishStatus(approve ? "submitting" : "rejecting", confirmationID: confirmationId, sessionID: sourceSessionID)
+        }
         Task {
             commands.isSendingMessage = true
-            defer { commands.isSendingMessage = false }
+            defer { commands.isSendingMessage = false; inFlight.remove(confirmationId) }
             do {
                 commands.sendStatusMessage = approve
                     ? L10n("正在确认协作请求…")
@@ -64,31 +110,19 @@ final class CollaborationConfirmationController: ObservableObject {
                 let resolutionStatus = try await Self.requestCollaborationConfirmationResolution(
                     at: baseURL,
                     confirmationId: confirmationId,
-                    approve: approve
+                    approve: approve,
+                    urlSession: urlSession
                 )
                 if let sourceSessionID {
-                    if let detail = cachedDetail(sourceSessionID) {
-                        let resolvedDetail = SessionTimelineLocalOverlay.detailReplacingItems(detail) { item in
-                            guard item.collaborationConfirmationId == confirmationId else { return item }
-                            var resolvedItem = item
-                            resolvedItem.collaborationConfirmationStatus = resolutionStatus
-                            return resolvedItem
-                        }
-                        storeDetail(
-                            resolvedDetail,
-                            sourceSessionID,
-                            SessionTimelineRepository.shared.timelineRevision(for: sourceSessionID)
-                        )
-                    } else {
-                        pendingBySessionID[sourceSessionID] = nil
-                    }
+                    publishStatus(resolutionStatus, confirmationID: confirmationId, sessionID: sourceSessionID)
                 }
                 // HTTP confirms the resolution, while the timeline stream may lag behind.
                 if let sourceSession {
                     await loadMessages(sourceSession)
                 }
-                commands.sendStatusMessage = approve ? L10n("协作请求已确认，不代表消息已送达") : L10n("Collaboration request cancelled")
+                commands.sendStatusMessage = approve ? L10n("已发送") : L10n("Collaboration request cancelled")
             } catch {
+                if let sourceSessionID { publishStatus(nil, confirmationID: confirmationId, sessionID: sourceSessionID) }
                 reportError(error.localizedDescription)
                 commands.sendStatusMessage = L10nFormat("Confirmation failed: %@", error.localizedDescription)
             }

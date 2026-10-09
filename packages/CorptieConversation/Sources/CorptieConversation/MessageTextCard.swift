@@ -141,6 +141,7 @@ public struct MessageTextCard<Content: View>: View {
     private let cardWidth: CGFloat?
     private let cardHeight: CGFloat?
     private let status: UserMessageStatusPresentation?
+    private let rendersStatusGlow: Bool
     private let copy: () -> Void
     private let contextMenu: MessageTextCardMenuConfiguration?
     private let content: (Binding<Bool>) -> Content
@@ -150,12 +151,13 @@ public struct MessageTextCard<Content: View>: View {
 
     public init(messageID: String, role: Role, timestamp: String, showsActions: Bool,
                 actionsAlwaysVisible: Bool, cardWidth: CGFloat? = nil, cardHeight: CGFloat? = nil,
-                status: UserMessageStatusPresentation? = nil,
+                status: UserMessageStatusPresentation? = nil, rendersStatusGlow: Bool = true,
                 copy: @escaping () -> Void, @ViewBuilder content: @escaping () -> Content) {
         self.messageID = messageID; self.role = role; self.timestamp = timestamp; self.showsActions = showsActions
         self.actionsAlwaysVisible = actionsAlwaysVisible
         self.cardWidth = cardWidth; self.cardHeight = cardHeight
         self.status = status
+        self.rendersStatusGlow = rendersStatusGlow
         self.copy = copy
         self.contextMenu = nil
         self.content = { _ in content() }
@@ -175,6 +177,7 @@ public struct MessageTextCard<Content: View>: View {
         self.cardWidth = cardWidth; self.cardHeight = cardHeight
         self.status = status
         self.contextMenu = contextMenu
+        self.rendersStatusGlow = true
         self.copy = copy
         self.content = content
     }
@@ -235,7 +238,7 @@ public struct MessageTextCard<Content: View>: View {
                     tint: background, fallback: background, isMessage: true))
                 .accessibilityIdentifier("message-card-\(messageID)")
                 .background {
-                    if let status {
+                    if rendersStatusGlow, let status {
                         MessageStatusGlow(status: status)
                     }
                 }

@@ -134,7 +134,7 @@ struct MacSharedMessageTextCard: View {
             timestamp: "", showsActions: false,
             actionsAlwaysVisible: false, cardWidth: layout.cardWidth,
             cardHeight: layout.rowHeight - row.timeSeparatorHeight - 2,
-            status: presentedMessageStatus, copy: copy) {
+            status: presentedMessageStatus, rendersStatusGlow: false, copy: copy) {
             VStack(alignment: .leading, spacing: 0) {
                 if let source = row.scheduledMessageSource {
                     Label(source, systemImage: "clock").font(.system(size: 10, weight: .medium))
@@ -362,6 +362,7 @@ protocol AppKitChatRowRendering: AnyObject {
 
 /// One hosting tree per reusable native row; no duplicate legacy view tree.
 final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering {
+    private var messageGlow: NativeMessageStatusGlow?
     private var host: NSHostingView<MacSharedMessageTextCard>?
     private var row: AppKitChatTimelineRow?
     private var measuredLayout: NativeTimelineLayoutCache.Layout?
@@ -378,6 +379,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
         self.identifier = identifier
+        clipsToBounds = false
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -439,6 +441,17 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
             self.host = host
         }
         self.host?.menu = menu
+        if row.nativeStyle == .user, let status = row.messageStatus {
+            if messageGlow == nil {
+                let glow = NativeMessageStatusGlow(frame: .zero)
+                addSubview(glow, positioned: .below, relativeTo: host)
+                messageGlow = glow
+            }
+            messageGlow?.configure(status)
+        } else {
+            messageGlow?.removeFromSuperview()
+            messageGlow = nil
+        }
         configureHostedTextViews(resetTextSelection: resetTextSelection)
         DispatchQueue.main.async { [weak self] in
             self?.configureHostedTextViews(resetTextSelection: resetTextSelection)
@@ -456,7 +469,19 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
 
     override func layout() {
         if host?.frame != bounds { host?.frame = bounds }
+        if let measuredLayout, let row {
+            let size = NSSize(width: measuredLayout.cardWidth,
+                              height: measuredLayout.rowHeight - row.timeSeparatorHeight - 2)
+            messageGlow?.frame = NSRect(x: bounds.width - size.width - 2,
+                y: isFlipped ? row.timeSeparatorHeight + 1 : bounds.height - row.timeSeparatorHeight - 1 - size.height,
+                width: size.width, height: size.height)
+        }
         super.layout()
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        messageGlow?.allowRowOverflow()
     }
 
     @objc func copyRepresentedMessage() {

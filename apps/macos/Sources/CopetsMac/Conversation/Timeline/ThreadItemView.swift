@@ -62,7 +62,7 @@ struct ThreadItemView: View {
                     }
                         .font(.system(size: 10.5, weight: .bold))
                         .foregroundStyle(CorptiePalette.softBlue)
-                    Text(L10n(isSessionChannelAuthorization ? "授权 Session 通信渠道" : "确认发送协作任务"))
+                    Text(L10n(isSessionChannelAuthorization ? "首次授权并发送" : "确认发送协作任务"))
                         .font(.system(size: 10.5, weight: .bold))
                         .foregroundStyle(CorptiePalette.primaryText)
                     Spacer(minLength: 4)
@@ -83,6 +83,10 @@ struct ThreadItemView: View {
             if isCollaborationConfirmationExpanded {
                 Divider()
                     .overlay(CorptiePalette.collaborationBorder.opacity(0.42))
+                if isSessionChannelAuthorization, collaborationConfirmationStatus == "pending" {
+                    Text(L10n("首次与此会话建立通道，或原通道已撤销。授权仅适用于这两个 Session。"))
+                        .font(.caption).foregroundStyle(CorptiePalette.secondaryText).padding(10)
+                }
 
                 VStack(alignment: .leading, spacing: 10) {
                     VStack(alignment: .leading, spacing: 7) {
@@ -193,7 +197,7 @@ struct ThreadItemView: View {
             if collaborationConfirmationStatus == "confirmed" {
                 Divider()
                     .overlay(CorptiePalette.collaborationBorder.opacity(0.42))
-                Label(L10n("已确认 · 不代表消息已送达"), systemImage: "checkmark.circle.fill")
+                Label(L10n("已发送"), systemImage: "checkmark.circle.fill")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(CorptiePalette.connected)
                     .padding(.horizontal, 10)
@@ -275,7 +279,8 @@ struct ThreadItemView: View {
 
     private var collaborationConfirmationStatusLabel: String {
         switch collaborationConfirmationStatus {
-        case "confirmed": isSessionChannelAuthorization ? "已授权" : "已确认"
+        case "confirmed": "已发送"
+        case "submitting", "rejecting": "正在提交…"
         case "rejected": "已取消"
         default: "等待确认"
         }
