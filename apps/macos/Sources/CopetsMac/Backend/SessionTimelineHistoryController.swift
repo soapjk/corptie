@@ -16,24 +16,33 @@ final class SessionTimelineHistoryController: ObservableObject {
     private var earlierHistoryLoadSessionIDs = Set<String>()
     private let baseURL: URL
     private let selection: SessionSelectionController
-    private let currentSession: () -> TaskSession?
-    private let currentDetail: () -> CodexThreadDetail?
-    private let publishDetail: (CodexThreadDetail) -> Void
+    private let sessionForID: (String) -> TaskSession?
+    private let detailForSession: (String) -> CodexThreadDetail?
+    private let publishSessionDetail: (CodexThreadDetail, String) -> Void
+    private let requestTimelineWindow: (URL) async throws -> SessionTimelineWindowResponse
     private let requestEarlierHistoryPage: (URL) async throws -> SessionHistoryResponse
 
-    private var selectedSession: TaskSession? { currentSession() }
-    private var selectedDetail: CodexThreadDetail? { currentDetail() }
-
     init(baseURL: URL, selection: SessionSelectionController,
-         currentSession: @escaping () -> TaskSession?,
-         currentDetail: @escaping () -> CodexThreadDetail?,
-         publishDetail: @escaping (CodexThreadDetail) -> Void,
+         sessionForID: @escaping (String) -> TaskSession?,
+         detailForSession: @escaping (String) -> CodexThreadDetail?,
+         publishSessionDetail: @escaping (CodexThreadDetail, String) -> Void,
+         requestTimelineWindow: @escaping (URL) async throws -> SessionTimelineWindowResponse = { url in
+             let (data, response) = try await URLSession.shared.data(from: url)
+             guard let httpResponse = response as? HTTPURLResponse,
+                   httpResponse.statusCode == 200 else {
+                 throw URLError(.badServerResponse)
+             }
+             return try await Task.detached(priority: .userInitiated) {
+                 try JSONDecoder().decode(SessionTimelineWindowResponse.self, from: data)
+             }.value
+         },
          requestEarlierHistoryPage: @escaping (URL) async throws -> SessionHistoryResponse) {
         self.baseURL = baseURL
         self.selection = selection
-        self.currentSession = currentSession
-        self.currentDetail = currentDetail
-        self.publishDetail = publishDetail
+        self.sessionForID = sessionForID
+        self.detailForSession = detailForSession
+        self.publishSessionDetail = publishSessionDetail
+        self.requestTimelineWindow = requestTimelineWindow
         self.requestEarlierHistoryPage = requestEarlierHistoryPage
     }
 
@@ -49,7 +58,7 @@ final class SessionTimelineHistoryController: ObservableObject {
     func loadTimelineWindow(
         for session: TaskSession,
         anchorRowID: String,
-        expectedSelectionGeneration: UInt64
+        expectedSelectionGeneration: UInt64?
     ) async -> TimelineAnchorWindowLoadResult {
         let anchorKind: String
         let anchorID: String
@@ -63,13 +72,16 @@ final class SessionTimelineHistoryController: ObservableObject {
             return .missing
         }
         guard !anchorID.isEmpty,
-              Self.historyPageRequestIsCurrent(
+              (expectedSelectionGeneration == nil || Self.historyPageRequestIsCurrent(
                   sessionID: session.id,
                   expectedSelectionGeneration: expectedSelectionGeneration,
-                  currentSessionID: selectedSession?.id,
+                  currentSessionID: selection.selectedSessionID,
                   currentSelectionGeneration: selection.generation
-              ),
-              let current = selectedDetail,
+              )),
+              let liveSession = sessionForID(session.id),
+              SessionTimelineBindingReconciler.sameRoute(liveSession, session),
+              let current = detailForSession(session.id),
+              current.id == (session.external?.threadId ?? session.id),
               timelineWindowLoadSessionIDs.insert(session.id).inserted else {
             return .stale
         }
@@ -88,19 +100,16 @@ final class SessionTimelineHistoryController: ObservableObject {
                 URLQueryItem(name: "after", value: "40")
             ]
             guard let url = components?.url else { return .unavailable }
-            let (data, response) = try await URLSession.shared.data(from: url)
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 else { return .unavailable }
-            let window = try await Task.detached(priority: .userInitiated) {
-                try JSONDecoder().decode(SessionTimelineWindowResponse.self, from: data)
-            }.value
-            guard Self.historyPageRequestIsCurrent(
+            let window = try await requestTimelineWindow(url)
+            guard (expectedSelectionGeneration == nil || Self.historyPageRequestIsCurrent(
                       sessionID: session.id,
                       expectedSelectionGeneration: expectedSelectionGeneration,
-                      currentSessionID: selectedSession?.id,
+                      currentSessionID: selection.selectedSessionID,
                       currentSelectionGeneration: selection.generation
-                  ),
-                  let latest = selectedDetail,
+                  )),
+                  let liveSession = sessionForID(session.id),
+                  SessionTimelineBindingReconciler.sameRoute(liveSession, session),
+                  let latest = detailForSession(session.id),
                   latest.id == threadID else {
                 return .stale
             }
@@ -131,7 +140,7 @@ final class SessionTimelineHistoryController: ObservableObject {
                 historyItemsCount: latest.historyItemsCount,
                 actions: latest.actions
             )
-            publishDetail(merged)
+            publishSessionDetail(merged, session.id)
             return .found
         } catch is CancellationError {
             return .stale
@@ -159,13 +168,15 @@ final class SessionTimelineHistoryController: ObservableObject {
         expectedSelectionGeneration: UInt64? = nil
     ) async -> EarlierHistoryLoadState {
         let threadId = session.external?.threadId ?? session.id
-        guard Self.historyPageRequestIsCurrent(
+        guard (expectedSelectionGeneration == nil || Self.historyPageRequestIsCurrent(
                   sessionID: session.id,
                   expectedSelectionGeneration: expectedSelectionGeneration,
-                  currentSessionID: selectedSession?.id,
+                  currentSessionID: selection.selectedSessionID,
                   currentSelectionGeneration: selection.generation
-              ),
-              let current = selectedDetail,
+              )),
+              let liveSession = sessionForID(session.id),
+              SessionTimelineBindingReconciler.sameRoute(liveSession, session),
+              let current = detailForSession(session.id),
               current.id == threadId,
               let oldest = current.items.first else {
             return earlierHistoryLoadState(for: session.id)
@@ -197,15 +208,16 @@ final class SessionTimelineHistoryController: ObservableObject {
                 throw BackendError.message(L10n("The history page did not advance."))
             }
 
-            guard Self.historyPageRequestIsCurrent(
+            guard (expectedSelectionGeneration == nil || Self.historyPageRequestIsCurrent(
                       sessionID: session.id,
                       expectedSelectionGeneration: expectedSelectionGeneration,
-                      currentSessionID: selectedSession?.id,
+                      currentSessionID: selection.selectedSessionID,
                       currentSelectionGeneration: selection.generation
-                  ),
-                  let current = selectedDetail,
-                  current.id == threadId,
-                  selectedSession?.id == session.id else {
+                  )),
+                  let liveSession = sessionForID(session.id),
+                  SessionTimelineBindingReconciler.sameRoute(liveSession, session),
+                  let current = detailForSession(session.id),
+                  current.id == threadId else {
                 setEarlierHistoryLoadState(.idle, for: session.id)
                 return .idle
             }
@@ -243,7 +255,7 @@ final class SessionTimelineHistoryController: ObservableObject {
                 historyItemsCount: page.historyItemsCount,
                 actions: current.actions
             )
-            publishDetail(merged)
+            publishSessionDetail(merged, session.id)
             let nextState: EarlierHistoryLoadState = page.hasMoreHistory == true ? .idle : .exhausted
             setEarlierHistoryLoadState(nextState, for: session.id)
             return nextState

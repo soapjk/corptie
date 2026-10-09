@@ -53,6 +53,7 @@ struct MessageComposer: View {
     let sessionId: String
     let draftRepository: ComposerDraftRepository
     let allowsModelSwitch: Bool
+    let compact: Bool
     let status: TaskStatus?
     let isReady: Bool
     let notReadyReason: SessionNotReadyReason?
@@ -81,6 +82,7 @@ struct MessageComposer: View {
         draftRepository: ComposerDraftRepository,
         modelCatalog: ProviderCatalogStore,
         allowsModelSwitch: Bool = true,
+        compact: Bool = false,
         status: TaskStatus?,
         isReady: Bool,
         notReadyReason: SessionNotReadyReason?,
@@ -90,6 +92,7 @@ struct MessageComposer: View {
         _modelCatalog = ObservedObject(wrappedValue: modelCatalog)
         self.draftRepository = draftRepository
         self.allowsModelSwitch = allowsModelSwitch
+        self.compact = compact
         self.status = status
         self.isReady = isReady
         self.notReadyReason = notReadyReason
@@ -110,24 +113,35 @@ struct MessageComposer: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            ConversationQuickMessages(items: quickMessages,
-                enabled: canSend && !backendClient.isSendingMessage && session?.archived != true) { text in
-                guard canSend, !backendClient.isSendingMessage, let session, session.archived != true else { return }
-                // Independent send: never clear or attach the editor's draft.
-                backendClient.sendMessage(text, to: session, onSuccess: { quickMessageRefresh += 1 })
+            if !compact {
+                ConversationQuickMessages(items: quickMessages,
+                    enabled: canSend && !backendClient.isSendingMessage && session?.archived != true) { text in
+                    guard canSend, !backendClient.isSendingMessage, let session, session.archived != true else { return }
+                    // Independent send: never clear or attach the editor's draft.
+                    backendClient.sendMessage(text, to: session, onSuccess: { quickMessageRefresh += 1 })
+                }
             }
-        ConversationComposerChrome {
-            HStack(spacing: 0) {
-                ThreadMetaView(sessionID: sessionId, status: status, isReady: isReady,
-                               notReadyReason: notReadyReason, activityStatus: activityStatus)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                SessionComposerStopButton(session: session)
+            ConversationComposerChrome {
+                if !compact {
+                    HStack(spacing: 0) {
+                        ThreadMetaView(sessionID: sessionId, status: status, isReady: isReady,
+                                       notReadyReason: notReadyReason, activityStatus: activityStatus)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        SessionComposerStopButton(session: session)
+                    }
+                }
+            } content: {
+                if compact {
+                    editorInput
+                        .frame(minWidth: 0, maxWidth: .infinity)
+                        .padding(.horizontal, 10)
+                } else {
+                    editorRow
+                }
             }
-        } content: {
-            editorRow
-        }
         }
         .task(id: "\(session?.taskId ?? sessionId):\(sessionId):\(quickMessageRefresh)") {
+            guard !compact else { return }
             let taskID = session?.taskId
             let scope = ClientQuickMessageCache.scope(host: backendClient.baseURL.absoluteString,
                 taskID: taskID, sessionID: sessionId)
@@ -208,36 +222,7 @@ struct MessageComposer: View {
             }
             .frame(height: ComposerShellMetrics.attachmentStripHeight)
         } editor: {
-                ComposerInputTextView(
-                    controller: editorController,
-                    placeholder: "Send a instruction",
-                    font: .systemFont(ofSize: 12, weight: .medium),
-                    onFocusChange: { isFocused = $0 },
-                    onSendableTextChange: { nextValue in
-                        if hasSendableText != nextValue {
-                            hasSendableText = nextValue
-                        }
-                    },
-                    onContentHeightChange: { nextHeight in
-                        if abs(inputHeight - nextHeight) > 0.5 {
-                            inputHeight = nextHeight
-                        }
-                    },
-                    onPasteImages: importImagesFromPasteboard,
-                    onMentionQueryChange: updateMentionQuery,
-                    onMentionAnchorChange: { mentionAnchorPoint = $0 },
-                    onMentionCommand: handleMentionCommand,
-                    onSubmit: send
-                )
-                .frame(height: inputHeight)
-                .popover(isPresented: mentionMenuPresented,
-                         attachmentAnchor: .point(mentionAnchorPoint), arrowEdge: .bottom) {
-                    ComposerMentionMenu(candidates: mentionCandidates,
-                                        selectedIndex: mentionSelectionIndex, onSelect: selectMention)
-                        .frame(width: ComposerMentionMenuMetrics.width,
-                               height: ComposerMentionMenuMetrics.height(candidateCount: mentionCandidates.count))
-                }
-                .onTapGesture { isFocused = true }
+            editorInput
         } send: {
             Button { sendCurrentDraft() } label: {
                 ComposerActionGlyph(systemName: "paperplane.fill", tint: ComposerPalette.softBlue,
@@ -298,9 +283,39 @@ struct MessageComposer: View {
         }
     }
 
+    private var editorInput: some View {
+        ComposerInputTextView(
+            controller: editorController,
+            placeholder: "Send a instruction",
+            font: .systemFont(ofSize: 12, weight: .medium),
+            onFocusChange: { isFocused = $0 },
+            onSendableTextChange: { nextValue in
+                if hasSendableText != nextValue { hasSendableText = nextValue }
+            },
+            onContentHeightChange: { nextHeight in
+                if abs(inputHeight - nextHeight) > 0.5 { inputHeight = nextHeight }
+            },
+            onPasteImages: compact ? { _ in false } : importImagesFromPasteboard,
+            onMentionQueryChange: updateMentionQuery,
+            onMentionAnchorChange: { mentionAnchorPoint = $0 },
+            onMentionCommand: handleMentionCommand,
+            onSubmit: send
+        )
+        .frame(height: inputHeight)
+        .popover(isPresented: mentionMenuPresented,
+                 attachmentAnchor: .point(mentionAnchorPoint), arrowEdge: .bottom) {
+            ComposerMentionMenu(candidates: mentionCandidates,
+                                selectedIndex: mentionSelectionIndex, onSelect: selectMention)
+                .frame(width: ComposerMentionMenuMetrics.width,
+                       height: ComposerMentionMenuMetrics.height(candidateCount: mentionCandidates.count))
+        }
+        .onTapGesture { isFocused = true }
+        .accessibilityHint(compact ? L10n("Press Return to send; Shift-Return for a new line") : "")
+    }
+
     private func sendCurrentDraft() {
         guard let submission = editorController.submission()
-                ?? (!attachedImages.isEmpty
+                ?? (!compact && !attachedImages.isEmpty
                     ? ComposerDraftBuffer.Submission(
                         text: editorController.draft.text,
                         revision: editorController.draft.revision
@@ -326,7 +341,7 @@ struct MessageComposer: View {
               !backendClient.isSendingMessage else {
             return
         }
-        let submittedImages = attachedImages
+        let submittedImages = compact ? [] : attachedImages
         let submittedMentions = selectedMentions.filter { submission.text.contains("@\($0.displayName)") }
         let didStartSending = backendClient.sendMessage(submission.text, to: session,
             images: submittedImages,
@@ -336,7 +351,7 @@ struct MessageComposer: View {
             if editorController.restoreAfterFailedSubmission(submission) {
                 hasSendableText = true
             }
-            attachedImages = submittedImages
+            if !compact { attachedImages = submittedImages }
             selectedMentions = submittedMentions
         })
         guard didStartSending else {
@@ -346,7 +361,7 @@ struct MessageComposer: View {
             hasSendableText = false
             inputHeight = ComposerInputLayout.minimumHeight
         }
-        attachedImages = []
+        if !compact { attachedImages = [] }
         selectedMentions = []
         mentionQuery = nil
     }
