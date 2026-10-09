@@ -405,7 +405,7 @@ final class WorktreeManagementClient: ObservableObject {
     ) async -> IndividualWorktreeOperationPreparation? {
         guard let repositoryId = selection.repositoryId else { return nil }
         guard worktree.dirty == true else {
-            return IndividualWorktreeOperationPreparation(commitMessage: nil, protection: nil)
+            return IndividualWorktreeOperationPreparation(protection: nil)
         }
         isMutating = true
         defer { isMutating = false }
@@ -414,15 +414,25 @@ final class WorktreeManagementClient: ObservableObject {
                 "projects/\(repositoryId)/workspaces/\(worktree.worktreeId)/actions/commit-prepare",
                 body: [:]
             )
+            errorMessage = nil
+            return IndividualWorktreeOperationPreparation(
+                protection: protection.result
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    func generateIndividualCommitMessage(for worktree: ManagedWorktree) async -> String? {
+        guard let repositoryId = selection.repositoryId, worktree.dirty == true else { return nil }
+        do {
             let message: ProjectWorkspaceActionEnvelope<WorktreeCommitMessageResult> = try await post(
                 "projects/\(repositoryId)/workspaces/\(worktree.worktreeId)/actions/commit-message",
                 body: [:]
             )
             errorMessage = nil
-            return IndividualWorktreeOperationPreparation(
-                commitMessage: message.result.commitMessage,
-                protection: protection.result
-            )
+            return message.result.commitMessage
         } catch {
             errorMessage = error.localizedDescription
             return nil
@@ -775,6 +785,37 @@ final class WorktreeManagementClient: ObservableObject {
                     "version": blocker.version,
                     "decisions": blocker.files.map { file in
                         ["path": file.path, "action": decisions[file.path]!.rawValue]
+                    }
+                ]
+            )
+            self.job = envelope.job
+            errorMessage = nil
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            await refreshSelected()
+            return false
+        }
+    }
+
+    @discardableResult
+    func resolveCommitPolicyResidue(
+        decisions: [String: WorktreeCommitPolicyResidueAction]
+    ) async -> Bool {
+        guard let job, let residue = job.commitPolicyResidue,
+              job.canResolveCommitPolicyResidue else { return false }
+        guard residue.paths.allSatisfy({ decisions[$0] != nil }) else {
+            errorMessage = L10n("Choose a recovery action for every Markdown file.")
+            return false
+        }
+        isMutating = true
+        defer { isMutating = false }
+        do {
+            let envelope: WorktreeIntegrationJobEnvelope = try await post(
+                "worktree-management/jobs/\(job.id)/commit-policy-residue",
+                body: [
+                    "decisions": residue.paths.map { path in
+                        ["path": path, "action": decisions[path]!.rawValue]
                     }
                 ]
             )

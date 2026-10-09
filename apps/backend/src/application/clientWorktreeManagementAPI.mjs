@@ -5,7 +5,8 @@ const WORKSPACE_ACTIONS = new Set([
 ]);
 const SERVICE_ACTIONS = new Set(["initialize", "update", "profile", "start", "restart", "stop"]);
 const JOB_ACTIONS = new Set([
-  "cancel", "confirm", "resolve-conflict", "retry", "commit-policy-prepare", "commit-policy-decisions"
+  "cancel", "confirm", "resolve-conflict", "retry", "commit-policy-prepare", "commit-policy-decisions",
+  "commit-policy-residue"
 ]);
 
 /**
@@ -91,6 +92,8 @@ export class ClientWorktreeManagementAPI {
           ? await this.worktrees.resolveCommitPolicy(jobId, input)
         : action === "commit-policy-prepare"
           ? await this.worktrees.prepareCommitPolicyResolution(jobId)
+        : action === "commit-policy-residue"
+          ? await this.worktrees.resolveCommitPolicyResidue(jobId, input)
         : action === "resolve-conflict"
           ? await this.worktrees.resolveConflictWithAgent(jobId)
           : await this.worktrees.retry(jobId);

@@ -35,6 +35,7 @@ export class WorktreeIntegrationJobService {
     this.deleteCommitPolicyFile = options.deleteCommitPolicyFile;
     this.convertCommitPolicyFileToArtifact = options.convertCommitPolicyFileToArtifact;
     this.allowCommitPolicyFileTracking = options.allowCommitPolicyFileTracking;
+    this.resolveCommitPolicyResidueFile = options.resolveCommitPolicyResidueFile ?? null;
     this.inspectCommitProtection = options.inspectCommitProtection;
     this.mergeSource = options.mergeSource;
     this.abortMerge = options.abortMerge;
@@ -1164,6 +1165,119 @@ export class WorktreeIntegrationJobService {
     return presentJob(job);
   }
 
+  async resolveCommitPolicyResidue(jobId, input = {}) {
+    let job = this.#requireJob(jobId);
+    const residue = legacyCommitPolicyResidue(job);
+    if (job.status !== "paused" || !residue) {
+      throw new WorktreeIntegrationJobError(
+        "COMMIT_POLICY_RESIDUE_NOT_ACTIVE",
+        "This integration task does not have a recoverable Markdown Ignore residue.",
+        409
+      );
+    }
+    if (typeof this.resolveCommitPolicyResidueFile !== "function") {
+      throw new WorktreeIntegrationJobError(
+        "COMMIT_POLICY_RESIDUE_UNSUPPORTED",
+        "This backend cannot recover a legacy Markdown Ignore residue.",
+        501
+      );
+    }
+    const entries = Array.isArray(input.decisions) ? input.decisions : [];
+    const decisions = new Map(entries.map((entry) => [entry?.path, entry?.action]));
+    if (entries.length !== residue.paths.length || decisions.size !== residue.paths.length
+      || residue.paths.some((path) => !decisions.has(path))) {
+      throw new WorktreeIntegrationJobError(
+        "COMMIT_POLICY_RESIDUE_DECISION_INCOMPLETE",
+        "Choose how to recover every Markdown Ignore residue.",
+        400
+      );
+    }
+    for (const path of residue.paths) {
+      if (!["keep_ignore", "track"].includes(decisions.get(path))) {
+        throw new WorktreeIntegrationJobError(
+          "COMMIT_POLICY_RESIDUE_ACTION_UNSUPPORTED",
+          `Unsupported recovery action for ${path}: ${decisions.get(path) ?? "missing"}.`,
+          400
+        );
+      }
+    }
+    const sourceItem = job.details.plan.items.find((item) => item.worktreeId === residue.worktreeId);
+    if (!sourceItem) {
+      throw new WorktreeIntegrationJobError("WORKTREE_NOT_FOUND", "The Markdown source Worktree no longer exists.", 404);
+    }
+    const mainPath = job.details.plan.executionPath ?? job.details.plan.mainPath;
+    const auditDecisions = [];
+    for (const path of residue.paths) {
+      const action = decisions.get(path);
+      let contentHash = null;
+      let artifactId = null;
+      if (action === "track") {
+        const [file] = await this.inspectCommitPolicyFiles({ path: mainPath, relativePaths: [path] });
+        if (!file) {
+          throw new WorktreeIntegrationJobError(
+            "COMMIT_POLICY_RESIDUE_FILE_MISSING",
+            `${path} is no longer available for Git tracking.`,
+            409
+          );
+        }
+        contentHash = file.contentHash;
+        const promoted = await this.allowCommitPolicyFileTracking({
+          repositoryId: job.repositoryId,
+          jobId: job.id,
+          blockerId: `commit_policy_residue:${job.id}`,
+          decisionId: `${job.id}:residue:${path}:track:${contentHash}`,
+          item: { ...sourceItem, path: mainPath },
+          path: mainPath,
+          relativePath: path,
+          expectedContentHash: contentHash
+        });
+        artifactId = promoted?.artifactId ?? null;
+      }
+      auditDecisions.push({ path, action, contentHash, artifactId });
+    }
+    const prepared = await this.resolveCommitPolicyResidueFile({
+      repositoryId: job.repositoryId,
+      path: mainPath,
+      decisions: auditDecisions.map((decision) => ({
+        relativePath: decision.path,
+        action: decision.action,
+        expectedContentHash: decision.contentHash
+      }))
+    });
+    const committed = await this.commitChanges({
+      path: mainPath,
+      expectedHead: prepared.headOid,
+      expectedStatusSummary: prepared.statusSummary,
+      commitMessage: `Corptie: finalize Markdown decisions for ${job.id}`,
+      protectionDecision: null,
+      neverRemindPrivateFiles: false,
+      jobId: job.id
+    });
+    const items = job.details.plan.items.map((item) => item.worktreeId === residue.worktreeId ? {
+      ...item,
+      mergeMainHead: committed.headOid,
+      error: null
+    } : item);
+    job = this.#update(job, {
+      status: "queued",
+      phase: "commit_policy_residue_resolved",
+      error: null,
+      details: {
+        ...job.details,
+        plan: { ...job.details.plan, items },
+        commitPolicyResidueResolution: {
+          resolvedAt: new Date().toISOString(),
+          commitHead: committed.headOid,
+          decisions: auditDecisions
+        }
+      },
+      auditEvent: "commit_policy_residue_resolved",
+      auditData: { worktreeId: residue.worktreeId, commitHead: committed.headOid, decisions: auditDecisions }
+    });
+    this.#schedule(job.id);
+    return presentJob(job);
+  }
+
   async resolveConflictWithAgent(jobId) {
     const key = String(jobId);
     const active = this.activeConflictResolutions.get(key);
@@ -1682,6 +1796,7 @@ export class WorktreeIntegrationJobService {
                 });
                 return;
               }
+              if (error.code === "INTEGRATION_POSTCONDITION_DIRTY") throw error;
               if (!isRecoverableConflictFallbackError(error) || attempt + 1 >= this.maxConflictFallbackAttempts) {
                 throw conflictFallbackFailure(error, "merge_source", attempt + 1);
               }
@@ -1909,6 +2024,14 @@ export class WorktreeIntegrationJobService {
             worktreeId: currentItem?.worktreeId ?? job.details.currentWorktreeId ?? null,
             branchName: currentItem?.branchName ?? null,
             violations: structuredStagedTreeViolations(error.violations)
+          }
+        } : {}),
+        ...(error.code === "INTEGRATION_POSTCONDITION_DIRTY" ? {
+          integrationPostconditionBlocker: {
+            worktreeId: currentItem?.worktreeId ?? job.details.currentWorktreeId ?? null,
+            branchName: currentItem?.branchName ?? null,
+            changedFiles: Array.isArray(error.changedFiles) ? [...error.changedFiles] : [],
+            statusSummary: error.statusSummary ?? ""
           }
         } : {}),
         ...(automation ? {
@@ -2704,9 +2827,11 @@ function integrationExecutionProgressed(job) {
 export function presentJob(job) {
   if (!job) return null;
   const presented = { ...job, ...job.details, details: undefined };
-  const availableActions = integrationJobAvailableActions(presented);
+  const commitPolicyResidue = legacyCommitPolicyResidue(job);
+  const availableActions = integrationJobAvailableActions({ ...presented, commitPolicyResidue });
   return {
     ...presented,
+    commitPolicyResidue,
     availableActions,
     notification: projectOperationNotification(presented),
     recovery: integrationJobRecovery(presented, availableActions)
@@ -2725,6 +2850,7 @@ function integrationJobAvailableActions(job) {
   if (job.commitPolicyBlocker || legacyCommitPolicyPaths(job.error).length > 0) {
     return ["resolve_commit_policy", "cancel"];
   }
+  if (job.commitPolicyResidue) return ["resolve_commit_policy_residue", "cancel"];
   const lastCode = [...(job.audit ?? [])].reverse().find(event => event.code)?.code;
   if ((job.phase === "plan_stale" || new Set([
     "PLAN_STALE", "MAIN_HEAD_CHANGED", "MAIN_DIRTY", "WORKTREE_HEAD_CHANGED",
@@ -2742,6 +2868,7 @@ function integrationJobRecovery(job, availableActions) {
   const action = availableActions[0] ?? null;
   const messages = {
     resolve_commit_policy: "Choose an action for every blocked Markdown file, then continue.",
+    resolve_commit_policy_residue: "Resolve the Markdown Ignore changes left by the interrupted integration, then continue.",
     repreflight: "Repository state changed. Generate and review a fresh integration plan.",
     resolve_conflict_with_agent: "Resolve the preserved conflict with an Agent or manually, then retry.",
     retry: "The operation is paused and can be retried from its preserved state."
@@ -2753,6 +2880,34 @@ function integrationJobRecovery(job, availableActions) {
     };
   }
   return { kind: action, message: messages[action] ?? "No automatic recovery action is available." };
+}
+
+function legacyCommitPolicyResidue(job) {
+  if (job?.status !== "paused") return null;
+  const audit = job.details?.audit ?? job.audit ?? [];
+  const decision = [...audit].reverse().find((entry) =>
+    entry?.event === "commit_policy_decisions_applied"
+      && entry?.resumeStage === "merge_source"
+      && Array.isArray(entry.decisions)
+      && entry.decisions.some((item) => item?.action === "ignore"));
+  if (!decision) return null;
+  const lastFailureCode = [...audit].reverse().find((entry) => entry?.code)?.code ?? null;
+  const mainDirtyFailure = lastFailureCode === "CONFLICT_FALLBACK_RETRY_EXHAUSTED"
+    || lastFailureCode === "MAIN_DIRTY"
+    || /main gained uncommitted changes/iu.test(String(job.error ?? ""));
+  if (!mainDirtyFailure) return null;
+  const item = job.details?.plan?.items?.find((candidate) => candidate.worktreeId === decision.worktreeId);
+  const paths = [...new Set(decision.decisions
+    .filter((entry) => entry?.action === "ignore" && typeof entry.path === "string")
+    .map((entry) => entry.path))].sort();
+  if (paths.length === 0) return null;
+  return {
+    id: `commit_policy_residue:${job.id}:${decision.at}`,
+    worktreeId: decision.worktreeId,
+    branchName: item?.branchName ?? null,
+    paths,
+    supportedActions: ["keep_ignore", "track"]
+  };
 }
 
 function structuredStagedTreeViolations(violations) {
