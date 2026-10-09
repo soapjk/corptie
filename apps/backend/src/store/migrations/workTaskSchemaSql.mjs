@@ -37,6 +37,7 @@ export const workTaskSchemaSql = `
         verification_criteria TEXT NOT NULL DEFAULT '',
         priority TEXT NOT NULL DEFAULT 'medium',
         lifecycle_state TEXT NOT NULL DEFAULT 'todo',
+        auto_title_enabled INTEGER NOT NULL DEFAULT 1,
         main_agent_id TEXT,
         execution_status TEXT NOT NULL DEFAULT 'idle',
         acceptance_assessment_json TEXT NOT NULL DEFAULT '{}',

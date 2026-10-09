@@ -21,6 +21,7 @@ struct CorptieTaskDetailView: View {
     @State private var executionAgentIds = Set<String>()
     @State private var executionError: EntityLaunchError?
     @State private var showEdit = false
+    @State private var isUpdatingAutoTitle = false
     @State private var showCompleteConfirmation = false
     @State private var isLaunchingExecution = false
     @State private var sessionCreationAgent: Agent?
@@ -181,7 +182,20 @@ struct CorptieTaskDetailView: View {
                 title: L10n("Task 信息"),
                 descriptionTitle: L10n("Description"), acceptanceTitle: L10n("Acceptance Criteria"),
                 expandLabel: L10n("Expand"),
-                collapseLabel: L10n("Collapse"), showsWhenEmpty: true) {
+                collapseLabel: L10n("Collapse"), showsWhenEmpty: true,
+                autoTitleEnabled: task.autoTitleEnabled ?? true,
+                autoTitleLabel: L10n("自动更新 Task 标题"),
+                autoTitleUpdating: isUpdatingAutoTitle,
+                onAutoTitleChange: { enabled in
+                    guard !isUpdatingAutoTitle else { return }
+                    isUpdatingAutoTitle = true
+                    Task {
+                        if await client.updateCorptieTask(taskId: task.id, autoTitleEnabled: enabled) != nil {
+                            onRequestReload()
+                        }
+                        isUpdatingAutoTitle = false
+                    }
+                }) {
                 Button { showEdit = true } label: { ConversationDetailHeaderIcon(systemName: "pencil") }
                     .buttonStyle(.plain)
                     .help(L10n("编辑工作项"))

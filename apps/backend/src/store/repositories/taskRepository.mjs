@@ -47,8 +47,8 @@ export class TaskRepository {
     this.runInTransaction(() => {
       this.db.run(
         `INSERT INTO tasks (id, work_id, title, description, acceptance_criteria,
-          verification_criteria, priority, lifecycle_state, main_agent_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          verification_criteria, priority, lifecycle_state, main_agent_id, auto_title_enabled, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           normalized.workId,
@@ -59,6 +59,7 @@ export class TaskRepository {
           normalized.priority ?? "medium",
           normalized.lifecycleState ?? "todo",
           normalized.mainAgentId ?? null,
+          normalized.autoTitleEnabled === false ? 0 : 1,
           now,
           now,
         ]
@@ -265,7 +266,7 @@ export class TaskRepository {
     const has = (key) => Object.prototype.hasOwnProperty.call(normalized, key);
     this.db.run(
       `UPDATE tasks SET title=?, description=?, acceptance_criteria=?, verification_criteria=?,
-        priority=?, lifecycle_state=?, main_agent_id=?,
+        priority=?, lifecycle_state=?, main_agent_id=?, auto_title_enabled=?,
         execution_status=?, acceptance_assessment_json=?, resource_version=resource_version+1,
         updated_at=? WHERE id=?`,
       [
@@ -276,6 +277,7 @@ export class TaskRepository {
         has("priority") ? normalized.priority : current.priority,
         has("lifecycleState") ? normalized.lifecycleState : current.lifecycle_state,
         has("mainAgentId") ? normalized.mainAgentId : current.main_agent_id,
+        has("autoTitleEnabled") ? (normalized.autoTitleEnabled ? 1 : 0) : current.auto_title_enabled,
         Object.prototype.hasOwnProperty.call(internalPatch, "executionStatus")
           ? internalPatch.executionStatus
           : (current.execution_status ?? "idle"),

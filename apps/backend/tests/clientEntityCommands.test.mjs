@@ -76,7 +76,8 @@ test("management projections are available to every paired device and mirror the
     const management = api.taskManagement(tasks, f.task.id);
     assert.equal(management.schemaVersion, 1);
     assert.deepEqual(management.task, { id: f.task.id, workId: "work:test", title: "Task", description: "", acceptanceCriteria: "",
-      verificationCriteria: "", priority: "medium", lifecycleState: "todo", archived: false, mainAgentId: "agent:test", deletionStatus: null });
+      verificationCriteria: "", priority: "medium", lifecycleState: "todo", archived: false,
+      autoTitleEnabled: true, mainAgentId: "agent:test", deletionStatus: null });
     assert.deepEqual(management.agents, [{ id: "agent:test", name: "Test" }]);
     assert.deepEqual(management.priorities, ["low", "medium", "high", "urgent"]);
     assert.deepEqual(management.actions, {
@@ -128,6 +129,7 @@ test("task commands validate closed DTOs before any receipt is journaled", async
       ["update", { requestId: "req_00000001", title: "bad name!" }], ["update", { requestId: "req_00000001", title: "" }],
       ["update", { requestId: "req_00000001", priority: "critical" }], ["update", { requestId: "req_00000001", executionStatus: "running" }],
       ["update", { requestId: "req_00000001", lifecycleState: "done" }], ["update", { requestId: "req_00000001", description: "x".repeat(16_001) }],
+      ["update", { requestId: "req_00000001", autoTitleEnabled: "false" }],
       ["archive", { requestId: "req_00000001", archived: "yes" }], ["archive", { requestId: "req_00000001" }],
       ["restart", { requestId: "req_00000001", force: true }],
       ["delete", { requestId: "req_00000001", mode: "hard" }], ["delete", { requestId: "req_00000001", artifactDisposition: "purge" }],
@@ -150,15 +152,16 @@ test("commands dispatch through shared services once, replay receipts and classi
   const f = await fixture();
   try {
     const api = f.make();
-    const update = await api.taskCommand(tasks, f.task.id, "update", { requestId: "req_update_1", title: "Renamed", priority: "high" });
+    const update = await api.taskCommand(tasks, f.task.id, "update", { requestId: "req_update_1", title: "Renamed", priority: "high", autoTitleEnabled: false });
     assert.equal(update.status, "completed");
     assert.equal(update.kind, "task_update");
     assert.deepEqual(update.entityResult, { taskId: f.task.id, title: "Renamed" });
     assert.equal(update.taskResult, undefined);
     assert.equal(f.store.getTask(f.task.id).priority, "high");
-    assert.deepEqual(f.calls.pop(), ["updateTask", f.task.id, { title: "Renamed", priority: "high" }]);
+    assert.equal(f.store.getTask(f.task.id).auto_title_enabled, 0);
+    assert.deepEqual(f.calls.pop(), ["updateTask", f.task.id, { title: "Renamed", autoTitleEnabled: false, priority: "high" }]);
     // Same request replays the receipt; a changed payload is a conflict; neither re-dispatches.
-    assert.deepEqual(await f.make().taskCommand(tasks, f.task.id, "update", { requestId: "req_update_1", title: "Renamed", priority: "high" }), update);
+    assert.deepEqual(await f.make().taskCommand(tasks, f.task.id, "update", { requestId: "req_update_1", title: "Renamed", priority: "high", autoTitleEnabled: false }), update);
     await assert.rejects(async () => api.taskCommand(tasks, f.task.id, "update", { requestId: "req_update_1", title: "Other" }), { code: "IDEMPOTENCY_CONFLICT", status: 409 });
     assert.equal(f.calls.length, 0);
     assert.deepEqual(api.receipt(tasks, "req_update_1"), update);

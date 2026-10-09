@@ -32,6 +32,7 @@ public struct ClientTask: Decodable, Sendable, Identifiable, Equatable {
     public let verificationCriteria: String?
     public let id: String
     public let title: String
+    public let autoTitleEnabled: Bool
     public let workId: String
     public let lifecycleState: String
     public let executionStatus: String
@@ -45,12 +46,13 @@ public struct ClientTask: Decodable, Sendable, Identifiable, Equatable {
     public let updatedAt: String
 
     enum CodingKeys: String, CodingKey {
-        case id, title, workId, lifecycleState, executionStatus, currentSessionId, hasPendingScheduledWake, deletionStatus, archived, updatedAt, description, acceptanceCriteria, verificationCriteria
+        case id, title, autoTitleEnabled, workId, lifecycleState, executionStatus, currentSessionId, hasPendingScheduledWake, deletionStatus, archived, updatedAt, description, acceptanceCriteria, verificationCriteria
     }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
         title = try container.decode(String.self, forKey: .title)
+        autoTitleEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoTitleEnabled) ?? true
         description = try container.decodeIfPresent(String.self, forKey: .description)
         acceptanceCriteria = try container.decodeIfPresent(String.self, forKey: .acceptanceCriteria)
         verificationCriteria = try container.decodeIfPresent(String.self, forKey: .verificationCriteria)

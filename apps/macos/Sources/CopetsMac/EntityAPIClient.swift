@@ -293,7 +293,7 @@ final class EntityAPIClient: ObservableObject {
                         acceptanceCriteria: String? = nil,
                         verificationCriteria: String? = nil,
                         priority: String? = nil, lifecycleState: String? = nil,
-                        mainAgentId: String? = nil) async -> CorptieTask? {
+                        mainAgentId: String? = nil, autoTitleEnabled: Bool? = nil) async -> CorptieTask? {
         var request = URLRequest(url: baseURL.appending(path: "tasks/\(taskId)"))
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -305,6 +305,7 @@ final class EntityAPIClient: ObservableObject {
         if let priority { body["priority"] = priority }
         if let lifecycleState { body["lifecycleState"] = lifecycleState }
         if let mainAgentId { body["mainAgentId"] = mainAgentId }
+        if let autoTitleEnabled { body["autoTitleEnabled"] = autoTitleEnabled }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         return await performEntityMutation(request, as: CorptieTask.self)
     }
