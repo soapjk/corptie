@@ -21,9 +21,11 @@ struct DetailIncrementalProjection {
         var nextDisplayItems: [CodexThreadItem] = []
         nextDisplayItems.reserveCapacity(detail.items.count)
         var firstTailTurnIndex: Int?
+        var confirmations: [String: CodexThreadItem] = [:]
         // Fold coverage detection into the existing source-filter pass. No
         // historical hash, retained index or additional observer is needed.
         for item in detail.items where !isLowSignalDetailProcessItem(item) {
+            if item.type == "collaborationConfirmation" { confirmations[item.id] = item }
             if firstTailTurnIndex == nil, item.turnId == tailTurnID {
                 firstTailTurnIndex = nextDisplayItems.count
             }
@@ -46,6 +48,22 @@ struct DetailIncrementalProjection {
         }
 
         let appendedItems = nextDisplayItems.dropFirst(cachedSourceItemCount)
+        // Confirmation cards are independent product rows, often before the
+        // Provider's current tail. Rebind only these cached rows by stable ID;
+        // keep the streaming fast path and its process grouping unchanged.
+        let reboundEntries = confirmations.isEmpty ? cachedDisplayEntries : cachedDisplayEntries.map { entry -> ChatDisplayEntry in
+            guard case .message(let old) = entry.kind,
+                  let current = confirmations[old.id], current != old else { return entry }
+            return ChatDisplayEntry(kind: .message(current))
+        }
+        let confirmationDelta = zip(cachedDisplayEntries, reboundEntries).compactMap { old, new -> String? in
+            guard case .message(let before) = old.kind, case .message(let after) = new.kind,
+                  before.type == "collaborationConfirmation",
+                  before != after else { return nil }
+            return detailItemSignature(after)
+        }.joined(separator: "|")
+        let reboundSignature = confirmationDelta.isEmpty ? cachedItemsSignature
+            : cachedItemsSignature + "|confirmation:" + confirmationDelta
         if let firstAppended = appendedItems.first,
            firstAppended.turnId != cachedLast.turnId {
             // A new source turn is independent from the cached tail. Project
@@ -61,14 +79,14 @@ struct DetailIncrementalProjection {
                 cached: cachedDisplayEntries,
                 appended: appendedEntries
             ) else { return nil }
-            let combined = cachedDisplayEntries + appendedEntries
+            let combined = reboundEntries + appendedEntries
             return (
                 displayItems: nextDisplayItems,
                 visibleEntries: visibleDetailEntries(from: combined, limit: visibleMessageLimit),
                 totalCount: cachedTotalDisplayEntryCount
                     + appendedEntries.reduce(0) { $0 + $1.displayWeight },
                 signature: incrementalDisplaySignature(
-                    previousSignature: cachedItemsSignature,
+                    previousSignature: reboundSignature,
                     tailEntries: appendedEntries
                 ),
                 sourceSignature: makeDetailSourceSignature(for: detail, visibleMessageLimit: visibleMessageLimit)
@@ -114,7 +132,7 @@ struct DetailIncrementalProjection {
 
         let oldTailWeight = oldTailEntries.reduce(0) { $0 + $1.displayWeight }
         let nextTailWeight = nextTailEntries.reduce(0) { $0 + $1.displayWeight }
-        let combined = Array(cachedDisplayEntries[..<oldTailStart]) + nextTailEntries
+        let combined = Array(reboundEntries[..<oldTailStart]) + nextTailEntries
         let visibleEntries = visibleDetailEntries(from: combined, limit: visibleMessageLimit)
         let totalCount = max(0, cachedTotalDisplayEntryCount - oldTailWeight + nextTailWeight)
         return (
@@ -122,7 +140,7 @@ struct DetailIncrementalProjection {
             visibleEntries: visibleEntries,
             totalCount: totalCount,
             signature: incrementalDisplaySignature(
-                previousSignature: cachedItemsSignature,
+                previousSignature: reboundSignature,
                 tailEntries: nextTailEntries
             ),
             sourceSignature: makeDetailSourceSignature(for: detail, visibleMessageLimit: visibleMessageLimit)

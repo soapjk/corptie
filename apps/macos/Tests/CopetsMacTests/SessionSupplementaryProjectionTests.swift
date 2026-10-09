@@ -2,6 +2,17 @@ import Testing
 @testable import CorptieMac
 
 struct SessionSupplementaryProjectionTests {
+    @Test func localConfirmationTransitionChangesRefreshSignatureAndPreservesIdentity() {
+        let pending = CodexThreadItem(id: "confirmation", turnId: "product", turnStatus: "waiting_approval",
+                                     type: "collaborationConfirmation", title: "", text: "", options: nil, status: "pending", createdAt: nil)
+        let submitting = CollaborationConfirmationController.replacingStatus(pending, with: "submitting")
+        let accepted = CollaborationConfirmationController.replacingStatus(submitting, with: "confirmed")
+        #expect(submitting.id == pending.id)
+        #expect(submitting.collaborationConfirmationStatus == "submitting")
+        #expect(detailItemSignature(pending) != detailItemSignature(submitting))
+        #expect(accepted.turnStatus == pending.turnStatus)
+        #expect(accepted.collaborationConfirmationStatus == "confirmed")
+    }
     @Test
     func pendingCollaborationConfirmationComesFromTimelineInsteadOfSessionIndex() {
         var item = CodexThreadItem(

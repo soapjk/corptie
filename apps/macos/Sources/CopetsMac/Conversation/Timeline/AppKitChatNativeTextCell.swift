@@ -6,7 +6,7 @@ import CorptieClientCore
 @MainActor
 final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private let cardView = NativeContentCardSurface(frame: .zero)
-    private var messageGlow: NSHostingView<MessageStatusGlow>?
+    private var messageGlow: NativeMessageStatusGlow?
     private let timeSeparatorLabel = NSTextField(labelWithString: "")
     private let titleLabel = NSTextField(labelWithString: "")
     private let metadataLabel = NSTextField(labelWithString: "")
@@ -25,7 +25,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private let collaborationSentStatus = NSStackView()
     private let collaborationSentStatusIcon = NSImageView()
     // This footer acknowledges confirmation, not transport delivery.
-    private let collaborationSentStatusLabel = NSTextField(labelWithString: L10n("已确认 · 不代表消息已送达"))
+    private let collaborationSentStatusLabel = NSTextField(labelWithString: L10n("已发送"))
     private let processSeparator = NSView()
     private let processButton = NSButton()
     private var processSeparatorHeight: NSLayoutConstraint!
@@ -79,6 +79,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
         self.identifier = identifier
+        clipsToBounds = false
         cardView.translatesAutoresizingMaskIntoConstraints = false
         cardView.identifier = NSUserInterfaceItemIdentifier("chat.timeline.card")
         cardView.wantsLayer = true
@@ -635,6 +636,11 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         }
     }
 
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        messageGlow?.allowRowOverflow()
+    }
+
     private func configureMessageStatus(_ status: UserMessageStatusPresentation?) {
         hasVisibleMessageStatus = false
         messageStatusButton.isHidden = true
@@ -646,10 +652,10 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             return
         }
         if let messageGlow {
-            messageGlow.rootView = MessageStatusGlow(status: status)
+            messageGlow.configure(status)
         } else {
-            let glow = NSHostingView(rootView: MessageStatusGlow(status: status))
-            glow.sizingOptions = []
+            let glow = NativeMessageStatusGlow(frame: .zero)
+            glow.configure(status)
             glow.translatesAutoresizingMaskIntoConstraints = false
             addSubview(glow, positioned: .below, relativeTo: cardView)
             NSLayoutConstraint.activate([

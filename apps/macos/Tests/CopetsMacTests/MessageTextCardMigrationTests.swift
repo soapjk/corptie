@@ -22,7 +22,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
         XCTAssertFalse(MacSharedMessageTextCard.supports(process))
     }
 
-    func testShortMessageFooterCanBeWiderThanItsBubble() throws {
+    func testStatusDecorationDoesNotWidenShortMessage() throws {
         _ = NSApplication.shared
         let status = try XCTUnwrap(UserMessageStatusPresentation(
             authoritativeStatus: "processing", legacyStatus: nil
@@ -33,8 +33,8 @@ final class MessageTextCardMigrationTests: XCTestCase {
                 Text("好")
             }
         let host = NSHostingView(rootView: card)
-        XCTAssertGreaterThan(host.fittingSize.width, 70,
-            "The status footer must not be constrained to the 40-point text bubble")
+        XCTAssertEqual(host.fittingSize.width, 40,
+            "Status is a paint-only halo, not an extra footer or layout slot")
     }
 
     func testRealCoordinatorUsesSharedRowsAndSwitchesRendererOnContentChanges() throws {

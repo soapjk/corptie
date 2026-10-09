@@ -278,7 +278,7 @@ final class BackendClient: ObservableObject {
         activeSessions: { [weak self] in self?.sessions ?? [] },
         cachedDetail: { [weak self] in self?.cachedDetail(for: $0) },
         storeDetail: { [weak self] detail, sessionID, timelineRevision in
-            self?.storeCachedDetail(detail, for: sessionID, timelineRevision: timelineRevision)
+            self?.storeLocalCollaborationDetail(detail, for: sessionID, timelineRevision: timelineRevision)
         },
         loadMessages: { [weak self] session in
             if let self { await self.loadSessionMessages(session) }
@@ -834,11 +834,18 @@ final class BackendClient: ObservableObject {
         collaborationConfirmationController.pendingConfirmation(for: sessionID)
     }
 
+    private func storeLocalCollaborationDetail(_ detail: CodexThreadDetail, for sessionID: String, timelineRevision: Int?) {
+        SessionTimelineRepository.shared.publish(detail, for: sessionID, timelineRevision: timelineRevision)
+        collaborationConfirmationController.updatePendingConfirmation(from: detail, for: sessionID)
+    }
+
     func storeCachedDetail(
         _ detail: CodexThreadDetail,
         for sessionId: String,
         timelineRevision: Int? = nil
     ) {
+        if let timelineRevision, timelineRevision < SessionTimelineRepository.shared.timelineRevision(for: sessionId) { return }
+        let detail = collaborationConfirmationController.reconcile(detail, for: sessionId)
         SessionTimelineRepository.shared.publish(
             detail,
             for: sessionId,

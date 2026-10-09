@@ -401,7 +401,11 @@ export function handleCollaborationHttpRequest({
           ? core.getTask(runningWork.source.taskId)
           : null) ?? core.getTaskForTask(sourceCapabilities.taskId);
         const trustedSessionRoute = Boolean(recipientSession && onConfirmationResolved)
-          && core.hasConfirmedSessionRoute(sourceCapabilities.sourceSessionId, recipientSession);
+          && Boolean(sessionChannelService?.findActiveChannel(sourceCapabilities.sourceSessionId, recipientSession)
+            // Once a pair has Channel history, revocation is authoritative;
+            // an old task confirmation must never revive its permission.
+            || (!sessionChannelService?.hasChannelHistory(sourceCapabilities.sourceSessionId, recipientSession)
+              && core.hasConfirmedSessionRoute(sourceCapabilities.sourceSessionId, recipientSession)));
         const confirmation = core.proposeTask({
           ...input,
           parentTaskId: parentTask?.taskId ?? undefined,

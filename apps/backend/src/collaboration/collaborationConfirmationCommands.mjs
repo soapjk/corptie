@@ -4,8 +4,24 @@ export function createCollaborationConfirmationCommands({
   collaborationCore, sessionChannelService, sessionCollaborationService, emitEvent,
   syncCollaborationDeliveriesIntoAgentWorkQueue, syncSessionChannelDeliveriesIntoAgentWorkQueue
 }) {
+  // The database is the reliable outbox. Acknowledgement must not wait for a
+  // Provider turn or a scan of other Sessions. Coalesce wakeups per queue.
+  const scheduled = new Set();
+  function scheduleDelivery(kind, sync) {
+    if (scheduled.has(kind)) return;
+    scheduled.add(kind);
+    setImmediate(async () => {
+      scheduled.delete(kind);
+      try { await sync(); }
+      catch (error) { console.error(`[collaboration] ${kind} delivery sync failed: ${error.message}`); }
+    });
+  }
   async function resolveCollaborationConfirmation(confirmationId, approved, source = { type: "desktop" }) {
     const before = collaborationCore.getTaskConfirmation(confirmationId);
+    if (approved && before?.status === "confirmed") {
+      scheduleDelivery("task", syncCollaborationDeliveriesIntoAgentWorkQueue);
+      return before;
+    }
     const preparedTarget = approved
       ? await sessionCollaborationService.prepareTaskConfirmationTarget(before)
       : null;
@@ -15,9 +31,7 @@ export function createCollaborationConfirmationCommands({
     const sessionId = confirmation.sourceSessionId ?? before?.sourceSessionId ?? null;
     emitEvent("CollaborationConfirmationResolved", { sessionId, confirmation }, { sessionId, source });
     if (approved) {
-      await syncCollaborationDeliveriesIntoAgentWorkQueue().catch((error) => {
-        console.error(`[collaboration] confirmation delivery sync failed: ${error.message}`);
-      });
+      scheduleDelivery("task", syncCollaborationDeliveriesIntoAgentWorkQueue);
     }
     return confirmation;
   }
@@ -37,9 +51,7 @@ export function createCollaborationConfirmationCommands({
       return rejected;
     }
     if (before.status === "confirmed") {
-      await syncSessionChannelDeliveriesIntoAgentWorkQueue().catch((error) => {
-        console.error(`[session-channel] confirmation replay delivery sync failed request=${requestId}: ${error.message}`);
-      });
+      scheduleDelivery("channel", syncSessionChannelDeliveriesIntoAgentWorkQueue);
       return before;
     }
     let confirmed;
@@ -47,15 +59,16 @@ export function createCollaborationConfirmationCommands({
       const target = await sessionCollaborationService.prepareChannelRequestTarget(before);
       confirmed = sessionChannelService.confirmRequest(requestId, target, source);
     } catch (error) {
-      sessionChannelService.failRequest(requestId, error);
+      const failed = sessionChannelService.failRequest(requestId, error);
+      if (failed) emitEvent("SessionChannelRequestResolved", {
+        sessionId: failed.requestingSessionId, request: failed
+      }, { sessionId: failed.requestingSessionId, source });
       throw error;
     }
     emitEvent("SessionChannelRequestResolved", {
       sessionId: confirmed.requestingSessionId, request: confirmed
     }, { sessionId: confirmed.requestingSessionId, source });
-    await syncSessionChannelDeliveriesIntoAgentWorkQueue().catch((error) => {
-      console.error(`[session-channel] confirmation delivery sync failed request=${requestId}: ${error.message}`);
-    });
+    scheduleDelivery("channel", syncSessionChannelDeliveriesIntoAgentWorkQueue);
     return confirmed;
   }
 
