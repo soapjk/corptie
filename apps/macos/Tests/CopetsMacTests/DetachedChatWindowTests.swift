@@ -67,7 +67,26 @@ struct DetachedChatWindowTests {
         #expect(!source.contains(".background(.regularMaterial)"))
         #expect(source.contains("PersistentRedWindowCloseButton(action: close)"))
         #expect(source.contains("ZStack(alignment: .top)"))
-        #expect(source.contains("topChromeClearance: 62"))
+        #expect(source.contains("topChromeClearance: 50"))
+    }
+
+    @Test
+    func detachedWindowUsesInputOnlyComposerAndSmallerChrome() throws {
+        let window = try contents(of: "DetachedChatWindowManager.swift")
+        let conversation = try contents(of: "Conversation/SessionConversationContent.swift")
+        let composer = try contents(of: "Conversation/Composer/MessageComposer.swift")
+
+        #expect(window.contains("compactComposer: true"))
+        #expect(window.contains("topChromeClearance: 50"))
+        #expect(window.contains(".padding(.horizontal, 4)"))
+        #expect(window.contains(".padding(.top, 3)"))
+        #expect(window.contains(".font(.system(size: 11, weight: .semibold))"))
+        #expect(conversation.contains("compact: compactComposer"))
+        #expect(composer.contains("if !compact {\n                ConversationQuickMessages"))
+        #expect(composer.contains("if !compact {\n                    HStack(spacing: 0)"))
+        #expect(composer.contains("if compact {\n                    editorInput"))
+        #expect(composer.contains("guard !compact else { return }"))
+        #expect(composer.contains("let submittedImages = compact ? [] : attachedImages"))
     }
 
     @Test

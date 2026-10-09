@@ -355,9 +355,20 @@ final class BackendClient: ObservableObject {
     )
     lazy var timelineHistoryController = SessionTimelineHistoryController(
         baseURL: baseURL, selection: sessionSelectionController,
-        currentSession: { [weak self] in self?.selectedSession },
-        currentDetail: { [weak self] in self?.selectedDetail },
-        publishDetail: { [weak self] in self?.publishSelectedDetailIfSafe($0) },
+        sessionForID: { [weak self] id in
+            self?.sessions.first(where: { $0.id == id })
+                ?? self?.archivedSessions.first(where: { $0.id == id })
+        },
+        detailForSession: { [weak self] id in self?.cachedDetail(for: id) },
+        publishSessionDetail: { [weak self] detail, id in
+            guard let self else { return }
+            if self.selectedSession?.id == id,
+               self.viewingHistoricalThreadId == nil {
+                self.publishSelectedDetailIfSafe(detail)
+            } else {
+                self.storeCachedDetail(detail, for: id)
+            }
+        },
         requestEarlierHistoryPage: { url in
             try await BackendClient.requestEarlierHistoryPage(at: url)
         }
