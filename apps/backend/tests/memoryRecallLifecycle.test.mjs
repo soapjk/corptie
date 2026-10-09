@@ -325,6 +325,71 @@ test("confirmed Memory reaches a Provider turn and its Session Detail audit", as
   }
 });
 
+test("user-saved Global preferences reach existing Sessions across Works on unrelated Turns", async () => {
+  const f = await fixture();
+  try {
+    f.store.createSession({ id: "session:existing-a", title: "Existing", provider: "test-provider",
+      status: "running", sessionKind: "workChat", workId: f.scope.workId,
+      agentId: f.scope.agentId });
+    const recallService = new MemoryRecallService({ store: f.store,
+      hubService: new HubService({ store: f.store }) });
+    const earlierStartup = await recallService.startup({
+      sessionId: "session:existing-a", workId: f.scope.workId, agentId: f.scope.agentId
+    });
+    recallService.markInjection(earlierStartup, "not_selected");
+    const preference = memory(f.store, { ownerType: "global", ownerId: "user:local",
+      kind: "preference", content: "Do all development before running one combined test pass.",
+      confidence: 0.5, autoApplied: false, appliedAt: "2026-10-08T07:11:54.053Z" });
+    const irrelevant = memory(f.store, { ownerType: "global", ownerId: "user:local",
+      kind: "fact", content: "An unrelated project fact." });
+    f.store.createWork({ id: "work:other", name: "Other", contributorAgentIds: [f.scope.agentId] });
+    const sessions = [
+      { id: "session:existing-a", workId: f.scope.workId },
+      { id: "session:existing-b", workId: "work:other" }
+    ];
+    const delivered = [];
+    const registry = new AgentProviderRegistry([new CallbackAgentProvider({
+      id: "test-provider", displayName: "Test Provider", transport: "test",
+      capabilities: [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND]
+    }, { send: async (reference, _message, context) => {
+      delivered.push({ sessionId: reference.sessionId, prompt: context.sessionContext.prompt });
+      return { accepted: true };
+    } })]);
+    for (const session of sessions) {
+      if (session.id !== "session:existing-a") f.store.createSession({
+        id: session.id, title: session.id, provider: "test-provider", status: "running",
+        sessionKind: "workChat", workId: session.workId, agentId: f.scope.agentId
+      });
+      const reference = { sessionId: session.id, providerId: "test-provider",
+        providerSessionId: session.id, logicalSessionId: `logical:${session.id}`,
+        bindingId: `binding:${session.id}`, routingVersion: 1 };
+      const service = createSessionApplicationComposition({ store: f.store,
+        agentProviderRegistry: registry,
+        sessionBindingRepository: { resolve: () => reference },
+        assertForkDispatchAllowed: () => {}, assertSessionRecoveryMessageBoundary: () => {},
+        memoryRecallService: recallService,
+        workChatContextService: { build: () => ({ prompt: "Work context" }) },
+        resolveContextReferences: async () => null,
+        mcpAssignmentRevisionForAgent: () => null, emitEvent: () => {} });
+      await service.sendMessage(session.id, { text: "hi" });
+      await service.sendMessage(session.id, { text: "ok" });
+      const audits = f.store.listMemoryRecallAudit({ sessionId: session.id });
+      const pinned = audits.filter((audit) => audit.phase === "global_preference");
+      assert.equal(pinned.length, 2);
+      assert.ok(pinned.every((audit) => audit.selectedIds.includes(preference.id)
+        && audit.diagnostics.injection.status === "provider_accepted"));
+      assert.ok(presentSessionMemoryHits(f.store, session.id).some((entry) => entry.id === preference.id));
+    }
+    assert.equal(delivered.length, 4);
+    assert.ok(delivered.every(({ prompt }) => prompt.includes(preference.content)));
+    assert.ok(delivered.filter((_, index) => index % 2 === 1)
+      .every(({ prompt }) => !prompt.includes(irrelevant.content)));
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
 test("pre-compaction preservation, consolidation audit/rollback, and recall audit survive reconnect", async () => {
   const f = await fixture();
   try {

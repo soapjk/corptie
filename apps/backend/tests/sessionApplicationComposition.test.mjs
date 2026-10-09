@@ -113,6 +113,39 @@ test("Worker message context injects bounded selected references after authorita
   assert.ok(context.prompt.indexOf("Authoritative bound Task definition") < context.prompt.indexOf("Reference: test document"));
 });
 
+test("Worker message context retains user-saved Global preferences independently of optional recall", async () => {
+  const session = { id: "session:worker", sessionKind: "worker", taskId: "task:one",
+    workId: "work:one", agentId: "agent:one" };
+  const task = { id: "task:one", work_id: "work:one", title: "Task one",
+    description: "Build it", revision: 1, resource_version: 1 };
+  const reference = { sessionId: session.id, logicalSessionId: "logical:one", bindingId: "binding:one" };
+  const statuses = [];
+  const globalRecall = { id: "recall:global", mode: "always_on",
+    memories: [{ id: "memory:global", content: "Run one combined test pass after development." }] };
+  const service = createSessionApplicationComposition({
+    store: { getSession: () => session,
+      assertLogicalWorkSessionBinding: () => ({ taskId: task.id }),
+      getTask: () => task, getWork: () => ({ id: "work:one", name: "Work one" }),
+      selectOne: () => null, getSessionToolCatalogMaterialization: () => null },
+    agentProviderRegistry: {}, sessionBindingRepository: { resolve: () => reference },
+    artifactService: { indexForSession: () => ({ items: [] }) },
+    mcpAssignmentRevisionForAgent: () => null,
+    resolveContextReferences: async () => null,
+    memoryRecallService: {
+      globalPreferences: () => globalRecall,
+      hasStartupRecall: () => true,
+      turn: async () => ({ id: "recall:ordinary", mode: "skipped", memories: [] }),
+      markInjection: (recall, status) => statuses.push([recall.id, status])
+    }, emitEvent: () => {}
+  });
+  const context = await service.resolveMessageContext(reference, { message: { text: "Continue coding" } });
+  assert.match(context.prompt, /Run one combined test pass after development/);
+  assert.equal(context.globalPreferenceRecall, globalRecall);
+  assert.ok(context.prompt.indexOf("Run one combined test pass")
+    > context.prompt.indexOf("Authoritative bound Task definition"));
+  assert.deepEqual(statuses, [["recall:global", "context_included"], ["recall:ordinary", "not_selected"]]);
+});
+
 test("Work Chat message context also includes references already allowed by its Detail UI", async () => {
   const session = { id: "session:work-chat", sessionKind: "workChat", workId: "work:one" };
   const reference = { sessionId: session.id, logicalSessionId: "logical:work-chat" };
