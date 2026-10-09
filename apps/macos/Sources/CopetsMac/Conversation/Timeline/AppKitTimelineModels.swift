@@ -301,7 +301,7 @@ enum ChatBubbleWidthPolicy {
             availableWidth: fullAvailableWidth
         )
         return row.images.isEmpty ? preferred
-            : min(fullAvailableWidth, max(MessageBubbleWidthPolicy.attachmentMinimumWidth, preferred))
+            : min(fullAvailableWidth, max(MessageImageGalleryLayout.preferredBodyWidth + horizontalPadding, preferred))
     }
 }
 

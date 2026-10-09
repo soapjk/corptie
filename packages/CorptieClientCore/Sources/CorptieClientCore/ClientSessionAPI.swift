@@ -248,6 +248,7 @@ public struct ClientMessageImage: Codable, Sendable, Equatable, Identifiable {
     public let byteLength: Int?
 }
 extension ClientMessage: ConversationExecutionItem {
+    public var timelineHasImages: Bool { !images.isEmpty }
     public var executionTitle: String { title ?? "" }
     public var timelineTurnID: String { turnId ?? "" }
     public var timelineTurnStatus: String { turnStatus ?? "" }

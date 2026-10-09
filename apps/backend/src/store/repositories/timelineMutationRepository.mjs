@@ -21,6 +21,20 @@ export class TimelineMutationRepository {
     if (this.selectOne("SELECT 1 FROM deleted_user_messages WHERE session_id=? AND message_id=?", [sessionId, item.id])) return false;
     const createdAt = createdAtFromOrNow(item);
     const rawMetadataJSON = typeof item.rawMetadataJSON === "string" ? item.rawMetadataJSON : null;
+    // Provider status/echo projections are not authority to remove durable
+    // attachments admitted with the message. Preserve only images, not stale
+    // interaction/status metadata. An explicit images array still wins.
+    // Merge inside the existing write: no extra SELECT or whole-message JSON
+    // decoding on every streaming update. Reuse the expression in the change
+    // predicate so replaying the same echo does not dirty the Timeline again.
+    const mergedMetadata = `CASE
+      WHEN excluded.type IN ('userMessage','agentMessage','imageView')
+        AND json_valid(excluded.raw_metadata_json) AND json_valid(session_items.raw_metadata_json)
+      THEN CASE WHEN json_type(excluded.raw_metadata_json, '$.images') IS NULL
+        AND json_type(session_items.raw_metadata_json, '$.images') = 'array'
+        THEN json_set(excluded.raw_metadata_json, '$.images', json_extract(session_items.raw_metadata_json, '$.images'))
+        ELSE excluded.raw_metadata_json END
+      ELSE COALESCE(excluded.raw_metadata_json, session_items.raw_metadata_json) END`;
     this.db.run(
       `INSERT INTO session_items (
         id, session_id, turn_id, turn_status, type, title, text, options_json, raw_metadata_json,
@@ -33,7 +47,7 @@ export class TimelineMutationRepository {
         title=excluded.title,
         text=excluded.text,
         options_json=excluded.options_json,
-        raw_metadata_json=COALESCE(excluded.raw_metadata_json, session_items.raw_metadata_json),
+        raw_metadata_json=${mergedMetadata},
         binding_id=COALESCE(excluded.binding_id, session_items.binding_id),
         presentation_role=COALESCE(excluded.presentation_role, session_items.presentation_role),
         presentation_text=COALESCE(excluded.presentation_text, session_items.presentation_text),
@@ -44,7 +58,7 @@ export class TimelineMutationRepository {
          OR session_items.title IS NOT excluded.title
          OR session_items.text IS NOT excluded.text
          OR session_items.options_json IS NOT excluded.options_json
-         OR (excluded.raw_metadata_json IS NOT NULL AND session_items.raw_metadata_json IS NOT excluded.raw_metadata_json)
+         OR (excluded.raw_metadata_json IS NOT NULL AND session_items.raw_metadata_json IS NOT (${mergedMetadata}))
          OR (excluded.binding_id IS NOT NULL AND session_items.binding_id IS NOT excluded.binding_id)
          OR (excluded.presentation_role IS NOT NULL AND session_items.presentation_role IS NOT excluded.presentation_role)
          OR (excluded.presentation_text IS NOT NULL AND session_items.presentation_text IS NOT excluded.presentation_text)

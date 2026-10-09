@@ -252,6 +252,10 @@ struct PadStandardTimeline<Row: View, Composer: View>: View {
         }
         var numbers: [String: Double] = ["composerHeight": Double(input.handle.composerHeight),
             "containerHeight": Double(metrics.size.height), "messageCount": Double(input.ids.count)]
+        // Cumulative counters piggyback on existing diagnostic samples: no
+        // per-measurement logging, timer, observed state or disk write.
+        numbers["textSizeQueries"] = Double(PadMessageLayout.sizeQueries)
+        numbers["textSystemMeasurements"] = Double(PadMessageLayout.systemMeasurements)
         if let scroll = reader.scroll {
             let insets = scroll.adjustedContentInset
             numbers["boundsHeight"] = Double(scroll.bounds.height)

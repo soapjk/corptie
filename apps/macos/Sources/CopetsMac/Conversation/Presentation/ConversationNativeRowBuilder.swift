@@ -73,10 +73,13 @@ struct ConversationNativeRowBuilder {
                 ? displayedText
                 : "\(displayedText)\n\n\(supplementalText)")
             let existingImageURLs = Set(images.compactMap(\.displayURL))
-            images.append(contentsOf: MessageMarkdownImageResolver.references(
+            let parsedImages = ConversationMessageImageReferenceCache.shared.references(messageID: item.id, text: presentedText)
+            let markdownImages = MessageMarkdownImageResolver.references(
                 in: presentedText,
-                baseDirectory: workingDirectory
-            ).compactMap { reference in
+                baseDirectory: workingDirectory, parsed: parsedImages
+            )
+            let markdownImageSources = Set(markdownImages.map(\.source))
+            images.append(contentsOf: markdownImages.compactMap { reference in
                 guard !existingImageURLs.contains(reference.url) else { return nil }
                 return ChatTimelineImage(
                     managedPath: "markdown:\(reference.url.absoluteString)",
@@ -85,11 +88,14 @@ struct ConversationNativeRowBuilder {
                 )
             })
             text = ClickableMessageText.markdown(
-                from: presentedText,
+                from: item.type == "imageView" && !images.isEmpty ? "" :
+                    MessageImageGalleryLayout.bodyText(ConversationMessageImageReference.removing(
+                        parsedImages.filter { markdownImageSources.contains($0.source) },
+                        from: presentedText), hasImages: !images.isEmpty),
                 baseDirectory: workingDirectory
             )
             let isOrdinaryMessage = collaboration == nil && specialEvent == nil
-                && (item.type == "userMessage" || item.type == "agentMessage")
+                && (item.type == "userMessage" || item.type == "agentMessage" || (item.type == "imageView" && !images.isEmpty))
             let scheduledSource = item.messageOrigin == "scheduled_task"
                 ? ConversationEventText(languageCode: AppLanguageController.shared.languageCode).messageSource(name: item.automationName) : nil
             title = scheduledSource ?? collaboration?.title ?? specialEvent?.title ?? (isOrdinaryMessage ? "" : item.title)

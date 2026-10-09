@@ -2,7 +2,94 @@ import XCTest
 import SwiftUI
 import UIKit
 import CorptieClientCore
+import CorptieConversation
 @testable import CorptieMobile
+
+@MainActor final class MessageImageDecodeTests: XCTestCase {
+    func testLargeImageIsDownsampledWithoutChangingAspectRatio() async throws {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 4096, height: 256), format: format).image { context in
+            UIColor.blue.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 4096, height: 256))
+        }
+        let data = try XCTUnwrap(image.pngData())
+        let decoded = await PadMessageImageStore.decode(data)
+        let thumbnail = try XCTUnwrap(decoded)
+        let bitmap = try XCTUnwrap(thumbnail.cgImage)
+        XCTAssertLessThanOrEqual(bitmap.width, 1024)
+        XCTAssertEqual(Double(bitmap.width) / Double(bitmap.height), 16, accuracy: 0.1)
+        let invalid = await PadMessageImageStore.decode(Data("not an image".utf8))
+        XCTAssertNil(invalid)
+    }
+}
+
+@MainActor final class MessageMeasurementCacheTests: XCTestCase {
+    private func view(_ entry: PadMessageLayout.Entry) -> UITextView {
+        let view = UITextView()
+        view.isEditable = false
+        view.isScrollEnabled = false
+        view.textContainerInset = .zero
+        view.textContainer.lineFragmentPadding = 0
+        view.attributedText = entry.attributed
+        return view
+    }
+
+    func testSystemSizeIsReusedAcrossRecreatedTextViews() {
+        let text = String(repeating: "Long **Markdown** with a [link](https://example.com).\n", count: 150)
+        let entry = PadMessageLayout.entry(text: text, style: .agent)
+        let firstView = view(entry)
+        let width: CGFloat = 327.25
+        let raw = firstView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        let expected = CGSize(width: min(width, ceil(raw.width)), height: ceil(raw.height))
+        XCTAssertEqual(entry.size(width: width, view: firstView), expected)
+        let count = entry.measurementCount
+        let recreated = PadMessageLayout.entry(text: text, style: .agent)
+        XCTAssertTrue(entry === recreated)
+        for _ in 0..<100 {
+            XCTAssertEqual(recreated.size(width: width, view: view(recreated)), expected)
+        }
+        XCTAssertEqual(entry.measurementCount, count)
+    }
+
+    func testFractionalWidthConfigurationAndBodyChangesInvalidate() {
+        let text = "cache-input-\(UUID())\n" + String(repeating: "word ", count: 100)
+        let entry = PadMessageLayout.entry(text: text, style: .agent)
+        let textView = view(entry)
+        _ = entry.size(width: 300.1, view: textView)
+        _ = entry.size(width: 300.2, view: textView)
+        XCTAssertEqual(entry.measurementCount, 2)
+        textView.textContainerInset.bottom = 12
+        let changed = entry.size(width: 300.2, view: textView)
+        let raw = textView.sizeThatFits(CGSize(width: 300.2, height: .greatestFiniteMagnitude))
+        XCTAssertEqual(changed.height, ceil(raw.height))
+        XCTAssertEqual(entry.measurementCount, 3)
+        textView.traitOverrides.preferredContentSizeCategory = .accessibilityExtraExtraExtraLarge
+        _ = entry.size(width: 300.2, view: textView)
+        XCTAssertEqual(entry.measurementCount, 4)
+        textView.textContainer.lineFragmentPadding = 5
+        _ = entry.size(width: 300.2, view: textView)
+        XCTAssertEqual(entry.measurementCount, 5)
+        XCTAssertFalse(entry === PadMessageLayout.entry(text: "different body", style: .agent))
+        XCTAssertFalse(entry === PadMessageLayout.entry(text: text, style: .user))
+        PadMessageLayout.removeAllCachedEntries()
+        let reloaded = PadMessageLayout.entry(text: text, style: .agent)
+        XCTAssertFalse(entry === reloaded)
+        XCTAssertEqual(reloaded.size(width: 300.2, view: view(reloaded)),
+                       entry.size(width: 300.2, view: view(entry)))
+    }
+
+    func testProposalStorageIsBoundedAndEvictedInputsRemeasureCorrectly() {
+        let entry = PadMessageLayout.entry(text: "bounded \(UUID())", style: .agent)
+        let textView = view(entry)
+        for width in 200..<220 { _ = entry.size(width: CGFloat(width), view: textView) }
+        let before = entry.measurementCount
+        let result = entry.size(width: 200, view: textView)
+        XCTAssertEqual(entry.measurementCount, before + 1)
+        let raw = textView.sizeThatFits(CGSize(width: 200, height: CGFloat.greatestFiniteMagnitude))
+        XCTAssertEqual(result, CGSize(width: min(200, ceil(raw.width)), height: ceil(raw.height)))
+    }
+}
 
 /// Actual UICollectionView + hosted SwiftUI cells, not source-string assertions.
 @MainActor final class NativeTimelineLayoutTests: XCTestCase {

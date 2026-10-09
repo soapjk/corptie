@@ -3,6 +3,14 @@ import Testing
 @testable import CorptieClientCore
 
 struct ConversationTimelineTests {
+    @Test func materializedImageOutputIsVisibleWithoutExpandingExecution() throws {
+        let data = Data(#"{"id":"image","turnId":"turn","type":"imageView","text":"/tmp/original.png","images":[{"managedPath":"chat-resources/test/image.png"}]}"#.utf8)
+        let item = try JSONDecoder().decode(ClientMessage.self, from: data)
+        #expect(item.timelineHasImages)
+        let entries = ConversationTimeline.makeEntries(from: [item])
+        #expect(entries.map(\.id) == ["message:image"])
+        #expect(entries.first?.displayWeight == 1)
+    }
     private func message(_ id: String, _ type: String, role: String? = nil,
                          turn: String? = "turn", status: String = "running",
                          date: String? = nil, direction: String? = nil) throws -> ClientMessage {

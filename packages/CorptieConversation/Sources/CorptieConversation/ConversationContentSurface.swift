@@ -3,6 +3,15 @@ import SwiftUI
 /// Platform-neutral content styling. Text opacity, layout and interaction are
 /// deliberately untouched; only the background gets translucent color.
 public enum ConversationContentSurfacePolicy {
+    // Diagnostic A/B only: fixed before launch, never toggled while scrolling.
+    // Keep the same tint layer so the comparison isolates message material.
+    static let suppressMessageMaterialForProfiling: Bool = {
+        #if DEBUG && os(iOS)
+        ProcessInfo.processInfo.environment["CORPTIE_PROFILE_MESSAGE_MATERIAL"] == "0"
+        #else
+        false
+        #endif
+    }()
     public static let tintOpacity = 0.18
     public static let messageMaterialOpacity = 0.80
     public static let panelMaterialOpacity = 0.60
@@ -66,7 +75,7 @@ public struct ConversationContentSurface: ViewModifier {
         let base = fallback ?? (usesSemanticBackground ? tint : nil) ?? WorkbenchCanvasSurface.defaultColor
         content.background {
             #if os(iOS)
-            if withMaterial {
+            if withMaterial && !ConversationContentSurfacePolicy.suppressMessageMaterialForProfiling {
                 shape.fill(.regularMaterial.opacity(ConversationContentSurfacePolicy.messageMaterialOpacity))
             }
             #endif

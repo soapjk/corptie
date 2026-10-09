@@ -101,6 +101,8 @@ struct PadTimelineProjectionTests {
         let messages = try JSONDecoder().decode([ClientMessage].self, from: Data(#"[{"id":"u","turnId":"t","type":"userMessage","text":"question"},{"id":"p","turnId":"t","type":"agentMessage","text":"checking","presentationRole":"commentary","turnStatus":"running"},{"id":"tool","turnId":"t","type":"mcpToolCall","text":"result","turnStatus":"running"},{"id":"a","turnId":"t","type":"agentMessage","text":"answer","presentationRole":"final_answer"}]"#.utf8))
         workspace.messages = messages
         #expect(workspace.displayEntries.map(\.id) == ["message:u", "message:p", "process:t", "message:a"])
+        #expect(Set(workspace.displayEntryByID.keys) == Set(workspace.displayEntries.map(\.id)))
+        #expect(workspace.displayEntryByID["process:t"]?.id == "process:t")
         #expect(workspace.processPresentations["process:t"]?.state == .running)
         #expect(workspace.activeProcessEntryID == "process:t")
         #expect(workspace.processPresentations["process:t"]?.duration == nil)
@@ -112,6 +114,7 @@ struct PadTimelineProjectionTests {
         #expect(workspace.displayEntries.filter { $0.id == "message:pending" }.count == 1)
         workspace.selection = "session:b"
         #expect(workspace.displayEntries.isEmpty)
+        #expect(workspace.displayEntryByID.isEmpty)
         #expect(workspace.processPresentations.isEmpty)
         #expect(workspace.activeProcessEntryID == nil)
         #expect(workspace.processSteps.isEmpty)
