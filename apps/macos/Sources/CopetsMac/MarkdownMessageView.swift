@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import CorptieConversation
 @preconcurrency import MarkdownUI
 
 struct MarkdownMessageView: View {
@@ -313,28 +314,13 @@ enum MessageMarkdownImageResolver {
     static func references(
         in markdown: String,
         baseDirectory: String?,
-        fileManager _: FileManager = .default
+        fileManager _: FileManager = .default,
+        parsed: [ConversationMessageImageReference]? = nil
     ) -> [MessageMarkdownImageReference] {
-        guard markdown.contains("![") else { return [] }
-        var inFence = false
         var seen = Set<URL>()
         var references: [MessageMarkdownImageReference] = []
-
-        for line in markdown.components(separatedBy: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
-                inFence.toggle()
-                continue
-            }
-            guard !inFence else { continue }
-
-            let range = NSRange(line.startIndex..., in: line)
-            for match in image.matches(in: line, range: range) {
-                let destination = [match.range(at: 1), match.range(at: 2)]
-                    .first(where: { $0.location != NSNotFound })
-                    .flatMap { Range($0, in: line) }
-                    .map { String(line[$0]) }
-                guard let destination else { continue }
+        for reference in parsed ?? ConversationMessageImageReference.parse(markdown) {
+                let destination = reference.source
                 let targetURL: URL?
                 if let remoteURL = URL(string: destination),
                    ["http", "https"].contains(remoteURL.scheme?.lowercased() ?? "") {
@@ -361,8 +347,7 @@ enum MessageMarkdownImageResolver {
                     source: destination,
                     url: targetURL
                 ))
-                if references.count == 4 { return references }
-            }
+                if references.count == 8 { return references }
         }
         return references
     }

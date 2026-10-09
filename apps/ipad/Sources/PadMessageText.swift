@@ -24,6 +24,7 @@ struct PadMessageText: UIViewRepresentable {
         var text: String?
         var fromUser: Bool?
         var steps: [ConversationExecutionStep]?
+        var layoutEntry: PadMessageLayout.Entry?
         var isTextSelectionEnabled: Binding<Bool>?
         var openLink: ((URL) -> Void)?
 
@@ -65,9 +66,12 @@ struct PadMessageText: UIViewRepresentable {
         context.coordinator.fromUser = fromUser
         context.coordinator.steps = steps
         if let steps {
+            context.coordinator.layoutEntry = nil
             view.attributedText = ExecutionTimelineAttributedText.make(steps: steps)
         } else {
-            view.attributedText = PadMessageLayout.entry(text: text, style: fromUser ? .user : .agent).attributed
+            let entry = PadMessageLayout.entry(text: text, style: fromUser ? .user : .agent)
+            context.coordinator.layoutEntry = entry
+            view.attributedText = entry.attributed
         }
         view.invalidateIntrinsicContentSize()
     }
@@ -91,6 +95,9 @@ struct PadMessageText: UIViewRepresentable {
             targetWidth = min(width, maxAllowedWidth)
         } else {
             targetWidth = maxAllowedWidth
+        }
+        if let entry = context.coordinator.layoutEntry {
+            return entry.size(width: targetWidth, view: uiView)
         }
         let size = uiView.sizeThatFits(CGSize(width: targetWidth, height: .greatestFiniteMagnitude))
         return CGSize(width: min(targetWidth, ceil(size.width)), height: ceil(size.height))

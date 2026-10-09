@@ -552,7 +552,7 @@ final class NativeTimelineLayoutCache {
                 rowHeight = max(
                     row.showsHeader ? 54 : 30,
                     textHeight + verticalChrome + footerHeight + actionHeight + sentStatusHeight + messageStatusBarHeight
-                ) + (row.images.isEmpty ? 0 : 96) + row.timeSeparatorHeight
+                ) + (row.images.isEmpty ? 0 : MessageImageGalleryLayout.height(count: row.images.count, width: textWidth) + 8) + row.timeSeparatorHeight
             }
         }
         let layout = Layout(
