@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { deviceError } from "./clientDeviceAuthority.mjs";
+import { deviceError, pairedDeviceActor } from "./clientDeviceAuthority.mjs";
 import { validateEntityName } from "../domain/workTaskValidation.mjs";
 
 /**
@@ -34,9 +34,6 @@ function requireSupport(api) {
 }
 function action(available, reason = null) {
   return { available: available === true, reason: available === true ? null : reason };
-}
-function deviceActor(identity) {
-  return { type: "user", id: `user:paired-device:${identity.deviceId}` };
 }
 function contributors(api, work) {
   return (work?.contributorAgentIds ?? []).map(id => api.store.getAgent(id)).filter(Boolean)
@@ -111,7 +108,7 @@ export async function clientTaskDeletionPlan(api, identity, taskId) {
   const commands = requireSupport(api);
   const task = requireTask(api, taskId);
   let plan;
-  try { plan = await commands.inspectTaskDeletion(task.id, deviceActor(identity)); }
+  try { plan = await commands.inspectTaskDeletion(task.id, pairedDeviceActor(identity)); }
   catch (error) {
     const rejected = rejection(error);
     throw deviceError(rejected?.code ?? "TASK_DELETION_INSPECTION_FAILED", rejected?.status ?? 503);
@@ -189,7 +186,7 @@ export function clientTaskCommand(api, identity, taskId, command, input, revalid
         }
         case "delete": {
           const result = await commands.deleteTask(current.id, { ...fields, idempotencyKey: `task-delete:${current.id}:device:${fingerprint}` },
-            deviceActor(identity));
+            pairedDeviceActor(identity));
           return { taskId: current.id, operationId: result?.operation?.operationId ?? null, state: result?.operation?.state ?? null };
         }
         default: throw new Error("unreachable");
