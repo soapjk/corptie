@@ -61,8 +61,10 @@ private struct WorktreeCommitPolicyResolutionSheet: View {
                                 set: { decisions[file.path] = $0 }
                             )
                         ) {
+                            Text(L10n("Choose Action"))
+                                .tag(Optional<WorktreeCommitPolicyAction>.none)
                             ForEach(WorktreeCommitPolicyAction.allCases) { action in
-                                Text(action.title).tag(action)
+                                Text(action.title).tag(Optional(action))
                             }
                         }
                         .pickerStyle(.menu)
@@ -93,8 +95,8 @@ private struct WorktreeCommitPolicyResolutionSheet: View {
                 Button(L10n("Confirm and Continue")) {
                     Task {
                         guard let files = client.job?.commitPolicyBlocker?.files else { return }
-                        let selected = Dictionary(uniqueKeysWithValues: files.map {
-                            ($0.path, selectedAction(for: $0))
+                        let selected = Dictionary(uniqueKeysWithValues: files.compactMap { file in
+                            selectedAction(for: file).map { (file.path, $0) }
                         })
                         if await client.resolveBlockedMarkdownAndContinue(decisions: selected) {
                             isPresented = false
@@ -102,19 +104,112 @@ private struct WorktreeCommitPolicyResolutionSheet: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(client.isMutating || client.job?.commitPolicyBlocker?.files.isEmpty != false)
+                .disabled(client.isMutating || !hasCompleteDecisionSet)
                 .accessibilityIdentifier("worktree.commit-policy.confirm-and-continue")
             }
         }
         .padding(20)
         .frame(width: 680)
+        .onChange(of: client.job?.commitPolicyBlocker?.id, initial: true) { _, _ in
+            decisions.removeAll(keepingCapacity: true)
+        }
     }
 
-    private func selectedAction(for file: WorktreeCommitPolicyFile) -> WorktreeCommitPolicyAction {
+    private var hasCompleteDecisionSet: Bool {
+        guard let files = client.job?.commitPolicyBlocker?.files, !files.isEmpty else { return false }
+        return files.allSatisfy { selectedAction(for: $0) != nil }
+    }
+
+    private func selectedAction(for file: WorktreeCommitPolicyFile) -> WorktreeCommitPolicyAction? {
         if let applied = file.appliedAction.flatMap(WorktreeCommitPolicyAction.init(rawValue:)) {
             return applied
         }
-        return decisions[file.path] ?? .ignore
+        return decisions[file.path]
+    }
+}
+
+private struct WorktreeCommitPolicyResidueResolutionSheet: View {
+    @ObservedObject var client: WorktreeManagementClient
+    @Binding var isPresented: Bool
+    @State private var decisions: [String: WorktreeCommitPolicyResidueAction] = [:]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label(L10n("Finish Markdown Recovery"), systemImage: "arrow.triangle.2.circlepath.doc.on.clipboard")
+                .font(.headline)
+                .foregroundStyle(.orange)
+            Text(L10n("A previous integration applied Ignore choices but stopped before committing them. Choose an explicit recovery action for every affected file."))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            if let residue = client.job?.commitPolicyResidue {
+                List(residue.paths, id: \.self) { path in
+                    HStack(spacing: 12) {
+                        Text(path)
+                            .font(.body.monospaced())
+                            .textSelection(.enabled)
+                            .lineLimit(2)
+                        Spacer(minLength: 8)
+                        Picker(
+                            L10n("Action"),
+                            selection: Binding(
+                                get: { decisions[path] },
+                                set: { decisions[path] = $0 }
+                            )
+                        ) {
+                            Text(L10n("Choose Action"))
+                                .tag(Optional<WorktreeCommitPolicyResidueAction>.none)
+                            ForEach(WorktreeCommitPolicyResidueAction.allCases) { action in
+                                Text(action.title).tag(Optional(action))
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .frame(width: 220, alignment: .trailing)
+                        .disabled(client.isMutating)
+                        .accessibilityLabel(String(format: L10n("Recovery action for %@"), path))
+                    }
+                    .padding(.vertical, 3)
+                }
+                .frame(minHeight: 130, maxHeight: 300)
+            }
+
+            Text(L10n("Keep Ignored commits the exact Ignore rule. Allow Git Tracking removes that rule and commits the current file version after authorization. No action pushes to a remote."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if let error = client.errorMessage, !error.isEmpty {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+            }
+
+            HStack {
+                Spacer()
+                if client.isMutating { ProgressView().controlSize(.small) }
+                Button(L10n("Confirm and Continue")) {
+                    Task {
+                        if await client.resolveCommitPolicyResidue(decisions: decisions) {
+                            isPresented = false
+                        }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(client.isMutating || !hasCompleteDecisionSet)
+                .accessibilityIdentifier("worktree.commit-policy-residue.confirm-and-continue")
+            }
+        }
+        .padding(20)
+        .frame(width: 680)
+        .onChange(of: client.job?.commitPolicyResidue?.id, initial: true) { _, _ in
+            decisions.removeAll(keepingCapacity: true)
+        }
+    }
+
+    private var hasCompleteDecisionSet: Bool {
+        guard let paths = client.job?.commitPolicyResidue?.paths, !paths.isEmpty else { return false }
+        return paths.allSatisfy { decisions[$0] != nil }
     }
 }
 
@@ -151,6 +246,7 @@ struct WorktreeManagementView: View {
     @State private var selectedWorktreeIds: [String] = []
     @State private var batchOperationDraft: WorktreeBatchOperationDraft?
     @State private var showingCommitPolicyResolution = false
+    @State private var showingCommitPolicyResidueResolution = false
     @State private var pendingGitOperationAction: PendingGitOperationAction?
     @State private var showingIntegrationCancellation = false
 
@@ -238,6 +334,12 @@ struct WorktreeManagementView: View {
             WorktreeCommitPolicyResolutionSheet(
                 client: client,
                 isPresented: $showingCommitPolicyResolution
+            )
+        }
+        .sheet(isPresented: $showingCommitPolicyResidueResolution) {
+            WorktreeCommitPolicyResidueResolutionSheet(
+                client: client,
+                isPresented: $showingCommitPolicyResidueResolution
             )
         }
         .confirmationDialog(
@@ -858,6 +960,13 @@ struct WorktreeManagementView: View {
                         agentConflictRetryButton()
                         manualConflictRetryButton()
                     }
+                } else if job.canResolveCommitPolicyResidue {
+                    Button(L10n("Finish Markdown Recovery")) {
+                        showingCommitPolicyResidueResolution = true
+                    }
+                    .controlSize(.small)
+                    .disabled(client.isMutating)
+                    .accessibilityIdentifier("worktree.integrate.resolve-markdown-residue")
                 } else if job.canHandleCommitPolicy {
                     Button(L10n("Handle Markdown Files")) {
                         Task {
@@ -927,7 +1036,14 @@ struct WorktreeManagementView: View {
                let item = job.plan.items.first(where: { $0.worktreeId == current }) {
                 Text(item.branchName ?? item.path).font(.caption).foregroundStyle(.secondary)
             }
-            if job.isWaitingForCommitPolicyDecision, let blocker = job.commitPolicyBlocker {
+            if let residue = job.commitPolicyResidue {
+                Text(L10nFormat(
+                    "A previous Markdown decision left %d uncommitted Ignore change(s). Resolve each file before integration continues.",
+                    residue.paths.count
+                ))
+                .font(.caption)
+                .foregroundStyle(.orange)
+            } else if job.isWaitingForCommitPolicyDecision, let blocker = job.commitPolicyBlocker {
                 Text(L10nFormat(
                     "Document commit needs confirmation · %d file(s). Choose how to handle them before integration continues.",
                     blocker.files.count
@@ -972,6 +1088,16 @@ struct WorktreeManagementView: View {
                 .font(.caption)
                 .foregroundStyle(.orange)
                 .textSelection(.enabled)
+            } else if let blocker = job.integrationPostconditionBlocker {
+                Text(L10n("The merge commit completed but left these target Worktree changes uncommitted. Review or preserve them, make the target clean, then retry."))
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                ForEach(blocker.changedFiles, id: \.self) { path in
+                    Text(path)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
             } else if let blocker = job.stagedTreeBlocker {
                 stagedTreeBlockerDetails(blocker)
             } else if let error = job.error {
@@ -1389,6 +1515,7 @@ private struct IndividualWorktreeOperationView: View {
     @State private var privateFilesDecision: String?
     @State private var neverRemindPrivateFiles = false
     @State private var isPreparing = true
+    @State private var isAutoFilling = false
 
     init(
         worktree: ManagedWorktree,
@@ -1414,50 +1541,75 @@ private struct IndividualWorktreeOperationView: View {
                 Text(worktree.path).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
 
-            if isPreparing {
-                HStack { ProgressView().controlSize(.small); Text(L10n("Inspecting Worktree changes…")) }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                if worktree.isMain {
-                    Text(L10n("This creates a local commit for the uncommitted changes in main. Nothing is pushed."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Toggle(L10n("Merge into main"), isOn: $mergeIntoMain)
-                            .disabled(mergeIsUnnecessary)
-                        Toggle(L10n("Synchronize with main"), isOn: $synchronizeWithMain)
-                            .disabled(worktree.synchronizedWithMain == true)
-                        Toggle(L10n("Restart service"), isOn: $restartService)
-                    }
-                    .toggleStyle(.checkbox)
-                }
-
-                if worktree.dirty == true, worktree.isMain || mergeIntoMain {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(L10n("Commit message")).font(.headline)
-                        TextField(L10n("Enter a commit message"), text: $commitMessage)
-                        if let protection = preparation?.protection,
-                           protection.requiresDecision {
-                            Label(L10n("Protected local files were detected."), systemImage: "exclamationmark.shield.fill")
-                                .foregroundStyle(.orange)
-                            ForEach(protection.protectedPaths, id: \.self) { path in
-                                Text(path).font(.caption.monospaced()).textSelection(.enabled)
-                            }
-                            Picker(L10n("Handle protected files"), selection: $privateFilesDecision) {
-                                Text(L10n("Choose…")).tag(String?.none)
-                                Text(L10n("Add matching paths to .gitignore")).tag(String?.some("ignore"))
-                                Text(L10n("Include files in this commit")).tag(String?.some("include"))
-                            }
-                            Toggle(L10n("Do not remind me again for this project"), isOn: $neverRemindPrivateFiles)
-                        }
-                    }
-                }
-
-                Text(L10n("Operations run in the displayed order. No remote push or deletion is performed."))
+            if worktree.isMain {
+                Text(L10n("This creates a local commit for the uncommitted changes in main. Nothing is pushed."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    Toggle(L10n("Merge into main"), isOn: $mergeIntoMain)
+                        .disabled(mergeIsUnnecessary)
+                    Toggle(L10n("Synchronize with main"), isOn: $synchronizeWithMain)
+                        .disabled(worktree.synchronizedWithMain == true)
+                    Toggle(L10n("Restart service"), isOn: $restartService)
+                }
+                .toggleStyle(.checkbox)
             }
+
+            if worktree.dirty == true, worktree.isMain || mergeIntoMain {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text(L10n("Commit message")).font(.headline)
+                        Spacer()
+                        Button {
+                            autoFillCommitMessage()
+                        } label: {
+                            if isAutoFilling {
+                                HStack(spacing: 6) {
+                                    ProgressView().controlSize(.small)
+                                    Text(L10n("Generating…"))
+                                }
+                            } else {
+                                Label(L10n("Auto Fill"), systemImage: "wand.and.stars")
+                            }
+                        }
+                        .disabled(isAutoFilling || isPreparing)
+                        .accessibilityIdentifier("worktree.operation.auto-fill-commit-message")
+                    }
+                    TextField(L10n("Enter a commit message"), text: $commitMessage)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.body.monospaced())
+                    Text(L10n("Enter your own message, or choose Auto Fill to generate one."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if isPreparing {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text(L10n("Checking protected-file rules…"))
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    } else if let protection = preparation?.protection,
+                              protection.requiresDecision {
+                        Label(L10n("Protected local files were detected."), systemImage: "exclamationmark.shield.fill")
+                            .foregroundStyle(.orange)
+                        ForEach(protection.protectedPaths, id: \.self) { path in
+                            Text(path).font(.caption.monospaced()).textSelection(.enabled)
+                        }
+                        Picker(L10n("Handle protected files"), selection: $privateFilesDecision) {
+                            Text(L10n("Choose…")).tag(String?.none)
+                            Text(L10n("Add matching paths to .gitignore")).tag(String?.some("ignore"))
+                            Text(L10n("Include files in this commit")).tag(String?.some("include"))
+                        }
+                        Toggle(L10n("Do not remind me again for this project"), isOn: $neverRemindPrivateFiles)
+                    }
+                }
+            }
+
+            Text(L10n("Operations run in the displayed order. No remote push or deletion is performed."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             Spacer()
             HStack {
@@ -1476,7 +1628,6 @@ private struct IndividualWorktreeOperationView: View {
         .frame(width: 480, height: worktree.dirty == true ? 520 : 370)
         .task {
             preparation = await client.prepareIndividualOperation(for: worktree)
-            commitMessage = preparation?.commitMessage ?? ""
             isPreparing = false
         }
         .onChange(of: synchronizeWithMain) { _, selected in
@@ -1496,7 +1647,7 @@ private struct IndividualWorktreeOperationView: View {
     }
 
     private var canExecute: Bool {
-        guard !isPreparing, !client.isMutating else { return false }
+        guard !isPreparing, !isAutoFilling, !client.isMutating else { return false }
         if worktree.isMain {
             guard worktree.dirty == true,
                   !commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
@@ -1511,6 +1662,17 @@ private struct IndividualWorktreeOperationView: View {
             return false
         }
         return true
+    }
+
+    private func autoFillCommitMessage() {
+        guard !isAutoFilling else { return }
+        isAutoFilling = true
+        Task {
+            if let suggestion = await client.generateIndividualCommitMessage(for: worktree) {
+                commitMessage = suggestion
+            }
+            isAutoFilling = false
+        }
     }
 
     private func executeAndDismiss() {

@@ -312,6 +312,11 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(view.contains("worktree.commit-main.\\(worktree.worktreeId)"))
         XCTAssertTrue(view.contains("worktree.isMain, worktree.dirty == true"))
         XCTAssertTrue(view.contains("client.commitMainWorktreeChanges("))
+        XCTAssertTrue(view.contains("L10n(\"Auto Fill\")"))
+        XCTAssertTrue(view.contains("worktree.operation.auto-fill-commit-message"))
+        XCTAssertTrue(view.contains("client.generateIndividualCommitMessage(for: worktree)"))
+        XCTAssertFalse(view.contains("commitMessage = preparation?.commitMessage"))
+        XCTAssertTrue(client.contains("func generateIndividualCommitMessage(for worktree:"))
         XCTAssertTrue(view.contains("private func confirmAndDismiss()"))
         XCTAssertTrue(view.contains("onClose()\n        Task"))
         XCTAssertTrue(view.contains("if await client.confirmPlan(commitProtectionDecisions: decisions)"))
@@ -691,6 +696,10 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(contents.contains("worktree.commit-policy.confirm-and-continue"))
         XCTAssertTrue(contents.contains("WorktreeCommitPolicyAction.allCases"))
         XCTAssertTrue(contents.contains("resolveBlockedMarkdownAndContinue"))
+        XCTAssertTrue(contents.contains("Choose Action"))
+        XCTAssertFalse(contents.contains("decisions[file.path] ?? .ignore"))
+        XCTAssertTrue(contents.contains("worktree.integrate.resolve-markdown-residue"))
+        XCTAssertTrue(contents.contains("resolveCommitPolicyResidue"))
         XCTAssertFalse(contents.contains("Button(L10n(\"Later\"))"))
     }
 

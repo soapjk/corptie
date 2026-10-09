@@ -203,6 +203,7 @@ export function createWorktreeIntegrationServices({
       removeSource: false,
       allowTracking: true
     }),
+    resolveCommitPolicyResidueFile: (input) => gitWorkspaces.resolveIntegrationMarkdownResidue(input),
     commitChanges: (input) => gitWorkspaces.commitIntegrationChanges({
       ...input,
       prepare: () => gitCommitProtection.resolve(input.path, {
