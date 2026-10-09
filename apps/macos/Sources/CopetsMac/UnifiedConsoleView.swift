@@ -68,6 +68,7 @@ struct UnifiedConsoleView: View {
     @AppStorage("console.workOutline.sort", store: CorptieAppEnvironment.userDefaults)
     var outlineSortRaw = WorkOutlineSort.standard.rawValue
     @StateObject var outlineExpansionPreferences = ConsoleOutlineExpansionPreferences()
+    @State var outlineFullyExpandedWorkIDs = Set<String>()
     @State var cardAttentionCount = 0
     @State var cardSelectionExplicitlyCleared = false
     @State private var didResolveDevelopmentPreviewStart = false

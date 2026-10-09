@@ -682,6 +682,23 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
+    func activeWorkGroupsLimitTasksUntilExplicitRevealOnBothClients() throws {
+        let desktop = try source(named: "UnifiedConsoleView.swift")
+        #expect(desktop.contains("WorkOutlineTaskDisclosurePolicy.visibleCount("))
+        #expect(desktop.contains("ForEach(tasks.prefix(visibleTaskCount))"))
+        #expect(desktop.contains("outlineShowAllTasksButton("))
+        #expect(desktop.contains("outlineFullyExpandedWorkIDs.remove(workID)"))
+        #expect(desktop.contains("accessibilityLabel(\"展开全部 Task，还剩 \\(hiddenCount) 个\")"))
+
+        let mobile = try source(named: "../../../ipad/Sources/PadWorkOutline.swift")
+        #expect(mobile.contains("WorkOutlineTaskDisclosurePolicy.visibleCount("))
+        #expect(mobile.contains("ForEach(tasks.prefix(visibleTaskCount))"))
+        #expect(mobile.contains("showAllTasksButton(workID:"))
+        #expect(mobile.contains("fullyExpandedWorkIDs.remove(id)"))
+        #expect(mobile.contains("accessibilityLabel(\"展开全部 Task，还剩 \\(hiddenCount) 个\")"))
+    }
+
+    @Test
     func workingWorkTitleUsesAnAccessibleFlowingColorGradient() throws {
         #expect(ConsoleWorkOutlineMetrics.workingGradientDuration == 2.6)
 

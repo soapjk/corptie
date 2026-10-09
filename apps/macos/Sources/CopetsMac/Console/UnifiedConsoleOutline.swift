@@ -89,6 +89,14 @@ extension UnifiedConsoleView {
 
                 ForEach(orderedOutlineWorks) { work in
                     let tasks = tasksByWorkID[work.id] ?? []
+                    let queryIsActive = !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    let visibleTaskCount = WorkOutlineTaskDisclosurePolicy.visibleCount(
+                        totalCount: tasks.count,
+                        showsAll: outlineFullyExpandedWorkIDs.contains(work.id),
+                        isSearching: queryIsActive,
+                        isShowingArchive: isShowingWorkerArchive
+                    )
+                    let hiddenTaskCount = tasks.count - visibleTaskCount
 
                     DisclosureGroup(isExpanded: outlineWorkExpandedBinding(work.id)) {
                         VStack(alignment: .leading, spacing: 2) {
@@ -115,12 +123,18 @@ extension UnifiedConsoleView {
                                     }
                                 }
                             } else {
-                                ForEach(tasks) { task in
+                                ForEach(tasks.prefix(visibleTaskCount)) { task in
                                     taskRow(task)
                                         .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
                                         .background(outlineChildSelectionBackground(
                                             selectedTaskId == task.id
                                         ))
+                                }
+                                if hiddenTaskCount > 0 {
+                                    outlineShowAllTasksButton(
+                                        workID: work.id,
+                                        hiddenCount: hiddenTaskCount
+                                    )
                                 }
                             }
                         }
@@ -188,6 +202,21 @@ extension UnifiedConsoleView {
             .padding(.vertical, 4)
     }
 
+    func outlineShowAllTasksButton(workID: String, hiddenCount: Int) -> some View {
+        Button {
+            outlineFullyExpandedWorkIDs.insert(workID)
+        } label: {
+            Label("展开其余 \(hiddenCount) 个 Task", systemImage: "chevron.down")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.leading, ConsoleWorkOutlineMetrics.childIndent + 24)
+        .accessibilityLabel("展开全部 Task，还剩 \(hiddenCount) 个")
+    }
+
     func outlineChildSelectionBackground(_ isSelected: Bool) -> some View {
         RoundedRectangle(cornerRadius: 5, style: .continuous)
             .fill(isSelected ? Color.accentColor.opacity(0.09) : Color.clear)
@@ -216,6 +245,9 @@ extension UnifiedConsoleView {
                 guard searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     return
                 }
+                if !isExpanded {
+                    outlineFullyExpandedWorkIDs.remove(workID)
+                }
                 outlineExpansionPreferences.setWorkExpanded(isExpanded, workID: workID)
             }
         )
@@ -240,6 +272,9 @@ extension UnifiedConsoleView {
             toggleExpanded: {
                 guard searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
                 withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation) {
+                    if outlineWorkIsExpanded(work.id) {
+                        outlineFullyExpandedWorkIDs.remove(work.id)
+                    }
                     outlineExpansionPreferences.toggleWork(workID: work.id)
                 }
             },
