@@ -429,7 +429,9 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
     let conflictAutomation: WorktreeConflictAutomation?
     let commitProtectionDecisions: [String: WorktreePersistedCommitProtectionDecision]?
     let commitPolicyBlocker: WorktreeCommitPolicyBlocker?
+    let commitPolicyResidue: WorktreeCommitPolicyResidue?
     let stagedTreeBlocker: WorktreeStagedTreeBlocker?
+    let integrationPostconditionBlocker: WorktreeIntegrationPostconditionBlocker?
     let availableActions: [String]?
     let recovery: WorktreeIntegrationRecovery?
 
@@ -472,12 +474,24 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
     var canHandleCommitPolicy: Bool {
         isWaitingForCommitPolicyDecision || hasLegacyCommitPolicyFailure
     }
+    var canResolveCommitPolicyResidue: Bool {
+        status == "paused"
+            && commitPolicyResidue != nil
+            && supports("resolve_commit_policy_residue")
+    }
 }
 
 struct WorktreeStagedTreeBlocker: Decodable, Equatable, Sendable {
     let worktreeId: String?
     let branchName: String?
     let violations: [WorktreeStagedTreeViolation]
+}
+
+struct WorktreeIntegrationPostconditionBlocker: Decodable, Equatable, Sendable {
+    let worktreeId: String?
+    let branchName: String?
+    let changedFiles: [String]
+    let statusSummary: String
 }
 
 struct WorktreeStagedTreeViolation: Identifiable, Decodable, Equatable, Sendable {
@@ -513,6 +527,28 @@ struct WorktreeCommitPolicyFile: Identifiable, Decodable, Equatable, Sendable {
     let artifactId: String?
 }
 
+struct WorktreeCommitPolicyResidue: Identifiable, Decodable, Equatable, Sendable {
+    let id: String
+    let worktreeId: String
+    let branchName: String?
+    let paths: [String]
+    let supportedActions: [String]
+}
+
+enum WorktreeCommitPolicyResidueAction: String, CaseIterable, Identifiable, Sendable {
+    case keepIgnore = "keep_ignore"
+    case track
+
+    var id: String { rawValue }
+
+    @MainActor var title: String {
+        switch self {
+        case .keepIgnore: L10n("Keep Ignored")
+        case .track: L10n("Allow Git Tracking Current Version")
+        }
+    }
+}
+
 enum WorktreeCommitPolicyAction: String, CaseIterable, Identifiable, Sendable {
     case ignore
     case delete
@@ -526,7 +562,7 @@ enum WorktreeCommitPolicyAction: String, CaseIterable, Identifiable, Sendable {
         case .ignore: L10n("Add to Ignore")
         case .delete: L10n("Delete File")
         case .artifact: L10n("Convert to Artifact")
-        case .track: L10n("Allow Git Tracking")
+        case .track: L10n("Allow Git Tracking Current Version")
         }
     }
 }
@@ -747,6 +783,5 @@ struct WorktreeManagementSelection: Equatable {
 }
 
 struct IndividualWorktreeOperationPreparation: Equatable, Sendable {
-    let commitMessage: String?
     let protection: GitCommitProtectionStatus?
 }
