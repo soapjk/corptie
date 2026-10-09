@@ -26,6 +26,9 @@ apps/backend/data/
 
 # Swift Package Manager / Xcode
 .build/
+.build-*/
+.swiftpm/
+**/xcuserdata/
 DerivedData/
 Packages/
 # Source packages (case-insensitive macOS filesystems also match Packages/).
