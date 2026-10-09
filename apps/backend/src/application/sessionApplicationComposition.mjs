@@ -16,6 +16,7 @@ export function createSessionApplicationComposition({
   requiredToolDomainsForSession, assertForkDispatchAllowed, assertSessionRecoveryMessageBoundary,
   recoverSession, requireSessionReference, workChatContextService, resolveContextReferences,
   artifactService, memoryRecallService, mcpAssignmentRevisionForAgent,
+  resolveAssignedCapabilities = () => [],
   ensureCollaborationAgentForSession, ensureLogicalRouteForProviderSession,
   sessionWithLogicalWorkspace, collaborationCore, emitEvent
 }) {
@@ -153,7 +154,8 @@ export function createSessionApplicationComposition({
       // history from either Provider or session_items.
       const directUserIntentContext = buildDirectUserMessageEvidence(store, reference, messageContext);
       const skillRoutingContext = skillMcpTurnContext(
-        mcpAssignmentRevisionForAgent(session?.agentId)
+        mcpAssignmentRevisionForAgent(session?.agentId),
+        session?.agentId ? await resolveAssignedCapabilities(session.agentId) : []
       );
       // Refresh presentation capabilities at Turn boundaries, including already
       // running/resumed Sessions whose Provider thread predates this contract.

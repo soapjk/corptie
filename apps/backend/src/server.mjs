@@ -99,6 +99,7 @@ import { scheduleBackendStartupMaintenance } from "./application/backendStartupM
 import { createSessionInteractionCommands } from "./application/sessionInteractionCommands.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
 import { SkillMcpGateway } from "./application/skillMcpGateway.mjs";
+import { assignedCapabilitySummary } from "./application/skillMcpTurnContext.mjs";
 import { McpRegistryService } from "./application/mcpRegistryService.mjs";
 import { McpSessionAvailabilityService } from "./application/mcpSessionAvailabilityService.mjs";
 import { handleMcpRegistryHttpRequest } from "./application/mcpRegistryHttpApi.mjs";
@@ -1165,6 +1166,7 @@ const sessionApplicationService = createSessionApplicationComposition({
   requireSessionReference, workChatContextService,
   resolveContextReferences: (sessionId, options) => sessionContextReferenceService.resolve(sessionId, options),
   artifactService, memoryRecallService, mcpAssignmentRevisionForAgent,
+  resolveAssignedCapabilities: (agentId) => assignedCapabilitySummary(store, agentId),
   ensureCollaborationAgentForSession, ensureLogicalRouteForProviderSession,
   sessionWithLogicalWorkspace, collaborationCore, emitEvent
 });

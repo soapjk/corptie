@@ -2,6 +2,37 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createSessionApplicationComposition } from "../src/application/sessionApplicationComposition.mjs";
 
+for (const providerId of ["codex-app-server", "claude-code", "openclacky"]) {
+  test(`${providerId}: existing chat receives fresh assignment hints without replacement`, async () => {
+    const session = { id: "session:chat", agentId: "agent:one", sessionKind: "assistantChat" };
+    const reference = { sessionId: session.id, logicalSessionId: "logical:chat", bindingId: "binding:stable", providerId };
+    let capabilities = [{ id:"skill:one", kind:"skill", name:"investrace" }];
+    let revision = "assigned:1";
+    const service = createSessionApplicationComposition({
+      store: { getSession: () => session }, agentProviderRegistry: {},
+      sessionBindingRepository: { resolve: () => reference },
+      resolveContextReferences: async () => null,
+      mcpAssignmentRevisionForAgent: () => revision,
+      resolveAssignedCapabilities: agentId => { assert.equal(agentId, session.agentId); return capabilities; },
+      memoryRecallService: { turn: async () => ({ memories: [] }) },
+      emitEvent: () => { throw new Error("Must not replace or restart a Session"); }
+    });
+    const first = await service.resolveMessageContext(reference, { message: "查投资记录" });
+    assert.match(first.prompt, /ALL_TOOLS/);
+    assert.match(first.prompt, /name="investrace"/);
+    capabilities = [{ id:"mcp:one", kind:"mcp", name:"tradude" }]; revision = "assigned:2";
+    const next = await service.resolveMessageContext(reference, { message: "查运行状态" });
+    assert.doesNotMatch(next.prompt, /name="investrace"/);
+    assert.match(next.prompt, /name="tradude"/);
+    assert.match(next.prompt, /revision="assigned:2"/);
+    capabilities = []; revision = "none";
+    const removed = await service.resolveMessageContext(reference, { message: "还有哪些工具" });
+    assert.doesNotMatch(removed.prompt, /<capability /);
+    assert.match(removed.prompt, /corptie_tool_catalog_search/);
+    assert.equal(reference.bindingId, "binding:stable");
+  });
+}
+
 function fixture() {
   const calls = [];
   const session = { id: "session:1", title: "stored", agentId: "agent:1", sessionKind: "worker" };
