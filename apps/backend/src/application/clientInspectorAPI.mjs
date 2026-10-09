@@ -1,4 +1,4 @@
-import { deviceError } from "./clientDeviceAuthority.mjs";
+import { deviceError, pairedDeviceActor } from "./clientDeviceAuthority.mjs";
 import { executeClientCommand } from "./clientEntityCommands.mjs";
 import { presentMemory, createUserMemory, reviewExtractedMemory } from "./memoryOperationService.mjs";
 import { presentMemoryRecallAudit } from "./memoryRecallService.mjs";
@@ -61,7 +61,7 @@ export class ClientInspectorAPI {
       read("memories", () => this.memoryPage(scope)),
       read("recalls", () => this.store.listMemoryRecallAudit({ sessionId, limit: 8 })
         .map((audit) => presentMemoryRecallAudit(this.store, audit))),
-      read("schedules", () => this.schedules.list({ logicalSessionId: scope.logicalSessionId, status: "active" }, scope.actor)),
+      read("schedules", () => this.schedules.list({ logicalSessionId: scope.logicalSessionId, status: "active" }, pairedDeviceActor(identity))),
       read("turn", () => this.observability.latestSummary(scope.logicalSessionId ?? sessionId, { kind: "local_user" })),
       read("providers", () => this.providers(sessionId))
     ]);

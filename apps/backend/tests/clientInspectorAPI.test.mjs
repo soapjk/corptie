@@ -34,6 +34,23 @@ test("section failures are not projected as empty successful results", async () 
     await assert.rejects(() => f.inspector.snapshot(identity, "missing"), { code: "SESSION_NOT_FOUND" });
   } finally { await f.close(); }
 });
+test("paired-device Detail reads active schedules with the scheduler actor and reports denied reads", async () => {
+  const f = await fixture();
+  try {
+    f.inspector.schedules.list = (options, actor) => {
+      assert.deepEqual(options, { logicalSessionId: "s", status: "active" });
+      assert.deepEqual(actor, { type: "user", id: "user:paired-device:test-device" });
+      return [{ taskId: "scheduled:one", status: "active", name: "Next check" }];
+    };
+    const active = await f.inspector.snapshot(identity, "s");
+    assert.equal(active.sections.schedules[0].taskId, "scheduled:one");
+    assert.equal(f.inspector.scope("s", identity).actor.id, "client-device:test-device");
+    f.inspector.schedules.list = () => { throw Object.assign(new Error("denied"), { code: "AUTHORIZATION_REVOKED" }); };
+    const denied = await f.inspector.snapshot(identity, "s");
+    assert.equal(denied.errors.schedules, "AUTHORIZATION_REVOKED");
+    assert.equal(Object.hasOwn(denied.sections, "schedules"), false);
+  } finally { await f.close(); }
+});
 test("task Detail snapshot carries the same definition fields as desktop", async () => {
   const f = await fixture();
   try {

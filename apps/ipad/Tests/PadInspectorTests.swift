@@ -19,6 +19,18 @@ struct PadInspectorTests {
         store.apply(try snapshot("s", sections: #"{"references":[]}"#), sessionID: "s")
         #expect(store.sections["references"]?.items.isEmpty == true)
     }
+    @Test func activeScheduleAppearsFromPushAndSuccessfulEmptyUpdateRemovesIt() throws {
+        let store = PadInspectorStore()
+        store.apply(try snapshot("s", sections: #"{"schedules":[]}"#), sessionID: "s")
+        #expect(store.sections["schedules"]?.items.isEmpty == true)
+        store.apply(try snapshot("s", sections: #"{"schedules":[{"taskId":"scheduled:one","status":"active","name":"Next check"}]}"#), sessionID: "s")
+        #expect(store.sections["schedules"]?.items.first?["name"].text == "Next check")
+        store.apply(try snapshot("s", sections: "{}", errors: #"{"schedules":"AUTHORIZATION_REVOKED"}"#), sessionID: "s")
+        #expect(store.snapshot?.errors["schedules"] == "AUTHORIZATION_REVOKED")
+        store.apply(try snapshot("s", sections: #"{"schedules":[]}"#), sessionID: "s")
+        #expect(store.sections["schedules"]?.items.isEmpty == true)
+        #expect(store.snapshot?.errors["schedules"] == nil)
+    }
     @Test func wrongSessionFrameCannotReplaceVisibleDetail() throws {
         let store = PadInspectorStore()
         store.apply(try snapshot("s", sections: "{}"), sessionID: "s")
@@ -57,6 +69,8 @@ struct PadInspectorTests {
         #expect(source.contains("Image(systemName: \"chevron.up.chevron.down\")"))
         #expect(!source.contains("ConversationDetailHeaderIcon(systemName: \"arrow.triangle.2.circlepath\")"))
         #expect(source.contains("ConversationDetailDisclosure(isExpanded: $turnExpanded"))
+        #expect(source.contains("if let scheduleError = store.snapshot?.errors[\"schedules\"]"))
+        #expect(source.contains("scheduleFailure(scheduleError)"))
     }
 
     @Test func conversationHeaderOffersDesktopMetadataAndCopyActions() throws {
