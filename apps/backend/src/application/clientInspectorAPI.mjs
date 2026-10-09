@@ -23,7 +23,7 @@ const ACTION_FIELDS = {
   "memory.rollback": ["id", "auditId", "confirmed", "expectedVersion"],
   "memory.confirm": ["id", "content", "confirmed", "expectedVersion"],
   "memory.reject": ["id", "reason", "confirmed", "expectedVersion"],
-  "task.update": ["title", "description", "acceptanceCriteria", "verificationCriteria", "priority", "mainAgentId"],
+  "task.update": ["title", "description", "acceptanceCriteria", "verificationCriteria", "priority", "mainAgentId", "autoTitleEnabled"],
   "task.reclaimWorktree": ["confirmed"],
 };
 
@@ -80,6 +80,7 @@ export class ClientInspectorAPI {
         description: task.description ?? "", acceptanceCriteria: task.acceptance_criteria ?? "",
         verificationCriteria: task.verification_criteria ?? "", summary: parseSummary(task.user_summary_json),
         title: task.title, revision: task.revision, priority: task.priority, mainAgentId: task.main_agent_id, lifecycleState: task.lifecycle_state,
+        autoTitleEnabled: task.auto_title_enabled !== 0,
         agents: (this.store.getWork(workId)?.contributorAgentIds ?? []).map(id => {
           const agent = this.store.getAgent(id); return { id, name: agent?.name ?? id };
         })

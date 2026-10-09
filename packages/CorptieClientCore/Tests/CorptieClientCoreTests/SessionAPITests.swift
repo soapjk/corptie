@@ -76,6 +76,7 @@ struct SessionAPITests {
         #expect(work.actions.delete == ClientEntityAction(available: false, reason: "WORK_TASK_DELETING"))
         var update = ClientTaskUpdate(requestId: "update_12345")
         update.title = "Renamed"
+        update.autoTitleEnabled = false
         let renamed = try await api.taskCommand(taskId: "task:one", command: .update, body: update)
         #expect(renamed.kind == "task_update")
         #expect(renamed.entityResult?.title == "Renamed")
@@ -298,6 +299,7 @@ private final class SessionProtocol: URLProtocol, @unchecked Sendable {
                 json = #"{"schemaVersion":1,"work":{"id":"work:one","name":"Work","description":"","status":"active"},"actions":{"edit":{"available":true,"reason":null},"delete":{"available":false,"reason":"WORK_TASK_DELETING"}}}"#
             case ("/client/v1/tasks/task:one/update", _, "POST"):
                 #expect(body?["title"] as? String == "Renamed")
+                #expect(body?["autoTitleEnabled"] as? Bool == false)
                 #expect(body?["description"] == nil, "unset optionals stay off the wire")
                 json = #"{"schemaVersion":1,"requestId":"update_12345","sessionId":"","kind":"task_update","status":"completed","errorCode":null,"updatedAt":"now","entityResult":{"taskId":"task:one","title":"Renamed"}}"#
             case ("/client/v1/tasks/task:one/delete", _, "POST"):

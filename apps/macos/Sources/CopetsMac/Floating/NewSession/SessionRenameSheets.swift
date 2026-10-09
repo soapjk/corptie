@@ -79,6 +79,7 @@ struct RenameSessionSheet: View {
 struct RenameCorptieTaskSheet: View {
     @ObservedObject private var entityClient = EntityAPIClient.shared
     @State private var title: String
+    @State private var autoTitleEnabled: Bool
     @State private var isSaving = false
     @State private var saveError: String?
     let task: CorptieTask
@@ -88,6 +89,7 @@ struct RenameCorptieTaskSheet: View {
         self.task = task
         self.close = close
         _title = State(initialValue: task.title)
+        _autoTitleEnabled = State(initialValue: task.autoTitleEnabled ?? true)
     }
 
     var body: some View {
@@ -116,6 +118,8 @@ struct RenameCorptieTaskSheet: View {
                         .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
                 )
                 .onSubmit(save)
+
+            Toggle(L10n("自动更新 Task 标题"), isOn: $autoTitleEnabled)
 
             EntityNameValidationMessage(value: title)
 
@@ -154,7 +158,8 @@ struct RenameCorptieTaskSheet: View {
         isSaving = true
         saveError = nil
         Task {
-            if await entityClient.updateCorptieTask(taskId: task.id, title: trimmedTitle) != nil {
+            if await entityClient.updateCorptieTask(taskId: task.id, title: trimmedTitle,
+                autoTitleEnabled: autoTitleEnabled) != nil {
                 close()
             } else {
                 saveError = entityClient.errorMessage ?? L10n("CorptieTask 保存失败。")

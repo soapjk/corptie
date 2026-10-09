@@ -77,6 +77,7 @@ function fixture() {
   const published = [];
   const repository = new TaskSummaryRepository({
     runInTransaction: (body) => body(),
+    getTask: () => ({ title: "现有标题", auto_title_enabled: 1, user_summary_json: null }),
     db: { run: (sql, parameters) => writes.push({ sql, parameters }) }
   });
   const claim = { taskID: "task:1", generation: 2, operationID: "summary:2", basis: { hash: "basis:2" } };
@@ -119,6 +120,16 @@ test("unchanged suggested title produces no title write", () => {
   repository.store.getTask = () => ({ title: "相同标题" });
   repository.complete(claim, { suggestedTitle: "相同标题" });
   assert.ok(writes.every(({ sql }) => !sql.startsWith("UPDATE tasks SET title=")));
+});
+
+test("disabling automatic titles during generation keeps the current title but still publishes the summary", () => {
+  const { repository, claim, writes, published } = fixture();
+  repository.store.getTask = () => ({ title: "手动标题", auto_title_enabled: 0 });
+  assert.equal(repository.complete(claim, { suggestedTitle: "模型标题", focus: "继续工作" }), true);
+  assert.ok(writes.every(({ sql }) => !sql.startsWith("UPDATE tasks SET title=")));
+  assert.equal(published[0][1], "ready");
+  assert.equal(published[0][2].focus, "继续工作");
+  assert.equal(published[0][2].titleChange, undefined);
 });
 
 test("manual edit during generation prevents automatic rename", () => {

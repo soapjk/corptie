@@ -292,7 +292,13 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
                 ConversationTaskSummary(inspectorValue: $0["summary"], taskRevision: $0["revision"].number.map(Int.init))
             }
             ConversationTaskInformationCard(summary: summary, description: description,
-                acceptance: acceptance, showsWhenEmpty: true) {
+                acceptance: acceptance, showsWhenEmpty: true,
+                autoTitleEnabled: definition?["autoTitleEnabled"] == .null ? true : definition?["autoTitleEnabled"].flag,
+                autoTitleUpdating: locked,
+                onAutoTitleChange: { enabled in
+                    Task { await store.command("task.update", fields: ["autoTitleEnabled": .bool(enabled)],
+                        sessionID: sessionID, connection: connection) }
+                }) {
                 if let definition {
                     Button {
                         editor = .init(title: "编辑 Task", action: "task.update", fields: definition.fields,
@@ -305,6 +311,7 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
                         editor?.fields.removeValue(forKey: "summary"); editor?.fields.removeValue(forKey: "agents")
                         editor?.fields.removeValue(forKey: "lifecycleState")
                         editor?.fields.removeValue(forKey: "verificationCriteria")
+                        editor?.fields.removeValue(forKey: "autoTitleEnabled")
                     } label: { ConversationDetailHeaderIcon(systemName: "pencil") }
                         .accessibilityLabel("编辑 Task")
                         .disabled(locked)

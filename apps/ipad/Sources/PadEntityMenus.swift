@@ -171,6 +171,7 @@ struct PadRenameTaskSheet: View {
     let task: ClientTask
     let onFinished: () -> Void
     @State private var title: String
+    @State private var autoTitleEnabled: Bool
     @State private var submitting = false
     @State private var commandNotice: String?
     @Environment(\.dismiss) private var dismiss
@@ -181,6 +182,7 @@ struct PadRenameTaskSheet: View {
         self.task = task
         self.onFinished = onFinished
         _title = State(initialValue: task.title)
+        _autoTitleEnabled = State(initialValue: task.autoTitleEnabled)
     }
 
     var body: some View {
@@ -188,6 +190,7 @@ struct PadRenameTaskSheet: View {
             Form {
                 Section("Task 标题") {
                     TextField("标题", text: $title)
+                    Toggle("自动更新 Task 标题", isOn: $autoTitleEnabled)
                 }
                 if let commandNotice {
                     Section {
@@ -210,6 +213,7 @@ struct PadRenameTaskSheet: View {
                             let receipt = await commands.run(connection, target: .task(task.id), kind: "task_update", label: "重命名 Task") { api, requestID in
                                 var req = ClientTaskUpdate(requestId: requestID)
                                 req.title = trimmed
+                                req.autoTitleEnabled = autoTitleEnabled
                                 return try await api.taskCommand(taskId: task.id, command: .update, body: req)
                             }
                             submitting = false
