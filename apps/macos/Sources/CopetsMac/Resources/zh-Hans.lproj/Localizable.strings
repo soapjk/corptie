@@ -1701,3 +1701,5 @@
 "Open Floating Window" = "开启悬浮窗";
 
 "Close Floating Window" = "关闭悬浮窗";
+
+"Press Return to send; Shift-Return for a new line" = "按回车发送；Shift-回车换行";

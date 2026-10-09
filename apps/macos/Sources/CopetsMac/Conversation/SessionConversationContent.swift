@@ -59,6 +59,7 @@ struct SessionConversationContent: View {
     let showsHeader: Bool
     let allowsModelSwitch: Bool
     let topChromeClearance: CGFloat
+    let compactComposer: Bool
     let presentation: SessionConversationPresentation
 
     init(
@@ -71,6 +72,7 @@ struct SessionConversationContent: View {
         showsHeader: Bool = true,
         allowsModelSwitch: Bool = true,
         topChromeClearance: CGFloat = 0,
+        compactComposer: Bool = false,
         presentation: SessionConversationPresentation = .standard
     ) {
         self.sessionId = sessionId
@@ -85,6 +87,7 @@ struct SessionConversationContent: View {
         self.showsHeader = showsHeader
         self.allowsModelSwitch = allowsModelSwitch
         self.topChromeClearance = topChromeClearance
+        self.compactComposer = compactComposer
         self.presentation = presentation
         let presentationState = presentationCache.state(for: sessionId)
         _presentationState = ObservedObject(wrappedValue: presentationState)
@@ -181,6 +184,7 @@ struct SessionConversationContent: View {
                 draftRepository: composerDraftRepository,
                 modelCatalog: backendClient.modelCatalog,
                 allowsModelSwitch: allowsModelSwitch,
+                compact: compactComposer,
                 status: selectedSession?.executionTaskStatus ?? displayedDetail?.status,
                 isReady: selectedSession?.isReady ?? displayedDetail?.isReady ?? true,
                 notReadyReason: selectedSession?.notReadyReason ?? displayedDetail?.notReadyReason,
@@ -354,12 +358,7 @@ struct SessionConversationContent: View {
             restoreMissingHistoryAnchorIfNeeded()
         }
         .onReceive(backendClient.sessionSelectionController.$selectedSessionID) { selectedSessionID in
-            guard selectedSessionID == sessionId else {
-                historyAnchorRestoreTask?.cancel()
-                historyAnchorRestoreTask = nil
-                return
-            }
-            restoreMissingHistoryAnchorIfNeeded()
+            if selectedSessionID == sessionId { restoreMissingHistoryAnchorIfNeeded() }
         }
         .onReceive(backendClient.$isLoadingDetail) { isLoading in
             guard backendClient.selectedSession?.id == sessionId else { return }
@@ -682,8 +681,8 @@ struct SessionConversationContent: View {
     }
 
     private func loadEarlierMessages(preservingLatestFollow: Bool) {
-        guard backendClient.selectedSession?.id == sessionId,
-              let detail = displayedDetail else { return }
+        guard let detail = displayedDetail,
+              let session = selectedSession else { return }
         let visibleWeight = cachedDisplayEntries.reduce(0) { $0 + $1.displayWeight }
         let hiddenCount = max(0, cachedTotalDisplayEntryCount - visibleWeight)
         viewportState.prepareForHistoryPrepend(preservingLatestFollow: preservingLatestFollow)
@@ -693,25 +692,22 @@ struct SessionConversationContent: View {
             visibleMessageLimit += 100
             updateCachedDisplayEntries(for: detail)
         } else if detail.hasMoreHistory == true {
-            if let session = backendClient.selectedSession, session.id == sessionId {
-                // Reserve a presentation page before awaiting the request. A
-                // merged detail can publish while a scrollbar mouse-down is
-                // still active; the old bounded tail would otherwise keep the
-                // prepended rows hidden until a Session switch rebuilt it.
-                let previousVisibleMessageLimit = visibleMessageLimit
-                visibleMessageLimit += 100
-                Task { @MainActor in
-                    let selectionGeneration = backendClient.selectionGenerationToken(for: sessionId)
-                    let result = await backendClient.loadEarlierMessages(
-                        for: session,
-                        expectedSelectionGeneration: selectionGeneration
-                    )
-                    if case .failed = result,
-                       backendClient.selectedSession?.id == sessionId {
-                        visibleMessageLimit = previousVisibleMessageLimit
-                        if let current = displayedDetail {
-                            updateCachedDisplayEntries(for: current)
-                        }
+            // Reserve a presentation page before awaiting the request. A
+            // merged detail can publish while a scrollbar mouse-down is
+            // still active; the old bounded tail would otherwise keep the
+            // prepended rows hidden until a Session switch rebuilt it.
+            let previousVisibleMessageLimit = visibleMessageLimit
+            visibleMessageLimit += 100
+            Task { @MainActor in
+                let selectionGeneration = backendClient.selectionGenerationToken(for: sessionId)
+                let result = await backendClient.loadEarlierMessages(
+                    for: session,
+                    expectedSelectionGeneration: selectionGeneration
+                )
+                if case .failed = result {
+                    visibleMessageLimit = previousVisibleMessageLimit
+                    if let current = displayedDetail {
+                        updateCachedDisplayEntries(for: current)
                     }
                 }
             }
@@ -750,7 +746,6 @@ struct SessionConversationContent: View {
 
     private func restoreMissingHistoryAnchorIfNeeded() {
         guard historyAnchorRestoreTask == nil,
-              backendClient.selectedSession?.id == sessionId,
               let anchorRowID = requestedRestorationAnchorRowID,
               !cachedDisplayEntries.contains(where: { $0.id == anchorRowID }),
               let detail = displayedDetail else { return }
@@ -760,7 +755,7 @@ struct SessionConversationContent: View {
             return
         }
         guard detail.hasMoreHistory == true,
-              let session = backendClient.selectedSession else {
+              let session = selectedSession else {
             // A deleted/invalid anchor degrades directly to latest. Reusing
             // the old absolute Y against a different row set is what caused
             // the visible jump to unrelated historical content.
@@ -771,14 +766,14 @@ struct SessionConversationContent: View {
 
         historyAnchorRestoreTask = Task { @MainActor in
             defer { historyAnchorRestoreTask = nil }
-            guard let selectionGeneration = backendClient.selectionGenerationToken(for: sessionId) else { return }
+            let selectionGeneration = backendClient.selectionGenerationToken(for: sessionId)
             let result = await backendClient.loadTimelineWindow(
                 for: session,
                 anchorRowID: anchorRowID,
                 expectedSelectionGeneration: selectionGeneration
             )
             guard !Task.isCancelled,
-                  backendClient.selectedSession?.id == sessionId,
+                  selectedSession.map({ SessionTimelineBindingReconciler.sameRoute($0, session) }) == true,
                   let current = displayedDetail else { return }
             if result != .found || !timelineContains(rowID: anchorRowID, in: current.items) {
                 timelineRestorationIntent.clearAnchor()

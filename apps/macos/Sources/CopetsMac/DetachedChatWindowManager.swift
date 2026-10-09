@@ -362,7 +362,8 @@ private struct DetachedChatWindowView: View {
                     initialTimelinePosition: SessionViewportController.shared.position(for: session.id),
                     showsHeader: false,
                     allowsModelSwitch: false,
-                    topChromeClearance: 62
+                    topChromeClearance: 50,
+                    compactComposer: true
                 )
                 .padding(10)
             } else {
@@ -409,17 +410,17 @@ private struct DetachedChatWindowView: View {
                         .frame(minWidth: 180)
                     }
                 }
-                .padding(.top, 9)
+                .padding(.top, 6)
 
                 Spacer(minLength: 0)
                 DetachedChatWindowTitle(session: session)
-                    .frame(maxWidth: 360)
+                    .frame(maxWidth: 280)
                 Spacer(minLength: 0)
                 Color.clear.frame(width: 76, height: 1)
             }
-            .padding(.horizontal, 10)
-            .padding(.top, 8)
-            .frame(height: 62, alignment: .top)
+            .padding(.horizontal, 4)
+            .padding(.top, 3)
+            .frame(height: 48, alignment: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
@@ -456,24 +457,24 @@ private struct DetachedChatWindowTitle: View {
     var body: some View {
         ZStack {
             DetachedChatWindowDragArea()
-            VStack(spacing: 2) {
+            VStack(spacing: 1) {
                 Text(session?.title ?? L10n("Chat"))
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                     .lineLimit(1)
                     .accessibilityAddTraits(.isHeader)
                 if let work {
-                    HStack(spacing: 5) {
+                    HStack(spacing: 4) {
                         ObjectiveAvatarView(objectiveID: work.id, name: work.name,
-                                            avatarPath: work.avatarPath, size: 14)
+                                            avatarPath: work.avatarPath, size: 12)
                         Text(work.name)
                             .lineLimit(1)
                     }
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(.secondary)
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 7)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
             .allowsHitTesting(false)
         }
         .fixedSize(horizontal: false, vertical: true)

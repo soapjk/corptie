@@ -31,6 +31,23 @@ struct SessionForkResponse: Decodable {
     let taskId: String?
 }
 
+/// The request must outlive the sheet so closing it cannot cancel a long fork.
+@MainActor
+final class SessionForkBackgroundOperation {
+    static let shared = SessionForkBackgroundOperation()
+    private var inFlight = Set<String>()
+
+    func isRunning(_ requestID: String) -> Bool { inFlight.contains(requestID) }
+
+    func run(requestID: String, operation: @escaping @MainActor () async -> Void) {
+        guard inFlight.insert(requestID).inserted else { return }
+        Task {
+            defer { inFlight.remove(requestID) }
+            await operation()
+        }
+    }
+}
+
 struct SessionForkSheet: View {
     let selection: SessionForkSelection
     @ObservedObject var backendClient: BackendClient
@@ -42,7 +59,6 @@ struct SessionForkSheet: View {
     @State private var verificationCriteria = ""
     @State private var priority = "medium"
     @State private var requestID = UUID().uuidString
-    @State private var submitting = false
     @State private var errorText: String?
     @FocusState private var titleFocused: Bool
 
@@ -76,7 +92,6 @@ struct SessionForkSheet: View {
                             }
                         }
                         .textFieldStyle(.roundedBorder)
-                        .disabled(submitting)
                         Label(preview.hasWorktree
                               ? L10n("History through this turn and the current workspace, including uncommitted changes, will be copied. No instruction will run automatically.")
                               : L10n("History through this turn will be copied. No instruction will run automatically."),
@@ -89,28 +104,21 @@ struct SessionForkSheet: View {
                         Label(errorText, systemImage: "exclamationmark.triangle.fill")
                             .font(.callout).foregroundStyle(.red).textSelection(.enabled)
                     }
-                    if submitting {
-                        ProgressView(preview?.kind == "worker"
-                                     ? L10n("Creating Task, copying workspace, and forking history…")
-                                     : L10n("Creating Chat and forking history…"))
-                            .controlSize(.small)
-                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             Divider().padding(.vertical, 14)
             HStack {
                 Spacer()
-                Button(L10n("Cancel")) { dismiss() }.keyboardShortcut(.cancelAction).disabled(submitting)
-                Button(L10n("Create Branch")) { Task { await create() } }
+                Button(L10n("Cancel")) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(L10n("Create Branch")) { create() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(preview == nil || !EntityNamePolicy.isValid(title) || submitting)
+                    .disabled(preview == nil || !EntityNamePolicy.isValid(title))
             }
         }
         .padding(22)
         .frame(width: 520)
         .frame(minHeight: 420, idealHeight: 620, maxHeight: 720)
-        .interactiveDismissDisabled(submitting)
         .task(id: selection.id) {
             do {
                 let value = try await backendClient.previewSessionFork(selection)
@@ -125,24 +133,33 @@ struct SessionForkSheet: View {
         }
     }
 
-    @MainActor private func create() async {
-        guard let preview, !submitting else { return }
-        submitting = true
-        errorText = nil
-        defer { submitting = false }
-        do {
-            let result = try await backendClient.createSessionFork(selection, requestID: requestID,
-                sourceBindingID: preview.sourceBindingId, title: title,
-                description: description, acceptanceCriteria: acceptanceCriteria,
-                verificationCriteria: verificationCriteria, priority: priority)
-            OperationNotificationManager.shared.complete(.init(category: .environment, outcome: .succeeded, name: "Session fork", sessionID: result.session.id))
-            backendClient.acceptCreatedSession(result.session, selectImmediately: false)
-            backendClient.select(session: result.session, focusComposer: true)
-            dismiss()
-        } catch {
-            OperationNotificationManager.shared.complete(.init(category: .environment, outcome: OperationNotificationOutcome.errorOutcome(error), name: "Session fork"))
-            errorText = error.localizedDescription
+    @MainActor private func create() {
+        guard let preview, EntityNamePolicy.isValid(title) else { return }
+        let selection = selection
+        let requestID = requestID
+        let sourceBindingID = preview.sourceBindingId
+        let title = title
+        let description = description
+        let acceptanceCriteria = acceptanceCriteria
+        let verificationCriteria = verificationCriteria
+        let priority = priority
+        let backendClient = backendClient
+        SessionForkBackgroundOperation.shared.run(requestID: requestID) {
+            do {
+                let result = try await backendClient.createSessionFork(selection, requestID: requestID,
+                    sourceBindingID: sourceBindingID, title: title,
+                    description: description, acceptanceCriteria: acceptanceCriteria,
+                    verificationCriteria: verificationCriteria, priority: priority)
+                backendClient.acceptCreatedSession(result.session, selectImmediately: false)
+                OperationNotificationManager.shared.complete(.init(category: .environment, outcome: .succeeded,
+                    name: "Session fork", summary: title, sessionID: result.session.id))
+            } catch {
+                OperationNotificationManager.shared.complete(.init(category: .environment,
+                    outcome: OperationNotificationOutcome.errorOutcome(error),
+                    name: "Session fork", summary: error.localizedDescription))
+            }
         }
+        dismiss()
     }
 
     private func sourceCard(_ preview: SessionForkPreview) -> some View {

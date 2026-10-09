@@ -22,7 +22,7 @@ extension BackendClient {
     }
 
     func loadTimelineWindow(
-        for session: TaskSession, anchorRowID: String, expectedSelectionGeneration: UInt64
+        for session: TaskSession, anchorRowID: String, expectedSelectionGeneration: UInt64?
     ) async -> TimelineAnchorWindowLoadResult {
         await timelineHistoryController.loadTimelineWindow(
             for: session, anchorRowID: anchorRowID,
