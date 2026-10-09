@@ -5,6 +5,8 @@ import CorptieClientCore
 import CorptieConversation
 import Observation
 import OSLog
+import ImageIO
+import UniformTypeIdentifiers
 
 @main
 struct CorptieMobileApp: App {
@@ -809,7 +811,7 @@ struct ConversationView: View {
                     Color.clear.frame(height: 1)
                 }
             }.frame(width: width)
-        } else if let entry = workspace.displayEntries.first(where: { $0.id == id }) {
+        } else if let entry = workspace.displayEntryByID[id] {
             VStack(spacing: 0) {
                         switch entry.kind {
                         case .message(let message):
@@ -2188,10 +2190,11 @@ private struct MobileMessageBubble: View {
     var delete: (() -> Void)? = nil
     var cancelQueued: (() -> Void)? = nil
     @State private var selectedResource: ConversationLocalResource?
+    @State private var selectedGallery: MobileImageGalleryPreview?
     @State private var linkFailed = false
 
     private var localResources: [ConversationLocalResource] {
-        ConversationLocalResourceCache.shared.resources(messageID: message.id, text: displayText)
+        ConversationLocalResourceCache.shared.resources(messageID: message.id, text: rawDisplayText)
     }
 
     private func openMessageLink(_ url: URL) {
@@ -2203,9 +2206,18 @@ private struct MobileMessageBubble: View {
     }
 
     private var fromUser: Bool { message.presentationKind == .userMessage }
-    private var displayText: String {
+    private var rawDisplayText: String {
         ConversationMessageDisplayText.resolve(text: message.text,
             presentationText: message.presentationText, title: message.title, type: message.type)
+    }
+    private var imageReferences: [ConversationMessageImageReference] {
+        ConversationMessageImageReferenceCache.shared.references(messageID: message.id, text: rawDisplayText)
+            .filter { ConversationLocalResource(url: $0.url) != nil || ["http", "https"].contains($0.url.scheme?.lowercased() ?? "") }
+    }
+    private var displayText: String {
+        if message.type == "imageView", !message.images.isEmpty { return "" }
+        return MessageImageGalleryLayout.bodyText(ConversationMessageImageReference.removing(imageReferences, from: rawDisplayText),
+            hasImages: !message.images.isEmpty)
     }
     private var contentBlocks: [ConversationLocatedContentBlock] {
         guard displayText.contains("|") || (message.type == "agentMessage" && displayText.contains("```corptie-chart"))
@@ -2213,7 +2225,11 @@ private struct MobileMessageBubble: View {
         return ConversationChartBlockCache.shared.locatedBlocks(
             messageID: message.id, authoritativeText: displayText)
     }
-    private var attachments: ArraySlice<ClientMessageImage> { message.images.prefix(MessageImageStripMetrics.maximumCount) }
+    private var attachments: [ClientMessageImage] { message.images }
+    private var galleryResources: [ConversationMessageImageReference] {
+        var seen = Set<String>()
+        return imageReferences.filter { seen.insert($0.id).inserted }
+    }
     private var suggestedReplies: [ClientApprovalOption] {
         guard message.type == "agentMessage", message.status != "selected" else { return [] }
         return message.options ?? []
@@ -2231,8 +2247,9 @@ private struct MobileMessageBubble: View {
     private var cardWidth: CGFloat {
         let availableLane = laneWidth > 0 ? laneWidth : MessageBubbleWidthPolicy.maximumWidth
         return MessageBubbleWidthPolicy.cardWidth(
-            bodyWidth: PadMessageLayout.bodyWidth(text: displayText, style: fromUser ? .user : .agent),
-            hasAttachments: !attachments.isEmpty || !suggestedReplies.isEmpty,
+            bodyWidth: max(PadMessageLayout.bodyWidth(text: displayText, style: fromUser ? .user : .agent),
+                attachments.isEmpty && galleryResources.isEmpty ? 0 : MessageImageGalleryLayout.preferredBodyWidth),
+            hasAttachments: !attachments.isEmpty || !galleryResources.isEmpty || !suggestedReplies.isEmpty,
             laneWidth: availableLane)
     }
 
@@ -2270,7 +2287,7 @@ private struct MobileMessageBubble: View {
                                     .messageSource(name: message.automationName), systemImage: "clock")
                                     .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                             }
-                            if fromUser && !attachments.isEmpty { attachmentStrip }
+                            if fromUser && (!attachments.isEmpty || !galleryResources.isEmpty) { attachmentStrip }
                             ForEach(contentBlocks) { block in
                                 switch block.content {
                                 case .markdown(let text):
@@ -2298,14 +2315,10 @@ private struct MobileMessageBubble: View {
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 }
                             }
-                            if !fromUser && !attachments.isEmpty { attachmentStrip }
-                            ForEach(localResources.prefix(8)) { resource in
+                            if !fromUser && (!attachments.isEmpty || !galleryResources.isEmpty) { attachmentStrip }
+                            ForEach(localResources.filter { !$0.isImage }.prefix(8)) { resource in
                                 Button { selectedResource = resource } label: {
                                     HStack {
-                                        if resource.isImage {
-                                            MessageImageThumbnail(state: resourceThumbnail(resource), index: 0)
-                                                .frame(width: 88, height: 88)
-                                        }
                                         Label(resource.fileName, systemImage: resource.isImage ? "photo" : "doc")
                                         .font(.caption).lineLimit(1)
                                         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
@@ -2347,13 +2360,18 @@ private struct MobileMessageBubble: View {
             PadMessageResourceViewer(connection: connection, sessionID: sessionID,
                 itemID: message.id, resource: resource)
         }
+        .fullScreenCover(item: $selectedGallery) { preview in
+            MobileImageGalleryViewer(connection: connection, sessionID: sessionID, itemID: message.id, preview: preview)
+        }
         .alert("无法打开链接", isPresented: $linkFailed) {
             Button("好", role: .cancel) { }
         } message: { Text("链接格式不受支持，或当前没有可打开它的应用。") }
     }
 
-    private func resourceThumbnail(_ resource: ConversationLocalResource) -> MessageImageThumbnail.State {
-        switch images.entry(sessionID: sessionID, managedPath: resource.path, itemID: message.id) {
+    private func resourceThumbnail(_ resource: ConversationMessageImageReference) -> MessageImageThumbnail.State {
+        let local = ConversationLocalResource(url: resource.url)
+        return switch images.entry(sessionID: sessionID, managedPath: local?.path ?? resource.url.absoluteString,
+                           itemID: local == nil ? nil : message.id) {
         case .loaded(let image): .loaded(Image(uiImage: image))
         case .missing: .missing
         case .loading, nil: .loading
@@ -2361,20 +2379,41 @@ private struct MobileMessageBubble: View {
     }
 
     private var attachmentStrip: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: MessageImageStripMetrics.spacing) {
-                ForEach(Array(attachments.enumerated()), id: \.element.id) { index, attachment in
-                    Button { openAttachment(attachment) } label: {
-                        MessageImageThumbnail(state: thumbnailState(attachment), index: index)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("message-attachment-\(index)")
-                    .onAppear { images.ensure(sessionID: sessionID, managedPath: attachment.managedPath, connection: connection) }
+        let count = attachments.count + galleryResources.count
+        let frames = MessageImageGalleryLayout.frames(count: count,
+            width: cardWidth - MessageBubbleWidthPolicy.horizontalPadding)
+        return ZStack(alignment: .topLeading) {
+            ForEach(Array(frames.enumerated()), id: \.offset) { index, frame in
+                if index < attachments.count {
+                    let attachment = attachments[index]
+                    Button {
+                        if images.entry(sessionID: sessionID, managedPath: attachment.managedPath) == .missing {
+                            images.retry(sessionID: sessionID, managedPath: attachment.managedPath, connection: connection)
+                        } else { showGallery(index: index) }
+                    } label: {
+                        MessageImageThumbnail(state: thumbnailState(attachment), index: index,
+                            size: frame.size, fits: count == 1, extraCount: index == 3 ? max(0, count - 4) : 0)
+                    }.buttonStyle(.plain)
+                        .offset(x: frame.minX, y: frame.minY)
+                        .accessibilityIdentifier("message-attachment-\(index)")
+                        .onAppear { images.ensure(sessionID: sessionID, managedPath: attachment.managedPath, connection: connection) }
+                } else {
+                    let resource = galleryResources[index - attachments.count]
+                    let local = ConversationLocalResource(url: resource.url)
+                    let path = local?.path ?? resource.url.absoluteString
+                    Button {
+                        if images.entry(sessionID: sessionID, managedPath: path, itemID: local == nil ? nil : message.id) == .missing {
+                            images.retry(sessionID: sessionID, managedPath: path, connection: connection, itemID: local == nil ? nil : message.id)
+                        } else { showGallery(index: index) }
+                    } label: {
+                        MessageImageThumbnail(state: resourceThumbnail(resource), index: index,
+                            size: frame.size, fits: count == 1, extraCount: index == 3 ? max(0, count - 4) : 0)
+                    }.buttonStyle(.plain).offset(x: frame.minX, y: frame.minY)
+                        .onAppear { images.ensure(sessionID: sessionID, managedPath: path, connection: connection, itemID: local == nil ? nil : message.id) }
                 }
             }
         }
-        .scrollIndicators(.hidden)
-        .frame(height: MessageImageStripMetrics.thumbnailEdge)
+        .frame(width: frames.map(\.maxX).max() ?? 0, height: frames.map(\.maxY).max() ?? 0, alignment: .topLeading)
     }
 
     private func thumbnailState(_ attachment: ClientMessageImage) -> MessageImageThumbnail.State {
@@ -2383,6 +2422,112 @@ private struct MobileMessageBubble: View {
         case .missing: .missing
         case .loading, nil: .loading
         }
+    }
+
+    private func showGallery(index: Int) {
+        selectedGallery = .init(items: attachments.map { .managed($0) } + galleryResources.map { .reference($0) }, selected: index)
+    }
+}
+
+private struct MobileImageGalleryPreview: Identifiable {
+    enum Item: Sendable {
+        case managed(ClientMessageImage)
+        case reference(ConversationMessageImageReference)
+        var name: String {
+            switch self {
+            case .managed(let image): URL(fileURLWithPath: image.fileName ?? image.managedPath).lastPathComponent
+            case .reference(let reference): reference.url.lastPathComponent
+            }
+        }
+    }
+    let id = UUID()
+    let items: [Item]
+    let selected: Int
+}
+
+/// One original at a time, with native Quick Look zoom/rotation. Moving between
+/// images releases the previous temporary file instead of retaining an album
+/// of full-resolution UIImages alongside the scrolling thumbnail cache.
+private struct MobileImageGalleryViewer: View {
+    let connection: PadConnection
+    let sessionID: String
+    let itemID: String
+    let preview: MobileImageGalleryPreview
+    @Environment(\.dismiss) private var dismiss
+    @State private var selection: Int
+    @State private var localURL: URL?
+    @State private var failed = false
+    @State private var retry = 0
+
+    init(connection: PadConnection, sessionID: String, itemID: String, preview: MobileImageGalleryPreview) {
+        self.connection = connection; self.sessionID = sessionID; self.itemID = itemID; self.preview = preview
+        _selection = State(initialValue: preview.selected)
+    }
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let localURL { PadResourceQuickLook(url: localURL).id(localURL) }
+                else if failed {
+                    ContentUnavailableView {
+                        Label("图片暂时无法打开", systemImage: "photo")
+                    } description: { Text("请检查连接，或确认图片仍然可用。") }
+                    actions: { Button("重试") { retry += 1 } }
+                } else { ProgressView("正在加载图片…") }
+            }
+            .navigationTitle(preview.items[selection].name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
+                ToolbarItemGroup(placement: .bottomBar) {
+                    Button { selection -= 1 } label: { Image(systemName: "chevron.left") }.disabled(selection == 0)
+                    Spacer()
+                    Text("\(selection + 1) / \(preview.items.count)").monospacedDigit()
+                    Spacer()
+                    Button { selection += 1 } label: { Image(systemName: "chevron.right") }.disabled(selection == preview.items.count - 1)
+                }
+            }
+        }
+        .task(id: "\(selection):\(retry)") {
+            if let localURL { try? FileManager.default.removeItem(at: localURL.deletingLastPathComponent()) }
+            localURL = nil; failed = false
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("image-gallery-\(UUID())")
+            do {
+                let selected = preview.items[selection]
+                let bytes: Data
+                switch selected {
+                case .managed(let image):
+                    let api = ClientSessionAPI(transport: try await connection.transport())
+                    guard let payload = try await api.image(sessionId: sessionID, managedPath: image.managedPath) else {
+                        throw URLError(.fileDoesNotExist)
+                    }
+                    bytes = payload.data
+                case .reference(let reference):
+                    if let resource = ConversationLocalResource(url: reference.url) {
+                        let api = ClientSessionAPI(transport: try await connection.transport())
+                        bytes = try await api.resource(sessionId: sessionID, itemId: itemID, path: resource.path)
+                    } else {
+                        bytes = try await ClientRemoteImageDownload.read(reference.url)
+                    }
+                }
+                try Task.checkCancellation()
+                let url = try await Task.detached(priority: .userInitiated) {
+                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                    let source = CGImageSourceCreateWithData(bytes as CFData, nil)
+                    guard let source, let type = CGImageSourceGetType(source) as String? else { throw URLError(.cannotDecodeContentData) }
+                    let ext = UTType(type)?.preferredFilenameExtension ?? "png"
+                    let file = directory.appendingPathComponent("image.\(ext)")
+                    try bytes.write(to: file, options: [.atomic, .completeFileProtection])
+                    return file
+                }.value
+                try Task.checkCancellation()
+                localURL = url
+            } catch {
+                try? FileManager.default.removeItem(at: directory)
+                if !Task.isCancelled { failed = true }
+            }
+        }
+        .onDisappear { if let localURL { try? FileManager.default.removeItem(at: localURL.deletingLastPathComponent()) } }
+        .accessibilityIdentifier("attachment-gallery-viewer")
     }
 }
 

@@ -207,47 +207,40 @@ struct MacSharedMessageTextCard: View {
     }
 
     private var attachmentStrip: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 7) {
-                ForEach(Array(row.images.prefix(4).enumerated()), id: \.offset) { index, attachment in
-                    MacMessageImageThumbnail(attachment: attachment, index: index)
-                }
+        let frames = MessageImageGalleryLayout.frames(count: row.images.count, width: layout.cardWidth - 20)
+        return ZStack(alignment: .topLeading) {
+            ForEach(Array(frames.enumerated()), id: \.offset) { index, frame in
+                MacMessageImageThumbnail(attachment: row.images[index], index: index,
+                    size: frame.size, fits: row.images.count == 1,
+                    extraCount: index == 3 ? max(0, row.images.count - 4) : 0,
+                    open: { ChatImageGalleryViewer.shared.show(row.images, selected: index) })
+                    .offset(x: frame.minX, y: frame.minY)
             }
         }
-        .scrollIndicators(.hidden)
-        .frame(width: layout.cardWidth - 20, height: 88, alignment: .leading)
+        .frame(width: frames.map(\.maxX).max() ?? 0, height: frames.map(\.maxY).max() ?? 0, alignment: .topLeading)
     }
 }
 
 private struct MacMessageImageThumbnail: View {
     let attachment: ChatTimelineImage
     let index: Int
+    let size: CGSize
+    let fits: Bool
+    let extraCount: Int
+    let open: () -> Void
     @State private var loadedImage: NSImage?
     @State private var loadFailed = false
+    @State private var retry = 0
 
     var body: some View {
-        Button(action: openImage) {
-            Group {
-                if let loadedImage {
-                    Image(nsImage: loadedImage)
-                        .resizable()
-                        .scaledToFill()
-                } else {
-                    Image(systemName: loadFailed ? "exclamationmark.triangle" : "photo")
-                        .resizable()
-                        .scaledToFit()
-                        .padding(22)
-                }
-            }
-            .frame(width: 88, height: 88)
-            .clipped()
-            .background(Color(nsColor: .quaternaryLabelColor).opacity(0.12))
-            .clipShape(RoundedRectangle(cornerRadius: 9))
+        Button { if loadFailed { retry += 1 } else { open() } } label: {
+            MessageImageThumbnail(state: loadedImage.map { .loaded(Image(nsImage: $0)) } ?? (loadFailed ? .missing : .loading),
+                index: index, size: size, fits: fits, extraCount: extraCount)
         }
         .buttonStyle(.plain)
-        .help(attachment.originalPath == nil ? "打开图片" : "在 Finder 中显示原始图片")
+        .help("打开图片")
         .accessibilityLabel("附加图片 \(index + 1)")
-        .task(id: attachment.displayURL) {
+        .task(id: "\(attachment.displayURL?.absoluteString ?? ""):\(retry)") {
             loadedImage = nil
             loadFailed = false
             guard let url = attachment.displayURL else {
@@ -262,21 +255,6 @@ private struct MacMessageImageThumbnail: View {
         }
     }
 
-    private func openImage() {
-        if let originalPath = attachment.originalPath,
-           FileManager.default.fileExists(atPath: originalPath) {
-            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: originalPath)])
-        } else if attachment.originalPath != nil, let url = attachment.displayURL {
-            let alert = NSAlert()
-            alert.messageText = "Original image is missing"
-            alert.informativeText = "Corptie kept a managed copy for this conversation."
-            alert.addButton(withTitle: "View managed copy")
-            alert.addButton(withTitle: "Cancel")
-            if alert.runModal() == .alertFirstButtonReturn { NSWorkspace.shared.open(url) }
-        } else if let url = attachment.displayURL {
-            NSWorkspace.shared.open(url)
-        }
-    }
 }
 
 private struct MacProcessBlockView: View {
