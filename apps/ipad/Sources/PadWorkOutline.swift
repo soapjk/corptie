@@ -30,6 +30,7 @@ struct PadWorkOutline: View {
     @State private var searchText = ""
     @State private var showingArchived = false
     @State private var selectedArchivedTask: ClientTask?
+    @State private var fullyExpandedWorkIDs = Set<String>()
     @FocusState private var searchFocused: Bool
     private var sort: PadOutlineSort { PadOutlineSort(rawValue: sortRaw) ?? .standard }
     private var hasSearch: Bool { !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -316,16 +317,27 @@ struct PadWorkOutline: View {
 
     private func workGroup(_ work: ClientWork) -> some View {
         let isExpanded = expandedWorkIDs.contains(work.id) || hasSearch
+        let tasks = tasksByWork[work.id] ?? []
+        let visibleTaskCount = WorkOutlineTaskDisclosurePolicy.visibleCount(
+            totalCount: tasks.count,
+            showsAll: fullyExpandedWorkIDs.contains(work.id),
+            isSearching: hasSearch,
+            isShowingArchive: showingArchived
+        )
+        let hiddenTaskCount = tasks.count - visibleTaskCount
         return VStack(alignment: .leading, spacing: 2) {
             workHeader(work, isExpanded: isExpanded)
             if isExpanded {
-                ForEach(tasksByWork[work.id] ?? []) { task in
+                ForEach(tasks.prefix(visibleTaskCount)) { task in
                     let sessionID = workspace.sessionIDByTaskID[task.id]
                     taskRow(task, sessionID: sessionID)
                         .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
                         .background(WorkOutlineSelectionBackground(
                             isSelected: showsPersistentSelection
                                 && sessionID != nil && workspace.selection == sessionID))
+                }
+                if hiddenTaskCount > 0 {
+                    showAllTasksButton(workID: work.id, hiddenCount: hiddenTaskCount)
                 }
             }
         }
@@ -425,8 +437,28 @@ struct PadWorkOutline: View {
     private func toggleWork(_ id: String) {
         guard !hasSearch else { return }
         withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation) {
-            if expandedWorkIDs.contains(id) { expandedWorkIDs.remove(id) } else { expandedWorkIDs.insert(id) }
+            if expandedWorkIDs.contains(id) {
+                fullyExpandedWorkIDs.remove(id)
+                expandedWorkIDs.remove(id)
+            } else {
+                expandedWorkIDs.insert(id)
+            }
         }
+    }
+
+    private func showAllTasksButton(workID: String, hiddenCount: Int) -> some View {
+        Button {
+            fullyExpandedWorkIDs.insert(workID)
+        } label: {
+            Label("展开其余 \(hiddenCount) 个 Task", systemImage: "chevron.down")
+                .font(isPhone ? .caption : .system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .padding(.vertical, rowPadding)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.leading, ConsoleWorkOutlineMetrics.childIndent + 24)
+        .accessibilityLabel("展开全部 Task，还剩 \(hiddenCount) 个")
     }
 
     private func taskRow(_ task: ClientTask, sessionID: String?) -> some View {

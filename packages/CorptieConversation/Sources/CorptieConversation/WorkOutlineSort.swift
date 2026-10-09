@@ -38,6 +38,38 @@ public enum WorkOutlineSort: String, CaseIterable, Sendable {
     }
 }
 
+/// Keeps expanded Work groups compact until the user explicitly asks to see
+/// the remaining active Tasks. Search and archive projections stay complete.
+public enum WorkOutlineTaskDisclosurePolicy {
+    public static let defaultVisibleCount = 5
+
+    public static func visibleCount(
+        totalCount: Int,
+        showsAll: Bool,
+        isSearching: Bool,
+        isShowingArchive: Bool
+    ) -> Int {
+        guard !showsAll, !isSearching, !isShowingArchive else {
+            return max(0, totalCount)
+        }
+        return min(max(0, totalCount), defaultVisibleCount)
+    }
+
+    public static func hiddenCount(
+        totalCount: Int,
+        showsAll: Bool,
+        isSearching: Bool,
+        isShowingArchive: Bool
+    ) -> Int {
+        max(0, totalCount - visibleCount(
+            totalCount: totalCount,
+            showsAll: showsAll,
+            isSearching: isSearching,
+            isShowingArchive: isShowingArchive
+        ))
+    }
+}
+
 /// Both clients persist only explicit expansion: newly discovered groups stay folded.
 public struct WorkOutlineExpansionStore {
     private static let worksKey = "corptie.workOutline.expandedWorkIDs.v2"

@@ -38,4 +38,26 @@ struct WorkOutlinePolicyTests {
         #expect(ordered(.updated) == ["c", "a", "b"])
         #expect(ordered(.updated, activity: true) == ["c", "a", "b"])
     }
+
+    @Test func activeWorkGroupsRevealFiveTasksBeforeShowingAll() {
+        #expect(WorkOutlineTaskDisclosurePolicy.defaultVisibleCount == 5)
+        #expect(WorkOutlineTaskDisclosurePolicy.visibleCount(
+            totalCount: 12, showsAll: false, isSearching: false, isShowingArchive: false
+        ) == 5)
+        #expect(WorkOutlineTaskDisclosurePolicy.hiddenCount(
+            totalCount: 12, showsAll: false, isSearching: false, isShowingArchive: false
+        ) == 7)
+        #expect(WorkOutlineTaskDisclosurePolicy.visibleCount(
+            totalCount: 12, showsAll: true, isSearching: false, isShowingArchive: false
+        ) == 12)
+        #expect(WorkOutlineTaskDisclosurePolicy.visibleCount(
+            totalCount: 12, showsAll: false, isSearching: true, isShowingArchive: false
+        ) == 12)
+        #expect(WorkOutlineTaskDisclosurePolicy.visibleCount(
+            totalCount: 12, showsAll: false, isSearching: false, isShowingArchive: true
+        ) == 12)
+        #expect(WorkOutlineTaskDisclosurePolicy.hiddenCount(
+            totalCount: 3, showsAll: false, isSearching: false, isShowingArchive: false
+        ) == 0)
+    }
 }
