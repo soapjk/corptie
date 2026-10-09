@@ -206,6 +206,7 @@ export class AgentWorkQueueRepository {
   updateAgentTask(taskId, patch = {}) {
     const item = this.getAgentTask(taskId);
     if (!item) return null;
+    if (item.source?.deleted === true) return item;
     const status = patch.status ?? item.status;
     const timestamp = new Date().toISOString();
     const completedAt = Object.hasOwn(patch, "completedAt")

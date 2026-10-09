@@ -1,4 +1,5 @@
 import { providerSafeToolText } from "./providerRawMetadata.mjs";
+import { boundedUnicodeText } from "./unicodeText.mjs";
 
 const TOOL_TYPES = new Set(["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"]);
 const MAX_NAME = 160;
@@ -8,8 +9,8 @@ export function toolExecutionForItem(item, { input = null, result = null } = {})
   if (!TOOL_TYPES.has(item?.type)) return null;
   return {
     schemaVersion: 1,
-    toolId: String(item.id ?? "").slice(0, 200),
-    name: String(item.title ?? item.type).slice(0, MAX_NAME),
+    toolId: boundedUnicodeText(item.id ?? "", 200),
+    name: boundedUnicodeText(item.title ?? item.type, MAX_NAME),
     status: toolStatus(item.status),
     input: preview(input),
     result: preview(result)
@@ -56,5 +57,5 @@ function preview(value) {
   // Reuse the existing Provider metadata redactor before making a public preview.
   const text = providerSafeToolText(value);
   if (!text) return null;
-  return text.length <= MAX_PREVIEW ? text : `${text.slice(0, MAX_PREVIEW - 1)}…`;
+  return boundedUnicodeText(text, MAX_PREVIEW, "…");
 }

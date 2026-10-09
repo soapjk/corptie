@@ -288,8 +288,8 @@ export class ScheduledSessionTaskService {
       status = "running";
       eventType = "ScheduledSessionRunStarted";
     } else if (type === "AgentWorkCompleted") {
-      status = "completed";
-      eventType = "ScheduledSessionRunCompleted";
+      status = operation.status === "cancelled" ? "cancelled" : "completed";
+      eventType = status === "cancelled" ? "ScheduledSessionRunCancelled" : "ScheduledSessionRunCompleted";
     } else if (type === "AgentWorkFailed") {
       status = "failed";
       eventType = "ScheduledSessionRunFailed";
@@ -300,7 +300,7 @@ export class ScheduledSessionTaskService {
       errorCode: status === "failed" ? "AGENT_WORK_FAILED" : null,
       errorMessage: status === "failed" ? operation.lastError : null,
       startedAt: status === "running" ? timestamp : run.startedAt,
-      completedAt: ["completed", "failed"].includes(status) ? timestamp : run.completedAt
+      completedAt: ["completed", "failed", "cancelled"].includes(status) ? timestamp : run.completedAt
     });
     this.store.updateScheduledSessionTask(task.taskId, {
       lastRunId: run.runId,
@@ -541,6 +541,7 @@ export class ScheduledSessionTaskService {
               automationId: task.taskId,
               scheduledTaskId: task.taskId,
               scheduledRunId: run.runId,
+              automationName: task.name ?? null,
               messageType: message.type,
               payload: message.payload,
               triggerKind: run.triggerKind,

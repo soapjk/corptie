@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { clientSafeJSONStringify } from "../utils/unicodeText.mjs";
 import { deviceError } from "./clientDeviceAuthority.mjs";
 
 /** A separate, visible-only Detail projection; never reloads the conversation. */
@@ -33,7 +34,7 @@ export class ClientInspectorStream {
     if (client.closed) return;
     try {
       client.authenticate();
-      const frame = `event: ${event}\ndata: ${JSON.stringify(value)}\n\n`;
+      const frame = `event: ${event}\ndata: ${clientSafeJSONStringify(value)}\n\n`;
       if (Buffer.byteLength(frame) > 2 * 1024 * 1024 || client.response.writableLength > 2 * 1024 * 1024) {
         client.close(); return;
       }

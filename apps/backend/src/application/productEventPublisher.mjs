@@ -1,4 +1,5 @@
 import { projectTaskDeletionNotification } from "./worktreeIntegrationJobService.mjs";
+import { clientSafeJSONStringify } from "../utils/unicodeText.mjs";
 import { randomUUID } from "node:crypto";
 import { resolveDurableEventSessionId } from "./providerSessionIdentity.mjs";
 import { canonicalSessionIdFromEventPayload } from "./providerSessionProjection.mjs";
@@ -56,6 +57,17 @@ export function createProductEventPublisher({
           // must never reconstruct them by scanning session_events or querying
           // automation state for every active Session.
           for (const item of productTimelineItemsForEvent(type, payload, sessionEvent, sessionId)) {
+            if (item.type === "automationEvent" && item.automationRunId) {
+              const previous = store.getSessionItem?.(sessionId, item.id);
+              if (previous) {
+                item.createdAt = previous.createdAt;
+                item.automationName = previous.automationName;
+                item.automationEventOccurredAt = previous.automationEventOccurredAt;
+                for (const key of ["automationTriggerType", "automationScheduleType", "automationRunAt",
+                  "automationNextRunAt", "automationIntervalSeconds", "automationConditionCheckIntervalSeconds",
+                  "automationProcessPollIntervalSeconds", "automationExpiresAt"]) item[key] = previous[key];
+              }
+            }
             store.upsertTimelineItemProjection(sessionId, {
               ...item,
               rawMetadataJSON: JSON.stringify(item)
@@ -74,7 +86,7 @@ export function createProductEventPublisher({
     }
 
     const event = eventLog.append({ type, payload, createdAt });
-    const frame = `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+    const frame = `id: ${event.id}\nevent: ${event.type}\ndata: ${clientSafeJSONStringify(event)}\n\n`;
     for (const response of sseClients) {
       try {
         response.write(frame);
@@ -130,7 +142,9 @@ export function createProductEventPublisher({
   }
 
   function productTimelineItemsForEvent(type, payload, sessionEvent, sessionId) {
-    const items = automationTimelineItems([sessionEvent]);
+    const items = automationTimelineItems([sessionEvent], {
+      resolveRun: id => store.getScheduledSessionRun?.(id)
+    });
     if (type === "SessionCommandCompleted" && payload?.item) {
       items.push(payload.item);
     }

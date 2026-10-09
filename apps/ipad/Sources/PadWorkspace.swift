@@ -612,8 +612,36 @@ final class PadWorkspace {
             .flatMap { try? JSONDecoder().decode([String: Set<String>].self, from: $0) } ?? [:]
     }
 
+    func cancelQueuedMessage(_ connection: PadConnection, sessionID: String, messageID: String) async {
+        guard selection == sessionID, capabilities?.cancelQueuedMessage == true,
+              let message = messages.first(where: { $0.id == messageID }),
+              let taskID = message.cancellableQueuedMessageTaskID else { return }
+        let key = connection.serverID + "|" + sessionID + "|" + taskID
+        guard cancellingQueuedMessages.insert(key).inserted else { return }
+        defer { cancellingQueuedMessages.remove(key) }
+        let server = connection.serverID
+        let routedID = capabilities?.sessionId ?? sessionID
+        let revision = lastTimelineRevision
+        do {
+            let api = ClientSessionAPI(transport: try await connection.transport())
+            try await api.cancelQueuedMessage(sessionId: routedID, taskId: taskID)
+            guard selection == sessionID, connection.serverID == server else { return }
+            status = "已取消排队。"
+            await waitForRealtimeTimelineOrFallback(connection, after: revision)
+        } catch {
+            guard selection == sessionID, connection.serverID == server else { return }
+            if let failure = error as? ClientServiceFailure, failure.code == "MESSAGE_NOT_QUEUED" {
+                status = "消息已不在队列中，可能已经开始处理，未执行取消。"
+                await waitForRealtimeTimelineOrFallback(connection, after: revision)
+            } else {
+                status = "取消结果未确认，请刷新消息状态后重试。"
+            }
+        }
+    }
+
     func canDeleteUnreceivedMessage(_ message: ClientMessage) -> Bool {
         guard message.presentationKind == .userMessage else { return false }
+        if message.userMessageStatus != nil { return message.deletionAvailable == true }
         let status = UserMessageStatusPresentation(authoritativeStatus: message.userMessageStatus,
             legacyStatus: message.status, localDeliveryState: outgoingStates[message.id])
         switch status?.kind {
@@ -624,6 +652,34 @@ final class PadWorkspace {
 
     func deleteUnreceivedMessage(_ connection: PadConnection, sessionID: String, messageID: String) async {
         guard connection.deviceID != nil, !connection.serverID.isEmpty else { return }
+        if let message = messages.first(where: { $0.id == messageID }), sessionID == selection {
+            guard canDeleteUnreceivedMessage(message), capabilities?.deleteUnreceivedMessage == true else {
+                status = "请更新 Mac 后端以启用所有设备同步删除。"
+                return
+            }
+            let key = connection.serverID + "|delete|" + sessionID + "|" + messageID
+            guard cancellingQueuedMessages.insert(key).inserted else { return }
+            defer { cancellingQueuedMessages.remove(key) }
+            let server = connection.serverID, revision = lastTimelineRevision
+            do {
+                let api = ClientSessionAPI(transport: try await connection.transport())
+                try await api.deleteUnreceivedMessage(sessionId: capabilities?.sessionId ?? sessionID, messageId: messageID)
+                try await messageOutbox.removeDeletedMessages(serverID: server, deviceID: connection.deviceID ?? "",
+                    sessionID: sessionID, messageIDs: [messageID])
+                guard selection == sessionID, connection.serverID == server else { return }
+                outgoingMessages[sessionID]?.removeAll { $0.id == messageID }
+                outgoingStates.removeValue(forKey: messageID)
+                status = "已删除，其他设备将同步移除。"
+                await waitForRealtimeTimelineOrFallback(connection, after: revision)
+            } catch {
+                guard selection == sessionID, connection.serverID == server else { return }
+                let code = (error as? ClientServiceFailure)?.code ?? ""
+                status = ["MESSAGE_MAY_HAVE_BEEN_RECEIVED", "MESSAGE_DELIVERY_UNPROVEN"].contains(code)
+                    ? "无法确认模型未接收这条消息，不能删除。"
+                    : "删除结果未确认，请刷新后重试；重复删除不会重复执行。"
+            }
+            return
+        }
         prepareDeletedMessageScope(connection)
         let scope = deletedMessageScope
         let current = sessionID == selection ? messages.first(where: { $0.id == messageID }) : nil
@@ -639,6 +695,10 @@ final class PadWorkspace {
                     && $0.displaySessionID == sessionID
                     && ($0.messageID == messageID || $0.authoritativeMessageID == messageID)
             }) {
+                guard record.attempts == 0 else {
+                    status = "这条消息曾尝试发送，需要先核对服务端记录，不能仅在本机删除。"
+                    return
+                }
                 guard try await messageOutbox.discardTerminal(record.id) else { return }
                 if deliveryIssues[sessionID] == record.id { deliveryIssues.removeValue(forKey: sessionID) }
             }
@@ -654,7 +714,7 @@ final class PadWorkspace {
             deletedMessageIDs = next
             outgoingMessages[sessionID]?.removeAll { $0.id == messageID }
             outgoingStates.removeValue(forKey: messageID)
-            status = "已删除本机消息；未撤回或删除后端记录。"
+            status = "已删除尚未发出的本机消息。"
         } catch { status = "删除失败，消息仍保留，请稍后重试。" }
     }
 
@@ -1083,6 +1143,7 @@ final class PadWorkspace {
         guard let key = residentKey(for: delta.sessionId) else { return false }
         switch timelineRepository.apply(delta, sessionKey: key) {
         case .applied, .duplicate:
+            clearDeletedOutgoing(delta, sessionKey: key)
             persistResidentTimeline(key)
             return true
         case .requiresSnapshot: return false
@@ -1243,6 +1304,7 @@ final class PadWorkspace {
     @ObservationIgnored let persistentTimelineCache: PersistentTimelineCache
     @ObservationIgnored private var persistentTimelineScope: String?
     var outboxSaving = false
+    var cancellingQueuedMessages: Set<String> = []
     var deliveryRevision = 0
     var deliveryIssues: [String: String] = [:]
     private let defaults: UserDefaults
@@ -1342,6 +1404,7 @@ final class PadWorkspace {
             return delta.revision <= (lastTimelineRevision ?? 0)
         }
         clearConversationReadNotice(.messages)
+        clearDeletedOutgoing(delta, sessionKey: selection)
         let previous = messages
         messages = state.messages
         applyUsage(state.usage)
@@ -1349,6 +1412,13 @@ final class PadWorkspace {
         saveResidentState(for: selection)
         if previous != state.messages { messageRevision += 1 }
         return true
+    }
+
+    private func clearDeletedOutgoing(_ delta: ClientTimelineDelta, sessionKey: String) {
+        let deleted = Set(delta.changes.filter { $0.operation == "delete" }.map(\.itemId))
+        guard !deleted.isEmpty else { return }
+        outgoingMessages[sessionKey]?.removeAll { deleted.contains($0.id) }
+        for id in deleted { outgoingStates.removeValue(forKey: id) }
     }
 
     func inventory(_ connection: PadConnection, more: Bool = false) async {
