@@ -19,7 +19,7 @@ function fixture() {
       getRequest: () => request,
       rejectRequest: () => { calls.push("reject"); return request; },
       confirmRequest: () => { calls.push("confirm"); return request; },
-      failRequest: () => calls.push("fail")
+      failRequest: () => { calls.push("fail"); return { ...request, status: "failed" }; }
     },
     sessionCollaborationService: preparation,
     emitEvent: () => calls.push("event"),
@@ -32,6 +32,8 @@ function fixture() {
 test("channel approval prepares and confirms before publishing and delivering", async () => {
   const f = fixture();
   await f.commands.resolveSessionChannelRequest("request", true);
+  assert.deepEqual(f.calls, ["prepare", "confirm", "event"]);
+  await new Promise(setImmediate);
   assert.deepEqual(f.calls, ["prepare", "confirm", "event", "channelDelivery"]);
 });
 
@@ -39,7 +41,43 @@ test("confirmed replay retries delivery without preparing or confirming again", 
   const f = fixture();
   f.request.status = "confirmed";
   assert.equal(await f.commands.resolveSessionChannelRequest("request", true), f.request);
+  await new Promise(setImmediate);
   assert.deepEqual(f.calls, ["channelDelivery"]);
+});
+
+test("a blocked delivery scan cannot delay the durable approval acknowledgement", async () => {
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  let started = false;
+  const commands = createCollaborationConfirmationCommands({
+    sessionChannelService: {
+      getRequest: () => ({ requestingSessionId: "source", status: "pending" }),
+      confirmRequest: () => ({ status: "confirmed", firstMessageId: "message:one", channelId: "channel:one" })
+    },
+    sessionCollaborationService: { prepareChannelRequestTarget: async () => ({ recipientSessionId: "target" }) },
+    emitEvent: () => {},
+    syncSessionChannelDeliveriesIntoAgentWorkQueue: async () => { started = true; await blocked; }
+  });
+  try {
+    const result = await commands.resolveSessionChannelRequest("request", true);
+    assert.equal(result.firstMessageId, "message:one");
+    assert.equal(started, false);
+    await new Promise(setImmediate);
+    assert.equal(started, true);
+  } finally { release(); }
+});
+
+test("legacy confirmed replay does not prepare the target again", async () => {
+  let prepared = 0;
+  const before = { status: "confirmed", taskId: "task:one" };
+  const commands = createCollaborationConfirmationCommands({
+    collaborationCore: { getTaskConfirmation: () => before },
+    sessionCollaborationService: { prepareTaskConfirmationTarget: async () => { prepared++; } },
+    syncCollaborationDeliveriesIntoAgentWorkQueue: async () => {}
+  });
+  assert.equal(await commands.resolveCollaborationConfirmation("one", true), before);
+  assert.equal(prepared, 0);
+  await new Promise(setImmediate);
 });
 
 test("rejection does not prepare a target or enqueue delivery", async () => {
@@ -55,5 +93,5 @@ test("target preparation failure records failure and does not publish success", 
   const f = fixture();
   f.preparation.prepareChannelRequestTarget = async () => { throw new Error("unavailable"); };
   await assert.rejects(f.commands.resolveSessionChannelRequest("request", true), /unavailable/);
-  assert.deepEqual(f.calls, ["fail"]);
+  assert.deepEqual(f.calls, ["fail", "event"]);
 });

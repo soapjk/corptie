@@ -207,6 +207,14 @@ export class SessionChannelService {
     return row ? this.#presentChannel(row) : null;
   }
 
+  hasChannelHistory(firstSessionId, secondSessionId) {
+    const [sessionAId, sessionBId] = canonicalPair(firstSessionId, secondSessionId);
+    return Boolean(this.store.selectOne(
+      "SELECT channel_id FROM session_collaboration_channels WHERE session_a_id=? AND session_b_id=? LIMIT 1",
+      [sessionAId, sessionBId]
+    ));
+  }
+
   getChannel(channelId) {
     const row = this.store.selectOne(
       "SELECT * FROM session_collaboration_channels WHERE channel_id=?",

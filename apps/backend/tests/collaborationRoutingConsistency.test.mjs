@@ -165,6 +165,7 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
     });
     const staged = [];
     let stagingError = null;
+    const channels = new SessionChannelService({ store, collaborationCore: core });
     server = http.createServer((request, response) => {
       const url = new URL(request.url, `http://${request.headers.host}`);
       if (!handleCollaborationHttpRequest({
@@ -173,6 +174,7 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
         url,
         core,
         sessionCollaborationService: collaborationService,
+        sessionChannelService: channels,
         onConfirmationStaged: async (confirmation) => {
           if (stagingError) throw stagingError;
           staged.push(confirmation);
@@ -361,6 +363,26 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
     assert.equal(child.confirmation.request.contextId, repeatedTask.contextId);
     assert.equal(child.confirmation.status, "pending");
     assert.equal(staged.length, stagedCountBeforeReverseRoute + 1);
+
+    const channelRequest = channels.requestChannel({
+      requestingSessionId: "session:authoritative", recipientSessionId: task.recipientSessionId,
+      body: "Establish the exact pair", idempotencyKey: "channel:pair"
+    });
+    const authorized = channels.confirmRequest(channelRequest.requestId);
+    const grant = core.hasConfirmedSessionRoute.bind(core);
+    core.hasConfirmedSessionRoute = () => false;
+    const channelFollowup = await authoritative.post("/internal/collaboration/task-confirmations", {
+      recipientSessionId: task.recipientSessionId, type: "question", title: "Use Channel authorization",
+      summary: "No extra confirmation", idempotencyKey: "channel:followup"
+    });
+    assert.equal(channelFollowup.confirmation.status, "confirmed");
+    core.hasConfirmedSessionRoute = grant;
+    channels.revokeChannel(authorized.channelId, "session:authoritative", "User revoked");
+    const revokedFollowup = await authoritative.post("/internal/collaboration/task-confirmations", {
+      recipientSessionId: task.recipientSessionId, type: "question", title: "Do not revive revoked permission",
+      summary: "Require authorization", idempotencyKey: "channel:revoked"
+    });
+    assert.equal(revokedFollowup.confirmation.status, "pending");
   } finally {
     if (server) await new Promise((resolve) => server.close(resolve));
     await store.close();

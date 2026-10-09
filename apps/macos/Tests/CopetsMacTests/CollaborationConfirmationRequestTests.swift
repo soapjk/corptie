@@ -4,6 +4,44 @@ import Testing
 
 @Suite(.serialized)
 struct CollaborationConfirmationRequestTests {
+    @MainActor @Test func immediateFeedbackAndDelayedSnapshotDoNotResurrectButtons() async {
+        var item = CodexThreadItem(id: "confirmation", turnId: "product", turnStatus: "waiting_approval",
+                                  type: "collaborationConfirmation", title: "", text: "", options: nil, status: "pending", createdAt: nil)
+        item.collaborationConfirmationId = "confirmation:one"
+        item.collaborationConfirmationStatus = "pending"
+        let pending = CodexThreadDetail(id: "session", title: "", status: .blocked, source: nil,
+                                        connectionStatus: nil, currentModel: nil, currentReasoningLevel: nil,
+                                        activityStatus: nil, cwd: nil, createdAt: "now", updatedAt: "now",
+                                        canSend: true, sendUnavailableReason: nil, capabilities: nil, turnCount: 1, items: [item])
+        var resident = pending
+        let (events, continuation) = AsyncStream<String>.makeStream()
+        var requests = 0
+        CollaborationConfirmationURLProtocol.handler = { _ in
+            requests += 1
+            return (200, #"{"request":{"status":"confirmed"}}"#)
+        }
+        let controller = CollaborationConfirmationController(
+            baseURL: URL(string: "http://127.0.0.1:9999")!, commands: SessionCommandController(),
+            activeSessions: { [] }, cachedDetail: { _ in resident },
+            storeDetail: { detail, _, _ in
+                resident = detail
+                continuation.yield(detail.items[0].collaborationConfirmationStatus ?? "")
+            }, loadMessages: { _ in }, reportError: { _ in continuation.finish() }, urlSession: makeSession())
+        controller.updatePendingConfirmation(from: pending, for: "session")
+        controller.respondToCollaborationConfirmation(confirmationId: "confirmation:one", approve: true)
+        controller.respondToCollaborationConfirmation(confirmationId: "confirmation:one", approve: true)
+        #expect(resident.items[0].collaborationConfirmationStatus == "submitting")
+        var iterator = events.makeAsyncIterator()
+        #expect(await iterator.next() == "submitting")
+        #expect(await iterator.next() == "confirmed")
+        #expect(requests == 1)
+        let delayed = controller.reconcile(pending, for: "session")
+        #expect(delayed.items[0].collaborationConfirmationStatus == "confirmed")
+        #expect(BackendClient.pendingCollaborationConfirmation(in: delayed) == nil)
+        let accepted = controller.reconcile(resident, for: "session")
+        #expect(accepted.items[0].collaborationConfirmationStatus == "confirmed")
+        continuation.finish()
+    }
     @Test func confirmationActionCannotSilentlyDependOnTheSelectedSession() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -22,7 +60,8 @@ struct CollaborationConfirmationRequestTests {
         #expect(!action.contains("guard session != nil || selectedSession != nil else { return }"))
         #expect(action.contains("pendingBySessionID.first"))
         #expect(action.contains("requestCollaborationConfirmationResolution("))
-        #expect(action.contains("resolvedItem.collaborationConfirmationStatus = resolutionStatus"))
+        #expect(action.contains("publishStatus(resolutionStatus"))
+        #expect(action.contains("publishStatus(approve ? \"submitting\" : \"rejecting\""))
         #expect(!action.contains("Collaboration request sent"))
         #expect(action.contains("await loadMessages(sourceSession)"))
         #expect(action.contains("Confirmation failed: %@"))
@@ -73,7 +112,7 @@ struct CollaborationConfirmationRequestTests {
         }
     }
 
-    @Test func confirmationPresentationDoesNotClaimDelivery() throws {
+    @Test func durableAcceptanceShowsSentWithoutClaimingModelCompletion() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
             .appending(path: "Sources/CopetsMac")
@@ -81,10 +120,10 @@ struct CollaborationConfirmationRequestTests {
             + String(contentsOf: root.appending(path: "Conversation/Timeline/ThreadItemView.swift"), encoding: .utf8)
             + String(contentsOf: root.appending(path: "Conversation/Presentation/ConversationNativeRowBuilder.swift"), encoding: .utf8)
         let appKit = try String(contentsOf: root.appending(path: "Conversation/Timeline/AppKitChatNativeTextCell.swift"), encoding: .utf8)
-        #expect(!swiftUI.contains("case \"confirmed\": isConfirmation ? L10n(\"已发送\")"))
+        #expect(swiftUI.contains("case \"confirmed\": isConfirmation ? L10n(\"已发送\")"))
         #expect(!swiftUI.contains("isSessionChannelAuthorization ? \"已授权\" : \"已发送\""))
         #expect(!swiftUI.contains("collaboration.confirmation.sent"))
-        #expect(appKit.contains("NSTextField(labelWithString: L10n(\"已确认 · 不代表消息已送达\"))"))
+        #expect(appKit.contains("NSTextField(labelWithString: L10n(\"已发送\"))"))
     }
 
     @Test func confirmationFailureSurfacesTheBackendReason() async {

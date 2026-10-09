@@ -3,6 +3,16 @@ import SwiftUI
 @testable import CorptieMac
 
 final class DetailIncrementalProjectionTests: XCTestCase {
+    func testHistoricalConfirmationChangesWithoutRebuildingProviderTail() throws {
+        var confirmation = item("confirmation", "product", "collaborationConfirmation")
+        confirmation.collaborationConfirmationStatus = "pending"
+        let previous = [confirmation, item("user", "turn", "userMessage"), item("reply", "turn", "agentMessage")]
+        for status in ["submitting", "confirmed", "rejected"] {
+            var next = previous
+            next[0].collaborationConfirmationStatus = status
+            try assertEquivalent(previous: previous, next: next, incremental: true)
+        }
+    }
     func testInterleavedTurnCannotReplaceWholeTurnWithContiguousSuffix() {
         let previous = [item("old-user", "old", "userMessage"),
                         item("new-user", "new", "userMessage"),
