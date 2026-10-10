@@ -25,7 +25,6 @@ struct MainWindowNavigationRail: View {
             },
             selectedID: selection.rawValue,
             expanded: isExpanded,
-            verticalAlignment: .center,
             settingsTitle: L10n("设置"),
             settingsAccessibilityID: "main-window.settings",
             onSelect: { id in
@@ -35,7 +34,7 @@ struct MainWindowNavigationRail: View {
         )
         .padding(.horizontal, 8)
         .padding(.top, MainWindowLayoutMetrics.titlebarHeight + 8)
-        .padding(.bottom, MainWindowLayoutMetrics.titlebarHeight + 8)
+        .padding(.bottom, 8)
         .frame(maxHeight: .infinity)
         .overlay(alignment: .trailing) {
             Color.clear

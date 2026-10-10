@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @testable import CorptieMac
 
@@ -60,7 +61,7 @@ struct DetachedChatWindowTests {
     func detachedHeaderUsesAnIndependentWorkIdentityGlassCapsule() throws {
         let source = try contents(of: "DetachedChatWindowManager.swift")
 
-        #expect(source.contains("DetachedChatWindowTitle(session: session)"))
+        #expect(source.contains("DetachedChatWindowTitle("))
         #expect(source.contains("ObjectiveAvatarView(objectiveID: work.id"))
         #expect(source.contains("Text(work.name)"))
         #expect(source.contains(".platformGlassSurface(in: Capsule(), variant: .clear)"))
@@ -68,6 +69,38 @@ struct DetachedChatWindowTests {
         #expect(source.contains("PersistentRedWindowCloseButton(action: close)"))
         #expect(source.contains("ZStack(alignment: .top)"))
         #expect(source.contains("topChromeClearance: 50"))
+        #expect(source.contains(".frame(maxWidth: maximumWidth)\n        .fixedSize(horizontal: true, vertical: false)"))
+        #expect(source.contains(".overlay { DetachedChatWindowDragArea() }"))
+        #expect(source.contains("DetachedChatWindowTitleLayout.maximumWidth("))
+    }
+
+    @Test @MainActor
+    func titleCapsuleFitsShortTextAndCapsLongText() {
+        func measuredWidth(_ title: String, maximumWidth: CGFloat) -> CGFloat {
+            NSHostingView(rootView: Text(title)
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .frame(maxWidth: maximumWidth)
+                .fixedSize(horizontal: true, vertical: false)
+            ).fittingSize.width
+        }
+
+        let shortWidth = measuredWidth("Chat", maximumWidth: 280)
+        let longWidth = measuredWidth(String(repeating: "Long session title ", count: 12), maximumWidth: 280)
+        #expect(shortWidth < 100)
+        #expect(longWidth <= 280)
+        #expect(longWidth > shortWidth)
+        #expect(measuredWidth("Chat", maximumWidth: 560) < 100)
+        #expect(measuredWidth(String(repeating: "Long session title ", count: 20), maximumWidth: 560) <= 560)
+        #expect(DetachedChatWindowTitleLayout.maximumWidth(for: 220) == 44)
+        #expect(DetachedChatWindowTitleLayout.maximumWidth(for: 560) == 280)
+    }
+
+    @Test
+    func mainChatTitleCapsuleFitsContentWithoutLosingItsMaximum() throws {
+        let source = try contents(of: "Conversation/ConversationHeader.swift")
+        #expect(source.contains(".frame(maxWidth: 560)\n        .fixedSize(horizontal: true, vertical: false)"))
+        #expect(source.contains(".accessibilityValue(selectedTitle)"))
     }
 
     @Test
