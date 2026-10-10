@@ -591,6 +591,9 @@ struct ConversationView: View {
     @State private var nativeHistoryGeneration: UInt64 = 0
     @State private var expandedProcessEntryIDs: Set<String> = []
     @State private var attachmentPreview: PadAttachmentPreview?
+    @State private var quickMessageHintRevision = 0
+    @State private var quickMessageSendRevision = 0
+    @State private var quickMessageDropViewport: CGSize = .zero
     @State private var composerSheet: ComposerSheet?
     private enum ComposerSheet: String, Identifiable {
         case schedule
@@ -644,6 +647,15 @@ struct ConversationView: View {
             }
         }
         .coordinateSpace(name: "conversation-viewport")
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { quickMessageDropViewport = $0 }
+        .dropDestination(for: ConversationQuickMessageDrag.self) { items, location in
+            guard items.count == 1, let text = items[0].acceptedText(
+                scope: quickMessageDragScope, enabled: canSendQuickMessage, location: location,
+                viewport: quickMessageDropViewport, topInset: nativeHeaderHeight,
+                bottomInset: quickMessageDropBottomInset) else { return false }
+            sendQuickMessage(text)
+            return true
+        }
         .id([connection.serverID, connection.deviceID ?? "", sessionID])
         .overlay(alignment: .trailing) {
             TimelineDragOnlyScrollbar(scrollView: timelineScrollView,
@@ -692,6 +704,11 @@ struct ConversationView: View {
         .overlay(alignment: .top) {
             conversationHeader
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { nativeHeaderHeight = $0 }
+        }
+        .overlay(alignment: .top) {
+            PadQuickMessageHintToast(revision: quickMessageHintRevision)
+                .padding(.top, nativeHeaderHeight + 4)
+                .allowsHitTesting(false)
         }
         .background(WorkbenchCanvasSurface.color)
         .toolbar(.hidden, for: .navigationBar)
@@ -1189,7 +1206,11 @@ struct ConversationView: View {
             }
             PadComposer(connection: connection, workspace: workspace, sessionID: sessionID,
                         scheduleMessage: { composerSheet = .schedule },
-                        canStop: canStopCurrentSession, stop: stopCurrentSession) {
+                        canStop: canStopCurrentSession, stop: stopCurrentSession,
+                        quickMessageDragScope: quickMessageDragScope,
+                        quickMessageSendRevision: quickMessageSendRevision,
+                        quickMessageSingleTap: { quickMessageHintRevision &+= 1 },
+                        sendQuickMessage: sendQuickMessage) {
                 conversationStatusRow
             }
         }
@@ -1201,6 +1222,52 @@ struct ConversationView: View {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix("/"), !trimmed.contains(where: { $0.isWhitespace }) else { return nil }
         return String(trimmed.dropFirst())
+    }
+
+    private var quickMessageDragScope: String {
+        "\(connection.serverID)|\(connection.deviceID ?? "")|\(sessionID)"
+    }
+    private var quickMessageDropBottomInset: CGFloat {
+        // The native timeline draws beneath the keyboard. Its existing inset
+        // already contains the keyboard and composer occlusion; do not derive
+        // a second keyboard height or change scrolling to implement drop bounds.
+        usesStandardTimeline ? nativeTimeline.composerHeight
+            : max(nativeTimeline.composerHeight, timelineScrollView?.adjustedContentInset.bottom ?? 0)
+    }
+    private var canSendQuickMessage: Bool {
+        !connection.busy && workspace.pending == nil && !workspace.outboxSaving
+            && workspace.capabilities?.send.available == true
+            && workspace.importingImagesForSession != sessionID
+    }
+    private func sendQuickMessage(_ text: String) {
+        guard canSendQuickMessage else { return }
+        Task {
+            await workspace.sendSuggestedReply(connection, sessionID: sessionID, text: text)
+            quickMessageSendRevision &+= 1
+        }
+    }
+}
+
+private struct PadQuickMessageHintToast: View {
+    let revision: Int
+    @State private var visible = false
+    var body: some View {
+        Group {
+            if visible {
+                Text("双击发送快捷消息")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color(uiColor: .systemBackground))
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(Color.primary.opacity(0.88), in: Capsule())
+                    .accessibilityIdentifier("quick-message-tap-hint")
+            }
+        }
+        .task(id: revision) {
+            guard revision > 0 else { visible = false; return }
+            visible = true
+            do { try await Task.sleep(for: .seconds(1.5)) } catch { return }
+            visible = false
+        }
     }
 }
 
