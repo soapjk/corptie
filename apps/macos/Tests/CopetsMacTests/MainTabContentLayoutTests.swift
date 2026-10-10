@@ -239,7 +239,7 @@ struct MainTabContentLayoutTests {
     }
 
     @Test
-    func tabCapsuleStaysBelowTitlebarAndCentersNavigationWithSettingsInside() throws {
+    func tabCapsuleStaysBelowTitlebarAndKeepsSettingsInside() throws {
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -249,9 +249,9 @@ struct MainTabContentLayoutTests {
 
         #expect(contents.contains("settingsAccessibilityID: \"main-window.settings\""))
         #expect(contents.contains("PlatformNavigationRail("))
-        #expect(contents.contains("verticalAlignment: .center"))
+        #expect(!contents.contains("verticalAlignment: .center"))
         #expect(contents.contains(".padding(.top, MainWindowLayoutMetrics.titlebarHeight + 8)"))
-        #expect(contents.contains(".padding(.bottom, MainWindowLayoutMetrics.titlebarHeight + 8)"))
+        #expect(contents.contains(".padding(.bottom, 8)"))
         #expect(!contents.contains(".background(Color(nsColor: .windowBackgroundColor)"))
         #expect(!contents.contains(".fill(Color(nsColor: .controlBackgroundColor))"))
 

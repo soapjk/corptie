@@ -193,7 +193,7 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains("Menu {\n            navigationModeOption(.workOutline, title: \"分组\")"))
         #expect(source.contains(".platformWorkOutlineToolbarControl()\n        .menuIndicator(.hidden)"))
         #expect(source.contains(".modifier(ConsoleTopEdgeEffectModifier())"))
-        #expect(controls.contains("PlatformWorkOutlineToolbar {"))
+        #expect(controls.contains("PlatformWorkOutlineToolbar(density: .compact) {"))
         #expect(!controls.contains(".padding(.top, 3)"))
         #expect(PlatformWorkOutlineLayout.controlSize == 44)
         #expect(PlatformWorkOutlineLayout.controlSurfaceDiameter == 36)
@@ -201,6 +201,9 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(PlatformWorkOutlineLayout.toolbarHeight == 56)
         #expect(PlatformWorkOutlineLayout.minimumToolbarWidth == 276)
         #expect(PlatformWorkOutlineLayout.columnWidth == 312)
+        #expect(PlatformWorkOutlineToolbarDensity.compact.controlSize == 36)
+        #expect(PlatformWorkOutlineToolbarDensity.compact.controlSurfaceDiameter == 30)
+        #expect(PlatformWorkOutlineToolbarDensity.compact.symbolSize == 14)
         #expect(!source.contains("ConsoleSidebarTitlebarControls("))
         let mobile = try self.source(named: "../../../../apps/ipad/Sources/PadWorkOutline.swift")
         #expect(mobile.contains("PlatformWorkOutlineToolbar("))
@@ -226,6 +229,29 @@ struct UnifiedConsoleControlSurfaceTests {
             #expect(host.fittingSize.height == PlatformWorkOutlineLayout.toolbarHeight)
             #expect(host.fittingSize.width <= width)
         }
+    }
+
+    @Test @MainActor
+    func compactMacWorkToolbarFitsFiveControlsWithoutChangingIPadSizing() {
+        let density = PlatformWorkOutlineToolbarDensity.compact
+        let host = NSHostingView(rootView: PlatformWorkOutlineToolbar(density: density) {
+            ForEach(["arrow.up.arrow.down", "rectangle.3.group", "magnifyingglass", "archivebox"], id: \.self) { symbol in
+                Button {} label: { PlatformWorkOutlineToolbarGlyph(symbol: symbol) }
+                    .platformWorkOutlineToolbarControl()
+            }
+        } trailing: {
+            Menu {} label: { PlatformWorkOutlineToolbarGlyph(symbol: "plus") }
+                .platformWorkOutlineToolbarControl()
+                .menuIndicator(.hidden)
+        })
+        let expectedHeight = density.controlSize + density.verticalInset * 2
+        for width in [220.0, 312.0, 420.0] {
+            host.frame = NSRect(x: 0, y: 0, width: width, height: expectedHeight)
+            host.layoutSubtreeIfNeeded()
+            #expect(host.fittingSize.height == expectedHeight)
+            #expect(host.fittingSize.width <= width)
+        }
+        #expect(PlatformWorkOutlineToolbarDensity.regular.controlSize == 44)
     }
 
     @Test

@@ -292,7 +292,7 @@ struct UnifiedConsoleView: View {
         .frame(maxHeight: .infinity)
         .modifier(ConsoleTopEdgeEffectModifier())
         .safeAreaInset(edge: .top, spacing: 0) {
-            PlatformWorkOutlineToolbar {
+            PlatformWorkOutlineToolbar(density: .compact) {
                 outlineSortMenu
                 navigationModeToggle.labelsHidden()
                 searchToggleButton

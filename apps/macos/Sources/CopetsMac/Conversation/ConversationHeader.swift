@@ -144,6 +144,7 @@ struct DetailHeaderView: View {
                 .buttonStyle(.plain)
                 .help(L10n("Click to copy Session title"))
                 .accessibilityLabel(L10n("Copy Session title"))
+                .accessibilityValue(selectedTitle)
 
                 if didCopySessionTitle {
                     Label(L10n("Copied"), systemImage: "checkmark")
@@ -220,6 +221,7 @@ struct DetailHeaderView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .frame(maxWidth: 560)
+        .fixedSize(horizontal: true, vertical: false)
         .platformGlassSurface(in: Capsule())
     }
 

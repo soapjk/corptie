@@ -375,54 +375,60 @@ private struct DetachedChatWindowView: View {
                 )
             }
 
-            HStack(alignment: .top, spacing: 8) {
-                HStack(spacing: 0) {
-                    PersistentRedWindowCloseButton(action: close)
+            GeometryReader { geometry in
+                HStack(alignment: .top, spacing: 8) {
+                    HStack(spacing: 0) {
+                        PersistentRedWindowCloseButton(action: close)
 
-                    DetachedWindowTrafficLightButton(
-                        color: Color(red: 1, green: 0.741, blue: 0.180),
-                        systemImage: "arrow.uturn.backward",
-                        help: L10n("Return to main window"),
-                        action: returnToMain
-                    )
+                        DetachedWindowTrafficLightButton(
+                            color: Color(red: 1, green: 0.741, blue: 0.180),
+                            systemImage: "arrow.uturn.backward",
+                            help: L10n("Return to main window"),
+                            action: returnToMain
+                        )
 
-                    DetachedWindowTrafficLightButton(
-                        color: Color(red: 0.188, green: 0.784, blue: 0.251),
-                        systemImage: "rectangle.3.group",
-                        help: L10n("Window size and position"),
-                        action: { showsWindowPresets.toggle() }
-                    )
-                    .popover(isPresented: $showsWindowPresets, arrowEdge: .bottom) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            ForEach(DetachedChatWindowPreset.allCases, id: \.self) { preset in
-                                Button {
-                                    showsWindowPresets = false
-                                    applyWindowPreset(preset)
-                                } label: {
-                                    Label(preset.title, systemImage: preset.systemImage)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 6)
-                                        .contentShape(Rectangle())
+                        DetachedWindowTrafficLightButton(
+                            color: Color(red: 0.188, green: 0.784, blue: 0.251),
+                            systemImage: "rectangle.3.group",
+                            help: L10n("Window size and position"),
+                            action: { showsWindowPresets.toggle() }
+                        )
+                        .popover(isPresented: $showsWindowPresets, arrowEdge: .bottom) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                ForEach(DetachedChatWindowPreset.allCases, id: \.self) { preset in
+                                    Button {
+                                        showsWindowPresets = false
+                                        applyWindowPreset(preset)
+                                    } label: {
+                                        Label(preset.title, systemImage: preset.systemImage)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 6)
+                                            .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
                                 }
-                                .buttonStyle(.plain)
                             }
+                            .padding(6)
+                            .frame(minWidth: 180)
                         }
-                        .padding(6)
-                        .frame(minWidth: 180)
                     }
-                }
-                .padding(.top, 6)
+                    .padding(.top, 6)
 
-                Spacer(minLength: 0)
-                DetachedChatWindowTitle(session: session)
-                    .frame(maxWidth: 280)
-                Spacer(minLength: 0)
-                Color.clear.frame(width: 76, height: 1)
+                    Spacer(minLength: 0)
+                    DetachedChatWindowTitle(
+                        session: session,
+                        maximumWidth: DetachedChatWindowTitleLayout.maximumWidth(
+                            for: geometry.size.width
+                        )
+                    )
+                    Spacer(minLength: 0)
+                    Color.clear.frame(width: 76, height: 1)
+                }
+                .padding(.horizontal, 4)
+                .padding(.top, 3)
             }
-            .padding(.horizontal, 4)
-            .padding(.top, 3)
-            .frame(height: 48, alignment: .top)
+            .frame(height: 48)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
@@ -444,9 +450,18 @@ private struct DetachedChatWindowView: View {
     }
 }
 
+enum DetachedChatWindowTitleLayout {
+    static let maximumWidth: CGFloat = 280
+
+    static func maximumWidth(for availableWidth: CGFloat) -> CGFloat {
+        min(maximumWidth, max(44, availableWidth - 176))
+    }
+}
+
 private struct DetachedChatWindowTitle: View {
     @ObservedObject private var entityClient = EntityAPIClient.shared
     let session: TaskSession?
+    let maximumWidth: CGFloat
 
     private var work: Work? {
         guard let session else { return nil }
@@ -457,30 +472,30 @@ private struct DetachedChatWindowTitle: View {
     }
 
     var body: some View {
-        ZStack {
-            DetachedChatWindowDragArea()
-            VStack(spacing: 1) {
-                Text(session?.title ?? L10n("Chat"))
-                    .font(.system(size: 11, weight: .semibold))
-                    .lineLimit(1)
-                    .accessibilityAddTraits(.isHeader)
-                if let work {
-                    HStack(spacing: 4) {
-                        ObjectiveAvatarView(objectiveID: work.id, name: work.name,
-                                            avatarPath: work.avatarPath, size: 12)
-                        Text(work.name)
-                            .lineLimit(1)
-                    }
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(.secondary)
+        VStack(spacing: 1) {
+            Text(session?.title ?? L10n("Chat"))
+                .font(.system(size: 11, weight: .semibold))
+                .lineLimit(1)
+                .accessibilityAddTraits(.isHeader)
+            if let work {
+                HStack(spacing: 4) {
+                    ObjectiveAvatarView(objectiveID: work.id, name: work.name,
+                                        avatarPath: work.avatarPath, size: 12)
+                    Text(work.name)
+                        .lineLimit(1)
                 }
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 4)
-            .allowsHitTesting(false)
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .frame(maxWidth: maximumWidth)
+        .fixedSize(horizontal: true, vertical: false)
+        .overlay { DetachedChatWindowDragArea() }
         .fixedSize(horizontal: false, vertical: true)
         .platformGlassSurface(in: Capsule(), variant: .clear)
+        .help(session?.title ?? L10n("Chat"))
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("detached-chat-title")
     }
