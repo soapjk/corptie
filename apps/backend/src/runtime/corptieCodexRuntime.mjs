@@ -1,8 +1,8 @@
-import { constants as fsConstants } from "node:fs";
-import { chmod, copyFile, mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
+import { readCodexAuthenticationSource } from "./codexAuthenticationSource.mjs";
 import {
   ensureCorptieAgentMemory,
   ensureProviderMemoryLink,
@@ -85,7 +85,7 @@ export async function ensureCorptieCodexRuntime(options = {}) {
   await mkdir(dirname(paths.collaborationProjectToolsReferencePath), { recursive: true, mode: 0o700 });
 
   const configChanged = await ensureRuntimeConfig(paths.configPath);
-  const authCopied = await bootstrapAuthentication(paths);
+  const authCopied = await bootstrapAuthentication(paths, options);
   const agentMemory = await ensureCorptieAgentMemory({
     ...options,
     bundledMemoryPath,
@@ -226,7 +226,18 @@ function insertTopLevelSetting(config, assignment) {
   return lines.join("\n");
 }
 
-async function bootstrapAuthentication(paths) {
+const authenticationBootstraps = new Map();
+
+async function bootstrapAuthentication(paths, options) {
+  const pending = authenticationBootstraps.get(paths.authPath);
+  if (pending) return pending;
+  const operation = bootstrapAuthenticationOnce(paths, options);
+  authenticationBootstraps.set(paths.authPath, operation);
+  try { return await operation; }
+  finally { authenticationBootstraps.delete(paths.authPath); }
+}
+
+async function bootstrapAuthenticationOnce(paths, options) {
   if (await isFile(paths.authBootstrapMarkerPath)) {
     if (await isFile(paths.authPath)) await chmod(paths.authPath, 0o600);
     return false;
@@ -236,16 +247,20 @@ async function bootstrapAuthentication(paths) {
     await writeAuthBootstrapMarker(paths, "existing");
     return false;
   }
-  if (!await isFile(paths.sourceAuthPath)) return false;
+  const authentication = await readCodexAuthenticationSource(paths.sourceAuthPath, {
+    platform: options.authenticationPlatform,
+    readKeychainCredential: options.readKeychainCredential
+  });
+  if (!authentication) return false;
 
   await mkdir(dirname(paths.authPath), { recursive: true, mode: 0o700 });
   try {
-    await copyFile(paths.sourceAuthPath, paths.authPath, fsConstants.COPYFILE_EXCL);
+    await writeFile(paths.authPath, authentication.content, { flag: "wx", mode: 0o600 });
   } catch (error) {
     if (error.code !== "EEXIST") throw error;
   }
   await chmod(paths.authPath, 0o600);
-  await writeAuthBootstrapMarker(paths, "copied");
+  await writeAuthBootstrapMarker(paths, authentication.source);
   return true;
 }
 
