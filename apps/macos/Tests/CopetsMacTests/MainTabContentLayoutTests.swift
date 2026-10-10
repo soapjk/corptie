@@ -239,7 +239,7 @@ struct MainTabContentLayoutTests {
     }
 
     @Test
-    func tabCapsuleStaysBelowTitlebarAndLeavesSettingsOutside() throws {
+    func tabCapsuleStaysBelowTitlebarAndCentersNavigationWithSettingsInside() throws {
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -249,9 +249,23 @@ struct MainTabContentLayoutTests {
 
         #expect(contents.contains("settingsAccessibilityID: \"main-window.settings\""))
         #expect(contents.contains("PlatformNavigationRail("))
+        #expect(contents.contains("verticalAlignment: .center"))
         #expect(contents.contains(".padding(.top, MainWindowLayoutMetrics.titlebarHeight + 8)"))
+        #expect(contents.contains(".padding(.bottom, MainWindowLayoutMetrics.titlebarHeight + 8)"))
         #expect(!contents.contains(".background(Color(nsColor: .windowBackgroundColor)"))
         #expect(!contents.contains(".fill(Color(nsColor: .controlBackgroundColor))"))
+
+        let shared = source
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("packages/CorptieConversation/Sources/CorptieConversation/PlatformNavigationRail.swift")
+        let sharedContents = try String(contentsOf: shared, encoding: .utf8)
+        #expect(sharedContents.contains("Button(action: onSettings)"))
+        #expect(sharedContents.contains("Text(settingsTitle)"))
+        #expect(!sharedContents.contains(".platformGlassSurface(in: Circle()"))
     }
 
     @Test
