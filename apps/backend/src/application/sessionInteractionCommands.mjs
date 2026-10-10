@@ -6,7 +6,7 @@ import { validateInteractionAnswers, withSubmittedUserInputAnswers } from "./int
 export function createSessionInteractionCommands({
   store, requireSessionReference, sessionApplicationService, providerEventIngestion,
   handleCommittedProviderTerminalLifecycle, sendUnifiedSessionMessage, emitEvent, now,
-  interruptTimeoutMs = 15_000
+  interruptTimeoutMs = 15_000, onInterruptRequested = () => {}
 }) {
   async function interruptUnifiedSession(sessionId, source = { type: "desktop" }) {
     const reference = requireSessionReference(sessionId);
@@ -16,6 +16,7 @@ export function createSessionInteractionCommands({
       ?? store.listUnsettledSessionTurns(reference.sessionId).at(-1)?.turn_id
       ?? null;
     let session;
+    if (activeTurnId) onInterruptRequested({ ...reference, turnId: activeTurnId });
     let timeout;
     console.info(`[session-interrupt] requested session=${reference.sessionId} binding=${reference.bindingId} turn=${activeTurnId}`);
     try {
