@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 PRODUCT_NAME="Corptie"
 APP_NAME="${PRODUCT_NAME}.app"
 BUILD_CFG="release"
@@ -20,6 +20,10 @@ release_version_lock() {
 trap release_version_lock EXIT
 VERSION_VALUES="$(node "${ROOT}/scripts/release-version.mjs" next "${ROOT}")"
 read -r APP_VERSION APP_BUILD_NUMBER <<< "${VERSION_VALUES}"
+if [[ ! "${APP_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "${APP_BUILD_NUMBER}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Error: release-version.mjs returned an invalid version/build number: ${VERSION_VALUES}" >&2
+  exit 1
+fi
 echo "Packaging release ${APP_VERSION}, build ${APP_BUILD_NUMBER} (saved only on success)."
 APP_BUNDLE_PATH="/Applications/Corptie.app"
 ICON_ICNS_SOURCE="${ROOT}/apps/macos/Sources/CopetsMac/Resources/AppIcon.icns"

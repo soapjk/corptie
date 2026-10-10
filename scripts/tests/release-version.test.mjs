@@ -1,10 +1,35 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm, copyFile, symlink } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { nextReleaseVersion, readNextRelease, commitRelease } from "../release-version.mjs";
+
+test("CLI runs through both physical and symlinked project paths", async t => {
+  const temporary = await mkdtemp(join(tmpdir(), "corptie-version-cli-"));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const root = join(temporary, "project");
+  const alias = join(temporary, "alias");
+  await mkdir(root);
+  await copyFile(new URL("../release-version.mjs", import.meta.url), join(root, "release-version.mjs"));
+  await writeFile(join(root, "release-version.json"), JSON.stringify({ version: "0.5.6", buildNumber: 1 }));
+  await symlink(root, alias, "dir");
+  const run = promisify(execFile);
+  for (const path of [root, alias]) {
+    const { stdout, stderr } = await run(process.execPath, [join(path, "release-version.mjs"), "next", path]);
+    assert.equal(stdout, "0.5.7 2\n");
+    assert.equal(stderr, "");
+  }
+  await writeFile(join(root, "release-version.json"), JSON.stringify({ version: "invalid", buildNumber: 1 }));
+  await assert.rejects(run(process.execPath, [join(alias, "release-version.mjs"), "next", alias]), error => {
+    assert.equal(error.code, 1);
+    assert.match(error.stderr, /Invalid or exhausted release version/);
+    return true;
+  });
+});
 
 test("patch and build increment from the single version source", () => {
   assert.deepEqual(nextReleaseVersion({ version: "0.5.6", buildNumber: 1 }), {

@@ -1,5 +1,5 @@
-import { readFile, writeFile, rename, unlink } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { readFile, writeFile, rename, unlink, realpath } from "node:fs/promises";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export function nextReleaseVersion(current) {
@@ -36,7 +36,7 @@ export async function commitRelease(root, expected) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(await realpath(process.argv[1])).href) {
   const [command, root, version, build] = process.argv.slice(2);
   try {
     if (command === "next" && root && !version) {
