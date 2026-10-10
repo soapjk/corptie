@@ -63,14 +63,14 @@ final class AppLanguageController: ObservableObject {
         case .simplifiedChinese:
             localization = "zh-Hans"
         }
-        guard let stringsPath = Bundle.module.path(
+        guard let stringsPath = AppResourceBundle.bundle.path(
             forResource: "Localizable",
             ofType: "strings",
             inDirectory: nil,
             forLocalization: localization
         ),
               let bundle = Bundle(path: URL(fileURLWithPath: stringsPath).deletingLastPathComponent().path) else {
-            return .module
+            return AppResourceBundle.bundle
         }
         return bundle
     }

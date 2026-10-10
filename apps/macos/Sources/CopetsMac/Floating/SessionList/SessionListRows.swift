@@ -295,7 +295,7 @@ enum ProviderBrandIcon {
     }
 
     private static func load(_ name: String) -> NSImage? {
-        guard let url = Bundle.module.url(
+        guard let url = AppResourceBundle.bundle.url(
             forResource: name,
             withExtension: "png",
             subdirectory: "ProviderIcons"
