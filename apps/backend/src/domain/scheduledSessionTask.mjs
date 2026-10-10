@@ -18,7 +18,7 @@ export function validateScheduledSessionTaskInput(input = {}, options = {}) {
   const scheduleType = legacyScheduleType(triggerType);
   const triggerInput = input.trigger && typeof input.trigger === "object" ? input.trigger : {};
   validateTriggerShape(triggerType, triggerInput);
-  const actions = normalizeActions(input.actions, input.message);
+  const actions = normalizeActions(input.actions, input.message, input.message != null);
   const messageAction = actions.find((action) => action.type === "queueSessionMessage");
   const message = messageAction?.message ?? normalizeMessage(input.message ?? { text: "Automation triggered" });
   const timezone = normalizeTimezone(input.timezone ?? systemTimezone());
@@ -112,7 +112,9 @@ export function validateScheduledSessionTaskPatch(input = {}, task, options = {}
     logicalSessionId: task.logicalSessionId,
     scheduleType: task.scheduleType,
     name: Object.hasOwn(input, "name") ? input.name : task.name,
-    message: Object.hasOwn(input, "message") ? input.message : task.message,
+    message: Object.hasOwn(input, "message")
+      ? input.message
+      : task.actions?.some((action) => action.type === "queueSessionMessage") ? task.message : undefined,
     runAt: Object.hasOwn(input, "runAt") ? input.runAt : task.runAt,
     expiresAt: Object.hasOwn(input, "expiresAfterSeconds")
       ? undefined
@@ -169,20 +171,18 @@ function normalizeConditionSpec(value) {
   };
 }
 
-function normalizeActions(value, legacyMessage) {
-  const candidates = value == null
-    ? [{ type: "queueSessionMessage", message: legacyMessage }]
-    : value;
-  if (!Array.isArray(candidates) || candidates.length === 0 || candidates.length > 16) {
-    invalid("actions", "must contain from 1 to 16 actions");
+function normalizeActions(value, topLevelMessage, hasTopLevelMessage) {
+  const candidates = value == null ? [] : value;
+  if (!Array.isArray(candidates) || candidates.length > 16) {
+    invalid("actions", "must contain at most 16 actions");
   }
-  return candidates.map((candidate, index) => {
+  const actions = candidates.map((candidate, index) => {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) invalid(`actions.${index}`, "must be an object");
     const type = requiredText(candidate.type, `actions.${index}.type`);
     if (!ACTION_TYPES.has(type)) invalid(`actions.${index}.type`, "is not supported");
     if (type === "queueSessionMessage") {
       rejectUnknown(candidate, new Set(["type", "message"]), `actions.${index}`);
-      return { type, message: normalizeMessage(candidate.message ?? legacyMessage) };
+      return { type, message: normalizeMessage(candidate.message ?? topLevelMessage) };
     }
     if (type === "activateSession") {
       rejectUnknown(candidate, new Set(["type"]), `actions.${index}`);
@@ -192,9 +192,23 @@ function normalizeActions(value, legacyMessage) {
     return {
       type,
       title: optionalText(candidate.title) ?? "Corptie Automation",
-      body: requiredText(candidate.body ?? legacyMessage?.text ?? legacyMessage, `actions.${index}.body`)
+      body: requiredText(candidate.body ?? topLevelMessage?.text ?? topLevelMessage, `actions.${index}.body`)
     };
   });
+  if (hasTopLevelMessage) {
+    const message = normalizeMessage(topLevelMessage);
+    const explicitMessages = actions.filter((action) => action.type === "queueSessionMessage");
+    if (explicitMessages.some((action) => JSON.stringify(action.message) !== JSON.stringify(message))) {
+      invalid("actions", "must not define a queueSessionMessage that conflicts with the top-level message");
+    }
+    const supplementalActions = actions.filter((action) => action.type !== "queueSessionMessage");
+    if (supplementalActions.length >= 16) {
+      invalid("actions", "must leave room for the message action (at most 15 supplemental actions)");
+    }
+    return [{ type: "queueSessionMessage", message }, ...supplementalActions];
+  }
+  if (actions.length === 0) invalid("actions", "requires message or at least one supplemental action");
+  return actions;
 }
 
 function normalizeRisk(value, actions, conditionSpec) {

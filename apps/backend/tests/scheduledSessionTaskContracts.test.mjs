@@ -31,6 +31,9 @@ test("Host Tool contract injects the runtime actor and never accepts an actor fr
   assert.equal(definition.inputSchema.additionalProperties, false);
   assert.equal(definition.inputSchema.allOf[0].then.oneOf.length, 2);
   assert.deepEqual(definition.inputSchema.allOf[0].then.required, ["name", "schedule_type"]);
+  assert.match(definition.inputSchema.properties.message.description, /Omit it when no Session message/);
+  assert.deepEqual(definition.inputSchema.properties.actions.items.oneOf
+    .map((item) => item.properties.type.const), ["activateSession", "localNotification"]);
   assert.equal(Object.hasOwn(definition.inputSchema.properties, "actor_id"), false);
 
   await catalog.execute({
@@ -147,9 +150,55 @@ test("provider-neutral Automation aliases dispatch with the finalized logical Se
   });
 
   assert.equal(calls[0][1].logicalSessionId, "logical:runtime");
+  assert.equal(Object.hasOwn(calls[0][1], "message"), false);
   assert.deepEqual(calls[0][2], { type: "agent", id: "agent:runtime" });
   assert.deepEqual(calls[1][1], { logicalSessionId: "logical:runtime", status: undefined });
   assert.deepEqual(calls[2], ["run", "task:one", { type: "agent", id: "agent:runtime" }]);
+});
+
+test("canonical Automation schema uses message as the only Session-delivery parameter", async () => {
+  const catalog = new HostToolCatalog([{
+    id: "scheduled",
+    tools: scheduledSessionTaskDynamicTools,
+    authorize: () => true,
+    execute: () => ({})
+  }]);
+  const base = {
+    actorId: "agent:runtime",
+    metadata: { logicalSessionId: "logical:runtime" },
+    tool: "corptie_automations_create"
+  };
+  const schedule = {
+    name: "Strict delivery contract",
+    schedule_type: "after",
+    delay_seconds: 30,
+    expires_after_seconds: 60
+  };
+
+  await assert.rejects(() => catalog.execute({
+    ...base,
+    arguments: schedule
+  }), (error) => error.code === "TOOL_ARGUMENT_SCHEMA_INVALID");
+  await assert.rejects(() => catalog.execute({
+    ...base,
+    arguments: {
+      ...schedule,
+      actions: [{ type: "queueSessionMessage", message: "legacy nested message" }]
+    }
+  }), (error) => error.code === "TOOL_ARGUMENT_SCHEMA_INVALID");
+  await assert.rejects(() => catalog.execute({
+    ...base,
+    arguments: {
+      ...schedule,
+      actions: [{ type: "localNotification" }]
+    }
+  }), (error) => error.code === "TOOL_ARGUMENT_SCHEMA_INVALID");
+
+  await catalog.execute({ ...base, arguments: { ...schedule, message: "wake the Session" } });
+  await catalog.execute({
+    ...base,
+    arguments: { ...schedule, actions: [{ type: "activateSession" }] }
+  });
 });
 
 test("HTTP contract exposes create, list, detail, update, lifecycle actions, and run now", async () => {
