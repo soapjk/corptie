@@ -82,6 +82,9 @@ test("Automation discovery contract explains long-process wakeup without foregro
   assert.match(create.description, /background/);
   assert.match(create.description, /processExit or condition/);
   assert.match(create.description, /never starts or restarts/);
+  assert.match(create.description, /Pass message only/);
+  assert.deepEqual(create.inputSchema.properties.actions.items.oneOf
+    .map((item) => item.properties.type.const), ["activateSession", "localNotification"]);
   assert.match(create.inputSchema.properties.process.properties.expected_start_time.description, /PID reuse/);
   assert.match(create.inputSchema.properties.expires_after_seconds.description, /exactly one expiration field/);
 });
