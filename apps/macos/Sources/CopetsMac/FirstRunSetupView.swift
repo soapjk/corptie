@@ -19,6 +19,29 @@ struct FirstRunProvider: Decodable, Identifiable {
     let enabled: Bool
     let checkState: String
     let message: String?
+    var environment: ProviderRuntimeEnvironment? = nil
+    var errorCode: String? = nil
+}
+
+struct ProviderRuntimeEnvironment: Decodable, Equatable {
+    struct Option: Decodable, Equatable, Identifiable {
+        let mode: String
+        let title: String
+        let home: String
+        var id: String { mode }
+    }
+    let profileId: String
+    let mode: String
+    let home: String
+    let revision: Int
+    let options: [Option]
+    let canImportAuthentication: Bool
+}
+
+private struct ProviderAuthenticationResult: Decodable {
+    let state: String
+    let loginId: String?
+    let authUrl: String?
 }
 
 struct FirstRunStatus: Decodable {
@@ -251,7 +274,7 @@ struct FirstRunSetupRoot<Content: View>: View {
 }
 
 @MainActor
-private enum FirstRunSetupAPI {
+enum FirstRunSetupAPI {
     static func request<T: Decodable>(_ path: String, body: [String: Any]? = nil) async throws -> T {
         var request = URLRequest(url: CorptieAppEnvironment.backendBaseURL.appending(path: path))
         request.timeoutInterval = 60
@@ -264,13 +287,13 @@ private enum FirstRunSetupAPI {
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let message = (try? JSONDecoder().decode(FirstRunFailure.self, from: data).error)
                 ?? L10n("无法连接本地服务，请重试。")
-            throw NSError(domain: "FirstRunSetup", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+            throw NSError(domain: "FirstRunSetup", code: 1, userInfo: [NSLocalizedDescriptionKey: L10n(message)])
         }
         return try JSONDecoder().decode(T.self, from: data)
     }
 }
 
-private struct FirstRunProviderCard: View {
+struct FirstRunProviderCard: View {
     let provider: FirstRunProvider
     let busy: Bool
     let scanGeneration: Int
@@ -284,6 +307,11 @@ private struct FirstRunProviderCard: View {
     @State private var error: String?
     @State private var checkGeneration = 0
     @State private var editingPath = false
+    @State private var environmentMode: String
+    @State private var environmentHome: String
+    @State private var confirmImport = false
+    @State private var authenticationBusy = false
+    @State private var loginId: String?
 
     init(provider: FirstRunProvider, busy: Bool, scanGeneration: Int, isDefault: Bool,
          pathChanged: @escaping (Bool) -> Void, updated: @escaping (FirstRunProvider) -> Void) {
@@ -295,20 +323,31 @@ private struct FirstRunProviderCard: View {
         self.updated = updated
         _path = State(initialValue: provider.path)
         _result = State(initialValue: provider)
+        _environmentMode = State(initialValue: provider.environment?.mode ?? "isolated")
+        _environmentHome = State(initialValue: provider.environment?.home ?? "")
     }
 
     private var available: Bool {
-        !testing && result.path == path && result.checkState == "available"
+        !testing && resultMatchesSelection && result.checkState == "available"
     }
+
+    private var resultMatchesSelection: Bool {
+        result.path == path && (result.environment == nil ||
+            (result.environment?.mode == environmentMode && result.environment?.home == environmentHome))
+    }
+
+    private var selectionKey: String { "\(path)|\(environmentMode)|\(environmentHome)" }
+    private var controlsBusy: Bool { busy || saving || authenticationBusy }
 
     private var statusLabel: String {
         if testing { return L10n("检测中") }
+        if authenticationBusy { return L10n("登录中") }
         if saving { return L10n("正在保存…") }
-        if path != result.path { return L10n("等待检测") }
+        if !resultMatchesSelection { return L10n("等待检测") }
         if available { return L10n(result.enabled ? "已就绪" : "可用 · 未启用") }
         switch result.checkState {
         case "missing": return L10n("未找到程序")
-        case "failed": return L10n("需要修复")
+        case "failed": return L10n(result.errorCode == "PROVIDER_LOGIN_REQUIRED" ? "需要登录" : "需要修复")
         default: return L10n("等待检测")
         }
     }
@@ -348,7 +387,7 @@ private struct FirstRunProviderCard: View {
                 ))
                 .toggleStyle(.switch)
                 .accessibilityLabel(L10nFormat("启用 %@", provider.name))
-                .disabled(!available || saving || busy)
+                .disabled(!available || controlsBusy)
             }
             if available && !editingPath {
                 HStack {
@@ -377,8 +416,11 @@ private struct FirstRunProviderCard: View {
                     }
                 }
             }
-            if let message = error ?? (result.path == path ? result.message : nil) {
-                Label(message, systemImage: "exclamationmark.circle")
+            if let environment = provider.environment {
+                environmentSelection(environment)
+            }
+            if let message = error ?? (resultMatchesSelection ? result.message : nil) {
+                Label(L10n(message), systemImage: "exclamationmark.circle")
                     .font(.callout).foregroundStyle(.red)
                     .textSelection(.enabled)
             }
@@ -389,21 +431,133 @@ private struct FirstRunProviderCard: View {
             RoundedRectangle(cornerRadius: 16)
                 .strokeBorder(available && result.enabled ? Color.accentColor.opacity(0.45) : Color.primary.opacity(0.1), lineWidth: 1)
         }
-        .onChange(of: path) { _, value in
+        .onChange(of: selectionKey) { _, _ in
             testing = false
             error = nil
-            pathChanged(value != result.path)
+            pathChanged(!resultMatchesSelection)
         }
-        .task(id: "\(path)|\(scanGeneration)|\(checkGeneration)") {
-            let shouldCheck = result.path != path || (!path.isEmpty && (result.checkState == "unknown"
+        .task(id: "\(selectionKey)|\(scanGeneration)|\(checkGeneration)") {
+            let shouldCheck = provider.environment != nil
+                ? (!authenticationBusy && !path.isEmpty && (scanGeneration > 0 || checkGeneration > 0))
+                : !resultMatchesSelection || (!path.isEmpty && (result.checkState == "unknown"
                 || result.checkState == "checking" || scanGeneration > 0 || checkGeneration > 0))
             guard shouldCheck else { return }
             do {
-                if result.path != path { try await Task.sleep(for: .milliseconds(600)) }
+                if !resultMatchesSelection { try await Task.sleep(for: .milliseconds(600)) }
                 try Task.checkCancellation()
                 await check()
             } catch { }
         }
+        .alert(L10n("复用本机登录？"), isPresented: $confirmImport) {
+            Button(L10n("取消"), role: .cancel) { }
+            Button(L10n("导入登录")) { Task { await authenticate("import") } }
+        } message: {
+            Text(L10n("将把本机登录凭据导入独立环境；如保存在钥匙串中，macOS 可能请求授权。"))
+        }
+        .task(id: loginId) {
+            guard let id = loginId else { return }
+            let requested = selectionKey
+            let cancelBody = authenticationBody("cancel", login: id)
+            defer { if loginId == id { authenticationBusy = false; loginId = nil } }
+            do {
+                for _ in 0..<150 {
+                    try await Task.sleep(for: .seconds(2))
+                    try Task.checkCancellation()
+                    guard requested == selectionKey else { throw CancellationError() }
+                    let status: ProviderAuthenticationResult = try await FirstRunSetupAPI.request(
+                        "first-run/authentication", body: authenticationBody("status", login: id))
+                    if status.state == "completed" { checkGeneration += 1; return }
+                    if status.state != "pending" { throw NSError(domain: "ProviderLogin", code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: L10n("登录未完成，请重试。")]) }
+                }
+                error = L10n("登录超时，请重试。")
+            } catch {
+                if !Task.isCancelled && requested == selectionKey { self.error = error.localizedDescription }
+            }
+            Task { let _: ProviderAuthenticationResult? = try? await FirstRunSetupAPI.request("first-run/authentication", body: cancelBody) }
+        }
+    }
+
+    private func environmentSelection(_ environment: ProviderRuntimeEnvironment) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(L10n("运行环境")).font(.callout.weight(.medium))
+            Picker(L10n("运行环境"), selection: Binding(get: { environmentMode }, set: { mode in
+                environmentMode = mode
+                environmentHome = environment.options.first(where: { $0.mode == mode })?.home ?? ""
+            })) {
+                ForEach(environment.options) { option in Text(L10n(option.title)).tag(option.mode) }
+            }
+            .pickerStyle(.radioGroup)
+            .disabled(controlsBusy || testing)
+            Text(L10n(environmentMode == "native"
+                ? "使用本机已有配置和登录状态，认证由 Codex 管理。Codex 自身可能请求系统授权。"
+                : "使用独立配置和会话状态，不改动现有 Codex 环境。"))
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Text(environmentHome).font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                if environmentMode == "native" {
+                    Button(L10n("更改目录…")) { chooseHome() }.disabled(controlsBusy || testing)
+                }
+            }
+            Text(L10n("环境切换仅影响新建会话，已有会话继续使用原环境。"))
+                .font(.caption).foregroundStyle(.secondary)
+            if !available {
+                HStack {
+                    if environmentMode == "isolated" {
+                        Button(L10n("复用本机登录")) { confirmImport = true }
+                            .disabled(authenticationBusy)
+                    }
+                    Button(L10n("登录 Codex")) { Task { await authenticate("login") } }
+                        .disabled(authenticationBusy)
+                    if loginId != nil {
+                        Button(L10n("取消登录")) { loginId = nil; authenticationBusy = false }
+                    }
+                    Button(L10n("重新检测")) { checkGeneration += 1 }
+                        .disabled(authenticationBusy)
+                }
+                .disabled((controlsBusy && loginId == nil) || testing || path.isEmpty)
+            }
+        }
+    }
+
+    private func chooseHome() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.showsHiddenFiles = true
+        panel.message = L10n("选择现有 Codex Home 目录")
+        if panel.runModal() == .OK, let url = panel.url { environmentHome = url.path }
+    }
+
+    private var environmentBody: [String: String] { ["mode": environmentMode, "home": environmentHome] }
+
+    private func authenticationBody(_ action: String, login: String? = nil) -> [String: Any] {
+        var body: [String: Any] = ["providerId": provider.id, "path": path, "environment": environmentBody,
+                                   "action": action, "confirmed": action == "import"]
+        if let login { body["loginId"] = login }
+        return body
+    }
+
+    private func authenticate(_ action: String) async {
+        guard !authenticationBusy else { return }
+        authenticationBusy = true
+        error = nil
+        let requested = selectionKey
+        defer { if loginId == nil { authenticationBusy = false } }
+        do {
+            let result: ProviderAuthenticationResult = try await FirstRunSetupAPI.request(
+                "first-run/authentication", body: authenticationBody(action))
+            guard requested == selectionKey else { return }
+            if let id = result.loginId, let address = result.authUrl, let url = URL(string: address),
+               url.scheme == "https", let host = url.host, host == "auth.openai.com" || host.hasSuffix(".openai.com") {
+                loginId = id
+                NSWorkspace.shared.open(url)
+            } else if result.state == "imported" { checkGeneration += 1 }
+            else { error = L10n("无法启动 Codex 登录，请在 Codex 中登录后重新检测。") }
+        } catch { if requested == selectionKey { self.error = error.localizedDescription } }
     }
 
     private var providerIcon: some View {
@@ -423,36 +577,38 @@ private struct FirstRunProviderCard: View {
             .font(.system(.body, design: .monospaced))
             .textFieldStyle(.roundedBorder)
             .accessibilityLabel(L10nFormat("%@ 二进制路径", provider.name))
-            .disabled(saving || busy)
+            .disabled(controlsBusy)
     }
 
     private var pathActions: some View {
         HStack {
             Button(L10n("选择…")) { chooseBinary() }
-                .disabled(saving || busy)
-            Button(L10n("重试")) { checkGeneration += 1 }
-                .disabled(testing || saving || busy || path.isEmpty)
+                .disabled(controlsBusy)
+                Button(L10n(provider.environment != nil ? "检测" : "重试")) { checkGeneration += 1 }
+                .disabled(testing || controlsBusy || path.isEmpty)
         }
     }
 
     private func check() async {
         let requestedPath = path
+        let requestedSelection = selectionKey
         testing = true
         error = nil
         pathChanged(true)
         do {
-            let row: FirstRunProvider = try await FirstRunSetupAPI.request("first-run/check", body: [
-                "providerId": provider.id, "path": requestedPath
-            ])
-            guard !Task.isCancelled, requestedPath == path else { return }
+            var body: [String: Any] = ["providerId": provider.id, "path": requestedPath]
+            if provider.environment != nil { body["environment"] = environmentBody }
+            let row: FirstRunProvider = try await FirstRunSetupAPI.request("first-run/check", body: body)
+            guard !Task.isCancelled, requestedSelection == selectionKey else { return }
             result = row
+            if row.checkState == "available", let environment = row.environment { environmentHome = environment.home }
             updated(row)
             pathChanged(false)
         } catch {
-            guard !Task.isCancelled, requestedPath == path else { return }
+            guard !Task.isCancelled, requestedSelection == selectionKey else { return }
             self.error = error.localizedDescription
         }
-        if requestedPath == path { testing = false }
+        if requestedSelection == selectionKey || resultMatchesSelection { testing = false }
     }
 
     private func setEnabled(_ enabled: Bool) async {
@@ -461,7 +617,7 @@ private struct FirstRunProviderCard: View {
         pathChanged(true)
         defer {
             saving = false
-            pathChanged(path != result.path)
+            pathChanged(!resultMatchesSelection)
         }
         do {
             let row: FirstRunProvider = try await FirstRunSetupAPI.request("first-run/provider", body: [
@@ -480,5 +636,39 @@ private struct FirstRunProviderCard: View {
         panel.allowsMultipleSelection = false
         panel.message = L10nFormat("选择 %@ 的二进制文件", provider.name)
         if panel.runModal() == .OK, let url = panel.url { path = url.path }
+    }
+}
+
+// Settings and onboarding deliberately share the exact same provider card.
+struct ProviderEnvironmentSettingsView: View {
+    @State private var status: FirstRunStatus?
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(L10n("Agent 运行环境")).font(.headline)
+            if let status {
+                ForEach(status.providers.filter { $0.environment != nil }) { provider in
+                    FirstRunProviderCard(provider: provider, busy: false, scanGeneration: 0,
+                        isDefault: status.defaultProviderId == provider.id, pathChanged: { _ in },
+                        updated: { row in
+                            if let index = self.status?.providers.firstIndex(where: { $0.id == row.id }) {
+                                self.status?.providers[index] = row
+                            }
+                        })
+                }
+            } else if let error {
+                Text(error).font(.callout).foregroundStyle(.red)
+                Button(L10n("重试")) { Task { await load() } }
+            } else {
+                ProgressView(L10n("正在加载运行环境…"))
+            }
+        }
+        .task { await load() }
+    }
+
+    private func load() async {
+        do { status = try await FirstRunSetupAPI.request("first-run"); error = nil }
+        catch { self.error = error.localizedDescription }
     }
 }

@@ -525,6 +525,7 @@ function localChoiceParserSettingsSignature(settings = {}) {
     command: settings.localCommand || defaultCodexCommand(),
     args: settings.localArgs || "",
     model: settings.localModel || "",
+    codexHome: process.env.CODEX_HOME ?? null,
     proxy: settings.agentProxy?.choiceParser ?? null
   });
 }

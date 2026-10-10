@@ -33,12 +33,17 @@ export class FirstRunSetupService {
     const check = this.checks.get(provider.id);
     const path = check?.path ?? saved?.path ?? provider.discover();
     const fingerprint = await executableFingerprint(path);
-    const available = Boolean(fingerprint && saved?.probe?.state === "available" && saved.probe.fingerprint === fingerprint);
+    const environment = provider.environmentDescriptor?.();
+    const environmentFingerprint = environment ? await provider.environmentFingerprint(environment) : null;
+    const environmentMatches = !environment || saved?.probe?.environmentFingerprint === environmentFingerprint;
+    const available = Boolean(fingerprint && environmentMatches && saved?.probe?.state === "available" && saved.probe.fingerprint === fingerprint);
     const checkState = check ? "checking" : (!fingerprint ? "missing" : (available ? "available"
-      : (saved?.probe?.fingerprint === fingerprint ? saved.probe.state : "unknown")));
+      : (environmentMatches && saved?.probe?.fingerprint === fingerprint ? saved.probe.state : "unknown")));
     return { id: provider.id, name: provider.name, path: fingerprint || saved || check ? path : "",
       executable: Boolean(fingerprint), enabled: !check && available && saved.enabled === true,
-      checkState, message: checkState === "failed" ? saved.probe.message : null };
+      checkState, message: checkState === "failed" ? saved.probe.message : null,
+      ...(environment ? { environment } : {}),
+      ...(saved?.probe?.code ? { errorCode: saved.probe.code } : {}) };
   }
 
   async status() {
@@ -64,10 +69,13 @@ export class FirstRunSetupService {
   check(input) {
     const provider = this.provider(input.providerId);
     const path = typeof input.path === "string" ? input.path.trim() : "";
+    let environment;
+    try { environment = provider.resolveEnvironment?.(input.environment); }
+    catch (error) { return Promise.reject(error); }
     const running = this.checks.get(provider.id);
-    if (running?.path === path) return running.promise;
+    if (running?.path === path && running?.environment?.profileId === environment?.profileId) return running.promise;
     running?.controller.abort();
-    const check = { path, controller: new AbortController() };
+    const check = { path, environment, controller: new AbortController() };
     this.checks.set(provider.id, check);
     check.promise = this.runCheck(provider, check).finally(() => {
       if (this.checks.get(provider.id) === check) this.checks.delete(provider.id);
@@ -80,29 +88,43 @@ export class FirstRunSetupService {
     const configuredPath = previous?.configuredPath ?? (previous?.confirmed ? previous.path : null);
     const userDisabled = previous?.path === check.path && previous?.userDisabled === true;
     const fingerprint = await executableFingerprint(check.path);
-    let message = null;
+    let message = null, code = null;
+    let environmentFingerprint = null;
+    let environment = check.environment;
     let available = false;
     await this.serialize(async () => {
       if (this.checks.get(provider.id) !== check) return;
-      await this.saveRow(provider.id, { path: check.path, enabled: false, userDisabled, configuredPath });
+      if (!environment) await this.saveRow(provider.id, { path: check.path, enabled: false, userDisabled, configuredPath });
     });
     try {
       if (!fingerprint) throw new Error("请选择可执行文件。");
-      const result = await provider.probe(check.path, { signal: check.controller.signal });
+      const result = await provider.probe(check.path, { signal: check.controller.signal, environment });
       if (result?.ok !== true) throw new Error("未收到有效回复，请重试。");
       if (await executableFingerprint(check.path) !== fingerprint) throw new Error("程序已变更，请重新检测。");
+      environment = result.environment ?? environment;
+      if (environment) {
+        environmentFingerprint = await provider.environmentFingerprint(environment);
+        if (result.environmentFingerprint && result.environmentFingerprint !== environmentFingerprint) {
+          throw new Error("运行环境配置已变更，请重新检测。");
+        }
+      }
       available = true;
-    } catch (error) { message = error.message; }
+    } catch (error) { message = error.message; code = error.code ?? null; }
     return this.serialize(async () => {
       // A slow response from a replaced path must never enable the new path.
       if (this.checks.get(provider.id) !== check) return this.row(provider);
       try {
         if (available && !userDisabled) await provider.configure(check.path);
+        if (available && environment) await provider.configureEnvironment(environment);
       } catch (error) { available = false; message = error.message; }
       this.checks.delete(provider.id);
+      // A failed candidate never replaces the working default environment.
+      if (environment && !available) return { ...(await this.row(provider)), path: check.path,
+        executable: Boolean(fingerprint), enabled: false, checkState: "failed", message, errorCode: code,
+        environment: provider.environmentDescriptor(environment) };
       await this.saveRow(provider.id, { path: check.path, enabled: available && !userDisabled, userDisabled,
         configuredPath: available && !userDisabled ? check.path : configuredPath,
-        probe: { state: available ? "available" : "failed", fingerprint, message, checkedAt: new Date().toISOString() } });
+        probe: { state: available ? "available" : "failed", fingerprint, environmentFingerprint, message, code, checkedAt: new Date().toISOString() } });
       return this.row(provider);
     });
   }
@@ -119,6 +141,14 @@ export class FirstRunSetupService {
         configuredPath: input.enabled ? row.path : this.state.providers[provider.id]?.configuredPath });
       return this.row(provider);
     });
+  }
+
+  async authentication(input) {
+    const provider = this.provider(input.providerId);
+    if (!provider.authentication) throw new Error("此 Provider 不支持该认证操作。");
+    const path = typeof input.path === "string" ? input.path.trim() : "";
+    if (!await executableFingerprint(path)) throw new Error("请选择可执行文件。");
+    return provider.authentication({ ...input, path });
   }
 
   async saveRow(id, row) {

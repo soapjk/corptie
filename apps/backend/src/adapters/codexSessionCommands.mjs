@@ -190,7 +190,7 @@ export function createCodexSessionCommands({
   }
 
   async function readCodexProviderAccountUsage(reference = null) {
-    const usage = await codexRuntime.readAccountRateLimits();
+    const usage = await codexRuntime.readAccountRateLimits(reference?.providerSessionId);
     return {
       available: true,
       provider: "codex",

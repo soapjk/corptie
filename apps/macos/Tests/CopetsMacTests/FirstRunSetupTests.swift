@@ -6,6 +6,37 @@ import Testing
 @testable import CorptieMac
 
 struct FirstRunSetupTests {
+    @Test
+    func providerEnvironmentProjectionDecodesWithoutCredentials() throws {
+        let provider = try JSONDecoder().decode(FirstRunProvider.self, from: Data("""
+        {"id":"codex-app-server","name":"Codex","path":"/tmp/codex","executable":true,
+         "enabled":false,"checkState":"unknown",
+         "environment":{"profileId":"native","mode":"native","home":"/tmp/native","revision":1,
+           "canImportAuthentication":false,"options":[
+             {"mode":"native","title":"使用现有 Codex 环境（推荐）","home":"/tmp/native"},
+             {"mode":"isolated","title":"使用独立 Corptie 环境","home":"/tmp/isolated"}]}}
+        """.utf8))
+        #expect(provider.environment?.mode == "native")
+        #expect(provider.environment?.options.count == 2)
+        #expect(provider.environment?.canImportAuthentication == false)
+    }
+
+    @Test @MainActor
+    func environmentChoiceCardRendersInCompactWindow() throws {
+        let environment = ProviderRuntimeEnvironment(profileId: "native", mode: "native", home: "/tmp/native",
+            revision: 1, options: [
+                .init(mode: "native", title: "使用现有 Codex 环境（推荐）", home: "/tmp/native"),
+                .init(mode: "isolated", title: "使用独立 Corptie 环境", home: "/tmp/isolated")
+            ], canImportAuthentication: false)
+        let provider = FirstRunProvider(id: "codex-app-server", name: "Codex", path: "/tmp/codex",
+            executable: true, enabled: false, checkState: "unknown", message: nil, environment: environment)
+        let view = NSHostingView(rootView: FirstRunProviderCard(provider: provider, busy: false,
+            scanGeneration: 0, isDefault: false, pathChanged: { _ in }, updated: { _ in }).frame(width: 480))
+        view.frame = NSRect(x: 0, y: 0, width: 480, height: 520)
+        view.layoutSubtreeIfNeeded()
+        #expect(view.fittingSize.height > 200)
+        #expect(view.fittingSize.width <= 480)
+    }
     @Test @MainActor
     func delayedStoreReadinessLoadsConfigurationWithoutManualRetry() async throws {
         let readiness = CurrentValueSubject<Bool, Never>(false)
