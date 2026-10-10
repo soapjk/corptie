@@ -8,7 +8,19 @@ BUILD_CFG="release"
 ARCHIVE_DIR="${ROOT}/dist"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 BACKEND_BUILD_ID="${TIMESTAMP}"
-APP_VERSION="0.5.4"
+VERSION_LOCK="${ROOT}/.corptie/release-version.lock"
+mkdir -p "${ROOT}/.corptie"
+if ! mkdir "${VERSION_LOCK}" 2>/dev/null; then
+  echo "Another packaging run holds ${VERSION_LOCK}; inspect any stale lock before retrying." >&2
+  exit 75
+fi
+release_version_lock() {
+  rmdir "${VERSION_LOCK}"
+}
+trap release_version_lock EXIT
+VERSION_VALUES="$(node "${ROOT}/scripts/release-version.mjs" next "${ROOT}")"
+read -r APP_VERSION APP_BUILD_NUMBER <<< "${VERSION_VALUES}"
+echo "Packaging release ${APP_VERSION}, build ${APP_BUILD_NUMBER} (saved only on success)."
 APP_BUNDLE_PATH="/Applications/Corptie.app"
 ICON_ICNS_SOURCE="${ROOT}/apps/macos/Sources/CopetsMac/Resources/AppIcon.icns"
 ICON_SOURCE="${ROOT}/apps/macos/Sources/CopetsMac/Resources/AppIcon.png"
@@ -74,6 +86,7 @@ PKGBUILD_STDERR=""
 cleanup() {
   rm -rf "${STAGING_ROOT}" "${Dmg_STAGING}" "${SCRIPTS_DIR}"
   [[ -z "${PKGBUILD_STDERR}" ]] || rm -f "${PKGBUILD_STDERR}"
+  release_version_lock
 }
 trap cleanup EXIT
 
@@ -131,7 +144,7 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
     <key>CFBundleShortVersionString</key>
     <string>${APP_VERSION}</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>${APP_BUILD_NUMBER}</string>
     <key>CFBundleURLTypes</key>
     <array>
       <dict>
@@ -352,5 +365,7 @@ hdiutil create "${DMG_NAME}" \
   -srcfolder "${Dmg_STAGING}" \
   -ov -format UDZO
 
+node "${ROOT}/scripts/release-version.mjs" commit "${ROOT}" "${APP_VERSION}" "${APP_BUILD_NUMBER}"
+echo "Saved release version ${APP_VERSION}, build ${APP_BUILD_NUMBER}."
 echo "Built production installer package: ${PKG_FILE}"
 echo "Built production dmg: ${DMG_NAME}"
