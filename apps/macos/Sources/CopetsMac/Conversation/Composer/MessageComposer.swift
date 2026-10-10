@@ -121,24 +121,22 @@ struct MessageComposer: View {
                     backendClient.sendMessage(text, to: session, onSuccess: { quickMessageRefresh += 1 })
                 }
             }
-            ConversationComposerChrome(verticalPadding: compact ? 3 : 6,
-                                       contentSpacing: compact ? 0 : 2) {
-                if !compact {
+            if compact {
+                compactEditorRow
+                    .frame(maxWidth: CompactComposerLayout.maximumWidth)
+            } else {
+                ConversationComposerChrome {
                     HStack(spacing: 0) {
                         ThreadMetaView(sessionID: sessionId, status: status, isReady: isReady,
                                        notReadyReason: notReadyReason, activityStatus: activityStatus)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         SessionComposerStopButton(session: session)
                     }
-                }
-            } content: {
-                if compact {
-                    compactEditorRow
-                } else {
+                } content: {
                     editorRow
                 }
+                .frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: compact ? CompactComposerLayout.maximumWidth : .infinity)
         }
         .task(id: "\(session?.taskId ?? sessionId):\(sessionId):\(quickMessageRefresh)") {
             guard !compact else { return }
