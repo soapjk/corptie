@@ -9,7 +9,11 @@ import {
 import { createCodexNotificationReceiver } from "./adapters/codexNotificationReceiver.mjs";
 import { createClaudeNotificationReceiver } from "./adapters/claudeNotificationReceiver.mjs";
 import { createRuntimeAgentWorkQueue } from "./runtime/runtimeAgentWorkQueue.mjs";
-import { createCodexReplyProbe, createClaudeReplyProbe, createOpenClackyReplyProbe } from "./agent-provider/providers/providerReplyProbe.mjs";
+import { createClaudeReplyProbe, createOpenClackyReplyProbe } from "./agent-provider/providers/providerReplyProbe.mjs";
+import { readFile } from "node:fs/promises";
+import { CodexEnvironmentRegistry } from "./runtime/codexEnvironmentRegistry.mjs";
+import { createCodexEnvironmentRuntime } from "./agent-provider/bootstrap/codexEnvironmentRuntime.mjs";
+import { createCodexEnvironmentSetup } from "./adapters/codexEnvironmentSetup.mjs";
 import { ensureFirstRunAssistantGreeting } from "./application/firstRunAssistantGreeting.mjs";
 import { FirstRunSetupService } from "./application/firstRunSetupService.mjs";
 import { resolveExternalCommand } from "./utils/externalCommand.mjs";
@@ -36,7 +40,6 @@ import { createCodexSessionCreator } from "./adapters/codexSessionCreator.mjs";
 import {
   mapCodexThreadToLegacyTimelineItems
 } from "./adapters/codexAppServer.mjs";
-import { createCodexProviderRuntime } from "./agent-provider/bootstrap/codexProviderRuntime.mjs";
 import { configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/choiceParser.mjs";
 import { createCodexChoiceProjection } from "./adapters/codexChoiceProjection.mjs";
 import { createSessionApplicationComposition } from "./application/sessionApplicationComposition.mjs";
@@ -692,21 +695,64 @@ const hostToolCatalog = createHostToolCatalog({
 });
 let toolHostService = null;
 const codexAppServerCommand = () => firstRunSetup.command("codex-app-server", resolveCodexCommand);
+const codexEnvironmentRegistry = new CodexEnvironmentRegistry({
+  path: () => join(store.dataRoot, "codex-environments.json"),
+  isolatedHome: corptieCodexRuntimePaths.codexHome
+});
+const codexRuntimeOptions = { environmentName, bundledMemoryPath: bundledAgentMemoryPath,
+  bundledSkillPath: bundledCollaborationSkillPath, bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath,
+  collaborationMcpServerPath };
+let managedCodexResources;
+async function prepareCodexEnvironment(profile) {
+  // Managed resources stay in Corptie even when execution uses a native Home.
+  managedCodexResources ??= ensureCorptieCodexRuntime(codexRuntimeOptions).catch((error) => {
+    managedCodexResources = null; throw error;
+  });
+  const resources = await managedCodexResources;
+  await codexEnvironmentRegistry.validate(profile);
+  return resources;
+}
+const codexEnvironment = (profile) => ({
+  ...environmentForCommand(codexAppServerCommand()),
+  ...proxyEnvForProfile(store.settings().agentProxy?.codex), CODEX_HOME: profile.home
+});
+let nativeCodexInstructions;
+async function codexEnvironmentInstructions() {
+  nativeCodexInstructions ??= Promise.all([
+    readFile(corptieCodexRuntimePaths.sharedMemoryPath, "utf8"),
+    readFile(bundledCollaborationSkillPath, "utf8")
+  ]).then(([memory, skill]) => [memory.replace(
+    "Corptie supplies an isolated Provider configuration and state directory.",
+    "The user explicitly selected their existing Codex Home for this Session; do not modify its configuration, instructions, or Skills."
+  ), "# Corptie collaboration instructions", skill].join("\n\n"));
+  return nativeCodexInstructions;
+}
+function codexEnvironmentHasActiveSession(profile) {
+  return store.listSessions({ archived: false }).some((session) =>
+    session.external?.provider === "codex-app-server"
+    && (session.external?.activeTurnId || session.activeTurnId || session.rawStatus?.activeTurnId)
+    && codexEnvironmentRegistry.forThread(session.external?.threadId ?? session.id).profileId === profile.profileId);
+}
 const { loadCodexModels, loadClaudeModels } = createProviderModelCatalogLoaders({
   store, codexAppServerCommand, corptieCodexRuntimePaths, environmentForCommand,
-  execFileAsync, readCodexDefaultConfig, defaultWorkspacePath,
+  codexHome: () => codexEnvironmentRegistry.current.home,
+  execFileAsync, readCodexDefaultConfig: () => readCodexDefaultConfig(codexEnvironmentRegistry.current.home), defaultWorkspacePath,
   claudeCommand: () => firstRunSetup.command("claude-sdk", () => resolveExternalCommand("claude"))
 });
 const { ensureCodexSessionPermissions, resolvedNewCodexRuntimeConfig } = createCodexSessionConfiguration({
-  store, upsertManagedCodexSession, loadCodexModels
+  store, upsertManagedCodexSession, loadCodexModels,
+  readDefaultConfig: () => readCodexDefaultConfig(codexEnvironmentRegistry.current.home)
 });
-const codexRuntime = createCodexProviderRuntime({
+const codexRuntime = createCodexEnvironmentRuntime({
+  registry: codexEnvironmentRegistry, environment: codexEnvironment,
+  prepare: prepareCodexEnvironment, instructions: codexEnvironmentInstructions,
+  canRelease: (profile) => !codexEnvironmentHasActiveSession(profile),
+  resolveSourceThread: (input) => {
+    const logicalSessionId = input.dynamicToolMetadata?.logicalSessionId;
+    const logical = logicalSessionId ? store.getLogicalSession(logicalSessionId) : null;
+    return logical?.activeBinding?.providerId === "codex-app-server" ? logical.activeThreadId : null;
+  },
   command: codexAppServerCommand,
-  env: () => ({
-    ...environmentForCommand(codexAppServerCommand()),
-    ...proxyEnvForProfile(store.settings().agentProxy?.codex),
-    CODEX_HOME: corptieCodexRuntimePaths.codexHome
-  }),
   onNotification: (message) => {
     handleCodexAppServerNotificationSafely(message);
   },
@@ -715,6 +761,20 @@ const codexRuntime = createCodexProviderRuntime({
     actorId: params.agentId,
     metadata: resolveDynamicToolCallMetadata(params)
   })
+});
+const codexEnvironmentSetup = createCodexEnvironmentSetup({
+  registry: codexEnvironmentRegistry, environment: codexEnvironment,
+  prepare: prepareCodexEnvironment, runtimeOptions: codexRuntimeOptions,
+  prepareSelection: async (profile) => {
+    codexRuntime.assertProfileCapacity(profile);
+    await codexRuntime.refreshAuthentication(profile);
+  },
+  afterAuthentication: (profile) => codexRuntime.refreshAuthentication(profile),
+  // Legacy helper subprocesses inherit the selected default; ordinary Session
+  // execution and recovery always use the explicit per-thread profile port.
+  onEnvironmentChanged: (profile) => { process.env.CODEX_HOME = profile.home; },
+  canImport: (profile) => codexRuntime.canRefreshAuthentication(profile)
+    && !codexEnvironmentHasActiveSession(profile)
 });
 const workspaceContinuationCoordinator = new WorkspaceContinuationCoordinator({
   store,
@@ -980,17 +1040,9 @@ const firstRunSetup = new FirstRunSetupService({
   },
   providers: [
     { id: "codex-app-server", name: "Codex", discover: resolveCodexCommand,
-      probe: createCodexReplyProbe({ environment: async () => {
-        await ensureCorptieCodexRuntime({ environmentName, bundledMemoryPath: bundledAgentMemoryPath,
-          bundledSkillPath: bundledCollaborationSkillPath, bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath,
-          collaborationMcpServerPath });
-        return { ...process.env, ...proxyEnvForProfile(store.settings().agentProxy?.codex),
-          CODEX_HOME: corptieCodexRuntimePaths.codexHome };
-      } }),
+      ...codexEnvironmentSetup,
       prepare: async () => {
-        await ensureCorptieCodexRuntime({ environmentName, bundledMemoryPath: bundledAgentMemoryPath,
-          bundledSkillPath: bundledCollaborationSkillPath, bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath,
-          collaborationMcpServerPath });
+        await prepareCodexEnvironment(codexEnvironmentRegistry.current);
         await codexRuntime.initialize();
         setProviderRuntimeReadiness("codex-app-server", { state: "ready" });
       },
@@ -2163,6 +2215,7 @@ await migrateStoreOffMainThread({
 });
 await store.initialize({ resolveDataPath: false, performMigrations: false });
 await firstRunSetup.initialize();
+await codexEnvironmentRegistry.initialize();
 if (firstRunSetup.state.defaultProviderId) {
   agentProviderRegistry.defaultProviderId = firstRunSetup.state.defaultProviderId;
   backgroundAgentService.defaultProviderId = firstRunSetup.state.defaultProviderId;
@@ -2187,7 +2240,8 @@ await initializeBackendStoreReadiness({
 const { storedSessions: storedSessionsAtStartup, knownActiveWorktrees } = loadStartupSessionInventory(store, normalizeSessionId);
 await activateStartupSessions({
   store, storedSessionsAtStartup, developmentPreview, environmentName,
-  corptieCodexRuntimePaths, corptieClaudeRuntimePaths,
+  corptieCodexRuntimePaths: { ...corptieCodexRuntimePaths, codexHome: codexEnvironmentRegistry.current.home },
+  corptieClaudeRuntimePaths,
   ensureAgentWorkDir, ensureCollaborationAgentForSession,
   publishProviderEventOutbox, workspaceContinuationCoordinator,
   providerEventPublisher, feishuGateway, taskSummaryService,

@@ -31,6 +31,55 @@ async function fixture(t) {
   return { service, options, binary, configured, probes, setWorks: () => { works = true; }, launches: () => launches };
 }
 
+test("environment checks commit only successful candidates and invalidate on Home config changes", async t => {
+  const f = await fixture(t);
+  const provider = f.options.providers[0];
+  let current = { profileId: "old", mode: "isolated", home: "/old" };
+  let configRevision = 1;
+  provider.resolveEnvironment = input => input ?? current;
+  provider.environmentDescriptor = input => input ?? current;
+  provider.environmentFingerprint = async profile => `${profile.profileId}:${configRevision}`;
+  provider.configureEnvironment = async profile => { current = profile; };
+  provider.probe = async (_, { environment }) => ({ ok: true, environment });
+  const input = { providerId: provider.id, path: f.binary };
+  assert.equal((await f.service.check(input)).enabled, true);
+  const candidate = { profileId: "new", mode: "native", home: "/new" };
+  provider.probe = async () => { throw Object.assign(new Error("needs login"), { code: "PROVIDER_LOGIN_REQUIRED" }); };
+  const failed = await f.service.check({ ...input, environment: candidate });
+  assert.equal(failed.errorCode, "PROVIDER_LOGIN_REQUIRED");
+  assert.equal(failed.environment.profileId, "new");
+  assert.equal(current.profileId, "old");
+  assert.equal((await f.service.status()).providers[0].enabled, true);
+  provider.probe = async (_, { environment }) => ({ ok: true, environment });
+  assert.equal((await f.service.check({ ...input, environment: candidate })).enabled, true);
+  assert.equal(current.profileId, "new");
+  configRevision++;
+  assert.equal((await f.service.status()).providers[0].enabled, false);
+});
+
+test("same CLI with different environments does not coalesce or commit stale results", async t => {
+  const f = await fixture(t);
+  const provider = f.options.providers[0];
+  let current = { profileId: "old", mode: "isolated", home: "/old" };
+  provider.resolveEnvironment = input => input ?? current;
+  provider.environmentDescriptor = input => input ?? current;
+  provider.environmentFingerprint = async profile => profile.profileId;
+  provider.configureEnvironment = async profile => { current = profile; };
+  let started, finish;
+  const began = new Promise(resolve => { started = resolve; });
+  provider.probe = async (_, { environment }) => {
+    if (environment.profileId === "slow") { started(); await new Promise(resolve => { finish = resolve; }); }
+    return { ok: true, environment };
+  };
+  const input = { providerId: provider.id, path: f.binary };
+  const slow = f.service.check({ ...input, environment: { ...current, profileId: "slow" } });
+  await began;
+  const fast = await f.service.check({ ...input, environment: { ...current, profileId: "fast" } });
+  assert.equal(fast.environment.profileId, "fast");
+  finish(); await slow;
+  assert.equal(current.profileId, "fast");
+});
+
 test("discovery and legacy user confirmation cannot substitute for a reply test", async t => {
   const f = await fixture(t);
   f.service.state.providers["codex-app-server"] = { path: f.binary, confirmed: true };

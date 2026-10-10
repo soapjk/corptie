@@ -5,7 +5,8 @@ import { startup as startClaudeRuntime } from "@anthropic-ai/claude-agent-sdk";
 export function createProviderModelCatalogLoaders({
   store, codexAppServerCommand, corptieCodexRuntimePaths, environmentForCommand,
   execFileAsync, readCodexDefaultConfig, defaultWorkspacePath, claudeCommand,
-  startup = startClaudeRuntime
+  startup = startClaudeRuntime,
+  codexHome = () => corptieCodexRuntimePaths.codexHome
 }) {
   let codexModelsCache = null;
   let claudeModelsCache = null;
@@ -13,12 +14,13 @@ export function createProviderModelCatalogLoaders({
   async function loadCodexModels(options = {}) {
     const nowMs = Date.now();
     const refresh = options.refresh === true;
-    if (!refresh && codexModelsCache && nowMs - codexModelsCache.loadedAt < 5 * 60 * 1000) {
+    const home = codexHome();
+    if (!refresh && codexModelsCache?.home === home && nowMs - codexModelsCache.loadedAt < 5 * 60 * 1000) {
       return codexModelsCache.payload;
     }
 
     const { stdout } = await execFileAsync(codexAppServerCommand(), ["debug", "models"], {
-      env: { ...environmentForCommand(codexAppServerCommand()), CODEX_HOME: corptieCodexRuntimePaths.codexHome },
+      env: { ...environmentForCommand(codexAppServerCommand()), CODEX_HOME: home },
       timeout: 15_000,
       maxBuffer: 8 * 1024 * 1024
     });
@@ -53,7 +55,7 @@ export function createProviderModelCatalogLoaders({
         }))
         .filter((model) => model.id)
     };
-    codexModelsCache = { loadedAt: nowMs, payload };
+    codexModelsCache = { loadedAt: nowMs, home, payload };
     return payload;
   }
 

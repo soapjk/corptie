@@ -26,6 +26,7 @@ export function createCodexConversationClear({
     const releaseTitle = reserveSessionTitle(title, sessionId);
     try {
     const started = await codexRuntime.startThread({
+      sourceThreadId: session.external?.threadId,
       cwd,
       ...permissions,
       model,

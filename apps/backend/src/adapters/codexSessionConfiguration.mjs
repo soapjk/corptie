@@ -17,8 +17,8 @@ export function codexAppServerSessionCapabilities(overrides = {}) {
   };
 }
 
-export async function readCodexDefaultConfig() {
-  const config = await readFile(join(os.homedir(), ".codex", "config.toml"), "utf8").catch(() => "");
+export async function readCodexDefaultConfig(home = join(os.homedir(), ".codex")) {
+  const config = await readFile(join(home, "config.toml"), "utf8").catch(() => "");
   const modelMatch = config.match(/^\s*model\s*=\s*["']([^"']+)["']/m);
   const reasoningMatch = config.match(/^\s*model_reasoning_effort\s*=\s*["']([^"']+)["']/m);
   return {
@@ -27,7 +27,7 @@ export async function readCodexDefaultConfig() {
   };
 }
 
-export function createCodexSessionConfiguration({ store, upsertManagedCodexSession, loadCodexModels }) {
+export function createCodexSessionConfiguration({ store, upsertManagedCodexSession, loadCodexModels, readDefaultConfig = readCodexDefaultConfig }) {
   async function ensureCodexSessionPermissions(session) {
     if (!session) return session;
     const needsPermissions = !hasCodexSessionPermissions(session);
@@ -51,7 +51,7 @@ export function createCodexSessionConfiguration({ store, upsertManagedCodexSessi
 
   async function resolvedNewCodexRuntimeConfig(input = {}) {
     const [currentConfig, modelPayload] = await Promise.all([
-      readCodexDefaultConfig(),
+      readDefaultConfig(),
       loadCodexModels().catch(() => ({ models: [] }))
     ]);
     return resolveNewCodexRuntimeConfig({

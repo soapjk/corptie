@@ -9,7 +9,7 @@ function fixture() {
   const dependencies = {
     sessionApplicationService: { listModels: record("models") },
     agentProviderRegistry: { defaultProviderId: "test", descriptors: () => [{ id: "test" }], invoke: record("invoke") },
-    firstRunSetup: Object.fromEntries(["status", "check", "setEnabled", "prepareAssistant", "complete"].map((name) => [name, record(name)])),
+    firstRunSetup: Object.fromEntries(["status", "check", "authentication", "setEnabled", "prepareAssistant", "complete"].map((name) => [name, record(name)])),
     readJson: async (request) => { if (request.body instanceof Error) throw request.body; return request.body; },
     sendJson: (response, status, body) => response.resolve({ status, body }),
     errorStatus: (error, fallback) => Number.isInteger(error.statusCode) ? error.statusCode : fallback,
@@ -51,7 +51,7 @@ test("first-run routes retain exact dispatch and argument contracts", async () =
   assert.equal((await f.dispatch("/first-run").result).status, 200);
   assert.deepEqual(f.calls[0], ["status"]);
   const input = { providerId: "test" };
-  for (const [path, name, args] of [["provider", "setEnabled", [input]], ["check", "check", [input]], ["assistant", "prepareAssistant", []], ["complete", "complete", [input]]]) {
+  for (const [path, name, args] of [["provider", "setEnabled", [input]], ["check", "check", [input]], ["authentication", "authentication", [input]], ["assistant", "prepareAssistant", []], ["complete", "complete", [input]]]) {
     assert.equal((await f.dispatch(`/first-run/${path}`, "POST", input).result).status, 200);
     assert.deepEqual(f.calls.at(-1), [name, ...args]);
   }

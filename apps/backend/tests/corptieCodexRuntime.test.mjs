@@ -6,8 +6,26 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import {
   ensureCorptieCodexRuntime,
+  importCorptieCodexAuthentication,
   resolveCorptieRuntimePaths
 } from "../src/runtime/corptieCodexRuntime.mjs";
+
+test("ordinary startup never reads native credentials or Keychain", async () => {
+  await withFixture(async ({ directory, sourceAuthPath, bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath }) => {
+    await rm(sourceAuthPath);
+    const options = { corptieHome: join(directory, ".corptie"), sourceAuthPath,
+      bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath, authenticationPlatform: "darwin",
+      readKeychainCredential: async () => { throw new Error("unexpected-keychain-access"); } };
+    const runtime = await ensureCorptieCodexRuntime(options);
+    assert.equal(runtime.authCopied, false);
+    await assert.rejects(readFile(runtime.authPath), /ENOENT/);
+    options.readKeychainCredential = async () => '{"OPENAI_API_KEY":"test-sign-in"}';
+    assert.equal(await importCorptieCodexAuthentication(options), true);
+    await rm(runtime.authPath);
+    assert.equal((await ensureCorptieCodexRuntime(options)).authCopied, false);
+    assert.equal(await importCorptieCodexAuthentication(options), true);
+  });
+});
 
 async function withFixture(run) {
   const directory = await mkdtemp(join(os.tmpdir(), "corptie-codex-runtime-test-"));
@@ -42,6 +60,7 @@ test("initialization copies authentication and installs required runtime files",
     const result = await ensureCorptieCodexRuntime({
       corptieHome: join(directory, ".corptie"),
       sourceAuthPath,
+      importAuthentication: true,
       bundledAgentsPath,
       bundledSkillPath,
       bundledProjectToolsReferencePath,
@@ -78,6 +97,7 @@ test("startup self-heals managed files without replacing authentication or share
     const options = {
       corptieHome: join(directory, ".corptie"),
       sourceAuthPath,
+      importAuthentication: true,
       bundledAgentsPath,
       bundledSkillPath,
       collaborationMcpServerPath
@@ -115,6 +135,7 @@ test("Keychain-only login is imported once into both isolated runtime environmen
       let reads = 0;
       const options = {
         corptieHome: join(directory, ".corptie"), environmentName, sourceAuthPath,
+        importAuthentication: true,
         bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath,
         authenticationPlatform: "darwin",
         readKeychainCredential: async ({ service, account }) => {
@@ -155,6 +176,7 @@ test("Keychain denial leaves authentication bootstrap retryable without leaking 
     await rm(sourceAuthPath);
     const options = {
       corptieHome: join(directory, ".corptie"), sourceAuthPath,
+      importAuthentication: true,
       bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath,
       authenticationPlatform: "darwin",
       readKeychainCredential: async () => { throw new Error("test-secret-from-keychain"); }
@@ -217,6 +239,7 @@ test("authentication bootstrap never restores native credentials after a Corptie
     const options = {
       corptieHome: join(directory, ".corptie"),
       sourceAuthPath,
+      importAuthentication: true,
       bundledAgentsPath,
       bundledSkillPath,
       collaborationMcpServerPath

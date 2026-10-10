@@ -365,6 +365,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 12) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
+            ProviderEnvironmentSettingsView()
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(L10n("Storage"))

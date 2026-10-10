@@ -590,7 +590,8 @@ export class CodexAppServerClient {
 
     const childCodex = typeof this.command === "function" ? this.command() : this.command;
     const child = spawn(childCodex, ["exec", "resume", "--json", threadId, text], {
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["ignore", "pipe", "pipe"],
+      env: typeof this.transport.env === "function" ? this.transport.env() : this.transport.env
     });
 
     const startedAt = nowIso();

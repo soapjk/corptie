@@ -140,6 +140,7 @@ export class ForkingWorkspaceTransitionManager {
       const globalInstructionSources = await this.globalInstructionSources();
       const permission = logical.activeBinding.permissionSnapshot ?? {};
       const threadOptions = {
+        sourceThreadId: transition.sourceThreadId,
         cwd: targetCwd,
         runtimeWorkspaceRoots: [targetCwd],
         approvalPolicy: input.approvalPolicy

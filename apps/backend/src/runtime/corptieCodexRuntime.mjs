@@ -85,7 +85,9 @@ export async function ensureCorptieCodexRuntime(options = {}) {
   await mkdir(dirname(paths.collaborationProjectToolsReferencePath), { recursive: true, mode: 0o700 });
 
   const configChanged = await ensureRuntimeConfig(paths.configPath);
-  const authCopied = await bootstrapAuthentication(paths, options);
+  // Authentication import is an explicit onboarding action, never startup I/O.
+  const authCopied = options.importAuthentication === true
+    ? await bootstrapAuthentication(paths, options) : false;
   const agentMemory = await ensureCorptieAgentMemory({
     ...options,
     bundledMemoryPath,
@@ -228,6 +230,12 @@ function insertTopLevelSetting(config, assignment) {
 
 const authenticationBootstraps = new Map();
 
+export async function importCorptieCodexAuthentication(options = {}) {
+  const paths = resolveCorptieRuntimePaths(options);
+  // A prior logout marker must not prevent a newly authorized import.
+  return bootstrapAuthentication(paths, { ...options, explicitImport: true });
+}
+
 async function bootstrapAuthentication(paths, options) {
   const pending = authenticationBootstraps.get(paths.authPath);
   if (pending) return pending;
@@ -238,7 +246,7 @@ async function bootstrapAuthentication(paths, options) {
 }
 
 async function bootstrapAuthenticationOnce(paths, options) {
-  if (await isFile(paths.authBootstrapMarkerPath)) {
+  if (!options.explicitImport && await isFile(paths.authBootstrapMarkerPath)) {
     if (await isFile(paths.authPath)) await chmod(paths.authPath, 0o600);
     return false;
   }
