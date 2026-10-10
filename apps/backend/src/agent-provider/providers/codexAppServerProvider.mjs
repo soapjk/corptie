@@ -31,7 +31,7 @@ export function createCodexAppServerProvider(operations, options = {}) {
       backgroundExecutionPolicies: ["no-tools"],
       turnLiveness: {
         heartbeat: AGENT_PROVIDER_HEARTBEAT_RELIABILITY.UNAVAILABLE,
-        supportsStatusProbe: false
+        supportsStatusProbe: typeof operations.probeTurnExecution === "function"
       },
       toolSchemaCapabilities: CODEX_TOOL_SCHEMA_CAPABILITIES,
       sessionRecovery: {
@@ -55,6 +55,7 @@ export function createCodexAppServerProvider(operations, options = {}) {
       AGENT_PROVIDER_CAPABILITIES.SESSION_RENAME,
       AGENT_PROVIDER_CAPABILITIES.SESSION_EXECUTION_PREPARE,
       AGENT_PROVIDER_CAPABILITIES.SESSION_BINDING_PROBE,
+      ...(typeof operations.probeTurnExecution === "function" ? [AGENT_PROVIDER_CAPABILITIES.TURN_EXECUTION_PROBE] : []),
       AGENT_PROVIDER_CAPABILITIES.SESSION_RECOVERY_STABILIZE,
       AGENT_PROVIDER_CAPABILITIES.SESSION_FAILED_BINDING_RECOVERY,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,

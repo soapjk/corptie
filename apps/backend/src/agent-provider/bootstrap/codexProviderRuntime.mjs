@@ -20,6 +20,7 @@ export class CodexProviderRuntime {
   forkThread(...args) { return this.client.forkThread(...args); }
   clearThreadGoal(...args) { return this.client.clearThreadGoal(...args); }
   interruptTurn(...args) { return this.client.interruptTurn(...args); }
+  probeTurnExecution(...args) { return this.client.probeTurnExecution(...args); }
   inspectEmptyThreadForRouteCommit(...args) { return this.client.inspectEmptyThreadForRouteCommit(...args); }
   liveItemsForThread(...args) { return this.client.liveItemsForThread(...args); }
   attachManagedImagesToLiveItem(...args) { return this.client.attachManagedImagesToLiveItem(...args); }
