@@ -40,6 +40,9 @@ struct FirstRunStatus: Decodable {
 // The main tab tree is not mounted behind the first-run page.
 struct FirstRunSetupRoot<Content: View>: View {
     @ViewBuilder let content: () -> Content
+    private let storeReadiness: AnyPublisher<Bool, Never>
+    private let loadStatus: @MainActor () async throws -> FirstRunStatus
+    @State private var storeReady = false
     @State private var status: FirstRunStatus?
     @State private var error: String?
     @State private var busy = false
@@ -47,8 +50,13 @@ struct FirstRunSetupRoot<Content: View>: View {
     @State private var scanGeneration = 0
     @State private var defaultRefreshGeneration = 0
 
-    init(initialStatus: FirstRunStatus? = nil, @ViewBuilder content: @escaping () -> Content) {
+    init(initialStatus: FirstRunStatus? = nil,
+         storeReadiness: AnyPublisher<Bool, Never>? = nil,
+         loadStatus: (@MainActor () async throws -> FirstRunStatus)? = nil,
+         @ViewBuilder content: @escaping () -> Content) {
         self.content = content
+        self.storeReadiness = storeReadiness ?? AppStateStore.shared.$isReachable.eraseToAnyPublisher()
+        self.loadStatus = loadStatus ?? { try await FirstRunSetupAPI.request("first-run") }
         _status = State(initialValue: initialStatus)
     }
 
@@ -66,8 +74,12 @@ struct FirstRunSetupRoot<Content: View>: View {
                 setupPage
             }
         }
-        .onReceive(BackendClient.shared.$isOnline.removeDuplicates()) { online in
-            guard online, status == nil else { return }
+        .onReceive(storeReadiness.removeDuplicates()) { ready in
+            // SSE/health connectivity precedes SQLite initialization. The
+            // existing snapshot-backed readiness signal crosses that boundary
+            // and recovers automatically after delayed startup or reconnect.
+            storeReady = ready
+            guard ready, status == nil else { return }
             perform { try await refresh() }
         }
     }
@@ -105,8 +117,8 @@ struct FirstRunSetupRoot<Content: View>: View {
                             }
                         } else {
                             VStack(alignment: .leading, spacing: 12) {
-                                if busy {
-                                    ProgressView(L10n("正在准备…"))
+                                if busy || !storeReady {
+                                    ProgressView(L10n("正在准备本地数据…"))
                                 } else {
                                     Text(L10n("正在等待本地服务启动。"))
                                         .foregroundStyle(.secondary)
@@ -222,7 +234,7 @@ struct FirstRunSetupRoot<Content: View>: View {
     }
 
     private func refresh() async throws {
-        status = try await FirstRunSetupAPI.request("first-run")
+        status = try await loadStatus()
     }
 
     private func perform(_ operation: @escaping @MainActor () async throws -> Void) {
