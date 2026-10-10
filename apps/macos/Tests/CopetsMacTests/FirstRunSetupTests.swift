@@ -1,10 +1,40 @@
 import Foundation
 import AppKit
 import SwiftUI
+import Combine
 import Testing
 @testable import CorptieMac
 
 struct FirstRunSetupTests {
+    @Test @MainActor
+    func delayedStoreReadinessLoadsConfigurationWithoutManualRetry() async throws {
+        let readiness = CurrentValueSubject<Bool, Never>(false)
+        var loads = 0
+        let status = try decode(enabled: false, executable: false, checkState: "missing")
+        let view = NSHostingView(rootView: FirstRunSetupRoot(
+            storeReadiness: readiness.eraseToAnyPublisher(), loadStatus: {
+                loads += 1
+                return status
+            }
+        ) { EmptyView() })
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 560, height: 820),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = view
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        view.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        // The transport may already be connected while Store readiness remains
+        // false. No first-run API request may race the migration boundary.
+        #expect(loads == 0)
+        readiness.send(true)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(loads == 1)
+        readiness.send(true)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(loads == 1)
+    }
+
     @Test
     func discoveryAloneDoesNotUnlockSetup() throws {
         let status = try decode(enabled: false, executable: true)
