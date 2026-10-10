@@ -172,6 +172,7 @@ import { DataRootMigrationCoordinator } from "./runtime/dataRootMigrationCoordin
 import { BackendDataRootOwnership } from "./runtime/backendDataRootOwnership.mjs";
 import { ProviderEventIngestionService } from "./application/providerEventIngestionService.mjs";
 import { ProviderTurnResponseWatchdog } from "./application/providerTurnResponseWatchdog.mjs";
+import { createTurnExecutionProbe } from "./application/turnExecutionProbeComposition.mjs";
 import { ProviderEventProjector } from "./application/providerEventProjector.mjs";
 import { LegacySessionHistoryRepairService } from "./application/legacySessionHistoryRepairService.mjs";
 import { createSessionRecoveryComposition } from "./agent-provider/bootstrap/sessionRecoveryComposition.mjs";
@@ -379,6 +380,7 @@ const turnObservability = new CodeTaskObservabilityService({
 });
 const providerEventProjector = new ProviderEventProjector({ store });
 let providerTurnResponseWatchdog = null;
+let turnExecutionProbe = null;
 const { scheduleTimelineChangePublish } = createTimelineChangeDispatcher({
   store,
   resolveSessionReference: (sessionId) => sessionBindingRepository?.resolve(sessionId),
@@ -401,6 +403,7 @@ const providerEventIngestion = new ProviderEventIngestionService({
   observe: (context) => {
     const observation = turnObservability.ingestProviderEvent(context);
     providerTurnResponseWatchdog?.observe(context);
+    turnExecutionProbe?.observe(context);
     return observation;
   }
 });
@@ -1172,7 +1175,8 @@ const sessionApplicationService = createSessionApplicationComposition({
 });
 const { interruptUnifiedSession, respondUnifiedSessionApproval, respondUnifiedSessionUserInput } = createSessionInteractionCommands({
   store, requireSessionReference, sessionApplicationService, providerEventIngestion,
-  handleCommittedProviderTerminalLifecycle, sendUnifiedSessionMessage, emitEvent, now
+  handleCommittedProviderTerminalLifecycle, sendUnifiedSessionMessage, emitEvent, now,
+  onInterruptRequested: (entry) => turnExecutionProbe?.request(entry)
 });
 const { handleProviderResponseDelayed, handleProviderResponseTimeout } = createProviderResponseHandlers({
   store, providerEventIngestion, sessionApplicationService,
@@ -1185,6 +1189,21 @@ providerTurnResponseWatchdog = new ProviderTurnResponseWatchdog({
   onDelayed: handleProviderResponseDelayed,
   onTimeout: handleProviderResponseTimeout
 });
+turnExecutionProbe = createTurnExecutionProbe({ store, registry: agentProviderRegistry,
+  enabled: !developmentPreview,
+  bindings: sessionBindingRepository, ingestion: providerEventIngestion,
+  onRunning: (entry) => providerTurnResponseWatchdog.confirmRunning(entry),
+  onTerminal: handleCommittedProviderTerminalLifecycle, now });
+// Re-arm only current unfinished turns after startup; no Provider history scan,
+// model prompt, resume, or replay is performed here.
+function restoreTurnExecutionProbes() {
+  for (const row of store.selectAll(`SELECT session_id, binding_id, turn_id, routing_version
+    FROM session_turns WHERE execution_status IN ('running', 'blocked')`)) {
+    const reference = sessionBindingRepository.resolve(row.session_id);
+    if (reference?.bindingId !== row.binding_id || reference.routingVersion !== row.routing_version) continue;
+    turnExecutionProbe.observe({ event: { ...reference, turnId: row.turn_id, type: "turn.started" }, binding: reference });
+  }
+}
 sessionRuntimeReleaseService = new SessionRuntimeReleaseService({
   store,
   sessionService: sessionApplicationService
@@ -2180,6 +2199,7 @@ function startBackendRuntime() {
     console.log("[development-preview] read-only browsing; recovery, providers, schedules and integrations disabled");
     return;
   }
+  restoreTurnExecutionProbes();
   memoryExtractionScheduler.start();
   taskSummaryService.start();
   startClientDeviceGateway({
@@ -2234,7 +2254,7 @@ startBackendRuntime();
 
 const shutdownBackend = createBackendShutdown({
   backgroundAgentService, memoryExtractionScheduler, getClientDeviceGateway: () => clientDeviceGateway,
-  taskSummaryService, turnObservability, runtimeActivity, mcpCleanupInterval,
+  taskSummaryService, turnObservability, runtimeActivity, mcpCleanupInterval, turnExecutionProbe,
   stateSyncPublisher, scheduledSessionTaskService,
   getResetForecastMonitor: () => codexResetForecastMonitor,
   openClackyManager, feishuGateway, codexRuntime, skillMcpGateway,

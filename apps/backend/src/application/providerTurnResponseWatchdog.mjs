@@ -118,6 +118,18 @@ export class ProviderTurnResponseWatchdog {
     return Boolean(current);
   }
 
+  confirmRunning(input) {
+    const current = this.pending.get(turnKey(input));
+    if (!current || current.lastFailureAt) return false;
+    // Native status confirmation is liveness evidence, not model progress.
+    // Do not let the first-output timer kill a positively observed active turn.
+    if (!current.hasActivity && current.timeoutTimer) {
+      this.cancel(current.timeoutTimer);
+      current.timeoutTimer = null;
+    }
+    return true;
+  }
+
   close() {
     for (const current of this.pending.values()) {
       if (current.warningTimer) this.cancel(current.warningTimer);

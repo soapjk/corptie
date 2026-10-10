@@ -28,6 +28,9 @@ export function createProviderTerminalLifecycle({
       recordWorkSettled(updatedWork);
     }
     settleEntityTaskFromSession(nextSession);
+    // Recovered execution state does not prove the final business result was
+    // delivered. Require user review before advancing queued work.
+    if (event.payload?.suppressAutomaticContinuation === true) return;
     const agent = collaborationCore.getAgentForSession(nextSession.id);
     if (!failed && !cancelled) {
       refreshWorkspaceInventoryAfterTurn(logicalRoute);

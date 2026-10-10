@@ -35,6 +35,18 @@ const turn = {
   turnId: "turn:one"
 };
 
+test("positive status probe cancels first-output deadline but not a retry-failure deadline", () => {
+  const timers = scheduler();
+  const watchdog = new ProviderTurnResponseWatchdog({ schedule:timers.schedule,cancel:timers.cancel });
+  watchdog.watch(turn);
+  assert.equal(watchdog.confirmRunning(turn),true);
+  assert.equal(timers.hasDelay(120000),false);
+  watchdog.observe({event:{...turn,type:"provider.error",payload:{willRetry:true,error:{code:"NETWORK"}}},binding:turn});
+  assert.equal(watchdog.confirmRunning(turn),false);
+  assert.equal(timers.hasDelay(120000),true);
+  watchdog.close();
+});
+
 test("a silent Provider Turn warns and then times out", async () => {
   const timers = scheduler();
   const delayed = [];
