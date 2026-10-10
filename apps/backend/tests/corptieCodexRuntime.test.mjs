@@ -18,7 +18,7 @@ async function withFixture(run) {
   const collaborationMcpServerPath = join(directory, "bundle", "collaborationMcpServer.mjs");
   await mkdir(join(directory, "native-codex"), { recursive: true });
   await mkdir(join(directory, "bundle"), { recursive: true });
-  await writeFile(sourceAuthPath, '{"token":"local-test-token"}\n');
+  await writeFile(sourceAuthPath, '{"OPENAI_API_KEY":"local-test-token"}\n');
   await writeFile(bundledAgentsPath, "# Corptie global instructions\n\nEnvironment: `{{CORPTIE_ENVIRONMENT}}`\n");
   await writeFile(bundledSkillPath, "---\nname: corptie-collaboration\ndescription: test\n---\n\n# Test\n");
   await writeFile(bundledProjectToolsReferencePath, "# Project tools protocol\n");
@@ -55,7 +55,7 @@ test("initialization copies authentication and installs required runtime files",
     assert.equal(result.agentsAvailable, true);
     assert.match(await readFile(result.configPath, "utf8"), /cli_auth_credentials_store = "file"/);
     assert.match(await readFile(result.configPath, "utf8"), /mcp_oauth_credentials_store = "file"/);
-    assert.equal(await readFile(result.authPath, "utf8"), '{"token":"local-test-token"}\n');
+    assert.equal(await readFile(result.authPath, "utf8"), '{"OPENAI_API_KEY":"local-test-token"}\n');
     assert.match(await readFile(result.authBootstrapMarkerPath, "utf8"), /"source": "copied"/);
     const agents = await readFile(result.agentsPath, "utf8");
     assert.match(agents, /Environment: `production`/);
@@ -102,6 +102,71 @@ test("startup self-heals managed files without replacing authentication or share
     assert.match(config, /mcp_oauth_credentials_store = "file"/);
     assert.ok(config.indexOf('mcp_oauth_credentials_store = "file"') < config.indexOf("[features]"));
     assert.equal(await readFile(second.collaborationSkillPath, "utf8"), await readFile(bundledSkillPath, "utf8"));
+  });
+});
+
+test("Keychain-only login is imported once into both isolated runtime environments", async () => {
+  await withFixture(async ({ directory, sourceAuthPath, bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath }) => {
+    await rm(sourceAuthPath);
+    const nativeConfigPath = join(dirname(sourceAuthPath), "config.toml");
+    const nativeConfig = 'cli_auth_credentials_store = "keyring"\nmodel = "native-model"\n';
+    await writeFile(nativeConfigPath, nativeConfig);
+    for (const environmentName of ["production", "development"]) {
+      let reads = 0;
+      const options = {
+        corptieHome: join(directory, ".corptie"), environmentName, sourceAuthPath,
+        bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath,
+        authenticationPlatform: "darwin",
+        readKeychainCredential: async ({ service, account }) => {
+          reads++;
+          assert.equal(service, "Codex Auth");
+          assert.match(account, /^cli\|[a-f0-9]{16}$/);
+          return JSON.stringify({ tokens: { access_token: "test-keychain-login" } });
+        }
+      };
+      // Provision unrelated managed files first; concurrent initialization here
+      // exercises authentication coordination rather than memory-file creation.
+      await ensureCorptieCodexRuntime({ ...options, authenticationPlatform: "linux" });
+      const results = await Promise.all([
+        ensureCorptieCodexRuntime(options), ensureCorptieCodexRuntime(options)
+      ]);
+      assert.equal(reads, 1);
+      assert.equal(results[0].authAvailable, true);
+      assert.equal(JSON.parse(await readFile(results[0].authPath, "utf8")).tokens.access_token, "test-keychain-login");
+      assert.equal((await stat(results[0].authPath)).mode & 0o777, 0o600);
+      const marker = await readFile(results[0].authBootstrapMarkerPath, "utf8");
+      assert.match(marker, /"source": "keychain"/);
+      assert.ok(!marker.includes("test-keychain-login"));
+      assert.ok(!(await readFile(results[0].configPath, "utf8")).includes("native-model"));
+      await writeFile(results[0].authPath, '{"token":"corptie-account"}\n');
+      assert.equal((await ensureCorptieCodexRuntime(options)).authCopied, false);
+      assert.equal(await readFile(results[0].authPath, "utf8"), '{"token":"corptie-account"}\n');
+      await rm(results[0].authPath);
+      assert.equal((await ensureCorptieCodexRuntime(options)).authAvailable, false);
+      assert.equal(reads, 1, "an explicit logout must not silently restore Keychain login");
+    }
+    assert.equal(await readFile(nativeConfigPath, "utf8"), nativeConfig);
+    await assert.rejects(readFile(sourceAuthPath), /ENOENT/);
+  });
+});
+
+test("Keychain denial leaves authentication bootstrap retryable without leaking diagnostics", async () => {
+  await withFixture(async ({ directory, sourceAuthPath, bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath }) => {
+    await rm(sourceAuthPath);
+    const options = {
+      corptieHome: join(directory, ".corptie"), sourceAuthPath,
+      bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath,
+      authenticationPlatform: "darwin",
+      readKeychainCredential: async () => { throw new Error("test-secret-from-keychain"); }
+    };
+    await assert.rejects(ensureCorptieCodexRuntime(options), error =>
+      !error.message.includes("test-secret") && error.message.includes("钥匙串"));
+    const paths = resolveCorptieRuntimePaths(options);
+    await assert.rejects(readFile(paths.authBootstrapMarkerPath), /ENOENT/);
+    options.readKeychainCredential = async () => '{"OPENAI_API_KEY":"test-key"}';
+    const result = await ensureCorptieCodexRuntime(options);
+    assert.equal(result.authAvailable, true);
+    assert.equal(result.authCopied, true);
   });
 });
 
