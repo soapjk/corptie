@@ -1719,3 +1719,24 @@
 "Choose a recovery action for every Markdown file." = "请为每个 Markdown 文件选择恢复操作。";
 "A previous Markdown decision left %d uncommitted Ignore change(s). Resolve each file before integration continues." = "上一次 Markdown 决策留下了 %d 个未提交的 Ignore 变更。请逐个处理后再继续整合。";
 "The merge commit completed but left these target Worktree changes uncommitted. Review or preserve them, make the target clean, then retry." = "合并提交已经完成，但目标 Worktree 仍有以下未提交变更。请检查或保留这些变更，将目标恢复为干净状态后重试。";
+
+"本机 Agent" = "本机 Agent";
+"欢迎开始" = "欢迎开始";
+"让你的 Agent 准备就绪" = "让你的 Agent 准备就绪";
+"连接本机的 Agent，开始在 Corptie 中工作。完成一个配置即可开始，其他配置可以稍后添加。" = "连接本机的 Agent，开始在 Corptie 中工作。完成一个配置即可开始，其他配置可以稍后添加。";
+"完成配置后，Corptie 助理会陪你开始使用。" = "完成配置后，Corptie 助理会陪你开始使用。";
+"Agent 已准备就绪" = "Agent 已准备就绪";
+"至少完成一个 Agent 配置才能继续" = "至少完成一个 Agent 配置才能继续";
+"正在准备助理…" = "正在准备助理…";
+"进入 Corptie" = "进入 Corptie";
+"正在保存…" = "正在保存…";
+"等待检测" = "等待检测";
+"已就绪" = "已就绪";
+"可用 · 未启用" = "可用 · 未启用";
+"未找到程序" = "未找到程序";
+"需要修复" = "需要修复";
+"已通过实际回复检测" = "已通过实际回复检测";
+"更改配置…" = "更改配置…";
+"程序路径" = "程序路径";
+"未找到程序，请选择已安装的 Agent 可执行文件。" = "未找到程序，请选择已安装的 Agent 可执行文件。";
+"启用 %@" = "启用 %@";

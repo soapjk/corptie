@@ -51,7 +51,7 @@ test("first-run routes retain exact dispatch and argument contracts", async () =
   assert.equal((await f.dispatch("/first-run").result).status, 200);
   assert.deepEqual(f.calls[0], ["status"]);
   const input = { providerId: "test" };
-  for (const [path, name, args] of [["provider", "setEnabled", [input]], ["check", "check", [input]], ["assistant", "prepareAssistant", []], ["complete", "complete", []]]) {
+  for (const [path, name, args] of [["provider", "setEnabled", [input]], ["check", "check", [input]], ["assistant", "prepareAssistant", []], ["complete", "complete", [input]]]) {
     assert.equal((await f.dispatch(`/first-run/${path}`, "POST", input).result).status, 200);
     assert.deepEqual(f.calls.at(-1), [name, ...args]);
   }

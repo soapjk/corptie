@@ -5,8 +5,8 @@ import { dirname, isAbsolute } from "node:path";
 // Provider-independent setup state. Only adapter reply tests can mark a binary
 // available; enabling a row never substitutes for a successful test.
 export class FirstRunSetupService {
-  constructor({ path, providers, hasWorks, firstWorkSession = () => null, findAssistantSession, createAssistantSession, onDefaultChanged = () => {} }) {
-    Object.assign(this, { path, providers, hasWorks, firstWorkSession, findAssistantSession, createAssistantSession, onDefaultChanged });
+  constructor({ path, providers, hasWorks, firstWorkSession = () => null, findAssistantSession, createAssistantSession, ensureAssistantGreeting = async () => {}, onDefaultChanged = () => {} }) {
+    Object.assign(this, { path, providers, hasWorks, firstWorkSession, findAssistantSession, createAssistantSession, ensureAssistantGreeting, onDefaultChanged });
     this.state = { providers: {}, completed: false };
     this.pending = Promise.resolve();
     this.checks = new Map();
@@ -130,28 +130,39 @@ export class FirstRunSetupService {
   }
 
   prepareAssistant() {
-    return this.serialize(async () => {
-      const status = await this.status();
-      const selected = status.providers.find((p) => p.id === status.defaultProviderId && p.enabled)
-        ?? status.providers.find((p) => p.enabled);
-      if (!selected) throw new Error("请先启用至少一个可用 Provider。");
-      if (selected.id !== this.state.defaultProviderId) {
-        await this.save({ ...this.state, defaultProviderId: selected.id });
-        this.onDefaultChanged(selected.id);
-      }
-      const existing = this.findAssistantSession();
-      if (existing) return { sessionId: existing.id };
-      await this.provider(selected.id).prepare?.();
-      const session = await this.createAssistantSession(selected.id);
-      return { sessionId: session.id };
-    });
+    return this.serialize(() => this.prepareAssistantWithinOperation());
   }
 
-  complete() {
+  // Caller owns the serialization lock. Completion and the legacy preparation
+  // route share this operation without nesting queue promises.
+  async prepareAssistantWithinOperation(language) {
+    const status = await this.status();
+    const selected = status.providers.find((p) => p.id === status.defaultProviderId && p.enabled)
+      ?? status.providers.find((p) => p.enabled);
+    if (!selected) throw new Error("请先启用至少一个可用 Provider。");
+    if (selected.id !== this.state.defaultProviderId) {
+      await this.save({ ...this.state, defaultProviderId: selected.id });
+      this.onDefaultChanged(selected.id);
+    }
+    let session = this.findAssistantSession();
+    if (!session) {
+      await this.provider(selected.id).prepare?.();
+      session = await this.createAssistantSession(selected.id);
+    }
+    if (!this.state.completed) await this.ensureAssistantGreeting(session.id, language);
+    return { sessionId: session.id };
+  }
+
+  complete(input = {}) {
     return this.serialize(async () => {
+      // Replaying a completed request must not recreate a deleted assistant.
+      if (this.state.completed) return this.status();
+      await this.prepareAssistantWithinOperation(typeof input.language === "string" ? input.language : undefined);
+      // Revalidate after initialization: the binary or enabled choice may have
+      // changed while the Provider was preparing its Session.
       const status = await this.status();
-      if (!status.providers.some((p) => p.enabled) || !status.assistantSessionId) {
-        throw new Error("请先启用至少一个可用 Provider，并准备 Corptie Chat。");
+      if (!status.providers.some((p) => p.enabled)) {
+        throw new Error("请先启用至少一个可用 Provider。");
       }
       await this.save({ ...this.state, completed: true });
       return this.status();
