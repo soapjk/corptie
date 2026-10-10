@@ -1032,7 +1032,6 @@ struct ConversationView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .frame(minHeight: 36)
                         .accessibilityLabel("复制工作空间路径：\(cwd)")
                         .accessibilityIdentifier("conversation-copy-workspace")
                     }
@@ -1046,7 +1045,6 @@ struct ConversationView: View {
                             }
                         }
                         .buttonStyle(.plain)
-                        .frame(minHeight: 36)
                         .accessibilityLabel("打开 Worktree：\(branch)")
                         .accessibilityIdentifier("conversation-open-worktrees")
                     }
@@ -1061,6 +1059,9 @@ struct ConversationView: View {
                 }
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
+                // Keep metadata compact regardless of which buttons are present.
+                // Per-button minimum heights otherwise add a gap below the title.
+                .frame(minHeight: 18)
                 .frame(maxWidth: .infinity)
             }
                 .padding(.horizontal, 12)
