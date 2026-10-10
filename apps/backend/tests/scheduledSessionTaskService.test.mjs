@@ -947,10 +947,10 @@ test("Automation projection supports after plus ordered message, activation, and
     const task = f.service.create({
       name: "Follow up",
       logicalSessionId: "logical:stable",
+      message: "follow up now",
       scheduleType: "after",
       delaySeconds: 2,
       actions: [
-        { type: "queueSessionMessage", message: "follow up now" },
         { type: "activateSession" },
         { type: "localNotification", title: "Ready", body: "Follow-up queued" }
       ],
@@ -973,6 +973,79 @@ test("Automation projection supports after plus ordered message, activation, and
     assert.ok(run.stages.some((value) => value.name === "authorization" && value.status === "completed"));
     assert.ok(run.stages.some((value) => value.name === "routing" && value.status === "completed"));
     assert.equal(actionCalls.length, 2);
+  } finally {
+    await cleanup(f);
+  }
+});
+
+test("top-level message is the sole source for Session delivery alongside supplemental actions", async () => {
+  const actionCalls = [];
+  const f = await fixture({ activate: async (value) => actionCalls.push(value) });
+  try {
+    const task = f.service.create({
+      name: "Wake with a message",
+      logicalSessionId: "logical:stable",
+      message: "inspect the scheduled evidence",
+      scheduleType: "after",
+      delaySeconds: 2,
+      actions: [{ type: "activateSession" }]
+    }, f.actor);
+    assert.deepEqual(task.actions.map((action) => action.type), ["queueSessionMessage", "activateSession"]);
+    assert.equal(task.actions[0].message.text, "inspect the scheduled evidence");
+
+    f.advance(2_000);
+    await f.service.tick();
+
+    const run = f.store.listScheduledSessionRuns(task.taskId)[0];
+    assert.equal(run.status, "queued");
+    assert.ok(run.agentTaskId);
+    assert.equal(f.queued.length, 1);
+    assert.equal(f.queued[0].text, "inspect the scheduled evidence");
+    assert.deepEqual(run.actionResults.map((result) => result.status), ["queued", "requested"]);
+    assert.equal(actionCalls.length, 1);
+  } finally {
+    await cleanup(f);
+  }
+});
+
+test("omitting top-level message runs supplemental actions without queueing a Session message", async () => {
+  const actionCalls = [];
+  const f = await fixture({ activate: async (value) => actionCalls.push(value) });
+  try {
+    const task = f.service.create({
+      name: "Activate silently",
+      logicalSessionId: "logical:stable",
+      scheduleType: "after",
+      delaySeconds: 2,
+      actions: [{ type: "activateSession" }]
+    }, f.actor);
+    assert.deepEqual(task.actions, [{ type: "activateSession" }]);
+
+    f.advance(2_000);
+    await f.service.tick();
+
+    const run = f.store.listScheduledSessionRuns(task.taskId)[0];
+    assert.equal(run.status, "completed");
+    assert.equal(run.agentTaskId, null);
+    assert.equal(f.queued.length, 0);
+    assert.deepEqual(run.actionResults.map((result) => result.status), ["requested"]);
+    assert.equal(actionCalls.length, 1);
+  } finally {
+    await cleanup(f);
+  }
+});
+
+test("legacy nested message cannot conflict with the top-level message", async () => {
+  const f = await fixture();
+  try {
+    assert.throws(() => f.service.create({
+      name: "Conflicting messages",
+      logicalSessionId: "logical:stable",
+      message: "authoritative message",
+      scheduleType: "after",
+      delaySeconds: 2,
+      actions: [{ type: "queueSessionMessage", message: "different nested message" }]
+    }, f.actor), (error) => error.code === "INVALID_SCHEDULED_SESSION_TASK" && error.field === "actions");
   } finally {
     await cleanup(f);
   }

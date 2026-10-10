@@ -35,6 +35,7 @@ const scheduledSessionTaskManageTool = Object.freeze({
         logical_session_id: { type: "string", minLength: 1, description: "Optional target logical Session. Create defaults to the calling Agent's current logical Session. Never pass a Provider thread id." },
         name: { type: "string", minLength: 1, maxLength: 120 },
         message: {
+          description: "Optional trigger message. When present, Automation queues exactly this message to the target Session when the trigger fires. Omit it when no Session message should be sent; do not duplicate it in actions.",
           oneOf: [
             { type: "string", minLength: 1 },
             {
@@ -58,16 +59,26 @@ const scheduledSessionTaskManageTool = Object.freeze({
         expires_after_seconds: { type: "integer", minimum: 1, maximum: 315360000, description: "Countdown from creation to expiration in seconds. For create, specify exactly one expiration field." },
         missed_policy: { type: "string", enum: ["skip", "fireOnce", "catchUp", "coalesce_once"] },
         actions: {
-          type: "array", minItems: 1, maxItems: 16,
+          type: "array", minItems: 1, maxItems: 15, description: "Optional supplemental effects. Message delivery is controlled only by the top-level message field.",
           items: {
-            type: "object", additionalProperties: false,
-            properties: {
-              type: { type: "string", enum: ["queueSessionMessage", "activateSession", "localNotification"] },
-              message: { oneOf: [{ type: "string" }, { type: "object", additionalProperties: true }] },
-              title: { type: "string" },
-              body: { type: "string" }
-            },
-            required: ["type"]
+            oneOf: [
+              {
+                type: "object", additionalProperties: false,
+                properties: {
+                  type: { const: "activateSession", description: "Activate the target Session without sending a message. Pass the top-level message when a Session Turn is required." }
+                },
+                required: ["type"]
+              },
+              {
+                type: "object", additionalProperties: false,
+                properties: {
+                  type: { const: "localNotification" },
+                  title: { type: "string" },
+                  body: { type: "string", minLength: 1 }
+                },
+                required: ["type", "body"]
+              }
+            ]
           }
         },
         process: {
@@ -103,6 +114,7 @@ const scheduledSessionTaskManageTool = Object.freeze({
         if: { properties: { action: { const: "create" } }, required: ["action"] },
         then: {
           required: ["name", "schedule_type"],
+          anyOf: [{ required: ["message"] }, { required: ["actions"] }],
           oneOf: [
             { required: ["expires_at"], not: { required: ["expires_after_seconds"] } },
             { required: ["expires_after_seconds"], not: { required: ["expires_at"] } }
@@ -149,7 +161,7 @@ export const scheduledSessionTaskDynamicTools = Object.freeze([
   Object.freeze({
     type: "function",
     name: "corptie_automations_create",
-    description: "Create a provider-neutral Corptie Automation for this authenticated logical Session. For long non-interactive work, start the command in the background and use processExit or condition to wake the Session without model polling. processExit never starts or restarts the process; identify it with pid and, when available, expected_start_time. Set exactly one expiration field so abandoned observers terminate.",
+    description: "Create a provider-neutral Corptie Automation for this authenticated logical Session. Pass message only when the trigger must send a Session message; omit it otherwise. actions contains only supplemental activation or local-notification effects. For long non-interactive work, start the command in the background and use processExit or condition to wake the Session without model polling. processExit never starts or restarts the process; identify it with pid and, when available, expected_start_time. Set exactly one expiration field so abandoned observers terminate.",
     deferLoading: false,
     inputSchema: {
       type: "object",
@@ -159,6 +171,7 @@ export const scheduledSessionTaskDynamicTools = Object.freeze([
       ].includes(name))),
       required: ["name", "schedule_type"],
       allOf: [{
+        anyOf: [{ required: ["message"] }, { required: ["actions"] }],
         oneOf: [
           { required: ["expires_at"], not: { required: ["expires_after_seconds"] } },
           { required: ["expires_after_seconds"], not: { required: ["expires_at"] } }
@@ -232,7 +245,7 @@ function toTaskInput(args) {
   return {
     name: args.name,
     logicalSessionId: args.logical_session_id,
-    message: args.message,
+    ...(Object.hasOwn(args, "message") ? { message: args.message } : {}),
     scheduleType: args.schedule_type,
     runAt: args.run_at,
     delaySeconds: args.delay_seconds,
