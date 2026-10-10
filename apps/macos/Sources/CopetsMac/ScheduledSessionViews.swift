@@ -76,7 +76,16 @@ struct ScheduledSessionStrip: View {
                 }
 
                 ForEach(visibleTasks) { task in
-                    ScheduledSessionCompactCard(task: task)
+                    Button {
+                        AppTabRouter.shared.openAutomation(task.id)
+                    } label: {
+                        ScheduledSessionCompactCard(task: task)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(L10n("Automations"))
+                    .accessibilityIdentifier("scheduled-session.detail.open.\(task.id)")
                 }
 
                 if let error = commandState.scheduledTaskError {
