@@ -6,6 +6,7 @@ import CorptieConversation
 struct SessionComposerStopButton: View {
     @EnvironmentObject private var backendClient: BackendClient
     let session: TaskSession?
+    var compact = false
 
     var body: some View {
         ZStack {
@@ -25,7 +26,8 @@ struct SessionComposerStopButton: View {
                             Circle().strokeBorder(Color.red.opacity(0.45), lineWidth: 1)
                                 .allowsHitTesting(false)
                         }
-                        .frame(width: 44, height: 32)
+                        .frame(width: compact ? ComposerShellMetrics.actionHitEdge : 44,
+                               height: compact ? ComposerShellMetrics.actionHitEdge : 32)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -35,6 +37,7 @@ struct SessionComposerStopButton: View {
                 .accessibilityIdentifier("conversation-stop")
             }
         }
-        .frame(width: 44, height: 32)
+        .frame(width: compact ? ComposerShellMetrics.actionHitEdge : 44,
+               height: compact ? ComposerShellMetrics.actionHitEdge : 32)
     }
 }
