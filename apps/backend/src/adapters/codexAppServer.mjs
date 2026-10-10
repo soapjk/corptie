@@ -111,6 +111,12 @@ export class CodexAppServerClient {
   // Product history reads remain Store-only. This transport read is exposed
   // solely to the explicit, audited legacy-history repair workflow so old
   // rollouts can be materialized once without turning GET into a hidden write.
+  async probeTurnExecution(threadId, turnId) {
+    await this.initialize();
+    const { probeCodexTurnExecution } = await import("./codexTurnExecutionProbe.mjs");
+    return probeCodexTurnExecution((method, params) => this.request(method, params), threadId, turnId);
+  }
+
   async readThreadForLegacyHistoryRepair(threadId) {
     await this.initialize();
     return this.request("thread/read", {
