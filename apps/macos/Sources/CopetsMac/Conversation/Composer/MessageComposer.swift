@@ -121,7 +121,8 @@ struct MessageComposer: View {
                     backendClient.sendMessage(text, to: session, onSuccess: { quickMessageRefresh += 1 })
                 }
             }
-            ConversationComposerChrome {
+            ConversationComposerChrome(verticalPadding: compact ? 3 : 6,
+                                       contentSpacing: compact ? 0 : 2) {
                 if !compact {
                     HStack(spacing: 0) {
                         ThreadMetaView(sessionID: sessionId, status: status, isReady: isReady,
@@ -132,13 +133,12 @@ struct MessageComposer: View {
                 }
             } content: {
                 if compact {
-                    editorInput
-                        .frame(minWidth: 0, maxWidth: .infinity)
-                        .padding(.horizontal, 10)
+                    compactEditorRow
                 } else {
                     editorRow
                 }
             }
+            .frame(maxWidth: compact ? CompactComposerLayout.maximumWidth : .infinity)
         }
         .task(id: "\(session?.taskId ?? sessionId):\(sessionId):\(quickMessageRefresh)") {
             guard !compact else { return }
@@ -207,74 +207,13 @@ struct MessageComposer: View {
             showsAttachments: !attachedImages.isEmpty,
             showsModel: allowsModelSwitch && canSwitchModel
         ) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: ComposerShellMetrics.attachmentSpacing) {
-                    ForEach(attachedImages) { image in
-                        ComposerImageChip(
-                            imageURL: backendClient.chatImageURL(sessionID: sessionId, managedPath: image.managedPath),
-                            onRemove: { removeAttachedImage(image) }
-                        )
-                    }
-                }
-                .padding(.horizontal, 9)
-                .padding(.top, 8)
-                .padding(.bottom, 4)
-            }
-            .frame(height: ComposerShellMetrics.attachmentStripHeight)
+            attachmentStrip
         } editor: {
             editorInput
         } send: {
-            Button { sendCurrentDraft() } label: {
-                ComposerActionGlyph(systemName: "paperplane.fill", tint: ComposerPalette.softBlue,
-                                    isBusy: backendClient.isSendingMessage, showsSurface: false)
-                    .frame(width: Self.sendControlEdge, height: Self.sendControlEdge)
-                    .clipped()
-                    .overlay {
-                        Circle().strokeBorder(ComposerPalette.softBlue.opacity(0.4), lineWidth: 1)
-                            .allowsHitTesting(false)
-                    }
-                    .conversationGlassControl(tint: ComposerPalette.softBlue)
-                    .frame(width: ComposerShellMetrics.actionHitEdge,
-                           height: ComposerShellMetrics.actionHitEdge)
-                    .contentShape(Circle().inset(by: -8))
-            }
-            .buttonStyle(.plain)
-            .disabled(isSendDisabled)
-            .help(L10n("Send instruction"))
-            .accessibilityLabel(L10n("Send instruction"))
-            .accessibilityIdentifier("conversation-composer-send")
+            sendButton
         } more: {
-            Menu {
-                Button {
-                    isShowingPhotoPicker = true
-                } label: {
-                    Label(isImportingImages ? L10n("正在导入图片…") : L10n("从照片选择"),
-                          systemImage: "photo.on.rectangle")
-                }
-                .disabled(!canAttachImages || isImportingImages || attachedImages.count >= 8)
-                Button(action: chooseImageFiles) {
-                    Label(L10n("从文件选择"), systemImage: "folder")
-                }
-                .disabled(!canAttachImages || isImportingImages || attachedImages.count >= 8)
-                Button {
-                    scheduleSubmission = editorController.submission()
-                    isShowingScheduleSheet = true
-                } label: {
-                    Label(L10n("创建定时消息"), systemImage: ScheduledSessionAccessibilityID.composerSymbol)
-                }
-                .accessibilityIdentifier(ScheduledSessionAccessibilityID.composerEntry)
-            } label: {
-                ComposerActionGlyph(systemName: "ellipsis", tint: ComposerPalette.secondaryText,
-                                    weight: .semibold, showsSurface: false)
-                    .contentShape(Circle().inset(by: -8))
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .frame(width: ComposerShellMetrics.actionHitEdge, height: ComposerShellMetrics.actionHitEdge)
-            .fixedSize()
-            .help(L10n("更多功能"))
-            .accessibilityLabel(L10n("更多功能"))
-            .accessibilityIdentifier("composer.more-actions")
+            moreMenu
         } model: {
             CodexModelMenu(modelCatalog: modelCatalog, maxWidth: modelMenuMaxWidth)
         }
@@ -283,25 +222,128 @@ struct MessageComposer: View {
         }
     }
 
+    private var compactEditorRow: some View {
+        VStack(spacing: 0) {
+            if !attachedImages.isEmpty { attachmentStrip }
+            HStack(spacing: 2) {
+                editorInput
+                    .frame(minWidth: 0, maxWidth: .infinity)
+                    .padding(.leading, 8)
+                    .padding(.trailing, 2)
+                    .layoutPriority(-1)
+                sendButton
+                if session?.executionTaskStatus == .running,
+                   session?.canInterruptNow == true {
+                    SessionComposerStopButton(session: session, compact: true)
+                }
+                moreMenu
+                    .padding(.trailing, 4)
+            }
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: ComposerShellMetrics.cornerRadius, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.22), lineWidth: 1)
+                .allowsHitTesting(false)
+        }
+        .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier], isTargeted: nil) { providers in
+            importDroppedImages(providers)
+        }
+    }
+
+    private var attachmentStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: ComposerShellMetrics.attachmentSpacing) {
+                ForEach(attachedImages) { image in
+                    ComposerImageChip(
+                        imageURL: backendClient.chatImageURL(sessionID: sessionId, managedPath: image.managedPath),
+                        onRemove: { removeAttachedImage(image) }
+                    )
+                }
+            }
+            .padding(.horizontal, 9)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+        }
+        .frame(height: ComposerShellMetrics.attachmentStripHeight)
+    }
+
+    private var sendButton: some View {
+        Button { sendCurrentDraft() } label: {
+            ComposerActionGlyph(systemName: "paperplane.fill", tint: ComposerPalette.softBlue,
+                                isBusy: backendClient.isSendingMessage, showsSurface: false)
+                .frame(width: Self.sendControlEdge, height: Self.sendControlEdge)
+                .clipped()
+                .overlay {
+                    Circle().strokeBorder(ComposerPalette.softBlue.opacity(0.4), lineWidth: 1)
+                        .allowsHitTesting(false)
+                }
+                .conversationGlassControl(tint: ComposerPalette.softBlue)
+                .frame(width: ComposerShellMetrics.actionHitEdge,
+                       height: ComposerShellMetrics.actionHitEdge)
+                .contentShape(Circle().inset(by: compact ? 0 : -8))
+        }
+        .buttonStyle(.plain)
+        .disabled(isSendDisabled)
+        .help(L10n("Send instruction"))
+        .accessibilityLabel(L10n("Send instruction"))
+        .accessibilityIdentifier("conversation-composer-send")
+    }
+
+    private var moreMenu: some View {
+        Menu {
+            Button {
+                isShowingPhotoPicker = true
+            } label: {
+                Label(isImportingImages ? L10n("正在导入图片…") : L10n("从照片选择"),
+                      systemImage: "photo.on.rectangle")
+            }
+            .disabled(!canAttachImages || isImportingImages || attachedImages.count >= 8)
+            Button(action: chooseImageFiles) {
+                Label(L10n("从文件选择"), systemImage: "folder")
+            }
+            .disabled(!canAttachImages || isImportingImages || attachedImages.count >= 8)
+            Button {
+                scheduleSubmission = editorController.submission()
+                isShowingScheduleSheet = true
+            } label: {
+                Label(L10n("创建定时消息"), systemImage: ScheduledSessionAccessibilityID.composerSymbol)
+            }
+            .accessibilityIdentifier(ScheduledSessionAccessibilityID.composerEntry)
+        } label: {
+            ComposerActionGlyph(systemName: "ellipsis", tint: ComposerPalette.secondaryText,
+                                weight: .semibold, showsSurface: false)
+                .contentShape(Circle().inset(by: compact ? 0 : -8))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .frame(width: ComposerShellMetrics.actionHitEdge, height: ComposerShellMetrics.actionHitEdge)
+        .fixedSize()
+        .help(L10n("更多功能"))
+        .accessibilityLabel(L10n("更多功能"))
+        .accessibilityIdentifier("composer.more-actions")
+    }
+
     private var editorInput: some View {
         ComposerInputTextView(
             controller: editorController,
             placeholder: "Send a instruction",
             font: .systemFont(ofSize: 12, weight: .medium),
+            textInsetHeight: compact ? CompactComposerLayout.textInsetHeight : ComposerShellMetrics.textInsetHeight,
             onFocusChange: { isFocused = $0 },
             onSendableTextChange: { nextValue in
                 if hasSendableText != nextValue { hasSendableText = nextValue }
             },
             onContentHeightChange: { nextHeight in
-                if abs(inputHeight - nextHeight) > 0.5 { inputHeight = nextHeight }
+                let resolved = compact ? CompactComposerLayout.resolvedInputHeight(nextHeight) : nextHeight
+                if abs(inputHeight - resolved) > 0.5 { inputHeight = resolved }
             },
-            onPasteImages: compact ? { _ in false } : importImagesFromPasteboard,
+            onPasteImages: importImagesFromPasteboard,
             onMentionQueryChange: updateMentionQuery,
             onMentionAnchorChange: { mentionAnchorPoint = $0 },
             onMentionCommand: handleMentionCommand,
             onSubmit: send
         )
-        .frame(height: inputHeight)
+        .frame(height: compact ? CompactComposerLayout.resolvedInputHeight(inputHeight) : inputHeight)
         .popover(isPresented: mentionMenuPresented,
                  attachmentAnchor: .point(mentionAnchorPoint), arrowEdge: .bottom) {
             ComposerMentionMenu(candidates: mentionCandidates,
@@ -315,7 +357,7 @@ struct MessageComposer: View {
 
     private func sendCurrentDraft() {
         guard let submission = editorController.submission()
-                ?? (!compact && !attachedImages.isEmpty
+                ?? (!attachedImages.isEmpty
                     ? ComposerDraftBuffer.Submission(
                         text: editorController.draft.text,
                         revision: editorController.draft.revision
@@ -341,7 +383,7 @@ struct MessageComposer: View {
               !backendClient.isSendingMessage else {
             return
         }
-        let submittedImages = compact ? [] : attachedImages
+        let submittedImages = attachedImages
         let submittedMentions = selectedMentions.filter { submission.text.contains("@\($0.displayName)") }
         let didStartSending = backendClient.sendMessage(submission.text, to: session,
             images: submittedImages,
@@ -351,7 +393,7 @@ struct MessageComposer: View {
             if editorController.restoreAfterFailedSubmission(submission) {
                 hasSendableText = true
             }
-            if !compact { attachedImages = submittedImages }
+            attachedImages = submittedImages
             selectedMentions = submittedMentions
         })
         guard didStartSending else {
@@ -361,7 +403,7 @@ struct MessageComposer: View {
             hasSendableText = false
             inputHeight = ComposerInputLayout.minimumHeight
         }
-        if !compact { attachedImages = [] }
+        attachedImages = []
         selectedMentions = []
         mentionQuery = nil
     }
@@ -625,6 +667,16 @@ enum ComposerInputLayout {
 
     static func resolvedHeight(text: String, measuredHeight: CGFloat) -> CGFloat {
         text.isEmpty ? minimumHeight : resolvedHeight(for: measuredHeight)
+    }
+}
+
+enum CompactComposerLayout {
+    static let maximumWidth: CGFloat = 460
+    static let maximumInputHeight: CGFloat = 72
+    static let textInsetHeight: CGFloat = 3
+
+    static func resolvedInputHeight(_ measuredHeight: CGFloat) -> CGFloat {
+        min(maximumInputHeight, max(ComposerInputLayout.minimumHeight, measuredHeight))
     }
 }
 
