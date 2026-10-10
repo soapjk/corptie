@@ -1337,3 +1337,5 @@
 "程序路径" = "Program path";
 "未找到程序，请选择已安装的 Agent 可执行文件。" = "Program not found. Select the executable for an installed Agent.";
 "启用 %@" = "Enable %@";
+
+"正在准备本地数据…" = "Preparing local data…";
