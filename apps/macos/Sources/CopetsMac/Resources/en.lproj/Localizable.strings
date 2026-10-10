@@ -1316,3 +1316,24 @@
 "首次授权并发送" = "Authorize and send for the first time";
 "正在提交…" = "Submitting…";
 "首次与此会话建立通道，或原通道已撤销。授权仅适用于这两个 Session。" = "This is the first Channel to this Session, or the previous Channel was revoked. Authorization applies only to these two Sessions.";
+
+"本机 Agent" = "Local Agents";
+"欢迎开始" = "Welcome";
+"让你的 Agent 准备就绪" = "Get your Agent ready";
+"连接本机的 Agent，开始在 Corptie 中工作。完成一个配置即可开始，其他配置可以稍后添加。" = "Connect a local Agent to start working in Corptie. Set up one to begin; you can add others later.";
+"完成配置后，Corptie 助理会陪你开始使用。" = "Once setup is complete, your Corptie assistant will help you get started.";
+"Agent 已准备就绪" = "Your Agent is ready";
+"至少完成一个 Agent 配置才能继续" = "Set up at least one Agent to continue";
+"正在准备助理…" = "Preparing your assistant…";
+"进入 Corptie" = "Open Corptie";
+"正在保存…" = "Saving…";
+"等待检测" = "Waiting for verification";
+"已就绪" = "Ready";
+"可用 · 未启用" = "Available · Disabled";
+"未找到程序" = "Program not found";
+"需要修复" = "Needs attention";
+"已通过实际回复检测" = "Verified with an actual reply";
+"更改配置…" = "Configure…";
+"程序路径" = "Program path";
+"未找到程序，请选择已安装的 Agent 可执行文件。" = "Program not found. Select the executable for an installed Agent.";
+"启用 %@" = "Enable %@";

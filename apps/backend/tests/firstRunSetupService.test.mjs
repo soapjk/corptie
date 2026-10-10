@@ -152,12 +152,10 @@ test("new installs require setup while legacy installs without markers skip it",
 });
 
 for (const providerId of ["codex-app-server", "claude-sdk", "openclacky"]) {
-  test(`${providerId}: Work can be skipped only after Provider and Chat are ready`, async t => {
+  test(`${providerId}: single-step completion creates Chat without a Work`, async t => {
     const f = await fixture(t);
     await assert.rejects(f.service.complete());
     await f.service.check({ providerId, path: f.binary });
-    await assert.rejects(f.service.complete());
-    await f.service.prepareAssistant();
     await f.service.setEnabled({ providerId, path: f.binary, enabled: false });
     await assert.rejects(f.service.complete());
     await f.service.setEnabled({ providerId, path: f.binary, enabled: true });
@@ -169,3 +167,51 @@ for (const providerId of ["codex-app-server", "claude-sdk", "openclacky"]) {
     assert.equal((await restarted.status()).completed, true);
   });
 }
+
+
+test("concurrent completion initializes once and greeting retry reuses the Session", async t => {
+  const f = await fixture(t);
+  let greetings = 0;
+  f.service.ensureAssistantGreeting = async () => {
+    greetings += 1;
+    if (greetings === 1) throw new Error("greeting failed");
+  };
+  await f.service.check({ providerId: "claude-sdk", path: f.binary });
+  await assert.rejects(f.service.complete(), /greeting failed/);
+  assert.equal((await f.service.status()).completed, false);
+  await Promise.all([f.service.complete(), f.service.complete()]);
+  assert.equal(f.launches(), 1);
+  assert.equal(greetings, 2);
+  assert.equal((await f.service.status()).completed, true);
+  assert.equal((await f.service.status()).hasWorks, false);
+});
+
+test("completed retries respect removal of the assistant Session", async t => {
+  const f = await fixture(t);
+  await f.service.check({ providerId: "openclacky", path: f.binary });
+  await f.service.complete();
+  f.service.findAssistantSession = () => null;
+  assert.equal((await f.service.complete()).completed, true);
+  assert.equal(f.launches(), 1);
+});
+
+
+test("assistant preparation failure preserves setup and succeeds on retry", async t => {
+  const f = await fixture(t);
+  await f.service.check({ providerId: "openclacky", path: f.binary });
+  f.options.providers[2].prepare = async () => { throw new Error("runtime unavailable"); };
+  await assert.rejects(f.service.complete(), /runtime unavailable/);
+  assert.equal((await f.service.status()).completed, false);
+  assert.equal(f.launches(), 0);
+  f.options.providers[2].prepare = async () => {};
+  assert.equal((await f.service.complete()).completed, true);
+  assert.equal(f.launches(), 1);
+});
+
+test("completion rechecks binary availability after Session creation", async t => {
+  const f = await fixture(t);
+  await f.service.check({ providerId: "codex-app-server", path: f.binary });
+  f.options.providers[0].prepare = async () => chmod(f.binary, 0o600);
+  await assert.rejects(f.service.complete());
+  assert.equal((await f.service.status()).completed, false);
+});

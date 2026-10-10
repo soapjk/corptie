@@ -59,7 +59,7 @@ export function handleProviderSetupHttpRequest({
     readJson(request).then(async (input) => {
       if (url.pathname === "/first-run/check") return firstRunSetup.check(input);
       if (url.pathname === "/first-run/provider") return firstRunSetup.setEnabled(input);
-      return url.pathname === "/first-run/assistant" ? firstRunSetup.prepareAssistant() : firstRunSetup.complete();
+      return url.pathname === "/first-run/assistant" ? firstRunSetup.prepareAssistant() : firstRunSetup.complete(input);
     }).then((result) => sendJson(response, 200, result))
       .catch((error) => sendJson(response, 400, { error: error.message }));
     return true;

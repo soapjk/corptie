@@ -10,6 +10,7 @@ import { createCodexNotificationReceiver } from "./adapters/codexNotificationRec
 import { createClaudeNotificationReceiver } from "./adapters/claudeNotificationReceiver.mjs";
 import { createRuntimeAgentWorkQueue } from "./runtime/runtimeAgentWorkQueue.mjs";
 import { createCodexReplyProbe, createClaudeReplyProbe, createOpenClackyReplyProbe } from "./agent-provider/providers/providerReplyProbe.mjs";
+import { ensureFirstRunAssistantGreeting } from "./application/firstRunAssistantGreeting.mjs";
 import { FirstRunSetupService } from "./application/firstRunSetupService.mjs";
 import { resolveExternalCommand } from "./utils/externalCommand.mjs";
 import { createMockSessionFixtures } from "./application/mockSessionFixtures.mjs";
@@ -968,6 +969,7 @@ const firstRunSetup = new FirstRunSetupService({
   createAssistantSession: (providerId) => launchAgentSession({
     agent: store.ensureAssistantAgent(), providerId, title: "Corptie", prompt: ""
   }),
+  ensureAssistantGreeting: (sessionId, language) => ensureFirstRunAssistantGreeting(store, sessionId, language),
   onDefaultChanged: (providerId) => {
     if (!providerId) return;
     agentProviderRegistry.defaultProviderId = providerId;
