@@ -106,8 +106,26 @@ while IFS= read -r runtime_path; do
   esac
 done < <(otool -l "${BUILD_BIN}" | awk '/cmd LC_RPATH/ { getline; getline; sub(/^ *path /, ""); sub(/ \(offset [0-9]+\)$/, ""); print }')
 RESOURCE_BUNDLE="${BUILD_BIN_DIR}/CorptieMac_CorptieMac.bundle"
-if [ -d "${RESOURCE_BUNDLE}" ]; then
-  cp -R "${RESOURCE_BUNDLE}" "${APP_DIR}/Contents/Resources/"
+if [ ! -d "${RESOURCE_BUNDLE}" ]; then
+  echo "Required SwiftPM resource bundle not found: ${RESOURCE_BUNDLE}" >&2
+  exit 1
+fi
+cp -R "${RESOURCE_BUNDLE}" "${APP_DIR}/Contents/Resources/"
+PACKAGED_RESOURCE_BUNDLE="${APP_DIR}/Contents/Resources/CorptieMac_CorptieMac.bundle"
+RESOURCE_ROOT="${PACKAGED_RESOURCE_BUNDLE}"
+if [ -d "${PACKAGED_RESOURCE_BUNDLE}/Contents/Resources" ]; then
+  RESOURCE_ROOT="${PACKAGED_RESOURCE_BUNDLE}/Contents/Resources"
+fi
+for required_resource in AppIcon.png en.lproj/Localizable.strings; do
+  if [ ! -f "${RESOURCE_ROOT}/${required_resource}" ]; then
+    echo "Required app resource missing from package: ${required_resource}" >&2
+    exit 1
+  fi
+done
+if [ ! -f "${RESOURCE_ROOT}/zh-Hans.lproj/Localizable.strings" ] &&
+   [ ! -f "${RESOURCE_ROOT}/zh-hans.lproj/Localizable.strings" ]; then
+  echo "Required app resource missing from package: Chinese localization" >&2
+  exit 1
 fi
 
 if [ -f "${ICON_ICNS_SOURCE}" ]; then

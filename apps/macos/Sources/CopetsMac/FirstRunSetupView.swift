@@ -7,7 +7,7 @@ private struct FirstRunFailure: Decodable { let error: String }
 private enum FirstRunBrandAssets {
     // Copied SwiftPM resources are loaded by URL, rather than asset-catalog
     // lookup. Decode once, including when the page redraws during a check.
-    static let appIcon: NSImage? = Bundle.module.url(forResource: "AppIcon", withExtension: "png")
+    static let appIcon: NSImage? = AppResourceBundle.bundle.url(forResource: "AppIcon", withExtension: "png")
         .flatMap { NSImage(contentsOf: $0) }
 }
 
