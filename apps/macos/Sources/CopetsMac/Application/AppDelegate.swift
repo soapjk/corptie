@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var warRoomWindow: NSWindow?
     private var assistantWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
+    private var mainWindowActivationRestorationGeneration = 0
 
     // AppKit owns our startup window. Do not let the sole SwiftUI Settings
     // scene serve as an automatic untitled launch/reopen window.
@@ -236,12 +237,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // click has finished establishing its key window. Defer one main-loop
         // turn so clicking a detached chat keeps that panel in front instead
         // of racing the main window for focus.
+        let restorationGeneration = mainWindowActivationRestorationGeneration
         DispatchQueue.main.async { [weak self] in
-            guard NSApp.isActive,
+            guard let self,
+                  restorationGeneration == self.mainWindowActivationRestorationGeneration,
+                  NSApp.isActive,
                   MainWindowActivationPolicy.shouldPresentMainWindow(
                     detachedChatWindowIsKey: DetachedChatWindowManager.shared.hasKeyWindow
                   ) else { return }
-            self?.presentMainWindowAfterActivation()
+            self.presentMainWindowAfterActivation()
         }
         // Reconcile list state on foregrounding and replace any stream that was
         // silently stalled while the app was inactive.
@@ -254,6 +258,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationDidResignActive(_ notification: Notification) {
         backendClient.applicationDidResignActive()
+    }
+
+    func cancelPendingMainWindowActivationRestoration() {
+        mainWindowActivationRestorationGeneration &+= 1
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

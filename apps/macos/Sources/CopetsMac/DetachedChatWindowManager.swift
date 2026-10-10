@@ -43,6 +43,7 @@ final class DetachedChatWindowManager: ObservableObject {
 
     func close(sessionID: String) {
         guard controllers[sessionID] != nil else { return }
+        AppDelegate.shared?.cancelPendingMainWindowActivationRestoration()
         objectWillChange.send()
         guard let controller = controllers.removeValue(forKey: sessionID) else { return }
         controller.close()
@@ -187,6 +188,7 @@ private final class DetachedChatWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        AppDelegate.shared?.cancelPendingMainWindowActivationRestoration()
         panel.saveFrame(usingName: DetachedChatWindowFrameStore.name(for: sessionID))
         closeHandler(sessionID)
     }

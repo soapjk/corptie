@@ -40,8 +40,16 @@ final class ComposerShellPolicyTests: XCTestCase {
         let send = try String(contentsOf: sources.appendingPathComponent("Conversation/Composer/MessageComposer.swift"), encoding: .utf8)
         XCTAssertTrue(stop.contains("ComposerShellMetrics.actionVisualEdge"))
         XCTAssertTrue(send.contains("sendControlEdge = ComposerShellMetrics.actionVisualEdge"))
-        XCTAssertTrue(stop.contains(".frame(width: 44, height: 32)"))
+        XCTAssertTrue(stop.contains("compact ? ComposerShellMetrics.actionHitEdge : 44"))
         XCTAssertEqual(ComposerShellMetrics.actionVisualEdge, 22)
+    }
+
+    func testCompactComposerDefaultsToOneLineAndBoundsGrowth() {
+        XCTAssertEqual(CompactComposerLayout.maximumWidth, 460)
+        XCTAssertEqual(CompactComposerLayout.resolvedInputHeight(12), 30)
+        XCTAssertEqual(CompactComposerLayout.resolvedInputHeight(50), 50)
+        XCTAssertEqual(CompactComposerLayout.resolvedInputHeight(120), 72)
+        XCTAssertLessThan(CompactComposerLayout.textInsetHeight, ComposerShellMetrics.textInsetHeight)
     }
 
     func testDesktopInputLayoutDelegatesToSharedClamp() {

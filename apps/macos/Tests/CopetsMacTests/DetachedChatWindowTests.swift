@@ -71,7 +71,7 @@ struct DetachedChatWindowTests {
     }
 
     @Test
-    func detachedWindowUsesInputOnlyComposerAndSmallerChrome() throws {
+    func detachedWindowKeepsCompactComposerActionsInsideItsInput() throws {
         let window = try contents(of: "DetachedChatWindowManager.swift")
         let conversation = try contents(of: "Conversation/SessionConversationContent.swift")
         let composer = try contents(of: "Conversation/Composer/MessageComposer.swift")
@@ -84,9 +84,14 @@ struct DetachedChatWindowTests {
         #expect(conversation.contains("compact: compactComposer"))
         #expect(composer.contains("if !compact {\n                ConversationQuickMessages"))
         #expect(composer.contains("if !compact {\n                    HStack(spacing: 0)"))
-        #expect(composer.contains("if compact {\n                    editorInput"))
+        #expect(composer.contains("if compact {\n                    compactEditorRow"))
+        #expect(composer.contains("private var compactEditorRow: some View"))
+        #expect(composer.contains("sendButton\n                if session?.executionTaskStatus == .running"))
+        #expect(composer.contains("SessionComposerStopButton(session: session, compact: true)"))
+        #expect(composer.contains("moreMenu\n                    .padding(.trailing, 4)"))
+        #expect(composer.contains("CompactComposerLayout.maximumWidth"))
         #expect(composer.contains("guard !compact else { return }"))
-        #expect(composer.contains("let submittedImages = compact ? [] : attachedImages"))
+        #expect(composer.contains("let submittedImages = attachedImages"))
     }
 
     @Test
@@ -205,6 +210,18 @@ struct DetachedChatWindowTests {
         let appSource = try contents(of: "Application/AppDelegate.swift")
         #expect(appSource.contains("DispatchQueue.main.async { [weak self] in"))
         #expect(appSource.contains("detachedChatWindowIsKey: DetachedChatWindowManager.shared.hasKeyWindow"))
+    }
+
+    @Test
+    func closingDetachedChatCancelsQueuedMainWindowRestoration() throws {
+        let managerSource = try contents(of: "DetachedChatWindowManager.swift")
+        let appSource = try contents(of: "Application/AppDelegate.swift")
+
+        #expect(managerSource.contains("func close(sessionID: String) {\n        guard controllers[sessionID] != nil else { return }\n        AppDelegate.shared?.cancelPendingMainWindowActivationRestoration()"))
+        #expect(managerSource.contains("func windowWillClose(_ notification: Notification) {\n        AppDelegate.shared?.cancelPendingMainWindowActivationRestoration()"))
+        #expect(appSource.contains("let restorationGeneration = mainWindowActivationRestorationGeneration"))
+        #expect(appSource.contains("restorationGeneration == self.mainWindowActivationRestorationGeneration"))
+        #expect(managerSource.contains("func returnToMain(sessionID: String) {\n        close(sessionID: sessionID)\n        AppDelegate.shared?.openSessionInMainWindow(sessionID: sessionID)"))
     }
 
     @Test
