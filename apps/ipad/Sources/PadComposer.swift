@@ -27,6 +27,10 @@ struct PadComposer<Header: View>: View {
     let scheduleMessage: () -> Void
     let canStop: Bool
     let stop: () -> Void
+    let quickMessageDragScope: String
+    let quickMessageSendRevision: Int
+    let quickMessageSingleTap: () -> Void
+    let sendQuickMessage: (String) -> Void
     @ViewBuilder let header: () -> Header
     @State private var editor = PadComposerEditor()
     @State private var inputHeight = ComposerShellMetrics.minimumInputHeight
@@ -85,12 +89,8 @@ struct PadComposer<Header: View>: View {
             ConversationQuickMessages(items: quickMessages,
                 enabled: !connection.busy && workspace.pending == nil && !workspace.outboxSaving
                     && workspace.capabilities?.send.available == true
-                    && workspace.importingImagesForSession != sessionID) { text in
-                Task {
-                    await workspace.sendSuggestedReply(connection, sessionID: sessionID, text: text)
-                    quickMessageRefresh += 1
-                }
-            }
+                    && workspace.importingImagesForSession != sessionID,
+                dragScope: quickMessageDragScope, singleTap: quickMessageSingleTap, send: sendQuickMessage)
         ConversationComposerChrome(verticalPadding: isPhone ? 3 : 6,
                                    contentSpacing: isPhone ? 1 : 2) {
             if isPhone {
@@ -119,7 +119,7 @@ struct PadComposer<Header: View>: View {
             .accessibilityHidden(true)
         }
         }
-        .task(id: "\(sessionID):\(quickMessageTaskID ?? ""):\(connection.serverID):\(quickMessageRefresh)") {
+        .task(id: "\(sessionID):\(quickMessageTaskID ?? ""):\(connection.serverID):\(quickMessageRefresh):\(quickMessageSendRevision)") {
             let taskID = quickMessageTaskID
             let scope = ClientQuickMessageCache.scope(host: connection.serverID,
                 taskID: taskID, sessionID: sessionID)
