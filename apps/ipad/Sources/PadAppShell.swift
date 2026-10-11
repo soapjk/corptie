@@ -53,7 +53,7 @@ struct PadAppShell: View {
                     onOpenWorktrees: { tab = .worktrees },
                     onOpenAutomation: { id in
                         if let destination = controls.selectAutomation(id: id) { tab = destination }
-                    })
+                    }, navigationGesturesEnabled: tab == .workspace)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .opacity(tab == .workspace ? 1 : 0)
                     .allowsHitTesting(tab == .workspace)

@@ -8,6 +8,29 @@ import AppKit
 @testable import CorptieConversation
 
 struct ConversationInspectorTests {
+    @Test func chatHeadersReuseListAlarmAndCurrentTaskProjection() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let desktop = try String(contentsOf: root.appendingPathComponent(
+            "apps/macos/Sources/CopetsMac/Conversation/ConversationHeader.swift"), encoding: .utf8)
+        let mobile = try String(contentsOf: root.appendingPathComponent(
+            "apps/ipad/Sources/CorptieMobileApp.swift"), encoding: .utf8)
+        #expect(desktop.contains("guard let taskID = backendClient.selectedSession?.taskId else { return false }"))
+        #expect(desktop.contains("entityClient.tasks.first(where: { $0.id == taskID })?.hasPendingScheduledWake == true"))
+        #expect(desktop.contains("if hasPendingScheduledWake {"))
+        #expect(desktop.contains("ConsoleScheduledWakeIcon(isActive: scenePhase == .active)"))
+        #expect(mobile.contains("let task = workspace.tasks.first(where: { $0.id == session?.taskId })"))
+        #expect(mobile.contains("if task?.hasPendingScheduledWake == true {"))
+        #expect(mobile.contains("ScheduledWakeIcon(isActive: scenePhase == .active)"))
+        for source in [desktop, mobile] {
+            #expect(source.contains(".accessibilityIdentifier(\"conversation-task-scheduled-wake\")"))
+            #expect(!source.contains("Image(systemName: \"alarm\")"), "Use the list component, not a duplicate glyph")
+        }
+        #expect(desktop.contains("copySessionTitle(selectedTitle)"))
+        #expect(mobile.contains("UIPasteboard.general.string = title"))
+    }
+
     @Test func worktreePreferenceUsesSharedNativeToggleWithoutAutoRebaseInViewCode() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

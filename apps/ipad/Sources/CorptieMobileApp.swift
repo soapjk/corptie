@@ -278,6 +278,7 @@ struct WorkspaceView: View {
     let onCompactRootChange: (Bool) -> Void
     let onOpenWorktrees: () -> Void
     let onOpenAutomation: (String) -> Void
+    var navigationGesturesEnabled = true
     @State private var expandedWorkIDs = PadWorkExpansionStore().load()
     @State private var isChatExpanded = PadWorkExpansionStore().loadChat()
     @State private var taskCreationRoute: PadTaskCreationRoute?
@@ -408,13 +409,18 @@ struct WorkspaceView: View {
                         .onEnded { value in
                             outlineDragActive = false
                             suppressOutlineTapUntil = Date().addingTimeInterval(0.15)
-                            guard PadWorkReturnSwipePolicy.opensPreviousTask(
+                            guard compactPath.isEmpty, PadWorkReturnSwipePolicy.opensPreviousTask(
                                 horizontal: value.translation.width, vertical: value.translation.height),
                                 let id = workspace.previousMobileTaskSession(connection) else { return }
                             openCompactSession(id)
                         }
                 )
                 .onDisappear { outlineDragActive = false }
+                .modifier(CompactPageSwipe(onBack: nil, onOpenDetail: {
+                    guard compactPath.isEmpty,
+                          let id = workspace.previousMobileTaskSession(connection) else { return }
+                    openCompactSession(id)
+                }, enabled: navigationGesturesEnabled && compactPath.isEmpty, edgeOnly: true))
                 .padWorkspaceNavigationBackground()
                 .navigationDestination(for: CompactWorkspacePage.self) { page in
                     switch page {
@@ -423,7 +429,8 @@ struct WorkspaceView: View {
                             messageImages: messageImages,
                             onBack: { if compactPath.last == .conversation(id) { compactPath.removeLast() } },
                             onOpenDetail: { if compactPath.last == .conversation(id) { compactPath.append(.detail(id)) } },
-                            onOpenWorktrees: onOpenWorktrees)
+                            onOpenWorktrees: onOpenWorktrees,
+                            navigationGesturesEnabled: navigationGesturesEnabled && compactPath.last == .conversation(id))
                             .id(id)
                             .padWorkspaceNavigationBackground()
                     case .detail(let id):
@@ -431,7 +438,7 @@ struct WorkspaceView: View {
                             onOpenAutomation: onOpenAutomation)
                             .safeAreaInset(edge: .top, spacing: 0) { compactDetailHeader }
                             .toolbar(.hidden, for: .navigationBar)
-                            .modifier(CompactBackSwipe {
+                            .modifier(CompactBackSwipe(enabled: navigationGesturesEnabled && compactPath.last == .detail(id)) {
                                 if compactPath.last == .detail(id) { compactPath.removeLast() }
                             })
                             .padWorkspaceNavigationBackground()
@@ -572,6 +579,7 @@ struct ConversationView: View {
     let onBack: (() -> Void)?
     let onOpenDetail: (() -> Void)?
     let onOpenWorktrees: () -> Void
+    var navigationGesturesEnabled = true
     @State private var headerMetadata: ClientInspectorValue = .null
     // User-authorized iPhone trial. Keep Release and native baseline tests unchanged.
     var standardTimeline = false
@@ -715,7 +723,8 @@ struct ConversationView: View {
                     .allowsHitTesting(false)
             }
         }
-        .modifier(CompactPageSwipe(onBack: onBack, onOpenDetail: onOpenDetail))
+        .modifier(CompactPageSwipe(onBack: onBack, onOpenDetail: onOpenDetail,
+                                  enabled: navigationGesturesEnabled))
         .overlay(alignment: .top) {
             conversationHeader
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { nativeHeaderHeight = $0 }
@@ -968,8 +977,8 @@ struct ConversationView: View {
 
     private var conversationHeader: some View {
         let session = workspace.sessionsByID[sessionID]
-        let rawTitle = workspace.tasks.first(where: { $0.id == session?.taskId })?.title
-            ?? session?.title ?? "会话"
+        let task = workspace.tasks.first(where: { $0.id == session?.taskId })
+        let rawTitle = task?.title ?? session?.title ?? "会话"
         let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "会话" : rawTitle
         let inspector = workspace.inspectorStore(for: sessionID)
         let snapshot = inspector.snapshot?.sessionId == sessionID ? inspector.snapshot : nil
@@ -1006,6 +1015,10 @@ struct ConversationView: View {
                             .minimumScaleFactor(0.75)
                             .truncationMode(.tail)
                             .multilineTextAlignment(.center)
+                        if task?.hasPendingScheduledWake == true {
+                            ScheduledWakeIcon(isActive: scenePhase == .active)
+                                .accessibilityIdentifier("conversation-task-scheduled-wake")
+                        }
                         if copiedHeaderItem == .title {
                             Image(systemName: "checkmark")
                                 .font(.caption2.weight(.bold))
@@ -1288,10 +1301,13 @@ private struct PadQuickMessageHintToast: View {
 private struct CompactPageSwipe: ViewModifier {
     let onBack: (() -> Void)?
     let onOpenDetail: (() -> Void)?
+    var enabled = true
+    var edgeOnly = false
 
     @ViewBuilder func body(content: Content) -> some View {
         if onBack != nil || onOpenDetail != nil {
-            content.background(CompactConversationPan(onBack: onBack, onOpenDetail: onOpenDetail))
+            content.background(CompactConversationPan(onBack: onBack, onOpenDetail: onOpenDetail,
+                                                     enabled: enabled, edgeOnly: edgeOnly))
         } else {
             content
         }
@@ -1303,6 +1319,8 @@ private struct CompactPageSwipe: ViewModifier {
 private struct CompactConversationPan: UIViewRepresentable {
     let onBack: (() -> Void)?
     let onOpenDetail: (() -> Void)?
+    let enabled: Bool
+    let edgeOnly: Bool
 
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeUIView(context: Context) -> AttachmentView {
@@ -1314,12 +1332,15 @@ private struct CompactConversationPan: UIViewRepresentable {
     func updateUIView(_ view: AttachmentView, context: Context) {
         context.coordinator.onBack = onBack
         context.coordinator.onOpenDetail = onOpenDetail
+        context.coordinator.configure(enabled: enabled, edgeOnly: edgeOnly)
         context.coordinator.region = view
         view.onAttachmentChange = { [weak coordinator = context.coordinator] in coordinator?.attach(to: $0) }
+        view.onNativeBack = { [weak coordinator = context.coordinator] in coordinator?.preferNativeBack($0) }
         view.refreshAttachment()
     }
     static func dismantleUIView(_ view: AttachmentView, coordinator: Coordinator) {
         view.onAttachmentChange = nil
+        view.onNativeBack = nil
         coordinator.detach()
     }
 
@@ -1341,27 +1362,23 @@ private struct CompactConversationPan: UIViewRepresentable {
         }
         func refreshAttachment() {
             guard window != nil else { onAttachmentChange?(nil); return }
-            var ancestor = superview
-            while let view = ancestor {
-                if let scroll = view as? UIScrollView, !(scroll is UITextView) {
-                    onAttachmentChange?(scroll)
-                    return
-                }
-                ancestor = view.superview
-            }
-            // SwiftUI may place a background next to, not inside, its scroll
-            // view. Attach to the page owner, restricted to this region below.
+            // Own the whole page, including header, composer and edge gutters;
+            // a nested scroll view cannot receive touches outside its bounds.
             var responder: UIResponder? = next
             while let current = responder {
                 if let controller = current as? UIViewController,
                    let owner = controller.viewIfLoaded, owner.window === window {
                     onAttachmentChange?(owner)
+                    if let nativeBack = controller.navigationController?.interactivePopGestureRecognizer {
+                        onNativeBack?(nativeBack)
+                    }
                     return
                 }
                 responder = current.next
             }
             onAttachmentChange?(nil)
         }
+        var onNativeBack: ((UIGestureRecognizer) -> Void)?
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
@@ -1369,10 +1386,32 @@ private struct CompactConversationPan: UIViewRepresentable {
         var onOpenDetail: (() -> Void)?
         weak var region: UIView?
         private weak var attachmentView: UIView?
+        private weak var nativeBack: UIGestureRecognizer?
+        private lazy var leftEdge = makeEdge(.left)
+        private lazy var rightEdge = makeEdge(.right)
+        private func makeEdge(_ edge: UIRectEdge) -> UIScreenEdgePanGestureRecognizer {
+            let value = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+            value.edges = edge
+            value.delegate = self
+            return value
+        }
+        func configure(enabled: Bool, edgeOnly: Bool) {
+            pan.isEnabled = enabled && !edgeOnly
+            leftEdge.isEnabled = enabled && onBack != nil
+            rightEdge.isEnabled = enabled && onOpenDetail != nil
+        }
+        func preferNativeBack(_ native: UIGestureRecognizer) {
+            guard nativeBack !== native else { return }
+            nativeBack = native
+            leftEdge.require(toFail: native)
+            pan.require(toFail: native)
+        }
         private lazy var pan: UIPanGestureRecognizer = {
             let value = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
             value.maximumNumberOfTouches = 1
             value.delegate = self
+            value.require(toFail: leftEdge)
+            value.require(toFail: rightEdge)
             return value
         }()
         func attach(to view: UIView?) {
@@ -1380,16 +1419,30 @@ private struct CompactConversationPan: UIViewRepresentable {
             detach()
             attachmentView = view
             view?.addGestureRecognizer(pan)
+            view?.addGestureRecognizer(leftEdge)
+            view?.addGestureRecognizer(rightEdge)
         }
-        func detach() { attachmentView?.removeGestureRecognizer(pan); attachmentView = nil }
+        func detach() {
+            for recognizer in [pan, leftEdge, rightEdge] { attachmentView?.removeGestureRecognizer(recognizer) }
+            attachmentView = nil
+        }
         func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
-            let velocity = pan.velocity(in: attachmentView)
+            guard let recognizer = recognizer as? UIPanGestureRecognizer else { return false }
+            let velocity = recognizer.velocity(in: attachmentView)
             guard PadConversationSwipePolicy.isHorizontal(x: velocity.x, y: velocity.y) else { return false }
+            if recognizer === leftEdge { return velocity.x > 0 && onBack != nil }
+            if recognizer === rightEdge { return velocity.x < 0 && onOpenDetail != nil }
             return velocity.x > 0 ? onBack != nil : onOpenDetail != nil
         }
         func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
             guard let region, region.window != nil,
                   region.bounds.contains(touch.location(in: region)) else { return false }
+            // Screen-edge intent takes priority over content controls. Ordinary
+            // horizontal drags still belong to text selection and nested content.
+            if recognizer === leftEdge || recognizer === rightEdge { return true }
+            let point = touch.location(in: attachmentView)
+            if let attachmentView,
+               point.x <= 32 || point.x >= attachmentView.bounds.width - 32 { return false }
             var candidate = touch.view
             while let view = candidate, view !== attachmentView {
                 if view is UIControl { return false }
@@ -1413,7 +1466,9 @@ private struct CompactConversationPan: UIViewRepresentable {
         @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
             guard recognizer.state == .ended else { return }
             let value = recognizer.translation(in: attachmentView)
-            switch PadConversationSwipePolicy.destination(horizontal: value.x, vertical: value.y) {
+            let edge: PadConversationSwipePolicy.Edge? = recognizer === leftEdge ? .left
+                : recognizer === rightEdge ? .right : nil
+            switch PadConversationSwipePolicy.destination(horizontal: value.x, vertical: value.y, edge: edge) {
             case .taskList: onBack?()
             case .detail: onOpenDetail?()
             case nil: break
@@ -1423,17 +1478,12 @@ private struct CompactConversationPan: UIViewRepresentable {
 }
 
 private struct CompactBackSwipe: ViewModifier {
+    var enabled = true
     let onBack: () -> Void
 
     func body(content: Content) -> some View {
-        content.simultaneousGesture(
-            DragGesture(minimumDistance: 20).onEnded { gesture in
-                let horizontal = gesture.translation.width
-                guard gesture.startLocation.x <= 48, horizontal > 64,
-                      horizontal > abs(gesture.translation.height) * 1.5 else { return }
-                onBack()
-            }
-        )
+        content.modifier(CompactPageSwipe(onBack: onBack, onOpenDetail: nil,
+                                         enabled: enabled, edgeOnly: true))
     }
 }
 
