@@ -11,6 +11,7 @@ struct DetailHeaderView: View {
     @ObservedObject private var supplementaryData = BackendClient.shared.supplementaryDataController
     @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     @Environment(\.isLiquidGlass) private var isLiquidGlass
+    @Environment(\.scenePhase) private var scenePhase
     @State private var didCopySessionTitle = false
     @State private var sessionTitleCopyFeedbackTask: Task<Void, Never>?
     @State private var didCopyWorkspacePath = false
@@ -131,15 +132,21 @@ struct DetailHeaderView: View {
                 Button {
                     copySessionTitle(selectedTitle)
                 } label: {
-                    Text(selectedTitle)
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
-                        .truncationMode(.tail)
-                        .multilineTextAlignment(.center)
-                        .accessibilityAddTraits(.isHeader)
-                        .accessibilityIdentifier("conversation-task-title")
+                    HStack(spacing: 4) {
+                        Text(selectedTitle)
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                            .truncationMode(.tail)
+                            .multilineTextAlignment(.center)
+                            .accessibilityAddTraits(.isHeader)
+                            .accessibilityIdentifier("conversation-task-title")
+                        if hasPendingScheduledWake {
+                            ConsoleScheduledWakeIcon(isActive: scenePhase == .active)
+                                .accessibilityIdentifier("conversation-task-scheduled-wake")
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
                 .help(L10n("Click to copy Session title"))
@@ -227,6 +234,11 @@ struct DetailHeaderView: View {
 
     private var selectedTitle: String? {
         backendClient.selectedSession?.title
+    }
+
+    private var hasPendingScheduledWake: Bool {
+        guard let taskID = backendClient.selectedSession?.taskId else { return false }
+        return entityClient.tasks.first(where: { $0.id == taskID })?.hasPendingScheduledWake == true
     }
 
     private var selectedSessionWorktree: ProjectWorktreeStatus? {

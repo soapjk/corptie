@@ -71,7 +71,7 @@ struct PadStateTests {
         let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Sources/CorptieMobileApp.swift"), encoding: .utf8)
-        #expect(source.contains(".modifier(CompactPageSwipe(onBack: onBack, onOpenDetail: onOpenDetail))"))
+        #expect(source.contains(".modifier(CompactPageSwipe(onBack: onBack, onOpenDetail: onOpenDetail,"))
         #expect(source.contains("PadNativeTimeline(ids:"))
     }
 
@@ -113,12 +113,34 @@ struct PadStateTests {
         #expect(gesture.contains("coordinator.detach()"))
         #expect(gesture.contains("region.bounds.contains(touch.location(in: region))"))
         #expect(gesture.contains("text.isEditable || text.selectedRange.length > 0"))
+        #expect(gesture.contains("UIScreenEdgePanGestureRecognizer"))
+        #expect(gesture.contains("leftEdge.require(toFail: native)"))
+        #expect(gesture.contains("value.require(toFail: leftEdge)"))
+        #expect(gesture.contains("value.require(toFail: rightEdge)"))
+        #expect(gesture.contains("recognizer === leftEdge || recognizer === rightEdge"))
+        #expect(!gesture.contains("onAttachmentChange?(scroll)"))
+        #expect(app.contains("navigationGesturesEnabled && compactPath.last == .detail(id)"))
+        let detailSwipe = app.components(separatedBy: "private struct CompactBackSwipe:")[1]
+            .components(separatedBy: "/// Edge-only separation")[0]
+        #expect(detailSwipe.contains("CompactPageSwipe(onBack: onBack, onOpenDetail: nil,"))
+        #expect(!detailSwipe.contains("DragGesture"))
         let editor = try String(contentsOf: sources.appendingPathComponent("PadComposerTextView.swift"), encoding: .utf8)
         #expect(editor.contains("guard !heightReportScheduled"))
         #expect(editor.contains("DispatchQueue.main.async { [weak self]"))
         #expect(editor.contains("self.deliverHeight()"))
         let composer = try String(contentsOf: sources.appendingPathComponent("PadComposer.swift"), encoding: .utf8)
         #expect(composer.contains("PadComposerHeightPolicy.height("))
+    }
+
+    @Test func edgeNavigationRequiresInwardHorizontalIntentButLessTravel() {
+        #expect(PadConversationSwipePolicy.destination(horizontal: 40, vertical: 5, edge: .left) == .taskList)
+        #expect(PadConversationSwipePolicy.destination(horizontal: -40, vertical: 5, edge: .right) == .detail)
+        #expect(PadConversationSwipePolicy.destination(horizontal: -100, vertical: 0, edge: .left) == nil)
+        #expect(PadConversationSwipePolicy.destination(horizontal: 100, vertical: 0, edge: .right) == nil)
+        #expect(PadConversationSwipePolicy.destination(horizontal: 32, vertical: 0, edge: .left) == nil)
+        #expect(PadConversationSwipePolicy.destination(horizontal: 40, vertical: 40, edge: .left) == nil)
+        #expect(PadConversationSwipePolicy.destination(horizontal: .nan, vertical: 0, edge: .left) == nil)
+        #expect(PadConversationSwipePolicy.destination(horizontal: 40, vertical: 0) == nil)
     }
 
     @Test func timelineWidthReservesBothMarginsBeforeAnyMessageAppears() {

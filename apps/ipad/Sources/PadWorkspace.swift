@@ -305,12 +305,16 @@ enum PadWorkReturnSwipePolicy {
 
 enum PadConversationSwipePolicy {
     enum Destination { case taskList, detail }
+    enum Edge { case left, right }
     static func isHorizontal(x: CGFloat, y: CGFloat) -> Bool {
         x.isFinite && y.isFinite && abs(x) > abs(y) * 1.5
     }
-    static func destination(horizontal: CGFloat, vertical: CGFloat, contentOwnsGesture: Bool = false) -> Destination? {
-        guard !contentOwnsGesture, abs(horizontal) > 64,
+    static func destination(horizontal: CGFloat, vertical: CGFloat, contentOwnsGesture: Bool = false,
+                            edge: Edge? = nil) -> Destination? {
+        guard !contentOwnsGesture, abs(horizontal) > (edge == nil ? 64 : 32),
               isHorizontal(x: horizontal, y: vertical) else { return nil }
+        if edge == .left, horizontal <= 0 { return nil }
+        if edge == .right, horizontal >= 0 { return nil }
         return horizontal > 0 ? .taskList : .detail
     }
 }

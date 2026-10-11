@@ -155,6 +155,9 @@ struct PadComposerTextView: UIViewRepresentable {
 
         override func layoutSubviews() {
             super.layoutSubviews()
+            // UIKit can change its buffer without a delegate callback (draft
+            // restoration, undo, dictation and input-method composition).
+            updatePlaceholder()
             let size = placeholderLabel.intrinsicContentSize
             placeholderLabel.frame = CGRect(x: textContainerInset.left,
                                             y: max(0, (bounds.height - size.height) / 2),
@@ -167,10 +170,42 @@ struct PadComposerTextView: UIViewRepresentable {
         }
 
         func updatePlaceholder() {
-            placeholderLabel.isHidden = !(text?.isEmpty ?? true)
+            // Read the live buffer, not the possibly delayed SwiftUI binding.
+            // NSTextStorage.length is constant-time, including marked text.
+            let hidden = textStorage.length > 0
+            if placeholderLabel.isHidden != hidden { placeholderLabel.isHidden = hidden }
+        }
+
+        override var text: String! {
+            didSet { updatePlaceholder() }
+        }
+
+        override var attributedText: NSAttributedString! {
+            didSet { updatePlaceholder() }
+        }
+
+        override func insertText(_ text: String) {
+            super.insertText(text)
+            updatePlaceholder()
+        }
+
+        override func deleteBackward() {
+            super.deleteBackward()
+            updatePlaceholder()
+        }
+
+        override func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
+            super.setMarkedText(markedText, selectedRange: selectedRange)
+            updatePlaceholder()
+        }
+
+        override func replace(_ range: UITextRange, withText text: String) {
+            super.replace(range, withText: text)
+            updatePlaceholder()
         }
 
         func noteProgrammaticChange() {
+            updatePlaceholder()
             onContentChange?(self)
         }
 
