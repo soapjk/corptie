@@ -150,6 +150,7 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
     public let autoTitleUpdating: Bool
     private let onAutoTitleChange: ((Bool) -> Void)?
     private let actions: Actions
+    @State private var isExpanded = false
 
     public init(summary: ConversationTaskSummary?, description: String?, acceptance: String?,
                 title: String = "Task 信息", summaryTitle: String = "当前摘要",
@@ -182,17 +183,40 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
             ConversationDetailModuleCard(title: title, systemImage: "checklist", headerActions: { actions }) {
                 VStack(alignment: .leading, spacing: 14) {
                     ConversationTaskSummaryView(summary: summary, title: summaryTitle)
-                    ConversationTaskDefinition(description: description, acceptance: acceptance,
-                        descriptionTitle: descriptionTitle, acceptanceTitle: acceptanceTitle,
-                        expandLabel: expandLabel, collapseLabel: collapseLabel)
-                    if let autoTitleEnabled, let onAutoTitleChange {
-                        Toggle(autoTitleLabel, isOn: Binding(
-                            get: { autoTitleEnabled }, set: { onAutoTitleChange($0) }
-                        ))
-                        .disabled(autoTitleUpdating)
+                    if isExpanded {
+                        ConversationTaskDefinition(description: description, acceptance: acceptance,
+                            descriptionTitle: descriptionTitle, acceptanceTitle: acceptanceTitle,
+                            expandLabel: expandLabel, collapseLabel: collapseLabel)
+                        if let autoTitleEnabled, let onAutoTitleChange {
+                            Toggle(autoTitleLabel, isOn: Binding(
+                                get: { autoTitleEnabled }, set: { onAutoTitleChange($0) }
+                            ))
+                            .disabled(autoTitleUpdating)
+                        }
+                    }
+                    if ConversationTaskDefinition.hasContent(description: description, acceptance: acceptance)
+                        || (autoTitleEnabled != nil && onAutoTitleChange != nil) {
+                        Button { isExpanded.toggle() } label: {
+                            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, minHeight: disclosureHeight)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(isExpanded ? collapseLabel : expandLabel)
+                        .accessibilityIdentifier("task-information-disclosure")
                     }
                 }
             }
         }
+    }
+
+    private var disclosureHeight: CGFloat {
+        #if os(iOS)
+        44
+        #else
+        28
+        #endif
     }
 }

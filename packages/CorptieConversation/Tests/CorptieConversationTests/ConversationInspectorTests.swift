@@ -8,7 +8,46 @@ import AppKit
 @testable import CorptieConversation
 
 struct ConversationInspectorTests {
+    @Test func taskInformationDefaultsToSummaryWithOneBottomDisclosure() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/CorptieConversation/ConversationTaskInformationCard.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let card = try #require(source.components(separatedBy: "public struct ConversationTaskInformationCard").last)
+            .components(separatedBy: "/// A single native button")[0]
+        #expect(card.contains("@State private var isExpanded = false"))
+        let summary = try #require(card.range(of: "ConversationTaskSummaryView(summary:"))
+        let expanded = try #require(card.range(of: "if isExpanded {"))
+        let definition = try #require(card.range(of: "ConversationTaskDefinition(description:"))
+        let preference = try #require(card.range(of: "Toggle(autoTitleLabel"))
+        let disclosure = try #require(card.range(of: "Button { isExpanded.toggle() }"))
+        #expect(summary.lowerBound < expanded.lowerBound)
+        #expect(expanded.lowerBound < definition.lowerBound)
+        #expect(definition.lowerBound < preference.lowerBound)
+        #expect(preference.lowerBound < disclosure.lowerBound)
+        #expect(card.contains(".accessibilityLabel(isExpanded ? collapseLabel : expandLabel)"))
+    }
+
     #if os(macOS)
+    @Test @MainActor func collapsedTaskInformationDoesNotLayOutLongDefinitions() {
+        for width in [240.0, 280.0, 375.0] {
+            func height(description: String, acceptance: String) -> CGFloat {
+                let host = NSHostingView(rootView: ConversationTaskInformationCard(
+                    summary: nil, description: description, acceptance: acceptance,
+                    autoTitleEnabled: true, onAutoTitleChange: { _ in }) { EmptyView() }
+                    .frame(width: width))
+                host.frame = NSRect(x: 0, y: 0, width: width, height: 400)
+                host.layoutSubtreeIfNeeded()
+                return host.fittingSize.height
+            }
+            let short = height(description: "Short", acceptance: "Pass")
+            let long = height(description: String(repeating: "Long task description\n", count: 100),
+                              acceptance: String(repeating: "Acceptance criterion\n", count: 100))
+            #expect(abs(short - long) < 1)
+            #expect(long < 180)
+        }
+    }
+
     @Test @MainActor func worktreeCardRendersCompactWithoutDoingGitWorkInBody() throws {
         let detail = try JSONDecoder().decode(ClientSessionWorktreeDetail.self, from: Data(#"{"attached":true,"repositoryId":"repo","mainWorktreeId":"main","mainBranch":"develop","worktree":{"worktreeId":"tree","path":"/repo/feature","branchName":"feature","isMain":false,"availability":"available","dirty":false,"changedFiles":[],"aheadOfMain":3,"behindMain":2,"conflictFiles":[]}}"#.utf8))
         for width in [240.0, 280.0, 375.0] {
