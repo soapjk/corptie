@@ -103,7 +103,13 @@ struct UnifiedConsoleControlSurfaceTests {
             #expect(contents.contains("taskID == nil || result.taskId == taskID"))
             #expect(!contents.contains("quickMessages = result.items"))
             #expect(!contents.contains("\n                quickMessages = ClientQuickMessage.defaults\n"))
+            #expect(contents.contains(".read(scope: scope)"))
+            #expect(contents.contains("try await Task.sleep(for: .milliseconds(600))"))
+            #expect(contents.contains("ClientQuickMessageDiagnostics.failure(error)"))
         }
+        let api = try source(named: "Backend/BackendClientInteractions.swift")
+        #expect(api.contains("return try result.validated()"))
+        #expect(!api.contains("items.count <= 6"))
     }
 
     @Test

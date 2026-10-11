@@ -48,3 +48,18 @@ test("listener failure after commit never causes a rollback", () => {
   }));
   assert.deepEqual(events, ["BEGIN IMMEDIATE", "COMMIT", { sessionId: "session", revision: 7 }]);
 });
+
+test("quick-message invalidation is sticky within a commit and absent after rollback", () => {
+  const { coordinator, events } = fixture();
+  coordinator.runInTransaction(() => {
+    coordinator.notifyTimelineDirty("session", { quickMessagesChanged: true });
+    coordinator.notifyTimelineDirty("session");
+  });
+  assert.deepEqual(events.at(-1), { sessionId: "session", revision: 7, quickMessagesChanged: true });
+  assert.throws(() => coordinator.runInTransaction(() => {
+    coordinator.notifyTimelineDirty("session", { quickMessagesChanged: true });
+    throw new Error("rollback");
+  }));
+  coordinator.runInTransaction(() => coordinator.notifyTimelineDirty("session"));
+  assert.deepEqual(events.at(-1), { sessionId: "session", revision: 7 });
+});

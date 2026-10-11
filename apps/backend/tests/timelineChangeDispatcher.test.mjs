@@ -49,3 +49,13 @@ test("canonical timeline publication occurs once regardless of legacy alias coun
   assert.deepEqual(f.calls[1], ["publish", "codex:original"]);
   assert.deepEqual(f.calls[2], ["schedule", change]);
 });
+
+test("only quick-message contribution changes notify the exact Task scope", () => {
+  const changes = [];
+  const f = fixture({ store: { getSession: () => ({ taskId: "task:one" }) },
+    publishQuickMessages: change => changes.push(change) });
+  f.dispatcher.scheduleTimelineChangePublish({ sessionId: "s", revision: 1 });
+  assert.equal(changes.length, 0);
+  f.dispatcher.scheduleTimelineChangePublish({ sessionId: "s", revision: 2, quickMessagesChanged: true });
+  assert.deepEqual(changes, [{ schemaVersion: 1, sessionId: "s", taskId: "task:one" }]);
+});

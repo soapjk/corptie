@@ -25,7 +25,8 @@ struct PadSuggestedReplyTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let outbox = ReliableMessageOutbox(directory: directory, key: SymmetricKey(size: .bits256))
-        let workspace = PadWorkspace(defaults: defaults, messageOutbox: outbox)
+        let recommendations = ClientQuickMessageCache(defaults: defaults)
+        let workspace = PadWorkspace(defaults: defaults, messageOutbox: outbox, quickMessageCache: recommendations)
         defer { workspace.refreshWorker?.cancel() }
         workspace.selection = "session:a"
         workspace.capabilities = try JSONDecoder().decode(ClientSessionCapabilities.self, from: Data(
@@ -34,8 +35,14 @@ struct PadSuggestedReplyTests {
         workspace.draftImages["session:a"] = [ClientDraftImage(fileName: "draft.png", data: Data([1]))]
 
         await workspace.sendSuggestedReply(connection, sessionID: "session:a", text: "Continue")
+        let scope = ClientQuickMessageCache.scope(host: connection.serverID, taskID: nil, sessionID: "session:a")
+        let beforeAcceptance = recommendations.revision(for: scope)
+        #expect(beforeAcceptance == 0) // Saving a local intent is not delivery.
         #expect(try await outbox.all().first?.text == "Continue")
-        await workspace.runMessageDelivery(connection)
+        // Enqueue already starts the application-owned sender. Wait for its
+        // receipt instead of starting a second, concurrent delivery loop.
+        await workspace.messageDeliveryLifetime.waitForCurrentWorker()
+        #expect(recommendations.revision(for: scope) == beforeAcceptance + 1)
 
         let body = try #require(SuggestedReplyProtocol.body)
         #expect(SuggestedReplyProtocol.path == "/client/v1/sessions/session:a/message-deliveries")

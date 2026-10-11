@@ -65,7 +65,8 @@ public struct ClientEvents: Sendable {
         AsyncThrowingStream(bufferingPolicy: .bufferingOldest(64)) { continuation in
             let task = Task { [transport] in
                 do {
-                    var query = [URLQueryItem(name: "operationNotifications", value: "true"),
+                    var query = [URLQueryItem(name: "quickMessageNotifications", value: "true"),
+                                 URLQueryItem(name: "operationNotifications", value: "true"),
                                  URLQueryItem(name: "stateRevision", value: String(stateRevision)),
                                  URLQueryItem(name: "timelineRevision", value: String(timelineRevision))]
                     if let sessionId { query.append(URLQueryItem(name: "sessionId", value: sessionId)) }
@@ -112,6 +113,7 @@ public struct ClientEvents: Sendable {
                             case "timeline-snapshot": update = .timelineSnapshot(try JSONDecoder().decode(ClientTimelineSnapshot.self, from: data))
                             case "timeline-delta": update = .timelineDelta(try JSONDecoder().decode(ClientTimelineDelta.self, from: data))
                             case "command-receipt": update = .receipt(try JSONDecoder().decode(ClientCommandReceipt.self, from: data))
+                            case "quick-messages-changed": update = .quickMessagesChanged(try JSONDecoder().decode(ClientQuickMessageInvalidation.self, from: data).validated())
                             case "heartbeat": update = .heartbeat
                             default: throw ClientConnectionError.invalidResponse
                             }
@@ -193,5 +195,6 @@ public enum ClientRealtimeUpdate: Sendable {
     case timelineSnapshot(ClientTimelineSnapshot)
     case timelineDelta(ClientTimelineDelta)
     case receipt(ClientCommandReceipt)
+    case quickMessagesChanged(ClientQuickMessageInvalidation)
     case heartbeat
 }

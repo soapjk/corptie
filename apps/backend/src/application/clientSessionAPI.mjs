@@ -9,6 +9,7 @@ import { validateSessionCommand, sessionCommandNeedsConfirmation } from "../comm
 import { parseSlashCommand } from "../commands/unifiedCommands.mjs";
 import { createClientTask, clientTaskCreationCatalog } from "./clientTaskCreation.mjs";
 import { clientDiscussionOptions, openClientDiscussion } from "./clientWorkDiscussion.mjs";
+import { clientChatCreationOptions, createClientChat } from "./clientChatCreation.mjs";
 import { clientTaskManagement, clientTaskDeletionPlan, clientWorkManagement, clientTaskCommand, clientWorkCommand, clientWorkCreationOptions, createClientWork } from "./clientEntityCommands.mjs";
 import { publicToolExecution } from "../utils/toolExecutionProjection.mjs";
 import { publicChangeSet } from "../utils/changeSetProjection.mjs";
@@ -124,7 +125,8 @@ function publicClientMessage(item) {
 
 /** v1 text messaging + stop commands. Provider-neutral callbacks, durable at-most-once dispatch. */
 export class ClientSessionAPI {
-  constructor({ searchPage = null, deleteUserMessage = null, cancelQueuedMessage = null, quickMessages = null, store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null, respondToApproval = null, respondToUserInput = null, respondToCollaborationConfirmation = null, respondToSessionChannelRequest = null, onReceiptChanged = null, inspector = null, admitReliableMessage = null }) {
+  constructor({ chatCreation = null, searchPage = null, deleteUserMessage = null, cancelQueuedMessage = null, quickMessages = null, store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null, respondToApproval = null, respondToUserInput = null, respondToCollaborationConfirmation = null, respondToSessionChannelRequest = null, onReceiptChanged = null, inspector = null, admitReliableMessage = null }) {
+    this.chatCreation = chatCreation;
     this.deleteUserMessage = deleteUserMessage;
     this.cancelQueuedMessageHandler = cancelQueuedMessage;
     this.admitReliableMessage = admitReliableMessage;
@@ -207,6 +209,10 @@ export class ClientSessionAPI {
   }
   taskDeletionPlan(identity, taskId) { return clientTaskDeletionPlan(this, identity, taskId); }
   workManagement(identity, workId) { return clientWorkManagement(this, identity, workId); }
+  chatCreationOptions() { return clientChatCreationOptions(this); }
+  createChat(identity, input, revalidateIdentity = null) {
+    return createClientChat(this, identity, input, revalidateIdentity);
+  }
   workCreationOptions() { return clientWorkCreationOptions(this); }
   createWork(identity, input, revalidateIdentity = null) {
     return createClientWork(this, identity, input, revalidateIdentity);
@@ -634,7 +640,7 @@ export class ClientSessionAPI {
         ? { messageId: `client:${createHash("sha256").update(key).digest("hex")}` } : {}),
       ...(row.result_json ? { [row.kind === "create_task" ? "taskResult" : row.kind === "open_work_discussion" ? "discussionResult"
         : row.kind.startsWith("inspector:") ? "inspectorResult"
-        : /^(task|work)_/.test(row.kind) ? "entityResult" : "commandResult"]: JSON.parse(row.result_json) } : {}) };
+        : /^(task|work|chat)_/.test(row.kind) ? "entityResult" : "commandResult"]: JSON.parse(row.result_json) } : {}) };
   }
 
   async commandCatalog(identity, id) {

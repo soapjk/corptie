@@ -19,9 +19,12 @@ export function parseRealtimeResumeQuery(query) {
   const coalescing = query.get("timelineCoalescing");
   if (coalescing != null && !["true", "false"].includes(coalescing)) throw deviceError("INVALID_QUERY", 400);
   const operations = query.get("operationNotifications");
+  const quickMessages = query.get("quickMessageNotifications");
+  if (quickMessages != null && !["true", "false"].includes(quickMessages)) throw deviceError("INVALID_QUERY", 400);
   if (operations != null && !["true", "false"].includes(operations)) throw deviceError("INVALID_QUERY", 400);
   return { timelineRevisions, backgroundTimelineLimit, timelineCoalescing: coalescing === "true",
-    ...(operations != null ? { operationNotifications: operations === "true" } : {}) };
+    ...(operations != null ? { operationNotifications: operations === "true" } : {}),
+    ...(quickMessages != null ? { quickMessageNotifications: quickMessages === "true" } : {}) };
 }
 
 /** Notification-only v1 stream. Every connection starts with authoritative resync.
@@ -53,6 +56,14 @@ export class ClientEventStream {
     if (operation?.schemaVersion !== 1) return;
     for (const client of this.clients) {
       if (client.version === 2 && client.operationNotifications && !client.closed) client.write("operation-job", operation);
+    }
+  }
+  publishQuickMessages(change) {
+    if (change?.schemaVersion !== 1) return;
+    for (const client of this.clients) {
+      if (client.version === 2 && client.quickMessageNotifications && !client.closed) {
+        client.write("quick-messages-changed", change);
+      }
     }
   }
   invalidate({ inventory = false, control = false, sessionId = null, sessionIds = null } = {}) {
@@ -98,7 +109,8 @@ export class ClientEventStream {
   }
 
   attachV2(response, authenticate, { sessionId = null, stateRevision = 0, timelineRevision = 0,
-    timelineRevisions = {}, backgroundTimelineLimit = null, timelineCoalescing = false, operationNotifications = false } = {}) {
+    timelineRevisions = {}, backgroundTimelineLimit = null, timelineCoalescing = false, operationNotifications = false,
+    quickMessageNotifications = false } = {}) {
     const identity = authenticate();
     if (this.clients.size >= 16 || [...this.clients].filter(c => c.deviceId === identity.deviceId).length >= 2) {
       throw deviceError("STREAM_LIMIT", 429);
@@ -117,6 +129,7 @@ export class ClientEventStream {
     const client = {
       version: 2,
       operationNotifications,
+      quickMessageNotifications,
       closed: false,
       deviceId: identity.deviceId,
       sessionId,

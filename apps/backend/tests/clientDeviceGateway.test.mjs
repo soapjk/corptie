@@ -247,6 +247,13 @@ test("real TLS route boundary and authenticated local approval", async () => {
     receipt(identity, requestId) { return { requestId, deviceId: identity.deviceId }; },
     capabilities() { return { schemaVersion: 1 }; },
     workCreationOptions() { return { schemaVersion: 1, agents: [{ id: "agent:test", name: "Test" }] }; },
+    chatCreation: {},
+    chatCreationOptions() { return { schemaVersion: 1, agents: [{ id: "agent:test", name: "Test" }], providers: [] }; },
+    createChat(identity, input, revalidate) {
+      assert.equal(revalidate().deviceId, identity.deviceId);
+      return { schemaVersion: 1, requestId: input.requestId, kind: "chat_create", status: "completed",
+        entityResult: { sessionId: "session:new", title: input.title } };
+    },
     createWork(identity, input, revalidate) {
       assert.equal(revalidate().deviceId, identity.deviceId);
       return { schemaVersion: 1, requestId: input.requestId, kind: "work_create", status: "completed" };
@@ -483,6 +490,16 @@ test("real TLS route boundary and authenticated local approval", async () => {
     assert.equal((await call("/internal/client-devices/permissions", { local: true, token, method: "POST",
       value: { deviceId: creds.deviceId, permissions: [] } })).status, 404);
     const createPath = "/client/v1/sessions/session%3Atest/tasks";
+    const newChatPath = "/client/v1/chats/create";
+    assert.equal((await call(newChatPath)).status, 401);
+    assert.equal((await call(newChatPath, { token: creds.accessToken })).body.schemaVersion, 1);
+    const newChat = await call(newChatPath, { token: creds.accessToken, method: "POST",
+      value: { requestId: "chat_create_1", title: "Chat", agentId: "agent:test", providerId: "provider:a" } });
+    assert.equal(newChat.status, 200);
+    assert.equal(newChat.body.entityResult.sessionId, "session:new");
+    assert.equal((await call(`${newChatPath}?x=1`, { token: creds.accessToken })).status, 403);
+    assert.equal((await call(newChatPath, { token: creds.accessToken, method: "DELETE" })).status, 404);
+    gateway.buckets.clear();
     const newWorkPath = "/client/v1/works/create";
     assert.equal((await call(newWorkPath)).status, 401);
     assert.equal((await call(newWorkPath, { token: creds.accessToken })).body.agents[0].id, "agent:test");

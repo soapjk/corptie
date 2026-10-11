@@ -12,6 +12,26 @@ class Response extends EventEmitter {
 const identity = { deviceId: "one" };
 const data = frame => JSON.parse(frame.split("data: ")[1]);
 
+test("quick-message invalidations are identifier-only and opt-in, including on-demand streams", async () => {
+  const hub = new ClientEventStream();
+  const oldClient = new Response(), newClient = new Response();
+  try {
+    hub.attachV2(oldClient, () => identity);
+    hub.attachV2(newClient, () => ({ deviceId: "two" }), {
+      backgroundTimelineLimit: 0, quickMessageNotifications: true
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    const change = { schemaVersion: 1, sessionId: "s", taskId: "t" };
+    hub.publishQuickMessages(change);
+    assert.equal(oldClient.frames.filter(f => f.includes("event: quick-messages-changed")).length, 0);
+    const frames = newClient.frames.filter(f => f.includes("event: quick-messages-changed"));
+    assert.equal(frames.length, 1);
+    assert.deepEqual(data(frames[0]), change);
+    assert.equal(parseRealtimeResumeQuery(new URLSearchParams({ quickMessageNotifications: "true" })).quickMessageNotifications, true);
+    assert.throws(() => parseRealtimeResumeQuery(new URLSearchParams({ quickMessageNotifications: "1" })), { code: "INVALID_QUERY" });
+  } finally { hub.close(); }
+});
+
 test("realtime resume queries bound untrusted cursor count, IDs and revisions", () => {
   assert.deepEqual(parseRealtimeResumeQuery(new URLSearchParams()), { timelineRevisions: {}, backgroundTimelineLimit: null, timelineCoalescing: false });
   assert.deepEqual(parseRealtimeResumeQuery(new URLSearchParams({ timelineRevisions: '{"one":4}', backgroundTimelineLimit: "2" })),

@@ -8,6 +8,7 @@ struct PadConversationInspector: View {
     @Bindable var workspace: PadWorkspace
     let connection: PadConnection
     let sessionID: String
+    let onOpenAutomation: (String) -> Void
     private var inspector: PadInspectorStore { workspace.inspectorStore(for: sessionID) }
     private var session: ClientSession? { workspace.sessionsByID[sessionID] }
     private var kind: ConversationInspectorKind {
@@ -16,7 +17,8 @@ struct PadConversationInspector: View {
     var body: some View {
         ConversationDetailDashboard {
             if let session {
-                PadInspectorResources(store: inspector, connection: connection, sessionID: sessionID, workspace: workspace, kind: kind) {
+                PadInspectorResources(store: inspector, connection: connection, sessionID: sessionID, workspace: workspace,
+                    kind: kind, onOpenAutomation: onOpenAutomation) {
                     ConversationSessionInformationCard(sessionID: session.id,
                         workName: workspace.works.first(where: { $0.id == session.workId })?.name)
                 } secondary: {

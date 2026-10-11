@@ -537,7 +537,7 @@ export class CorptieStore {
   scheduleSave() { return this.transactions.scheduleSave(); }
   setStateDirtyListener(listener) { return this.transactions.setStateDirtyListener(listener); }
   setTimelineDirtyListener(listener) { return this.transactions.setTimelineDirtyListener(listener); }
-  notifyTimelineDirty(sessionId) { return this.transactions.notifyTimelineDirty(sessionId); }
+  notifyTimelineDirty(sessionId, options) { return this.transactions.notifyTimelineDirty(sessionId, options); }
   runInTransaction(operation) { return this.transactions.runInTransaction(operation); }
   flushCommittedDirtyNotifications() { return this.transactions.flushCommittedDirtyNotifications(); }
 

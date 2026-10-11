@@ -121,6 +121,26 @@ public struct ClientWorkUpdate: Codable, Sendable, Equatable {
 public struct ClientWorkCreationOptions: Decodable, Sendable {
     public let agents: [ClientTaskCreationOptions.Resource]
 }
+public struct ClientChatCreationOptions: Decodable, Sendable {
+    public struct Provider: Decodable, Identifiable, Sendable {
+        public let id: String
+        public let name: String
+        public let available: Bool
+    }
+    public let schemaVersion: Int
+    public let agents: [ClientTaskCreationOptions.Resource]
+    public let providers: [Provider]
+    public let defaultProviderId: String?
+}
+public struct ClientChatCreation: Encodable, Sendable {
+    public let requestId: String
+    public let title: String
+    public let agentId: String
+    public let providerId: String
+    public init(requestId: String, title: String, agentId: String, providerId: String) {
+        self.requestId = requestId; self.title = title; self.agentId = agentId; self.providerId = providerId
+    }
+}
 public struct ClientWorkCreation: Encodable, Sendable {
     public let requestId: String
     public let name: String
@@ -138,6 +158,7 @@ public struct ClientEntityRequest: Codable, Sendable, Equatable {
 
 /// `entityResult` on a receipt; which fields are present depends on `kind`.
 public struct ClientEntityCommandResult: Codable, Sendable, Equatable {
+    public let sessionId: String?
     public let taskId: String?
     public let workId: String?
     public let title: String?

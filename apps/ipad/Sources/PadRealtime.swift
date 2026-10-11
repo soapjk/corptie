@@ -165,6 +165,7 @@ extension PadWorkspace {
                     case .operation(let job):
                         PadOperationNotifications.shared.observe(job)
                     case .ready:
+                        quickMessageCache.connectionRecovered()
                         Self.realtimeLog.info("Realtime ready: generation=\(generation, privacy: .public)")
                         PadOperationNotifications.shared.recover(connection: connection)
                         receivedV2Ready = true
@@ -205,6 +206,9 @@ extension PadWorkspace {
                         pushedReceipt = receipt
                         pushedReceiptRevision += 1
                         if pending?.requestID == receipt.requestId { settle(receipt) }
+                    case .quickMessagesChanged(let change):
+                        quickMessageCache.invalidate(host: connection.serverID,
+                            taskID: change.taskId, sessionID: change.sessionId)
                     case .heartbeat:
                         realtimeConnected = true
                         realtimeReconnectFailed = false

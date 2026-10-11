@@ -50,7 +50,10 @@ struct PadAppShell: View {
                 WorkspaceView(connection: connection, workspace: workspace,
                     compactOpenSessionRequest: compactOpenSessionRequest,
                     onCompactRootChange: { compactWorkspaceIsRoot = $0 },
-                    onOpenWorktrees: { tab = .worktrees })
+                    onOpenWorktrees: { tab = .worktrees },
+                    onOpenAutomation: { id in
+                        if let destination = controls.selectAutomation(id: id) { tab = destination }
+                    })
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .opacity(tab == .workspace ? 1 : 0)
                     .allowsHitTesting(tab == .workspace)
@@ -242,8 +245,7 @@ struct PadAppShell: View {
             tab = .workspace
         } else if userInfo["destination"] as? String == "automation" {
             if let automationID = userInfo["automationId"] as? String {
-                controls.selections[.automations] = automationID
-                controls.routes[.automations] = PadControlSelection(kind: .automations, id: automationID)
+                controls.selectAutomation(id: automationID)
             }
             tab = .automations
         } else {

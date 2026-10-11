@@ -499,8 +499,7 @@ public struct ClientSessionAPI: Sendable {
     public func quickMessages(sessionId: String) async throws -> ClientQuickMessageRecommendations {
         let result: ClientQuickMessageRecommendations = try await read(
             transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "quick-messages"]))
-        guard result.schemaVersion == 1, result.items.count <= 6 else { throw ClientConnectionError.invalidResponse }
-        return result
+        return try result.validated()
     }
     /// Usage snapshot behind `messages.read`; hosts without a usage reader answer 409 `CAPABILITY_UNSUPPORTED`.
     public func usage(sessionId: String, freshAccount: Bool = false) async throws -> ClientSessionUsage {
@@ -719,6 +718,14 @@ public struct ClientSessionAPI: Sendable {
     }
     public func workCreationOptions() async throws -> ClientWorkCreationOptions {
         try await read(transport.endpoint.request(path: ["client", "v1", "works", "create"]))
+    }
+    public func chatCreationOptions() async throws -> ClientChatCreationOptions {
+        let value: ClientChatCreationOptions = try await read(transport.endpoint.request(path: ["client", "v1", "chats", "create"]))
+        guard value.schemaVersion == 1 else { throw ClientConnectionError.invalidResponse }
+        return value
+    }
+    public func createChat(_ body: ClientChatCreation) async throws -> ClientCommandReceipt {
+        try await post(path: ["client", "v1", "chats", "create"], body: body)
     }
     public func createWork(_ body: ClientWorkCreation) async throws -> ClientCommandReceipt {
         try await post(path: ["client", "v1", "works", "create"], body: body)
