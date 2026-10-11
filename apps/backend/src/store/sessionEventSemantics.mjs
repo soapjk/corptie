@@ -19,13 +19,13 @@ export function agentMessageEventSQL(tableAlias) {
   return `${tableAlias}.has_agent_message = 1`;
 }
 
-// Ordering is about meaningful exchanges, not streaming output or tool/status
-// traffic. Completion markers count only when they durably confirm a reply.
-export function conversationActivityEventSQL(tableAlias = null) {
+// A formal message is either a user message or a durably confirmed final
+// model reply. Commentary, reasoning, tools, plans, status traffic, streaming
+// output, and legacy assistant surface rows never advance ordering by themselves.
+export function formalMessageEventSQL(tableAlias = null) {
   const prefix = tableAlias ? `${tableAlias}.` : "";
   return `(${prefix}type IN (
-    'user/message', 'user.message.accepted', 'SessionUserMessageCreated',
-    'assistant/message'
+    'user/message', 'user.message.accepted', 'SessionUserMessageCreated'
   ) OR ${prefix}has_agent_message = 1)`;
 }
 

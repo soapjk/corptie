@@ -513,9 +513,9 @@ final class PadWorkspace {
     /// Sessions outside any Work (macOS "Chat" group), in inventory order.
     private(set) var independentSessions: [ClientSession] = []
     var sessionsByID: [String: ClientSession] = [:]
-    /// Client-recorded latest message timestamps by session id, driven directly
-    /// by pushed timeline snapshots, deltas, and local outgoing messages.
-    private(set) var recordedMessageActivityBySession: [String: String] = [:]
+    /// Client-recorded formal-message timestamps by Session id. Only user
+    /// messages and final model replies may advance Work/Task ordering.
+    private(set) var recordedFormalMessageActivityBySession: [String: String] = [:]
     private(set) var latestSessionActivityByWork: [String: String] = [:]
     private(set) var latestSessionActivityByTask: [String: String] = [:]
     private(set) var processingWorkIDs: Set<String> = []
@@ -874,7 +874,7 @@ final class PadWorkspace {
             let received = Set(items.map(\.id))
             outgoingMessages[selection]?.removeAll { received.contains($0.id) }
             for id in received { outgoingStates.removeValue(forKey: id) }
-            recordSessionActivity(sessionID: selection, messages: items)
+            recordFormalMessageActivity(sessionID: selection, messages: items)
         }
         if previous != messages { messageRevision += 1 }
     }
@@ -1054,32 +1054,35 @@ final class PadWorkspace {
         return id
     }
 
-    func effectiveRecordedActivity(for sessionID: String) -> String {
-        let raw = recordedMessageActivityBySession[sessionID] ?? ""
-        let normalized = recordedMessageActivityBySession[normalizedSessionID(sessionID)] ?? ""
+    func effectiveRecordedFormalMessageActivity(for sessionID: String) -> String {
+        let raw = recordedFormalMessageActivityBySession[sessionID] ?? ""
+        let normalized = recordedFormalMessageActivityBySession[normalizedSessionID(sessionID)] ?? ""
         return max(raw, normalized)
     }
 
-    func recordSessionActivity(sessionID: String, messages: [ClientMessage]) {
+    func recordFormalMessageActivity(sessionID: String, messages: [ClientMessage]) {
         var latestDate = ""
-        for message in messages {
+        for message in messages where ConversationPresentationKind.isFormalMessage(
+            type: message.type,
+            presentationRole: message.presentationRole
+        ) {
             if let createdAt = message.createdAt, !createdAt.isEmpty {
                 if createdAt > latestDate { latestDate = createdAt }
             }
         }
         if !latestDate.isEmpty {
-            recordSessionActivity(sessionID: sessionID, timestamp: latestDate)
+            recordFormalMessageActivity(sessionID: sessionID, timestamp: latestDate)
         }
     }
 
-    func recordSessionActivity(sessionID: String, timestamp: String) {
+    func recordFormalMessageActivity(sessionID: String, timestamp: String) {
         guard !timestamp.isEmpty else { return }
-        let current = effectiveRecordedActivity(for: sessionID)
+        let current = effectiveRecordedFormalMessageActivity(for: sessionID)
         guard timestamp > current else { return }
-        recordedMessageActivityBySession[sessionID] = timestamp
+        recordedFormalMessageActivityBySession[sessionID] = timestamp
         let normalized = normalizedSessionID(sessionID)
         if normalized != sessionID {
-            recordedMessageActivityBySession[normalized] = timestamp
+            recordedFormalMessageActivityBySession[normalized] = timestamp
         }
         propagateSessionActivity(sessionID: sessionID, timestamp: timestamp)
     }
@@ -1112,10 +1115,10 @@ final class PadWorkspace {
     private func sortIndependentSessions(_ items: [ClientSession]) -> [ClientSession] {
         let enumerated = Array(items.enumerated())
         return enumerated.sorted { left, right in
-            let leftRecorded = effectiveRecordedActivity(for: left.element.id)
+            let leftRecorded = effectiveRecordedFormalMessageActivity(for: left.element.id)
             let leftAt = max(leftRecorded, left.element.lastMessageAt ?? left.element.updatedAt)
 
-            let rightRecorded = effectiveRecordedActivity(for: right.element.id)
+            let rightRecorded = effectiveRecordedFormalMessageActivity(for: right.element.id)
             let rightAt = max(rightRecorded, right.element.lastMessageAt ?? right.element.updatedAt)
 
             if leftAt != rightAt {
@@ -1132,7 +1135,7 @@ final class PadWorkspace {
     }
 
     func applyBackgroundTimeline(_ snapshot: ClientTimelineSnapshot) {
-        recordSessionActivity(sessionID: snapshot.sessionId, messages: snapshot.messages.items)
+        recordFormalMessageActivity(sessionID: snapshot.sessionId, messages: snapshot.messages.items)
         let key = residentKey(for: snapshot.sessionId) ?? snapshot.sessionId
         _ = timelineRepository.apply(snapshot, sessionKey: key)
         persistResidentTimeline(key)
@@ -1141,7 +1144,7 @@ final class PadWorkspace {
     @discardableResult
     func applyBackgroundTimeline(_ delta: ClientTimelineDelta) -> Bool {
         let deltaMessages = delta.changes.compactMap(\.item)
-        recordSessionActivity(sessionID: delta.sessionId, messages: deltaMessages)
+        recordFormalMessageActivity(sessionID: delta.sessionId, messages: deltaMessages)
         guard let key = residentKey(for: delta.sessionId) else { return false }
         switch timelineRepository.apply(delta, sessionKey: key) {
         case .applied, .duplicate:
@@ -1160,7 +1163,7 @@ final class PadWorkspace {
             let caps = try await api.capabilities(sessionId: sessionID)
             guard caps.readMessages else { return }
             let page = try await api.messages(sessionId: caps.sessionId)
-            recordSessionActivity(sessionID: caps.sessionId, messages: page.items)
+            recordFormalMessageActivity(sessionID: caps.sessionId, messages: page.items)
             timelineRepository.store(ClientResidentTimeline(
                 messages: page.items,
                 before: page.nextBefore,
@@ -1366,7 +1369,7 @@ final class PadWorkspace {
 
     func applyRealtimeTimeline(_ snapshot: ClientTimelineSnapshot) {
         guard snapshot.schemaVersion == 2 else { return }
-        recordSessionActivity(sessionID: snapshot.sessionId, messages: snapshot.messages.items)
+        recordFormalMessageActivity(sessionID: snapshot.sessionId, messages: snapshot.messages.items)
         guard isSelectedTimeline(snapshot.sessionId) else {
             applyBackgroundTimeline(snapshot)
             return
@@ -1399,7 +1402,7 @@ final class PadWorkspace {
     @discardableResult
     func applyRealtimeTimeline(_ delta: ClientTimelineDelta) -> Bool {
         let deltaMessages = delta.changes.compactMap(\.item)
-        recordSessionActivity(sessionID: delta.sessionId, messages: deltaMessages)
+        recordFormalMessageActivity(sessionID: delta.sessionId, messages: deltaMessages)
         guard isSelectedTimeline(delta.sessionId) else {
             return applyBackgroundTimeline(delta)
         }
@@ -1486,7 +1489,7 @@ final class PadWorkspace {
         var latestActivityByTask: [String: String] = [:]
         for session in sessions {
             // Includes Work discussions, even though they have no Task binding.
-            let recorded = effectiveRecordedActivity(for: session.id)
+            let recorded = effectiveRecordedFormalMessageActivity(for: session.id)
             let messageAt = max(recorded, session.lastMessageAt ?? "")
             if !messageAt.isEmpty {
                 if let workID = session.workId {
@@ -1506,7 +1509,7 @@ final class PadWorkspace {
             let bound = bindingID.flatMap { sessionsByID[$0] } ?? latestByTask[task.id]
             if let sessionID = bound?.id ?? bindingID, !sessionID.isEmpty {
                 resolvedSessionIDs[task.id] = sessionID
-                let recorded = effectiveRecordedActivity(for: sessionID)
+                let recorded = effectiveRecordedFormalMessageActivity(for: sessionID)
                 let messageAt = max(recorded, bound?.lastMessageAt ?? "")
                 if !messageAt.isEmpty {
                     latestActivityByTask[task.id] = max(latestActivityByTask[task.id] ?? "", messageAt)
@@ -1833,7 +1836,7 @@ final class PadWorkspace {
                 outgoingStates[messageID] = "Sending"
                 outgoingRequestIDs[command.requestID] = messageID
                 scrollRequest += 1
-                recordSessionActivity(sessionID: id, timestamp: Date().ISO8601Format())
+                recordFormalMessageActivity(sessionID: id, timestamp: Date().ISO8601Format())
             }
             let receipt: ClientCommandReceipt
             do {
@@ -1992,7 +1995,6 @@ final class PadWorkspace {
                 let item = ClientMessage(commandMessageID: messageID, result: result)
                 outgoingMessages[draftSessionID] = Self.merge(outgoingMessages[draftSessionID] ?? [], [item])
                 if selection == draftSessionID { scrollRequest += 1 }
-                recordSessionActivity(sessionID: draftSessionID, timestamp: Date().ISO8601Format())
             }
             status = ""
             inventoryDirty = true; messagesDirty = true

@@ -222,5 +222,10 @@ struct ConversationTimelineTests {
         #expect(!ConversationPresentationKind.isCommentary(type: "agentMessage", presentationRole: "final_answer"))
         #expect(!ConversationPresentationKind.isCommentary(type: "agentMessage", presentationRole: nil))
         #expect(!ConversationPresentationKind.isCommentary(type: "userMessage", presentationRole: "commentary"))
+        #expect(ConversationPresentationKind.isFormalMessage(type: "userMessage", presentationRole: nil))
+        #expect(ConversationPresentationKind.isFormalMessage(type: "agentMessage", presentationRole: "final_answer"))
+        #expect(!ConversationPresentationKind.isFormalMessage(type: "agentMessage", presentationRole: "commentary"))
+        #expect(!ConversationPresentationKind.isFormalMessage(type: "agentMessage", presentationRole: nil))
+        #expect(!ConversationPresentationKind.isFormalMessage(type: "commandExecution", presentationRole: nil))
     }
 }

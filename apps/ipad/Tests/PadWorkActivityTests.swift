@@ -45,7 +45,7 @@ struct PadWorkActivityTests {
         #expect(workspace.sessionIDByTaskID.isEmpty)
     }
 
-    @Test func timelineDeltaUpdatesActivityAndReordersWithoutServerInventory() throws {
+    @Test func onlyFormalTimelineMessagesUpdateActivityWithoutServerInventory() throws {
         let key = "pad-work-activity-delta-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: key)!
         defer { defaults.removePersistentDomain(forName: key) }
@@ -91,7 +91,7 @@ struct PadWorkActivityTests {
                     "operation": "append",
                     "item": {
                         "id": "msg:c1",
-                        "type": "user",
+                        "type": "userMessage",
                         "text": "Hello in chat 1",
                         "createdAt": "2026-10-02T10:00:00Z"
                     }
@@ -102,11 +102,11 @@ struct PadWorkActivityTests {
         let deltaChat1 = try decoder.decode(ClientTimelineDelta.self, from: Data(deltaChat1JSON.utf8))
         _ = workspace.applyBackgroundTimeline(deltaChat1)
 
-        #expect(workspace.effectiveRecordedActivity(for: "chat1") == "2026-10-02T10:00:00Z")
+        #expect(workspace.effectiveRecordedFormalMessageActivity(for: "chat1") == "2026-10-02T10:00:00Z")
         #expect(workspace.independentSessions.map(\.id) == ["chat1", "chat2"])
 
-        // Receive pushed timeline delta for task session s1 with newer message
-        let deltaS1JSON = """
+        // Commentary is process output, not a formal message, so it cannot reorder Work.
+        let commentaryS1JSON = """
         {
             "schemaVersion": 2,
             "kind": "delta",
@@ -119,30 +119,66 @@ struct PadWorkActivityTests {
             "changes": [
                 {
                     "revision": 2,
-                    "itemId": "msg:s1",
+                    "itemId": "commentary:s1",
                     "operation": "append",
                     "item": {
-                        "id": "msg:s1",
-                        "type": "assistant",
-                        "text": "Task update",
+                        "id": "commentary:s1",
+                        "type": "agentMessage",
+                        "presentationRole": "commentary",
+                        "text": "Still working",
                         "createdAt": "2026-10-03T12:00:00Z"
                     }
                 }
             ]
         }
         """
-        let deltaS1 = try decoder.decode(ClientTimelineDelta.self, from: Data(deltaS1JSON.utf8))
-        _ = workspace.applyBackgroundTimeline(deltaS1)
+        let commentaryS1 = try decoder.decode(ClientTimelineDelta.self, from: Data(commentaryS1JSON.utf8))
+        _ = workspace.applyBackgroundTimeline(commentaryS1)
 
-        #expect(workspace.effectiveRecordedActivity(for: "s1") == "2026-10-03T12:00:00Z")
-        #expect(workspace.latestSessionActivityByTask["t1"] == "2026-10-03T12:00:00Z")
-        #expect(workspace.latestSessionActivityByWork["w1"] == "2026-10-03T12:00:00Z")
+        #expect(workspace.effectiveRecordedFormalMessageActivity(for: "s1").isEmpty)
+        #expect(workspace.latestSessionActivityByTask["t1"] == "2026-09-01")
+        #expect(workspace.latestSessionActivityByWork["w1"] == "2026-09-01")
+        #expect(PadOutlineSort.updated.works(workspace.works, latestSessionActivity: workspace.latestSessionActivityByWork).map(\.id) == ["w2", "w1"])
+
+        // A final model reply is formal and may advance ordering immediately.
+        let finalS1JSON = """
+        {
+            "schemaVersion": 2,
+            "kind": "delta",
+            "sessionId": "s1",
+            "snapshotRequired": false,
+            "baseRevision": 2,
+            "revision": 3,
+            "currentRevision": 3,
+            "hasMore": false,
+            "changes": [
+                {
+                    "revision": 3,
+                    "itemId": "final:s1",
+                    "operation": "append",
+                    "item": {
+                        "id": "final:s1",
+                        "type": "agentMessage",
+                        "presentationRole": "final_answer",
+                        "text": "Task complete",
+                        "createdAt": "2026-10-03T12:05:00Z"
+                    }
+                }
+            ]
+        }
+        """
+        let finalS1 = try decoder.decode(ClientTimelineDelta.self, from: Data(finalS1JSON.utf8))
+        _ = workspace.applyBackgroundTimeline(finalS1)
+
+        #expect(workspace.effectiveRecordedFormalMessageActivity(for: "s1") == "2026-10-03T12:05:00Z")
+        #expect(workspace.latestSessionActivityByTask["t1"] == "2026-10-03T12:05:00Z")
+        #expect(workspace.latestSessionActivityByWork["w1"] == "2026-10-03T12:05:00Z")
         #expect(PadOutlineSort.updated.works(workspace.works, latestSessionActivity: workspace.latestSessionActivityByWork).map(\.id) == ["w1", "w2"])
 
         // Rebuilding groups with existing inventory does not regress client-recorded activity
         workspace.rebuildGroups()
-        #expect(workspace.latestSessionActivityByTask["t1"] == "2026-10-03T12:00:00Z")
-        #expect(workspace.latestSessionActivityByWork["w1"] == "2026-10-03T12:00:00Z")
+        #expect(workspace.latestSessionActivityByTask["t1"] == "2026-10-03T12:05:00Z")
+        #expect(workspace.latestSessionActivityByWork["w1"] == "2026-10-03T12:05:00Z")
         #expect(workspace.independentSessions.map(\.id) == ["chat1", "chat2"])
         #expect(PadOutlineSort.updated.tasks(workspace.tasks, latestSessionActivity: workspace.latestSessionActivityByTask).map(\.id) == ["t1", "t2"])
 
