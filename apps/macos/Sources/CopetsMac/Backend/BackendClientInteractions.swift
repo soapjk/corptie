@@ -30,8 +30,7 @@ extension BackendClient {
             throw ClientConnectionError.invalidResponse
         }
         let result = try JSONDecoder().decode(ClientQuickMessageRecommendations.self, from: data)
-        guard result.schemaVersion == 1, result.items.count <= 6 else { throw ClientConnectionError.invalidResponse }
-        return result
+        return try result.validated()
     }
     func sendMessage(
         _ text: String,

@@ -13,6 +13,15 @@ export function eligibleQuickMessage(text) {
   return value;
 }
 
+// Only eligibility/text changes affect statistics. Status/echo churn for the
+// same accepted user message and streaming Agent output do not wake readers.
+export function quickMessageContribution(row) {
+  if (!row || row.type !== "userMessage" || !["", "user"].includes(row.presentation_role ?? "")
+      || ["failed", "cancelled"].includes(row.status)) return null;
+  try { if (JSON.parse(row.raw_metadata_json ?? "{}").images?.length) return null; } catch { return null; }
+  return eligibleQuickMessage(row.text);
+}
+
 export function rankQuickMessages(taskRows, commonRows, taskId) {
   function frequencies(rows) {
     const counts = new Map();
@@ -54,7 +63,9 @@ export function readQuickMessages(store, sessionId) {
   let cache = caches.get(store);
   if (!cache) caches.set(store, cache = new Map());
   const existing = cache.get(scope);
-  const watermark = store.selectOne("SELECT COALESCE(MAX(rowid), 0) AS value FROM session_items").value;
+  // A new rowid misses status updates and deletes. Revision rows are small
+  // (one per Session) and read in this same snapshot, unlike PRAGMA data_version.
+  const watermark = store.selectOne("SELECT COALESCE(SUM(revision), 0) AS value FROM session_timeline_revisions").value;
   if (existing && existing.watermark === watermark && Date.now() - existing.at < 15_000) return existing.value;
   const eligible = `i.type = 'userMessage' AND COALESCE(i.presentation_role, '') IN ('', 'user')
     AND COALESCE(i.status, '') NOT IN ('failed', 'cancelled') AND length(i.text) BETWEEN 1 AND 80 AND s.deleted_at IS NULL

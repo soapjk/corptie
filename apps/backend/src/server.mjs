@@ -391,6 +391,10 @@ const { scheduleTimelineChangePublish } = createTimelineChangeDispatcher({
   resolveSessionReference: (sessionId) => sessionBindingRepository?.resolve(sessionId),
   invalidateDevices: (change) => clientDeviceGateway?.events.invalidate(change),
   publishDeviceTimeline: (sessionId) => clientDeviceGateway?.events.publishTimeline(sessionId),
+  publishQuickMessages: (change) => {
+    clientDeviceGateway?.events.publishQuickMessages(change);
+    emitEvent("SessionQuickMessagesChanged", change, { sessionId: change.sessionId, recordSessionEvent: false });
+  },
   scheduleTimelineChange: (change) => runtimeActivity.scheduleTimelineChange(change)
 });
 const providerEventPublisher = createProviderEventPublisher({
@@ -2288,7 +2292,7 @@ function startBackendRuntime() {
     interruptUnifiedSession, cancelQueuedUserMessage, deleteUserMessage, respondUnifiedSessionApproval, respondUnifiedSessionUserInput,
     resolveCollaborationConfirmation, resolveSessionChannelRequest,
     publishStateChangesIfNeeded, workDiscussionService, sessionApplicationService,
-    workSessionStartApplicationService, chatResourceService, decorateSessionForClient,
+    workSessionStartApplicationService, chatResourceService, launchAgentSession, decorateSessionForClient,
     readSessionUsage, setTaskArchivedForEntityRoutes, restartTaskForEntityRoutes,
     taskDeletionService, clearWorkAvatarFile, sessionBindingRepository, createTaskAndSession,
     getClientDeviceGateway: () => clientDeviceGateway,

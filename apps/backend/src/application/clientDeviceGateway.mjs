@@ -202,6 +202,19 @@ export class ClientDeviceGateway {
         }
         throw deviceError("ROUTE_NOT_AVAILABLE", 404);
       }
+      if (path === "/client/v1/chats/create" && this.sessionAPI) {
+        if (request.method === "GET") {
+          const result = await this.sessionAPI.chatCreationOptions();
+          this.authenticateRequest(request);
+          return reply(response, 200, result);
+        }
+        if (request.method === "POST") {
+          const input = await body(request);
+          return reply(response, 200, await this.sessionAPI.createChat(this.authenticateRequest(request),
+            input, () => this.authenticateRequest(request)));
+        }
+        throw deviceError("ROUTE_NOT_AVAILABLE", 404);
+      }
       if (path === "/client/v1/works/create" && this.sessionAPI) {
         if (request.method === "GET") {
           const result = this.sessionAPI.workCreationOptions();
@@ -472,6 +485,7 @@ export class ClientDeviceGateway {
           taskManagement: Boolean(this.sessionAPI?.entityCommands),
           workManagement: Boolean(this.sessionAPI?.entityCommands),
           workCreation: Boolean(this.sessionAPI?.entityCommands?.createWork),
+          chatCreation: Boolean(this.sessionAPI?.chatCreation),
           search: this.sessionAPI?.search ? { schemaVersion: 1 } : null,
           inventoryLists: Boolean(this.readAPI), messages: Boolean(this.sessionAPI),
           controlRead: Boolean(this.controlAPI), controlWrite: Boolean(this.worktreeAPI),

@@ -4,6 +4,7 @@ import CorptieConversation
 
 /// Dialogs and sheets for touch-based Work / Task management actions.
 enum PadEntityRoute: Identifiable {
+    case createChat
     case createWork
     case editWork(ClientWork)
     case renameTask(ClientTask)
@@ -13,6 +14,7 @@ enum PadEntityRoute: Identifiable {
 
     var id: String {
         switch self {
+        case .createChat: return "create-chat"
         case .createWork: return "create-work"
         case .editWork(let w): return "edit-work-\(w.id)"
         case .renameTask(let t): return "rename-task-\(t.id)"
@@ -20,6 +22,111 @@ enum PadEntityRoute: Identifiable {
         case .deleteTask(let t): return "delete-task-\(t.id)"
         case .deleteWork(let w): return "delete-work-\(w.id)"
         }
+    }
+}
+
+struct PadCreateChatSheet: View {
+    let connection: PadConnection
+    let commands: PadEntityCommandState
+    @Environment(\.dismiss) private var dismiss
+    @State private var title = ""
+    @State private var agentID = ""
+    @State private var providerID = ""
+    @State private var options: ClientChatCreationOptions?
+    @State private var loading = false
+    @State private var error: String?
+
+    private var canCreate: Bool {
+        guard let options else { return false }
+        let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return connection.connected && !commands.isBusy && !loading && !name.isEmpty && name.utf16.count <= 512
+            && options.agents.contains(where: { $0.id == agentID })
+            && options.providers.contains(where: { $0.id == providerID && $0.available })
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Chat") {
+                    TextField("标题", text: $title)
+                        .accessibilityIdentifier("create-chat-title")
+                }
+                if let options {
+                    Section("执行配置") {
+                        Picker("Agent", selection: $agentID) {
+                            ForEach(options.agents) { Text($0.name).tag($0.id) }
+                        }
+                        Picker("Provider", selection: $providerID) {
+                            ForEach(options.providers.filter(\.available)) { Text($0.name).tag($0.id) }
+                        }
+                        if options.agents.isEmpty || !options.providers.contains(where: \.available) {
+                            Text("暂无可用的 Agent 或 Provider，请先在 Mac 上配置。")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } else if loading { ProgressView("加载创建选项…") }
+                if let error {
+                    Section {
+                        Text(error).foregroundStyle(.red)
+                        Button("重试") { Task { await loadOptions() } }.disabled(loading)
+                    }
+                }
+                if !commands.notice.isEmpty {
+                    Section {
+                        Text(commands.notice).font(.footnote)
+                        if commands.pending?.kind == "chat_create" {
+                            Button("核对创建结果") { Task { await commands.reconcile(connection) } }
+                                .disabled(commands.checking || commands.submitting)
+                        }
+                    }
+                }
+            }
+            .disabled(commands.submitting)
+            .navigationTitle("新建 Chat")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(commands.submitting ? "创建中…" : "创建") { Task { await create() } }
+                        .disabled(!canCreate)
+                        .accessibilityIdentifier("create-chat-submit")
+                }
+            }
+            .task { await loadOptions() }
+            .onChange(of: commands.outcome) { _, outcome in
+                if outcome?.pending.kind == "chat_create", outcome?.status == "completed" { dismiss() }
+            }
+        }
+        .interactiveDismissDisabled(commands.submitting)
+    }
+
+    private func loadOptions() async {
+        guard !loading else { return }
+        loading = true; error = nil
+        defer { loading = false }
+        do {
+            let next = try await ClientSessionAPI(transport: connection.transport()).chatCreationOptions()
+            guard !Task.isCancelled else { return }
+            options = next
+            if !next.agents.contains(where: { $0.id == agentID }) { agentID = next.agents.first?.id ?? "" }
+            if !next.providers.contains(where: { $0.id == providerID && $0.available }) {
+                providerID = next.providers.first(where: { $0.id == next.defaultProviderId && $0.available })?.id
+                    ?? next.providers.first(where: \.available)?.id ?? ""
+            }
+        } catch is CancellationError { return }
+        catch let failure as ClientServiceFailure where ["CAPABILITY_UNSUPPORTED", "ROUTE_NOT_AVAILABLE"].contains(failure.code) {
+            error = "此 Mac 服务端尚未支持新建 Chat，请更新服务端后重试。"
+        } catch { if !Task.isCancelled { self.error = PadConnection.explain(error) } }
+    }
+
+    private func create() async {
+        guard canCreate else { return }
+        let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let agent = agentID, provider = providerID
+        let receipt = await commands.run(connection, target: .chats, kind: "chat_create", label: "新建 Chat") { api, requestID in
+            try await api.createChat(ClientChatCreation(requestId: requestID, title: name, agentId: agent, providerId: provider))
+        }
+        if receipt?.status == "completed" { dismiss() }
     }
 }
 

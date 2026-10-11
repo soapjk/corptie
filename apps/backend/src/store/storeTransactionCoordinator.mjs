@@ -9,6 +9,7 @@ export class StoreTransactionCoordinator {
     this.transactionDepth = 0;
     this.pendingStateDirty = false;
     this.pendingTimelineDirty = new Set();
+    this.pendingQuickMessagesDirty = new Set();
   }
 
   scheduleSave() {
@@ -30,15 +31,17 @@ export class StoreTransactionCoordinator {
     this.timelineDirtyListener = typeof listener === "function" ? listener : null;
   }
 
-  notifyTimelineDirty(sessionId) {
+  notifyTimelineDirty(sessionId, { quickMessagesChanged = false } = {}) {
     if (!sessionId) return;
     if (this.transactionDepth > 0) {
       this.pendingTimelineDirty.add(sessionId);
+      if (quickMessagesChanged) this.pendingQuickMessagesDirty.add(sessionId);
       return;
     }
     this.timelineDirtyListener?.({
       sessionId,
-      revision: this.sessionTimelineRevision(sessionId)
+      revision: this.sessionTimelineRevision(sessionId),
+      ...(quickMessagesChanged ? { quickMessagesChanged: true } : {})
     });
   }
 
@@ -62,6 +65,7 @@ export class StoreTransactionCoordinator {
       this.transactionDepth = 0;
       this.pendingStateDirty = false;
       this.pendingTimelineDirty.clear();
+      this.pendingQuickMessagesDirty.clear();
       throw error;
     }
     this.transactionDepth = 0;
@@ -74,13 +78,16 @@ export class StoreTransactionCoordinator {
   flushCommittedDirtyNotifications() {
     const stateDirty = this.pendingStateDirty;
     const timelineSessionIds = [...this.pendingTimelineDirty];
+    const quickMessagesSessionIds = new Set(this.pendingQuickMessagesDirty);
     this.pendingStateDirty = false;
     this.pendingTimelineDirty.clear();
+    this.pendingQuickMessagesDirty.clear();
     if (stateDirty) notifyCommittedListener(this.stateDirtyListener);
     for (const sessionId of timelineSessionIds) {
       notifyCommittedListener(this.timelineDirtyListener, {
         sessionId,
-        revision: this.sessionTimelineRevision(sessionId)
+        revision: this.sessionTimelineRevision(sessionId),
+        ...(quickMessagesSessionIds.has(sessionId) ? { quickMessagesChanged: true } : {})
       });
     }
   }

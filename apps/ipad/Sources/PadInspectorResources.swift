@@ -10,15 +10,18 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
     let sessionID: String
     @Bindable var workspace: PadWorkspace
     let kind: ConversationInspectorKind
+    let onOpenAutomation: (String) -> Void
     let primary: Primary
     let secondary: Secondary
     init(store: PadInspectorStore, connection: PadConnection, sessionID: String, workspace: PadWorkspace, kind: ConversationInspectorKind,
+         onOpenAutomation: @escaping (String) -> Void,
          @ViewBuilder primary: () -> Primary, @ViewBuilder secondary: () -> Secondary) {
         self.store = store
         self.connection = connection
         self.sessionID = sessionID
         self.workspace = workspace
         self.kind = kind
+        self.onOpenAutomation = onOpenAutomation
         self.primary = primary()
         self.secondary = secondary()
     }
@@ -320,13 +323,31 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
         }
     }
     private var schedules: some View {
-        ConversationDetailModuleCard(title: "定时任务", systemImage: "clock.badge") {
+        ConversationDetailModuleCard(title: "计划任务", systemImage: "clock.badge") {
             ForEach(section("schedules").items, id: \.inspectorID) { task in
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(task["name"].text ?? "定时任务")
-                    Text("\(task["scheduleType"].text ?? "") · \(task["status"].text ?? "")").font(.caption)
-                    Text(task["nextRunAt"].text ?? task["runAt"].text ?? "").font(.caption).foregroundStyle(.secondary)
+                let id = PadControlPresentation.automationID(task)
+                Button {
+                    if let id { onOpenAutomation(id) }
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(task["name"].text ?? "计划任务")
+                            Text("\(PadControlPresentation.status(task["scheduleType"].text ?? "")) · \(PadControlPresentation.status(task["status"].text ?? ""))")
+                                .font(.caption).foregroundStyle(.secondary)
+                            if let time = task["nextRunAt"].text ?? task["runAt"].text {
+                                Text(PadControlPresentation.date(time)).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .disabled(id == nil)
+                .accessibilityLabel("打开计划任务：\(task["name"].text ?? "计划任务")")
+                .accessibilityIdentifier("inspector-automation-\(id ?? "unavailable")")
             }
         }
     }

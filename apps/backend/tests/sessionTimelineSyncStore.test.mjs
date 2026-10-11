@@ -22,6 +22,31 @@ async function fixture() {
   return { store, directory };
 }
 
+test("only changed eligible user-message contributions wake quick-message readers", async () => {
+  const { store, directory } = await fixture();
+  const changes = [];
+  store.setTimelineDirtyListener(change => changes.push(change));
+  try {
+    const user = { id: "user:quick", type: "userMessage", text: "检查布局", status: "queued" };
+    store.upsertTimelineItemProjection("session:timeline", user);
+    assert.equal(changes.at(-1).quickMessagesChanged, true);
+    store.upsertTimelineItemProjection("session:timeline", { ...user, status: "processing" });
+    assert.equal(changes.at(-1).quickMessagesChanged, undefined);
+    store.upsertTimelineItemProjection("session:timeline", { ...user, status: "failed" });
+    assert.equal(changes.at(-1).quickMessagesChanged, true);
+    for (let i = 0; i < 10; i++) {
+      store.upsertTimelineItemProjection("session:timeline", { id: "reply", type: "agentMessage", text: `token${i}` });
+      assert.equal(changes.at(-1).quickMessagesChanged, undefined);
+    }
+    store.upsertTimelineItemProjection("session:timeline", { ...user, status: "queued", presentationRole: "collaboration" });
+    assert.equal(changes.at(-1).quickMessagesChanged, undefined);
+    store.upsertTimelineItemProjection("session:timeline", { ...user, presentationRole: "user" });
+    assert.equal(changes.at(-1).quickMessagesChanged, true);
+    store.removeItem("session:timeline", user.id);
+    assert.equal(changes.at(-1).quickMessagesChanged, true);
+  } finally { await store.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
 test("timeline item mutations expose ordered replayable revisions", async () => {
   const { store, directory } = await fixture();
   try {

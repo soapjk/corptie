@@ -6,6 +6,23 @@ import CorptieClientCore
 /// Work / Task management commands: one persisted request id, no replay, receipt-driven outcome.
 @MainActor @Suite(.serialized)
 struct PadEntityCommandTests {
+    @Test func chatCreationUsesSharedCommandJournalAndRecoversWithoutReposting() async throws {
+        let (state, connection, defaults, name) = try fixture()
+        defer { defaults.removePersistentDomain(forName: name) }
+        EntityProtocol.mode = "drop"
+        _ = await state.run(connection, target: .chats, kind: "chat_create", label: "新建 Chat") { api, requestID in
+            try await api.createChat(ClientChatCreation(requestId: requestID, title: "Chat", agentId: "agent:a", providerId: "provider:a"))
+        }
+        #expect(EntityProtocol.lastPath == "/client/v1/chats/create")
+        #expect(state.pending?.kind == "chat_create")
+        let restored = PadEntityCommandState(connection: connection, defaults: defaults)
+        #expect(restored.pending?.target == .chats)
+        EntityProtocol.mode = "chat-completed"
+        await restored.reconcile(connection)
+        #expect(EntityProtocol.posts == 1)
+        #expect(restored.pending == nil)
+        #expect(restored.outcome?.result?.sessionId == "session:new")
+    }
     private func fixture() throws -> (PadEntityCommandState, PadConnection, UserDefaults, String) {
         EntityProtocol.reset()
         let name = "pad-entity-\(UUID().uuidString)"
@@ -157,11 +174,12 @@ private final class EntityProtocol: URLProtocol, @unchecked Sendable {
             client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
         default:
             let id = Self.lock.withLock { Self.requestID }
-            let status = mode == "busy" ? "rejected" : mode
-            var value: [String: Any] = ["schemaVersion": 1, "requestId": id, "sessionId": "", "kind": "task_archive",
+            let status = mode == "busy" ? "rejected" : mode == "chat-completed" ? "completed" : mode
+            var value: [String: Any] = ["schemaVersion": 1, "requestId": id, "sessionId": "", "kind": mode == "chat-completed" ? "chat_create" : "task_archive",
                 "status": status, "updatedAt": "now"]
             if mode == "busy" { value["errorCode"] = "TASK_ARCHIVE_BUSY" }
             if mode == "completed" { value["entityResult"] = ["taskId": "task:a", "archived": true] }
+            if mode == "chat-completed" { value["entityResult"] = ["sessionId": "session:new", "title": "Chat"] }
             respond(200, value)
         }
     }

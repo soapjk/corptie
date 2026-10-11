@@ -89,6 +89,11 @@ test("real SQLite read worker isolates Tasks, merges their Sessions across Provi
     const refreshed = await pool.readQuickMessages({ sessionId: "a1" });
     assert.equal(refreshed.items.find(item => item.text === "检查布局").count, 3,
       "new sends invalidate the bounded recommendation cache immediately");
+    store.upsertTimelineItemProjection("a1", { id: "m1", type: "userMessage", text: "检查布局", status: "failed" });
+    const afterFailure = await pool.readQuickMessages({ sessionId: "a1" });
+    assert.equal(afterFailure.items.find(item => item.text === "检查布局").count, 2,
+      "in-place eligibility updates invalidate the read-worker cache without waiting for its TTL");
+    store.upsertTimelineItemProjection("a1", { id: "m1", type: "userMessage", text: "检查布局", status: "completed" });
     message("a1", "总结一下"); message("b1", "总结一下"); message("b1", "总结一下");
     // Move the learned commands beyond both former sampling windows. Bulk SQL
     // keeps this fixture cheap and exercises the real read-worker query plan.

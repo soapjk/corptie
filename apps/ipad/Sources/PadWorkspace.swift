@@ -1302,6 +1302,7 @@ final class PadWorkspace {
     @ObservationIgnored private var reconciliationRun: UUID?
     @ObservationIgnored private var receiptReadInFlight = false
     @ObservationIgnored let messageOutbox: ReliableMessageOutbox
+    @ObservationIgnored let quickMessageCache: ClientQuickMessageCache
     @ObservationIgnored let messageDeliveryLifetime = PadMessageDeliveryLifetime()
     @ObservationIgnored let persistentTimelineCache: PersistentTimelineCache
     @ObservationIgnored private var persistentTimelineScope: String?
@@ -1316,11 +1317,13 @@ final class PadWorkspace {
         defaults: UserDefaults = .standard,
         initialStateRecoveryDelay: Duration = .seconds(2),
         messageOutbox: ReliableMessageOutbox = ReliableMessageOutbox(),
-        persistentTimelineCache: PersistentTimelineCache? = nil
+        persistentTimelineCache: PersistentTimelineCache? = nil,
+        quickMessageCache: ClientQuickMessageCache = .shared
     ) {
         self.defaults = defaults
         self.initialStateRecoveryDelay = initialStateRecoveryDelay
         self.messageOutbox = messageOutbox
+        self.quickMessageCache = quickMessageCache
         self.persistentTimelineCache = persistentTimelineCache ?? PersistentTimelineCache(keyProvider: { try await messageOutbox.timelinePersistenceKey() })
         pending = defaults.data(forKey: "pendingCommand").flatMap { try? JSONDecoder().decode(PendingCommand.self, from: $0) }
     }

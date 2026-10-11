@@ -6,6 +6,7 @@ struct PadControlView: View {
     let connection: PadConnection
     @Bindable var store: PadControlStore
     let openSession: (String) -> Void
+    @State private var preferredCompactColumn = NavigationSplitViewColumn.sidebar
     private var selection: Binding<PadControlSelection?> {
         Binding(get: { store.routes[tab] }, set: { value in
             store.routes[tab] = value
@@ -13,7 +14,8 @@ struct PadControlView: View {
         })
     }
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(preferredCompactColumn: $preferredCompactColumn) {
+            ScrollViewReader { proxy in
             List(selection: selection) {
                 ForEach(tab.resources, id: \.self) { kind in
                     Section(kind == .skills ? "Skills" : tab.title) {
@@ -29,6 +31,7 @@ struct PadControlView: View {
                                     }
                                 }
                             }
+                            .id(PadControlSelection(kind: kind, id: item.id))
                         }
                         if store.loading.contains(kind) { ProgressView().accessibilityLabel("正在同步") }
                         else if store.items[kind]?.isEmpty == true, store.errors[kind] == nil {
@@ -41,6 +44,17 @@ struct PadControlView: View {
                     }
                 }
             }
+            .onChange(of: selection.wrappedValue, initial: true) { _, route in
+                if let route { proxy.scrollTo(route, anchor: .center) }
+            }
+            .onChange(of: store.automationNavigationRevision) { _, _ in
+                if tab == .automations, let route = selection.wrappedValue {
+                    proxy.scrollTo(route, anchor: .center)
+                }
+            }
+            .onChange(of: tab.resources.flatMap { store.items[$0] ?? [] }.map(\.id)) { _, _ in
+                if let route = selection.wrappedValue { proxy.scrollTo(route, anchor: .center) }
+            }
             .navigationTitle(tab.title)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -49,16 +63,26 @@ struct PadControlView: View {
                     }
                 }
             }
+            }
         } detail: {
             if let route = selection.wrappedValue {
                 if let item = store.items[route.kind]?.first(where: { $0.id == route.id }) {
                     detail(item, kind: route.kind)
+                } else if store.items[route.kind] == nil || store.loading.contains(route.kind) {
+                    ProgressView("正在同步…")
                 } else {
                     ContentUnavailableView("此项目已不在当前列表中", systemImage: "doc.questionmark")
                 }
             } else {
                 ContentUnavailableView("选择一个项目", systemImage: tab.symbol)
             }
+        }
+        .onChange(of: selection.wrappedValue, initial: true) { _, route in
+            preferredCompactColumn = route == nil ? .sidebar : .detail
+        }
+        .onChange(of: store.automationNavigationRevision) { _, _ in
+            // Reopening the same task must also leave the compact sidebar.
+            if tab == .automations { preferredCompactColumn = .detail }
         }
     }
 
@@ -91,18 +115,5 @@ struct PadControlView: View {
             }
             .navigationTitle(item.name).navigationBarTitleDisplayMode(.inline)
         }
-    }
-}
-
-enum PadControlPresentation {
-    static func status(_ value: String) -> String {
-        ["active": "等待触发", "paused": "已暂停", "cancelled": "已取消", "expired": "已过期",
-         "completed": "已完成", "failed": "失败", "error": "错误", "running": "执行中", "queued": "已触发",
-         "claimed": "正在启动", "succeeded": "成功", "available": "可用", "missing": "不可用",
-         "once": "单次", "interval": "周期", "condition": "条件", "processExit": "进程退出"][value] ?? value
-    }
-    static func date(_ value: String) -> String {
-        let date = try? Date(value, strategy: .iso8601)
-        return date?.formatted(date: .abbreviated, time: .standard) ?? value
     }
 }

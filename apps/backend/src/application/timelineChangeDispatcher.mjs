@@ -1,7 +1,8 @@
 // Alias expansion exists only for legacy notification matching; the canonical
 // V2 stream receives exactly one publish request for the original Session ID.
 export function createTimelineChangeDispatcher({
-  store, resolveSessionReference, invalidateDevices, publishDeviceTimeline, scheduleTimelineChange
+  store, resolveSessionReference, invalidateDevices, publishDeviceTimeline, scheduleTimelineChange,
+  publishQuickMessages = () => {}
 }) {
   function resolveTimelineChangeSessionAliases(sessionId) {
     if (!sessionId || typeof sessionId !== "string") return [];
@@ -64,6 +65,10 @@ export function createTimelineChangeDispatcher({
     // canonical source id once; aliases remain necessary only for legacy
     // notification matching.
     publishDeviceTimeline(change.sessionId);
+    if (change.quickMessagesChanged) {
+      publishQuickMessages({ schemaVersion: 1, sessionId: change.sessionId,
+        taskId: store?.getSession(change.sessionId)?.taskId ?? null });
+    }
     scheduleTimelineChange(change);
   }
 

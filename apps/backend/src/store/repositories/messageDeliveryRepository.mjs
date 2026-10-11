@@ -140,7 +140,9 @@ export class MessageDeliveryRepository {
           value("providerTurnId", current.providerTurnId)
         ]
       );
-      if (this.db.getRowsModified() > 0) this.notifyTimelineDirty(current.sessionId);
+      if (this.db.getRowsModified() > 0) this.notifyTimelineDirty(current.sessionId, {
+        quickMessagesChanged: ["failed", "cancelled"].includes(current.status) !== ["failed", "cancelled"].includes(status)
+      });
       return this.getMessageDelivery(deliveryId);
     });
   }

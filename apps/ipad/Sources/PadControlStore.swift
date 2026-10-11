@@ -2,6 +2,25 @@ import Foundation
 import Observation
 import CorptieClientCore
 
+enum PadControlPresentation {
+    static func status(_ value: String) -> String {
+        ["active": "等待触发", "paused": "已暂停", "cancelled": "已取消", "expired": "已过期",
+         "completed": "已完成", "failed": "失败", "error": "错误", "running": "执行中", "queued": "已触发",
+         "claimed": "正在启动", "succeeded": "成功", "available": "可用", "missing": "不可用",
+         "once": "单次", "interval": "周期", "condition": "条件", "processExit": "进程退出"][value] ?? value
+    }
+    static func date(_ value: String, timeZone: TimeZone = .autoupdatingCurrent,
+                     locale: Locale = .autoupdatingCurrent) -> String {
+        guard let date = ConversationTimestampText.date(from: value) else { return "时间不可用" }
+        return date.formatted(Date.FormatStyle(date: .abbreviated, time: .standard,
+            locale: locale, timeZone: timeZone))
+    }
+    static func automationID(_ value: ClientInspectorValue) -> String? {
+        guard let id = value["taskId"].text, !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return id
+    }
+}
+
 struct PadControlSelection: Hashable {
     let kind: ClientControlKind
     let id: String
@@ -31,6 +50,7 @@ final class PadControlStore {
     var errors: [ClientControlKind: String] = [:]
     var selections: [ClientControlKind: String] = [:]
     var routes: [PadTab: PadControlSelection] = [:]
+    private(set) var automationNavigationRevision = 0
     var repository: ClientRepositoryDetail?
     var repositoryError = ""
     var loading: Set<ClientControlKind> = []
@@ -43,6 +63,16 @@ final class PadControlStore {
     private var active = false
     private var lastRefresh: [ClientControlKind: ContinuousClock.Instant] = [:]
     private var pushSynchronized = false
+
+    /// The inspector and notifications use the same exact-resource route.
+    @discardableResult
+    func selectAutomation(id: String) -> PadTab? {
+        guard !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        selections[.automations] = id
+        routes[.automations] = PadControlSelection(kind: .automations, id: id)
+        automationNavigationRevision &+= 1
+        return .automations
+    }
 
     func apply(_ snapshot: ClientControlSnapshot) {
         guard snapshot.schemaVersion == 2 else { return }

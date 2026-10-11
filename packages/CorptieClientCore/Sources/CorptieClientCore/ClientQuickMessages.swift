@@ -1,5 +1,7 @@
 import Foundation
 import CryptoKit
+import Observation
+import OSLog
 
 public struct ClientQuickMessage: Codable, Equatable, Identifiable, Sendable {
     public static let maximumRecommendations = 8
@@ -27,6 +29,47 @@ public final class ClientQuickMessageCache {
     private let indexKey = "quickMessageSnapshots.v1.index"
     private var keys: [String]
     private var resident: [String: [ClientQuickMessage]] = [:]
+    @MainActor @Observable fileprivate final class Signal { var revision = 0 }
+    private var signals: [String: Signal] = [:]
+    private struct Flight {
+        let id: UUID
+        let task: Task<ClientQuickMessageRecommendations, Error>
+    }
+    private var flights: [String: Flight] = [:]
+    public var inFlightCount: Int { flights.count }
+    public func read(scope: String,
+                     load: @escaping @MainActor @Sendable () async throws -> ClientQuickMessageRecommendations) async throws -> ClientQuickMessageRecommendations {
+        if let flight = flights[scope] { return try await flight.task.value }
+        guard flights.count < 32 else { throw URLError(.resourceUnavailable) }
+        let id = UUID()
+        let task = Task { @MainActor in
+            let result = try await load()
+            return try result.validated()
+        }
+        flights[scope] = Flight(id: id, task: task)
+        defer { if flights[scope]?.id == id { flights.removeValue(forKey: scope) } }
+        return try await task.value
+    }
+
+    /// Only this Scope's readers observe its signal; cache reads/writes do not
+    /// invalidate every composer or start a request for each streaming token.
+    public func revision(for scope: String) -> Int { signal(for: scope).revision }
+    private func signal(for scope: String) -> Signal {
+        if let value = signals[scope] { return value }
+        if signals.count >= maximumScopes, let oldest = signals.keys.first { signals.removeValue(forKey: oldest) }
+        let value = Signal(); signals[scope] = value
+        return value
+    }
+    public func invalidate(host: String, taskID: String?, sessionID: String) {
+        let scope = Self.scope(host: host, taskID: taskID, sessionID: sessionID)
+        flights.removeValue(forKey: scope)?.task.cancel()
+        signal(for: scope).revision &+= 1
+    }
+    public func connectionRecovered() {
+        for flight in flights.values { flight.task.cancel() }
+        flights.removeAll()
+        for signal in signals.values { signal.revision &+= 1 }
+    }
 
     public init(defaults: UserDefaults = .standard, maximumScopes: Int = 128) {
         self.defaults = defaults
@@ -91,4 +134,38 @@ public struct ClientQuickMessageRecommendations: Codable, Equatable, Sendable {
     public let schemaVersion: Int
     public let taskId: String?
     public let items: [ClientQuickMessage]
+
+    public func validated() throws -> Self {
+        guard schemaVersion == 1, items.count <= ClientQuickMessage.maximumRecommendations else {
+            throw ClientConnectionError.invalidResponse
+        }
+        return self
+    }
+}
+
+/// A product-level invalidation contains identifiers only, never message text
+/// or Provider events. Opt-in on the device stream keeps older decoders safe.
+public struct ClientQuickMessageInvalidation: Codable, Sendable {
+    public let schemaVersion: Int
+    public let sessionId: String
+    public let taskId: String?
+    public func validated() throws -> Self {
+        guard schemaVersion == 1, !sessionId.isEmpty, sessionId.utf8.count <= 512 else {
+            throw ClientConnectionError.invalidResponse
+        }
+        return self
+    }
+    public static func decodeEnvelope(_ data: Data) throws -> Self {
+        struct Envelope: Decodable { let payload: ClientQuickMessageInvalidation }
+        return try JSONDecoder().decode(Envelope.self, from: data).payload.validated()
+    }
+}
+
+public enum ClientQuickMessageDiagnostics {
+    private static let log = Logger(subsystem: "com.corptie.client", category: "QuickMessages")
+    public static func failure(_ error: Error) {
+        guard !(error is CancellationError), (error as? URLError)?.code != .cancelled else { return }
+        // Never log request URLs, credentials, recommendations or user text.
+        log.error("Recommendation refresh failed; retaining cache. errorType=\(String(reflecting: type(of: error)), privacy: .public)")
+    }
 }

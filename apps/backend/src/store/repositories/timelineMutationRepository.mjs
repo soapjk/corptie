@@ -1,5 +1,6 @@
 import { createdAtFromOrNow } from "../../utils/timestamps.mjs";
 import { parseJson } from "../storedJson.mjs";
+import { quickMessageContribution } from "../../application/quickMessageRecommendations.mjs";
 
 export class TimelineMutationRepository {
   constructor({ getDatabase, normalizedSessionIdFilter, selectOne, selectAll, getSession, getSessionItem, scheduleSave, notifyTimelineDirty }) {
@@ -21,6 +22,9 @@ export class TimelineMutationRepository {
     if (this.selectOne("SELECT 1 FROM deleted_user_messages WHERE session_id=? AND message_id=?", [sessionId, item.id])) return false;
     const createdAt = createdAtFromOrNow(item);
     const rawMetadataJSON = typeof item.rawMetadataJSON === "string" ? item.rawMetadataJSON : null;
+    // Indexed reads only for user-message writes, never model streaming tokens.
+    const previousUserItem = item.type === "userMessage"
+      ? this.selectOne("SELECT type, text, status, presentation_role, raw_metadata_json FROM session_items WHERE session_id=? AND id=?", [sessionId, item.id]) : null;
     // Provider status/echo projections are not authority to remove durable
     // attachments admitted with the message. Preserve only images, not stale
     // interaction/status metadata. An explicit images array still wins.
@@ -83,7 +87,10 @@ export class TimelineMutationRepository {
     const changed = this.db.getRowsModified() > 0;
     if (changed) {
       this.scheduleSave();
-      this.notifyTimelineDirty(sessionId);
+      const nextUserItem = item.type === "userMessage"
+        ? this.selectOne("SELECT type, text, status, presentation_role, raw_metadata_json FROM session_items WHERE session_id=? AND id=?", [sessionId, item.id]) : null;
+      this.notifyTimelineDirty(sessionId, { quickMessagesChanged:
+        quickMessageContribution(previousUserItem) !== quickMessageContribution(nextUserItem) });
     }
     return changed;
   }
@@ -110,10 +117,11 @@ export class TimelineMutationRepository {
 
 
   removeItem(sessionId, itemId) {
+    const previous = this.selectOne("SELECT type, text, status, presentation_role, raw_metadata_json FROM session_items WHERE session_id=? AND id=?", [sessionId, itemId]);
     this.db.run("DELETE FROM session_items WHERE session_id = ? AND id = ?", [sessionId, itemId]);
     if (this.db.getRowsModified() > 0) {
       this.scheduleSave();
-      this.notifyTimelineDirty(sessionId);
+      this.notifyTimelineDirty(sessionId, { quickMessagesChanged: quickMessageContribution(previous) != null });
     }
   }
 
@@ -121,7 +129,7 @@ export class TimelineMutationRepository {
     this.db.run("DELETE FROM session_items WHERE session_id = ?", [sessionId]);
     if (this.db.getRowsModified() > 0) {
       this.scheduleSave();
-      this.notifyTimelineDirty(sessionId);
+      this.notifyTimelineDirty(sessionId, { quickMessagesChanged: true });
     }
   }
 

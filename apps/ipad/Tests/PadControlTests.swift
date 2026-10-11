@@ -5,6 +5,60 @@ import CorptieClientCore
 
 @Suite(.serialized) @MainActor
 struct PadControlTests {
+    @Test func inspectorScheduleRoutesToExactAutomationAndPreservesOtherTabs() throws {
+        let store = PadControlStore()
+        let other = PadControlSelection(kind: .agents, id: "agent:keep")
+        store.routes[.agents] = other
+        let task = try JSONDecoder().decode(ClientInspectorValue.self, from:
+            Data(#"{"taskId":"scheduled:one","logicalSessionId":"logical:target","name":"检查"}"#.utf8))
+        let id = try #require(PadControlPresentation.automationID(task))
+        #expect(store.selectAutomation(id: id) == .automations)
+        #expect(store.selections[.automations] == "scheduled:one")
+        #expect(store.routes[.automations] == PadControlSelection(kind: .automations, id: "scheduled:one"))
+        #expect(store.routes[.agents] == other)
+        #expect(store.automationNavigationRevision == 1)
+        #expect(store.selectAutomation(id: id) == .automations)
+        #expect(store.automationNavigationRevision == 2)
+        #expect(store.selectAutomation(id: " ") == nil)
+        #expect(store.automationNavigationRevision == 2)
+        #expect(store.selections[.automations] == "scheduled:one")
+        #expect(PadControlPresentation.automationID(.null) == nil)
+    }
+
+    @Test func scheduleDatesUseLocalZoneForFractionalUTCAndOffsetTimestamps() throws {
+        let shanghai = try #require(TimeZone(identifier: "Asia/Shanghai"))
+        let losAngeles = try #require(TimeZone(identifier: "America/Los_Angeles"))
+        let locale = Locale(identifier: "en_US_POSIX")
+        let utc = "2026-10-10T00:30:00.123Z"
+        let equivalent = "2026-10-10T08:30:00.123+08:00"
+        let instant = try #require(ConversationTimestampText.date(from: utc))
+        let expected = instant.formatted(Date.FormatStyle(date: .abbreviated, time: .standard,
+            locale: locale, timeZone: shanghai))
+        #expect(PadControlPresentation.date(utc, timeZone: shanghai, locale: locale) == expected)
+        #expect(PadControlPresentation.date(equivalent, timeZone: shanghai, locale: locale) == expected)
+        #expect(PadControlPresentation.date(utc, timeZone: losAngeles, locale: locale)
+            != PadControlPresentation.date(utc, timeZone: shanghai, locale: locale))
+        #expect(PadControlPresentation.date("2026-10-10T00:30:00Z", timeZone: shanghai, locale: locale)
+            == expected)
+        #expect(PadControlPresentation.date("bad timestamp") == "时间不可用")
+        #expect(PadControlPresentation.date(utc) == instant.formatted(
+            Date.FormatStyle(date: .abbreviated, time: .standard,
+                locale: .autoupdatingCurrent, timeZone: .autoupdatingCurrent)))
+    }
+
+    @Test func inspectorScheduleButtonIsWiredOnBothWorkspaceLayouts() throws {
+        let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources")
+        let inspector = try String(contentsOf: sources.appendingPathComponent("PadInspectorResources.swift"), encoding: .utf8)
+        #expect(inspector.contains("if let id { onOpenAutomation(id) }"))
+        #expect(inspector.contains("PadControlPresentation.date(time)"))
+        let workspace = try String(contentsOf: sources.appendingPathComponent("CorptieMobileApp.swift"), encoding: .utf8)
+        #expect(workspace.components(separatedBy: "onOpenAutomation: onOpenAutomation").count == 3)
+        let control = try String(contentsOf: sources.appendingPathComponent("PadControlView.swift"), encoding: .utf8)
+        #expect(control.contains("NavigationSplitView(preferredCompactColumn: $preferredCompactColumn)"))
+        #expect(control.contains("proxy.scrollTo(route, anchor: .center)"))
+    }
+
     @Test func workOutlineUsesTheSharedPlatformToolbar() throws {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("Sources/PadWorkOutline.swift")

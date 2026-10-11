@@ -155,6 +155,8 @@ extension PadWorkspace {
                     }
                     do { try await messageOutbox.acknowledge(message, messageID: messageID) } catch { return }
                     acknowledgeOutgoing(localID: message.messageID, messageID: messageID, sessionID: message.displaySessionID)
+                    quickMessageCache.invalidate(host: connection.serverID,
+                        taskID: sessionsByID[message.displaySessionID]?.taskId, sessionID: message.displaySessionID)
                     projectReliableMessage(message, title: "后端已接收")
                     // Durable backend ownership releases local attachment storage.
                     do { try await messageOutbox.remove(message.id) } catch { return }
@@ -249,6 +251,8 @@ extension PadWorkspace {
                     try await messageOutbox.save(message)
                     try await messageOutbox.acknowledge(message, messageID: messageID)
                     acknowledgeOutgoing(localID: message.messageID, messageID: messageID, sessionID: message.displaySessionID)
+                    quickMessageCache.invalidate(host: connection.serverID,
+                        taskID: sessionsByID[message.displaySessionID]?.taskId, sessionID: message.displaySessionID)
                     if deliveryIssues[message.displaySessionID] == message.id {
                         deliveryIssues.removeValue(forKey: message.displaySessionID)
                     }

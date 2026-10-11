@@ -277,6 +277,7 @@ struct WorkspaceView: View {
     let compactOpenSessionRequest: Int
     let onCompactRootChange: (Bool) -> Void
     let onOpenWorktrees: () -> Void
+    let onOpenAutomation: (String) -> Void
     @State private var expandedWorkIDs = PadWorkExpansionStore().load()
     @State private var isChatExpanded = PadWorkExpansionStore().loadChat()
     @State private var taskCreationRoute: PadTaskCreationRoute?
@@ -315,7 +316,8 @@ struct WorkspaceView: View {
                     conversationColumn
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     if let id = workspace.selection {
-                        PadConversationInspector(workspace: workspace, connection: connection, sessionID: id)
+                        PadConversationInspector(workspace: workspace, connection: connection, sessionID: id,
+                            onOpenAutomation: onOpenAutomation)
                             .id(id)
                             .frame(width: 320)
                     }
@@ -336,6 +338,8 @@ struct WorkspaceView: View {
         }
         .sheet(item: $entityRoute) { route in
             switch route {
+            case .createChat:
+                PadCreateChatSheet(connection: connection, commands: commands)
             case .createWork:
                 PadCreateWorkSheet(connection: connection, commands: commands)
             case .editWork(let work):
@@ -376,6 +380,17 @@ struct WorkspaceView: View {
         .onChange(of: workspace.pushedReceiptRevision) {
             if let receipt = workspace.pushedReceipt { commands.acceptPushed(receipt) }
         }
+        .onChange(of: commands.outcome) { _, outcome in
+            guard outcome?.pending.kind == "chat_create", outcome?.status == "completed",
+                  let id = outcome?.result?.sessionId else { return }
+            isChatExpanded = true
+            Task {
+                await workspace.inventory(connection)
+                guard commands.matches(connection) else { return }
+                if horizontalSizeClass == .regular { workspace.selection = id }
+                else { openCompactSession(id) }
+            }
+        }
     }
 
     private func compactWorkspace(_ commands: PadEntityCommandState) -> some View {
@@ -412,7 +427,8 @@ struct WorkspaceView: View {
                             .id(id)
                             .padWorkspaceNavigationBackground()
                     case .detail(let id):
-                        PadConversationInspector(workspace: workspace, connection: connection, sessionID: id)
+                        PadConversationInspector(workspace: workspace, connection: connection, sessionID: id,
+                            onOpenAutomation: onOpenAutomation)
                             .safeAreaInset(edge: .top, spacing: 0) { compactDetailHeader }
                             .toolbar(.hidden, for: .navigationBar)
                             .modifier(CompactBackSwipe {
@@ -592,7 +608,6 @@ struct ConversationView: View {
     @State private var expandedProcessEntryIDs: Set<String> = []
     @State private var attachmentPreview: PadAttachmentPreview?
     @State private var quickMessageHintRevision = 0
-    @State private var quickMessageSendRevision = 0
     @State private var quickMessageDropViewport: CGSize = .zero
     @State private var composerSheet: ComposerSheet?
     private enum ComposerSheet: String, Identifiable {
@@ -1209,7 +1224,6 @@ struct ConversationView: View {
                         scheduleMessage: { composerSheet = .schedule },
                         canStop: canStopCurrentSession, stop: stopCurrentSession,
                         quickMessageDragScope: quickMessageDragScope,
-                        quickMessageSendRevision: quickMessageSendRevision,
                         quickMessageSingleTap: { quickMessageHintRevision &+= 1 },
                         sendQuickMessage: sendQuickMessage) {
                 conversationStatusRow
@@ -1244,7 +1258,6 @@ struct ConversationView: View {
         guard canSendQuickMessage else { return }
         Task {
             await workspace.sendSuggestedReply(connection, sessionID: sessionID, text: text)
-            quickMessageSendRevision &+= 1
         }
     }
 }

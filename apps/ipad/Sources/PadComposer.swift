@@ -28,7 +28,6 @@ struct PadComposer<Header: View>: View {
     let canStop: Bool
     let stop: () -> Void
     let quickMessageDragScope: String
-    let quickMessageSendRevision: Int
     let quickMessageSingleTap: () -> Void
     let sendQuickMessage: (String) -> Void
     @ViewBuilder let header: () -> Header
@@ -42,13 +41,19 @@ struct PadComposer<Header: View>: View {
     @State private var showFiles = false
     @State private var importing = false
     @Environment(\.padKeyboardViewport) private var keyboardViewport
+    @Environment(\.scenePhase) private var scenePhase
     @State private var quickMessages = ClientQuickMessage.defaults
-    @State private var quickMessageRefresh = 0
     @State private var quickMessageScope = ""
     @State private var confirmStopRetries = false
 
     private var isPhone: Bool { UIDevice.current.userInterfaceIdiom == .phone }
     private var quickMessageTaskID: String? { workspace.sessionsByID[sessionID]?.taskId }
+    private var recommendationScope: String {
+        ClientQuickMessageCache.scope(host: connection.serverID, taskID: quickMessageTaskID, sessionID: sessionID)
+    }
+    private var recommendationRefreshKey: String {
+        "\(recommendationScope):\(sessionID):\(workspace.quickMessageCache.revision(for: recommendationScope)):\(connection.connected):\(scenePhase == .active)"
+    }
 
     private var draft: Binding<String> {
         Binding(get: { workspace.drafts[sessionID] ?? "" }, set: { workspace.drafts[sessionID] = $0 })
@@ -119,26 +124,31 @@ struct PadComposer<Header: View>: View {
             .accessibilityHidden(true)
         }
         }
-        .task(id: "\(sessionID):\(quickMessageTaskID ?? ""):\(connection.serverID):\(quickMessageRefresh):\(quickMessageSendRevision)") {
+        .task(id: recommendationRefreshKey) {
             let taskID = quickMessageTaskID
             let scope = ClientQuickMessageCache.scope(host: connection.serverID,
                 taskID: taskID, sessionID: sessionID)
             if quickMessageScope != scope {
-                quickMessages = ClientQuickMessageCache.shared.items(for: scope)
+                quickMessages = workspace.quickMessageCache.items(for: scope)
                 quickMessageScope = scope
             }
+            guard connection.connected, scenePhase == .active else { return }
             do {
+                try await Task.sleep(for: .milliseconds(600))
                 let api = ClientSessionAPI(transport: try await connection.transport())
-                let result = try await api.quickMessages(sessionId: workspace.capabilities?.sessionId ?? sessionID)
+                let routedID = workspace.capabilities?.sessionId ?? sessionID
+                let result = try await workspace.quickMessageCache.read(scope: scope) {
+                    try await api.quickMessages(sessionId: routedID)
+                }
                 guard !Task.isCancelled, quickMessageScope == scope,
                       taskID == nil || result.taskId == taskID else { return }
                 let resolvedScope = ClientQuickMessageCache.scope(host: connection.serverID,
                     taskID: result.taskId, sessionID: sessionID)
-                let items = ClientQuickMessageCache.shared.remember(result.items, for: resolvedScope)
-                if resolvedScope != scope { ClientQuickMessageCache.shared.remember(items, for: scope) }
+                let items = workspace.quickMessageCache.remember(result.items, for: resolvedScope)
+                if resolvedScope != scope { workspace.quickMessageCache.remember(items, for: scope) }
                 if quickMessages != items { quickMessages = items }
             } catch {
-                // Read-only recommendation failure must not block the composer.
+                ClientQuickMessageDiagnostics.failure(error)
             }
         }
         .confirmationDialog("停止后续重试？", isPresented: $confirmStopRetries, titleVisibility: .visible) {
@@ -337,7 +347,6 @@ struct PadComposer<Header: View>: View {
         guard !isSendDisabled else { return }
         Task {
             await workspace.command(connection, stop: false)
-            quickMessageRefresh += 1
         }
     }
 

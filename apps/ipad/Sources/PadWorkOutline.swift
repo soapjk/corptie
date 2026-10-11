@@ -270,6 +270,15 @@ struct PadWorkOutline: View {
             .accessibilityLabel("聊天")
             .accessibilityValue(isChatExpanded || hasSearch ? "已展开" : "已折叠")
             .accessibilityIdentifier("outline-chat-header")
+            .contextMenu {
+                Button {
+                    onEntityRoute(.createChat)
+                } label: {
+                    Label("新建 Chat", systemImage: "plus.bubble")
+                }
+                .disabled(!connection.connected || entityCommands.isBusy)
+                .accessibilityIdentifier("outline-create-chat")
+            }
             if isChatExpanded || hasSearch {
                 if visibleChats.isEmpty {
                     emptyRow(showingArchived ? "归档 Task 显示在 Work 分组中" : "暂无匹配聊天")

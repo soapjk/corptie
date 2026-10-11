@@ -9,6 +9,7 @@ import CorptieClientCore
 @MainActor @Observable
 final class PadEntityCommandState {
     enum Target: Codable, Equatable {
+        case chats
         case task(String)
         case work(String)
     }
@@ -27,7 +28,7 @@ final class PadEntityCommandState {
     }
     /// Codes the host guarantees are raised before any receipt is journaled.
     static let preDispatchCodes: Set<String> = ["INVALID_CREDENTIAL", "INVALID_TASK_COMMAND",
-        "INVALID_WORK_COMMAND", "INVALID_TASK_ID", "INVALID_WORK_ID", "TASK_NOT_FOUND", "WORK_NOT_FOUND", "AGENT_OUTSIDE_WORK",
+        "INVALID_WORK_COMMAND", "INVALID_CHAT_CREATION", "INVALID_TASK_ID", "INVALID_WORK_ID", "TASK_NOT_FOUND", "WORK_NOT_FOUND", "AGENT_OUTSIDE_WORK",
         "AGENT_NOT_FOUND", "IDEMPOTENCY_CONFLICT", "CAPABILITY_UNSUPPORTED", "ROUTE_NOT_AVAILABLE", "COMMAND_JOURNAL_FULL"]
 
     private let serverID: String

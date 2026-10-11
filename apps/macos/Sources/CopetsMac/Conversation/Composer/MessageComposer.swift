@@ -48,6 +48,7 @@ struct MessageComposer: View {
     @ObservedObject private var archivedSessionState = BackendClient.shared.archivedSessionController
     @ObservedObject private var modelCatalog: ProviderCatalogStore
     @EnvironmentObject private var backendClient: BackendClient
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var appState = AppStateStore.shared
     @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     let sessionId: String
@@ -76,6 +77,12 @@ struct MessageComposer: View {
     @State private var quickMessages = ClientQuickMessage.defaults
     @State private var quickMessageRefresh = 0
     @State private var quickMessageScope = ""
+    private var recommendationScope: String {
+        ClientQuickMessageCache.scope(host: backendClient.baseURL.absoluteString, taskID: session?.taskId, sessionID: sessionId)
+    }
+    private var recommendationRefreshKey: String {
+        "\(recommendationScope):\(sessionId):\(quickMessageRefresh):\(BackendClient.quickMessageCache.revision(for: recommendationScope)):\(backendClient.isOnline):\(scenePhase == .active)"
+    }
 
     init(
         sessionId: String,
@@ -138,7 +145,7 @@ struct MessageComposer: View {
                 .frame(maxWidth: .infinity)
             }
         }
-        .task(id: "\(session?.taskId ?? sessionId):\(sessionId):\(quickMessageRefresh)") {
+        .task(id: recommendationRefreshKey) {
             guard !compact else { return }
             let taskID = session?.taskId
             let scope = ClientQuickMessageCache.scope(host: backendClient.baseURL.absoluteString,
@@ -147,8 +154,12 @@ struct MessageComposer: View {
                 quickMessages = BackendClient.quickMessageCache.items(for: scope)
                 quickMessageScope = scope
             }
+            guard backendClient.isOnline, scenePhase == .active else { return }
             do {
-                let result = try await backendClient.quickMessages(for: sessionId)
+                try await Task.sleep(for: .milliseconds(600))
+                let result = try await BackendClient.quickMessageCache.read(scope: scope) {
+                    try await backendClient.quickMessages(for: sessionId)
+                }
                 guard !Task.isCancelled, quickMessageScope == scope,
                       taskID == nil || result.taskId == taskID else { return }
                 let resolvedScope = ClientQuickMessageCache.scope(host: backendClient.baseURL.absoluteString,
@@ -158,7 +169,7 @@ struct MessageComposer: View {
                 if resolvedScope != scope { BackendClient.quickMessageCache.remember(items, for: scope) }
                 if quickMessages != items { quickMessages = items }
             } catch {
-                // Recreated composers and transient disconnects retain the last good snapshot.
+                ClientQuickMessageDiagnostics.failure(error)
             }
         }
         .background(

@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CorptieClientCore
 import Foundation
 
 extension Notification.Name {
@@ -582,6 +583,7 @@ final class BackendClient: ObservableObject {
             connected: { [weak self] in
                 guard let self else { return }
                 self.markBackendConnectedFromSessionStream()
+                Self.quickMessageCache.connectionRecovered()
                 OperationNotificationManager.shared.recoverJobs()
                 if self.appState.isReachable {
                     await self.reconcileTimelineRevisionIndex()
@@ -669,6 +671,12 @@ final class BackendClient: ObservableObject {
     }
 
     private func handleGlobalEvent(_ eventName: String, data: String) async {
+        if eventName == "SessionQuickMessagesChanged", let bytes = data.data(using: .utf8),
+           let change = try? ClientQuickMessageInvalidation.decodeEnvelope(bytes) {
+            Self.quickMessageCache.invalidate(host: baseURL.absoluteString,
+                taskID: change.taskId, sessionID: change.sessionId)
+            return
+        }
         await eventRouter.handle(eventName, data: data)
     }
 

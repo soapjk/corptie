@@ -18,7 +18,7 @@ export function startClientDeviceGateway({
   sendUnifiedSessionMessage, admitReliableMessage, interruptUnifiedSession, cancelQueuedUserMessage, deleteUserMessage, respondUnifiedSessionApproval,
   respondUnifiedSessionUserInput, resolveCollaborationConfirmation, resolveSessionChannelRequest,
   publishStateChangesIfNeeded, workDiscussionService,
-  sessionApplicationService, workSessionStartApplicationService, chatResourceService,
+  sessionApplicationService, workSessionStartApplicationService, chatResourceService, launchAgentSession,
   decorateSessionForClient, readSessionUsage, setTaskArchivedForEntityRoutes,
   restartTaskForEntityRoutes, taskDeletionService, clearWorkAvatarFile,
   sessionBindingRepository, createTaskAndSession, getClientDeviceGateway, onReady
@@ -62,6 +62,14 @@ export function startClientDeviceGateway({
         setImmediate(publishStateChangesIfNeeded);
         getClientDeviceGateway()?.events.invalidate({ inventory: true });
         return receipt;
+      },
+      chatCreation: {
+        options: () => ({ defaultProviderId: agentProviderRegistry.defaultProviderId,
+          providers: agentProviderRegistry.descriptors().map(descriptor => ({ id: descriptor.id, name: descriptor.displayName,
+            available: [AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE, AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+              AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND]
+              .every(capability => agentProviderRegistry.supports(descriptor.id, capability)) })) }),
+        create: input => launchAgentSession(input)
       },
       workDiscussion: {
         options: () => ({ defaultProviderId: agentProviderRegistry.defaultProviderId,
