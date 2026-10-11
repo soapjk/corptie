@@ -61,6 +61,56 @@ struct TransportTests {
             #expect(error == ClientServiceFailure(statusCode: 404, code: "ROUTE_NOT_AVAILABLE"))
         }
     }
+
+    @Test(arguments: [false, true])
+    func streamingReceiptLookupPreservesStructured404ThroughNativeAndRelayPaths(relay: Bool) async throws {
+        let endpoint = try BackendEndpoint(URL(string: "https://unit-test.invalid")!)
+        let body = Data(#"{"code":"COMMAND_NOT_FOUND","error":"COMMAND_NOT_FOUND","retryable":false}"#.utf8)
+        let transport: BackendTransport
+        if relay {
+            transport = BackendTransport(endpoint: endpoint,
+                data: { _ in throw URLError(.cancelled) },
+                bytes: { request in
+                    let stream = AsyncThrowingStream<UInt8, Error> { continuation in
+                        for byte in body { continuation.yield(byte) }
+                        continuation.finish()
+                    }
+                    return (BackendByteStream(stream), HTTPURLResponse(url: request.url!, statusCode: 404,
+                        httpVersion: nil, headerFields: nil)!)
+                })
+        } else {
+            let config = URLSessionConfiguration.ephemeral
+            config.protocolClasses = [StubProtocol.self]
+            StubProtocol.status = 404
+            StubProtocol.body = String(decoding: body, as: UTF8.self)
+            transport = try BackendTransport(endpoint: endpoint, bearerToken: "test-only", configuration: config)
+        }
+        defer { StubProtocol.body = "ok" }
+        var request = try endpoint.request(path: ["client", "v1", "commands", "request_123"])
+        request.httpMethod = "POST" // Shared URLProtocol fixture expects POST.
+        do {
+            _ = try await transport.bytes(for: request)
+            Issue.record("Expected the backend's receipt-not-found code")
+        } catch let failure as ClientServiceFailure {
+            #expect(failure == ClientServiceFailure(statusCode: 404, code: "COMMAND_NOT_FOUND"))
+        }
+    }
+
+    @Test func streamingErrorBodyIsBounded() async throws {
+        let endpoint = try BackendEndpoint(URL(string: "http://127.0.0.1")!)
+        let transport = BackendTransport(endpoint: endpoint,
+            data: { _ in throw URLError(.cancelled) }, bytes: { request in
+                let stream = AsyncThrowingStream<UInt8, Error> { continuation in
+                    for _ in 0...64 * 1024 { continuation.yield(32) }
+                    continuation.finish()
+                }
+                return (BackendByteStream(stream), HTTPURLResponse(url: request.url!, statusCode: 404,
+                    httpVersion: nil, headerFields: nil)!)
+            })
+        await #expect(throws: ClientConnectionError.httpStatus(404)) {
+            _ = try await transport.bytes(for: endpoint.request(path: ["missing"]))
+        }
+    }
 }
 
 private final class StubProtocol: URLProtocol, @unchecked Sendable {

@@ -967,6 +967,89 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(after.offset, before.offset, accuracy: 4)
     }
 
+    func testHistoryPrependCompensatesBeforeNextWheelEvent() async {
+        let harness = makeHarness(followsLatest: false, height: 180)
+        let original = (0..<40).map { row(id: "atomic-\($0)", text: "Original row \($0)") }
+        harness.coordinator.apply(rows: original)
+        await settleMainQueue()
+        harness.scrollView.contentView.scroll(to: NSPoint(x: 0, y: harness.tableView.rect(ofRow: 12).minY + 7))
+        let before = visibleAnchor(in: harness.tableView, rows: original)
+        let prepended = (0..<25).map { row(id: "earlier-atomic-\($0)", text: "Earlier row \($0)") } + original
+        harness.coordinator.apply(rows: prepended)
+        // No run-loop turn: the next input must see the compensated geometry.
+        let inserted = visibleAnchor(in: harness.tableView, rows: prepended)
+        XCTAssertEqual(inserted.id, before.id)
+        XCTAssertEqual(inserted.offset, before.offset, accuracy: 1)
+        harness.coordinator.userScrollEventWillBegin()
+        let targetY = harness.scrollView.contentView.bounds.minY - 20
+        harness.scrollView.contentView.scroll(to: NSPoint(x: 0, y: targetY))
+        harness.coordinator.userScrollEventDidEnd()
+        await settleMainQueue()
+        XCTAssertEqual(harness.scrollView.contentView.bounds.minY, targetY, accuracy: 1)
+    }
+
+    func testHistoryPrependDuringScrollbarTrackingPreservesMessage() async {
+        let harness = makeHarness(followsLatest: false, height: 180)
+        let original = (0..<40).map { row(id: "tracking-\($0)", text: "Original row \($0)") }
+        harness.coordinator.apply(rows: original)
+        await settleMainQueue()
+        harness.scrollView.contentView.scroll(to: NSPoint(x: 0, y: harness.tableView.rect(ofRow: 10).minY + 4))
+        harness.coordinator.userScrollEventWillBegin()
+        let before = visibleAnchor(in: harness.tableView, rows: original)
+        let prepended = (0..<20).map { row(id: "earlier-tracking-\($0)", text: "Earlier row \($0)") } + original
+        harness.coordinator.apply(rows: prepended)
+        let after = visibleAnchor(in: harness.tableView, rows: prepended)
+        XCTAssertEqual(after.id, before.id)
+        XCTAssertEqual(after.offset, before.offset, accuracy: 1)
+        harness.coordinator.userScrollEventDidEnd()
+        await settleMainQueue()
+        XCTAssertEqual(visibleAnchor(in: harness.tableView, rows: prepended).id, before.id)
+    }
+
+    func testHistoryPrependPreservesAnchorAtInterRowGapWithStaleFollowFlag() async {
+        let harness = makeHarness(followsLatest: true, height: 180)
+        let original = (0..<40).map { row(id: "gap-\($0)", text: "Original row \($0)") }
+        harness.coordinator.apply(rows: original)
+        await settleMainQueue()
+        let y = harness.tableView.rect(ofRow: 10).maxY + 2
+        harness.scrollView.contentView.scroll(to: NSPoint(x: 0, y: y))
+        XCTAssertEqual(harness.tableView.row(at: NSPoint(x: 1, y: y)), 11)
+        let relativeY = y - harness.tableView.rect(ofRow: 11).minY
+        let prepended = (0..<20).map { row(id: "earlier-gap-\($0)", text: "Earlier row \($0)") } + original
+        harness.coordinator.apply(rows: prepended)
+        XCTAssertEqual(harness.scrollView.contentView.bounds.minY - harness.tableView.rect(ofRow: 31).minY,
+                       relativeY, accuracy: 1)
+        await settleMainQueue()
+        XCTAssertEqual(harness.scrollView.contentView.bounds.minY - harness.tableView.rect(ofRow: 31).minY,
+                       relativeY, accuracy: 1)
+        XCTAssertFalse(harness.coordinator.followsLatest)
+    }
+
+    func testConsecutiveHistoryPagesPreserveOffsetInsideLongMessageImmediately() async {
+        let harness = makeHarness(followsLatest: false, height: 180)
+        harness.coordinator.setTopClearance(54)
+        let original = (0..<30).map {
+            row(id: "long-history-\($0)", text: String(repeating: "Long historical message. ", count: 100))
+        }
+        harness.coordinator.apply(rows: original)
+        await settleMainQueue()
+        let y = harness.tableView.rect(ofRow: 7).minY + 230
+        harness.scrollView.contentView.scroll(to: NSPoint(x: 0, y: y))
+        var rows = original
+        for page in 0..<3 {
+            rows = (0..<200).map {
+                row(id: "page-\(page)-\($0)", text: "Earlier message \($0)")
+            } + rows
+            harness.coordinator.apply(rows: rows)
+            let index = (page + 1) * 200 + 7
+            XCTAssertEqual(harness.scrollView.contentView.bounds.minY - harness.tableView.rect(ofRow: index).minY,
+                           230, accuracy: 1)
+        }
+        await settleMainQueue()
+        XCTAssertEqual(harness.scrollView.contentView.bounds.minY - harness.tableView.rect(ofRow: 607).minY,
+                       230, accuracy: 1)
+    }
+
     func testTransientEmptyProjectionPreservesReaderAcrossStreamedRowReturn() async {
         let harness = makeHarness(followsLatest: false, height: 180)
         let original = (0..<40).map { row(id: "transient-\($0)", text: "Original row \($0)") }

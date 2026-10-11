@@ -87,3 +87,18 @@ test("configuration changed during probe is rejected and never selected", async 
       runEphemeralPrompt: async () => { f.setFingerprint("config-v2"); return { text: "CORPTIE_OK" }; } }) });
   await assert.rejects(setup.probe("codex"), { code: "PROVIDER_CONFIGURATION_CHANGED" });
 });
+
+test("explicit model reaches the no-tools reply and structured errors retain safe categories", async () => {
+  const f = fixture();
+  const result = await f.setup.probe("/chosen/codex", { model: "explicit-model" });
+  assert.equal(f.calls.find(call => call[0] === "reply")[1].model, "explicit-model");
+  assert.equal(result.effectiveModel, "explicit-model");
+  for (const [providerErrorInfo, code] of [["Unauthorized", "PROVIDER_LOGIN_REQUIRED"],
+    ["UsageLimitExceeded", "PROVIDER_USAGE_LIMIT"], ["BadRequest", "PROVIDER_REQUEST_REJECTED"],
+    [{ type: "HttpConnectionFailed", httpStatusCode: 503 }, "PROVIDER_NETWORK_FAILED"]]) {
+    const setup = createCodexEnvironmentSetup({ registry: f.registry, environment: () => ({}), prepare: async () => {},
+      createClient: () => ({ initialize: async () => {}, close: async () => {}, request: async () => ({}),
+        runEphemeralPrompt: async () => { throw Object.assign(new Error("secret diagnostic"), { providerErrorInfo }); } }) });
+    await assert.rejects(setup.probe("/chosen/codex"), error => error.code === code && !error.message.includes("secret"));
+  }
+});

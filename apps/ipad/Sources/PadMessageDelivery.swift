@@ -97,7 +97,7 @@ extension PadWorkspace {
             return failure == .responseTooLarge || failure == .unsupportedRequest
         }
         guard let failure = error as? ClientServiceFailure else { return false }
-        if ["SESSION_BUSY", "SESSION_NOT_READY", "COMMAND_JOURNAL_FULL"].contains(failure.code) { return false }
+        if ["SESSION_BUSY", "SESSION_NOT_READY", "COMMAND_JOURNAL_FULL", "LOCAL_BACKEND_UNAVAILABLE"].contains(failure.code) { return false }
         return [400, 404, 409, 410, 413, 422].contains(failure.statusCode)
     }
 
@@ -137,6 +137,15 @@ extension PadWorkspace {
             var nextWake = Date().addingTimeInterval(30)
             for var message in records {
                 guard !Task.isCancelled, deliveryKey(connection) == generation else { return }
+                // Older relays discarded GET error bodies, misclassifying an
+                // absent receipt as a permanent backend rejection. Recover only
+                // that transport failure; keep real rejections/cancellations.
+                if message.state == .rejected, message.errorCode == "LOCAL_BACKEND_UNAVAILABLE" {
+                    message.state = .waiting
+                    message.errorCode = nil
+                    message.nextAttemptAt = .distantPast
+                    do { try await messageOutbox.save(message) } catch { return }
+                }
                 if message.state == .accepted {
                     guard let messageID = message.authoritativeMessageID else {
                         projectReliableMessage(message, title: "旧请求需核对；不会自动重发")

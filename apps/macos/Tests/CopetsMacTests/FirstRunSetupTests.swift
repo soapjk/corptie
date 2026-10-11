@@ -6,6 +6,30 @@ import Testing
 @testable import CorptieMac
 
 struct FirstRunSetupTests {
+    @Test @MainActor
+    func multiVersionSelectionDecodesAndRendersWithoutImplicitTesting() throws {
+        let provider = try JSONDecoder().decode(FirstRunProvider.self, from: Data("""
+        {"id":"codex-app-server","name":"Codex","path":"/tmp/new codex","executable":true,
+         "enabled":false,"checkState":"unknown","program":{"mode":"auto","recommendedPath":"/tmp/new codex",
+          "adoptedPath":"/tmp/old codex","model":"example-model","effectiveModel":"example-model",
+          "running":[{"profileId":"native","path":"/tmp/old codex","pid":123,"initialized":true}],
+          "candidates":[{"id":"new","path":"/tmp/new codex","resolvedPath":"/tmp/new codex","sources":["ChatGPT"],
+            "version":"0.155.0-alpha.16","state":"discovered","prerelease":true}]}}
+        """.utf8))
+        #expect(provider.program?.mode == "auto")
+        #expect(provider.program?.candidates.first?.prerelease == true)
+        #expect(provider.program?.running.first?.path != provider.path)
+        let view = NSHostingView(rootView: FirstRunProviderCard(provider: provider, busy: false,
+            scanGeneration: 0, isDefault: false, pathChanged: { _ in }, updated: { _ in }).frame(width: 480))
+        view.frame = NSRect(x: 0, y: 0, width: 480, height: 600)
+        view.layoutSubtreeIfNeeded()
+        #expect(view.fittingSize.width <= 480)
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac/FirstRunSetupView.swift"), encoding: .utf8)
+        #expect(source.contains("guard provider.program == nil else { return }"))
+        #expect(source.contains(".task(id: checkGeneration)"))
+    }
     @Test
     func providerEnvironmentProjectionDecodesWithoutCredentials() throws {
         let provider = try JSONDecoder().decode(FirstRunProvider.self, from: Data("""

@@ -10,6 +10,7 @@ export class CodexStdioTransport {
     this.args = options.args ?? ["app-server", "--listen", "stdio://"];
     this.env = options.env ?? process.env;
     this.spawnProcess = options.spawnProcess ?? spawn;
+    this.validateCommand = options.validateCommand;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 8000;
     // Process bootstrap may be slower than an ordinary RPC during app launch.
     this.initializationTimeoutMs = options.initializationTimeoutMs ?? 30000;
@@ -48,11 +49,15 @@ export class CodexStdioTransport {
 
   async #initializeProcess(generation) {
     const env = typeof this.env === "function" ? this.env() : this.env;
-    const child = this.spawnProcess(typeof this.command === "function" ? this.command() : this.command, this.args, {
+    const command = typeof this.command === "function" ? this.command() : this.command;
+    if (this.validateCommand) await this.validateCommand(command);
+    if (generation !== this.processGeneration) throw new Error("Codex program selection was superseded.");
+    const child = this.spawnProcess(command, this.args, {
       stdio: ["pipe", "pipe", "pipe"],
       env
     });
     this.process = child;
+    this.runningCommand = command;
     this.activeProcessGeneration = generation;
 
     child.stderr.setEncoding("utf8");
@@ -104,6 +109,7 @@ export class CodexStdioTransport {
         }
       }, this.initializationTimeoutMs);
       this.runtimeUserAgent = initialized?.userAgent ?? null;
+      if (this.validateCommand) await this.validateCommand(command);
       if (this.activeProcessGeneration !== generation || this.process !== child) {
         throw new Error("Codex app-server initialization was superseded by a newer process generation.");
       }
@@ -145,6 +151,7 @@ export class CodexStdioTransport {
     }
     this.initialized = false;
     this.process = null;
+    this.runningCommand = null;
     this.readline?.close();
     this.readline = null;
     this.activeProcessGeneration = 0;
@@ -244,6 +251,7 @@ export class CodexStdioTransport {
 
 export function codexResponseError(payload) {
   const error = new Error(JSON.stringify(payload));
+  error.rpcCode = payload?.code;
   const message = typeof payload?.message === "string" ? payload.message.trim() : "";
   if (/^(?:no rollout found for thread id\b|thread not found:|failed to resolve rollout path\b.*\bfile does not exist$)/i.test(message)) {
     error.code = "PROVIDER_SESSION_UNAVAILABLE";

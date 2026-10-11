@@ -524,6 +524,12 @@ public struct ClientSessionAPI: Sendable {
         if !images.isEmpty {
             do { return try await receipt(requestId: requestId) }
             catch let failure as ClientServiceFailure where failure.statusCode == 404 && failure.code == "COMMAND_NOT_FOUND" { }
+            catch let failure as ClientServiceFailure where failure.statusCode == 404 && failure.code == "LOCAL_BACKEND_UNAVAILABLE" {
+                // Old Mac relays lose the structured GET error body. This is
+                // NOT proof of absence: replay only the same immutable request
+                // through the negotiated idempotent upload/delivery protocol.
+                // An accepted request reconciles there without another send.
+            }
         }
         if !images.isEmpty {
             return try await uploadAndDeliver(sessionId: sessionId, requestId: requestId, createdAt: createdAt,

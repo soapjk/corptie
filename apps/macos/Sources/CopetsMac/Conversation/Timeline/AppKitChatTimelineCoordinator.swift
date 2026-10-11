@@ -536,11 +536,12 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                           restoreClosestAvailableAnchor(
                               anchor,
                               previousIDs: returningFromEmptyProjection.previousIDs,
-                              in: tableView
+                              in: tableView,
+                              synchronously: true
                           ) {
                     // The semantic row returned; its relative offset is
-                    // restored asynchronously after AppKit finishes the
-                    // structural insertion.
+                    // restored before another wheel event can observe
+                    // uncompensated structural geometry.
                 } else {
                     // A wholly replaced or deleted row window has no safe
                     // cross-revision absolute-Y fallback. Match ordinary
@@ -551,7 +552,8 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                 restoreClosestAvailableAnchor(
                     prependAnchor,
                     previousIDs: oldIDs,
-                    in: tableView
+                    in: tableView,
+                    synchronously: true
                 )
             }
             // Reused Session hosts may already have completed an empty
@@ -815,8 +817,8 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         }
     }
 
-    private func commitCorrection() {
-        guard !applyingCorrection, !isProcessingUserScrollEvent,
+    private func commitCorrection(allowDuringUserScroll: Bool = false) {
+        guard !applyingCorrection, (!isProcessingUserScrollEvent || allowDuringUserScroll),
               let correction = pendingCorrection,
               let tableView, let clip = scrollView?.contentView,
               !rows.isEmpty, clip.bounds.height > 0 else { return }
@@ -1159,11 +1161,22 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     }
 
     @discardableResult
-    private func restore(anchor: (id: String, offset: CGFloat), in tableView: NSTableView) -> Bool {
-        guard !isProcessingUserScrollEvent,
-              !followsLatest,
+    private func restore(anchor: (id: String, offset: CGFloat), in tableView: NSTableView,
+                         synchronously: Bool = false) -> Bool {
+        guard (synchronously || !isProcessingUserScrollEvent),
+              (synchronously || !followsLatest),
               rows.contains(where: { $0.id == anchor.id }) else { return false }
         suppressNearTopDuringLayout()
+        if synchronously {
+            // Structural insertion is coordinate compensation, not a new
+            // navigation command. Finish it in this transaction, including
+            // during scrollbar tracking, before the next user delta. Keep
+            // ordinary reflows and explicit navigation cancellable as before.
+            followsLatest = false
+            pendingCorrection = .anchor(id: anchor.id, offset: anchor.offset)
+            commitCorrection(allowDuringUserScroll: true)
+            return true
+        }
         enqueueCorrection(.anchor(id: anchor.id, offset: anchor.offset))
         return true
     }
@@ -1230,21 +1243,22 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     private func restoreClosestAvailableAnchor(
         _ anchor: (id: String, offset: CGFloat),
         previousIDs: [String],
-        in tableView: NSTableView
+        in tableView: NSTableView,
+        synchronously: Bool = false
     ) -> Bool {
-        if restore(anchor: anchor, in: tableView) { return true }
+        if restore(anchor: anchor, in: tableView, synchronously: synchronously) { return true }
         guard let removedIndex = previousIDs.firstIndex(of: anchor.id) else { return false }
         let successor = previousIDs.dropFirst(removedIndex + 1).first(where: { candidate in
             rows.contains(where: { $0.id == candidate })
         })
         if let successor {
-            return restore(anchor: (successor, anchor.offset), in: tableView)
+            return restore(anchor: (successor, anchor.offset), in: tableView, synchronously: synchronously)
         }
         let predecessor = previousIDs[..<removedIndex].reversed().first(where: { candidate in
             rows.contains(where: { $0.id == candidate })
         })
         guard let predecessor else { return false }
-        return restore(anchor: (predecessor, anchor.offset), in: tableView)
+        return restore(anchor: (predecessor, anchor.offset), in: tableView, synchronously: synchronously)
     }
 
     func prepareInitialPosition(_ position: AppKitChatTimelinePosition) {

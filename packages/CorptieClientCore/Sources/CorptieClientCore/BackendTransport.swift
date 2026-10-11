@@ -62,6 +62,7 @@ public struct BackendByteStream: AsyncSequence, Sendable {
 
 /// Explicit endpoint ownership: no global URLSession overrides or automatic mutation retries.
 public final class BackendTransport: Sendable {
+    private struct ServiceFailureBody: Decodable { let code: String }
     public typealias DataHandler = @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
     public typealias ByteHandler = @Sendable (URLRequest) async throws -> (BackendByteStream, HTTPURLResponse)
 
@@ -134,8 +135,8 @@ public final class BackendTransport: Sendable {
         if let dataHandler {
             let (data, response) = try await dataHandler(prepared)
             if !(200..<300).contains(response.statusCode),
-               let body = try? JSONDecoder().decode([String: String].self, from: data), let code = body["code"] {
-                throw ClientServiceFailure(statusCode: response.statusCode, code: code)
+               let body = try? JSONDecoder().decode(ServiceFailureBody.self, from: data) {
+                throw ClientServiceFailure(statusCode: response.statusCode, code: body.code)
             }
             guard (200..<300).contains(response.statusCode) else { throw ClientConnectionError.httpStatus(response.statusCode) }
             return (data, response)
@@ -143,12 +144,12 @@ public final class BackendTransport: Sendable {
         guard let session else { throw ClientConnectionError.invalidResponse }
         let (data, response) = try await session.data(for: prepared)
         if pairingOnly, let response = response as? HTTPURLResponse, !(200..<300).contains(response.statusCode),
-           let body = try? JSONDecoder().decode([String: String].self, from: data), let code = body["code"] {
-            throw DevicePairingFailure(code: code)
+           let body = try? JSONDecoder().decode(ServiceFailureBody.self, from: data) {
+            throw DevicePairingFailure(code: body.code)
         }
         if let response = response as? HTTPURLResponse, !(200..<300).contains(response.statusCode),
-           let body = try? JSONDecoder().decode([String: String].self, from: data), let code = body["code"] {
-            throw ClientServiceFailure(statusCode: response.statusCode, code: code)
+           let body = try? JSONDecoder().decode(ServiceFailureBody.self, from: data) {
+            throw ClientServiceFailure(statusCode: response.statusCode, code: body.code)
         }
         return (data, try Self.requireSuccess(response))
     }
@@ -157,12 +158,13 @@ public final class BackendTransport: Sendable {
         let prepared = try prepare(request)
         if let byteHandler {
             let (bytes, response) = try await byteHandler(prepared)
-            guard (200..<300).contains(response.statusCode) else { throw ClientConnectionError.httpStatus(response.statusCode) }
+            try await Self.requireByteSuccess(bytes, response: response)
             return (bytes, response)
         }
         guard let session else { throw ClientConnectionError.invalidResponse }
         let (bytes, response) = try await session.bytes(for: prepared)
-        let http = try Self.requireSuccess(response)
+        guard let http = response as? HTTPURLResponse else { throw ClientConnectionError.invalidResponse }
+        try await Self.requireByteSuccess(bytes, response: http)
         let stream = AsyncThrowingStream<UInt8, Error> { continuation in
             let task = Task {
                 do {
@@ -173,6 +175,23 @@ public final class BackendTransport: Sendable {
             continuation.onTermination = { _ in task.cancel() }
         }
         return (BackendByteStream(stream), http)
+    }
+
+    // Relay GETs use the streaming path too. Preserve their structured error
+    // codes (notably COMMAND_NOT_FOUND) instead of turning a normal 404 into
+    // LOCAL_BACKEND_UNAVAILABLE. Successful streams remain unbuffered.
+    private static func requireByteSuccess<Bytes: AsyncSequence>(_ bytes: Bytes,
+        response: HTTPURLResponse) async throws where Bytes.Element == UInt8 {
+        guard !(200..<300).contains(response.statusCode) else { return }
+        var body = Data()
+        for try await byte in bytes {
+            guard body.count < 64 * 1024 else { throw ClientConnectionError.httpStatus(response.statusCode) }
+            body.append(byte)
+        }
+        if let failure = try? JSONDecoder().decode(ServiceFailureBody.self, from: body) {
+            throw ClientServiceFailure(statusCode: response.statusCode, code: failure.code)
+        }
+        throw ClientConnectionError.httpStatus(response.statusCode)
     }
 
     private static func requireSuccess(_ response: URLResponse) throws -> HTTPURLResponse {

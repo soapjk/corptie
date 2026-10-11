@@ -4,8 +4,9 @@ import Testing
 @testable import CorptieClientCore
 
 @Suite struct ClientImageUploadTests {
-    @Test func largeImageResumesConfirmedChunksAndCommitsReferencesOnly() async throws {
-        let probe = ImageUploadProbe()
+    @Test(arguments: [false, true])
+    func largeImageResumesConfirmedChunksAndCommitsReferencesOnly(legacyRelay: Bool) async throws {
+        let probe = ImageUploadProbe(legacyRelay: legacyRelay)
         let api = ClientSessionAPI(transport: BackendTransport(endpoint: try BackendEndpoint(URL(string: "http://127.0.0.1")!),
             data: { try await probe.handle($0) }, bytes: { _ in throw URLError(.cancelled) }))
         let data = Data(repeating: 7, count: 7 * 1024 * 1024)
@@ -36,6 +37,8 @@ import Testing
 }
 
 private actor ImageUploadProbe {
+    let legacyRelay: Bool
+    init(legacyRelay: Bool) { self.legacyRelay = legacyRelay }
     var uploaded = Data()
     var offsets: [Int] = []
     var maximumBody = 0
@@ -47,7 +50,8 @@ private actor ImageUploadProbe {
         let path = request.url!.path
         var result: [String: Any]
         if path.contains("/commands/") {
-            guard submissions > 0 else { throw ClientServiceFailure(statusCode: 404, code: "COMMAND_NOT_FOUND") }
+            guard submissions > 0 else { throw ClientServiceFailure(statusCode: 404,
+                code: legacyRelay ? "LOCAL_BACKEND_UNAVAILABLE" : "COMMAND_NOT_FOUND") }
             result = receipt
         } else if path.hasSuffix("/capabilities") {
             result = ["schemaVersion": 1, "sessionId": "session", "readMessages": true,
