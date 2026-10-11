@@ -9,7 +9,8 @@ export function createRuntimeAgentWorkQueue({
   store, collaborationCore, sessionChannelService, collaborationDispatcher,
   workspaceContinuationCoordinator, inspectCollaborationSession, resolveCollaborationDeliveryRoute,
   scheduleAgentWorkDrain, dispatchSessionChannelDelivery, sendUnifiedSessionMessage, emitEvent,
-  syncSessionChannelDeliveriesIntoAgentWorkQueue, syncCollaborationDeliveriesIntoAgentWorkQueue
+  syncSessionChannelDeliveriesIntoAgentWorkQueue, syncCollaborationDeliveriesIntoAgentWorkQueue,
+  isWorkspaceMutationActive = () => false
 }) {
   const drainingAgentWorkSessionIds = new Set();
   const runtimeQueuedTasksBySession = new Map();
@@ -69,6 +70,9 @@ export function createRuntimeAgentWorkQueue({
   }
 
   async function drainAgentWorkSession(sessionId) {
+    // Do not claim a queued message or spend its dispatch retry budget while
+    // project-level Git is mutating this Session's Worktree.
+    if (isWorkspaceMutationActive(sessionId)) return;
     const boundAgent = collaborationCore.getAgentForSession(sessionId);
     if (!boundAgent) return;
 

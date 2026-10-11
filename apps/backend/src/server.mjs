@@ -71,6 +71,7 @@ import { SessionChannelService } from "./collaboration/sessionChannelService.mjs
 import { loadStartupSessionInventory } from "./application/startupSessionInventory.mjs";
 import { createManagedProviderSessionProjection } from "./application/managedProviderSessionProjection.mjs";
 import { createProjectWorktreeStatusReader } from "./application/projectWorktreeStatusReader.mjs";
+import { WorktreeAutoFollowService, automaticWorktreeMutationActive } from "./application/worktreeAutoFollowService.mjs";
 import { WorkChatContextService } from "./application/workChatContextService.mjs";
 import { WorkDiscussionApplicationService } from "./application/workDiscussionApplicationService.mjs";
 import { WorkChatOperationService } from "./application/workChatDynamicTools.mjs";
@@ -1388,10 +1389,12 @@ const { projectToolsetStatusForPath } = createProjectToolsetStatusReader({
   getProduction: () => projectToolsetProduction,
   runtimeSourceIdentity
 });
+let worktreeAutoFollowService;
 const projectWorktreeStatusReader = createProjectWorktreeStatusReader({
   store, requireSessionReference, ensureLogicalRouteForProviderSession,
   projectToolsetAuthenticatedSession, projectToolsetStatusForPath,
   projectToolsets, gitWorkspaces, gitHubPushes,
+  readAutoFollow: id => worktreeAutoFollowService?.state(id) ?? { enabled: false, status: "off" },
   readLatestJob: id => {
     const job = store.getLatestWorktreeIntegrationJob(id);
     return job && ["awaiting_confirmation", "queued", "running", "paused", "failed", "cancellation_requested", "replanning"].includes(job.status)
@@ -1487,7 +1490,13 @@ const { sessionForkService, prepareConversationForkWorkspace } = createSessionFo
 const { projectWorktreeIntegrationService, worktreeIntegrationJobService } = createWorktreeIntegrationServices({
   store, projectApplicationService, gitWorkspaces, gitHubPushes, gitCommitProtection,
   workService, artifactService, agentProviderRegistry, startPreparedWorkSession,
-  sendUnifiedSessionMessage, emitEvent, presentTaskForClient
+  sendUnifiedSessionMessage, emitEvent, presentTaskForClient,
+  authorizeAutomaticFollow: job => worktreeAutoFollowService?.authorizes(job) === true
+});
+worktreeAutoFollowService = new WorktreeAutoFollowService({
+  store, readDetail: id => projectWorktreeStatusReader.worktreeDetail(id), jobs: worktreeIntegrationJobService,
+  readHead: path => gitWorkspaces.gitOutput(path, ["rev-parse", "--verify", "HEAD"]),
+  onEvent: emitEvent
 });
 const {
   syncSessionChannelDeliveriesIntoAgentWorkQueue,
@@ -1546,7 +1555,8 @@ const {
   store, collaborationCore, sessionChannelService, collaborationDispatcher,
   workspaceContinuationCoordinator, inspectCollaborationSession, resolveCollaborationDeliveryRoute,
   scheduleAgentWorkDrain, dispatchSessionChannelDelivery, sendUnifiedSessionMessage, emitEvent,
-  syncSessionChannelDeliveriesIntoAgentWorkQueue, syncCollaborationDeliveriesIntoAgentWorkQueue
+  syncSessionChannelDeliveriesIntoAgentWorkQueue, syncCollaborationDeliveriesIntoAgentWorkQueue,
+  isWorkspaceMutationActive: sessionId => automaticWorktreeMutationActive(store, { sessionId })
 });
 function cancelQueuedUserMessage(sessionId, taskId) {
   const routedSessionId = requireSessionReference(sessionId).sessionId;
@@ -2143,6 +2153,7 @@ const backendHttpPorts = Object.freeze({
   get generateGitHubPushCommitMessage() { return generateGitHubPushCommitMessage; },
   get confirmGitHubPush() { return confirmGitHubPush; },
   get projectWorktreeStatus() { return projectWorktreeStatus; },
+  get setWorktreeAutoFollow() { return (id, input) => worktreeAutoFollowService.set(id, input); },
   get mergeProjectWorktree() { return mergeProjectWorktree; },
   get prepareProjectWorktreeCommit() { return prepareProjectWorktreeCommit; },
   get generateProjectWorktreeCommitMessage() { return generateProjectWorktreeCommitMessage; },
@@ -2287,6 +2298,7 @@ function startBackendRuntime() {
   restoreTurnExecutionProbes();
   memoryExtractionScheduler.start();
   taskSummaryService.start();
+  worktreeAutoFollowService.start();
   startClientDeviceGateway({
     store, environmentName, developmentPreview, worktreeIntegrationJobService, projectApplicationService,
     emitEvent, readSessionTimelineWindow, getTimelineReadPool, requireSessionReference,
@@ -2294,6 +2306,7 @@ function startBackendRuntime() {
     turnObservability, agentProviderRegistry, switchSessionProvider, workService,
     inspectTaskWorktree, reclaimTaskWorktree, sendUnifiedSessionMessage,
     readSessionWorktree: id => projectWorktreeStatusReader.worktreeDetail(id),
+    setWorktreeAutoFollow: (id, input) => worktreeAutoFollowService.set(id, input),
     admitReliableMessage: sessionMessageOperation.admitReliableMessage,
     interruptUnifiedSession, cancelQueuedUserMessage, deleteUserMessage, respondUnifiedSessionApproval, respondUnifiedSessionUserInput,
     resolveCollaborationConfirmation, resolveSessionChannelRequest,
@@ -2350,6 +2363,7 @@ const shutdownBackend = createBackendShutdown({
 });
 
 function shutdown() {
+  worktreeAutoFollowService?.stop();
   return shutdownBackend();
 }
 

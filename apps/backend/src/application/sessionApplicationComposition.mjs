@@ -8,6 +8,7 @@ import { resolveMessageMentionContext } from "./messageMentionContext.mjs";
 import { buildDirectUserMessageEvidence } from "./directUserMessageEvidence.mjs";
 import { skillMcpTurnContext } from "./skillMcpTurnContext.mjs";
 import { desiredToolDomainIds, appliedToolDomainIds } from "./sessionToolBindingProjection.mjs";
+import { assertNoAutomaticWorktreeMutation } from "./worktreeAutoFollowService.mjs";
 
 // Product policy wired into the common Session service. Later-created services
 // enter through narrow deferred operations to preserve startup dependency order.
@@ -33,6 +34,7 @@ export function createSessionApplicationComposition({
     resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
     assertMessageDispatchAllowed: (reference) => {
       assertForkDispatchAllowed(reference.sessionId);
+      assertNoAutomaticWorktreeMutation(store, reference);
       return assertSessionRecoveryMessageBoundary(reference);
     },
     recoverUnavailableSession: async ({ sessionId, reference, error, context }) => {

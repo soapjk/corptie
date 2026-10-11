@@ -2,13 +2,20 @@ export function handleSessionGitHttpRequest({
   request, response, url, prepareGitHubPush, generateGitHubPushCommitMessage,
   confirmGitHubPush, projectWorktreeStatus, mergeProjectWorktree, prepareProjectWorktreeCommit,
   generateProjectWorktreeCommitMessage, commitProjectWorktree, completeProjectWorktree,
-  operateProjectWorktree, restartProjectWorktree, readJson, sendJson, errorStatus
+  operateProjectWorktree, restartProjectWorktree, setWorktreeAutoFollow, readJson, sendJson, errorStatus
 }) {
   const sessionGitHubPushMatch = url.pathname.match(
     /^\/sessions\/([^/]+)\/github-push\/(prepare|commit-message|confirm)$/
   );
   const sessionProjectWorktreesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/project-worktrees$/);
   const sessionWorktreeCardMatch = url.pathname.match(/^\/sessions\/([^/]+)\/worktree-detail$/);
+  const autoFollowMatch = url.pathname.match(/^\/sessions\/([^/]+)\/worktree-auto-follow$/);
+  if (request.method === "POST" && autoFollowMatch) {
+    readJson(request).then(input => setWorktreeAutoFollow(decodeURIComponent(autoFollowMatch[1]), input))
+      .then(result => sendJson(response, 200, result))
+      .catch(error => sendJson(response, errorStatus(error, 400), { error: error.message, code: error.code ?? null }));
+    return true;
+  }
   const sessionProjectWorktreeActionMatch = url.pathname.match(
     /^\/sessions\/([^/]+)\/project-worktrees\/([^/]+)\/(merge|complete|restart|operate|commit|commit-prepare|commit-message)$/
   );

@@ -50,6 +50,7 @@ export class WorktreeIntegrationJobService {
     this.isSessionActive = options.isSessionActive ?? (() => false);
     this.onDeletionFailure = options.onDeletionFailure ?? (() => {});
     this.onEvent = options.onEvent ?? (() => {});
+    this.authorizeAutomaticFollow = options.authorizeAutomaticFollow ?? (() => false);
     this.activeJobs = new Set();
     this.activeConflictResolutions = new Map();
     this.integrationCandidates = new Map();
@@ -275,6 +276,10 @@ export class WorktreeIntegrationJobService {
     const repository = this.#requireRepository(repositoryId);
     this.#assertNoActiveJob(repository.id, options.ignoreJobId, true);
     const built = await this.#buildPlan(repository, options);
+    if (options.automaticFollow && !this.authorizeAutomaticFollow({ repositoryId: repository.id,
+      details: { plan: built.plan, automaticFollow: options.automaticFollow } })) {
+      throw new WorktreeIntegrationJobError("AUTO_FOLLOW_NOT_AUTHORIZED", "Automatic follow is disabled or its binding changed.", 409);
+    }
     let job = this.store.createWorktreeIntegrationJob({
       repositoryId: repository.id,
       planFingerprint: built.planFingerprint,
@@ -283,6 +288,7 @@ export class WorktreeIntegrationJobService {
       phase: built.noWorkRequired ? "completed" : "preflight_complete",
       details: {
         plan: built.plan,
+        ...(options.automaticFollow ? { automaticFollow: options.automaticFollow } : {}),
         currentWorktreeId: null,
         progress: progressFor(built.plan.items),
         audit: [{
@@ -757,6 +763,10 @@ export class WorktreeIntegrationJobService {
         409
       );
     }
+    if (input.automaticFollow && !this.authorizeAutomaticFollow({ ...job,
+      details: { ...job.details, automaticFollow: input.automaticFollow } })) {
+      throw new WorktreeIntegrationJobError("AUTO_FOLLOW_NOT_AUTHORIZED", "Automatic follow is disabled or its binding changed.", 409);
+    }
     const commitProtectionDecisions = normalizeCommitProtectionDecisions(input.commitProtectionDecisions);
     validateCommitProtectionDecisionBindings(
       job.details.plan,
@@ -786,7 +796,8 @@ export class WorktreeIntegrationJobService {
         status: "queued",
         phase: "queued",
         confirmedAt: new Date().toISOString(),
-        details: { ...job.details, commitProtectionDecisions: boundCommitProtectionDecisions },
+        details: { ...job.details, commitProtectionDecisions: boundCommitProtectionDecisions,
+          ...(input.automaticFollow ? { automaticFollow: input.automaticFollow } : {}) },
         auditEvent: "plan_confirmed"
       });
     } catch (error) {
@@ -986,7 +997,7 @@ export class WorktreeIntegrationJobService {
     }
     const updated = this.#update(job, {
       status: "queued", phase: "retry_queued", error: null,
-      details: { ...job.details, stagedTreeBlocker: null },
+      details: { ...job.details, stagedTreeBlocker: null, automaticFollow: null },
       auditEvent: "retry_requested"
     });
     this.#schedule(updated.id);
@@ -1578,6 +1589,7 @@ export class WorktreeIntegrationJobService {
       }
       if (!['queued', 'running'].includes(job.status)) return;
       job = this.#update(job, { status: "running", phase: "validating", auditEvent: "execution_started" });
+      await this.#assertAutomaticFollowSafe(job);
       let items = job.details.plan.items;
       const completedAny = items.some((item) => ["completed", "recovered"].includes(item.commitStatus)
         || ["completed", "already_integrated", "recovered"].includes(item.mergeStatus))
@@ -1670,6 +1682,7 @@ export class WorktreeIntegrationJobService {
           const refreshed = await this.#refreshWorktreeItem(job, item.worktreeId, { requireClean: true });
           job = refreshed.job;
           item = refreshed.item;
+          await this.#assertAutomaticFollowSafe(job);
           job = this.#item(job, item.worktreeId, { mergeStatus: "running", error: null }, "rebasing", "rebase_started");
           try {
             const result = await this.rebaseSource({
@@ -1947,6 +1960,25 @@ export class WorktreeIntegrationJobService {
       `Protected files changed in ${item.branchName ?? item.path} after confirmation. Generate and review a fresh candidate.`,
       409
     );
+  }
+
+  async #assertAutomaticFollowSafe(job) {
+    if (!job.details.automaticFollow) return;
+    if (!this.authorizeAutomaticFollow(job)) {
+      throw new WorktreeIntegrationJobError("AUTO_FOLLOW_NOT_AUTHORIZED", "Automatic follow is disabled or its binding changed.", 409);
+    }
+    const inspection = this.#associate(await this.inspectRepository(job.repositoryId, { forceFresh: true }));
+    for (const recorded of job.details.plan.items) {
+      const current = inspection.worktrees.find(item => item.worktreeId === recorded.worktreeId);
+      if (!current || current.availability !== "available" || current.dirty !== false
+          || current.operationState || current.isLocked || current.isDetached || current.conflictFiles?.length
+          || current.path !== recorded.path || current.branchName !== recorded.branchName
+          || current.headOid !== recorded.sourceHeadBefore
+          || current.associations?.some(association => association.active
+            || this.store.hasUnsettledSessionRuntimeWork?.(association.sessionId))) {
+        throw new WorktreeIntegrationJobError("AUTO_FOLLOW_UNSAFE", "Automatic rebase paused because a Worktree or Session is no longer safe. No automatic commit or stash is allowed.", 409);
+      }
+    }
   }
 
   async #assertWorktreeIdle(repositoryId, worktreeId) {
@@ -2933,6 +2965,7 @@ export function projectOperationNotification(job) {
   counts.pending = Math.max(0, items.length - counts.completed - counts.failed);
   const partial = counts.completed > 0 || items.some(item => ["completed", "recovered"].includes(item.commitStatus));
   return { schemaVersion: 1, id: job.id, repositoryId: job.repositoryId,
+    automaticFollow: Boolean(job.automaticFollow),
     status: job.status, phase: job.phase, updatedAt: job.updatedAt,
     currentWorktreeId: job.currentWorktreeId ?? null,
     revision: job.audit?.length ?? 0, audit: [], counts,

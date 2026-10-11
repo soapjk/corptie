@@ -44,7 +44,7 @@ function commitPolicyArtifactBinding(store, item) {
 export function createWorktreeIntegrationServices({
   store, projectApplicationService, gitWorkspaces, gitHubPushes, gitCommitProtection,
   workService, artifactService, agentProviderRegistry, startPreparedWorkSession,
-  sendUnifiedSessionMessage, emitEvent, presentTaskForClient
+  sendUnifiedSessionMessage, emitEvent, presentTaskForClient, authorizeAutomaticFollow
 }) {
   const applyArtifactDecision = async (input, { removeSource, allowTracking }) => {
     const binding = commitPolicyArtifactBinding(store, input.item);
@@ -171,6 +171,7 @@ export function createWorktreeIntegrationServices({
   });
   const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
     store,
+    authorizeAutomaticFollow,
     inspectGitHubPushStatus: (input) => gitHubPushes.branchStatus(input),
     recoverGitOperation: (input) => gitWorkspaces.recoverGitOperation(input),
     inspectRepositorySummary: async (repositoryId, options = {}) => {

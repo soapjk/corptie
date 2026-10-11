@@ -4,7 +4,7 @@ import { sessionHasActiveRun } from "../utils/sessionPresentation.mjs";
 export function createProjectWorktreeStatusReader({
   store, requireSessionReference, ensureLogicalRouteForProviderSession,
   projectToolsetAuthenticatedSession, projectToolsetStatusForPath,
-  projectToolsets, gitWorkspaces, gitHubPushes, readLatestJob = () => null
+  projectToolsets, gitWorkspaces, gitHubPushes, readLatestJob = () => null, readAutoFollow = () => ({ enabled: false, status: "off" })
 }) {
   function projectWorkingDirectoryForSession(sessionId) {
     const reference = requireSessionReference(sessionId);
@@ -60,7 +60,8 @@ export function createProjectWorktreeStatusReader({
       ...(store.listLogicalSessionsByWorkspaceId?.(worktree.worktreeId) ?? [logical]),
       ...(main ? store.listLogicalSessionsByWorkspaceId?.(main.worktreeId) ?? [] : [])
     ];
-    const busy = associated.some(row => sessionHasActiveRun(store.getSession(row.legacySessionId)))
+    const busy = associated.some(row => sessionHasActiveRun(store.getSession(row.legacySessionId))
+      || store.hasUnsettledSessionRuntimeWork?.(row.legacySessionId))
       || sessionHasActiveRun(reference.metadata.session);
     const blockedReason = worktree.isMain ? "MAIN_WORKTREE"
       : worktree.availability !== "available" || !main || main.availability !== "available" ? "WORKTREE_UNAVAILABLE"
@@ -74,6 +75,7 @@ export function createProjectWorktreeStatusReader({
     const job = ["awaiting_confirmation", "queued", "running", "paused", "failed", "cancellation_requested", "replanning"].includes(latest?.status)
       && latest?.plan?.items?.some(item => item.worktreeId === worktree.worktreeId) ? latest : null;
     return { attached: true, repositoryId: logical.repositoryId, mainWorktreeId: project.mainWorktreeId, job,
+      autoFollow: readAutoFollow(worktree.worktreeId),
       mainBranch: main?.branchName ?? project.mainBranch ?? null, blockedReason,
       worktree: { worktreeId: worktree.worktreeId, path: worktree.path, branchName: worktree.branchName,
         isMain: worktree.isMain, availability: worktree.availability, dirty: worktree.dirty ?? null,

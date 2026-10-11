@@ -1444,3 +1444,12 @@
 "提交检查" = "Commit check";
 "已完成" = "Completed";
 "Worktree 回收" = "Worktree cleanup";
+"自动跟随主分支" = "Automatically follow main";
+"工作区干净且会话空闲时自动 Rebase；不会自动提交、stash 或 push。" = "Automatically rebase when the worktrees are clean and Sessions are idle. Never auto-commit, stash, or push.";
+"自动跟随已暂停，请处理冲突或检查绑定" = "Automatic follow paused. Resolve conflicts or check the binding.";
+"正在自动同步主分支" = "Automatically syncing main";
+"已跟随主分支" = "Up to date with main";
+"等待安全同步时机" = "Waiting until safe to sync";
+"等待主分支更新" = "Waiting for main to update";
+"已有 Worktree 操作，请先处理" = "Resolve the existing Worktree operation first.";
+"Worktree 状态已变化，等待重新检查" = "Worktree state changed; waiting to recheck.";
