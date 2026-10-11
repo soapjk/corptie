@@ -29,6 +29,7 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { skillInstallationIdentity, withSkillRegistryMutation } from "./skillInstallationIdentity.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -150,7 +151,61 @@ export class SkillRegistryService {
   }
 
   // 登记一个 Skill。启动上下文只使用 manifest 索引；完整正文由 loadForAgent() 按需读取。
-  async register({ name, description = "", sourceType, source, sourceSubpath = "", assist = true }) {
+  async register(input) {
+    return withSkillRegistryMutation(this.store, () => this.#register(input));
+  }
+
+  async #matchingInstallations(coordinates, excludedId = null) {
+    const identity = await skillInstallationIdentity(coordinates);
+    const matches = [];
+    for (const skill of this.store.listRegistrySkills()) {
+      if (skill.skillId !== excludedId && await skillInstallationIdentity(skill) === identity) matches.push(skill);
+    }
+    return matches;
+  }
+
+  async duplicates() {
+    const groups = new Map();
+    for (const skill of this.store.listRegistrySkills()) {
+      const identity = await skillInstallationIdentity(skill);
+      const group = groups.get(identity) ?? [];
+      group.push(skill);
+      groups.set(identity, group);
+    }
+    return { groups: [...groups.values()].filter((skills) => skills.length > 1).map((skills) => ({ skills })),
+      automaticMerge: false };
+  }
+
+  async previewInstall({ sourceType, source, sourceSubpath = "" }) {
+    const type = sourceType === "git" ? "git" : "local";
+    const rawSource = String(source ?? "").trim();
+    if (!rawSource) throw skillError("INVALID_INPUT", "source is required.");
+    let cachePath = null;
+    try {
+      const root = type === "git" ? (cachePath = await this.#cloneGitSource(rawSource)) : resolve(rawSource);
+      const candidate = await this.#selectCandidate(root, sourceSubpath, { assist: false });
+      const coordinates = this.#registrationCoordinates(type, rawSource, root, candidate);
+      const matches = await this.#matchingInstallations({ sourceType: type, ...coordinates });
+      return { status: matches.length > 1 ? "duplicate_group" : matches.length ? "already_registered" : "new_install",
+        sourceType: type, ...coordinates, manifestName: candidate.manifestName,
+        existingSkillIds: matches.map((skill) => skill.skillId),
+        versionComparison: "unknown", requiresExplicitUpdate: matches.length > 0 };
+    } finally {
+      if (cachePath) await rm(cachePath, { recursive: true, force: true });
+    }
+  }
+
+  async #assertNotRegistered(coordinates, excludedId = null) {
+    const matches = await this.#matchingInstallations(coordinates, excludedId);
+    if (!matches.length) return;
+    const ids = matches.map((skill) => skill.skillId);
+    const error = skillError(matches.length > 1 ? "SKILL_DUPLICATE_GROUP" : "SKILL_ALREADY_REGISTERED",
+      `该来源的 Skill 已登记：${ids.join(", ")}。请明确选择现有 Skill 更新；不会自动新建、覆盖或合并。`);
+    error.existingSkillIds = ids;
+    throw error;
+  }
+
+  async #register({ name, description = "", sourceType, source, sourceSubpath = "", assist = true }) {
     const type = sourceType === "git" ? "git" : "local";
     const rawSource = String(source ?? "").trim();
     if (!rawSource) throw skillError("INVALID_INPUT", "source is required.");
@@ -162,6 +217,7 @@ export class SkillRegistryService {
         : resolve(rawSource);
       const candidate = await this.#selectCandidate(sourceRoot, sourceSubpath, { assist });
       const coordinates = this.#registrationCoordinates(type, rawSource, sourceRoot, candidate);
+      await this.#assertNotRegistered({ sourceType: type, ...coordinates });
       const resolvedName = String(name ?? "").trim() || candidate.manifestName;
       const resolvedDescription = String(description ?? "").trim() || candidate.manifestDescription;
 
@@ -220,11 +276,17 @@ export class SkillRegistryService {
 
   // 保留 skillId 和 Agent 绑定，重新指向一个经过验证的具体 Skill。
   async update(skillId, input = {}) {
+    return withSkillRegistryMutation(this.store, () => this.#update(skillId, input));
+  }
+
+  async #update(skillId, input = {}) {
     const existing = this.store.getRegistrySkill(skillId);
     if (!existing) throw skillError("NOT_FOUND", `Skill not found: ${skillId}`);
     const type = input.sourceType === "git" ? "git" : (input.sourceType ?? existing.sourceType);
     const source = String(input.source ?? existing.source).trim();
-    let cachePath = type === "git" && source === existing.source ? existing.cachePath : null;
+    // Explicit updates must inspect a fresh checkout, not silently reinstall the
+    // old snapshot. Legacy metadata repair is the only non-refreshing caller.
+    let cachePath = type === "git" && input.refreshSource === false && source === existing.source ? existing.cachePath : null;
     const createdCache = type === "git" && !cachePath;
     try {
       if (createdCache) cachePath = await this.#cloneGitSource(source);
@@ -235,6 +297,7 @@ export class SkillRegistryService {
         { assist: input.assist !== false }
       );
       const coordinates = this.#registrationCoordinates(type, source, sourceRoot, candidate);
+      await this.#assertNotRegistered({ sourceType: type, ...coordinates }, skillId);
       const next = {
         ...existing,
         name: String(input.name ?? existing.name).trim() || candidate.manifestName,
@@ -341,7 +404,7 @@ export class SkillRegistryService {
           });
           continue;
         }
-        const updated = await this.update(skill.skillId, { sourceSubpath: selected.relativePath });
+        const updated = await this.update(skill.skillId, { sourceSubpath: selected.relativePath, refreshSource: false });
         if (previousFailure) {
           delete repairState.failures[skill.skillId];
           repairStateChanged = true;
@@ -599,6 +662,10 @@ export class SkillRegistryService {
   // provider-neutral 物化和 Git 缓存，全部成功后才事务性删除登记与 Agent 关联。
   // 文件部分失败时登记仍存在，并尝试重新物化，operation 可用于审计和重试。
   async remove(skillId) {
+    return withSkillRegistryMutation(this.store, () => this.#remove(skillId));
+  }
+
+  async #remove(skillId) {
     const id = validateSkillId(skillId);
     const skill = this.store.getRegistrySkill(id);
     if (!skill) throw skillError("NOT_FOUND", `Skill not found: ${id}`);
