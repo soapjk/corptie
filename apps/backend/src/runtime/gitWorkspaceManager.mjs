@@ -187,6 +187,21 @@ export class GitWorkspaceManager {
     });
   }
 
+  async sessionDetailInspection(logicalSessionId) {
+    const status = await this.projectStatus(logicalSessionId);
+    // session-level inspection already bounds the inventory to current + main.
+    // Enrich only these rows; do not run full management/push inspections.
+    const worktrees = await mapConcurrentOrdered(status.worktrees, this.inspectionConcurrency, async row => {
+      if (row.availability !== "available") return { ...row, changedFiles: [], conflictFiles: [], operationState: null };
+      const operationState = await operationStateForGitDir(row.gitDirCanonicalPath);
+      const conflictFiles = operationState || /^(?:UU|AA|DD|AU|UA|DU|UD) /m.test(row.statusSummary ?? "")
+        ? (await this.gitOutput(row.path, ["diff", "--name-only", "--diff-filter=U"])).split(/\r?\n/).filter(Boolean)
+        : [];
+      return { ...row, changedFiles: changedFilesFromPorcelain(row.statusSummary ?? ""), operationState, conflictFiles };
+    });
+    return { ...status, worktrees };
+  }
+
   async taskDeletionStatus(logicalSessionId) {
     const logical = this.requireLogicalRoute(logicalSessionId);
     if (!logical.repositoryId || !logical.activeWorkspaceId) {
@@ -352,7 +367,7 @@ export class GitWorkspaceManager {
             ...worktree,
             state: dirty ? "mainDirty" : "main",
             dirty,
-            statusSummary: status.trim(),
+            statusSummary: status.trimEnd(),
             diffStat,
             mergedIntoMain: true,
             synchronizedWithMain: !dirty,
@@ -382,7 +397,7 @@ export class GitWorkspaceManager {
           ...worktree,
           state,
           dirty,
-          statusSummary: status.trim(),
+          statusSummary: status.trimEnd(),
           diffStat,
           mergedIntoMain,
           synchronizedWithMain,

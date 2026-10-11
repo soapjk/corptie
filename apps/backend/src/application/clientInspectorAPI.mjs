@@ -111,6 +111,11 @@ export class ClientInspectorAPI {
   }
   async read(identity, sessionId, resource, input = {}) {
     const scope = this.scope(sessionId, identity);
+    if (resource === "session-worktree") {
+      if (!this.readSessionWorktree) throw deviceError("ROUTE_NOT_AVAILABLE", 404);
+      // Parameters cannot select an unrelated repository or Worktree.
+      return this.readSessionWorktree(scope.sessionId);
+    }
     if (resource === "header") {
       const external = scope.session.external ?? {};
       return {

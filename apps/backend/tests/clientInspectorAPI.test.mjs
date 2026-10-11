@@ -8,6 +8,14 @@ import { ClientSessionAPI } from "../src/application/clientSessionAPI.mjs";
 import { ClientInspectorAPI } from "../src/application/clientInspectorAPI.mjs";
 
 const identity = { deviceId: "test-device" };
+test("Worktree Detail reads stay bound to the authorized Session, not supplied IDs", async () => {
+  const f = await fixture();
+  try {
+    f.inspector.readSessionWorktree = id => ({ attached: true, id });
+    assert.deepEqual(await f.inspector.read(identity, "s", "session-worktree", { worktreeId: "other" }), { attached: true, id: "s" });
+    await assert.rejects(f.inspector.read(identity, "missing", "session-worktree"), { code: "SESSION_NOT_FOUND" });
+  } finally { await f.close(); }
+});
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), "corptie-inspector-"));
   const store = new CorptieStore({ dbPath: join(dir, "db.sqlite"), configPath: join(dir, "config.json") });

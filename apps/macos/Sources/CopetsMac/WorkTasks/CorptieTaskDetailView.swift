@@ -513,7 +513,7 @@ struct CorptieTaskDetailView: View {
 
     @ViewBuilder
     private var worktreeSection: some View {
-        ConversationInspectorSection(title: L10n("Worktree"), systemImage: "arrow.triangle.branch", headerActions: {
+        ConversationInspectorSection(title: L10n("Worktree 回收"), systemImage: "arrow.triangle.branch", headerActions: {
             if isLoadingWorktree || isReclaimingWorktree {
                 ProgressView().controlSize(.small)
                     .frame(width: 28, height: 28)

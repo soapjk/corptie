@@ -23,6 +23,15 @@ struct PadConversationInspector: View {
                         workName: workspace.works.first(where: { $0.id == session.workId })?.name)
                 } secondary: {
                     primaryDetail(for: session)
+                    ConversationWorktreeCard(sessionID: session.id, refreshID: session.updatedAt,
+                        api: { ClientSessionWorktreeAPI(transport: try await connection.transport(), route: .pairedDevice) },
+                        onJob: { job in
+                            if job.status != "awaiting_confirmation" {
+                                PadOperationNotifications.shared.track(job.id, resourceName: "Worktree")
+                                if let notification = job.notification { PadOperationNotifications.shared.observe(notification) }
+                            }
+                        })
+                        .id("\(connection.serverID):\(connection.address):\(session.id)")
                 }
             } else {
                 ContentUnavailableView("会话尚未同步", systemImage: "bubble.left.and.bubble.right")

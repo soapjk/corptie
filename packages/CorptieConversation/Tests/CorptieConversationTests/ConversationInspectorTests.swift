@@ -8,6 +8,19 @@ import AppKit
 @testable import CorptieConversation
 
 struct ConversationInspectorTests {
+    #if os(macOS)
+    @Test @MainActor func worktreeCardRendersCompactWithoutDoingGitWorkInBody() throws {
+        let detail = try JSONDecoder().decode(ClientSessionWorktreeDetail.self, from: Data(#"{"attached":true,"repositoryId":"repo","mainWorktreeId":"main","mainBranch":"develop","worktree":{"worktreeId":"tree","path":"/repo/feature","branchName":"feature","isMain":false,"availability":"available","dirty":false,"changedFiles":[],"aheadOfMain":3,"behindMain":2,"conflictFiles":[]}}"#.utf8))
+        for width in [240.0, 280.0, 375.0] {
+            let host = NSHostingView(rootView: ConversationWorktreeCard(sessionID: "test", refreshID: "test",
+                api: { throw ClientConnectionError.invalidResponse }, initialDetail: detail).frame(width: width))
+            host.frame = NSRect(x: 0, y: 0, width: width, height: 400)
+            host.layoutSubtreeIfNeeded()
+            #expect(host.fittingSize.height > 80)
+            #expect(host.fittingSize.height < 250)
+        }
+    }
+    #endif
     @Test func oneDeclaredChoiceSubmitsDirectlyButCompositeFormsDoNot() throws {
         func request(_ questions: String) throws -> ConversationUserInput {
             let json = """

@@ -1,9 +1,10 @@
 import { resolve } from "node:path";
+import { sessionHasActiveRun } from "../utils/sessionPresentation.mjs";
 
 export function createProjectWorktreeStatusReader({
   store, requireSessionReference, ensureLogicalRouteForProviderSession,
   projectToolsetAuthenticatedSession, projectToolsetStatusForPath,
-  projectToolsets, gitWorkspaces, gitHubPushes
+  projectToolsets, gitWorkspaces, gitHubPushes, readLatestJob = () => null
 }) {
   function projectWorkingDirectoryForSession(sessionId) {
     const reference = requireSessionReference(sessionId);
@@ -42,7 +43,48 @@ export function createProjectWorktreeStatusReader({
     return result;
   }
 
-  async function projectWorktreeStatus(sessionId) {
+  async function worktreeDetail(sessionId) {
+    const reference = requireSessionReference(sessionId);
+    const logical = (reference.logicalSessionId ? store.getLogicalSession(reference.logicalSessionId) : null)
+      ?? store.getLogicalSessionByLegacySessionId(reference.sessionId);
+    // A provider cwd is not proof of a managed Worktree binding. Never guess
+    // another tree from the Task title or create a binding just to render UI.
+    if (!logical?.repositoryId || !logical.activeWorkspaceId || !logical.activeBinding?.boundCwd) {
+      return { attached: false, worktree: null, mainBranch: null };
+    }
+    const project = await (gitWorkspaces.sessionDetailInspection ?? gitWorkspaces.projectStatus).call(gitWorkspaces, logical.logicalSessionId);
+    const worktree = project.worktrees.find(row => row.worktreeId === logical.activeWorkspaceId);
+    const main = project.worktrees.find(row => row.worktreeId === project.mainWorktreeId);
+    if (!worktree) throw Object.assign(new Error("The current Worktree binding is unavailable."), { code: "WORKTREE_NOT_FOUND", statusCode: 409 });
+    const associated = [
+      ...(store.listLogicalSessionsByWorkspaceId?.(worktree.worktreeId) ?? [logical]),
+      ...(main ? store.listLogicalSessionsByWorkspaceId?.(main.worktreeId) ?? [] : [])
+    ];
+    const busy = associated.some(row => sessionHasActiveRun(store.getSession(row.legacySessionId)))
+      || sessionHasActiveRun(reference.metadata.session);
+    const blockedReason = worktree.isMain ? "MAIN_WORKTREE"
+      : worktree.availability !== "available" || !main || main.availability !== "available" ? "WORKTREE_UNAVAILABLE"
+      : worktree.operationState || main.operationState || worktree.conflictFiles?.length || main.conflictFiles?.length ? "GIT_OPERATION_IN_PROGRESS"
+      : worktree.isLocked || main.isLocked ? "WORKTREE_LOCKED"
+      : worktree.isDetached || !worktree.branchName || !main.branchName ? "DETACHED_HEAD"
+      : busy ? "SESSION_BUSY"
+      : worktree.dirty !== false || main.dirty !== false ? "UNCOMMITTED_CHANGES"
+      : null;
+    const latest = readLatestJob(logical.repositoryId);
+    const job = ["awaiting_confirmation", "queued", "running", "paused", "failed", "cancellation_requested", "replanning"].includes(latest?.status)
+      && latest?.plan?.items?.some(item => item.worktreeId === worktree.worktreeId) ? latest : null;
+    return { attached: true, repositoryId: logical.repositoryId, mainWorktreeId: project.mainWorktreeId, job,
+      mainBranch: main?.branchName ?? project.mainBranch ?? null, blockedReason,
+      worktree: { worktreeId: worktree.worktreeId, path: worktree.path, branchName: worktree.branchName,
+        isMain: worktree.isMain, availability: worktree.availability, dirty: worktree.dirty ?? null,
+        changedFiles: (worktree.changedFiles ?? []).slice(0, 20), changedFileCount: worktree.changedFiles?.length ?? 0,
+        aheadOfMain: worktree.aheadOfMain ?? null,
+        behindMain: worktree.behindMain ?? null, operationState: worktree.operationState ?? null,
+        conflictFiles: (worktree.conflictFiles ?? []).slice(0, 100) } };
+  }
+
+  async function projectWorktreeStatus(sessionId, options = {}) {
+    if (options.detailCard) return worktreeDetail(sessionId);
     const reference = requireSessionReference(sessionId);
     const session = reference.metadata.session;
     const logical = (reference.logicalSessionId ? store.getLogicalSession(reference.logicalSessionId) : null)
@@ -80,6 +122,6 @@ export function createProjectWorktreeStatusReader({
 
   return {
     projectWorkingDirectoryForSession, projectToolsetStatus,
-    rebuildAndRestartProjectService, projectWorktreeStatus
+    rebuildAndRestartProjectService, projectWorktreeStatus, worktreeDetail
   };
 }

@@ -1,4 +1,5 @@
 import Combine
+import CorptieClientCore
 import CorptieConversation
 import AppKit
 import SwiftUI
@@ -99,6 +100,18 @@ struct SessionDetailPanel: View {
             contextReferencesSection
 
             ScheduledSessionStrip(session: session)
+
+            ConversationWorktreeCard(sessionID: session.id, refreshID: session.updatedAt,
+                api: {
+                    ClientSessionWorktreeAPI(transport: try BackendTransport(
+                        endpoint: BackendEndpoint(CorptieAppEnvironment.backendBaseURL)), route: .desktop)
+                }, onJob: { job in
+                    if job.status != "awaiting_confirmation" {
+                        OperationNotificationManager.shared.track(jobID: job.id, resourceName: "Worktree")
+                        if let notification = job.notification { OperationNotificationManager.shared.observe(notification) }
+                    }
+                }, localize: { L10n($0) })
+                .id(session.id)
 
             if detailKind == .workDetail,
                let work = entityClient.works.first(where: { $0.id == session.workId }) {
