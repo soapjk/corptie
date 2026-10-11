@@ -469,6 +469,17 @@ export function handleEntityHttpRequest({
         if (request.method === "GET" && path === "/skills") {
           return sendJson(response, 200, { skills: skillRegistryService.list() });
         }
+        if (request.method === "GET" && path === "/skills/duplicates") {
+          return sendJson(response, 200, await skillRegistryService.duplicates());
+        }
+        if (request.method === "POST" && path === "/skills/install-preview") {
+          const input = await readJson(request);
+          try {
+            return sendJson(response, 200, await skillRegistryService.previewInstall(input));
+          } catch (error) {
+            throw apiError(error?.code ?? "SKILL_PREVIEW_FAILED", error?.message ?? "Skill 安装预检失败。", 400);
+          }
+        }
         if (request.method === "POST" && path === "/skills/discover") {
           const input = await readJson(request);
           try {
@@ -501,7 +512,8 @@ export function handleEntityHttpRequest({
             onEntityChanged?.("SkillChanged", { action: "created", entity: skill });
             return sendJson(response, 201, { skill });
           } catch (error) {
-            const wrapped = apiError(error?.code ?? "SKILL_REGISTER_FAILED", error?.message ?? "Skill 登记失败。", 400);
+            const wrapped = apiError(error?.code ?? "SKILL_REGISTER_FAILED", error?.message ?? "Skill 登记失败。",
+              ["SKILL_ALREADY_REGISTERED", "SKILL_DUPLICATE_GROUP"].includes(error?.code) ? 409 : 400);
             wrapped.stage = error?.stage ?? "registration";
             throw wrapped;
           }
@@ -546,6 +558,7 @@ export function handleEntityHttpRequest({
             const input = await readJson(request);
             try {
               const skill = await skillRegistryService.update(id, input);
+              onEntityChanged?.("SkillChanged", { action: "updated", entity: skill });
               return sendJson(response, 200, { skill });
             } catch (error) {
               const wrapped = apiError(error?.code ?? "SKILL_UPDATE_FAILED", error?.message ?? "Skill 更新失败。", 400);

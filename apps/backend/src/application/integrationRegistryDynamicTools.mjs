@@ -17,6 +17,13 @@ export const integrationRegistryDynamicTools = Object.freeze([
   tool("corptie_integration_list", "List registered MCP Servers and Skills in Corptie. Registration does not assign a resource to an Agent or make it callable in a Session.", {}),
   tool("corptie_mcp_register", "Register and verify an independent MCP Server in Corptie when the user requests installation. Use http (or streamable-http) for Streamable HTTP. For stdio, command and cwd must be absolute paths. Protocol headers are negotiated automatically. Do not put secrets in tool arguments; credentialed installations use the native MCP management UI. Returns the saved Server and its observed tools; does not assign it to any Agent. Reuse installRequestId for retries.", mcp, ["name", "transport"]),
   tool("corptie_skill_discover", "Inspect a local directory or Git repository for installable Skill packages before registration. Returns candidates and sourceSubpath; does not install or assign a Skill.", source, ["sourceType", "source"]),
+  tool("corptie_skill_install_preview", "Check the selected Skill source for existing installations before installing. Does not register, update, merge or assign. An existing source requires an explicit update; manifest equality does not establish package version equality.", {
+    ...source, sourceSubpath: { type: "string" }
+  }, ["sourceType", "source"]),
+  tool("corptie_skill_duplicates_list", "List same-source duplicate Skill registrations. Read-only; never merge or remove installations without explicit user confirmation.", {}),
+  tool("corptie_skill_update", "Update one exact registered Skill only when the user requests an update. Preserves its Skill ID and Agent assignments. Do not use as an automatic fallback from a duplicate installation error.", {
+    skillId: text, ...source, name: text, description: { type: "string" }, sourceSubpath: { type: "string" }
+  }, ["skillId"]),
   tool("corptie_skill_register", "Register and materialize a Skill from a local directory or Git repository when the user requests installation. Use sourceSubpath from discovery for a multi-Skill repository. Bundled MCP descriptors are handled by the existing Skill installer. Does not assign the Skill to any Agent.", {
     ...source, name: text, description: { type: "string" }, sourceSubpath: { type: "string" }
   }, ["sourceType", "source"])
@@ -47,6 +54,16 @@ export async function callIntegrationRegistryDynamicTool({ mcpRegistryService, s
     }
     case "corptie_skill_discover":
       return skillRegistryService.discover({ ...args, assist: false });
+    case "corptie_skill_install_preview":
+      return skillRegistryService.previewInstall(args);
+    case "corptie_skill_duplicates_list":
+      return skillRegistryService.duplicates();
+    case "corptie_skill_update": {
+      const { skillId, ...changes } = args;
+      const skill = await skillRegistryService.update(skillId, { ...changes, assist: false });
+      onChanged?.("SkillChanged", { action: "updated", entity: skill });
+      return { skill, assignmentsPreserved: true };
+    }
     case "corptie_skill_register": {
       const skill = await skillRegistryService.register({ ...args, assist: false });
       onChanged?.("SkillChanged", { action: "created", entity: skill });

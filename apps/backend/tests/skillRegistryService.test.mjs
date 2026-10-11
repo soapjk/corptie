@@ -45,6 +45,85 @@ async function pathExists(path) {
   }
 }
 
+test("same-source registration is serialized and aliases cannot create duplicate IDs", async () => {
+  const value = await fixture();
+  try {
+    const input = { sourceType: "local", source: value.source, sourceSubpath: "skills/alpha", assist: false };
+    assert.equal((await value.service.previewInstall(input)).status, "new_install");
+    assert.equal(value.service.list().length, 0);
+    const second = new SkillRegistryService({ store: value.store, skillsDirs: { test: value.runtime }, cacheRoot: value.cacheRoot });
+    const results = await Promise.allSettled([value.service.register(input), second.register(input)]);
+    assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+    assert.equal(results.find((result) => result.status === "rejected").reason.code, "SKILL_ALREADY_REGISTERED");
+    assert.equal(value.service.list().length, 1);
+    const alias = join(value.directory, "alias");
+    await symlink(join(value.source, "skills", "alpha"), alias);
+    await assert.rejects(value.service.register({ source: alias, assist: false }), { code: "SKILL_ALREADY_REGISTERED" });
+    const first = value.service.list()[0];
+    assert.equal((await value.service.previewInstall(input)).versionComparison, "unknown");
+    const other = await value.service.register({ ...input, sourceSubpath: "skills/investrace", name: first.name });
+    assert.notEqual(other.skillId, first.skillId);
+    await assert.rejects(value.service.update(other.skillId, { sourceSubpath: "skills/alpha", assist: false }), { code: "SKILL_ALREADY_REGISTERED" });
+    assert.equal(value.service.get(other.skillId).sourceSubpath, "skills/investrace");
+    const updated = await value.service.update(first.skillId, { name: "renamed", assist: false });
+    assert.equal(updated.skillId, first.skillId);
+    assert.equal(value.service.list().length, 2);
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("legacy duplicate groups are reported and preserved without picking a survivor", async () => {
+  const value = await fixture();
+  try {
+    const input = { sourceType: "local", source: value.source, sourceSubpath: "skills/alpha", assist: false };
+    const first = await value.service.register(input);
+    const second = value.store.createRegistrySkill({ ...first, id: undefined });
+    assert.notEqual(first.skillId, second.skillId);
+    const preview = await value.service.previewInstall(input);
+    assert.equal(preview.status, "duplicate_group");
+    assert.deepEqual(new Set(preview.existingSkillIds), new Set([first.skillId, second.skillId]));
+    const report = await value.service.duplicates();
+    assert.equal(report.groups.length, 1);
+    assert.equal(report.automaticMerge, false);
+    await assert.rejects(value.service.register(input), { code: "SKILL_DUPLICATE_GROUP" });
+    assert.equal(value.service.list().length, 2);
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("explicit Git update checks out fresh content while preserving ID and assignments", async () => {
+  const value = await fixture();
+  try {
+    let version = "one";
+    let clones = 0;
+    const service = new SkillRegistryService({ store: value.store, cacheRoot: value.cacheRoot,
+      skillsDirs: { test: value.runtime }, exec: async (command, args) => {
+        assert.equal(command, "git");
+        const target = args.at(-1);
+        clones++;
+        await mkdir(target, { recursive: true });
+        await writeFile(join(target, "SKILL.md"), `---\nname: sample\n---\n${version}`);
+      } });
+    const first = await service.register({ sourceType: "git", source: "https://github.com/example/sample.git", assist: false });
+    const agent = value.store.createAgent({ name: "Test" });
+    value.store.setAgentRegistrySkills(agent.agentId, [first.skillId]);
+    version = "two";
+    const updated = await service.update(first.skillId, { assist: false });
+    assert.equal(clones, 2);
+    assert.equal(updated.skillId, first.skillId);
+    assert.notEqual(updated.cachePath, first.cachePath);
+    assert.match(await readFile(join(value.runtime, first.skillId, "SKILL.md"), "utf8"), /two/);
+    assert.deepEqual(value.store.listRegistrySkillIdsForAgent(agent.agentId), [first.skillId]);
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
 test("multi-Skill source requires an explicit candidate and materializes the selected Skill", async () => {
   const value = await fixture();
   try {

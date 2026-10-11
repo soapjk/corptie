@@ -547,6 +547,34 @@ test("Task restore endpoint preserves an actionable Worktree rebuild failure", a
   }
 });
 
+test("Skill HTTP preview and duplicate guard share the installer and update emits refresh", async () => {
+  const services = await createServices();
+  try {
+    const source = join(services.directory, "source");
+    await mkdir(source);
+    await writeFile(join(source, "SKILL.md"), "---\nname: sample\n---\nInstructions\n");
+    const body = { sourceType: "local", source, assist: false };
+    const preview = await callApi({ ...services, method: "POST", pathname: "/skills/install-preview", body });
+    assert.equal(preview.body.status, "new_install");
+    assert.equal(services.store.listRegistrySkills().length, 0);
+    const installed = await callApi({ ...services, method: "POST", pathname: "/skills", body });
+    assert.equal(installed.statusCode, 201);
+    const duplicate = await callApi({ ...services, method: "POST", pathname: "/skills", body });
+    assert.equal(duplicate.statusCode, 409);
+    assert.equal(services.store.listRegistrySkills().length, 1);
+    const groups = await callApi({ ...services, method: "GET", pathname: "/skills/duplicates" });
+    assert.deepEqual(groups.body.groups, []);
+    const updated = await callApi({ ...services, method: "PATCH", pathname: `/skills/${encodeURIComponent(installed.body.skill.skillId)}`,
+      body: { name: "renamed", assist: false } });
+    assert.equal(updated.statusCode, 200);
+    assert.equal(updated.body.skill.skillId, installed.body.skill.skillId);
+    assert.equal(services.entityEvents.at(-1).payload.action, "updated");
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
 test("GET /skills/runtime-events exposes filterable persisted stage diagnostics", async () => {
   const services = await createServices();
   try {

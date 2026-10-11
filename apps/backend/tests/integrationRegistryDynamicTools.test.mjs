@@ -31,7 +31,8 @@ test("registration domain is discoverable for MCP and Skill and shared across Pr
   for (const providerId of ["codex-app-server", "claude-code", "openclacky"]) {
     const contract = catalog.domainContract({ ...scope, providerId }, "integration-registry");
     assert.deepEqual(contract.tools.map((tool) => tool.canonicalName).sort(), [
-      "corptie_integration_list", "corptie_mcp_register", "corptie_skill_discover", "corptie_skill_register"
+      "corptie_integration_list", "corptie_mcp_register", "corptie_skill_discover",
+      "corptie_skill_duplicates_list", "corptie_skill_install_preview", "corptie_skill_register", "corptie_skill_update"
     ]);
     for (const entry of catalog.entries(scope, { domains: ["integration-registry"] })) {
       assert.deepEqual([...entry.eligibleSurfaces].sort(), ["generated_authenticated_mcp", "native_dynamic", "restricted_gateway"]);
@@ -68,6 +69,16 @@ test("model registration uses real MCP and Skill installers, persists results an
     assert.equal(listed.servers[0].serverId, installed.server.serverId);
     assert.equal(listed.skills[0].skillId, skill.skill.skillId);
     assert.deepEqual(events.map((event) => event.type), ["McpServerChanged", "SkillChanged"]);
+    const preview = await call("corptie_skill_install_preview", { sourceType: "local", source });
+    assert.equal(preview.status, "already_registered");
+    assert.deepEqual(preview.existingSkillIds, [skill.skill.skillId]);
+    await assert.rejects(call("corptie_skill_register", { sourceType: "local", source }), { code: "SKILL_ALREADY_REGISTERED" });
+    assert.equal(events.length, 2);
+    assert.deepEqual((await call("corptie_skill_duplicates_list", {})).groups, []);
+    const updated = await call("corptie_skill_update", { skillId: skill.skill.skillId, name: "Renamed" });
+    assert.equal(updated.skill.skillId, skill.skill.skillId);
+    assert.equal(updated.skill.name, "Renamed");
+    assert.equal(events.at(-1).payload.action, "updated");
     await assert.rejects(call("corptie_mcp_register", { ...input, headers: { Authorization: "secret" } }));
   } finally {
     await store.close();
