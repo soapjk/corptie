@@ -3,6 +3,18 @@ import Testing
 @testable import CorptieClientCore
 
 struct SessionAPITests {
+    @Test func messagePageDecodesAuthoritativeAndSupplementalWindowIdentity() throws {
+        let page = try JSONDecoder().decode(ClientMessagePage.self, from: Data(#"""
+        {"schemaVersion":2,"sessionId":"session:test","revision":7,
+         "items":[{"id":"boundary","type":"userMessage","text":"question"},{"id":"base","type":"mcpToolCall","text":"work"}],
+         "authoritativeItemIds":["base"],"supplementalItemIds":["boundary"],
+         "hasEarlier":true,"nextBefore":"base"}
+        """#.utf8))
+        #expect(page.authoritativeItemIds == ["base"])
+        #expect(page.supplementalItemIds == ["boundary"])
+        #expect(page.nextBefore == "base")
+    }
+
     @MainActor
     @Test func sharedTimeSeparatorUsesFiveMinuteGapAndCalendarDay() {
         var calendar = Calendar(identifier: .gregorian)

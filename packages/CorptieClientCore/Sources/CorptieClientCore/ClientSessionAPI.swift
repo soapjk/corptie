@@ -258,6 +258,8 @@ public struct ClientMessagePage: Decodable, Sendable {
     public let schemaVersion: Int
     public let sessionId: String
     public let items: [ClientMessage]
+    public let authoritativeItemIds: [String]?
+    public let supplementalItemIds: [String]?
     public let hasEarlier: Bool
     public let nextBefore: String?
     public let revision: Int?

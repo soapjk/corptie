@@ -524,6 +524,36 @@ test("stored latest timeline window is bounded and reports earlier history", asy
   }
 });
 
+test("latest timeline window distinguishes authoritative rows from supplemented turn boundaries", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-latest-boundaries-"));
+  const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
+  await store.initialize();
+  try {
+    store.upsertSession({ id: "latest-boundaries", title: "Boundaries", agent: "Codex", provider: "codex-app-server", status: "running" });
+    store.upsertTimelineItemProjection("latest-boundaries", {
+      id: "boundary-user", turnId: "turn:one", type: "userMessage", text: "question",
+      createdAt: "2026-01-01T00:00:00.000Z"
+    });
+    store.upsertTimelineItemProjection("latest-boundaries", {
+      id: "process-one", turnId: "turn:one", type: "mcpToolCall", text: "first",
+      createdAt: "2026-01-01T00:00:01.000Z"
+    });
+    store.upsertTimelineItemProjection("latest-boundaries", {
+      id: "process-two", turnId: "turn:one", type: "mcpToolCall", text: "second",
+      createdAt: "2026-01-01T00:00:02.000Z"
+    });
+
+    const window = store.getLatestTimelineItemWindow("latest-boundaries", { limit: 2 });
+    assert.deepEqual(window.items.map((item) => item.id), ["boundary-user", "process-one", "process-two"]);
+    assert.deepEqual(window.authoritativeItemIds, ["process-one", "process-two"]);
+    assert.deepEqual(window.supplementalItemIds, ["boundary-user"]);
+    assert.equal(window.hasEarlier, true);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Timeline history uses stable keyset pages and never needs a reconstructed detail", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-history-keyset-"));
   const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });

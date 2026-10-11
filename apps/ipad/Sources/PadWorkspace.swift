@@ -556,6 +556,8 @@ final class PadWorkspace {
     @ObservationIgnored private var totalDisplayEntryCount = 0
     @ObservationIgnored private var visibleMessageLimits: [String: Int] = [:]
     @ObservationIgnored private var inspectorStores: [String: PadInspectorStore] = [:]
+    @ObservationIgnored private var lastDuplicateProjectionDiagnostic = ""
+    private static let timelineLog = Logger(subsystem: "com.corptie.mobile", category: "TimelineProjection")
     private static let initialDisplayWeight = 20
     private static let historyDisplayWeightIncrement = 100
     private(set) var visibleMessageLimit = 20
@@ -770,10 +772,31 @@ final class PadWorkspace {
         projectedMessageLimit = visibleMessageLimit
         let allEntries = ConversationTimeline.makeEntries(from: source)
         totalDisplayEntryCount = allEntries.count
-        let nextEntries = Self.visibleEntries(from: allEntries, limit: visibleMessageLimit)
+        let visibleEntries = Self.visibleEntries(from: allEntries, limit: visibleMessageLimit)
+        var entryPositions: [String: Int] = [:]
+        entryPositions.reserveCapacity(visibleEntries.count)
+        var nextEntries: [ConversationEntry<ClientMessage>] = []
+        nextEntries.reserveCapacity(visibleEntries.count)
+        var duplicateEntryCount = 0
+        for entry in visibleEntries {
+            if let index = entryPositions[entry.id] {
+                nextEntries[index] = entry
+                duplicateEntryCount += 1
+            } else {
+                entryPositions[entry.id] = nextEntries.count
+                nextEntries.append(entry)
+            }
+        }
+        if duplicateEntryCount > 0 {
+            let diagnostic = "\(selection ?? "none")|\(lastTimelineRevision ?? -1)"
+            if diagnostic != lastDuplicateProjectionDiagnostic {
+                lastDuplicateProjectionDiagnostic = diagnostic
+                Self.timelineLog.fault("Recovered \(duplicateEntryCount, privacy: .public) duplicate Timeline display identities for \(diagnostic, privacy: .public)")
+            }
+        }
         let tailChanged = !Self.sameDisplayedTail(displayEntries.last, nextEntries.last)
         displayEntries = nextEntries
-        displayEntryByID = Dictionary(uniqueKeysWithValues: nextEntries.map { ($0.id, $0) })
+        displayEntryByID = Dictionary(nextEntries.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
         if tailChanged { tailDisplayRevision &+= 1 }
         let now = Date()
         var previousMessageDate: Date?
@@ -789,11 +812,11 @@ final class PadWorkspace {
             previousMessageDate = date
         }
         timeSeparatorTextByMessageID = separators
-        processSteps = Dictionary(uniqueKeysWithValues: displayEntries.compactMap { entry in
+        processSteps = Dictionary(displayEntries.compactMap { entry in
             guard case let .process(_, items) = entry.kind else { return nil }
             return (entry.id, ConversationExecutionProjection.steps(for: items))
-        })
-        processPresentations = Dictionary(uniqueKeysWithValues: displayEntries.compactMap { entry in
+        }, uniquingKeysWith: { _, latest in latest })
+        processPresentations = Dictionary(displayEntries.compactMap { entry in
             guard case let .process(_, items) = entry.kind else { return nil }
             let state = ConversationProcessPresentation.state(for: items)
             let currentStepTitle: String? = if state == .running,
@@ -809,7 +832,7 @@ final class PadWorkspace {
                 state: state, count: items.count,
                 duration: ConversationProcessPresentation.durationText(for: items, now: now),
                 currentStepTitle: currentStepTitle))
-        })
+        }, uniquingKeysWith: { _, latest in latest })
         activeProcessEntryID = displayEntries.last(where: {
             processPresentations[$0.id]?.state == .running
         })?.id
@@ -855,20 +878,20 @@ final class PadWorkspace {
 
     /// A window is not a replacement for all loaded history. During submission,
     /// an empty projection is not proof that the conversation was cleared.
-    func applyLatestWindow(_ items: [ClientMessage], cursor: String?, revision: Int?) {
+    func applyLatestWindow(
+        _ items: [ClientMessage], cursor: String?, revision: Int?,
+        authoritativeItemIDs: [String]? = nil, supplementalItemIDs: [String]? = nil
+    ) {
         if let revision, let previous = lastTimelineRevision, revision < previous { return }
         if items.isEmpty, !messages.isEmpty, let revision, let previous = lastTimelineRevision, revision == previous { return }
         if items.isEmpty, !messages.isEmpty, !(outgoingMessages[selection ?? ""] ?? []).isEmpty { return }
         let previous = messages
-        if let first = items.first?.id, let overlap = messages.firstIndex(where: { $0.id == first }) {
-            messages = Array(messages.prefix(overlap)) + items
-            // With no retained prefix this is a replacement of the latest page,
-            // so recover its history cursor after reconnect/snapshot repair.
-            if overlap == 0 { before = cursor }
-        } else {
-            messages = items
-            before = cursor
-        }
+        let reconciliation = ClientTimelineWindowReconciler.reconcile(
+            existing: messages, incoming: items, nextBefore: cursor, existingBefore: before,
+            authoritativeItemIds: authoritativeItemIDs, supplementalItemIds: supplementalItemIDs
+        )
+        messages = reconciliation.messages
+        before = reconciliation.before
         if let revision { lastTimelineRevision = revision }
         if let selection {
             let received = Set(items.map(\.id))
@@ -1378,7 +1401,9 @@ final class PadWorkspace {
         capabilities = snapshot.capabilities
         if let incoming = snapshot.usage { applyUsage(incoming) }
         mergeComposerConfiguration(snapshot.composer, capabilities: snapshot.capabilities)
-        applyLatestWindow(snapshot.messages.items, cursor: snapshot.messages.nextBefore, revision: snapshot.revision)
+        applyLatestWindow(snapshot.messages.items, cursor: snapshot.messages.nextBefore, revision: snapshot.revision,
+            authoritativeItemIDs: snapshot.messages.authoritativeItemIds,
+            supplementalItemIDs: snapshot.messages.supplementalItemIds)
         if let selection { saveResidentState(for: selection) }
         isLoadingDetail = false
         liveStatus = "实时连接正常"
@@ -1635,7 +1660,9 @@ final class PadWorkspace {
                 before = page.nextBefore
                 historyRestorationAnchor = anchorID
             } else {
-                applyLatestWindow(page.items, cursor: page.nextBefore, revision: page.revision)
+                applyLatestWindow(page.items, cursor: page.nextBefore, revision: page.revision,
+                    authoritativeItemIDs: page.authoritativeItemIds,
+                    supplementalItemIDs: page.supplementalItemIds)
                 isLoadingDetail = false
             }
             saveResidentState(for: id)

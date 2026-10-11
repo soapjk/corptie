@@ -429,17 +429,24 @@ extension PadWorkspace {
             guard caps.readMessages else { messages = []; return }
             let page = try await api.messages(sessionId: caps.sessionId)
             var latest = page.items, cursor = page.nextBefore
+            var authoritativeItemIDs = page.authoritativeItemIds
+            let supplementalItemIDs = page.supplementalItemIds
             let previousTail = messages.last?.id
             // Recover a disconnected gap; do not splice unrelated history onto the newest page.
             var pages = 1
             while let old = previousTail, !latest.contains(where: { $0.id == old }), let next = cursor, pages < 25 {
                 let earlier = try await api.messages(sessionId: caps.sessionId, before: next)
                 latest = Self.merge(earlier.items, latest)
+                if authoritativeItemIDs != nil {
+                    authoritativeItemIDs = earlier.items.map(\.id) + (authoritativeItemIDs ?? [])
+                }
                 cursor = earlier.nextBefore
                 pages += 1
             }
             guard !Task.isCancelled, selection == id, generation == timelineGeneration else { return }
-            applyLatestWindow(latest, cursor: cursor, revision: page.revision)
+            applyLatestWindow(latest, cursor: cursor, revision: page.revision,
+                authoritativeItemIDs: authoritativeItemIDs,
+                supplementalItemIDs: supplementalItemIDs)
             await loadUsage(api, sessionID: id, routedID: caps.sessionId, generation: generation)
             guard !Task.isCancelled, selection == id, generation == timelineGeneration else { return }
             if caps.composer == true, composerConfiguration == nil

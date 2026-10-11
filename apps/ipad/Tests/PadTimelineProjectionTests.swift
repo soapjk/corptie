@@ -182,6 +182,51 @@ struct PadTimelineProjectionTests {
         #expect(workspace.messages.first?.executionPlan?.revision == 2)
     }
 
+    @Test func latestWindowReconcilesSupplementalBoundaryWithoutDuplicateDisplayIdentity() throws {
+        let name = "pad-window-boundary-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let workspace = PadWorkspace(defaults: defaults)
+        workspace.selection = "session:window"
+        workspace.messages = try JSONDecoder().decode([ClientMessage].self, from: Data(#"""
+        [
+          {"id":"history","type":"agentMessage","text":"older history"},
+          {"id":"boundary","turnId":"turn:new","type":"userMessage","text":"old boundary"},
+          {"id":"base","turnId":"turn:new","type":"mcpToolCall","text":"old tool state","turnStatus":"running"}
+        ]
+        """#.utf8))
+        let incoming = try JSONDecoder().decode([ClientMessage].self, from: Data(#"""
+        [
+          {"id":"boundary","turnId":"turn:new","type":"userMessage","text":"updated boundary"},
+          {"id":"base","turnId":"turn:new","type":"mcpToolCall","text":"updated tool state","turnStatus":"completed"}
+        ]
+        """#.utf8))
+
+        workspace.applyLatestWindow(incoming, cursor: "before:base", revision: 2,
+            authoritativeItemIDs: ["base"], supplementalItemIDs: ["boundary"])
+
+        #expect(workspace.messages.map(\.id) == ["history", "boundary", "base"])
+        #expect(workspace.messages.first(where: { $0.id == "boundary" })?.text == "updated boundary")
+        #expect(workspace.messages.first(where: { $0.id == "base" })?.text == "updated tool state")
+        #expect(Set(workspace.messages.map(\.id)).count == workspace.messages.count)
+        #expect(Set(workspace.displayEntries.map(\.id)).count == workspace.displayEntries.count)
+    }
+
+    @Test func malformedDuplicateSourceIdentityIsRecoveredBeforeDictionaryProjection() {
+        let name = "pad-duplicate-projection-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let workspace = PadWorkspace(defaults: defaults)
+        workspace.selection = "session:duplicates"
+        workspace.messages = [
+            ClientMessage(id: "same", text: "old"),
+            ClientMessage(id: "same", text: "latest")
+        ]
+
+        #expect(workspace.displayEntries.map(\.id) == ["message:same"])
+        #expect(workspace.displayEntryByID.count == 1)
+    }
+
     @Test func settledProcessDoesNotKeepCurrentStepSubtitle() throws {
         let name = "pad-settled-process-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!

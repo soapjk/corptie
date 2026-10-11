@@ -266,8 +266,19 @@ export class ClientSessionAPI {
     }
     const items = projected.slice(start);
     const hasEarlier = window.hasEarlier === true || start > 0;
-    const result = { schemaVersion: 1, sessionId, revision: window.revision, items,
-      hasEarlier, nextBefore: hasEarlier && items.length ? items[0].id : null };
+    const returnedIDs = new Set(items.map((item) => item.id));
+    const authoritativeItemIds = window.authoritativeItemIds?.filter((id) => returnedIDs.has(id));
+    const supplementalItemIds = window.supplementalItemIds?.filter((id) => returnedIDs.has(id));
+    const authoritativeBefore = window.authoritativeItemIds?.[0] ?? items[0]?.id ?? null;
+    const result = {
+      schemaVersion: authoritativeItemIds ? 2 : 1,
+      sessionId,
+      revision: window.revision,
+      items,
+      ...(authoritativeItemIds ? { authoritativeItemIds, supplementalItemIds: supplementalItemIds ?? [] } : {}),
+      hasEarlier,
+      nextBefore: hasEarlier ? authoritativeBefore : null
+    };
     if (Buffer.byteLength(JSON.stringify(result)) > 8 * 1024 * 1024) throw deviceError("MESSAGE_WINDOW_TOO_LARGE", 413);
     return result;
   }

@@ -754,6 +754,24 @@ test("uncertain dispatch is never automatically replayed; reads project only pub
   } finally { await f.close(); }
 });
 
+test("message windows preserve authoritative identity and paginate from the authoritative boundary", async () => {
+  const f = await fixture();
+  try {
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks, readWindow: async () => ({
+      revision: 8,
+      hasEarlier: true,
+      items: ["boundary", "base-one", "base-two"].map(id => ({ id, type: "agentMessage", text: id })),
+      authoritativeItemIds: ["base-one", "base-two"],
+      supplementalItemIds: ["boundary"]
+    }) });
+    const page = await api.messages(identity, "session:test", new URLSearchParams());
+    assert.equal(page.schemaVersion, 2);
+    assert.deepEqual(page.authoritativeItemIds, ["base-one", "base-two"]);
+    assert.deepEqual(page.supplementalItemIds, ["boundary"]);
+    assert.equal(page.nextBefore, "base-one");
+  } finally { await f.close(); }
+});
+
 test("stable logical Session ids resolve to the current executable Session", async () => {
   const f = await fixture();
   try {

@@ -3,6 +3,62 @@ import Foundation
 @testable import CorptieClientCore
 
 struct ResidentTimelineRepositoryTests {
+    @Test func latestWindowReconciliationUsesOnlyAuthoritativeRowsAsTheReplacementBoundary() {
+        let existing = ["history", "boundary", "base-old", "tail-old"].map {
+            ClientMessage(id: $0, text: "old:\($0)")
+        }
+        let incoming = ["boundary", "base-new", "tail-new"].map {
+            ClientMessage(id: $0, text: "new:\($0)")
+        }
+        let result = ClientTimelineWindowReconciler.reconcile(
+            existing: existing,
+            incoming: incoming,
+            nextBefore: "new-cursor",
+            existingBefore: "old-cursor",
+            authoritativeItemIds: ["base-old", "base-new", "tail-new"],
+            supplementalItemIds: ["boundary"]
+        )
+
+        #expect(result.messages.map(\.id) == ["history", "boundary", "base-new", "tail-new"])
+        #expect(result.messages[1].text == "new:boundary")
+        #expect(result.before == "old-cursor")
+        #expect(result.retainedPrefix)
+        #expect(Set(result.messages.map(\.id)).count == result.messages.count)
+    }
+
+    @Test func latestWindowReconciliationHandlesReplacementPartialOverlapAndReordering() {
+        let existing = ["history", "a", "b", "c"].map { ClientMessage(id: $0, text: $0) }
+        let reordered = ["boundary", "c", "b"].map { ClientMessage(id: $0, text: "new:\($0)") }
+        let partial = ClientTimelineWindowReconciler.reconcile(
+            existing: existing, incoming: reordered, nextBefore: "new", existingBefore: "old",
+            authoritativeItemIds: ["c", "b"], supplementalItemIds: ["boundary"]
+        )
+        #expect(partial.messages.map(\.id) == ["history", "a", "boundary", "c", "b"])
+        #expect(partial.before == "old")
+
+        let replacement = ClientTimelineWindowReconciler.reconcile(
+            existing: existing,
+            incoming: [ClientMessage(id: "entirely-new", text: "new")],
+            nextBefore: "replacement", existingBefore: "old",
+            authoritativeItemIds: ["entirely-new"]
+        )
+        #expect(replacement.messages.map(\.id) == ["entirely-new"])
+        #expect(replacement.before == "replacement")
+        #expect(!replacement.retainedPrefix)
+    }
+
+    @Test func legacyLatestWindowFallbackDeduplicatesMalformedInputsWithoutTrapping() {
+        let duplicate = ClientMessage(id: "duplicate", text: "latest")
+        let result = ClientTimelineWindowReconciler.reconcile(
+            existing: [ClientMessage(id: "history", text: "history"), duplicate, duplicate],
+            incoming: [duplicate, duplicate],
+            nextBefore: nil, existingBefore: "old",
+            authoritativeItemIds: nil
+        )
+        #expect(result.messages.map(\.id) == ["history", "duplicate"])
+        #expect(result.duplicateCount == 2)
+    }
+
     @Test func coalescedChangesKeepContiguousRevisionsAndFinalDeletion() throws {
         var repository = ClientTimelineRepository()
         repository.store(state(revision: 1), for: "session:test")
