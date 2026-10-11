@@ -4,6 +4,16 @@ import Testing
 
 @Suite("Operation notifications") @MainActor
 struct OperationNotificationTests {
+    @Test func automaticFollowNotifiesWithoutAnOpenCardAndDeduplicatesAfterRestart() throws {
+        let store = defaults()
+        let ledger = OperationNotificationLedger(defaults: store, scope: "server")
+        let value = try JSONDecoder().decode(OperationJobSnapshot.self, from: Data(#"{"schemaVersion":1,"id":"auto-job","repositoryId":"repo","status":"completed","phase":"completed","updatedAt":"2026-10-11T00:00:00Z","audit":[],"revision":3,"automaticFollow":true,"plan":{"operationType":"sync"}}"#.utf8))
+        let event = try #require(ledger.observe(value))
+        #expect(event.outcome == .succeeded)
+        #expect(ledger.consume(event))
+        #expect(OperationNotificationLedger(defaults: store, scope: "server").observe(value) == nil)
+    }
+
     private func defaults() -> UserDefaults {
         UserDefaults(suiteName: "OperationNotifications.\(UUID().uuidString)")!
     }

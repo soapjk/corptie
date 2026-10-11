@@ -8,6 +8,18 @@ import AppKit
 @testable import CorptieConversation
 
 struct ConversationInspectorTests {
+    @Test func worktreePreferenceUsesSharedNativeToggleWithoutAutoRebaseInViewCode() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/CorptieConversation/ConversationWorktreeCard.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        #expect(source.contains("Toggle(localize(\"自动跟随主分支\")"))
+        #expect(source.contains("detail?.autoFollow?.enabled == true"))
+        #expect(source.contains("if !tree.isMain, detail?.autoFollow != nil"))
+        #expect(source.contains("setAutoFollow(sessionID: sessionID, worktreeID: worktreeID, enabled: enabled)"))
+        #expect(!source.contains("automaticFollow: "))
+    }
+
     @Test func taskInformationDefaultsToSummaryWithOneBottomDisclosure() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

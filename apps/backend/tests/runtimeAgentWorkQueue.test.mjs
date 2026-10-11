@@ -2,6 +2,18 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createRuntimeAgentWorkQueue } from "../src/runtime/runtimeAgentWorkQueue.mjs";
 
+test("automatic Worktree mutation holds messages without claiming or exhausting retries", async () => {
+  let mutating = true;
+  const f = fixture({ isWorkspaceMutationActive: () => mutating });
+  f.add("message");
+  for (let i = 0; i < 10; i++) await f.queue.drainAgentWork("session");
+  assert.equal(f.tasks.get("message").status, "queued");
+  assert.equal(f.sends.length, 0);
+  mutating = false;
+  await f.queue.drainAgentWork("session");
+  assert.equal(f.sends.length, 1);
+});
+
 function fixture(overrides = {}) {
   const tasks = new Map();
   const events = [];

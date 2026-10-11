@@ -550,6 +550,45 @@ test("one-way synchronization rebases every source independently and leaves the 
   ]);
 });
 
+test("automatic sync requires a persisted grant and checks it again at execution", async () => {
+  const { service, calls } = memoryFixture({ featureDirty: false });
+  const plan = await service.preflight("repository:1", {
+    operationType: "one_way_sync", sourceWorktreeIds: ["wt:feature"], targetWorktreeId: "wt:main"
+  });
+  const input = { confirmed: true, planFingerprint: plan.planFingerprint,
+    automaticFollow: { worktreeId: "wt:feature", revision: 1 } };
+  await assert.rejects(service.confirm(plan.id, input), { code: "AUTO_FOLLOW_NOT_AUTHORIZED" });
+  service.authorizeAutomaticFollow = () => true;
+  await service.confirm(plan.id, input);
+  service.authorizeAutomaticFollow = () => false;
+  const paused = await waitForJob(service, plan.id, "paused");
+  assert.match(paused.error, /disabled or its binding changed/);
+  assert.deepEqual(calls, []);
+  assert.equal(paused.notification.automaticFollow, true);
+  service.retry(plan.id); // Explicit manual retry is not constrained by a revoked auto grant.
+  await waitForJob(service, plan.id, "completed");
+  assert.equal(service.get(plan.id).automaticFollow, null);
+  assert.deepEqual(calls, ["rebase:/repo-feature:main:1"]);
+});
+
+test("automatic sync never commits changes or touches a Session that becomes busy after confirm", async () => {
+  for (const mutate of [trees => { trees[1].dirty = true; trees[1].statusSummary = " M new.txt"; },
+    trees => { trees[1].sessions = [{ sessionId: "session:active", logicalSessionId: "logical:active" }]; },
+    trees => { trees[0].dirty = true; }]) {
+    const { service, calls, worktrees } = memoryFixture({ featureDirty: false });
+    service.authorizeAutomaticFollow = () => true;
+    const plan = await service.preflight("repository:1", {
+      operationType: "one_way_sync", sourceWorktreeIds: ["wt:feature"], targetWorktreeId: "wt:main"
+    });
+    await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint,
+      automaticFollow: { worktreeId: "wt:feature", revision: 1 } });
+    mutate(worktrees);
+    const paused = await waitForJob(service, plan.id, "paused");
+    assert.match(paused.error, /no longer safe/);
+    assert.deepEqual(calls, []);
+  }
+});
+
 test("convergence merges all selected heads then fast-forwards every non-base branch to one result", async () => {
   const { service, calls, worktrees } = memoryFixture({ featureDirty: false, conflictAttempts: [0, 0] });
   const plan = await service.preflight("repository:1", {

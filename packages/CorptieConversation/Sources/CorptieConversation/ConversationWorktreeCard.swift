@@ -53,6 +53,18 @@ public struct ConversationWorktreeCard: View {
                 if let blocker = detail?.blockedReason, blocker != "MAIN_WORKTREE" {
                     Text(blockerText(blocker)).font(.caption).foregroundStyle(.orange)
                 }
+                if !tree.isMain, detail?.autoFollow != nil {
+                    Toggle(localize("自动跟随主分支"), isOn: Binding(
+                        get: { detail?.autoFollow?.enabled == true },
+                        set: { enabled in Task { await setAutoFollow(enabled, worktreeID: tree.worktreeId) } }
+                    ))
+                    .font(.caption).disabled(loading || mutating)
+                    .help(localize("工作区干净且会话空闲时自动 Rebase；不会自动提交、stash 或 push。"))
+                    if let follow = detail?.autoFollow, follow.enabled {
+                        Text(autoFollowText(follow)).font(.caption2)
+                            .foregroundStyle(follow.status == "paused" ? Color.orange : Color.secondary)
+                    }
+                }
                 if expanded {
                     Text(tree.path).font(.caption2.monospaced()).textSelection(.enabled)
                     Text(localize("比较本地主分支；不会自动 fetch 或 push。"))
@@ -80,6 +92,14 @@ public struct ConversationWorktreeCard: View {
             await reload()
         }
         .task(id: "\(job?.id ?? ""):\(pollRevision)") { await poll() }
+        .task(id: detail?.autoFollow?.enabled == true) {
+            // Only keep the visible opted-in card's status fresh. Automation
+            // is server-owned and does not rely on this presentation refresh.
+            while detail?.autoFollow?.enabled == true && !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
+                await reload()
+            }
+        }
         .sheet(item: $review, onDismiss: cancelDraftIfNeeded) { reviewed in
             reviewSheet(reviewed)
         }
@@ -98,7 +118,23 @@ public struct ConversationWorktreeCard: View {
     private func blockerText(_ code: String) -> String {
         localize(["SESSION_BUSY": "会话正在执行，请结束后再操作", "UNCOMMITTED_CHANGES": "请先处理当前或主 Worktree 的未提交修改",
             "GIT_OPERATION_IN_PROGRESS": "已有 Git 操作或冲突，请先处理", "WORKTREE_LOCKED": "Worktree 已锁定",
-            "DETACHED_HEAD": "需要有效的本地分支", "WORKTREE_UNAVAILABLE": "Worktree 暂不可用"][code] ?? code)
+            "DETACHED_HEAD": "需要有效的本地分支", "WORKTREE_UNAVAILABLE": "Worktree 暂不可用",
+            "INTEGRATION_JOB_ACTIVE": "已有 Worktree 操作，请先处理",
+            "WORKTREE_STATE_CHANGED": "Worktree 状态已变化，等待重新检查"][code] ?? code)
+    }
+    private func autoFollowText(_ value: ClientSessionWorktreeDetail.AutoFollow) -> String {
+        if value.status == "paused" { return localize("自动跟随已暂停，请处理冲突或检查绑定") }
+        if value.status == "running" { return localize("正在自动同步主分支") }
+        if value.status == "aligned" { return localize("已跟随主分支") }
+        if let reason = value.reason { return localize("等待安全同步时机") + " · " + blockerText(reason) }
+        return localize("等待主分支更新")
+    }
+    @MainActor private func setAutoFollow(_ enabled: Bool, worktreeID: String) async {
+        guard !mutating else { return }; mutating = true; error = nil
+        do { try await api().setAutoFollow(sessionID: sessionID, worktreeID: worktreeID, enabled: enabled) }
+        catch { self.error = describe(error); mutating = false; return }
+        mutating = false
+        await reload()
     }
     @ViewBuilder private func jobContent(_ value: ClientWorktreeJob) -> some View {
         Divider()

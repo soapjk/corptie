@@ -2,6 +2,12 @@ import Foundation
 
 /// One bounded current-Session projection, shared by every frontend.
 public struct ClientSessionWorktreeDetail: Decodable, Equatable, Sendable {
+    public struct AutoFollow: Decodable, Equatable, Sendable {
+        public let enabled: Bool
+        public let status: String
+        public let reason: String?
+        public let jobId: String?
+    }
     public struct Worktree: Decodable, Equatable, Sendable {
         public let worktreeId: String
         public let path: String
@@ -23,6 +29,7 @@ public struct ClientSessionWorktreeDetail: Decodable, Equatable, Sendable {
     public let blockedReason: String?
     public let worktree: Worktree?
     public let job: ClientWorktreeJob?
+    public let autoFollow: AutoFollow?
 
     public func canPerform(_ action: ClientWorktreePlanOperation) -> Bool {
         guard attached, blockedReason == nil, let worktree, !worktree.isMain,
@@ -68,6 +75,22 @@ public struct ClientSessionWorktreeAPI: Sendable {
         let body = try ClientWorktreePlanRequest(operation: action, sources: [source], target: target)
         let result: Envelope = try await request(root + ["repositories", repository, "integration-plans"], body: JSONEncoder().encode(body))
         return result.job
+    }
+    public func setAutoFollow(sessionID: String, worktreeID: String, enabled: Bool) async throws {
+        switch route {
+        case .desktop:
+            struct Body: Encodable { let enabled: Bool; let expectedWorktreeId: String }
+            let _: ClientSessionWorktreeDetail.AutoFollow = try await request(["sessions", sessionID, "worktree-auto-follow"],
+                body: JSONEncoder().encode(Body(enabled: enabled, expectedWorktreeId: worktreeID)))
+        case .pairedDevice:
+            let receipt = try await ClientInspectorAPI(transport: transport).command(sessionID: sessionID,
+                requestID: UUID().uuidString, action: "worktree.autoFollow",
+                fields: ["enabled": .bool(enabled), "expectedWorktreeId": .string(worktreeID)])
+            guard receipt.status == "completed" else {
+                throw ClientServiceFailure(statusCode: receipt.status == "rejected" ? 409 : 503,
+                    code: receipt.errorCode ?? "AUTO_FOLLOW_OUTCOME_UNCERTAIN")
+            }
+        }
     }
     public func confirm(_ job: ClientWorktreeJob) async throws -> ClientWorktreeJob {
         guard job.status == "awaiting_confirmation", job.plan.blockingRisks.isEmpty,

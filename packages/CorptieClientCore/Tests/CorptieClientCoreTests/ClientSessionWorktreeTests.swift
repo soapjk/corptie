@@ -3,6 +3,45 @@ import Testing
 @testable import CorptieClientCore
 
 struct ClientSessionWorktreeTests {
+    @Test func absentPreferenceIsOffAndBothHostsUseExactBoundMutationRoutes() async throws {
+        #expect(try Self.detail().autoFollow?.enabled != true)
+        for route in [ClientSessionWorktreeAPI.Route.desktop, .pairedDevice] {
+            let transport = BackendTransport(endpoint: try BackendEndpoint(URL(string: "http://127.0.0.1:1")!), data: { request in
+                #expect(request.httpMethod == "POST")
+                let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+                let data: Data
+                if request.url!.path.hasSuffix("worktree-auto-follow") {
+                    #expect(request.url!.path == "/sessions/session/worktree-auto-follow")
+                    #expect(body["enabled"] as? Bool == true)
+                    #expect(body["expectedWorktreeId"] as? String == "tree")
+                    data = Data(#"{"enabled":true,"status":"waiting"}"#.utf8)
+                } else {
+                    #expect(request.url!.path == "/client/v1/sessions/session/inspector/commands")
+                    #expect(body["action"] as? String == "worktree.autoFollow")
+                    let fields = body["fields"] as! [String: Any]
+                    #expect(fields["enabled"] as? Bool == true)
+                    #expect(fields["expectedWorktreeId"] as? String == "tree")
+                    data = Data(#"{"schemaVersion":1,"requestId":"request","sessionId":"session","kind":"inspector:worktree.autoFollow","status":"completed","updatedAt":"now"}"#.utf8)
+                }
+                return (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            }, bytes: { _ in throw ClientConnectionError.invalidResponse })
+            try await ClientSessionWorktreeAPI(transport: transport, route: route)
+                .setAutoFollow(sessionID: "session", worktreeID: "tree", enabled: true)
+        }
+    }
+
+    @Test func uncertainPairedPreferenceReceiptDoesNotClaimSuccess() async throws {
+        let transport = BackendTransport(endpoint: try BackendEndpoint(URL(string: "http://127.0.0.1:1")!), data: { request in
+            (Data(#"{"schemaVersion":1,"requestId":"request","sessionId":"session","kind":"inspector:worktree.autoFollow","status":"unknown","errorCode":"INSPECTOR_OUTCOME_UNCERTAIN","updatedAt":"now"}"#.utf8),
+             HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        }, bytes: { _ in throw ClientConnectionError.invalidResponse })
+        do {
+            try await ClientSessionWorktreeAPI(transport: transport, route: .pairedDevice)
+                .setAutoFollow(sessionID: "session", worktreeID: "tree", enabled: true)
+            Issue.record("Unknown outcome must not be reported as success")
+        } catch let error as ClientServiceFailure { #expect(error.code == "INSPECTOR_OUTCOME_UNCERTAIN") }
+    }
+
     static func detail(ahead: Int = 3, behind: Int = 0, dirty: Bool = false, blocker: String? = nil) throws -> ClientSessionWorktreeDetail {
         try JSONDecoder().decode(ClientSessionWorktreeDetail.self, from: Data("""
         {"attached":true,"repositoryId":"repo","mainWorktreeId":"main","mainBranch":"develop",

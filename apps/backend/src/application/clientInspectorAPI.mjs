@@ -25,6 +25,7 @@ const ACTION_FIELDS = {
   "memory.reject": ["id", "reason", "confirmed", "expectedVersion"],
   "task.update": ["title", "description", "acceptanceCriteria", "verificationCriteria", "priority", "mainAgentId", "autoTitleEnabled"],
   "task.reclaimWorktree": ["confirmed"],
+  "worktree.autoFollow": ["enabled", "expectedWorktreeId"],
 };
 
 /** Paired-user facade over the same services as desktop. Never proxies a URL. */
@@ -181,6 +182,7 @@ export class ClientInspectorAPI {
   async perform(scope, action, fields, fingerprint) {
     const { sessionId, context, task } = scope;
     switch (action) {
+      case "worktree.autoFollow": return this.setWorktreeAutoFollow(sessionId, fields);
       case "reference.import": case "artifact.import": return this.importFile(scope, action, fields);
       case "reference.create": return this.references.create(sessionId, fields.targetType === "session"
         ? { ...fields, targetId: this.resolveSession(fields.targetId).sessionId } : fields);

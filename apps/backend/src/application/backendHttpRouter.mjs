@@ -21,7 +21,7 @@ export function routeBackendHttpRequest(request, response, ports) {
     sessions, listGatewaySessionPage, requestedProviderId, sessionForkService, sessionTitleErrorPayload,
     handleSessionOrganizationHttpRequest, normalizeSessionId, archiveStoredSession, sessionRuntimeReleaseService, upsertManagedCodexSession,
     handleSessionRecoveryHttpRequest, sessionRecoveryCoordinator, handleSessionGitHttpRequest, prepareGitHubPush, generateGitHubPushCommitMessage,
-    confirmGitHubPush, projectWorktreeStatus, mergeProjectWorktree, prepareProjectWorktreeCommit, generateProjectWorktreeCommitMessage,
+    confirmGitHubPush, projectWorktreeStatus, setWorktreeAutoFollow, mergeProjectWorktree, prepareProjectWorktreeCommit, generateProjectWorktreeCommitMessage,
     commitProjectWorktree, completeProjectWorktree, operateProjectWorktree, restartProjectWorktree, handleSessionToolsetHttpRequest,
     projectToolsetStatus, projectWorkingDirectoryForSession, projectToolsetAuthenticatedSession, projectToolsetInitializer, projectToolsets,
     projectToolsetRunIsolationOptions, handleSessionMutationHttpRequest, sessionDeletionPlan, reserveSessionTitle, deleteSessionWithOptionalMerge,
@@ -247,7 +247,7 @@ export function routeBackendHttpRequest(request, response, ports) {
 
   if (handleSessionGitHttpRequest({
     request, response, url, prepareGitHubPush, generateGitHubPushCommitMessage,
-    confirmGitHubPush, projectWorktreeStatus, mergeProjectWorktree, prepareProjectWorktreeCommit,
+    confirmGitHubPush, projectWorktreeStatus, setWorktreeAutoFollow, mergeProjectWorktree, prepareProjectWorktreeCommit,
     generateProjectWorktreeCommitMessage, commitProjectWorktree, completeProjectWorktree,
     operateProjectWorktree, restartProjectWorktree, readJson, sendJson, errorStatus
   })) return;

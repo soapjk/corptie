@@ -137,6 +137,7 @@ public struct OperationJobSnapshot: Decodable, Equatable, Sendable {
     public let counts: OperationResultCounts?
     public let attentionKey: String?
     public let resultKind: String?
+    public let automaticFollow: Bool?
     public struct Audit: Decodable, Equatable, Sendable { public let event: String }
     public struct Plan: Decodable, Equatable, Sendable { public let operationType: String? }
     public struct Conflict: Decodable, Equatable, Sendable { public let status: String }
@@ -195,6 +196,7 @@ public final class OperationNotificationLedger {
 
     public func observe(_ job: OperationJobSnapshot) -> OperationNotificationEvent? {
         guard job.schemaVersion == nil || job.schemaVersion == 1 else { return nil }
+        if job.automaticFollow == true { track(jobID: job.id, resourceName: "Worktree") }
         guard let index = tracked.firstIndex(where: { $0.id == job.id }) else { return nil }
         let previous = tracked[index]
         guard (job.revision ?? job.audit.count) >= previous.revision, job.updatedAt >= previous.updatedAt else { return nil }
