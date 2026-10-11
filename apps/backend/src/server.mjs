@@ -1391,7 +1391,12 @@ const { projectToolsetStatusForPath } = createProjectToolsetStatusReader({
 const projectWorktreeStatusReader = createProjectWorktreeStatusReader({
   store, requireSessionReference, ensureLogicalRouteForProviderSession,
   projectToolsetAuthenticatedSession, projectToolsetStatusForPath,
-  projectToolsets, gitWorkspaces, gitHubPushes
+  projectToolsets, gitWorkspaces, gitHubPushes,
+  readLatestJob: id => {
+    const job = store.getLatestWorktreeIntegrationJob(id);
+    return job && ["awaiting_confirmation", "queued", "running", "paused", "failed", "cancellation_requested", "replanning"].includes(job.status)
+      ? worktreeIntegrationJobService.get(job.id) : null;
+  }
 });
 const { resolveProjectContext, performProjectDevelopmentServiceAction, performProjectWorkspaceAction } = createProjectActionHandlers({
   store, gitWorkspaces, projectToolsets, gitCommitProtection, gitHubPushes,
@@ -1974,8 +1979,8 @@ async function rebuildAndRestartProjectService(workingDirectory, executionRoot =
   return projectWorktreeStatusReader.rebuildAndRestartProjectService(workingDirectory, executionRoot);
 }
 
-async function projectWorktreeStatus(sessionId) {
-  return projectWorktreeStatusReader.projectWorktreeStatus(sessionId);
+async function projectWorktreeStatus(sessionId, options) {
+  return projectWorktreeStatusReader.projectWorktreeStatus(sessionId, options);
 }
 
 async function ensureTaskWorkspace({ task, session = null }) {
@@ -2288,6 +2293,7 @@ function startBackendRuntime() {
     sessionContextReferenceService, artifactService, scheduledSessionTaskService,
     turnObservability, agentProviderRegistry, switchSessionProvider, workService,
     inspectTaskWorktree, reclaimTaskWorktree, sendUnifiedSessionMessage,
+    readSessionWorktree: id => projectWorktreeStatusReader.worktreeDetail(id),
     admitReliableMessage: sessionMessageOperation.admitReliableMessage,
     interruptUnifiedSession, cancelQueuedUserMessage, deleteUserMessage, respondUnifiedSessionApproval, respondUnifiedSessionUserInput,
     resolveCollaborationConfirmation, resolveSessionChannelRequest,

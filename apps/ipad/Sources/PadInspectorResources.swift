@@ -360,7 +360,7 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
         }
     }
     private var taskWorktree: some View {
-        ConversationDetailModuleCard(title: "Worktree", systemImage: "arrow.triangle.branch", headerActions: {
+        ConversationDetailModuleCard(title: "Worktree 回收", systemImage: "arrow.triangle.branch", headerActions: {
             if inspectingWorktree {
                 ProgressView().frame(width: 44, height: 44).accessibilityLabel("检查 Worktree 中")
             } else {

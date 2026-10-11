@@ -8,6 +8,7 @@ export function handleSessionGitHttpRequest({
     /^\/sessions\/([^/]+)\/github-push\/(prepare|commit-message|confirm)$/
   );
   const sessionProjectWorktreesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/project-worktrees$/);
+  const sessionWorktreeCardMatch = url.pathname.match(/^\/sessions\/([^/]+)\/worktree-detail$/);
   const sessionProjectWorktreeActionMatch = url.pathname.match(
     /^\/sessions\/([^/]+)\/project-worktrees\/([^/]+)\/(merge|complete|restart|operate|commit|commit-prepare|commit-message)$/
   );
@@ -24,9 +25,9 @@ export function handleSessionGitHttpRequest({
       .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
     return true;
   }
-  if (request.method === "GET" && sessionProjectWorktreesMatch) {
-    const sessionId = decodeURIComponent(sessionProjectWorktreesMatch[1]);
-    projectWorktreeStatus(sessionId)
+  if (request.method === "GET" && (sessionProjectWorktreesMatch || sessionWorktreeCardMatch)) {
+    const sessionId = decodeURIComponent((sessionProjectWorktreesMatch ?? sessionWorktreeCardMatch)[1]);
+    projectWorktreeStatus(sessionId, sessionWorktreeCardMatch ? { detailCard: true } : undefined)
       .then((result) => sendJson(response, 200, result))
       .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
     return true;
