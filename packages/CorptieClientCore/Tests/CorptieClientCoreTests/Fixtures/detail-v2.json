@@ -1,0 +1,166 @@
+{
+  "snapshot": {
+    "protocolVersion": 2,
+    "documentId": "detail:logical:sample",
+    "sessionId": "logical:sample",
+    "generation": "fixture-generation",
+    "revision": 1,
+    "manifest": {
+      "cards": {
+        "session-info": {
+          "templateId": "native:information:session-info",
+          "templateHash": "sha256:04e327e235b2bf2db9c2fab0619611b50f14bcfe1ef3967a293343607efb477f"
+        }
+      },
+      "order": [
+        "session-info"
+      ],
+      "hash": "sha256:0b4a6d896345165eec0dbeeb71b3b28df6e71703c7d317d8db9b247a44ac7458",
+      "revision": 1
+    },
+    "templates": {
+      "sha256:04e327e235b2bf2db9c2fab0619611b50f14bcfe1ef3967a293343607efb477f": {
+        "templateId": "native:information:session-info",
+        "templateVersion": 1,
+        "card": {
+          "title": {
+            "key": "detail.sessionInfo",
+            "fallback": "会话信息"
+          },
+          "semanticKind": "information",
+          "rootNodeId": "root",
+          "nodes": [
+            {
+              "id": "root",
+              "kind": "column",
+              "props": {},
+              "children": [
+                "session",
+                "work"
+              ]
+            },
+            {
+              "id": "session",
+              "kind": "text",
+              "props": {},
+              "binding": "sessionId",
+              "children": []
+            },
+            {
+              "id": "work",
+              "kind": "text",
+              "props": {},
+              "binding": "workName",
+              "children": []
+            }
+          ],
+          "fallback": {
+            "key": "detail.unavailable",
+            "fallback": "此卡片暂时无法显示"
+          }
+        }
+      }
+    },
+    "instances": {
+      "session-info": {
+        "fields": {
+          "sessionId": "logical:sample",
+          "workName": "Sample Work"
+        },
+        "collections": {},
+        "actions": {
+          "refresh": {
+            "id": "refresh",
+            "kind": "read",
+            "operation": "detail.refresh",
+            "label": {
+              "key": "detail.refresh",
+              "fallback": "刷新"
+            },
+            "available": true
+          }
+        },
+        "hash": "sha256:34118263d9ef60823f4f2bc4b08a8dc635eb744175469412bd9b5d13c16bba84",
+        "revision": 1
+      }
+    },
+    "stateHash": "sha256:816da79f11cb619564b93005fda593baf2c51a5da66787867a6f145b0d49aca8"
+  },
+  "commit": {
+    "protocolVersion": 2,
+    "documentId": "detail:logical:sample",
+    "sessionId": "logical:sample",
+    "generation": "fixture-generation",
+    "baseRevision": 1,
+    "revision": 2,
+    "baseStateHash": "sha256:816da79f11cb619564b93005fda593baf2c51a5da66787867a6f145b0d49aca8",
+    "resultStateHash": "sha256:811e2bf951a602e4d20b2717a591e6a6269b0e25667763c73250690c606db7ae",
+    "templates": {},
+    "manifestChange": null,
+    "instanceChanges": [
+      {
+        "cardId": "session-info",
+        "baseRevision": 1,
+        "revision": 2,
+        "baseHash": "sha256:34118263d9ef60823f4f2bc4b08a8dc635eb744175469412bd9b5d13c16bba84",
+        "resultHash": "sha256:2a18b065f6e2a1eee1d3bd8d83f1ca65575cac83dc53a60b463e9213433fadd3",
+        "fields": {
+          "set": {
+            "workName": "更新后的 Work"
+          },
+          "remove": []
+        },
+        "actions": {
+          "set": {},
+          "remove": []
+        }
+      }
+    ],
+    "removeInstanceIds": []
+  },
+  "resultStateHash": "sha256:811e2bf951a602e4d20b2717a591e6a6269b0e25667763c73250690c606db7ae",
+  "vectors": [
+    {
+      "value": null,
+      "canonical": "null",
+      "hash": "sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "value": true,
+      "canonical": "true",
+      "hash": "sha256:b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b"
+    },
+    {
+      "value": 0,
+      "canonical": "0",
+      "hash": "sha256:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "value": 0,
+      "canonical": "0",
+      "hash": "sha256:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "value": 9007199254740991,
+      "canonical": "9007199254740991",
+      "hash": "sha256:f40b423c2dd95ff2b2f027e22208f438cf7242862e5e746860e697308c9add26"
+    },
+    {
+      "value": {
+        "😀": "emoji",
+        "": "private",
+        "a": "\u0000\b\t\n\f\r\"\\/ "
+      },
+      "canonical": "{\"a\":\"\\u0000\\b\\t\\n\\f\\r\\\"\\\\/ \",\"😀\":\"emoji\",\"\":\"private\"}",
+      "hash": "sha256:d45f867033fdeba3ef226400ebb7aa77dde6229de9e8cfa0aa983b0d8407448b"
+    },
+    {
+      "value": {
+        "text": "é",
+        "中文": "字"
+      },
+      "canonical": "{\"text\":\"é\",\"中文\":\"字\"}",
+      "hash": "sha256:21657e09c12fdbfed42b72100e078d2bac76b7de6c35a0a409e05a2ecdf5811e"
+    }
+  ]
+}

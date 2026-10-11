@@ -5,6 +5,8 @@ import { createReadStream } from "node:fs";
 import { ClientDeviceAuthority, deviceError } from "./clientDeviceAuthority.mjs";
 import { ClientEventStream, parseRealtimeResumeQuery } from "./clientEventStream.mjs";
 import { ClientInspectorStream } from "./clientInspectorStream.mjs";
+import { detailServiceFor, acceptsNativeDetail } from "./detailDocumentService.mjs";
+import { readDetailV2Request } from "./detailV2JSON.mjs";
 
 export const reply = (response, status, body) => {
   response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store",
@@ -145,6 +147,32 @@ export class ClientDeviceGateway {
         return reply(response, 200, await this.authority.refresh(await body(request)));
       }
       const identity = this.authenticateRequest(request);
+      const detailSync = /^\/client\/v1\/sessions\/([^/]+)\/detail\/sync$/.exec(path);
+      if (detailSync && this.sessionAPI?.inspector) {
+        if (request.method !== "POST") throw deviceError("DETAIL_REQUEST_NOT_ALLOWED", 405);
+        if (request.headers.accept !== "text/event-stream; corptie-detail=native-v2") throw deviceError("DETAIL_CATALOG_UNSUPPORTED", 409);
+        const id = decode(detailSync[1], "INVALID_SESSION_ID");
+        const scope = this.sessionAPI.inspector.scope(id, identity);
+        const input = await readDetailV2Request(request);
+        const service = detailServiceFor(this.sessionAPI.inspector.store);
+        return service.attachV2(response, () => {
+          const current = this.authenticateRequest(request); this.sessionAPI.inspector.scope(id, current); return current;
+        }, scope.logicalSessionId ?? scope.sessionId, null, input);
+      }
+      const detail = /^\/client\/v1\/sessions\/([^/]+)\/detail(?:\/(events))?$/.exec(path);
+      if (detail && this.sessionAPI?.inspector) {
+        if (request.method !== "GET") throw deviceError("DETAIL_REQUEST_NOT_ALLOWED", 405);
+        const v2 = !detail[2] && request.headers.accept === "application/json; corptie-detail=native-v2";
+        if (!v2 && !acceptsNativeDetail(request)) throw deviceError("DETAIL_CATALOG_UNSUPPORTED", 409);
+        const id = decode(detail[1], "INVALID_SESSION_ID"), authenticate = () => this.authenticateRequest(request);
+        const scope = this.sessionAPI.inspector.scope(id, identity);
+        const service = detailServiceFor(this.sessionAPI.inspector.store);
+        if (detail[2]) return service.events.attach(response, () => {
+          const identity = authenticate(); this.sessionAPI.inspector.scope(id, identity); return identity;
+        }, scope.logicalSessionId ?? scope.sessionId, request);
+        const result = v2 ? service.v2Snapshot(scope.logicalSessionId ?? scope.sessionId) : service.snapshot(scope.logicalSessionId ?? scope.sessionId);
+        authenticate(); return reply(response, 200, result);
+      }
       this.sockets.set(request.socket, identity.deviceId);
       const deleteMessage = /^\/client\/v1\/sessions\/([^/]+)\/messages\/([^/]+)$/.exec(path);
       if (deleteMessage && request.method === "DELETE" && this.sessionAPI) {

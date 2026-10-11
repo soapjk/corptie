@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "requestId": "request-contract-fixture-01",
+  "documentId": "detail:logical:sample",
+  "cardId": "schedule:sample",
+  "actionId": "cancel",
+  "expectedResourceRevision": "revision:7",
+  "fields": {"confirmed": true}
+}

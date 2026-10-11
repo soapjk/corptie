@@ -11,6 +11,6 @@ let package = Package(
         // Security also owns the shared, pre-encryption relay send scheduler.
         .target(name: "CorptieClientSecurity", dependencies: ["CorptieClientCore"]),
         .testTarget(name: "CorptieClientSecurityTests", dependencies: ["CorptieClientSecurity"]),
-        .testTarget(name: "CorptieClientCoreTests", dependencies: ["CorptieClientCore"], exclude: ["TLSFixture.mjs"])
+        .testTarget(name: "CorptieClientCoreTests", dependencies: ["CorptieClientCore"], exclude: ["TLSFixture.mjs"], resources: [.copy("Fixtures")])
     ]
 )

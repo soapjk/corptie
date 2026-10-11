@@ -1,6 +1,7 @@
 import http from "node:http";
 import { deleteUnreceivedUserMessage } from "./application/userMessageDeletion.mjs";
 import { routeBackendHttpRequest } from "./application/backendHttpRouter.mjs";
+import { detailServiceFor } from "./application/detailDocumentService.mjs";
 import { createProductEventPublisher } from "./application/productEventPublisher.mjs";
 import { createStartupRecoveryOperations } from "./application/startupRecoveryOperations.mjs";
 import {
@@ -323,6 +324,7 @@ const stateSyncPublisher = createStateSyncPublisher({
   recordSessionDiagnostic: (...args) => sessionStateDiagnostics.record(...args),
   invalidateDevices: () => {
     clientDeviceGateway?.inspectorEvents.invalidate();
+    detailServiceFor(store).invalidate();
     clientDeviceGateway?.events.invalidate({ inventory: true, control: true });
     clientDeviceGateway?.events.publishState();
   }

@@ -1,0 +1,491 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:corptie:detail:2",
+  "definitions": {
+    "Hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "Id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "Revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "Reference": {
+      "type": "object",
+      "properties": {
+        "templateId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "templateHash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "templateId",
+        "templateHash"
+      ],
+      "additionalProperties": false
+    },
+    "Manifest": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "cards": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[\\x20-\\x7e]+$",
+            "maxLength": 512
+          },
+          "additionalProperties": {
+            "$ref": "#/definitions/Reference"
+          },
+          "maxProperties": 64
+        },
+        "order": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "maxItems": 30,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "revision",
+        "hash",
+        "cards",
+        "order"
+      ],
+      "additionalProperties": false
+    },
+    "Instance": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "fields": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[\\x20-\\x7e]+$",
+            "maxLength": 512
+          },
+          "additionalProperties": {},
+          "maxProperties": 64
+        },
+        "collections": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[\\x20-\\x7e]+$",
+            "maxLength": 512
+          },
+          "additionalProperties": {},
+          "maxProperties": 64
+        },
+        "actions": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[\\x20-\\x7e]+$",
+            "maxLength": 512
+          },
+          "additionalProperties": {},
+          "maxProperties": 64
+        }
+      },
+      "required": [
+        "revision",
+        "hash",
+        "fields",
+        "collections",
+        "actions"
+      ],
+      "additionalProperties": false
+    },
+    "Template": {
+      "type": "object",
+      "properties": {
+        "templateId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "templateVersion": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "card": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "templateId",
+        "templateVersion",
+        "card"
+      ],
+      "additionalProperties": false
+    },
+    "Delta": {
+      "type": "object",
+      "properties": {
+        "set": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[\\x20-\\x7e]+$",
+            "maxLength": 512
+          },
+          "additionalProperties": {},
+          "maxProperties": 64
+        },
+        "remove": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "maxItems": 64,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "set",
+        "remove"
+      ],
+      "additionalProperties": false
+    },
+    "Change": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "cardId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "replacement": {
+              "$ref": "#/definitions/Instance"
+            }
+          },
+          "required": [
+            "cardId",
+            "replacement"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "cardId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "baseRevision": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "baseHash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "resultHash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "fields": {
+              "$ref": "#/definitions/Delta"
+            },
+            "actions": {
+              "$ref": "#/definitions/Delta"
+            }
+          },
+          "required": [
+            "cardId",
+            "baseRevision",
+            "revision",
+            "baseHash",
+            "resultHash",
+            "fields",
+            "actions"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "State": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 2
+        },
+        "documentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "generation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "stateHash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "manifest": {
+          "$ref": "#/definitions/Manifest"
+        },
+        "templates": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/definitions/Template"
+          },
+          "maxProperties": 30
+        },
+        "instances": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[\\x20-\\x7e]+$",
+            "maxLength": 512
+          },
+          "additionalProperties": {
+            "$ref": "#/definitions/Instance"
+          },
+          "maxProperties": 64
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "documentId",
+        "sessionId",
+        "generation",
+        "revision",
+        "stateHash",
+        "manifest",
+        "templates",
+        "instances"
+      ],
+      "additionalProperties": false
+    },
+    "Commit": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 2
+        },
+        "documentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "generation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "baseRevision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "baseStateHash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "resultStateHash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "templates": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/definitions/Template"
+          },
+          "maxProperties": 30
+        },
+        "manifestChange": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Manifest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "instanceChanges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Change"
+          },
+          "maxItems": 30
+        },
+        "removeInstanceIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "maxItems": 30,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "documentId",
+        "sessionId",
+        "generation",
+        "baseRevision",
+        "revision",
+        "baseStateHash",
+        "resultStateHash",
+        "templates",
+        "manifestChange",
+        "instanceChanges",
+        "removeInstanceIds"
+      ],
+      "additionalProperties": false
+    },
+    "Cursor": {
+      "type": "object",
+      "properties": {
+        "documentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "generation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "stateHash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "documentId",
+        "generation",
+        "revision",
+        "stateHash"
+      ],
+      "additionalProperties": false
+    },
+    "Request": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 2
+        },
+        "catalog": {
+          "const": "native-v2"
+        },
+        "resume": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Cursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cachedTemplateHashes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "maxItems": 128,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "catalog",
+        "resume",
+        "cachedTemplateHashes"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/definitions/State"
+    },
+    {
+      "$ref": "#/definitions/Commit"
+    },
+    {
+      "$ref": "#/definitions/Request"
+    }
+  ]
+}

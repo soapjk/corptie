@@ -1,0 +1,80 @@
+import Foundation
+
+public struct ClientDetailAPI: Sendable {
+    public enum Route: Sendable { case desktop, pairedDevice }
+    private let transport: BackendTransport
+    private let route: Route
+    public init(transport: BackendTransport, route: Route) { self.transport = transport; self.route = route }
+    var v2: ClientDetailV2API { ClientDetailV2API(transport: transport, route: route) }
+    static func canFallbackToV1(_ error: Error) -> Bool {
+        if let failure = error as? ClientServiceFailure {
+            return (failure.statusCode == 409 && failure.code == "DETAIL_CATALOG_UNSUPPORTED") ||
+                (failure.statusCode == 405 && failure.code == "DETAIL_REQUEST_NOT_ALLOWED") ||
+                (failure.statusCode == 403 && failure.code == "REQUEST_NOT_ALLOWED") ||
+                (failure.statusCode == 404 && ["NOT_FOUND", "ROUTE_NOT_FOUND"].contains(failure.code))
+        }
+        if case ClientConnectionError.httpStatus(let status) = error { return [404, 405].contains(status) }
+        return false
+    }
+    static func isAccessFailure(_ error: Error) -> Bool {
+        if let failure = error as? ClientServiceFailure { return [401, 403, 404].contains(failure.statusCode) }
+        if case ClientConnectionError.httpStatus(let status) = error { return [401, 403, 404].contains(status) }
+        return false
+    }
+    func renderingSnapshot(sessionID: String) async throws -> ClientDetailDocument {
+        do { return try await v2.snapshot(sessionID: sessionID).renderingDocument() }
+        catch { guard Self.canFallbackToV1(error) else { throw error }; return try await snapshot(sessionID: sessionID) }
+    }
+    private func request(sessionID: String, events: Bool) throws -> URLRequest {
+        let prefix = route == .desktop ? [] : ["client", "v1"]
+        var request = try transport.endpoint.request(path: prefix + ["sessions", sessionID, "detail"] + (events ? ["events"] : []))
+        request.setValue(events ? "text/event-stream; corptie-detail=native-v1" : "application/json; corptie-detail=native-v1",
+                         forHTTPHeaderField: "Accept")
+        return request
+    }
+    public func snapshot(sessionID: String) async throws -> ClientDetailDocument {
+        let (data, _) = try await transport.data(for: request(sessionID: sessionID, events: false))
+        return try ClientDetailDocument.decode(data)
+    }
+    /// FIFO patches cannot be silently dropped. Overflow terminates and the Store resnapshots.
+    public func subscribe(sessionID: String) -> AsyncThrowingStream<ClientDetailEvent, Error> {
+        AsyncThrowingStream(bufferingPolicy: .bufferingOldest(16)) { continuation in
+            let task = Task {
+                do {
+                    var request = try request(sessionID: sessionID, events: true)
+                    request.timeoutInterval = 35
+                    let (bytes, response) = try await transport.bytes(for: request)
+                    guard response.value(forHTTPHeaderField: "Content-Type")?.contains("text/event-stream") == true else { throw ClientConnectionError.invalidResponse }
+                    var parser = ServerSentEventParser(), count = 0
+                    for try await byte in bytes {
+                        try Task.checkCancellation(); count += 1
+                        guard count <= ClientDetailProtocol.maxFrameBytes else { throw ClientDetailFailure.limit }
+                        for event in parser.append(byte) {
+                            count = 0
+                            if event.isComment || event.name == "heartbeat" { continue }
+                            let data = Data(event.data.utf8)
+                            guard data.count <= ClientDetailProtocol.maxDocumentBytes else { throw ClientDetailFailure.limit }
+                            let next: ClientDetailEvent
+                            switch event.name {
+                            case "detail-snapshot": next = .snapshot(try ClientDetailDocument.decode(data))
+                            case "detail-patch": next = .patch(try JSONDecoder().decode(ClientDetailPatch.self, from: data))
+                            case "detail-error":
+                                let failure = try JSONDecoder().decode([String: String].self, from: data)
+                                throw ClientServiceFailure(statusCode: Int(failure["status"] ?? "503") ?? 503, code: failure["code"] ?? "DETAIL_FAILED")
+                            default: throw ClientConnectionError.invalidResponse
+                            }
+                            switch continuation.yield(next) {
+                            case .dropped: throw ClientDetailFailure.bufferOverflow
+                            case .terminated: return
+                            case .enqueued: break
+                            @unknown default: throw ClientDetailFailure.bufferOverflow
+                            }
+                        }
+                    }
+                    continuation.finish()
+                } catch { continuation.finish(throwing: error) }
+            }
+            continuation.onTermination = { @Sendable _ in task.cancel() }
+        }
+    }
+}
