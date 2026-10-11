@@ -224,16 +224,17 @@ public struct ClientTimelineRepository {
         let existing = cache.peek(key)
         if let revision = existing?.revision, snapshot.revision < revision { return .duplicate }
 
-        var messages = snapshot.messages.items
-        var before = snapshot.messages.nextBefore
-        if let existing, let first = messages.first?.id,
-           let overlap = existing.messages.firstIndex(where: { $0.id == first }) {
-            messages = Array(existing.messages.prefix(overlap)) + messages
-            if overlap > 0 { before = existing.before }
-        }
+        let reconciliation = ClientTimelineWindowReconciler.reconcile(
+            existing: existing?.messages ?? [],
+            incoming: snapshot.messages.items,
+            nextBefore: snapshot.messages.nextBefore,
+            existingBefore: existing?.before,
+            authoritativeItemIds: snapshot.messages.authoritativeItemIds,
+            supplementalItemIds: snapshot.messages.supplementalItemIds
+        )
         let state = ClientResidentTimeline(
-            messages: messages,
-            before: before,
+            messages: reconciliation.messages,
+            before: reconciliation.before,
             revision: snapshot.revision,
             capabilities: snapshot.capabilities,
             usage: snapshot.usage ?? existing?.usage,

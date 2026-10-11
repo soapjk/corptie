@@ -134,6 +134,10 @@ export class TimelineReadRepository {
   }
 
   latestTimelineRowsWithConversationBoundaries(sessionId, pageLimit) {
+    return this.latestTimelineWindowWithConversationBoundaries(sessionId, pageLimit).rows;
+  }
+
+  latestTimelineWindowWithConversationBoundaries(sessionId, pageLimit) {
     const columns = `id, turn_id, turn_status, type, title, text, options_json,
                      raw_metadata_json, binding_id, presentation_role, presentation_text,
                      status, created_at`;
@@ -157,7 +161,13 @@ export class TimelineReadRepository {
       .filter((row) => row.type !== "userMessage" && row.type !== "agentMessage")
       .map((row) => row.turn_id)
       .filter(Boolean))].slice(-8);
-    if (representedTurns.length === 0) return baseRows;
+    if (representedTurns.length === 0) {
+      return {
+        rows: baseRows,
+        authoritativeItemIds: baseRows.map((row) => row.id),
+        supplementalItemIds: []
+      };
+    }
     const placeholders = representedTurns.map(() => "?").join(", ");
     const conversationRows = this.selectAll(
       `SELECT rowid AS storage_order, ${columns} FROM session_items
@@ -195,7 +205,12 @@ export class TimelineReadRepository {
         emitted.add(boundary.agent.id);
       }
     }
-    return result;
+    const authoritativeIDs = new Set(baseRows.map((row) => row.id));
+    return {
+      rows: result,
+      authoritativeItemIds: result.filter((row) => authoritativeIDs.has(row.id)).map((row) => row.id),
+      supplementalItemIds: result.filter((row) => !authoritativeIDs.has(row.id)).map((row) => row.id)
+    };
   }
 
   getTimelineItemWindow(
@@ -326,7 +341,8 @@ export class TimelineReadRepository {
 
   getLatestTimelineItemWindow(sessionId, { limit = 200, provider = "" } = {}) {
     const pageLimit = Math.floor(Math.max(1, Math.min(200, Number(limit) || 200)));
-    const rows = this.latestTimelineRowsWithConversationBoundaries(sessionId, pageLimit);
+    const timelineWindow = this.latestTimelineWindowWithConversationBoundaries(sessionId, pageLimit);
+    const { rows, authoritativeItemIds, supplementalItemIds } = timelineWindow;
     // An existing Session with no Timeline items still has a valid, fully
     // authoritative local window. Returning null used to route the read into
     // the legacy detail/supplementary composer, which performed several
@@ -335,7 +351,8 @@ export class TimelineReadRepository {
     if (rows.length === 0) {
       return { items: [], hasEarlier: false, hasLater: false, historyItemsCount: 0 };
     }
-    const first = rows[0];
+    const authoritativeIDs = new Set(authoritativeItemIds);
+    const first = rows.find((row) => authoritativeIDs.has(row.id));
     const hasEarlier = Boolean(this.selectOne(
       `SELECT 1 FROM session_items INDEXED BY idx_session_items_latest
        WHERE session_id = ?
@@ -359,6 +376,8 @@ export class TimelineReadRepository {
         status: row.status,
         createdAt: row.created_at
       }, provider)),
+      authoritativeItemIds,
+      supplementalItemIds,
       hasEarlier,
       hasLater: false,
       historyItemsCount: hasEarlier ? null : 0
