@@ -1,5 +1,5 @@
 import { sessionEventFromRow } from "../sessionEventRow.mjs";
-import { surfaceForEventType, agentMessageEventSQL, conversationActivityEventSQL, eventHasAgentMessage, producerFromSource } from "../sessionEventSemantics.mjs";
+import { surfaceForEventType, agentMessageEventSQL, formalMessageEventSQL, eventHasAgentMessage, producerFromSource } from "../sessionEventSemantics.mjs";
 
 export class SessionEventRepository {
   constructor({ getDatabase, normalizedSessionIdFilter, selectOne, selectAll, runInTransaction, scheduleSave, getSession }) {
@@ -158,16 +158,16 @@ export class SessionEventRepository {
     // path on the purpose-built partial index and avoid the redundant join.
     const rows = ids ? this.selectAll(
       `SELECT events.session_id, MAX(events.created_at) AS last_message_at
-       FROM session_events events INDEXED BY idx_session_events_conversation_activity
-       WHERE ${conversationActivityEventSQL("events")}
+       FROM session_events events INDEXED BY idx_session_events_formal_message
+       WHERE ${formalMessageEventSQL("events")}
          AND events.session_id IN (${ids.map(() => "?").join(", ")})
        GROUP BY events.session_id`,
       ids
     ) : this.selectAll(
       `SELECT events.session_id, MAX(events.created_at) AS last_message_at
-       FROM session_events events INDEXED BY idx_session_events_conversation_activity
+       FROM session_events events INDEXED BY idx_session_events_formal_message
        JOIN sessions ON sessions.id = events.session_id AND sessions.deleted_at IS NULL
-       WHERE ${conversationActivityEventSQL("events")}
+       WHERE ${formalMessageEventSQL("events")}
        GROUP BY events.session_id`
     );
     return new Map(rows.map((row) => [row.session_id, row.last_message_at]));

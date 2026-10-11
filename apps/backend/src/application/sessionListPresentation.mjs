@@ -14,7 +14,7 @@ export function sortSessionsForList(sessions = []) {
 
 export function withLastMessageTimestamp(session, persistedMessageAt = null) {
   // Provider output timestamps can advance for every streamed chunk. Only the
-  // durable user/final-assistant activity projection is a sorting signal.
+  // canonical formal-message projection (user/final model reply) is a sorting signal.
   return { ...session, lastMessageAt: persistedMessageAt ?? null };
 }
 

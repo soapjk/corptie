@@ -19,6 +19,19 @@ public enum ConversationPresentationKind: String, Equatable, Sendable {
             && presentationRole?.lowercased() == "commentary"
     }
 
+    /// Formal messages are the only Timeline items allowed to advance
+    /// Work/Task ordering: user messages and final model replies.
+    public static func isFormalMessage(type: String, presentationRole: String?) -> Bool {
+        switch resolve(type: type, presentationRole: presentationRole) {
+        case .userMessage:
+            return true
+        case .agentMessage:
+            return presentationRole?.lowercased() == "final_answer"
+        default:
+            return false
+        }
+    }
+
     public static func resolve(type: String, presentationRole: String?) -> Self {
         switch presentationRole?.lowercased() {
         case "collaboration_confirmation": return .collaborationConfirmation

@@ -52,7 +52,7 @@ extension PadWorkspace {
             }
             projectReliableMessage(message, title: "已保存，等待发送")
             scrollRequest += 1
-            recordSessionActivity(sessionID: displaySessionID, timestamp: message.createdAt)
+            recordFormalMessageActivity(sessionID: displaySessionID, timestamp: message.createdAt)
             status = ""
             deliveryRevision += 1
             scheduleMessageDelivery(connection)

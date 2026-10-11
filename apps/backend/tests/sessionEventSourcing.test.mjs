@@ -162,6 +162,10 @@ test("listLatestSessionMessageTimes ignores streamed progress and keeps user/fin
       payload: { text: "Claude commentary before a tool call" }, createdAt: "2026-08-20T04:30:00Z"
     });
     store.appendSessionEvent({
+      eventId: "legacy-assistant-surface", sessionId: "s1", type: "assistant/message", surface: true,
+      payload: { text: "Legacy commentary", itemType: "reasoning" }, createdAt: "2026-08-20T04:45:00Z"
+    });
+    store.appendSessionEvent({
       eventId: "empty-completion", sessionId: "s1", type: "CodexThreadCompleted",
       payload: { hasAgentMessage: false }, createdAt: "2026-08-20T05:00:00Z"
     });
@@ -209,7 +213,7 @@ test("Session 列表消息聚合使用稀疏索引且不创建临时排序 B-tre
     const plans = capturedSQL.map((sql) => originalSelectAll(`EXPLAIN QUERY PLAN ${sql}`)
       .map((row) => row.detail)
       .join("\n"));
-    assert.match(plans[0], /idx_session_events_conversation_activity/);
+    assert.match(plans[0], /idx_session_events_formal_message/);
     assert.match(plans[1], /idx_session_events_agent_message/);
     assert.doesNotMatch(plans.join("\n"), /USE TEMP B-TREE/);
   } finally {
@@ -583,6 +587,7 @@ test("legacy schema migrates the cursor column without creating a full database 
     const legacy = new DatabaseSync(dbPath);
     legacy.exec(`
       DROP INDEX IF EXISTS idx_session_events_agent_message;
+      DROP INDEX IF EXISTS idx_session_events_formal_message;
       DROP INDEX IF EXISTS idx_session_events_conversation_activity;
       DROP TRIGGER IF EXISTS state_sync_session_events_agent_message_insert;
       DELETE FROM data_migrations WHERE migration_id = 'session-events-has-agent-message-v1';
