@@ -21,6 +21,33 @@ struct FirstRunProvider: Decodable, Identifiable {
     let message: String?
     var environment: ProviderRuntimeEnvironment? = nil
     var errorCode: String? = nil
+    var program: ProviderProgramInventory? = nil
+}
+
+struct ProviderProgramInventory: Decodable, Equatable {
+    struct Candidate: Decodable, Equatable, Identifiable {
+        let id: String
+        let path: String
+        let resolvedPath: String
+        let sources: [String]
+        let version: String?
+        let state: String
+        let prerelease: Bool
+    }
+    struct Running: Decodable, Equatable, Identifiable {
+        let profileId: String
+        let path: String
+        let pid: Int?
+        let initialized: Bool
+        var id: String { profileId }
+    }
+    let mode: String
+    let recommendedPath: String
+    let adoptedPath: String
+    let model: String
+    var effectiveModel: String? = nil
+    let candidates: [Candidate]
+    let running: [Running]
 }
 
 struct ProviderRuntimeEnvironment: Decodable, Equatable {
@@ -119,13 +146,13 @@ struct FirstRunSetupRoot<Content: View>: View {
                             Button {
                                 scanGeneration += 1
                             } label: {
-                                Label(L10n("重新检测"), systemImage: "arrow.clockwise")
+                                Label(L10n("重新扫描"), systemImage: "arrow.clockwise")
                             }
                             .disabled(busy)
                         }
                         if let status {
                             ForEach(status.providers) { provider in
-                                FirstRunProviderCard(provider: provider, busy: busy, scanGeneration: scanGeneration,
+                                FirstRunProviderCard(provider: provider, busy: busy, scanGeneration: provider.program != nil ? scanGeneration : 0,
                                     isDefault: status.defaultProviderId == provider.id,
                                     pathChanged: { dirty in
                                         if dirty { dirtyProviders.insert(provider.id) }
@@ -312,6 +339,10 @@ struct FirstRunProviderCard: View {
     @State private var confirmImport = false
     @State private var authenticationBusy = false
     @State private var loginId: String?
+    @State private var selectionMode: String
+    @State private var checkModel: String
+    @State private var scanning = false
+    @State private var activeCheckID: String?
 
     init(provider: FirstRunProvider, busy: Bool, scanGeneration: Int, isDefault: Bool,
          pathChanged: @escaping (Bool) -> Void, updated: @escaping (FirstRunProvider) -> Void) {
@@ -325,6 +356,8 @@ struct FirstRunProviderCard: View {
         _result = State(initialValue: provider)
         _environmentMode = State(initialValue: provider.environment?.mode ?? "isolated")
         _environmentHome = State(initialValue: provider.environment?.home ?? "")
+        _selectionMode = State(initialValue: provider.program?.mode ?? "manual")
+        _checkModel = State(initialValue: provider.program?.model ?? "")
     }
 
     private var available: Bool {
@@ -332,12 +365,13 @@ struct FirstRunProviderCard: View {
     }
 
     private var resultMatchesSelection: Bool {
-        result.path == path && (result.environment == nil ||
+        result.path == path && (result.program == nil ||
+            (result.program?.model == checkModel && result.program?.mode == selectionMode)) && (result.environment == nil ||
             (result.environment?.mode == environmentMode && result.environment?.home == environmentHome))
     }
 
-    private var selectionKey: String { "\(path)|\(environmentMode)|\(environmentHome)" }
-    private var controlsBusy: Bool { busy || saving || authenticationBusy }
+    private var selectionKey: String { "\(path)|\(environmentMode)|\(environmentHome)|\(selectionMode)|\(checkModel)" }
+    private var controlsBusy: Bool { busy || saving || authenticationBusy || scanning }
 
     private var statusLabel: String {
         if testing { return L10n("检测中") }
@@ -399,6 +433,7 @@ struct FirstRunProviderCard: View {
                 }
             } else {
                 VStack(alignment: .leading, spacing: 8) {
+                    if let program = result.program { programSelection(program) }
                     Text(L10n("程序路径")).font(.callout.weight(.medium))
                     ViewThatFits(in: .horizontal) {
                         HStack {
@@ -419,6 +454,19 @@ struct FirstRunProviderCard: View {
             if let environment = provider.environment {
                 environmentSelection(environment)
             }
+            if result.program != nil {
+                HStack {
+                    Text(L10n("检测模型")).font(.callout.weight(.medium))
+                    TextField(L10n("Codex 默认模型"), text: $checkModel)
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(controlsBusy || testing)
+                }
+                Text(L10n("检测会发送最小测试请求，可能消耗额度；不会读取项目或加入聊天历史。"))
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if let model = result.program?.effectiveModel {
+                    Text(L10nFormat("已验证模型：%@", model)).font(.caption).foregroundStyle(.secondary)
+                }
+            }
             if let message = error ?? (resultMatchesSelection ? result.message : nil) {
                 Label(L10n(message), systemImage: "exclamationmark.circle")
                     .font(.callout).foregroundStyle(.red)
@@ -432,11 +480,15 @@ struct FirstRunProviderCard: View {
                 .strokeBorder(available && result.enabled ? Color.accentColor.opacity(0.45) : Color.primary.opacity(0.1), lineWidth: 1)
         }
         .onChange(of: selectionKey) { _, _ in
+            if testing, result.program != nil { cancelCheck() }
             testing = false
             error = nil
             pathChanged(!resultMatchesSelection)
         }
         .task(id: "\(selectionKey)|\(scanGeneration)|\(checkGeneration)") {
+            // Multi-installation discovery never triggers a paid reply test.
+            // Its explicit check action has a separate task identity below.
+            guard provider.program == nil else { return }
             let shouldCheck = provider.environment != nil
                 ? (!authenticationBusy && !path.isEmpty && (scanGeneration > 0 || checkGeneration > 0))
                 : !resultMatchesSelection || (!path.isEmpty && (result.checkState == "unknown"
@@ -448,6 +500,15 @@ struct FirstRunProviderCard: View {
                 await check()
             } catch { }
         }
+        .task(id: scanGeneration) {
+            guard provider.program != nil, scanGeneration > 0 else { return }
+            await scanPrograms()
+        }
+        .task(id: checkGeneration) {
+            guard provider.program != nil, checkGeneration > 0 else { return }
+            await check()
+        }
+        .onDisappear { if result.program != nil { cancelCheck() } }
         .alert(L10n("复用本机登录？"), isPresented: $confirmImport) {
             Button(L10n("取消"), role: .cancel) { }
             Button(L10n("导入登录")) { Task { await authenticate("import") } }
@@ -476,6 +537,63 @@ struct FirstRunProviderCard: View {
             }
             Task { let _: ProviderAuthenticationResult? = try? await FirstRunSetupAPI.request("first-run/authentication", body: cancelBody) }
         }
+    }
+
+    private func programSelection(_ program: ProviderProgramInventory) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker(L10n("程序选择"), selection: Binding(
+                get: { selectionMode == "auto" ? "__auto__" : path },
+                set: { value in
+                    if value == "__auto__" {
+                        selectionMode = "auto"
+                        path = program.recommendedPath
+                    } else { selectionMode = "manual"; path = value }
+                }
+            )) {
+                Text(L10n("自动选择最新版本")) .tag("__auto__")
+                ForEach(program.candidates) { candidate in
+                    Text("\(candidate.sources.map { L10n($0) }.joined(separator: "/")) · \(candidate.version ?? L10n("版本未知"))\(candidate.prerelease ? " · " + L10n("预发布") : "")")
+                        .tag(candidate.path)
+                }
+                if !path.isEmpty && !program.candidates.contains(where: { $0.path == path }) {
+                    Text(path).tag(path)
+                }
+            }
+            .disabled(controlsBusy || testing || program.mode == "controlled")
+            if selectionMode == "legacyPinned" {
+                Text(L10n("已保留原程序路径，可选择自动模式并检测后采用新版。"))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if program.mode == "controlled" {
+                Text(L10n("程序路径由运行环境指定。")) .font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(program.running) { running in
+                Text(L10nFormat("当前运行：%@", running.path))
+                    .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
+            if !program.adoptedPath.isEmpty && program.adoptedPath != path {
+                Text(L10nFormat("已采用：%@", program.adoptedPath))
+                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+            Button(L10n("重新扫描")) { Task { await scanPrograms() } }
+                .disabled(controlsBusy || testing)
+        }
+    }
+
+    private func scanPrograms() async {
+        guard !scanning else { return }
+        scanning = true
+        let requested = selectionKey
+        defer { scanning = false }
+        do {
+            let row: FirstRunProvider = try await FirstRunSetupAPI.request("first-run/programs", body: ["providerId": provider.id])
+            guard !Task.isCancelled, requested == selectionKey else { return }
+            result = row
+            if selectionMode == "auto" { path = row.program?.recommendedPath ?? "" }
+            updated(row)
+            pathChanged(!resultMatchesSelection)
+        } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
     }
 
     private func environmentSelection(_ environment: ProviderRuntimeEnvironment) -> some View {
@@ -573,42 +691,61 @@ struct FirstRunProviderCard: View {
     }
 
     private var pathField: some View {
-        TextField(L10n("二进制路径"), text: $path)
+        TextField(L10n("二进制路径"), text: Binding(get: { path }, set: {
+            path = $0
+            if result.program != nil { selectionMode = "manual" }
+        }))
             .font(.system(.body, design: .monospaced))
             .textFieldStyle(.roundedBorder)
             .accessibilityLabel(L10nFormat("%@ 二进制路径", provider.name))
-            .disabled(controlsBusy)
+            .disabled(controlsBusy || result.program?.mode == "controlled")
     }
 
     private var pathActions: some View {
         HStack {
             Button(L10n("选择…")) { chooseBinary() }
-                .disabled(controlsBusy)
-                Button(L10n(provider.environment != nil ? "检测" : "重试")) { checkGeneration += 1 }
+                .disabled(controlsBusy || result.program?.mode == "controlled")
+                Button(L10n(result.program != nil ? "检测并采用" : (provider.environment != nil ? "检测" : "重试"))) { checkGeneration += 1 }
                 .disabled(testing || controlsBusy || path.isEmpty)
+            if testing && result.program != nil {
+                Button(L10n("取消")) { cancelCheck() }
+            }
         }
     }
 
     private func check() async {
         let requestedPath = path
         let requestedSelection = selectionKey
+        let checkID = UUID().uuidString
+        activeCheckID = checkID
         testing = true
         error = nil
         pathChanged(true)
         do {
             var body: [String: Any] = ["providerId": provider.id, "path": requestedPath]
+            if result.program != nil {
+                body["selectionMode"] = selectionMode; body["model"] = checkModel; body["checkId"] = checkID
+            }
             if provider.environment != nil { body["environment"] = environmentBody }
             let row: FirstRunProvider = try await FirstRunSetupAPI.request("first-run/check", body: body)
-            guard !Task.isCancelled, requestedSelection == selectionKey else { return }
+            guard !Task.isCancelled, requestedSelection == selectionKey, activeCheckID == checkID else { return }
             result = row
             if row.checkState == "available", let environment = row.environment { environmentHome = environment.home }
             updated(row)
             pathChanged(false)
         } catch {
-            guard !Task.isCancelled, requestedSelection == selectionKey else { return }
+            guard !Task.isCancelled, requestedSelection == selectionKey, activeCheckID == checkID else { return }
             self.error = error.localizedDescription
         }
-        if requestedSelection == selectionKey || resultMatchesSelection { testing = false }
+        if activeCheckID == checkID { activeCheckID = nil; testing = false }
+    }
+
+    private func cancelCheck() {
+        guard let id = activeCheckID else { return }
+        activeCheckID = nil
+        testing = false
+        let body: [String: Any] = ["providerId": provider.id, "checkId": id]
+        Task { let _: FirstRunProvider? = try? await FirstRunSetupAPI.request("first-run/check/cancel", body: body) }
     }
 
     private func setEnabled(_ enabled: Bool) async {
@@ -635,7 +772,10 @@ struct FirstRunProviderCard: View {
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
         panel.message = L10nFormat("选择 %@ 的二进制文件", provider.name)
-        if panel.runModal() == .OK, let url = panel.url { path = url.path }
+        if panel.runModal() == .OK, let url = panel.url {
+            path = url.path
+            if result.program != nil { selectionMode = "manual" }
+        }
     }
 }
 

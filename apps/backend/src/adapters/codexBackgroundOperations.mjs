@@ -145,13 +145,21 @@ export function createCodexBackgroundOperations({
         });
         if (completed) {
           turnCompleted = true;
+          if (options.rejectModelReroute && notificationsSince(notificationStart).some(message =>
+            message.method === "model/rerouted" && message.params?.threadId === threadId
+            && (!message.params?.turnId || message.params.turnId === turnId))) {
+            throw Object.assign(new Error("The test model was rerouted."), { code: "BACKGROUND_MODEL_REROUTED" });
+          }
           const status = String(completed.params?.turn?.status ?? "completed").toLowerCase();
           if (status !== "completed") {
             const detail = completed.params?.turn?.error?.message || status || "failed";
-            throw new Error(`Codex ephemeral turn failed (${detail}).`);
+            throw Object.assign(new Error(`Codex ephemeral turn failed (${detail}).`), {
+              providerErrorInfo: completed.params?.turn?.error?.codexErrorInfo
+            });
           }
           return {
             text: latestAgentMessageText(threadId, turnId),
+            model: started.model ?? started.thread?.model ?? options.model ?? null,
             threadId,
             turnId,
             durationMs: Date.now() - startedAt

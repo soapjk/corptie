@@ -2,6 +2,34 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createCodexEnvironmentRuntime } from "../src/agent-provider/bootstrap/codexEnvironmentRuntime.mjs";
 
+test("executable transition blocks new work and rejects every busy runtime state", async t => {
+  const profile = { profileId: "native", mode: "native" };
+  const client = { freshThreadIds: new Set(), transport: { pending: new Map() },
+    serverRequestsByThread: new Map(), threadResumePromises: new Map(), recoveryStabilizationThreads: new Set() };
+  let notify;
+  const runtime = createCodexEnvironmentRuntime({ registry: { current: profile },
+    environment: () => ({}), prepare: async () => {}, instructions: async () => "",
+    createRuntime: options => { notify = options.onNotification; return { client, close: async () => {} }; } });
+  t.after(() => runtime.close());
+  runtime.runtimeFor(profile);
+  for (const pending of [client.freshThreadIds, client.transport.pending, client.serverRequestsByThread,
+    client.threadResumePromises, client.recoveryStabilizationThreads]) {
+    if (pending instanceof Map) pending.set("busy", {}); else pending.add("busy");
+    await assert.rejects(runtime.withExecutableTransition(async () => assert.fail("must not switch")), /正在执行/);
+    pending.clear();
+  }
+  notify({ method: "turn/started", params: { turn: { id: "turn" } } });
+  assert.throws(() => runtime.assertExecutableChangeAllowed(), /正在执行/);
+  notify({ method: "turn/completed", params: { turn: { id: "turn" } } });
+  await runtime.withExecutableTransition(async () => {
+    assert.throws(() => runtime.runtimeFor(profile), { code: "PROVIDER_BUSY" });
+    await assert.rejects(runtime.startThread({}), { code: "PROVIDER_BUSY" });
+  });
+  runtime.assertExecutableChangeAllowed();
+  await assert.rejects(runtime.withExecutableTransition(async () => { throw new Error("rollback"); }), /rollback/);
+  runtime.assertExecutableChangeAllowed();
+});
+
 function fixture(options = {}) {
   const isolated = { profileId: "old", mode: "isolated", home: "/old" };
   const native = { profileId: "new", mode: "native", home: "/native" };

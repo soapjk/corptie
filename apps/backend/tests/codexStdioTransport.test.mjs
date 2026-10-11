@@ -25,6 +25,22 @@ function fakeChild() {
   return child;
 }
 
+test("runtime validates the exact command before spawn and after handshake", async () => {
+  const child = fakeChild();
+  const events = [];
+  const transport = new CodexStdioTransport({ command: () => "/chosen/codex",
+    validateCommand: async path => events.push(["validate", path]),
+    spawnProcess: path => { events.push(["spawn", path]); return child; } });
+  await transport.initialize();
+  assert.deepEqual(events, [["validate", "/chosen/codex"], ["spawn", "/chosen/codex"], ["validate", "/chosen/codex"]]);
+  assert.equal(transport.runningCommand, "/chosen/codex");
+  await transport.close();
+  assert.equal(transport.runningCommand, null);
+  const changed = new CodexStdioTransport({ validateCommand: () => { throw new Error("binary changed"); },
+    spawnProcess: () => { throw new Error("must not spawn"); } });
+  await assert.rejects(changed.initialize(), /binary changed/);
+});
+
 test("RPC responses correlate independently from native requests and notifications", async () => {
   const child = fakeChild();
   const notifications = [], requests = [], diagnostics = [];

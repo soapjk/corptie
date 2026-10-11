@@ -233,11 +233,35 @@ struct PadMessageDeliveryTests {
         #expect(!PadWorkspace.deliveryFailureIsPermanent(URLError(.timedOut)))
         #expect(!PadWorkspace.deliveryFailureIsPermanent(ClientServiceFailure(statusCode: 503, code: "SESSION_BUSY")))
         #expect(!PadWorkspace.deliveryFailureIsPermanent(ClientServiceFailure(statusCode: 409, code: "SESSION_NOT_READY")))
+        #expect(!PadWorkspace.deliveryFailureIsPermanent(ClientServiceFailure(statusCode: 404, code: "LOCAL_BACKEND_UNAVAILABLE")))
+        #expect(PadWorkspace.deliveryFailureIsPermanent(ClientServiceFailure(statusCode: 404, code: "SESSION_NOT_AVAILABLE")))
         #expect(PadWorkspace.deliveryFailureIsPermanent(ClientServiceFailure(statusCode: 410, code: "MESSAGE_EXPIRED")))
         #expect(PadWorkspace.deliveryFailureIsPermanent(CloudRelayTransportError.responseTooLarge))
         #expect(!PadWorkspace.deliveryFailureIsPermanent(CloudRelayTransportError.disconnected))
         #expect(PadWorkspace.retryInterval(attempt: 1, jitter: 1) == 1)
         #expect(PadWorkspace.retryInterval(attempt: 100, jitter: 1) == 30)
+    }
+
+    @Test func previouslyMisclassifiedRelayFailureRecoversTheOriginalMessageIdentity() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let outbox = ReliableMessageOutbox(directory: directory, key: SymmetricKey(size: .bits256))
+        var record = ReliableOutgoingMessage(serverID: "server", deviceID: "device", sessionID: "session",
+            displaySessionID: "session", text: "hello")
+        record.state = .rejected
+        record.errorCode = "LOCAL_BACKEND_UNAVAILABLE"
+        try await outbox.save(record)
+        let harness = DeliveryHarness(loseAcknowledgement: false)
+        let transport = BackendTransport(endpoint: try BackendEndpoint(URL(string: "http://127.0.0.1")!),
+            data: { request in try await harness.handle(request) }, bytes: { _ in throw URLError(.cancelled) })
+        let connection = PadConnection(transportOverride: transport, credentials: .init(serverId: "server", deviceId: "device",
+            accessToken: "test", refreshToken: "test", accessExpiresAt: .greatestFiniteMagnitude, refreshExpiresAt: .greatestFiniteMagnitude))
+        connection.serverID = "server"; connection.connected = true
+        let workspace = PadWorkspace(messageOutbox: outbox)
+        await workspace.runMessageDelivery(connection)
+        #expect(try await outbox.all().isEmpty)
+        #expect(await harness.admissions == 1)
+        #expect(await harness.requestIDs == [record.id, record.id])
     }
 
     @Test func rebuiltTransportCannotReuseAnOldSendingIdentityValidation() async throws {

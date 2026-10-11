@@ -181,7 +181,8 @@ import { ProviderEventProjector } from "./application/providerEventProjector.mjs
 import { LegacySessionHistoryRepairService } from "./application/legacySessionHistoryRepairService.mjs";
 import { createSessionRecoveryComposition } from "./agent-provider/bootstrap/sessionRecoveryComposition.mjs";
 import { CorptieStore } from "./store/corptieStore.mjs";
-import { resolveCodexCommand } from "./utils/codexCommand.mjs";
+import { resolveCodexCommand, controlledCodexCommand, codexExecutableCandidates } from "./utils/codexCommand.mjs";
+import { ProviderExecutableDiscovery } from "./application/providerExecutableDiscovery.mjs";
 import { resolvePlatformAdminSession } from "./utils/platformAssistantIdentity.mjs";
 import { environmentForCommand } from "./utils/externalCommand.mjs";
 import {
@@ -712,8 +713,8 @@ async function prepareCodexEnvironment(profile) {
   await codexEnvironmentRegistry.validate(profile);
   return resources;
 }
-const codexEnvironment = (profile) => ({
-  ...environmentForCommand(codexAppServerCommand()),
+const codexEnvironment = (profile, command = codexAppServerCommand()) => ({
+  ...environmentForCommand(command),
   ...proxyEnvForProfile(store.settings().agentProxy?.codex), CODEX_HOME: profile.home
 });
 let nativeCodexInstructions;
@@ -753,7 +754,12 @@ const codexRuntime = createCodexEnvironmentRuntime({
     return logical?.activeBinding?.providerId === "codex-app-server" ? logical.activeThreadId : null;
   },
   command: codexAppServerCommand,
-  onNotification: (message) => {
+  validateCommand: (path) => firstRunSetup.validateRuntimeProgram("codex-app-server", path),
+  onNotification: (message, profile) => {
+    if (message.method === "account/updated" && profile?.profileId === codexEnvironmentRegistry.current.profileId
+      && codexRuntime.runningPrograms().some(program => program.profileId === profile.profileId && program.initialized)) {
+      void firstRunSetup.invalidateConnectionTest("codex-app-server").catch(() => {});
+    }
     handleCodexAppServerNotificationSafely(message);
   },
   onDynamicToolCall: (params) => toolHostService.execute({
@@ -1040,15 +1046,29 @@ const firstRunSetup = new FirstRunSetupService({
   },
   providers: [
     { id: "codex-app-server", name: "Codex", discover: resolveCodexCommand,
+      programDiscovery: new ProviderExecutableDiscovery({ candidates: codexExecutableCandidates,
+        controlledPath: controlledCodexCommand }),
+      runningPrograms: () => codexRuntime.runningPrograms(),
+      withProgramTransition: async (path, probe, operation) => {
+        const saved = firstRunSetup.state.providers["codex-app-server"];
+        if (codexAppServerCommand() === path && saved?.probe?.fingerprint === probe.fingerprint) return operation();
+        codexEnvironmentSetup.assertNoPendingLogin();
+        return codexRuntime.withExecutableTransition(operation);
+      },
       ...codexEnvironmentSetup,
       prepare: async () => {
         await prepareCodexEnvironment(codexEnvironmentRegistry.current);
         await codexRuntime.initialize();
         setProviderRuntimeReadiness("codex-app-server", { state: "ready" });
       },
-      configure: async (path) => {
-        assertSetupPathChangeAllowed("codex-app-server", path);
-        if (codexAppServerCommand() !== path) codexRuntime.close();
+      configure: async (path, probe = {}) => {
+        const saved = firstRunSetup.state.providers["codex-app-server"];
+        if (codexAppServerCommand() === path && saved?.probe?.fingerprint === probe.fingerprint) return;
+        codexEnvironmentSetup.assertNoPendingLogin();
+        if (codexEnvironmentHasActiveSession(codexEnvironmentRegistry.current)) {
+          throw new Error("此 Provider 正在执行，请结束后再更改程序。");
+        }
+        await codexRuntime.close();
       } },
     { id: "claude-sdk", name: "Claude Code", discover: () => resolveExternalCommand("claude", { environmentVariables: ["CORPTIE_CLAUDE_PATH"] }),
       probe: createClaudeReplyProbe({ environment: async () => {

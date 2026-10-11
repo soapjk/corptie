@@ -18,11 +18,14 @@ export function createCodexEnvironmentRuntime({ registry, environment, prepare, 
   const runtimes = new Map();
   const activity = new Map();
   const prepared = new Map();
+  let replacingExecutable = false;
   const recyclable = (id, runtime) => typeof runtime.client === "object" && runtime.client !== null
     && canRelease(activity.get(id)?.profile)
     && !activity.get(id)?.turns.size && !runtime.client.freshThreadIds?.size
     && !runtime.client.transport?.pending?.size
-    && !runtime.client.serverRequestsByThread?.size;
+    && !runtime.client.serverRequestsByThread?.size
+    && !runtime.client.threadResumePromises?.size
+    && !runtime.client.recoveryStabilizationThreads?.size;
   const release = (id) => {
     const runtime = runtimes.get(id);
     clearTimeout(activity.get(id)?.timer);
@@ -49,6 +52,7 @@ export function createCodexEnvironmentRuntime({ registry, environment, prepare, 
     entry.timer.unref?.();
   };
   const runtimeFor = (profile) => {
+    if (replacingExecutable) throw Object.assign(new Error("Provider 程序正在切换，请稍后重试。"), { code: "PROVIDER_BUSY" });
     let runtime = runtimes.get(profile.profileId);
     if (!runtime) {
       assertProfileCapacity(profile);
@@ -59,7 +63,7 @@ export function createCodexEnvironmentRuntime({ registry, environment, prepare, 
           const turnId = message.params?.turn?.id;
           if (message.method === "turn/started" && turnId) turns?.add(turnId);
           if (message.method === "turn/completed" && turnId) turns?.delete(turnId);
-          options.onNotification?.(message);
+          options.onNotification?.(message, profile);
         } });
       runtimes.set(profile.profileId, runtime);
     }
@@ -80,6 +84,25 @@ export function createCodexEnvironmentRuntime({ registry, environment, prepare, 
     return { ...input, developerInstructions: [await instructions(profile), input.developerInstructions].filter(Boolean).join("\n\n") };
   };
   const target = {
+    async withExecutableTransition(operation) {
+      target.assertExecutableChangeAllowed();
+      replacingExecutable = true;
+      try { return await operation(); }
+      finally { replacingExecutable = false; }
+    },
+    runningPrograms() {
+      return [...runtimes.entries()].flatMap(([profileId, runtime]) => {
+        const transport = runtime.client?.transport;
+        return transport?.process && transport.runningCommand ? [{ profileId,
+          path: transport.runningCommand, pid: transport.process.pid,
+          initialized: transport.initialized }] : [];
+      });
+    },
+    assertExecutableChangeAllowed() {
+      if (replacingExecutable || [...runtimes.entries()].some(([id, runtime]) => !recyclable(id, runtime))) {
+        throw new Error("此 Provider 正在执行、审批或恢复，请结束后再更改程序。");
+      }
+    },
     get notifications() { return runtimeFor(registry.current).notifications; },
     runtimeFor,
     assertProfileCapacity,

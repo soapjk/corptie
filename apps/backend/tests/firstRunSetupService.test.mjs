@@ -4,6 +4,88 @@ import { mkdtemp, writeFile, chmod, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FirstRunSetupService } from "../src/application/firstRunSetupService.mjs";
+import { ProviderExecutableDiscovery } from "../src/application/providerExecutableDiscovery.mjs";
+
+test("account changes invalidate connection proof without replacing provider or enable intent", async t => {
+  const f = await fixture(t);
+  const id = "codex-app-server";
+  await f.service.check({ providerId: id, path: f.binary });
+  const previous = structuredClone(f.service.state);
+  await f.service.invalidateConnectionTest(id);
+  const saved = f.service.state.providers[id];
+  assert.equal(saved.probe.state, "unknown");
+  assert.equal(saved.probe.code, "PROVIDER_ACCOUNT_CHANGED");
+  assert.equal(saved.configuredPath, previous.providers[id].configuredPath);
+  assert.equal(saved.enabled, previous.providers[id].enabled);
+  assert.equal(saved.userDisabled, previous.providers[id].userDisabled);
+  assert.equal(f.service.state.defaultProvider, previous.defaultProvider);
+  await assert.rejects(f.service.setEnabled({ providerId: id, path: f.binary, enabled: true }), /先完成回复检测/);
+});
+
+test("automatic inventory adopts exactly the tested program; failed candidates and rescans preserve it", async t => {
+  const f = await fixture(t);
+  const provider = f.options.providers[0];
+  const second = `${f.binary}-new`;
+  await writeFile(second, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  provider.programDiscovery = new ProviderExecutableDiscovery({ candidates: () => [
+    { path: f.binary, source: "cli" }, { path: second, source: "ChatGPT" }],
+    probeVersion: async path => ({ version: path === second ? "0.155.0-alpha.16" : "0.141.0", state: "discovered" }) });
+  await provider.programDiscovery.scan();
+  assert.equal((await f.service.status()).providers[0].program.mode, "auto");
+  assert.equal(f.service.command(provider.id, () => "wrong"), second);
+  const row = await f.service.check({ providerId: provider.id, path: second, selectionMode: "auto", model: "test-model" });
+  assert.equal(row.enabled, true);
+  assert.equal(row.program.mode, "auto");
+  assert.equal(row.program.model, "test-model");
+  assert.equal(f.service.command(provider.id, () => "wrong"), second);
+  await f.service.validateRuntimeProgram(provider.id, second);
+  const saved = structuredClone(f.service.state);
+  provider.probe = async () => { throw new Error("candidate failed"); };
+  assert.equal((await f.service.check({ providerId: provider.id, path: f.binary })).checkState, "failed");
+  assert.deepEqual(f.service.state, saved);
+  assert.equal((await f.service.status()).providers[0].enabled, true);
+  await f.service.scanPrograms({ providerId: provider.id });
+  assert.deepEqual(f.service.state, saved);
+  assert.equal(f.probes.length, 1);
+  await writeFile(second, "#!/bin/sh\n# upgraded\nexit 0\n");
+  await assert.rejects(f.service.validateRuntimeProgram(provider.id, second), { code: "PROVIDER_PROGRAM_CHANGED" });
+});
+
+test("cancelled or different-model probes never commit obsolete results", async t => {
+  const f = await fixture(t);
+  let began, finish;
+  const started = new Promise(resolve => { began = resolve; });
+  f.options.providers[0].probe = async (_, { model }) => {
+    if (model === "slow") { began(); await new Promise(resolve => { finish = resolve; }); }
+    return { ok: true };
+  };
+  const slow = f.service.check({ providerId: "codex-app-server", path: f.binary, model: "slow", checkId: "old" });
+  await started;
+  await f.service.cancelCheck({ providerId: "codex-app-server", checkId: "not-old" });
+  assert.equal(f.service.checks.size, 1);
+  await f.service.cancelCheck({ providerId: "codex-app-server", checkId: "old" });
+  assert.equal(f.service.checks.size, 0);
+  const fast = await f.service.check({ providerId: "codex-app-server", path: f.binary, model: "new", checkId: "new" });
+  assert.equal(fast.enabled, true);
+  finish(); await slow;
+  assert.equal(f.service.state.providers["codex-app-server"].probe.model, "new");
+});
+
+test("controlled paths, legacy paths and explicitly disabled choices are preserved", async t => {
+  const f = await fixture(t);
+  const provider = f.options.providers[0];
+  let controlled = null;
+  provider.programDiscovery = new ProviderExecutableDiscovery({ candidates: () => [], controlledPath: () => controlled });
+  await f.service.check({ providerId: provider.id, path: f.binary });
+  await f.service.setEnabled({ providerId: provider.id, path: f.binary, enabled: false });
+  assert.equal((await f.service.check({ providerId: provider.id, path: f.binary })).enabled, false);
+  delete f.service.state.providers[provider.id].selectionMode;
+  assert.equal((await f.service.status()).providers[0].program.mode, "legacyPinned");
+  controlled = "/missing/controlled";
+  assert.equal(f.service.command(provider.id, () => "wrong"), controlled);
+  assert.equal((await f.service.status()).providers[0].path, controlled);
+  assert.throws(() => f.service.check({ providerId: provider.id, path: f.binary }), /运行环境/);
+});
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "corptie-setup-"));

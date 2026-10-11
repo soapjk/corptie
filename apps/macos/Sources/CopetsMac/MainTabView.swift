@@ -484,7 +484,6 @@ private struct MemoryCenterPage: View {
 // MARK: - 左侧导航与常驻页面
 
 struct MainWindowContentView: View {
-    @AppStorage("corptie.mac.navigationRailExpanded") private var navigationRailExpanded = true
     @StateObject private var router = AppTabRouter.shared
     @StateObject private var selectionState = AppTabRouter.shared.selectionState
     @EnvironmentObject private var resizeState: MainWindowResizeState
@@ -494,8 +493,8 @@ struct MainWindowContentView: View {
             MainWindowNavigationRail(selection: Binding(
                 get: { selectionState.selectedTab },
                 set: { router.selectTab($0) }
-            ), isExpanded: $navigationRailExpanded)
-            .frame(width: MainNavigationRailLayout.width(expanded: navigationRailExpanded))
+            ))
+            .frame(width: MainNavigationRailLayout.width)
 
             MainTabPageHost(
                 selection: selectionState.selectedTab,

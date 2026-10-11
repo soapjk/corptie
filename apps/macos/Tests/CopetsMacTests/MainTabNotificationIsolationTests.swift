@@ -49,13 +49,22 @@ struct MainTabNotificationIsolationTests {
     }
 
     @Test
-    func navigationRailChangesWidthOnlyAfterDirectionalEdgeDrag() {
-        #expect(MainNavigationRailLayout.width(expanded: true) == 200)
-        #expect(MainNavigationRailLayout.width(expanded: false) == 64)
-        #expect(!MainNavigationRailLayout.expanded(after: -32, currently: true))
-        #expect(MainNavigationRailLayout.expanded(after: 32, currently: false))
-        #expect(MainNavigationRailLayout.expanded(after: -12, currently: true))
-        #expect(!MainNavigationRailLayout.expanded(after: 12, currently: false))
+    func navigationRailIsAlwaysIconOnlyWithoutExpansionStateOrGestures() throws {
+        #expect(MainNavigationRailLayout.width == 64)
+        let source = try mainTabSource()
+        #expect(!source.contains("navigationRailExpanded"))
+        #expect(source.contains(".frame(width: MainNavigationRailLayout.width)"))
+        let railURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac/MainWindowNavigationRail.swift")
+        let rail = try String(contentsOf: railURL, encoding: .utf8)
+        #expect(rail.contains("expanded: false"))
+        #expect(!rail.contains("isExpanded"))
+        #expect(!rail.contains("DragGesture"))
+        #expect(!rail.contains("accessibilityAdjustableAction"))
+        #expect(!rail.contains("navigation-rail-resizer"))
     }
 
     @Test
