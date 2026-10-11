@@ -80,8 +80,11 @@ struct SessionDetailPanel: View {
 
     private var sessionDetailContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ConversationSessionInformationCard(sessionID: session.id,
-                workName: entityClient.works.first(where: { $0.id == session.workId })?.name)
+            ConversationServerDetail(scope: "\(CorptieAppEnvironment.backendBaseURL):\(session.id)", sessionID: session.id,
+                api: { [baseURL = CorptieAppEnvironment.backendBaseURL] in
+                    ClientDetailAPI(transport: try BackendTransport(endpoint: BackendEndpoint(baseURL)), route: .desktop)
+                })
+                .id(session.id)
             if detailKind == .taskDetail, let taskId = session.taskId, !taskId.isEmpty {
                 SessionCorptieTaskDetailCard(
                     taskId: taskId,
@@ -91,9 +94,6 @@ struct SessionDetailPanel: View {
                 )
             }
 
-            if detailKind == .chatDetail {
-                ConversationChatSummaryCard(summary: session.summary)
-            }
 
             if detailKind == .workDetail { workDetailContent }
 

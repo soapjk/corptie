@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "documentId": "detail:logical:sample",
+  "sessionId": "logical:sample",
+  "generation": "fixture-generation",
+  "revision": 1,
+  "order": ["session-info"],
+  "cards": [{
+    "id": "session-info", "templateRevision": 1, "dataRevision": "fixture-data",
+    "title": {"key": "detail.sessionInfo", "fallback": "会话信息"},
+    "semanticKind": "information", "rootNodeId": "root",
+    "nodes": [
+      {"id": "root", "kind": "column", "props": {}, "children": ["session", "work"]},
+      {"id": "session", "kind": "text", "props": {}, "binding": "sessionId", "children": []},
+      {"id": "work", "kind": "text", "props": {}, "binding": "workName", "children": []}
+    ],
+    "data": {"sessionId": "logical:sample", "workName": "Sample Work"},
+    "actions": [{"id": "refresh", "kind": "read", "operation": "detail.refresh", "label": {"key": "detail.refresh", "fallback": "刷新"}, "available": true}],
+    "fallback": {"key": "detail.unavailable", "fallback": "此卡片暂时无法显示"}
+  }]
+}

@@ -1,3 +1,5 @@
+import { handleDesktopDetail, handleDesktopDetailSync } from "./detailDocumentService.mjs";
+
 export function routeBackendHttpRequest(request, response, ports) {
   const {
     clientDeviceGateway, sendJson, developmentPreview, clientCapabilities, backendStoreReady,
@@ -71,6 +73,9 @@ export function routeBackendHttpRequest(request, response, ports) {
   if (rejectUnavailableStoreRequest({
     request, response, url, backendStoreReady, store, dataRootMigrationCoordinator, sendJson
   })) return;
+
+  if (handleDesktopDetailSync({ request, response, url, store, sendJson }) ||
+      handleDesktopDetail({ request, response, url, store, sendJson })) return;
 
   if (request.method === "GET" && url.pathname === "/search") {
     const failed = error => sendJson(response, error.statusCode ?? 500, { code: error.code ?? "SEARCH_FAILED", error: error.statusCode === 400 ? error.message : "Search unavailable." });

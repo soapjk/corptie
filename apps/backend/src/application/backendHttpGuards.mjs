@@ -7,13 +7,15 @@ export function rejectDevelopmentPreviewWrite({ request, response, url, developm
       "/works", "/tasks", "/agents", "/workspaces", "/repositories", "/artifacts", "/memories",
       "/automations", "/scheduled-tasks", "/scheduled-session-tasks"].includes(url.pathname)
       || /^\/sessions\/[^/]+\/(stored-snapshot|history|timeline\/window|timeline\/changes|events|usage|quick-messages|context-references|images|resources|fork|worktree-detail)$/.test(url.pathname)
+      || /^\/sessions\/[^/]+\/detail(?:\/events)?$/.test(url.pathname)
       || /^\/works\/[^/]+(?:\/(tasks|artifacts))?$/.test(url.pathname)
       || /^\/tasks\/[^/]+(?:\/(sessions|snapshots|artifacts))?$/.test(url.pathname)
       || /^\/artifacts\/[^/]+$/.test(url.pathname)
       || url.pathname === "/scene-templates"
       || url.pathname === "/scenes"
       || /^\/scenes\/[^/]+(?:\/(views\/[^/]+|changes))?$/.test(url.pathname);
-    if (request.method !== "GET" || !readable) {
+    const detailSyncRead = request.method === "POST" && /^\/sessions\/[^/]+\/detail\/sync$/.test(url.pathname) && !url.search;
+    if (!detailSyncRead && (request.method !== "GET" || !readable)) {
       sendJson(response, 403, { code: "DEVELOPMENT_PREVIEW_READ_ONLY",
         error: "开发版数据预览：只浏览、不执行；此操作已禁用。" });
       return true;

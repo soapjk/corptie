@@ -19,8 +19,11 @@ struct PadConversationInspector: View {
             if let session {
                 PadInspectorResources(store: inspector, connection: connection, sessionID: sessionID, workspace: workspace,
                     kind: kind, onOpenAutomation: onOpenAutomation) {
-                    ConversationSessionInformationCard(sessionID: session.id,
-                        workName: workspace.works.first(where: { $0.id == session.workId })?.name)
+                    ConversationServerDetail(scope: "\(connection.serverID):\(connection.address):\(connection.deviceID ?? ""):\(connection.cloudCurrentDeviceID?.uuidString ?? "lan"):\(sessionID)",
+                        sessionID: sessionID, api: {
+                            ClientDetailAPI(transport: try await connection.transport(), route: .pairedDevice)
+                        })
+                        .id("\(connection.serverID):\(connection.address):\(connection.deviceID ?? ""):\(connection.cloudCurrentDeviceID?.uuidString ?? "lan"):\(sessionID)")
                 } secondary: {
                     primaryDetail(for: session)
                     ConversationWorktreeCard(sessionID: session.id, refreshID: session.updatedAt,
@@ -43,9 +46,6 @@ struct PadConversationInspector: View {
         }
     }
     @ViewBuilder private func primaryDetail(for session: ClientSession) -> some View {
-        if kind == .chat {
-            ConversationChatSummaryCard(summary: inspector.snapshot?.summary ?? session.summary)
-        }
         if kind == .work, let work = workspace.works.first(where: { $0.id == session.workId }) {
             ConversationWorkOverviewCard(description: inspector.snapshot?.workDescription ?? work.description)
             let tasks = (inspector.sections["focusTasks"]?.items ?? []).compactMap { value -> ConversationFocusTask? in
