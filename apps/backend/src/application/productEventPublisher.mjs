@@ -14,7 +14,7 @@ export function createProductEventPublisher({
   reconcileCompletedCollaborationWork, reconcileConflictResolutionSession,
   agentWorkTimelineItem, collaborationConfirmationTimelineItem,
   sessionChannelAuthorizationTimelineItem, sessionChannelMessageTimelineItem,
-  logger = console, defer = setImmediate
+  logger = console, defer = setImmediate, invalidateDetail
 }) {
 
   function emitEvent(type, payload, options = {}) {
@@ -101,6 +101,7 @@ export function createProductEventPublisher({
       clientDeviceGateway?.events.publishOperation?.(projectTaskDeletionNotification(payload.operation));
     }
     if (outbox) store.markEventOutboxPublished(outbox.outbox_id, now());
+    invalidateDetail?.(type, payload, sessionId);
     scheduleStateSyncPublish();
     if (type === "TaskChanged" && payload?.entity?.id) {
       requestTaskSummary(payload.entity.id);

@@ -4,8 +4,11 @@ public struct ClientDetailAPI: Sendable {
     public enum Route: Sendable { case desktop, pairedDevice }
     private let transport: BackendTransport
     private let route: Route
-    public init(transport: BackendTransport, route: Route) { self.transport = transport; self.route = route }
-    var v2: ClientDetailV2API { ClientDetailV2API(transport: transport, route: route) }
+    public let negotiation: ClientDetailV2Negotiation
+    public init(transport: BackendTransport, route: Route, negotiation: ClientDetailV2Negotiation = .legacy) {
+        self.transport = transport; self.route = route; self.negotiation = negotiation
+    }
+    var v2: ClientDetailV2API { ClientDetailV2API(transport: transport, route: route, negotiation: negotiation) }
     static func canFallbackToV1(_ error: Error) -> Bool {
         if let failure = error as? ClientServiceFailure {
             return (failure.statusCode == 409 && failure.code == "DETAIL_CATALOG_UNSUPPORTED") ||
@@ -22,8 +25,8 @@ public struct ClientDetailAPI: Sendable {
         return false
     }
     func renderingSnapshot(sessionID: String) async throws -> ClientDetailDocument {
-        do { return try await v2.snapshot(sessionID: sessionID).renderingDocument() }
-        catch { guard Self.canFallbackToV1(error) else { throw error }; return try await snapshot(sessionID: sessionID) }
+        do { return try await v2.snapshot(sessionID: sessionID).renderingDocument(catalogProfile: negotiation.catalog, clientCapabilities: negotiation.clientCapabilities) }
+        catch { guard negotiation.isLegacy && Self.canFallbackToV1(error) else { throw error }; return try await snapshot(sessionID: sessionID) }
     }
     private func request(sessionID: String, events: Bool) throws -> URLRequest {
         let prefix = route == .desktop ? [] : ["client", "v1"]

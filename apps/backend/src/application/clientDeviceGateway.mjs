@@ -7,6 +7,8 @@ import { ClientEventStream, parseRealtimeResumeQuery } from "./clientEventStream
 import { ClientInspectorStream } from "./clientInspectorStream.mjs";
 import { detailServiceFor, acceptsNativeDetail } from "./detailDocumentService.mjs";
 import { readDetailV2Request } from "./detailV2JSON.mjs";
+import { sendDetailV2Snapshot } from "./detailSnapshotTransport.mjs";
+import { detailV2GetNegotiation, detailV2ServiceOptions, detailV2PinnedAuthenticate, DETAIL_TRANSPORT_CATALOGS } from "./detailV2Negotiation.mjs";
 
 export const reply = (response, status, body) => {
   response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store",
@@ -68,6 +70,8 @@ export class ClientDeviceGateway {
     this.buckets = new Map();
     this.sockets = new Map();
     this.onRevoke = id => {
+      if (this.sessionAPI?.inspector?.store) detailServiceFor(this.sessionAPI.inspector.store)
+        .clearCache({ serverId: this.authority.state.serverId, principalId: `device:${id}` });
       for (const [socket, owner] of this.sockets) if (owner === id) socket.destroy();
     };
   }
@@ -156,22 +160,31 @@ export class ClientDeviceGateway {
         const scope = this.sessionAPI.inspector.scope(id, identity);
         const input = await readDetailV2Request(request);
         const service = detailServiceFor(this.sessionAPI.inspector.store);
-        return service.attachV2(response, () => {
-          const current = this.authenticateRequest(request); this.sessionAPI.inspector.scope(id, current); return current;
-        }, scope.logicalSessionId ?? scope.sessionId, null, input);
+        const canonical = scope.logicalSessionId ?? scope.sessionId;
+        const authenticate = detailV2PinnedAuthenticate(() => this.authenticateRequest(request), current => {
+          const next = this.sessionAPI.inspector.scope(id, current); return next.logicalSessionId ?? next.sessionId;
+        }, identity, canonical);
+        return service.attachV2(response, authenticate, canonical, request, input);
       }
       const detail = /^\/client\/v1\/sessions\/([^/]+)\/detail(?:\/(events))?$/.exec(path);
       if (detail && this.sessionAPI?.inspector) {
         if (request.method !== "GET") throw deviceError("DETAIL_REQUEST_NOT_ALLOWED", 405);
-        const v2 = !detail[2] && request.headers.accept === "application/json; corptie-detail=native-v2";
+        const negotiation = !detail[2] ? detailV2GetNegotiation(request) : null;
+        const v2 = negotiation !== null;
+        if (v2 && !DETAIL_TRANSPORT_CATALOGS.includes(negotiation.catalog)) throw deviceError("DETAIL_CATALOG_UNSUPPORTED", 409);
         if (!v2 && !acceptsNativeDetail(request)) throw deviceError("DETAIL_CATALOG_UNSUPPORTED", 409);
-        const id = decode(detail[1], "INVALID_SESSION_ID"), authenticate = () => this.authenticateRequest(request);
+        const id = decode(detail[1], "INVALID_SESSION_ID");
         const scope = this.sessionAPI.inspector.scope(id, identity);
+        const authenticate = detailV2PinnedAuthenticate(() => this.authenticateRequest(request), current => {
+          const next = this.sessionAPI.inspector.scope(id, current); return next.logicalSessionId ?? next.sessionId;
+        }, identity, scope.logicalSessionId ?? scope.sessionId);
         const service = detailServiceFor(this.sessionAPI.inspector.store);
         if (detail[2]) return service.events.attach(response, () => {
           const identity = authenticate(); this.sessionAPI.inspector.scope(id, identity); return identity;
         }, scope.logicalSessionId ?? scope.sessionId, request);
-        const result = v2 ? service.v2Snapshot(scope.logicalSessionId ?? scope.sessionId) : service.snapshot(scope.logicalSessionId ?? scope.sessionId);
+        const result = v2 ? service.v2Snapshot(scope.logicalSessionId ?? scope.sessionId, detailV2ServiceOptions(identity, negotiation))
+          : service.snapshot(scope.logicalSessionId ?? scope.sessionId, { identity });
+        if (v2) return await sendDetailV2Snapshot(request, response, result, authenticate);
         authenticate(); return reply(response, 200, result);
       }
       this.sockets.set(request.socket, identity.deviceId);
@@ -570,6 +583,8 @@ export class ClientDeviceGateway {
 
   async close() {
     this.events.close();
+    if (this.sessionAPI?.inspector?.store) detailServiceFor(this.sessionAPI.inspector.store)
+      .clearCache({ serverId: this.authority.state.serverId });
     this.authority.listeners.delete(this.onRevoke);
     if (!this.server?.listening) return;
     for (const socket of this.sockets.keys()) socket.destroy();
