@@ -6,7 +6,7 @@ import test from "node:test";
 import { SessionContextReferenceService } from "../src/application/sessionContextReferenceService.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
-async function fixture() {
+async function fixture(onChanged) {
   const directory = await mkdtemp(join(tmpdir(), "corptie-context-references-"));
   const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
   await store.initialize();
@@ -22,6 +22,7 @@ async function fixture() {
   await writeFile(localPath, "# Local reference\nUse the shared Provider contract.");
   const service = new SessionContextReferenceService({
     store,
+    onChanged,
     fetch: async () => new Response("<html><head><title>Reference Page</title></head><body>Web reference body</body></html>", {
       headers: { "content-type": "text/html" }
     }),
@@ -107,6 +108,20 @@ test("Assistant Sessions persist and resolve Provider-neutral context references
     await value.store.close();
     await rm(value.directory, { recursive: true, force: true });
   }
+});
+
+test("successful reference writes invalidate only their owner; rejected writes and reads do not", async () => {
+  const changes = [], value = await fixture(change => changes.push(change));
+  try {
+    const created = await value.service.create("assistant-session", { targetType: "webURL", locator: "https://example.com/reference" });
+    value.service.list("assistant-session");
+    await assert.rejects(value.service.create("assistant-session", { targetType: "webURL", locator: "https://example.com/reference" }), { code: "CONTEXT_REFERENCE_DUPLICATE" });
+    assert.equal(changes.length, 1);
+    value.service.update("assistant-session", created.referenceId, { enabled: false });
+    await value.service.refresh("assistant-session", created.referenceId);
+    value.service.delete("assistant-session", created.referenceId);
+    assert.deepEqual(changes, Array.from({ length: 4 }, () => ({ resourceType: "reference", sessionId: "assistant-session" })));
+  } finally { await value.store.close(); await rm(value.directory, { recursive: true, force: true }); }
 });
 
 test("Task Worker Sessions can manage and resolve references; self references and duplicates still fail", async () => {

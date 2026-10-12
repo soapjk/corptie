@@ -1,15 +1,55 @@
 import { randomUUID, createHash } from "node:crypto";
 import { ClientInspectorStream } from "./clientInspectorStream.mjs";
 import { validateDetailContract } from "./detailDocumentContract.mjs";
-import { projectDetailV2, DetailV2Journal, diffDetailV2 } from "./detailSyncV2.mjs";
+import { projectDetailV2, DetailV2Journal, diffDetailV2, detailV2Hash } from "./detailSyncV2.mjs";
+import { detailV2CatalogOptions } from "./detailV2Catalog.mjs";
 import { readDetailV2Request } from "./detailV2JSON.mjs";
 import { validateDetailV2Envelope } from "./detailV2Contract.mjs";
+import { sendDetailV2Snapshot } from "./detailSnapshotTransport.mjs";
+import { detailV2GetNegotiation, detailV2ServiceOptions, detailV2PinnedAuthenticate, DETAIL_TRANSPORT_CATALOGS } from "./detailV2Negotiation.mjs";
+import { DEFAULT_DETAIL_MODULES, DETAIL_BUSINESS_MODULES, detailModuleNames, projectBusinessModules, businessDocument } from "./detailBusinessProjection.mjs";
+import { DetailBusinessReadCache } from "./detailBusinessReadCache.mjs";
+import { DetailBusinessInvalidation, DETAIL_RESOURCE_TYPES } from "./detailBusinessInvalidation.mjs";
+import { projectDetailBusinessRich, DETAIL_RICH_BUSINESS_MODULES, DETAIL_RICH_BUSINESS_CAPABILITIES } from "./detailBusinessRichProjection.mjs";
 
 const services = new WeakMap();
-const text = (key, fallback) => ({ key, fallback });
-const bounded = value => typeof value === "string" ? value.slice(0, 16000) : "";
 const digest = value => createHash("sha256").update(JSON.stringify(value ?? null)).digest("hex");
 const failure = (code, status = 400) => Object.assign(new Error(code), { code, status });
+const knownDependencies = new Set(DETAIL_RESOURCE_TYPES);
+const richHostModules = DETAIL_RICH_BUSINESS_MODULES;
+function trustedIdentity(identity, requirePrincipal = false) {
+  if (!identity || typeof identity !== "object" || Array.isArray(identity) || typeof identity.then === "function") throw failure("DETAIL_IDENTITY_INVALID", 403);
+  for (const name of ["serverId", "accountId", "principalId", "deviceId"]) {
+    const value = identity[name];
+    if (value !== undefined && value !== null && (typeof value !== "string" || !value.length || value.length > 512)) throw failure("DETAIL_IDENTITY_INVALID", 403);
+  }
+  if (requirePrincipal && !identity.principalId && !identity.deviceId) throw failure("AUTHENTICATED_PRINCIPAL_REQUIRED", 403);
+  return identity;
+}
+function cacheScope(identity = {}, sessionId, catalogProfile = "native-v1", clientCapabilities = []) {
+  trustedIdentity(identity);
+  return { serverId: identity.serverId ?? "local-server", accountId: identity.accountId ?? "local-user",
+    principalId: identity.principalId ?? (identity.deviceId ? `device:${identity.deviceId}` : "local-user"),
+    deviceId: identity.deviceId ?? null,
+    sessionId, catalogProfile, capabilitiesHash: detailV2Hash(clientCapabilities) };
+}
+function snapshotProfile({ catalog, catalogProfile, clientCapabilities } = {}) {
+  if (catalog && catalogProfile && catalog !== catalogProfile) throw failure("DETAIL_CATALOG_CONFLICT");
+  catalog = catalog ?? catalogProfile ?? "native-v1";
+  if (catalog === "native-v1") {
+    if (clientCapabilities !== undefined && (!Array.isArray(clientCapabilities) || clientCapabilities.length)) throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
+    return { catalog, clientCapabilities: [] };
+  }
+  return detailV2CatalogOptions({ catalog, clientCapabilities });
+}
+/** Internal trusted identity scope, not a wire authority or authentication API. */
+export function detailDocumentCacheScope(identity, sessionId, options = {}) {
+  const profile = snapshotProfile(options);
+  return cacheScope(identity, sessionId, profile.catalog, profile.clientCapabilities);
+}
+const matchesScope = (scope, filter) => Object.entries(filter).every(([key, value]) => scope[key] === value);
+const resourceScope = scope => ({ session: { id: scope.session.id }, logicalSessionId: scope.logicalSessionId,
+  task: scope.task ? { id: scope.task.id } : null, work: scope.work ? { id: scope.work.id } : null });
 
 // Accept is already authenticated and forwarded by the secure relay. Do not
 // introduce a new custom header that installed relay hosts would strip.
@@ -18,81 +58,356 @@ export function acceptsNativeDetail(request) {
 }
 
 /** Product projection only: no Provider adapters, arbitrary URLs or store serialization. */
-export function projectDetailDocument({ session, logicalSessionId, work }) {
-  const cards = [];
-  const card = (id, title, kind, nodes, data) => cards.push({ id, title, semanticKind: kind,
-    templateRevision: 1, dataRevision: digest(data), rootNodeId: "root", nodes, data,
-    actions: [{ id: "refresh", kind: "read", operation: "detail.refresh", label: text("detail.refresh", "刷新"), available: true }],
-    fallback: text("detail.unavailable", "此卡片暂时无法显示") });
-  const column = children => ({ id: "root", kind: "column", props: {}, children });
-  const field = (id, binding) => ({ id, kind: "text", props: {}, binding, children: [] });
-  card("session-info", text("detail.sessionInfo", "会话信息"), "information",
-    [column(["session", ...(work ? ["work"] : [])]), field("session", "sessionId"), ...(work ? [field("work", "workName")] : [])],
-    { sessionId: logicalSessionId, ...(work ? { workName: bounded(work.name) } : {}) });
-  if (session.sessionKind === "assistantChat" && bounded(session.summary).trim()) card("session-summary", text("detail.sessionSummary", "会话摘要"), "summary",
-    [column(["summary"]), { ...field("summary", "summary"), kind: "markdown" }], { summary: bounded(session.summary) });
-  return { schemaVersion: 1, documentId: `detail:${logicalSessionId}`, sessionId: logicalSessionId, cards, order: cards.map(c => c.id) };
+export function projectDetailDocument(scope, modules = DEFAULT_DETAIL_MODULES) {
+  return businessDocument(scope, projectBusinessModules(scope, modules));
 }
 
 export class DetailDocumentService {
-  constructor(store) {
+  #streamAttachments = new Map();
+  constructor(store, { modules = DEFAULT_DETAIL_MODULES } = {}) {
     this.store = store; this.generation = randomUUID(); this.cache = new Map();
-    this.events = new ClientInspectorStream({ snapshot: (_, id) => this.snapshot(id),
+    this.modules = detailModuleNames(modules);
+    this.businessInvalidation = new DetailBusinessInvalidation(store, change => this.invalidate(change));
+    this.events = new ClientInspectorStream({ snapshot: (identity, id) => this.snapshot(id, { identity, invalidatedOnly: true }),
       eventPrefix: "detail", sessionScopedLimit: true, maxFrameBytes: 256 * 1024 + 1024,
       eventForSnapshot: (previous, next) => previous && previous.generation === next.generation
         ? { name: "detail-patch", value: detailPatch(previous, next) } : { name: "detail-snapshot", value: next } });
     this.v2Journals = new Map();
-    this.v2Events = new ClientInspectorStream({ snapshot: (_, id) => this.v2Snapshot(id),
+    this.richHostPending = new Map(); this.businessPortsEpoch = 0;
+    this.v2Events = new ClientInspectorStream({ snapshot: (identity, id) => this.v2Snapshot(id, { identity, invalidatedOnly: true }),
       eventPrefix: "detail", sessionScopedLimit: true, maxFrameBytes: 256 * 1024 + 1024 });
+    for (const events of [this.events, this.v2Events]) {
+      const invalidate = events.invalidate.bind(events);
+      events.invalidate = change => { this.markDirty(change); invalidate(); };
+      this.#streamAttachments.set(events, events.attach.bind(events));
+      events.attach = (response, authenticate, id, request, options) => {
+        this.#attachScoped(events, response, authenticate, id, request, options,
+          { catalog: events === this.v2Events ? "native-v2" : "native-v1", clientCapabilities: [] });
+      };
+    }
   }
-  invalidate() { this.events.invalidate(); this.v2Events.invalidate(); }
-  v2Snapshot(id) {
-    const document = this.snapshot(id), existing = this.v2Journals.get(document.documentId);
-    const previous = existing?.entries.at(-1)?.state;
-    if (previous?.generation === document.generation && previous.revision === document.revision) return previous;
-    const journal = existing ?? new DetailV2Journal();
-    const state = projectDetailV2(document, previous);
-    journal.publish(state);
-    this.v2Journals.delete(document.documentId); this.v2Journals.set(document.documentId, journal);
-    if (this.v2Journals.size > 64) this.v2Journals.delete(this.v2Journals.keys().next().value);
+  #attachScoped(events, response, authenticate, id, request, options, profile) {
+    const initial = cacheScope(trustedIdentity(authenticate(), true), this.scope(id).logicalSessionId, profile.catalog, profile.clientCapabilities);
+    // New consumers check current facts, including changes while no consumer was attached.
+    this.markDirty({ sessionId: initial.sessionId });
+    const guarded = () => {
+      try {
+        const identity = trustedIdentity(authenticate(), true);
+        const current = cacheScope(identity, this.scope(id).logicalSessionId, profile.catalog, profile.clientCapabilities);
+        if (!matchesScope(current, initial)) throw failure("DETAIL_IDENTITY_CHANGED", 403);
+        return identity;
+      } catch (error) {
+        const { catalogProfile, capabilitiesHash, sessionId, ...authority } = initial;
+        this.clearCache(authority); throw error;
+      }
+    };
+    this.#streamAttachments.get(events)(response, guarded, id, request, options);
+    const client = [...events.clients].find(client => client.response === response);
+    if (client) client.detailCacheScope = initial;
+  }
+  /** Internal async contract only; not mounted by any HTTP handler.
+   * Promise<{state, revalidate}>. revalidate is synchronous and host-only;
+   * callers must invoke it after every transport await, immediately before send. */
+  async prepareRichSnapshot(id, { authenticate, catalog, clientCapabilities, invalidatedOnly = false } = {}) {
+    const pinned = this.#pinRichRead(id, { authenticate, catalog, clientCapabilities });
+    const state = await this.richBusinessSnapshot(id, { authenticate: pinned.revalidate, ...pinned.profile, invalidatedOnly });
+    pinned.revalidate();
+    return Object.freeze({ state, revalidate: pinned.revalidate });
+  }
+  #pinRichRead(id, { authenticate, catalog, clientCapabilities }) {
+    if (typeof authenticate !== "function") throw failure("AUTHENTICATED_PRINCIPAL_REQUIRED", 403);
+    const identity = trustedIdentity(authenticate(), true), context = this.v2Context(id, { identity, catalog, clientCapabilities });
+    const { profile, identityScope, key } = context;
+    if (profile.catalog !== "native-v2-components-1") throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
+    if (DETAIL_RICH_BUSINESS_CAPABILITIES.some(c => !profile.clientCapabilities.includes(c))) throw failure("DETAIL_CAPABILITY_UNAVAILABLE", 409);
+    const reader = this.businessReader, epoch = this.businessPortsEpoch;
+    if (!reader || richHostModules.some(name => !reader.ports[name])) throw failure("DETAIL_BUSINESS_RICH_MODULE_UNAVAILABLE", 409);
+    const journal = this.v2Journal(id, { identity, ...profile });
+    const scope = this.scope(id), binding = digest({ resources: resourceScope(scope), task: scope.task, work: scope.work });
+    const revalidate = () => {
+      let current;
+      try {
+        current = trustedIdentity(authenticate(), true);
+        if (!matchesScope(cacheScope(current, this.scope(id).logicalSessionId, profile.catalog, profile.clientCapabilities), identityScope)) throw failure("DETAIL_IDENTITY_CHANGED", 403);
+      } catch (error) {
+        const { catalogProfile, capabilitiesHash, sessionId, ...authority } = identityScope;
+        this.clearCache(authority); throw error;
+      }
+      const now = this.scope(id);
+      if (reader !== this.businessReader || epoch !== this.businessPortsEpoch || journal.detailRetired || this.v2Journals.get(key) !== journal
+        || digest({ resources: resourceScope(now), task: now.task, work: now.work }) !== binding) throw failure("DETAIL_READ_INVALIDATED", 409);
+      return current;
+    };
+    revalidate();
+    return { profile, journal, revalidate };
+  }
+  clearCache(filter = {}) {
+    this.businessInvalidation.clear();
+    this.businessReader?.clear(filter);
+    for (const [key, entry] of this.cache) if (matchesScope(entry.cacheScope, filter)) this.cache.delete(key);
+    for (const [key, journal] of this.v2Journals) if (matchesScope(journal.detailCacheScope, filter)) this.retireJournal(key);
+    for (const events of [this.events, this.v2Events]) {
+      for (const client of [...events.clients]) if (client.detailCacheScope && matchesScope(client.detailCacheScope, filter)) client.close();
+    }
+  }
+  invalidate(change) {
+    this.events.invalidate(change); this.v2Events.invalidate(change);
+  }
+  markDirty(change) {
+    this.businessReader?.invalidate(change);
+    // Product-level callers can supply resource changes without coupling to a
+    // Provider. Unknown/global hints conservatively invalidate every module.
+    for (const entry of this.cache.values()) {
+      if (change?.sessionId && ![entry.scope.session.id, entry.scope.logicalSessionId].includes(change.sessionId)) continue;
+      if (change?.taskId && entry.scope.task?.id !== change.taskId) continue;
+      if (change?.workId && entry.scope.work?.id !== change.workId) continue;
+      for (const name of this.modules) {
+        if (!knownDependencies.has(change?.resourceType) || DETAIL_BUSINESS_MODULES[name].dependencies.includes(change.resourceType)) entry.dirty.add(name);
+      }
+    }
+  }
+  configureBusinessPorts(ports) {
+    this.businessReader?.clear();
+    this.businessPortsEpoch++;
+    for (const [key, journal] of this.v2Journals) if (journal.detailCacheScope.catalogProfile !== "native-v2") this.retireJournal(key);
+    this.businessReader = new DetailBusinessReadCache(ports);
+  }
+  /** Internal preparation only: not mounted by GET or attachV2. The complete
+   * currently supported producer set is mandatory, never a claim of full UI
+   * coverage. authenticate must resolve trusted authority, not wire fields. */
+  async richBusinessSnapshot(id, { authenticate, catalog, clientCapabilities, invalidatedOnly = false, modules = richHostModules } = {}) {
+    if (typeof authenticate !== "function") throw failure("AUTHENTICATED_PRINCIPAL_REQUIRED", 403);
+    const identity = trustedIdentity(authenticate(), true);
+    const context = this.v2Context(id, { identity, catalog, clientCapabilities });
+    const { profile, identityScope, key } = context;
+    if (profile.catalog !== "native-v2-components-1") throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
+    if (!Array.isArray(modules) || modules.length !== richHostModules.length || richHostModules.some((name, i) => modules[i] !== name)) {
+      throw failure("DETAIL_BUSINESS_RICH_MODULE_UNAVAILABLE", 409);
+    }
+    if (DETAIL_RICH_BUSINESS_CAPABILITIES.some(capability => !profile.clientCapabilities.includes(capability))) {
+      throw failure("DETAIL_CAPABILITY_UNAVAILABLE", 409);
+    }
+    const reader = this.businessReader, portsEpoch = this.businessPortsEpoch;
+    if (!reader || richHostModules.some(name => !reader.ports[name])) throw failure("DETAIL_BUSINESS_RICH_MODULE_UNAVAILABLE", 409);
+    const scope = this.scope(id), binding = digest({ resources: resourceScope(scope), task: scope.task, work: scope.work });
+    const guard = journal => {
+      try {
+        const current = cacheScope(trustedIdentity(authenticate(), true), this.scope(id).logicalSessionId, profile.catalog, profile.clientCapabilities);
+        if (!matchesScope(current, identityScope)) throw failure("DETAIL_IDENTITY_CHANGED", 403);
+      } catch (error) {
+        const { catalogProfile, capabilitiesHash, sessionId, ...authority } = identityScope;
+        this.clearCache(authority); throw error;
+      }
+      const currentScope = this.scope(id);
+      if (reader !== this.businessReader || portsEpoch !== this.businessPortsEpoch || journal.detailRetired
+        || this.v2Journals.get(key) !== journal
+        || digest({ resources: resourceScope(currentScope), task: currentScope.task, work: currentScope.work }) !== binding) {
+        throw failure("DETAIL_READ_INVALIDATED", 409);
+      }
+    };
+    let pending = this.richHostPending.get(key);
+    if (pending && pending.invalidatedOnly !== invalidatedOnly) throw failure("DETAIL_READ_BUSY", 429);
+    if (!pending) {
+      if (this.richHostPending.size >= 8) throw failure("DETAIL_READ_BUSY", 429);
+      const journal = this.v2Journal(id, { identity, ...profile });
+      guard(journal);
+      const operation = async () => {
+        const values = new Array(richHostModules.length);
+        let nextModule = 0;
+        await Promise.all(Array.from({ length: 2 }, async () => {
+          while (nextModule < richHostModules.length) {
+            const index = nextModule++;
+            guard(journal);
+            values[index] = await reader.read(scope, richHostModules[index], identityScope, { force: !invalidatedOnly });
+          }
+        }));
+        guard(journal);
+        const previous = journal.entries.at(-1)?.state;
+        const state = projectDetailBusinessRich(scope, Object.fromEntries(richHostModules.map((name, i) => [name, values[i]])),
+          { profile, generation: journal.detailGeneration, previous });
+        guard(journal);
+        if (state !== previous) journal.publish(state);
+        return journal.entries.at(-1).state;
+      };
+      pending = { journal, invalidatedOnly, promise: operation() };
+      this.richHostPending.set(key, pending);
+      void pending.promise.finally(() => { if (this.richHostPending.get(key) === pending) this.richHostPending.delete(key); }).catch(() => {});
+    }
+    guard(pending.journal);
+    const state = await pending.promise;
+    guard(pending.journal);
     return state;
   }
+  invalidateStateChanges() { this.businessInvalidation.publishStateChanges(); }
+  invalidateProductEvent(type, payload, sessionId) { this.businessInvalidation.publishEvent(type, payload, sessionId); }
+  async readBusinessModule(id, name, { identity = {}, force = true, catalog = "native-v2", clientCapabilities } = {}) {
+    const profile = detailV2CatalogOptions({ catalog, clientCapabilities });
+    if (!this.businessReader) return { state: "error", code: "DETAIL_MODULE_UNAVAILABLE" };
+    const scope = this.scope(id), reader = this.businessReader;
+    const binding = digest(resourceScope(scope));
+    const identityScope = cacheScope(identity, scope.logicalSessionId, profile.catalog, profile.clientCapabilities);
+    // Account/principal metadata is retained; credentials are never retained.
+    const result = await reader.read(scope, name, identityScope, { force });
+    if (reader !== this.businessReader || digest(resourceScope(this.scope(id))) !== binding) {
+      throw failure("DETAIL_READ_INVALIDATED", 409);
+    }
+    return result;
+  }
+  v2Context(id, options = {}) {
+    const profile = snapshotProfile({ ...options, catalog: options.catalog ?? options.catalogProfile ?? "native-v2" });
+    if (profile.catalog === "native-v1") throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
+    const scope = this.scope(id), identityScope = cacheScope(options.identity, scope.logicalSessionId, profile.catalog, profile.clientCapabilities);
+    return { profile, identityScope, key: digest(identityScope) };
+  }
+  // Internal journal preparation supports strict profiles without enabling a
+  // rich producer or HTTP gate. Publication still validates the same profile.
+  v2Journal(id, options = {}) {
+    const { profile, identityScope, key } = this.v2Context(id, options);
+    const documentGeneration = this.cache.get(key)?.document.generation;
+    let journal = this.v2Journals.get(key);
+    if (!journal || (documentGeneration && journal.detailGeneration !== documentGeneration)) {
+      this.retireJournal(key);
+      journal = new DetailV2Journal(profile);
+      const generation = documentGeneration ?? randomUUID(), publish = journal.publish.bind(journal), resume = journal.resume.bind(journal);
+      Object.defineProperty(journal, "detailGeneration", { value: generation, enumerable: true });
+      journal.publish = state => {
+        if (journal.detailRetired) throw failure("DETAIL_JOURNAL_RETIRED", 409);
+        if (state.documentId !== `detail:${identityScope.sessionId}` || state.sessionId !== identityScope.sessionId
+          || state.generation !== generation) throw failure("DETAIL_JOURNAL_SCOPE_MISMATCH", 409);
+        return publish(state);
+      };
+      journal.resume = cursor => {
+        if (journal.detailRetired) throw failure("DETAIL_JOURNAL_RETIRED", 409);
+        return resume(cursor);
+      };
+    }
+    journal.detailCacheScope = identityScope;
+    this.v2Journals.delete(key); this.v2Journals.set(key, journal);
+    if (this.v2Journals.size > 64) this.retireJournal(this.v2Journals.keys().next().value);
+    return journal;
+  }
+  retireJournal(key) {
+    const journal = this.v2Journals.get(key);
+    if (journal) { journal.detailRetired = true; journal.entries = []; journal.bytes = 0; }
+    this.v2Journals.delete(key);
+  }
+  v2Snapshot(id, options = {}) {
+    const { profile, key } = this.v2Context(id, options);
+    if (profile.catalog !== "native-v2") throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
+    const document = this.snapshot(id, { ...options, catalog: profile.catalog });
+    const existing = this.v2Journals.get(key);
+    const previous = existing?.entries.at(-1)?.state;
+    if (previous?.generation === document.generation && previous.revision === document.revision) return previous;
+    const journal = this.v2Journal(id, { ...options, ...profile });
+    const state = projectDetailV2(document, previous);
+    journal.publish(state);
+    return state;
+  }
+  /** Exactly five arguments. authenticate is synchronous, returns the trusted
+   * current principal/device authority, and throws on revoked credentials.
+   * input is the validated wire Request; never accepts an identity/digest.
+   * No sixth options argument or client-supplied authority is consumed. */
   attachV2(response, authenticate, id, request, input) {
     validateDetailV2Envelope(input, "Request");
-    authenticate(); this.scope(id);
+    const profile = detailV2CatalogOptions(input);
+    // Recognizing rich Request syntax does not enable its HTTP subscription.
+    // Keep catalog/capability negotiation out of legacy scoped caches.
+    if (input.catalog !== "native-v2") throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
+    this.#attachV2Profile(response, authenticate, id, request, input, profile);
+  }
+  /** Internal validation seam only. No HTTP handler calls this entry point. */
+  attachRichBusiness(response, authenticate, id, request, input) {
+    validateDetailV2Envelope(input, "Request");
+    const profile = detailV2CatalogOptions(input);
+    const pinned = this.#pinRichRead(id, { authenticate, ...profile });
+    this.#attachV2Profile(response, pinned.revalidate, id, request, input, profile, true);
+  }
+  #attachV2Profile(response, authenticate, id, request, input, profile, rich = false) {
+    const identity = trustedIdentity(authenticate(), true), canonicalSessionId = this.scope(id).logicalSessionId;
+    const initial = cacheScope(identity, canonicalSessionId, profile.catalog, profile.clientCapabilities);
+    const guardedAuthenticate = () => {
+      try {
+        const current = trustedIdentity(authenticate(), true);
+        const currentScope = cacheScope(current, this.scope(id).logicalSessionId, profile.catalog, profile.clientCapabilities);
+        if (!matchesScope(currentScope, initial)) throw failure("DETAIL_IDENTITY_CHANGED", 403);
+        return current;
+      } catch (error) {
+        const { catalogProfile, capabilitiesHash, sessionId, ...authority } = initial;
+        this.clearCache(authority);
+        throw error;
+      }
+    };
+    const resume = input.resume ? { ...input.resume } : null;
     const cached = new Set(input.cachedTemplateHashes);
     const filterTemplates = value => ({ ...value, templates: Object.fromEntries(
       Object.entries(value.templates).filter(([hash]) => !cached.has(hash))) });
-    this.v2Events.attach(response, authenticate, id, request, {
+    this.#attachScoped(this.v2Events, response, guardedAuthenticate, id, request, {
+      // Capture this client's canonical negotiated profile, never a function
+      // supplied by the Request. Rich remains gated above until full producer
+      // and business capabilities are integrated.
+      snapshot: rich ? async (_currentIdentity, sessionId) => {
+        const prepared = await this.prepareRichSnapshot(sessionId, { authenticate: guardedAuthenticate, ...profile, invalidatedOnly: true });
+        prepared.revalidate(); return prepared.state;
+      } : (currentIdentity, sessionId) => this.v2Snapshot(sessionId,
+        { identity: currentIdentity, ...profile, invalidatedOnly: true }),
       eventForSnapshot: (previous, next) => {
         if (previous && previous.generation === next.generation) {
-          return { name: "detail-commit", value: diffDetailV2(previous, next) };
+          return { name: "detail-commit", value: diffDetailV2(previous, next, profile) };
         }
-        const result = this.v2Journals.get(next.documentId).resume(previous ? null : input.resume);
+        const key = digest(initial);
+        const journal = this.v2Journals.get(key);
+        if (!journal || journal.detailRetired) throw failure("DETAIL_JOURNAL_RETIRED", 409);
+        // resume prunes. Query a bounded shallow view so event generation is
+        // pure with respect to the canonical journal and delivery baseline.
+        const view = Object.create(journal);
+        view.entries = journal.entries.slice(); view.bytes = journal.bytes;
+        const result = DetailV2Journal.prototype.resume.call(view, previous ? null : resume);
         if (result.kind === "ready") return { name: "detail-ready", value: {
           protocolVersion: 2, documentId: next.documentId, sessionId: next.sessionId,
           generation: next.generation, revision: next.revision, stateHash: next.stateHash } };
         return { name: result.kind === "commit" ? "detail-commit" : "detail-snapshot", value: filterTemplates(result.value) };
       }
-    });
+    }, profile);
   }
   scope(id) {
     const logical = this.store.getLogicalSession(id) ?? this.store.getLogicalSessionByLegacySessionId?.(id);
     const session = this.store.getSession(logical?.legacySessionId ?? id);
     if (!session || session.archived || logical?.archived) throw failure("SESSION_NOT_FOUND", 404);
+    this.businessInvalidation.observe(session);
     const logicalSessionId = logical?.logicalSessionId ?? this.store.getLogicalSessionByLegacySessionId?.(session.id)?.logicalSessionId ?? session.id;
     const task = session.taskId ? this.store.getTask(session.taskId) : null;
     const workId = task?.work_id ?? session.workId;
     return { session, logicalSessionId, task, work: workId ? this.store.getWork(workId) : null };
   }
-  snapshot(id) {
-    const projection = projectDetailDocument(this.scope(id));
-    const hash = digest(projection), previous = this.cache.get(projection.documentId);
-    if (previous?.hash === hash) return previous.document;
+  snapshot(id, options = {}) {
+    const { invalidatedOnly = false, identity } = options, profile = snapshotProfile(options);
+    if (!["native-v1", "native-v2"].includes(profile.catalog)) throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
+    const scope = this.scope(id), documentId = `detail:${scope.logicalSessionId}`;
+    const identityScope = cacheScope(identity, scope.logicalSessionId, profile.catalog, profile.clientCapabilities), key = digest(identityScope);
+    const previous = this.cache.get(key);
+    // Direct reads/refresh always check current facts. Event delivery may reuse
+    // modules outside the authoritative invalidation's dependency set.
+    const modules = projectBusinessModules(scope, this.modules, previous?.modules, invalidatedOnly ? previous?.dirty : undefined);
+    if (previous && [...modules].every(([name, module]) => previous.modules.get(name) === module)) {
+      previous.scope = resourceScope(scope);
+      return previous.document;
+    }
+    const projection = businessDocument(scope, modules);
+    // Structure revisions cannot reset when an optional Work field disappears.
+    const oldCards = new Map(previous?.document.cards.map(card => [card.id, card]) ?? []);
+    projection.cards = projection.cards.map(card => {
+      const old = oldCards.get(card.id);
+      if (!old) return card;
+      const shape = ({ title, semanticKind, rootNodeId, nodes, fallback }) => ({ title, semanticKind, rootNodeId, nodes, fallback });
+      const templateRevision = old.templateRevision + Number(JSON.stringify(shape(old)) !== JSON.stringify(shape(card)));
+      return old.templateRevision === templateRevision && old.dataRevision === card.dataRevision ? old : { ...card, templateRevision };
+    });
+    const hash = digest(projection);
+    if (previous?.hash === hash) { previous.modules = modules; previous.scope = resourceScope(scope); return previous.document; }
     const document = { ...projection, generation: this.generation, revision: (previous?.document.revision ?? 0) + 1 };
     validateDetailContract(document, "Document");
-    this.cache.delete(document.documentId);
-    this.cache.set(document.documentId, { hash, document });
+    this.cache.delete(key);
+    this.cache.set(key, { hash, document, modules, scope: resourceScope(scope), cacheScope: identityScope, dirty: new Set() });
     if (this.cache.size > 64) this.cache.delete(this.cache.keys().next().value);
     // Cache eviction starts a new document generation, rather than reusing a revision sequence.
     if (!previous) document.generation = randomUUID();
@@ -127,14 +442,19 @@ export function handleDesktopDetail({ request, response, url, store, sendJson })
     return { principalId: "local-user" };
   };
   try {
-    authenticate();
+    const identity = authenticate();
     if (request.method !== "GET" || url.search) throw failure("DETAIL_REQUEST_NOT_ALLOWED", 405);
-    const v2 = !match[2] && request.headers.accept === "application/json; corptie-detail=native-v2";
+    const negotiation = !match[2] ? detailV2GetNegotiation(request) : null;
+    const v2 = negotiation !== null;
+    if (v2 && !DETAIL_TRANSPORT_CATALOGS.includes(negotiation.catalog)) throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
     if (!v2 && !acceptsNativeDetail(request)) throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
     const id = decodeURIComponent(match[1]), service = detailServiceFor(store);
-    service.scope(id);
-    if (match[2]) service.events.attach(response, authenticate, id, request);
-    else sendJson(response, 200, v2 ? service.v2Snapshot(id) : service.snapshot(id));
+    const scoped = service.scope(id);
+    const authenticatedScope = detailV2PinnedAuthenticate(authenticate, () => service.scope(id).logicalSessionId, identity, scoped.logicalSessionId);
+    if (match[2]) service.events.attach(response, authenticatedScope, id, request);
+    else if (v2) void sendDetailV2Snapshot(request, response, service.v2Snapshot(id, detailV2ServiceOptions(identity, negotiation)), authenticatedScope)
+      .catch(error => { if (!response.destroyed && !response.headersSent) sendJson(response, error.status ?? 400, { code: error.code ?? "INVALID_DETAIL_REQUEST" }); });
+    else sendJson(response, 200, service.snapshot(id, { identity }));
   } catch (error) { if (!response.headersSent) sendJson(response, error.status ?? 400, { code: error.code ?? "INVALID_DETAIL_REQUEST" }); }
   return true;
 }
@@ -154,9 +474,10 @@ export function handleDesktopDetailSync({ request, response, url, store, sendJso
       if (request.method !== "POST" || url.search) throw failure("DETAIL_REQUEST_NOT_ALLOWED", 405);
       if (request.headers.accept !== "text/event-stream; corptie-detail=native-v2") throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
       const id = decodeURIComponent(match[1]), service = detailServiceFor(store);
-      service.scope(id);
+      const identity = authenticate(), scoped = service.scope(id);
+      const authenticatedScope = detailV2PinnedAuthenticate(authenticate, () => service.scope(id).logicalSessionId, identity, scoped.logicalSessionId);
       const input = await readDetailV2Request(request);
-      service.attachV2(response, authenticate, id, null, input);
+      service.attachV2(response, authenticatedScope, id, request, input);
     } catch (error) {
       if (!response.headersSent) sendJson(response, error.status ?? 400, { code: error.code ?? "INVALID_DETAIL_REQUEST" });
       else response.destroy();

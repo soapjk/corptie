@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "recoveryScope": {"serverID":"server","principalID":"user","sessionID":"logical:ours","accountID":"account","credentialBindingID":"device-binding-1","catalog":"native-v2-components-1","capabilityDigest":"digest-1"},
+  "policies": {
+    "read": {"detail.refresh":{"fields":[],"confirmation":"none","revision":"none","availableWhen":"Authenticated current Session action view"},"detail.collection.page":{"requiredFields":["collectionName"],"cursorMaxLength":512,"confirmation":"none","revision":"cursor bound to resource revision","availableWhen":"Registered collection read/authorize/validateQuery ports with valid scope-bound cursor"}},
+    "navigation": {"resource.open":{"confirmation":"none","revision":"none","availableWhen":"Fixed resourceType whitelist and platform registered native destination"},"editor.open":{"confirmation":"none","revision":"none","availableWhen":"Fixed editor resourceType whitelist and platform registered native editor"}},
+    "command": {"commonAvailableWhen":"Safe resource/authorize/capability/revision/validateFields/execute ports; authenticated resource belongs to Session; existing service limits and approval mechanisms remain enforced","schedule.cancel":{"requiredFields":["confirmed"],"confirmation":"destructive","revision":"required"},"memory.update":{"requiredFields":["content"],"confirmation":"none","revision":"required"},"memory.delete":{"requiredFields":["confirmed"],"confirmation":"destructive","revision":"required"},"reference.add":{"requiredFields":["locator"],"confirmation":"none","revision":"required","locatorPolicy":"Existing safe reference service validation and authorization; no automatic network or raw-path reads"},"reference.remove":{"requiredFields":["confirmed"],"confirmation":"destructive","revision":"required"}}
+  },
+  "operations": [
+    {"action":{"id":"refresh","kind":"read","operation":"detail.refresh","label":{"fallback":"Refresh"},"available":true,"target":{"resourceType":"session","id":"logical:ours"}},"fields":{}},
+    {"action":{"id":"page","kind":"read","operation":"detail.collection.page","label":{"fallback":"Load more"},"available":true,"target":{"resourceType":"session","id":"logical:ours"}},"fields":{"collectionName":"artifacts","cursor":"opaque-revision-bound-cursor"}},
+    {"action":{"id":"open","kind":"navigation","operation":"resource.open","label":{"fallback":"Open"},"available":true,"target":{"resourceType":"task","id":"task:ours"}},"fields":{}},
+    {"action":{"id":"edit","kind":"navigation","operation":"editor.open","label":{"fallback":"Edit"},"available":true,"target":{"resourceType":"provider","id":"provider:ours"}},"fields":{}},
+    {"action":{"id":"cancel","kind":"command","operation":"schedule.cancel","label":{"fallback":"Cancel schedule A"},"available":true,"target":{"resourceType":"schedule","id":"schedule:ours"},"confirmation":"destructive","expectedResourceRevision":"revision:7"},"fields":{"confirmed":true}},
+    {"action":{"id":"update","kind":"command","operation":"memory.update","label":{"fallback":"Update memory A"},"available":true,"target":{"resourceType":"memory","id":"memory:ours"},"confirmation":"none","expectedResourceRevision":"7"},"fields":{"content":"New content","tags":["preference"]}},
+    {"action":{"id":"delete","kind":"command","operation":"memory.delete","label":{"fallback":"Delete memory A"},"available":true,"target":{"resourceType":"memory","id":"memory:ours"},"confirmation":"destructive","expectedResourceRevision":"7"},"fields":{"confirmed":true,"reason":"No longer needed"}},
+    {"action":{"id":"add","kind":"command","operation":"reference.add","label":{"fallback":"Add Task A reference"},"available":true,"target":{"resourceType":"task","id":"task:ours"},"confirmation":"none","expectedResourceRevision":"revision:7"},"fields":{"locator":"section-1","displayName":"Task A"}},
+    {"action":{"id":"remove","kind":"command","operation":"reference.remove","label":{"fallback":"Remove reference A"},"available":true,"target":{"resourceType":"reference","id":"reference:ours"},"confirmation":"destructive","expectedResourceRevision":"revision:7"},"fields":{"confirmed":true}}
+  ]
+}

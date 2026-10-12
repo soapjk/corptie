@@ -18,6 +18,7 @@ export class SessionContextReferenceService {
   constructor(options = {}) {
     this.store = options.store;
     this.stat = options.stat ?? stat;
+    this.onChanged = options.onChanged ?? (() => {});
     this.fetch = options.fetch ?? globalThis.fetch;
     this.readSessionDetail = options.readSessionDetail ?? null;
     this.maxSourceCharacters = options.maxSourceCharacters ?? MAX_SOURCE_CHARACTERS;
@@ -42,7 +43,7 @@ export class SessionContextReferenceService {
     }
     const normalized = await this.normalizeTarget(owner, targetType, input);
     try {
-      return publicReference(this.store.createSessionContextReference({
+      const created = this.store.createSessionContextReference({
         referenceId: input.referenceId ?? `context_ref:${randomUUID()}`,
         ownerSessionId: owner.id,
         targetType,
@@ -59,7 +60,9 @@ export class SessionContextReferenceService {
         snapshotAt: normalized.snapshotAt,
         contentHash: normalized.contentHash,
         metadata: normalized.metadata
-      }));
+      });
+      this.onChanged({ resourceType: "reference", sessionId: owner.id });
+      return publicReference(created);
     } catch (error) {
       if (String(error?.message ?? "").includes("UNIQUE constraint failed")) {
         const duplicate = new Error("This context reference is already attached to the Session.");
@@ -96,6 +99,7 @@ export class SessionContextReferenceService {
       ...(Object.prototype.hasOwnProperty.call(patch, "enabled") ? { enabled: patch.enabled === true } : {}),
       ...(Object.prototype.hasOwnProperty.call(patch, "priority") ? { priority: finitePriority(patch.priority) } : {})
     });
+    this.onChanged({ resourceType: "reference", sessionId: reference.ownerSessionId });
     return publicReference(updated);
   }
 
@@ -103,16 +107,22 @@ export class SessionContextReferenceService {
     const reference = this.ownedReference(ownerSessionId, referenceId);
     if (reference.targetType === "localFile") {
       await this.resolveLocalFile(reference);
-      return publicReference(this.store.getSessionContextReference(reference.referenceId));
+      const updated = this.store.getSessionContextReference(reference.referenceId);
+      this.onChanged({ resourceType: "reference", sessionId: reference.ownerSessionId });
+      return publicReference(updated);
     }
     if (reference.targetType !== "webURL") return publicReference(reference);
     const snapshot = await this.fetchWebSnapshot(reference.locator);
-    return publicReference(this.store.updateSessionContextReference(reference.referenceId, snapshot));
+    const updated = this.store.updateSessionContextReference(reference.referenceId, snapshot);
+    this.onChanged({ resourceType: "reference", sessionId: reference.ownerSessionId });
+    return publicReference(updated);
   }
 
   delete(ownerSessionId, referenceId) {
     const reference = this.ownedReference(ownerSessionId, referenceId);
-    return this.store.deleteSessionContextReference(reference.referenceId);
+    const deleted = this.store.deleteSessionContextReference(reference.referenceId);
+    this.onChanged({ resourceType: "reference", sessionId: reference.ownerSessionId });
+    return deleted;
   }
 
   async resolve(ownerSessionId, options = {}) {

@@ -141,6 +141,29 @@
         },
         "card": {
           "type": "object"
+        },
+        "catalogProfile": {
+          "const": "native-v2-components-1"
+        },
+        "requiredCapabilities": {
+          "$ref": "#/definitions/ComponentCapabilities"
+        },
+        "fieldSchema": {
+          "$ref": "#/definitions/FieldMap"
+        },
+        "collectionSchema": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": { "$ref": "#/definitions/Id" },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "maxItems": { "const": 20 },
+              "itemSchema": { "$ref": "#/definitions/FieldMap" }
+            },
+            "required": ["maxItems", "itemSchema"],
+            "additionalProperties": false
+          }
         }
       },
       "required": [
@@ -148,7 +171,50 @@
         "templateVersion",
         "card"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "if": { "required": ["catalogProfile"] },
+      "then": { "required": ["requiredCapabilities", "fieldSchema", "collectionSchema"] },
+      "else": { "not": { "anyOf": [
+        { "required": ["requiredCapabilities"] },
+        { "required": ["fieldSchema"] },
+        { "required": ["collectionSchema"] }
+      ] } }
+    },
+    "ComponentCapabilities": {
+      "type": "array",
+      "maxItems": 10,
+      "uniqueItems": true,
+      "items": { "enum": ["detail.button", "detail.chart", "detail.dateTime", "detail.form", "detail.image", "detail.keyValue", "detail.markdown", "detail.progress", "detail.resourceList", "detail.status"] }
+    },
+    "FieldMap": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": { "pattern": "^[\\x20-\\x7e]+$", "maxLength": 512 },
+      "additionalProperties": { "$ref": "#/definitions/FieldSchema" }
+    },
+    "FieldSchema": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": { "type": { "const": "string" }, "required": { "type": "boolean" }, "maxLength": { "type": "integer", "minimum": 1, "maximum": 65536 } },
+          "required": ["type", "required"], "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": { "type": { "enum": ["bool", "integer"] }, "required": { "type": "boolean" } },
+          "required": ["type", "required"], "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": { "type": { "const": "object" }, "required": { "type": "boolean" }, "properties": { "$ref": "#/definitions/FieldMap" } },
+          "required": ["type", "required", "properties"], "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": { "type": { "const": "array" }, "required": { "type": "boolean" }, "items": { "$ref": "#/definitions/FieldSchema" }, "maxItems": { "type": "integer", "minimum": 1, "maximum": 20 } },
+          "required": ["type", "required", "items", "maxItems"], "additionalProperties": false
+        }
+      ]
     },
     "Delta": {
       "type": "object",
@@ -229,6 +295,9 @@
               "$ref": "#/definitions/Delta"
             },
             "actions": {
+              "$ref": "#/definitions/Delta"
+            },
+            "collections": {
               "$ref": "#/definitions/Delta"
             }
           },
@@ -446,7 +515,10 @@
           "const": 2
         },
         "catalog": {
-          "const": "native-v2"
+          "enum": ["native-v2", "native-v2-components-1"]
+        },
+        "clientCapabilities": {
+          "$ref": "#/definitions/ComponentCapabilities"
         },
         "resume": {
           "anyOf": [
@@ -474,7 +546,10 @@
         "resume",
         "cachedTemplateHashes"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "if": { "properties": { "catalog": { "const": "native-v2-components-1" } } },
+      "then": { "required": ["clientCapabilities"] },
+      "else": { "not": { "required": ["clientCapabilities"] } }
     }
   },
   "oneOf": [

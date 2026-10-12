@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { deviceError, pairedDeviceActor } from "./clientDeviceAuthority.mjs";
 import { validateEntityName } from "../domain/workTaskValidation.mjs";
+import { clientCommandPrincipalKey } from "./clientCommandPrincipal.mjs";
 
 /**
  * Device-side Work / Task management (the macOS outline context menus).
@@ -280,38 +281,48 @@ function validateWorkCommand(command, input) {
   return fields;
 }
 
-/** Fingerprint → replay → revalidate → journal → run → durable receipt. Never dispatches twice. */
-export async function executeClientCommand(api, identity, revalidateIdentity, { kind, entityId: id, requestId, fields, uncertainCode, run }) {
-  const fingerprint = createHash("sha256").update(JSON.stringify([kind, id, requestId, fields])).digest("hex");
+/** Authenticate → replay → durable journal → preflight → run → receipt. */
+export async function executeClientCommand(api, identity, revalidateIdentity, { kind, entityId: id, requestId, fields, uncertainCode, run,
+  sessionId = "", strictSessionScope = false, payloadHash = null, requestHash = null, preflight = null, executionErrorsAreUnknown = false }) {
+  const principalKey = clientCommandPrincipalKey(identity);
+  // Receipt replay also requires a current credential. Revocation must not
+  // reveal a previously completed result through a stale authenticated object.
+  if (revalidateIdentity) {
+    const current = await revalidateIdentity();
+    if (clientCommandPrincipalKey(current) !== principalKey) throw deviceError("INVALID_CREDENTIAL", 401);
+    identity = current;
+  }
+  const fingerprint = payloadHash ?? createHash("sha256").update(JSON.stringify([kind, id, requestId, fields])).digest("hex");
   const replay = () => {
-    const row = api.store.selectOne("SELECT payload_hash FROM client_command_receipts WHERE device_id=? AND request_id=?", [identity.deviceId, requestId]);
+    const row = api.store.selectOne("SELECT payload_hash, session_id, detail_request_hash FROM client_command_receipts WHERE device_id=? AND request_id=?", [principalKey, requestId]);
     if (!row) return null;
-    if (row.payload_hash !== fingerprint) throw deviceError("IDEMPOTENCY_CONFLICT", 409);
+    if (strictSessionScope && row.session_id !== sessionId) throw deviceError("COMMAND_NOT_FOUND", 404);
+    if (requestHash ? row.detail_request_hash !== requestHash : row.payload_hash !== fingerprint) throw deviceError("IDEMPOTENCY_CONFLICT", 409);
     return api.receipt(identity, requestId);
   };
   const existing = replay();
   if (existing) return existing;
-  if (revalidateIdentity) {
-    const current = revalidateIdentity();
-    if (current.deviceId !== identity.deviceId) throw deviceError("INVALID_CREDENTIAL", 401);
-    identity = current;
-  }
-  const raced = replay();
-  if (raced) return raced;
   if (api.store.selectOne("SELECT COUNT(*) AS count FROM client_command_receipts").count >= 10000) throw deviceError("COMMAND_JOURNAL_FULL", 503);
   const now = new Date().toISOString();
   api.store.db.run(`INSERT INTO client_command_receipts
-    (device_id, request_id, session_id, kind, payload_hash, status, error_code, created_at, updated_at)
-    VALUES (?, ?, '', ?, ?, 'dispatching', NULL, ?, ?)`, [identity.deviceId, requestId, kind, fingerprint, now, now]);
-  const key = `${identity.deviceId}:${requestId}`;
+    (device_id, request_id, session_id, kind, payload_hash, status, error_code, created_at, updated_at, detail_request_hash)
+    VALUES (?, ?, ?, ?, ?, 'dispatching', NULL, ?, ?, ?)`, [principalKey, requestId, sessionId, kind, fingerprint, now, now, requestHash]);
+  const key = `${principalKey}:${requestId}`;
   api.inFlight.add(key);
   try {
+    if (preflight) {
+      try { await preflight(); }
+      catch (error) {
+        api.update(principalKey, requestId, "rejected", rejection(error)?.code ?? "DETAIL_PREFLIGHT_FAILED");
+        return api.receipt(identity, requestId);
+      }
+    }
     const result = await run(fingerprint);
-    api.update(identity.deviceId, requestId, "completed", null, result);
+    api.update(principalKey, requestId, "completed", null, result);
   } catch (error) {
-    const rejected = rejection(error);
+    const rejected = executionErrorsAreUnknown ? null : rejection(error);
     // A 4xx host code is a definite refusal before side effects; anything else may have partially applied.
-    api.update(identity.deviceId, requestId, rejected ? "rejected" : "unknown", rejected?.code ?? uncertainCode);
+    api.update(principalKey, requestId, rejected ? "rejected" : "unknown", rejected?.code ?? uncertainCode);
   } finally { api.inFlight.delete(key); }
   return api.receipt(identity, requestId);
 }

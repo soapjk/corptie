@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { ensureReliableMessageSchema, acceptReliableMessage, reliableReceipt } from "./clientReliableMessages.mjs";
 import { ClientImageUploads, imageUploadPolicy } from "./clientImageUploads.mjs";
 import { deviceError } from "./clientDeviceAuthority.mjs";
+import { clientCommandPrincipalKey } from "./clientCommandPrincipal.mjs";
 import { validateSessionCommand, sessionCommandNeedsConfirmation } from "../commands/sessionCommandCatalog.mjs";
 import { parseSlashCommand } from "../commands/unifiedCommands.mjs";
 import { createClientTask, clientTaskCreationCatalog } from "./clientTaskCreation.mjs";
@@ -159,6 +160,9 @@ export class ClientSessionAPI {
       PRIMARY KEY(device_id, request_id))`);
     if (!store.selectAll("PRAGMA table_info(client_command_receipts)").some(column => column.name === "result_json")) {
       store.db.run("ALTER TABLE client_command_receipts ADD COLUMN result_json TEXT");
+    }
+    if (!store.selectAll("PRAGMA table_info(client_command_receipts)").some(column => column.name === "detail_request_hash")) {
+      store.db.run("ALTER TABLE client_command_receipts ADD COLUMN detail_request_hash TEXT");
     }
     this.inFlight = new Set();
     this.approvalsInFlight = new Set();
@@ -633,11 +637,12 @@ export class ClientSessionAPI {
   }
 
   receipt(identity, requestId) {
-    const reliable = reliableReceipt(this.store, identity, requestId);
+    const principalKey = clientCommandPrincipalKey(identity);
+    const reliable = identity.kind === "local_user" ? null : reliableReceipt(this.store, identity, requestId);
     if (reliable) return reliable;
-    const row = this.store.selectOne("SELECT * FROM client_command_receipts WHERE device_id = ? AND request_id = ?", [identity.deviceId, requestId]);
+    const row = this.store.selectOne("SELECT * FROM client_command_receipts WHERE device_id = ? AND request_id = ?", [principalKey, requestId]);
     if (!row) throw deviceError("COMMAND_NOT_FOUND", 404);
-    const key = `${identity.deviceId}:${requestId}`;
+    const key = `${principalKey}:${requestId}`;
     if (row.kind === "send" && ["dispatching", "unknown"].includes(row.status) && !this.inFlight.has(key)) {
       const deliveryId = `delivery:client:${createHash("sha256").update(key).digest("hex")}`;
       if (this.store.getMessageDelivery?.(deliveryId)) {
