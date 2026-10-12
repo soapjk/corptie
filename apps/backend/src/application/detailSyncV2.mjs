@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { validateDetailContract } from "./detailDocumentContract.mjs";
 import { validateDetailV2Envelope } from "./detailV2Contract.mjs";
+import { DETAIL_COMPONENTS_CATALOG, detailV2CatalogOptions, validateDetailV2Components, validateDetailV2CollectionTransition } from "./detailV2Catalog.mjs";
 
 // native-v2 is not enabled on HTTP routes until both endpoints support the
 // contract. These pure functions are the shared synchronization boundary.
@@ -50,7 +51,8 @@ export function detailV2StateHash(state) {
       revision: state.instances[cardId].revision, hash: state.instances[cardId].hash })) });
 }
 
-export function validateDetailV2(state) {
+export function validateDetailV2(state, profile = {}) {
+  const options = detailV2CatalogOptions(profile);
   bounded(state);
   validateDetailV2Envelope(state, "State");
   if (state.protocolVersion !== 2) fail("DETAIL_V2_PROTOCOL");
@@ -66,6 +68,7 @@ export function validateDetailV2(state) {
   if (Object.keys(state.templates).length > 30) fail("DETAIL_V2_LIMIT");
   for (const [hash, template] of Object.entries(state.templates)) {
     if (!hashPattern.test(hash) || hash !== detailV2Hash(template)) fail("DETAIL_V2_HASH");
+    if (options.catalog === DETAIL_COMPONENTS_CATALOG ? template.catalogProfile !== options.catalog : template.catalogProfile !== undefined) fail("DETAIL_V2_CATALOG");
   }
   let nodeCount = 0;
   for (const cardId of manifest.order) {
@@ -81,7 +84,12 @@ export function validateDetailV2(state) {
     const template = state.templates[ref.templateHash];
     nodeCount += template.card?.nodes?.length ?? 0;
     if (nodeCount > 500 || Object.entries(instance.actions).some(([key, action]) => key !== action.id)) fail("DETAIL_V2_CATALOG");
-    if (template.templateId !== ref.templateId || Object.keys(instance.collections).length) fail("DETAIL_V2_CATALOG");
+    if (template.templateId !== ref.templateId) fail("DETAIL_V2_CATALOG");
+    if (options.catalog === DETAIL_COMPONENTS_CATALOG) {
+      validateDetailV2Components(template, instance, state, cardId, options);
+      continue;
+    }
+    if (Object.keys(instance.collections).length) fail("DETAIL_V2_CATALOG");
     validateDetailContract({ schemaVersion: 1, documentId: state.documentId, sessionId: state.sessionId,
       generation: state.generation, revision: state.revision, order: [cardId], cards: [{
         id: cardId, ...template.card, templateRevision: template.templateVersion,
@@ -120,16 +128,23 @@ function fieldDelta(before, after) {
     !own(before, key) || canonicalDetailV2(before[key]) !== canonicalDetailV2(value))),
   remove: Object.keys(before).filter(key => !own(after, key)).sort() };
 }
-export function diffDetailV2(before, after) {
-  validateDetailV2(before); validateDetailV2(after);
+export function diffDetailV2(before, after, profile = {}) {
+  const options = detailV2CatalogOptions(profile);
+  validateDetailV2(before, options); validateDetailV2(after, options);
   if (before.documentId !== after.documentId || before.sessionId !== after.sessionId || before.generation !== after.generation || after.revision <= before.revision) fail("DETAIL_V2_BASE");
   const changes = [];
   for (const [cardId, next] of Object.entries(after.instances)) {
     const old = before.instances[cardId];
     if (!old) changes.push({ cardId, replacement: next });
-    else if (old.hash !== next.hash || old.revision !== next.revision) changes.push({ cardId,
-      baseRevision: old.revision, revision: next.revision, baseHash: old.hash, resultHash: next.hash,
-      fields: fieldDelta(old.fields, next.fields), actions: fieldDelta(old.actions, next.actions) });
+    else {
+      validateDetailV2CollectionTransition(old.collections, next.collections);
+      if (old.hash !== next.hash || old.revision !== next.revision) {
+        if (next.revision <= old.revision) fail("DETAIL_V2_REVISION");
+        changes.push({ cardId, baseRevision: old.revision, revision: next.revision, baseHash: old.hash, resultHash: next.hash,
+          fields: fieldDelta(old.fields, next.fields), actions: fieldDelta(old.actions, next.actions),
+          ...(options.catalog === DETAIL_COMPONENTS_CATALOG ? { collections: fieldDelta(old.collections, next.collections) } : {}) });
+      }
+    }
   }
   const commit = { protocolVersion: 2, documentId: after.documentId, sessionId: after.sessionId, generation: after.generation,
     baseRevision: before.revision, revision: after.revision, baseStateHash: before.stateHash, resultStateHash: after.stateHash,
@@ -146,9 +161,11 @@ function applyFields(before, delta) {
   for (const key of delta.remove) delete next[key];
   return next;
 }
-export function applyDetailV2(before, commit) {
+export function applyDetailV2(before, commit, profile = {}) {
+  const options = detailV2CatalogOptions(profile);
   validateDetailV2Envelope(commit, "Commit");
-  validateDetailV2(before); bounded(commit);
+  validateDetailV2(before, options); bounded(commit);
+  if (options.catalog !== DETAIL_COMPONENTS_CATALOG && commit.instanceChanges.some(change => own(change, "collections"))) fail("DETAIL_V2_CATALOG");
   if (commit.protocolVersion !== 2 || commit.documentId !== before.documentId || commit.sessionId !== before.sessionId || commit.generation !== before.generation) fail("DETAIL_V2_BASE");
   if (commit.revision === before.revision && commit.resultStateHash === before.stateHash) return before;
   revision(commit.revision);
@@ -170,7 +187,9 @@ export function applyDetailV2(before, commit) {
     } else {
       revision(change.revision);
       if (!old || old.revision !== change.baseRevision || old.hash !== change.baseHash || change.revision <= old.revision) fail("DETAIL_V2_BASE");
-      next.instances[change.cardId] = { ...old, fields: applyFields(old.fields, change.fields),
+      const collections = change.collections ? applyFields(old.collections, change.collections) : old.collections;
+      validateDetailV2CollectionTransition(old.collections, collections);
+      next.instances[change.cardId] = { ...old, fields: applyFields(old.fields, change.fields), collections,
         actions: applyFields(old.actions, change.actions), revision: change.revision, hash: change.resultHash };
     }
   }
@@ -182,15 +201,18 @@ export function applyDetailV2(before, commit) {
   const refs = new Set(Object.values(next.manifest.cards).map(card => card.templateHash));
   for (const hash of Object.keys(next.templates)) if (!refs.has(hash)) delete next.templates[hash];
   next.revision = commit.revision; next.stateHash = commit.resultStateHash;
-  return validateDetailV2(next);
+  return validateDetailV2(next, options);
 }
 
 /** A per-document, bounded in-memory resume journal. It records immutable states
  * so reconnect can coalesce changes, not replay irrelevant intermediate UI. */
 export class DetailV2Journal {
-  constructor({ now = Date.now, limits = DETAIL_V2_LIMITS } = {}) { this.now = now; this.limits = limits; this.entries = []; this.bytes = 0; }
+  constructor({ now = Date.now, limits = DETAIL_V2_LIMITS, catalog = "native-v2", clientCapabilities } = {}) {
+    this.now = now; this.limits = limits; this.profile = Object.freeze(detailV2CatalogOptions({ catalog, clientCapabilities }));
+    Object.freeze(this.profile.clientCapabilities); this.entries = []; this.bytes = 0;
+  }
   publish(state) {
-    validateDetailV2(state);
+    validateDetailV2(state, this.profile);
     const latest = this.entries.at(-1)?.state;
     if (latest && latest.documentId === state.documentId && latest.generation === state.generation) {
       if (state.revision === latest.revision && state.stateHash === latest.stateHash) return;
@@ -213,7 +235,7 @@ export class DetailV2Journal {
     if (!base) return { kind: "snapshot", value: copy(latest) };
     if (base.revision === latest.revision) return { kind: "ready", revision: latest.revision, stateHash: latest.stateHash };
     try {
-      const value = diffDetailV2(base, latest);
+      const value = diffDetailV2(base, latest, this.profile);
       // A large structural replacement can cost more than a full snapshot.
       if (bounded(value) < bounded(latest)) return { kind: "commit", value };
     } catch (error) { if (error.code !== "DETAIL_V2_LIMIT") throw error; }

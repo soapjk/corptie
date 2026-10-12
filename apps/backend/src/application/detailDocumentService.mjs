@@ -59,6 +59,10 @@ export class DetailDocumentService {
   }
   attachV2(response, authenticate, id, request, input) {
     validateDetailV2Envelope(input, "Request");
+    // The strict wire recognizes the opt-in profile before business projection
+    // and scoped caches are integrated. Never turn that recognition into a
+    // legacy service subscription or silently discard the capability set.
+    if (input.catalog !== "native-v2") throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
     authenticate(); this.scope(id);
     const cached = new Set(input.cachedTemplateHashes);
     const filterTemplates = value => ({ ...value, templates: Object.fromEntries(
