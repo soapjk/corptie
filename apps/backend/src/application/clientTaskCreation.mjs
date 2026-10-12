@@ -40,7 +40,8 @@ export async function clientTaskCreationCatalog(api, identity, sourceID, query) 
     .map(agent => ({ id: agent.agentId ?? agent.id, name: agent.name }));
   const result = { schemaVersion: 1, sourceSessionId: sessionId,
     work: { id: currentWork.id, name: currentWork.name }, agents, providers, providerId,
-    defaultProviderId: providers.some(row => row.id === options.defaultProviderId && row.available) ? options.defaultProviderId : null,
+    defaultProviderId: options.configuredDefaultProviderId
+      ?? (providers.some(row => row.id === options.defaultProviderId && row.available) ? options.defaultProviderId : null),
     models, currentModel: typeof options.currentModel === "string" ? options.currentModel : null,
     currentReasoningLevel: typeof options.currentReasoningLevel === "string" ? options.currentReasoningLevel : null,
     priorities: [...TASK_PRIORITIES] };

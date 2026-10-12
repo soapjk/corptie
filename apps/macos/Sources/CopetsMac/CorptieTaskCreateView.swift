@@ -1,4 +1,5 @@
 import SwiftUI
+import CorptieClientCore
 
 enum CorptieTaskCreateFormPolicy {
     static func availableAgents(from agents: [Agent], allowedAgentIds: Set<String>) -> [Agent] {
@@ -72,6 +73,8 @@ struct CorptieTaskCreateView: View {
     @State private var defaultReasoningLevel: String?
     @State private var creationId = "task:\(UUID().uuidString.lowercased())"
     @State private var submissionError: String?
+    @State private var taskDefaults = TaskCreationDefaults()
+    @State private var defaultsLoaded = false
 
     init(initialWorkId: String? = nil, onCreated: @escaping (CorptieTask) -> Void) {
         self.initialWorkId = initialWorkId
@@ -172,6 +175,10 @@ struct CorptieTaskCreateView: View {
             async let works: Void = client.refreshWorks()
             if modelCatalog.agentProviders.isEmpty { await backendClient.loadProviders() }
             _ = await (agents, works)
+            if let settings = try? await ProviderSettingsAPI.readTaskDefaults() {
+                taskDefaults = settings.value
+            }
+            defaultsLoaded = true
             reconcileWorkSelection()
             reconcileProviderSelection()
         }
@@ -209,7 +216,15 @@ struct CorptieTaskCreateView: View {
         )
     }
 
-    private var canSubmit: Bool { validationMessage == nil }
+    private var canSubmit: Bool {
+        guard validationMessage == nil, defaultsLoaded, selectedProvider != nil else { return false }
+        if !selectedModelId.isEmpty && modelProviderId == selectedProviderId {
+            guard let model = models.first(where: { $0.id == selectedModelId }) else { return false }
+            if !selectedReasoningLevel.isEmpty,
+               !(model.reasoningLevels ?? []).contains(selectedReasoningLevel) { return false }
+        }
+        return true
+    }
 
     private var workSection: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -273,6 +288,9 @@ struct CorptieTaskCreateView: View {
                 ForEach(creatableProviders) { provider in
                     Text(provider.displayName).tag(provider.id)
                 }
+                if !selectedProviderId.isEmpty, selectedProvider == nil {
+                    Text("\(selectedProviderId)（不可用）").tag(selectedProviderId)
+                }
             }
             .labelsHidden()
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -292,12 +310,18 @@ struct CorptieTaskCreateView: View {
                 Picker("模型", selection: $selectedModelId) {
                     Text("Provider 默认").tag("")
                     ForEach(models) { Text($0.name).tag($0.id) }
+                    if !selectedModelId.isEmpty, !models.contains(where: { $0.id == selectedModelId }) {
+                        Text("\(selectedModelId)（不可用）").tag(selectedModelId)
+                    }
                 }
                 if selectedProvider?.supports("configuration.reasoning.switch") == true,
                    let levels = models.first(where: { $0.id == selectedModelId })?.reasoningLevels, !levels.isEmpty {
                     Picker("推理强度", selection: $selectedReasoningLevel) {
                         Text("模型默认").tag("")
                         ForEach(levels, id: \.self) { Text($0).tag($0) }
+                        if !selectedReasoningLevel.isEmpty, !levels.contains(selectedReasoningLevel) {
+                            Text("\(selectedReasoningLevel)（不可用）").tag(selectedReasoningLevel)
+                        }
                     }
                 }
             }
@@ -328,7 +352,8 @@ struct CorptieTaskCreateView: View {
             models = result.models
             modelProviderId = provider
             defaultReasoningLevel = result.currentReasoningLevel
-            selectedModelId = NewSessionModelSelection.preferredModelId(savedModelId: nil,
+            selectedModelId = (taskDefaults.providerId == provider ? taskDefaults.model : nil)
+                ?? NewSessionModelSelection.preferredModelId(savedModelId: nil,
                 providerDefaultModelId: result.currentModel, models: models)
             reconcileReasoning()
             modelLoading = false
@@ -343,14 +368,21 @@ struct CorptieTaskCreateView: View {
         let model = models.first { $0.id == selectedModelId }
         guard selectedProvider?.supports("configuration.reasoning.switch") == true,
               !(model?.reasoningLevels?.isEmpty ?? true) else { selectedReasoningLevel = ""; return }
-        selectedReasoningLevel = NewSessionModelSelection.preferredReasoningLevel(savedReasoningLevel: nil,
+        selectedReasoningLevel = (taskDefaults.providerId == selectedProviderId && taskDefaults.model == selectedModelId ? taskDefaults.reasoningLevel : nil)
+            ?? NewSessionModelSelection.preferredReasoningLevel(savedReasoningLevel: nil,
             providerDefaultReasoningLevel: defaultReasoningLevel, model: model)
     }
 
     private func reconcileProviderSelection() {
+        guard defaultsLoaded else { return }
+        if selectedProviderId.isEmpty, let configured = taskDefaults.providerId {
+            selectedProviderId = configured
+            return
+        }
+        if selectedProviderId == taskDefaults.providerId { return }
         selectedProviderId = CorptieTaskCreateProviderPolicy.selection(
             current: selectedProviderId,
-            preferred: modelCatalog.defaultSessionProviderId,
+            preferred: taskDefaults.providerId ?? modelCatalog.defaultSessionProviderId,
             providers: modelCatalog.agentProviders
         )
     }

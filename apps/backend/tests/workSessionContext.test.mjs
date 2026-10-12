@@ -260,6 +260,17 @@ test("Worker Turn includes selected references without truncating Task authority
   assert.ok(Buffer.byteLength(merged.prompt) <= WORKER_SESSION_CONTEXT_LIMITS.turnMaxUtf8Bytes);
 });
 
+test("Worker Turn never truncates atomic local-file references, including UTF-8 paths", () => {
+  const baseContext = workerContext();
+  const referenceContext = { atomic: true, prompt: JSON.stringify({ absolutePath: "/tmp/中文报告.docx" }) };
+  const merged = mergeWorkerSessionContexts({ baseContext, referenceContext });
+  assert.ok(merged.prompt.includes(referenceContext.prompt));
+  assert.equal(merged.contextBudget.referenceContextTruncated, false);
+  assert.throws(() => mergeWorkerSessionContexts({ baseContext,
+    referenceContext: { atomic: true, prompt: "中文".repeat(2000) } }),
+  { code: "CONTEXT_REFERENCE_BUDGET_EXCEEDED" });
+});
+
 test("Turn-level merging sheds optional Artifacts before direct evidence and mentions", () => {
   const task = {
     id: "task:fork", work_id: "work:quality", title: "消息轮次分叉功能开发",

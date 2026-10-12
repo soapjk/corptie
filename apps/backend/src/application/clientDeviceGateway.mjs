@@ -132,6 +132,7 @@ export class ClientDeviceGateway {
       const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|message-deliveries|quick-messages|stop|capabilities|composer|conversation-commands|tasks|read-receipt|images|resources|usage|approval|user-input|collaboration-confirmation)$/.exec(path);
       const commandReceipt = /^\/client\/v1\/commands\/([A-Za-z0-9_-]{8,128})$/.exec(path);
       if (url.search && !search && !inventory && !control && !eventV2 && !worktreeRepository
+          && !(path === "/client/v1/provider-settings/task-creation" && request.method === "GET")
           && !(["messages", "tasks", "images", "resources", "usage"].includes(conversation?.[2]) && request.method === "GET")) {
         throw deviceError("REQUEST_NOT_ALLOWED", 403);
       }
@@ -146,6 +147,21 @@ export class ClientDeviceGateway {
       }
       const identity = this.authenticateRequest(request);
       this.sockets.set(request.socket, identity.deviceId);
+      if (path === "/client/v1/provider-settings/task-creation" && this.sessionAPI?.providerSettings) {
+        if ([...url.searchParams.keys()].some(key => key !== "providerId")
+            || url.searchParams.getAll("providerId").length > 1) throw deviceError("INVALID_QUERY", 400);
+        const providerId = url.searchParams.get("providerId");
+        if (providerId !== null && (!providerId.trim() || providerId.length > 512)) throw deviceError("INVALID_PROVIDER_ID", 400);
+        let result;
+        if (request.method === "GET") result = await this.sessionAPI.providerSettings.read(providerId);
+        else if (request.method === "PUT") {
+          const input = await body(request, 4096);
+          this.authenticateRequest(request);
+          result = await this.sessionAPI.providerSettings.save(input, () => this.authenticateRequest(request));
+        } else throw deviceError("ROUTE_NOT_AVAILABLE", 404);
+        this.authenticateRequest(request);
+        return reply(response, 200, result);
+      }
       const deleteMessage = /^\/client\/v1\/sessions\/([^/]+)\/messages\/([^/]+)$/.exec(path);
       if (deleteMessage && request.method === "DELETE" && this.sessionAPI) {
         return reply(response, 200, await this.sessionAPI.deleteMessage(identity,

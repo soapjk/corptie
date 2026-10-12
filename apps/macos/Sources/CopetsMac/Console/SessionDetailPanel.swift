@@ -238,9 +238,12 @@ struct SessionDetailPanel: View {
 
     private func contextReferenceRow(_ reference: SessionContextReference) -> some View {
         ConversationReferenceRow(title: reference.displayName,
-            status: ConversationReferenceStatus.label(for: reference.status),
+            status: ConversationReferenceStatus.label(for: reference.status,
+                targetType: reference.targetType.rawValue, enabled: reference.enabled),
             systemImage: reference.targetType.systemImage,
-            enabled: reference.enabled, statusAvailable: reference.status == "available") {
+            enabled: reference.enabled, statusAvailable: reference.status == "available",
+            localPath: reference.targetType == .localFile ? reference.locator : nil,
+            checkError: reference.targetType == .localFile ? reference.metadata?.lastError : nil) {
             Toggle("启用引用", isOn: Binding(
                 get: { reference.enabled },
                 set: { enabled in Task { await backendClient.setContextReferenceEnabled(reference, enabled: enabled) } }
@@ -255,6 +258,14 @@ struct SessionDetailPanel: View {
                     }
                 }
                 if reference.targetType == .localFile, let path = reference.locator {
+                    Button("复制文件路径", systemImage: "doc.on.doc") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(path, forType: .string)
+                    }
+                    Button("重新检查文件", systemImage: "arrow.clockwise") {
+                        Task { await backendClient.refreshContextReference(reference) }
+                    }
+                    Button("重新选择文件", systemImage: "doc") { chooseLocalFile(replacing: reference) }
                     Button("在 Finder 中显示", systemImage: "folder") {
                         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
                     }
@@ -277,14 +288,18 @@ struct SessionDetailPanel: View {
         .detailRailReferenceRowStyle()
     }
 
-    private func chooseLocalFile() {
+    private func chooseLocalFile(replacing reference: SessionContextReference? = nil) {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task {
-            _ = await backendClient.addContextReference(to: session, type: .localFile, locator: url.path)
+            if let reference {
+                await backendClient.replaceContextReferenceFile(reference, path: url.path)
+            } else {
+                _ = await backendClient.addContextReference(to: session, type: .localFile, locator: url.path)
+            }
         }
     }
 

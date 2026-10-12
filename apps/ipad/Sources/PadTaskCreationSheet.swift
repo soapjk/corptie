@@ -43,6 +43,9 @@ struct PadTaskCreationSheet: View {
                                 Text(item.available ? item.name : "\(item.name)（不可用）")
                                     .tag(item.id).disabled(!item.available)
                             }
+                            if !state.draft.providerID.isEmpty, !options.providers.contains(where: { $0.id == state.draft.providerID }) {
+                                Text("\(state.draft.providerID)（不可用）").tag(state.draft.providerID)
+                            }
                         }
                         Picker("优先级", selection: $state.draft.priority) {
                             ForEach(options.priorities, id: \.self) { Text($0).tag($0) }
@@ -107,7 +110,12 @@ struct PadTaskCreationSheet: View {
         .onChange(of: workspace.pushedReceiptRevision) {
             if let receipt = workspace.pushedReceipt { state.acceptPushed(receipt) }
         }
-        .onChange(of: state.draft.model) { state.draft.reasoning = "" }
+        .onChange(of: state.draft.model) { _, model in
+            let options = state.options
+            state.draft.reasoning = options?.currentModel == model
+                ? (options?.currentReasoningLevel ?? "")
+                : (options?.models.first(where: { $0.id == model })?.defaultReasoningLevel ?? "")
+        }
         .onDisappear { state.flush() }
     }
 }

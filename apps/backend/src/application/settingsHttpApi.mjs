@@ -1,6 +1,17 @@
 import { resolve } from "node:path";
+import { TaskCreationSettingsService } from "./taskCreationSettingsService.mjs";
 
-export function handleSettingsReadHttpRequest({ request, response, url, store, developmentPreview, dataRootMigrationCoordinator, sendJson }) {
+export function handleSettingsReadHttpRequest({ request, response, url, store, developmentPreview, dataRootMigrationCoordinator, sendJson,
+  agentProviderRegistry, sessionApplicationService, readJson }) {
+  if (url.pathname === "/settings/task-creation" && ["GET", "PUT"].includes(request.method)) {
+    const service = new TaskCreationSettingsService({ store, registry: agentProviderRegistry,
+      sessions: sessionApplicationService, readOnly: developmentPreview });
+    const operation = request.method === "GET" ? service.read(url.searchParams.get("providerId"))
+      : readJson(request).then(input => service.save(input));
+    operation.then(value => sendJson(response, 200, value))
+      .catch(error => sendJson(response, error.statusCode ?? 500, { code: error.code ?? "TASK_DEFAULTS_UNAVAILABLE" }));
+    return true;
+  }
   if (request.method === "GET" && url.pathname === "/settings") {
     sendJson(response, 200, {
       ...store.settings(),

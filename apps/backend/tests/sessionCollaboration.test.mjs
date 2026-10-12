@@ -841,8 +841,14 @@ test("tool Task creation uses one service operation to persist the Task and bind
       providerSessionId: "provider:atomic-source", logicalSessionId: "session:atomic-source",
       agentId: agent.agentId, kind: "workChat", workId: work.id, cwd: f.directory
     });
+    await f.store.updateSettings({ newSessionDefaults: {
+      taskCreation: { providerId: "claude-sdk", model: "selected-model", reasoningLevel: "high" }
+    } });
     let startCount = 0;
-    f.service.workSessionStartApplicationService.start = async ({ taskId, assigneeAgentId }) => {
+    f.service.workSessionStartApplicationService.start = async ({ taskId, assigneeAgentId, providerId, model, reasoningLevel }) => {
+      assert.equal(providerId, "claude-sdk");
+      assert.equal(model, "selected-model");
+      assert.equal(reasoningLevel, "high");
       startCount += 1;
       session(f.store, f.core, {
         providerSessionId: "provider:atomic-worker", logicalSessionId: "session:atomic-worker",
@@ -861,7 +867,6 @@ test("tool Task creation uses one service operation to persist the Task and bind
       description: "Description belongs to Task context only",
       acceptanceCriteria: "Criterion belongs to Task context only",
       agentId: agent.agentId,
-      providerId: "codex-app-server",
       ...authorization,
       idempotencyKey: "tool-create:atomic"
     };

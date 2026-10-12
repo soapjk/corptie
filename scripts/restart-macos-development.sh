@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
+source "${ROOT_DIR}/scripts/development-launch-mode.sh"
+DEVELOPMENT_LAUNCH_MODE="$(corptie_development_launch_mode foreground "$@")"
 MACOS_PACKAGE_DIR="${ROOT_DIR}/apps/macos"
 MACOS_BUILD_TRIPLE="$(uname -m)-apple-macosx"
 APP_BIN="${MACOS_PACKAGE_DIR}/.build/${MACOS_BUILD_TRIPLE}/debug/CorptieMac"
@@ -194,6 +196,7 @@ echo "Starting CorptieMac..."
 /usr/bin/env \
   PATH="${PATH}" \
   CORPTIE_ENV=development \
+  CORPTIE_DEVELOPMENT_LAUNCH_MODE="${DEVELOPMENT_LAUNCH_MODE}" \
   CORPTIE_BACKEND_PORT="${BACKEND_PORT}" \
   CORPTIE_DATA_ROOT="${DEVELOPMENT_DATA_ROOT}" \
   CORPTIE_RUN_ISOLATION_DATA_ROOT="${RUN_ISOLATION_DATA_ROOT}" \
@@ -232,7 +235,10 @@ if ! curl -fsS --max-time 1 "${BACKEND_URL}" >/dev/null 2>&1; then
   exit 1
 fi
 
-osascript -e "tell application \"System Events\" to set frontmost of first process whose unix id is ${APP_PID} to true" 2>/dev/null || true
+if [[ "${DEVELOPMENT_LAUNCH_MODE}" == foreground ]]; then
+  osascript -e "tell application \"System Events\" to set frontmost of first process whose unix id is ${APP_PID} to true" 2>/dev/null || true
+fi
+echo "Development launch mode: ${DEVELOPMENT_LAUNCH_MODE}"
 
 BACKEND_PID="$(lsof -tiTCP:"${BACKEND_PORT}" -sTCP:LISTEN | head -1 || true)"
 PRODUCTION_BACKEND_PID_AFTER="$(lsof -tiTCP:"${PRODUCTION_BACKEND_PORT}" -sTCP:LISTEN 2>/dev/null | head -1 || true)"

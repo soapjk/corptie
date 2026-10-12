@@ -163,7 +163,8 @@ export function routeBackendHttpRequest(request, response, ports) {
   })) return;
 
   if (handleSettingsReadHttpRequest({
-    request, response, url, store, developmentPreview, dataRootMigrationCoordinator, sendJson
+    request, response, url, store, developmentPreview, dataRootMigrationCoordinator, sendJson,
+    agentProviderRegistry, sessionApplicationService, readJson
   })) return;
 
   if (handleProviderModelsHttpRequest({

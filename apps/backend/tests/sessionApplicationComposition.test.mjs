@@ -11,13 +11,16 @@ for (const providerId of ["codex-app-server", "claude-code", "openclacky"]) {
     const service = createSessionApplicationComposition({
       store: { getSession: () => session }, agentProviderRegistry: {},
       sessionBindingRepository: { resolve: () => reference },
-      resolveContextReferences: async () => null,
+      resolveContextReferences: async () => ({ atomic: true,
+        prompt: 'Local file reference: {"absolutePath":"/tmp/中文报告.docx"}; Corptie has not read this file.' }),
       mcpAssignmentRevisionForAgent: () => revision,
       resolveAssignedCapabilities: agentId => { assert.equal(agentId, session.agentId); return capabilities; },
       memoryRecallService: { turn: async () => ({ memories: [] }) },
       emitEvent: () => { throw new Error("Must not replace or restart a Session"); }
     });
     const first = await service.resolveMessageContext(reference, { message: "查投资记录" });
+    assert.match(first.prompt, /\/tmp\/中文报告.docx/);
+    assert.match(first.prompt, /Corptie has not read this file/);
     assert.match(first.prompt, /ALL_TOOLS/);
     assert.match(first.prompt, /name="investrace"/);
     capabilities = [{ id:"mcp:one", kind:"mcp", name:"tradude" }]; revision = "assigned:2";

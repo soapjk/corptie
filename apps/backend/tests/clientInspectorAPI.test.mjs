@@ -8,6 +8,24 @@ import { ClientSessionAPI } from "../src/application/clientSessionAPI.mjs";
 import { ClientInspectorAPI } from "../src/application/clientInspectorAPI.mjs";
 
 const identity = { deviceId: "test-device" };
+test("paired devices can replace and check file references without broadening the command contract", async () => {
+  const f = await fixture();
+  try {
+    const calls = [];
+    f.inspector.references.update = async (...args) => { calls.push(args); return { referenceId: "ref" }; };
+    f.inspector.references.refresh = async (...args) => { calls.push(args); return { referenceId: "ref", status: "available" }; };
+    const input = { requestId: "replace-local-path", action: "reference.update",
+      fields: { id: "ref", locator: "/tmp/中文报告.docx" } };
+    assert.equal((await f.inspector.command(f.api, identity, "s", input)).status, "completed");
+    assert.deepEqual(calls[0], ["s", "ref", { locator: "/tmp/中文报告.docx" }]);
+    const refresh = { requestId: "check-local-path", action: "reference.refresh", fields: { id: "ref" } };
+    assert.equal((await f.inspector.command(f.api, identity, "s", refresh)).status, "completed");
+    assert.deepEqual(calls[1], ["s", "ref"]);
+    assert.throws(() => f.inspector.command(f.api, identity, "s", { ...input,
+      requestId: "reject-permissions", fields: { ...input.fields, sandbox: "danger-full-access" } }),
+    { code: "INVALID_INSPECTOR_COMMAND" });
+  } finally { await f.close(); }
+});
 test("Worktree Detail reads stay bound to the authorized Session, not supplied IDs", async () => {
   const f = await fixture();
   try {

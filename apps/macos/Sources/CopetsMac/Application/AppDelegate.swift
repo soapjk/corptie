@@ -24,6 +24,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var assistantWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
     private var mainWindowActivationRestorationGeneration = 0
+    private var suppressAutomaticWindowPresentation = DevelopmentLaunchPolicy.startsInBackground(
+        environment: ProcessInfo.processInfo.environment,
+        isProductionBundle: Bundle.main.bundleIdentifier == "com.corptie.mac"
+    )
 
     // AppKit owns our startup window. Do not let the sole SwiftUI Settings
     // scene serve as an automatic untitled launch/reopen window.
@@ -95,7 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let controller = FloatingPanelController(client: backendClient)
         panelController = controller
         // 控制台是主界面：启动默认打开控制台；液态玻璃悬浮窗是辅助界面，默认不打开
-        openWarRoom()
+        if !suppressAutomaticWindowPresentation { openWarRoom() }
 
         // Agent 浮球：订阅 sessions + agents 变化驱动 sync（通知聚合 + 生命周期）
         let agentOrbManager = AgentOrbManager(
@@ -108,6 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             .receive(on: DispatchQueue.main)
             .sink { [weak self] sessions in
                 MainActor.assumeIsolated {
+                    guard self?.suppressAutomaticWindowPresentation != true else { return }
                     self?.agentOrbManager?.sync(agents: EntityAPIClient.shared.agents, sessions: sessions)
                 }
             }
@@ -116,6 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 MainActor.assumeIsolated {
+                    guard self?.suppressAutomaticWindowPresentation != true else { return }
                     self?.agentOrbManager?.sync(
                         agents: AppStateStore.shared.agents,
                         sessions: self?.backendClient.sessions ?? []
@@ -240,6 +246,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let restorationGeneration = mainWindowActivationRestorationGeneration
         DispatchQueue.main.async { [weak self] in
             guard let self,
+                  !self.suppressAutomaticWindowPresentation,
                   restorationGeneration == self.mainWindowActivationRestorationGeneration,
                   NSApp.isActive,
                   MainWindowActivationPolicy.shouldPresentMainWindow(
@@ -434,6 +441,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     @objc private func openWarRoom() {
+        // An explicit Dock reopen/menu request ends launch-only suppression.
+        suppressAutomaticWindowPresentation = false
         NSApp.activate(ignoringOtherApps: true)
         // 控制台前置时，收起辅助的液态玻璃悬浮窗
         panelController?.hide()

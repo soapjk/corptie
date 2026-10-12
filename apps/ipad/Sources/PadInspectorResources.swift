@@ -3,6 +3,7 @@ import SwiftUI
 import CorptieClientCore
 import CorptieConversation
 import UniformTypeIdentifiers
+import UIKit
 
 struct PadInspectorResources<Primary: View, Secondary: View>: View {
     @Bindable var store: PadInspectorStore
@@ -142,10 +143,13 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
     }
     private func referenceRow(_ reference: ClientInspectorValue) -> some View {
         ConversationReferenceRow(title: reference["displayName"].text ?? "引用",
-            status: ConversationReferenceStatus.label(for: reference["status"].text ?? ""),
+            status: ConversationReferenceStatus.label(for: reference["status"].text ?? "",
+                targetType: reference["targetType"].text, enabled: reference["enabled"].flag),
             systemImage: ConversationReferenceSymbol.symbol(for: reference["targetType"].text ?? ""),
             enabled: reference["enabled"].flag,
-            statusAvailable: reference["status"].text == "available") {
+            statusAvailable: reference["status"].text == "available",
+            localPath: reference["targetType"].text == "localFile" ? reference["locator"].text : nil,
+            checkError: reference["targetType"].text == "localFile" ? reference["metadata"]["lastError"].text : nil) {
             Toggle("启用引用", isOn: Binding(get: { reference["enabled"].flag }, set: { enabled in
                 Task { await store.command("reference.update", fields: ["id": reference["referenceId"], "enabled": .bool(enabled)],
                     sessionID: sessionID, connection: connection) }
@@ -158,6 +162,13 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
                     }
                 }
                 if reference["targetType"].text == "localFile", let path = reference["locator"].text {
+                    Button("复制文件路径") { UIPasteboard.general.string = path }
+                    Button("重新检查文件") { perform("reference.refresh", id: reference["referenceId"]) }
+                    Button("更换 Mac 文件路径") {
+                        editor = PadInspectorEdit(title: "更换文件路径", action: "reference.update",
+                            fields: ["id": reference["referenceId"]], inputs: [
+                                .init(key: "locator", label: "Mac 上的绝对路径")])
+                    }
                     ShareLink("分享 Mac 文件路径", item: path)
                 }
                 Button("移除引用", role: .destructive) {

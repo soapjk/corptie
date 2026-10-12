@@ -417,6 +417,7 @@ private struct PadBottomTabBar: View {
 
 private enum PadSettingsTab: String, CaseIterable, Hashable, Identifiable {
     case general
+    case provider
     case appearance
     case notifications
     case devices
@@ -425,6 +426,7 @@ private enum PadSettingsTab: String, CaseIterable, Hashable, Identifiable {
     var title: String {
         switch self {
         case .general: "通用"
+        case .provider: "Provider"
         case .appearance: "外观"
         case .notifications: "通知"
         case .devices: "设备接入"
@@ -433,6 +435,7 @@ private enum PadSettingsTab: String, CaseIterable, Hashable, Identifiable {
     var symbol: String {
         switch self {
         case .general: "gearshape"
+        case .provider: "cpu"
         case .appearance: "paintpalette"
         case .notifications: "bell"
         case .devices: "ipad.and.iphone"
@@ -512,6 +515,18 @@ private struct PadSettingsView: View {
         switch tab {
         case .general:
             PadGeneralSettingsView(connection: connection, workspace: workspace)
+        case .provider:
+            Form {
+                Section {
+                    TaskCreationDefaultsSettingsView(load: { providerId in
+                        let api = ClientSessionAPI(transport: try await connection.transport())
+                        return try await api.taskCreationSettings(providerId: providerId)
+                    }, save: { value in
+                        let api = ClientSessionAPI(transport: try await connection.transport())
+                        return try await api.saveTaskCreationSettings(value)
+                    })
+                }
+            }
         case .appearance:
             LocalWallpaperSettingsView()
         case .notifications:

@@ -72,11 +72,13 @@ export class SessionContextRepository {
     const has = (key) => Object.prototype.hasOwnProperty.call(patch, key);
     this.db.run(
       `UPDATE session_context_references SET
-        display_name = ?, inclusion_mode = ?, enabled = ?, priority = ?, status = ?,
+        target_key = ?, locator = ?, display_name = ?, inclusion_mode = ?, enabled = ?, priority = ?, status = ?,
         snapshot_title = ?, snapshot_text = ?, snapshot_at = ?, content_hash = ?,
         metadata_json = ?, updated_at = ?
        WHERE reference_id = ?`,
       [
+        has("targetKey") ? patch.targetKey : current.targetKey,
+        has("locator") ? patch.locator : current.locator,
         has("displayName") ? patch.displayName : current.displayName,
         has("inclusionMode") ? patch.inclusionMode : current.inclusionMode,
         has("enabled") ? (patch.enabled ? 1 : 0) : (current.enabled ? 1 : 0),

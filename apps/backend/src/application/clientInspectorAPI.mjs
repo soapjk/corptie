@@ -6,7 +6,7 @@ import { validateMemoryInput } from "./entityHttpApi.mjs";
 
 const ACTION_FIELDS = {
   "reference.create": ["targetType", "targetId", "locator", "displayName"],
-  "reference.update": ["id", "enabled"], "reference.delete": ["id"], "reference.refresh": ["id"],
+  "reference.update": ["id", "enabled", "locator"], "reference.delete": ["id"], "reference.refresh": ["id"],
   "reference.import": ["fileName", "dataBase64"], "artifact.import": ["fileName", "dataBase64", "title"],
   "artifact.create": ["title", "summary", "content", "mimeType", "relation", "required", "versionPolicy"],
   "artifact.publish": ["id", "title", "summary", "content", "expectedResourceVersion", "expectedPinnedVersion", "expectedPinnedHash", "referenceId"],
@@ -187,8 +187,12 @@ export class ClientInspectorAPI {
       case "reference.create": return this.references.create(sessionId, fields.targetType === "session"
         ? { ...fields, targetId: this.resolveSession(fields.targetId).sessionId } : fields);
       case "reference.update": {
-        if (typeof fields.enabled !== "boolean") throw deviceError("INVALID_ENABLED", 400);
-        return this.references.update(sessionId, fields.id, { enabled: fields.enabled });
+        if (fields.enabled !== undefined && typeof fields.enabled !== "boolean") throw deviceError("INVALID_ENABLED", 400);
+        if (fields.locator !== undefined && typeof fields.locator !== "string") throw deviceError("INVALID_FILE_REFERENCE", 400);
+        if (fields.enabled === undefined && fields.locator === undefined) throw deviceError("INVALID_ENABLED", 400);
+        return this.references.update(sessionId, fields.id, {
+          ...(fields.enabled !== undefined ? { enabled: fields.enabled } : {}),
+          ...(fields.locator !== undefined ? { locator: fields.locator } : {}) });
       }
       case "reference.delete": this.references.delete(sessionId, fields.id); return { removed: true };
       case "reference.refresh": return this.references.refresh(sessionId, fields.id);
