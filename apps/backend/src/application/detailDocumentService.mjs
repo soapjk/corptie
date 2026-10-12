@@ -310,9 +310,8 @@ export class DetailDocumentService {
   attachV2(response, authenticate, id, request, input) {
     validateDetailV2Envelope(input, "Request");
     const profile = detailV2CatalogOptions(input);
-    // The strict wire recognizes the opt-in profile before business projection,
-    // but recognition must not enable a public subscription or silently discard
-    // its capability set into the legacy scoped cache.
+    // Recognizing the strict rich wire must not enable either a public
+    // subscription or scoped business caches, nor discard its capability set.
     if (input.catalog !== "native-v2") throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
     this.#attachV2Profile(response, authenticate, id, request, input, profile);
   }
