@@ -4,6 +4,8 @@ import { validateDetailContract } from "./detailDocumentContract.mjs";
 import { projectDetailV2, DetailV2Journal, diffDetailV2 } from "./detailSyncV2.mjs";
 import { readDetailV2Request } from "./detailV2JSON.mjs";
 import { validateDetailV2Envelope } from "./detailV2Contract.mjs";
+import { sendDetailV2Snapshot } from "./detailSnapshotTransport.mjs";
+import { detailV2GetNegotiation, detailV2ServiceOptions, detailV2PinnedAuthenticate, DETAIL_TRANSPORT_CATALOGS } from "./detailV2Negotiation.mjs";
 
 const services = new WeakMap();
 const text = (key, fallback) => ({ key, fallback });
@@ -59,6 +61,8 @@ export class DetailDocumentService {
   }
   attachV2(response, authenticate, id, request, input) {
     validateDetailV2Envelope(input, "Request");
+    // Recognizing the strict rich wire does not enable scoped business caches.
+    if (input.catalog !== "native-v2") throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
     authenticate(); this.scope(id);
     const cached = new Set(input.cachedTemplateHashes);
     const filterTemplates = value => ({ ...value, templates: Object.fromEntries(
@@ -127,14 +131,19 @@ export function handleDesktopDetail({ request, response, url, store, sendJson })
     return { principalId: "local-user" };
   };
   try {
-    authenticate();
+    const identity = authenticate();
     if (request.method !== "GET" || url.search) throw failure("DETAIL_REQUEST_NOT_ALLOWED", 405);
-    const v2 = !match[2] && request.headers.accept === "application/json; corptie-detail=native-v2";
+    const negotiation = !match[2] ? detailV2GetNegotiation(request) : null;
+    const v2 = negotiation !== null;
+    if (v2 && !DETAIL_TRANSPORT_CATALOGS.includes(negotiation.catalog)) throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
     if (!v2 && !acceptsNativeDetail(request)) throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
     const id = decodeURIComponent(match[1]), service = detailServiceFor(store);
-    service.scope(id);
-    if (match[2]) service.events.attach(response, authenticate, id, request);
-    else sendJson(response, 200, v2 ? service.v2Snapshot(id) : service.snapshot(id));
+    const scoped = service.scope(id);
+    const authenticatedScope = detailV2PinnedAuthenticate(authenticate, () => service.scope(id).logicalSessionId, identity, scoped.logicalSessionId);
+    if (match[2]) service.events.attach(response, authenticatedScope, id, request);
+    else if (v2) void sendDetailV2Snapshot(request, response, service.v2Snapshot(id, detailV2ServiceOptions(identity, negotiation)), authenticatedScope)
+      .catch(error => { if (!response.destroyed && !response.headersSent) sendJson(response, error.status ?? 400, { code: error.code ?? "INVALID_DETAIL_REQUEST" }); });
+    else sendJson(response, 200, service.snapshot(id, { identity }));
   } catch (error) { if (!response.headersSent) sendJson(response, error.status ?? 400, { code: error.code ?? "INVALID_DETAIL_REQUEST" }); }
   return true;
 }
@@ -154,9 +163,10 @@ export function handleDesktopDetailSync({ request, response, url, store, sendJso
       if (request.method !== "POST" || url.search) throw failure("DETAIL_REQUEST_NOT_ALLOWED", 405);
       if (request.headers.accept !== "text/event-stream; corptie-detail=native-v2") throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
       const id = decodeURIComponent(match[1]), service = detailServiceFor(store);
-      service.scope(id);
+      const identity = authenticate(), scoped = service.scope(id);
+      const authenticatedScope = detailV2PinnedAuthenticate(authenticate, () => service.scope(id).logicalSessionId, identity, scoped.logicalSessionId);
       const input = await readDetailV2Request(request);
-      service.attachV2(response, authenticate, id, null, input);
+      service.attachV2(response, authenticatedScope, id, request, input);
     } catch (error) {
       if (!response.headersSent) sendJson(response, error.status ?? 400, { code: error.code ?? "INVALID_DETAIL_REQUEST" });
       else response.destroy();

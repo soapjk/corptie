@@ -83,8 +83,30 @@ public struct ClientDetailV2State: Codable, Equatable, Sendable {
     private static func json<T: Encodable>(_ value: T) throws -> ClientInspectorValue {
         try JSONDecoder().decode(ClientInspectorValue.self, from: JSONEncoder().encode(value))
     }
-    public func validate() throws {
+    private func validateNegotiation(catalogProfile: String, clientCapabilities: [String]?) throws {
+        let capabilities = clientCapabilities ?? []
+        guard catalogProfile == "native-v2" || catalogProfile == ClientDetailV2Catalog.profile,
+              capabilities == capabilities.sorted(), Set(capabilities).count == capabilities.count,
+              Set(capabilities).isSubset(of: ClientDetailV2Catalog.componentKinds),
+              catalogProfile == ClientDetailV2Catalog.profile ? clientCapabilities != nil : capabilities.isEmpty else {
+            throw ClientDetailV2Canonical.Failure.shape
+        }
+        for template in templates.values {
+            if catalogProfile == ClientDetailV2Catalog.profile {
+                guard template["catalogProfile"].text == catalogProfile,
+                      case .array(let required) = template["requiredCapabilities"],
+                      required.allSatisfy({ $0.text != nil }),
+                      Set(required.compactMap(\.text)).isSubset(of: Set(capabilities)) else {
+                    throw ClientDetailV2Canonical.Failure.shape
+                }
+            } else if template.fields["catalogProfile"] != nil {
+                throw ClientDetailV2Canonical.Failure.shape
+            }
+        }
+    }
+    public func validate(catalogProfile: String = "native-v2", clientCapabilities: [String]? = nil) throws {
         typealias Failure = ClientDetailV2Canonical.Failure
+        try validateNegotiation(catalogProfile: catalogProfile, clientCapabilities: clientCapabilities)
         try ClientDetailV2Canonical.bounded(Self.json(self))
         guard protocolVersion == 2, Self.validRevision(revision), Self.validRevision(manifest.revision),
               [documentId, sessionId, generation].allSatisfy(Self.validID), manifest.order.count <= 30,
@@ -100,7 +122,14 @@ public struct ClientDetailV2State: Codable, Equatable, Sendable {
         for cardID in manifest.order {
             guard Self.validID(cardID), let reference = manifest.cards[cardID], Self.validID(reference.templateId),
                   let template = templates[reference.templateHash], template["templateId"].text == reference.templateId,
-                  let instance = instances[cardID], Self.validRevision(instance.revision), instance.collections.isEmpty else { throw Failure.shape }
+                  let instance = instances[cardID], Self.validRevision(instance.revision) else { throw Failure.shape }
+            if template["catalogProfile"].text == ClientDetailV2Catalog.profile {
+                guard catalogProfile == ClientDetailV2Catalog.profile else { throw Failure.shape }
+                try ClientDetailV2Catalog.validate(template: template, instance: instance)
+            } else {
+                guard template.fields["catalogProfile"] == nil, instance.collections.isEmpty,
+                      catalogProfile == "native-v2" else { throw Failure.shape }
+            }
             nodeCount += template["card"]["nodes"].items.count
             guard nodeCount <= 500, instance.fields.count <= 64, instance.actions.count <= 32,
                   instance.actions.allSatisfy({ $0.key == $0.value["id"].text }) else { throw Failure.shape }
@@ -129,28 +158,37 @@ public struct ClientDetailV2State: Codable, Equatable, Sendable {
     /// Adapt the validated native catalog into the existing shared renderer.
     /// Keep v2 and v1 generation namespaces distinct so a legacy fallback or
     /// refresh cannot create a same-revision/different-data-stamp conflict.
-    func renderingDocument(previous: Self? = nil, document: ClientDetailDocument? = nil) throws -> ClientDetailDocument {
-        let renderGeneration = "v2:" + (try ClientDetailV2Canonical.hash(.string(generation)))
+    public func renderingDocument(previous: Self? = nil, document: ClientDetailDocument? = nil, catalogProfile: String = "native-v2", clientCapabilities: [String]? = nil) throws -> ClientDetailDocument {
+        // Check even reused cards: a reduced negotiation cannot reuse unsupported UI.
+        try validateNegotiation(catalogProfile: catalogProfile, clientCapabilities: clientCapabilities)
+        let renderGeneration = "v2:" + (try ClientDetailV2Canonical.hash(.string(catalogProfile == "native-v2" ? generation : catalogProfile + ":" + generation)))
         let oldCards = Dictionary(uniqueKeysWithValues: (document?.cards ?? []).map { ($0.id, $0) })
         let cards = try manifest.order.map { cardID -> ClientDetailCard in
             guard let reference = manifest.cards[cardID], let instance = instances[cardID], let template = templates[reference.templateHash] else { throw ClientDetailV2Canonical.Failure.shape }
+            guard template.fields["catalogProfile"] == nil || (catalogProfile == ClientDetailV2Catalog.profile && template["catalogProfile"].text == catalogProfile) else { throw ClientDetailV2Canonical.Failure.shape }
             if previous?.generation == generation, previous?.documentId == documentId,
+               document?.generation == renderGeneration,
                previous?.instances[cardID] == instance, previous?.manifest.cards[cardID] == reference,
                let old = oldCards[cardID] { return old }
             var definition = template["card"].fields
             definition["id"] = .string(cardID); definition["templateRevision"] = template["templateVersion"]
             definition["dataRevision"] = .string(instance.hash); definition["data"] = .object(instance.fields)
             definition["actions"] = .array(instance.actions.keys.sorted().map { instance.actions[$0]! })
-            return try JSONDecoder().decode(ClientDetailCard.self, from: JSONEncoder().encode(ClientInspectorValue.object(definition)))
+            var card = try JSONDecoder().decode(ClientDetailCard.self, from: JSONEncoder().encode(ClientInspectorValue.object(definition)))
+            if template["catalogProfile"].text == ClientDetailV2Catalog.profile {
+                try ClientDetailV2Catalog.validate(template: template, instance: instance)
+                card.v2Presentation = try ClientDetailV2Catalog.presentation(template: template, instance: instance)
+            }
+            return card
         }
         let result = ClientDetailDocument(schemaVersion: 1, documentId: documentId, sessionId: sessionId,
             generation: renderGeneration, revision: revision, cards: cards, order: manifest.order)
         try result.validate()
         return result
     }
-    public func applying(_ commit: ClientDetailV2Commit) throws -> Self {
+    public func applying(_ commit: ClientDetailV2Commit, catalogProfile: String = "native-v2", clientCapabilities: [String]? = nil) throws -> Self {
         typealias Failure = ClientDetailV2Canonical.Failure
-        try validate(); try ClientDetailV2Canonical.bounded(Self.json(commit))
+        try validate(catalogProfile: catalogProfile, clientCapabilities: clientCapabilities); try ClientDetailV2Canonical.bounded(Self.json(commit))
         guard commit.protocolVersion == 2, commit.documentId == documentId, commit.sessionId == sessionId,
               commit.generation == generation else { throw Failure.base }
         if commit.revision == revision && commit.resultStateHash == stateHash { return self }
@@ -173,6 +211,18 @@ public struct ClientDetailV2State: Codable, Equatable, Sendable {
                       let hash = change.resultHash, let fields = change.fields, let actions = change.actions else { throw Failure.base }
                 instance.fields = try fields.applying(instance.fields)
                 instance.actions = try actions.applying(instance.actions)
+                if let collections = change.collections {
+                    let pages = try collections.applying(instance.collections)
+                    for (name, page) in pages {
+                        if let old = instance.collections[name] {
+                            var content = page.fields, oldContent = old.fields
+                            content.removeValue(forKey: "revision"); oldContent.removeValue(forKey: "revision")
+                            guard let nextRevision = page["revision"].number, let oldRevision = old["revision"].number,
+                                  content == oldContent ? nextRevision == oldRevision : nextRevision > oldRevision else { throw Failure.base }
+                        }
+                    }
+                    instance.collections = pages
+                }
                 instance.revision = targetRevision; instance.hash = hash
                 next.instances[change.cardId] = instance
             }
@@ -185,7 +235,7 @@ public struct ClientDetailV2State: Codable, Equatable, Sendable {
         let referenced = Set(next.manifest.cards.values.map(\.templateHash))
         next.templates = next.templates.filter { referenced.contains($0.key) }
         next.revision = commit.revision; next.stateHash = commit.resultStateHash
-        try next.validate()
+        try next.validate(catalogProfile: catalogProfile, clientCapabilities: clientCapabilities)
         return next
     }
 }
@@ -208,6 +258,7 @@ public struct ClientDetailV2Commit: Codable, Equatable, Sendable {
         public let resultHash: String?
         public let fields: Delta?
         public let actions: Delta?
+        public var collections: Delta? = nil
     }
     public let protocolVersion: Int
     public let documentId: String

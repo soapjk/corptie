@@ -10,6 +10,9 @@ export class ClientInspectorStream {
     this.clients = new Set();
   }
   attach(response, authenticate, sessionId, request = null, options = {}) {
+    // Trusted host injection only; never selected by request/body fields.
+    const snapshot = options.snapshot ?? this.snapshot;
+    if (typeof snapshot !== "function") throw deviceError("INVALID_INSPECTOR_SNAPSHOT", 400);
     const identity = authenticate();
     const principalId = identity.principalId ?? identity.deviceId;
     if (!principalId) throw deviceError("AUTHENTICATED_PRINCIPAL_REQUIRED", 403);
@@ -20,9 +23,11 @@ export class ClientInspectorStream {
         (!this.sessionScopedLimit || c.sessionId === sessionId))) {
       throw deviceError("INSPECTOR_STREAM_LIMIT", 429);
     }
-    response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store" });
+    response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store, no-transform",
+      "x-accel-buffering": "no" });
     response.flushHeaders?.();
     const client = { sessionId, principalId, authenticate, response, dirty: true, busy: false, closed: false,
+      snapshot,
       eventForSnapshot: options.eventForSnapshot ?? this.eventForSnapshot };
     client.close = () => {
       client.closed = true; clearInterval(client.heartbeat); clearTimeout(client.timer);
@@ -30,7 +35,10 @@ export class ClientInspectorStream {
     };
     response.once("close", client.close);
     request?.once("close", client.close);
-    client.heartbeat = setInterval(() => this.write(client, "heartbeat", {}), this.heartbeatMs);
+    client.heartbeat = setInterval(() => {
+      try { client.authenticate(); } catch { client.close(); return; }
+      if (!client.busy && !response.writableNeedDrain) this.write(client, "heartbeat", {});
+    }, this.heartbeatMs);
     client.heartbeat.unref?.();
     this.clients.add(client);
     void this.deliver(client);
@@ -40,11 +48,13 @@ export class ClientInspectorStream {
     try {
       client.authenticate();
       const frame = `event: ${event}\ndata: ${clientSafeJSONStringify(value)}\n\n`;
-      if (Buffer.byteLength(frame) > this.maxFrameBytes || client.response.writableLength > this.maxFrameBytes) {
+      if (Buffer.byteLength(frame) + client.response.writableLength > this.maxFrameBytes) {
         client.close(); return;
       }
       // Honor backpressure: no second snapshot is prepared until drain/close.
-      return client.response.write(frame);
+      const wrote = client.response.write(frame);
+      client.response.flush?.();
+      return wrote;
     } catch { client.close(); }
   }
   invalidate() {
@@ -60,12 +70,16 @@ export class ClientInspectorStream {
     client.busy = true; client.dirty = false;
     try {
       const identity = client.authenticate();
-      const value = await this.snapshot(identity, client.sessionId);
+      const value = await client.snapshot.call(this, identity, client.sessionId);
       if (client.closed) return;
+      // Projection may await I/O. Revalidate before event generation as well
+      // as write, so revoked results cannot affect a service journal/baseline.
+      client.authenticate();
       const hash = createHash("sha256").update(JSON.stringify(value)).digest("hex");
       if (hash !== client.hash) {
         const event = client.eventForSnapshot?.(client.previous, value) ?? { name: `${this.eventPrefix}-snapshot`, value };
         const wrote = this.write(client, event.name, event.value);
+        if (client.closed || typeof wrote !== "boolean") return;
         client.previous = value;
         client.hash = hash;
         if (wrote === false && !client.closed && client.response.writableNeedDrain) {
