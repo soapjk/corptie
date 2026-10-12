@@ -7,6 +7,7 @@ actor ClientDetailSubscriptionPool {
     private struct Entry {
         let generation: UUID
         let sessionID: String
+        let negotiation: ClientDetailV2Negotiation
         var consumers: [UUID: AsyncThrowingStream<ClientDetailEvent, Error>.Continuation]
         var latest: ClientDetailDocument?
         var v2State: ClientDetailV2State?
@@ -19,7 +20,9 @@ actor ClientDetailSubscriptionPool {
         try await Task.sleep(for: .milliseconds(min(15_000, 500 * (1 << min(failures, 5)))))
     }) { self.retryDelay = retryDelay }
 
-    func subscribe(scope: String, sessionID: String, api: @escaping @Sendable () async throws -> ClientDetailAPI) -> AsyncThrowingStream<ClientDetailEvent, Error> {
+    func subscribe(scope: String, sessionID: String, negotiation: ClientDetailV2Negotiation = .legacy,
+                   api: @escaping @Sendable () async throws -> ClientDetailAPI) -> AsyncThrowingStream<ClientDetailEvent, Error> {
+        let scope = negotiation.scoped(scope)
         let (stream, continuation) = AsyncThrowingStream<ClientDetailEvent, Error>.makeStream(bufferingPolicy: .bufferingOldest(16))
         let consumer = UUID()
         continuation.onTermination = { @Sendable _ in Task { await self.remove(scope: scope, consumer: consumer) } }
@@ -31,7 +34,7 @@ actor ClientDetailSubscriptionPool {
         } else {
             guard entries.count < 8 else { continuation.finish(throwing: ClientDetailFailure.limit); return stream }
             let generation = UUID()
-            entries[scope] = Entry(generation: generation, sessionID: sessionID, consumers: [consumer: continuation])
+            entries[scope] = Entry(generation: generation, sessionID: sessionID, negotiation: negotiation, consumers: [consumer: continuation])
             let producer = Task {
                 await self.run(scope: scope, sessionID: sessionID, generation: generation, api: api)
             }
@@ -49,18 +52,21 @@ actor ClientDetailSubscriptionPool {
                 // an expired bearer/relay instance in a detached retry loop.
                 let client = try await api()
                 guard let entry = entries[scope], entry.generation == generation else { return }
+                guard client.negotiation == entry.negotiation else {
+                    finish(scope: scope, generation: generation, error: ClientDetailFailure.wrongScope); return
+                }
                 if entry.legacy {
                     for try await event in client.subscribe(sessionID: sessionID) {
                         try Task.checkCancellation(); try publish(event, scope: scope, generation: generation); failures = 0
                     }
                 } else {
-                    for try await state in client.v2.subscribe(sessionID: sessionID, resume: entry.v2State) {
+                    for try await state in client.v2.subscribe(sessionID: sessionID, resume: entry.v2State, resumeNegotiation: entry.negotiation) {
                         try Task.checkCancellation(); try publishV2(state, scope: scope, generation: generation); failures = 0
                     }
                 }
             } catch {
                 guard !Task.isCancelled, entries[scope]?.generation == generation else { return }
-                if entries[scope]?.legacy == false, ClientDetailAPI.canFallbackToV1(error) {
+                if entries[scope]?.negotiation.isLegacy == true, entries[scope]?.legacy == false, ClientDetailAPI.canFallbackToV1(error) {
                     entries[scope]?.legacy = true; entries[scope]?.v2State = nil; continue
                 }
                 if ClientDetailAPI.isAccessFailure(error) {
@@ -85,7 +91,7 @@ actor ClientDetailSubscriptionPool {
             // A ready/identical snapshot updates no view and reuses its cache.
             if previous == state { return }
         }
-        let document = try state.renderingDocument(previous: entry.v2State, document: entry.latest)
+        let document = try state.renderingDocument(previous: entry.v2State, document: entry.latest, catalogProfile: entry.negotiation.catalog, clientCapabilities: entry.negotiation.clientCapabilities)
         try publish(.snapshot(document), scope: scope, generation: generation)
         if entries[scope]?.generation == generation { entries[scope]?.v2State = state }
     }

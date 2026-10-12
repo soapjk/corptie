@@ -2,6 +2,7 @@ import http from "node:http";
 import { deleteUnreceivedUserMessage } from "./application/userMessageDeletion.mjs";
 import { routeBackendHttpRequest } from "./application/backendHttpRouter.mjs";
 import { detailServiceFor } from "./application/detailDocumentService.mjs";
+import { createDetailBusinessReadPorts } from "./application/detailBusinessReadPorts.mjs";
 import { createProductEventPublisher } from "./application/productEventPublisher.mjs";
 import { createStartupRecoveryOperations } from "./application/startupRecoveryOperations.mjs";
 import {
@@ -324,7 +325,7 @@ const stateSyncPublisher = createStateSyncPublisher({
   recordSessionDiagnostic: (...args) => sessionStateDiagnostics.record(...args),
   invalidateDevices: () => {
     clientDeviceGateway?.inspectorEvents.invalidate();
-    detailServiceFor(store).invalidate();
+    detailServiceFor(store).invalidateStateChanges();
     clientDeviceGateway?.events.invalidate({ inventory: true, control: true });
     clientDeviceGateway?.events.publishState();
   }
@@ -1316,6 +1317,7 @@ platformOperationService = createPlatformOperationComposition({
 });
 const sessionContextReferenceService = new SessionContextReferenceService({
   store,
+  onChanged: change => detailServiceFor(store).invalidate(change),
   readSessionDetail: (sessionId) => readStoredSessionDetail(requireSessionReference(sessionId))
 });
 const foundationModelSettings = new FoundationModelSettings(store.dataRoot);
@@ -1643,6 +1645,7 @@ function emitEvent(type, payload, options = {}) {
   productEventPublisher ??= createProductEventPublisher({
     store, eventLog, sseClients, now,
     getClientDeviceGateway: () => clientDeviceGateway,
+    invalidateDetail: (type, payload, sessionId) => detailServiceFor(store).invalidateProductEvent(type, payload, sessionId),
     scheduleStateSyncPublish: () => scheduleStateSyncPublish(),
     requestTaskSummary: (taskId) => taskSummaryService.request(taskId),
     notifySessionEventListeners: (event) => notifySessionEventListeners(event),
@@ -2269,6 +2272,13 @@ await seedDevelopmentFixtures({
   bundledCollaborationSkillPath, now, marker: developmentFixtureMarker,
   enabled: shouldSeedDevelopmentFixtures
 });
+detailServiceFor(store).configureBusinessPorts(createDetailBusinessReadPorts({
+  store, references: sessionContextReferenceService, artifacts: artifactService,
+  schedules: scheduledSessionTaskService, observability: turnObservability,
+  providerRegistry: agentProviderRegistry,
+  readWorktree: id => projectWorktreeStatusReader.worktreeDetail(id)
+}));
+
 await initializeBackendStoreReadiness({
   store, benchmarkControlPlane, runIsolationCoordinator, runIsolationDataRoot,
   developmentPreview, dataRootMigrationCoordinator, turnObservability,

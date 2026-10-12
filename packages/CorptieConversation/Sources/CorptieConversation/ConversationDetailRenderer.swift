@@ -36,12 +36,18 @@ public struct ConversationDetailRenderer: View {
     private let store: ClientDetailStore
     private let refreshing: Bool
     private let perform: (ClientDetailAction) -> Void
+    private let actions: ConversationDetailActions
     public init(store: ClientDetailStore, refreshing: Bool = false, perform: @escaping (ClientDetailAction) -> Void = { _ in }) {
         self.store = store; self.refreshing = refreshing; self.perform = perform
+        self.actions = .init(canPerform: { $0.kind == "read" && $0.operation == "detail.refresh" && !refreshing }, perform: { action, _ in perform(action) })
+    }
+    public init(store: ClientDetailStore, refreshing: Bool = false, actions: ConversationDetailActions) {
+        self.store = store; self.refreshing = refreshing; self.actions = actions
+        self.perform = { action in actions.perform(action, [:]) }
     }
     public var body: some View {
         ForEach(store.orderedCards) { state in
-            ConversationDetailRenderedCard(state: state, refreshing: refreshing, perform: perform)
+            ConversationDetailRenderedCard(state: state, refreshing: refreshing, perform: perform, actions: actions, scope: store.renderingScope)
         }
     }
 }
@@ -50,15 +56,17 @@ private struct ConversationDetailRenderedCard: View {
     let state: ClientDetailCardState
     let refreshing: Bool
     let perform: (ClientDetailAction) -> Void
+    let actions: ConversationDetailActions
+    let scope: String
     var body: some View {
-        ConversationDetailModuleCard(title: state.card.title.fallback, systemImage: icon(state.card.semanticKind)) {
+        ConversationDetailModuleCard(title: state.card.displayTitle, systemImage: icon(state.card.semanticKind)) {
             ForEach(state.card.actions.filter { $0.kind == "read" && $0.operation == "detail.refresh" }) { action in
                 Button { perform(action) } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(.plain).disabled(!action.available || refreshing)
                     .accessibilityLabel(action.label.fallback)
             }
         } content: {
-            ConversationDetailNodeView(state: state, nodeID: state.card.rootNodeId)
+            ConversationDetailNodeView(state: state, nodeID: state.card.rootNodeId, actions: actions, scope: scope)
         }
         .accessibilityIdentifier("detail-card-\(state.id)")
     }
@@ -78,9 +86,13 @@ private struct ConversationDetailRenderedCard: View {
 private struct ConversationDetailNodeView: View {
     @Bindable var state: ClientDetailCardState
     let nodeID: String
+    let actions: ConversationDetailActions
+    let scope: String
     var body: some View {
         if let node = state.nodes[nodeID] {
-            switch node.kind {
+            if let component = state.card.v2Presentation?.components[nodeID] {
+                ConversationDetailComponentView(state: state, node: node, component: component, actions: actions, scope: scope)
+            } else { switch node.kind {
             case "column", "section":
                 VStack(alignment: .leading, spacing: 6) { children(node) }
             case "row":
@@ -99,10 +111,11 @@ private struct ConversationDetailNodeView: View {
             default:
                 Label(state.card.fallback.fallback, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
             }
+            }
         }
     }
     // Type erasure is confined to the recursive extension boundary; validated depth <= 6.
     private func children(_ node: ClientDetailNode) -> some View {
-        ForEach(node.children, id: \.self) { id in AnyView(ConversationDetailNodeView(state: state, nodeID: id)) }
+        ForEach(node.children, id: \.self) { id in AnyView(ConversationDetailNodeView(state: state, nodeID: id, actions: actions, scope: scope)) }
     }
 }

@@ -1,0 +1,366 @@
+{
+  "protocolVersion": 2,
+  "documentId": "detail:sample",
+  "sessionId": "logical:sample",
+  "generation": "components:golden",
+  "revision": 1,
+  "stateHash": "sha256:0532d2b5c0c2acac25bdf71e2942af7f187bcf0affa4a20d79c27a79c668dedc",
+  "manifest": {
+    "revision": 1,
+    "hash": "sha256:974b7b87c0db8eebbc71a0fc71356cda915dcee5c615bc995ba2b9dc0e758f17",
+    "cards": {
+      "sample": {
+        "templateId": "native:information:991b93227939210bda77c649172191324892a6cc561ff20726c74d6b4f51d4ad",
+        "templateHash": "sha256:0b0657743328b12038167843587ee81442fee158c0e99fc15e72579cca38a927"
+      }
+    },
+    "order": [
+      "sample"
+    ]
+  },
+  "templates": {
+    "sha256:0b0657743328b12038167843587ee81442fee158c0e99fc15e72579cca38a927": {
+      "catalogProfile": "native-v2-components-1",
+      "templateVersion": 1,
+      "requiredCapabilities": [
+        "detail.button",
+        "detail.chart",
+        "detail.dateTime",
+        "detail.form",
+        "detail.image",
+        "detail.keyValue",
+        "detail.markdown",
+        "detail.progress",
+        "detail.resourceList",
+        "detail.status"
+      ],
+      "fieldSchema": {
+        "title": {
+          "type": "string",
+          "required": true,
+          "maxLength": 4096
+        },
+        "value": {
+          "type": "string",
+          "required": true,
+          "maxLength": 4096
+        },
+        "time": {
+          "type": "string",
+          "required": true,
+          "maxLength": 64
+        },
+        "markdown": {
+          "type": "string",
+          "required": true,
+          "maxLength": 32768
+        },
+        "chart": {
+          "type": "string",
+          "required": true,
+          "maxLength": 32768
+        },
+        "progress": {
+          "type": "integer",
+          "required": true
+        },
+        "image": {
+          "type": "object",
+          "required": true,
+          "properties": {
+            "resourceType": {
+              "type": "string",
+              "required": true,
+              "maxLength": 512
+            },
+            "id": {
+              "type": "string",
+              "required": true,
+              "maxLength": 512
+            }
+          }
+        },
+        "note": {
+          "type": "string",
+          "required": true,
+          "maxLength": 1024
+        },
+        "enabled": {
+          "type": "bool",
+          "required": true
+        },
+        "mode": {
+          "type": "string",
+          "required": true,
+          "maxLength": 32
+        }
+      },
+      "collectionSchema": {
+        "resources": {
+          "maxItems": 20,
+          "itemSchema": {
+            "title": {
+              "type": "string",
+              "required": true,
+              "maxLength": 4096
+            },
+            "resourceType": {
+              "type": "string",
+              "required": true,
+              "maxLength": 512
+            },
+            "id": {
+              "type": "string",
+              "required": true,
+              "maxLength": 512
+            },
+            "actionId": {
+              "type": "string",
+              "required": false,
+              "maxLength": 512
+            }
+          }
+        }
+      },
+      "card": {
+        "title": {
+          "fallback": "Detail"
+        },
+        "titleBinding": "title",
+        "semanticKind": "information",
+        "rootNodeId": "root",
+        "fallback": {
+          "fallback": "Unavailable"
+        },
+        "nodes": [
+          {
+            "id": "root",
+            "kind": "column",
+            "props": {},
+            "children": [
+              "value",
+              "status",
+              "date",
+              "progress",
+              "resources",
+              "image",
+              "markdown",
+              "chart",
+              "form",
+              "button"
+            ]
+          },
+          {
+            "id": "value",
+            "kind": "detail.keyValue",
+            "props": {
+              "label": {
+                "fallback": "Value"
+              }
+            },
+            "binding": "value",
+            "children": []
+          },
+          {
+            "id": "status",
+            "kind": "detail.status",
+            "props": {
+              "semantic": "success"
+            },
+            "binding": "value",
+            "children": []
+          },
+          {
+            "id": "date",
+            "kind": "detail.dateTime",
+            "props": {
+              "format": "dateTime"
+            },
+            "binding": "time",
+            "children": []
+          },
+          {
+            "id": "progress",
+            "kind": "detail.progress",
+            "props": {
+              "label": {
+                "fallback": "Progress"
+              }
+            },
+            "binding": "progress",
+            "children": []
+          },
+          {
+            "id": "resources",
+            "kind": "detail.resourceList",
+            "props": {
+              "collection": "resources",
+              "actionId": "more"
+            },
+            "children": []
+          },
+          {
+            "id": "image",
+            "kind": "detail.image",
+            "props": {
+              "label": {
+                "fallback": "Preview"
+              }
+            },
+            "binding": "image",
+            "children": []
+          },
+          {
+            "id": "markdown",
+            "kind": "detail.markdown",
+            "props": {},
+            "binding": "markdown",
+            "children": []
+          },
+          {
+            "id": "chart",
+            "kind": "detail.chart",
+            "props": {},
+            "binding": "chart",
+            "children": []
+          },
+          {
+            "id": "form",
+            "kind": "detail.form",
+            "props": {
+              "actionId": "save",
+              "controls": [
+                {
+                  "field": "note",
+                  "kind": "text",
+                  "label": {
+                    "fallback": "Note"
+                  }
+                },
+                {
+                  "field": "enabled",
+                  "kind": "toggle",
+                  "label": {
+                    "fallback": "Enabled"
+                  }
+                },
+                {
+                  "field": "mode",
+                  "kind": "picker",
+                  "label": {
+                    "fallback": "Mode"
+                  },
+                  "options": [
+                    {
+                      "value": "auto",
+                      "label": {
+                        "fallback": "Automatic"
+                      }
+                    },
+                    {
+                      "value": "manual",
+                      "label": {
+                        "fallback": "Manual"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            "children": []
+          },
+          {
+            "id": "button",
+            "kind": "detail.button",
+            "props": {
+              "actionId": "refresh"
+            },
+            "children": []
+          }
+        ]
+      },
+      "templateId": "native:information:991b93227939210bda77c649172191324892a6cc561ff20726c74d6b4f51d4ad"
+    }
+  },
+  "instances": {
+    "sample": {
+      "fields": {
+        "title": "Shared components",
+        "value": "Ready",
+        "time": "2026-10-11T21:00:00+08:00",
+        "progress": 25,
+        "image": {
+          "resourceType": "artifact",
+          "id": "artifact:sample"
+        },
+        "markdown": "| Name | State |\n| --- | --- |\n| Task | Ready |",
+        "chart": "{\"version\":1,\"type\":\"bar\",\"title\":\"Count\",\"data\":[{\"label\":\"A\",\"value\":2}]}",
+        "note": "Draft",
+        "enabled": true,
+        "mode": "auto"
+      },
+      "collections": {
+        "resources": {
+          "revision": 1,
+          "order": [
+            "artifact:sample"
+          ],
+          "items": {
+            "artifact:sample": {
+              "title": "Sample",
+              "resourceType": "artifact",
+              "id": "artifact:sample",
+              "actionId": "open"
+            }
+          },
+          "nextCursor": "page:2"
+        }
+      },
+      "actions": {
+        "more": {
+          "id": "more",
+          "kind": "read",
+          "operation": "detail.page",
+          "label": {
+            "fallback": "Load more"
+          },
+          "available": true
+        },
+        "save": {
+          "id": "save",
+          "kind": "command",
+          "operation": "detail.save",
+          "label": {
+            "fallback": "Save"
+          },
+          "available": true,
+          "expectedResourceRevision": "resource:1"
+        },
+        "refresh": {
+          "id": "refresh",
+          "kind": "read",
+          "operation": "detail.refresh",
+          "label": {
+            "fallback": "Refresh"
+          },
+          "available": true
+        },
+        "open": {
+          "id": "open",
+          "kind": "navigation",
+          "operation": "detail.resource",
+          "target": {
+            "resourceType": "artifact",
+            "id": "artifact:sample"
+          },
+          "label": {
+            "fallback": "Open"
+          },
+          "available": true
+        }
+      },
+      "revision": 1,
+      "hash": "sha256:d5f38641fa3045348a9fff67f29c79e236559937d8b3f9c1da2beab90ced5da9"
+    }
+  }
+}

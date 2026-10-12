@@ -5,24 +5,34 @@ import Foundation
 public struct ClientDetailV2API: Sendable {
     private let transport: BackendTransport
     private let route: ClientDetailAPI.Route
-    public init(transport: BackendTransport, route: ClientDetailAPI.Route) { self.transport = transport; self.route = route }
+    public let negotiation: ClientDetailV2Negotiation
+    public init(transport: BackendTransport, route: ClientDetailAPI.Route, negotiation: ClientDetailV2Negotiation = .legacy) {
+        self.transport = transport; self.route = route; self.negotiation = negotiation
+    }
 
     public func snapshot(sessionID: String) async throws -> ClientDetailV2State {
         let prefix = route == .desktop ? [] : ["client", "v1"]
         var request = try transport.endpoint.request(path: prefix + ["sessions", sessionID, "detail"])
-        request.setValue("application/json; corptie-detail=native-v2", forHTTPHeaderField: "Accept")
+        request.setValue("application/json; corptie-detail=\(negotiation.catalog)", forHTTPHeaderField: "Accept")
+        if !negotiation.isLegacy {
+            request.setValue(negotiation.clientCapabilities.joined(separator: ","), forHTTPHeaderField: "X-Corptie-Detail-Capabilities")
+        }
         let (data, _) = try await transport.data(for: request)
         let value = try ClientDetailV2JSON.decode(data)
         try ClientDetailV2JSON.validateEnvelope(value, commit: false)
         let state = try JSONDecoder().decode(ClientDetailV2State.self, from: data)
-        try state.validate(); return state
+        try state.validate(catalogProfile: negotiation.catalog, clientCapabilities: negotiation.clientCapabilities); return state
     }
 
-    public func subscribe(sessionID: String, resume: ClientDetailV2State? = nil) -> AsyncThrowingStream<ClientDetailV2State, Error> {
-        AsyncThrowingStream(bufferingPolicy: .bufferingOldest(16)) { continuation in
+    public func subscribe(sessionID: String, resume: ClientDetailV2State? = nil,
+                          resumeNegotiation: ClientDetailV2Negotiation? = nil) -> AsyncThrowingStream<ClientDetailV2State, Error> {
+        // Existing callers' raw cursors belong to legacy. Rich cursors must
+        // carry the exact originating catalog and capability set.
+        let resume = (resumeNegotiation ?? .legacy) == negotiation ? resume : nil
+        return AsyncThrowingStream(bufferingPolicy: .bufferingOldest(16)) { continuation in
             let task = Task {
                 do {
-                    if let resume { try resume.validate() }
+                    if let resume { try resume.validate(catalogProfile: negotiation.catalog, clientCapabilities: negotiation.clientCapabilities) }
                     let prefix = route == .desktop ? [] : ["client", "v1"]
                     var request = try transport.endpoint.request(path: prefix + ["sessions", sessionID, "detail", "sync"])
                     request.httpMethod = "POST"
@@ -30,8 +40,10 @@ public struct ClientDetailV2API: Sendable {
                     request.setValue("text/event-stream; corptie-detail=native-v2", forHTTPHeaderField: "Accept")
                     let cursor: ClientInspectorValue = resume.map { .object(["documentId": .string($0.documentId), "generation": .string($0.generation),
                         "revision": .number(Double($0.revision)), "stateHash": .string($0.stateHash)]) } ?? .null
-                    request.httpBody = try JSONEncoder().encode(ClientInspectorValue.object(["protocolVersion": .number(2), "catalog": .string("native-v2"),
-                        "resume": cursor, "cachedTemplateHashes": .array((resume?.templates.keys.sorted() ?? []).map { .string($0) })]))
+                    var fields: [String: ClientInspectorValue] = ["protocolVersion": .number(2), "catalog": .string(negotiation.catalog),
+                        "resume": cursor, "cachedTemplateHashes": .array((resume?.templates.keys.sorted() ?? []).map { .string($0) })]
+                    if !negotiation.isLegacy { fields["clientCapabilities"] = .array(negotiation.clientCapabilities.map { .string($0) }) }
+                    request.httpBody = try JSONEncoder().encode(ClientInspectorValue.object(fields))
                     request.timeoutInterval = 35
                     let (bytes, response) = try await transport.bytes(for: request)
                     guard response.value(forHTTPHeaderField: "Content-Type")?.contains("text/event-stream") == true else { throw ClientConnectionError.invalidResponse }
@@ -52,14 +64,14 @@ public struct ClientDetailV2API: Sendable {
                                 let referenced = Set(value["manifest"]["cards"].fields.values.compactMap { $0["templateHash"].text })
                                 fields["templates"] = .object(templates.filter { referenced.contains($0.key) })
                                 next = try JSONDecoder().decode(ClientDetailV2State.self, from: JSONEncoder().encode(ClientInspectorValue.object(fields)))
-                                try next.validate()
+                                try next.validate(catalogProfile: negotiation.catalog, clientCapabilities: negotiation.clientCapabilities)
                                 if let latest, next.documentId != latest.documentId || next.sessionId != latest.sessionId ||
                                     (next.generation == latest.generation && (next.revision < latest.revision || (next.revision == latest.revision && next.stateHash != latest.stateHash))) { throw ClientDetailV2Canonical.Failure.base }
                             case "detail-commit":
                                 try ClientDetailV2JSON.validateEnvelope(value, commit: true)
                                 guard let current = latest else { throw ClientDetailV2Canonical.Failure.base }
                                 let commit = try JSONDecoder().decode(ClientDetailV2Commit.self, from: JSONEncoder().encode(value))
-                                next = try current.applying(commit)
+                                next = try current.applying(commit, catalogProfile: negotiation.catalog, clientCapabilities: negotiation.clientCapabilities)
                             case "detail-ready":
                                 let keys: Set<String> = ["protocolVersion", "documentId", "sessionId", "generation", "revision", "stateHash"]
                                 try ClientDetailV2JSON.keys(value, allowed: keys, required: keys)
