@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
+source "${ROOT_DIR}/scripts/development-launch-mode.sh"
+export CORPTIE_DEVELOPMENT_LAUNCH_MODE="$(corptie_development_launch_mode foreground "$@")"
 EXTERNAL_RUNTIME_ROOT="${CORPTIE_DEVELOPMENT_RUNTIME_ROOT:-/Volumes/T9/CorptieData/development-launcher}"
 if [[ "${EXTERNAL_RUNTIME_ROOT}" != /Volumes/* ]]; then
   echo "Development runtime root must be an explicitly configured external volume path." >&2

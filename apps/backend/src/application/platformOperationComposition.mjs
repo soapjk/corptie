@@ -51,7 +51,7 @@ export function createPlatformOperationComposition({
         operationId: idempotencyKey
       },
       sourceSessionId,
-      providerId: providerId ?? getDefaultProviderId(),
+      providerId: providerId ?? store.settings?.().newSessionDefaults?.taskCreation?.providerId ?? getDefaultProviderId(),
       idempotencyKey
     }),
     onEntityChanged: (type, payload) => emitEvent(type, payload)

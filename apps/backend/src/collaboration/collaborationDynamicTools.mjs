@@ -96,7 +96,7 @@ export const collaborationDynamicTools = Object.freeze([
     acceptance_criteria: taskFieldsSchema.acceptance_criteria,
     priority: taskFieldsSchema.priority,
     agent_id: agentIdSchema,
-    provider_id: { type: "string", minLength: 1 },
+    provider_id: { type: "string", minLength: 1, description: "Optional explicit Provider override. Omit to use the user's Task creation defaults, including configured model and reasoning. Do not infer this from the calling Session's Provider." },
     artifact_reference: artifactReferenceSchema,
     file_reference: fileReferenceSchema,
     logical_session_id: { type: "string", minLength: 1, description: "Authoritative logical Session from the current Corptie direct-user evidence block; this is not a Provider Session id." },

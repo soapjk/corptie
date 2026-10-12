@@ -62,6 +62,10 @@ final class SessionContextReferenceController {
         await updateContextReference(reference, body: ["enabled": enabled])
     }
 
+    func replaceContextReferenceFile(_ reference: SessionContextReference, path: String) async {
+        await updateContextReference(reference, body: ["locator": path])
+    }
+
     func refreshContextReference(_ reference: SessionContextReference) async {
         guard let session = selectedSession() else { return }
         do {

@@ -9,6 +9,7 @@ import { ClientControlReadAPI } from "./clientControlReadAPI.mjs";
 import { ClientWorktreeManagementAPI } from "./clientWorktreeManagementAPI.mjs";
 import { ClientSessionAPI } from "./clientSessionAPI.mjs";
 import { pairedDeviceActor } from "./clientDeviceAuthority.mjs";
+import { TaskCreationSettingsService } from "./taskCreationSettingsService.mjs";
 
 export function startClientDeviceGateway({
   store, environmentName, developmentPreview, worktreeIntegrationJobService, projectApplicationService, emitEvent,
@@ -38,6 +39,8 @@ export function startClientDeviceGateway({
       emit: emitEvent
     }),
     sessionAPIFactory: () => new ClientSessionAPI({ store,
+      providerSettings: new TaskCreationSettingsService({ store, registry: agentProviderRegistry,
+        sessions: sessionApplicationService, readOnly: developmentPreview }),
       searchPage: query => getTimelineReadPool().readUnifiedSearch({ query: query.toString() }), readWindow: readSessionTimelineWindow,
       cancelQueuedMessage: cancelQueuedUserMessage,
       deleteUserMessage,
@@ -87,15 +90,19 @@ export function startClientDeviceGateway({
             available: required.every(capability => agentProviderRegistry.supports(descriptor.id, capability)),
             supportsModels: agentProviderRegistry.supports(descriptor.id, AGENT_PROVIDER_CAPABILITIES.MODEL_LIST)
           }));
-          const defaultProviderId = agentProviderRegistry.defaultProviderId;
-          if (!selectedProviderId) return { providers, models: [], defaultProviderId };
+          const defaults = store.settings().newSessionDefaults ?? {};
+          const defaultProviderId = defaults.taskCreation?.providerId ?? agentProviderRegistry.defaultProviderId;
+          if (!selectedProviderId) return { providers, models: [], defaultProviderId,
+            configuredDefaultProviderId: defaults.taskCreation?.providerId ?? null };
           const selected = providers.find(provider => provider.id === selectedProviderId);
           if (!selected?.available) {
             throw Object.assign(new Error("Provider does not support Work Sessions"), { code: "PROVIDER_CAPABILITY_UNAVAILABLE", status: 409 });
           }
           const catalog = selected.supportsModels ? await sessionApplicationService.listModels(selected.id) : {};
-          return { providers, defaultProviderId, models: catalog.models ?? [], currentModel: catalog.currentModel ?? null,
-            currentReasoningLevel: catalog.currentReasoningLevel ?? null };
+          const saved = defaults.taskCreation?.providerId === selected.id ? defaults.taskCreation : {};
+          return { providers, defaultProviderId, configuredDefaultProviderId: defaults.taskCreation?.providerId ?? null,
+            models: catalog.models ?? [], currentModel: saved.model ?? catalog.currentModel ?? null,
+            currentReasoningLevel: saved.reasoningLevel ?? catalog.currentReasoningLevel ?? null };
         },
         validate: (id, input) => {
           const reference = requireSessionReference(id);

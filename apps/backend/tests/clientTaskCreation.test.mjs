@@ -33,6 +33,10 @@ test("creation options are Work-scoped, read-only and explicitly projected", asy
     assert.equal(selected.providers[1].reason, "PROVIDER_CAPABILITY_UNAVAILABLE");
     assert.equal(JSON.stringify(selected).includes("PRIVATE"), false);
     assert.equal(f.calls(), 0);
+    f.taskCreation.options = async () => ({ providers: [{ id: "provider:test", name: "Test", available: true }],
+      defaultProviderId: "provider:test", configuredDefaultProviderId: "provider:unavailable" });
+    const unavailableDefault = await api.taskCreationOptions(identity, "session:test", new URLSearchParams());
+    assert.equal(unavailableDefault.defaultProviderId, "provider:unavailable");
     await assert.rejects(api.taskCreationOptions(identity, "session:test", new URLSearchParams("providerId=provider:unsupported")),
       { code: "PROVIDER_CAPABILITY_UNAVAILABLE" });
     for (const query of ["workId=other", "providerId=a&providerId=b", "providerId="]) {

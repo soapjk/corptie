@@ -53,4 +53,4 @@ fi
 
 echo "Starting Corptie macOS development app..."
 cd "${ROOT_DIR}"
-exec scripts/run-macos-development.sh
+exec scripts/run-macos-development.sh "$@"

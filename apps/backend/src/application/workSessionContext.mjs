@@ -159,6 +159,10 @@ export function mergeWorkerSessionContexts({
     referenceContext?.prompt,
     Math.min(4_096, maxContextBytes - requiredBytes - 2)
   );
+  if (referenceContext?.atomic && referencePrompt !== referenceContext.prompt) {
+    throw contextError("CONTEXT_REFERENCE_BUDGET_EXCEEDED",
+      "Complete local file references do not fit the Provider-safe Turn budget. Disable some references; no partial path was sent.");
+  }
   const compose = (basePrompt) => [basePrompt, ...requiredTail, referencePrompt]
     .filter(Boolean).join("\n\n");
   const source = baseContext.optionalArtifactSource;

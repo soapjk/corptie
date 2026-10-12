@@ -123,7 +123,8 @@ export class SessionCollaborationService {
       startWorkSession: (command) => this.workSessionStartApplicationService.start(command),
       taskInput: {},
       sourceSessionId: scope.logicalSessionId,
-      providerId: optional(input.providerId) ?? this.defaultProviderId,
+      providerId: optional(input.providerId)
+        ?? this.store.settings?.().newSessionDefaults?.taskCreation?.providerId ?? this.defaultProviderId,
       idempotencyKey: required(input.idempotencyKey, "idempotency_key"),
       persistTask: async () => persisted
     });

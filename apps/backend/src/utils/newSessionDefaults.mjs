@@ -9,8 +9,25 @@ export function normalizeNewSessionDefaults(input = {}) {
     approvalPolicy: normalizeCodexApprovalPolicy(input.approvalPolicy),
     codexModel: nonEmptyText(input.codexModel),
     codexReasoningLevel: nonEmptyText(input.codexReasoningLevel)?.toLowerCase() ?? null,
-    claudeModel: nonEmptyText(input.claudeModel)
+    claudeModel: nonEmptyText(input.claudeModel),
+    ...(input.taskCreation ? { taskCreation: normalizeTaskCreationDefaults(input.taskCreation) } : {})
   };
+}
+
+export function normalizeTaskCreationDefaults(input = {}) {
+  input ??= {};
+  return { providerId: nonEmptyText(input.providerId), model: nonEmptyText(input.model),
+    reasoningLevel: nonEmptyText(input.reasoningLevel)?.toLowerCase() ?? null };
+}
+
+// Never carry one Provider's model into another Provider's explicit override.
+export function resolveTaskCreationDefaults(request = {}, defaults = {}, fallbackProviderId = null) {
+  const saved = normalizeTaskCreationDefaults(defaults.taskCreation);
+  const providerId = nonEmptyText(request.providerId) ?? saved.providerId ?? fallbackProviderId;
+  const sameProvider = providerId === saved.providerId;
+  const sameModel = !nonEmptyText(request.model) || request.model.trim() === saved.model;
+  return { providerId, model: nonEmptyText(request.model) ?? (sameProvider ? saved.model : null),
+    reasoningLevel: nonEmptyText(request.reasoningLevel) ?? (sameProvider && sameModel ? saved.reasoningLevel : null) };
 }
 
 export function resolveNewCodexRuntimeConfig({

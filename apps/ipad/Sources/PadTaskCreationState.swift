@@ -105,6 +105,11 @@ final class PadTaskCreationState {
             options = next
             if !next.agents.contains(where: { $0.id == draft.agentID }) { draft.agentID = next.agents.first?.id ?? "" }
             if provider.isEmpty { draft.providerID = next.defaultProviderId ?? next.providers.first(where: \.available)?.id ?? "" }
+            if !provider.isEmpty, draft.model.isEmpty, let model = next.currentModel,
+               next.models.contains(where: { $0.id == model }) {
+                draft.model = model
+                draft.reasoning = next.currentReasoningLevel ?? ""
+            }
             if !next.priorities.contains(draft.priority) { draft.priority = next.priorities.first ?? "" }
         } catch {
             guard generation == optionsGeneration, matches(connection), !Task.isCancelled else { return }

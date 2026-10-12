@@ -187,6 +187,7 @@ test("real TLS route boundary and authenticated local approval", async () => {
   const reliableCalls = [];
   const worktreeCalls = [];
   const usageReads = [];
+  const providerWrites = [];
   const avatarPath = join(f.dir, "avatar.png");
   await writeFile(avatarPath, Buffer.from("89504e470d0a1a0a", "hex"));
   const gateway = new ClientDeviceGateway(f.authority, { readAPI: {
@@ -213,6 +214,14 @@ test("real TLS route boundary and authenticated local approval", async () => {
     developmentServiceAction: async (repositoryId, action, input) => ({ repositoryId, action, input }),
     jobAction: async (jobId, action, input) => ({ job: { id: jobId, action, input } })
   }, sessionAPI: {
+    providerSettings: {
+      read: async providerId => ({ schemaVersion: 1, selectedProviderId: providerId ?? "provider:default" }),
+      save: async (input, revalidate) => {
+        assert.ok(revalidate().deviceId);
+        providerWrites.push(input);
+        return { schemaVersion: 1, value: input };
+      }
+    },
     cancelQueuedMessage(identity, sessionId, input) {
       assert.ok(identity.deviceId);
       assert.equal(sessionId, "session:test");
@@ -352,6 +361,17 @@ test("real TLS route boundary and authenticated local approval", async () => {
     assert.equal((await call("/client/v1/pairing/exchange", { method: "POST", value: claim })).status, 403);
     await call("/internal/client-devices/approve", { local: true, token, method: "POST", value: { pairingId: invitation.pairingId, approved: true } });
     const creds = (await call("/client/v1/pairing/exchange", { method: "POST", value: claim })).body;
+    const providerRoute = "/client/v1/provider-settings/task-creation";
+    assert.equal((await call(providerRoute)).status, 401);
+    assert.equal((await call(providerRoute, { method: "PUT", value: {} })).status, 401);
+    const providerRead = await call(`${providerRoute}?providerId=provider%3Ab`, { token: creds.accessToken });
+    assert.equal(providerRead.status, 200);
+    assert.equal(providerRead.body.selectedProviderId, "provider:b");
+    assert.equal((await call(`${providerRoute}?unsafe=1`, { token: creds.accessToken })).status, 400);
+    assert.equal((await call(`${providerRoute}?providerId=a&providerId=b`, { token: creds.accessToken })).status, 400);
+    assert.equal((await call(providerRoute, { token: creds.accessToken, method: "PUT",
+      value: { providerId: "provider:b", model: "model:new", reasoningLevel: "high" } })).status, 200);
+    assert.deepEqual(providerWrites, [{ providerId: "provider:b", model: "model:new", reasoningLevel: "high" }]);
     const deleteOptions = { local: true, token, method: "POST", value: { deviceId: creds.deviceId } };
     assert.equal((await call("/internal/client-devices/delete", { ...deleteOptions, token: undefined })).status, 403);
     assert.equal((await call("/internal/client-devices/delete", { ...deleteOptions, headers: { origin: "https://evil.test" } })).status, 403);

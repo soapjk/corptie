@@ -66,6 +66,30 @@ final class SessionContextReferenceControllerTests: XCTestCase {
         XCTAssertEqual(state.selectedContextReferences, [item])
     }
 
+    func testReplaceFilePreservesReferenceIdentityAndReloadsPanel() async {
+        let api = ContextReferenceAPIStub()
+        let state = SessionSupplementaryDataController()
+        let target = session()
+        let item = reference()
+        let controller = SessionContextReferenceController(
+            api: api, state: state, selectedSession: { target }, reportError: { _ in }
+        )
+        await controller.replaceContextReferenceFile(item, path: "/tmp/中文报告.docx")
+        XCTAssertEqual(api.updatedReferenceID, item.referenceId)
+        XCTAssertEqual(api.updatedBody?["locator"] as? String, "/tmp/中文报告.docx")
+        XCTAssertEqual(api.listCount, 1)
+    }
+
+    func testMetadataDecodingIgnoresUnrelatedFieldsAndSupportsLegacyReferences() throws {
+        let data = try JSONEncoder().encode(reference())
+        XCTAssertNil(try JSONDecoder().decode(SessionContextReference.self, from: data).metadata)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        json["metadata"] = ["lastError": "Permission denied", "bytes": 380662, "contentRead": false] as [String: Any]
+        let decoded = try JSONDecoder().decode(SessionContextReference.self,
+            from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertEqual(decoded.metadata?.lastError, "Permission denied")
+    }
+
     private func session() -> TaskSession {
         var session = ChatPerformanceFixture.make(configuration: .init(
             turnCount: 1, rawItemCount: 3, longMessageCharacters: 32

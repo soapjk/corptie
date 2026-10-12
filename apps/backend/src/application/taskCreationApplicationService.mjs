@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { resolveTaskCreationDefaults } from "../utils/newSessionDefaults.mjs";
 
 export async function createTaskAndSession({
   workService,
@@ -16,7 +17,9 @@ export async function createTaskAndSession({
     throw coded("CAPABILITY_UNAVAILABLE", "Task creation and Session startup are unavailable.", 503);
   }
   const source = required(sourceSessionId, "sourceSessionId");
-  const provider = required(providerId, "providerId");
+  const runtime = resolveTaskCreationDefaults({ providerId, model, reasoningLevel },
+    workService.store.settings?.().newSessionDefaults ?? {});
+  const provider = required(runtime.providerId, "providerId");
   const operationKey = required(idempotencyKey, "idempotencyKey");
   const normalizedTaskInput = {
     ...taskInput,
@@ -68,8 +71,8 @@ export async function createTaskAndSession({
     assigneeAgentId: agentId,
     expectedTaskVersion: Number(task.resource_version ?? task.resourceVersion ?? 1),
     providerId: provider,
-    ...(model != null ? { model } : {}),
-    ...(reasoningLevel != null ? { reasoningLevel } : {}),
+    ...(runtime.model != null ? { model: runtime.model } : {}),
+    ...(runtime.reasoningLevel != null ? { reasoningLevel: runtime.reasoningLevel } : {}),
     title: task.title,
     idempotencyKey: `task-create:${operationKey}`,
     sourceSessionId: source,

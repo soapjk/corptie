@@ -33,6 +33,49 @@ async function fixture() {
   return { directory, store, service, localPath, agent };
 }
 
+test("binary references recover without reading content, preserve escaped paths and can be replaced", async () => {
+  const value = await fixture();
+  try {
+    const path = join(value.directory, '中文 "报告"\n.docx');
+    await writeFile(path, Buffer.from([80, 75, 0, 255]));
+    const created = await value.service.create("assistant-session", { targetType: "localFile", locator: path });
+    value.store.updateSessionContextReference(created.referenceId, {
+      status: "unavailable", contentHash: "legacy-hash", snapshotText: "legacy body",
+      metadata: { lastError: "Binary files are not supported as context yet." }
+    });
+    const refreshed = await value.service.refresh("assistant-session", created.referenceId);
+    assert.equal(refreshed.status, "available");
+    assert.equal(refreshed.metadata.contentRead, false);
+    assert.equal(refreshed.metadata.lastError, undefined);
+    assert.equal(refreshed.contentHash, null);
+    const resolved = await value.service.resolve("assistant-session");
+    assert.equal(resolved.atomic, true);
+    assert.ok(resolved.prompt.includes(JSON.stringify(path)));
+    assert.match(resolved.prompt, /grants no additional permissions/);
+    assert.doesNotMatch(resolved.prompt, /legacy body/);
+    const replaced = await value.service.update("assistant-session", created.referenceId, { locator: value.localPath });
+    assert.equal(replaced.referenceId, created.referenceId);
+    assert.equal(replaced.locator, value.localPath);
+    assert.equal(replaced.targetKey, value.localPath);
+    await assert.rejects(value.service.update("assistant-session", created.referenceId, { locator: "relative.docx" }),
+      { code: "INVALID_FILE_REFERENCE" });
+    await rm(value.localPath);
+    const missing = await value.service.resolve("assistant-session");
+    assert.equal(missing.documents[0].status, "missing");
+    assert.ok(missing.prompt.includes(JSON.stringify(value.localPath)));
+    assert.equal(value.service.list("assistant-session")[0].status, "missing");
+    value.service.stat = async () => { throw Object.assign(new Error("Permission denied"), { code: "EACCES" }); };
+    assert.equal((await value.service.refresh("assistant-session", created.referenceId)).status, "unavailable");
+    assert.match((await value.service.resolve("assistant-session")).prompt, /Permission denied/);
+    await value.service.update("assistant-session", created.referenceId, { enabled: false });
+    value.service.stat = () => { throw new Error("Disabled files must not be checked"); };
+    assert.equal((await value.service.resolve("assistant-session")).prompt, "");
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
 test("Assistant Sessions persist and resolve Provider-neutral context references", async () => {
   const value = await fixture();
   try {
@@ -50,7 +93,8 @@ test("Assistant Sessions persist and resolve Provider-neutral context references
       "agent", "localFile", "session", "task", "webURL", "work"
     ]);
     const resolved = await value.service.resolve("assistant-session", { characterBudget: 20_000 });
-    assert.match(resolved.prompt, /Local reference/);
+    assert.ok(resolved.prompt.includes(JSON.stringify(value.localPath)));
+    assert.doesNotMatch(resolved.prompt, /Use the shared Provider contract/);
     assert.match(resolved.prompt, /Web reference body/);
     assert.match(resolved.prompt, /Work: Ship context/);
     assert.match(resolved.prompt, /Build references/);
@@ -75,7 +119,7 @@ test("Task Worker Sessions can manage and resolve references; self references an
     const created = await value.service.create("worker", { targetType: "work", targetId: "work-a" });
     assert.equal(value.service.list("worker").length, 1);
     assert.match((await value.service.resolve("worker")).prompt, /Work: Ship context/);
-    value.service.update("worker", created.referenceId, { enabled: false });
+    await value.service.update("worker", created.referenceId, { enabled: false });
     assert.equal((await value.service.resolve("worker")).prompt, "");
     value.service.delete("worker", created.referenceId);
     assert.deepEqual(value.service.list("worker"), []);
@@ -99,11 +143,13 @@ test("context resolution obeys a total budget and disabled references are omitte
   try {
     const first = await value.service.create("assistant-session", { targetType: "localFile", locator: value.localPath });
     const second = await value.service.create("assistant-session", { targetType: "work", targetId: "work-a" });
-    value.service.update("assistant-session", second.referenceId, { enabled: false });
-    const resolved = await value.service.resolve("assistant-session", { characterBudget: 180 });
+    await value.service.update("assistant-session", second.referenceId, { enabled: false });
+    const resolved = await value.service.resolve("assistant-session", { characterBudget: 2048 });
     assert.equal(resolved.documents.some((document) => document.referenceId === second.referenceId), false);
     assert.equal(resolved.documents.some((document) => document.referenceId === first.referenceId), true);
-    assert.equal(resolved.characters <= 180, true);
+    assert.equal(resolved.characters <= 2048, true);
+    await assert.rejects(value.service.resolve("assistant-session", { characterBudget: 180 }),
+      { code: "CONTEXT_REFERENCE_BUDGET_EXCEEDED" });
   } finally {
     await value.store.close();
     await rm(value.directory, { recursive: true, force: true });

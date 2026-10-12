@@ -33,6 +33,9 @@ enum SessionContextReferenceType: String, Codable, CaseIterable, Sendable {
 }
 
 struct SessionContextReference: Identifiable, Codable, Equatable, Sendable {
+    struct Metadata: Codable, Equatable, Sendable {
+        let lastError: String?
+    }
     let referenceId: String
     let ownerSessionId: String
     let targetType: SessionContextReferenceType
@@ -49,6 +52,7 @@ struct SessionContextReference: Identifiable, Codable, Equatable, Sendable {
     let contentHash: String?
     let createdAt: String
     let updatedAt: String
+    var metadata: Metadata? = nil
 
     var id: String { referenceId }
 }
@@ -1749,6 +1753,7 @@ struct NewSessionDefaults: Codable, Equatable {
     var codexModel: String?
     var codexReasoningLevel: String?
     var claudeModel: String?
+    var taskCreation: TaskCreationDefaults? = nil
 }
 
 struct CodexBackendSettings: Codable, Equatable {

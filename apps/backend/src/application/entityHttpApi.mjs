@@ -782,7 +782,8 @@ export function handleEntityHttpRequest({
         if (sourceSessionId !== authenticatedSourceSessionId) {
           throw apiError("SOURCE_SESSION_ACTOR_MISMATCH", "Task creation source does not match the authenticated Session.", 403);
         }
-        const providerId = input.providerId ?? defaultSessionProviderId;
+        const providerId = input.providerId
+          ?? workService.store.settings?.().newSessionDefaults?.taskCreation?.providerId ?? defaultSessionProviderId;
         const idempotencyKey = input.idempotencyKey ?? input.id;
         const { providerId: _providerId, sourceSessionId: _sourceSessionId,
           model, reasoningLevel,

@@ -11,7 +11,7 @@ struct SettingsWindowLayoutTests {
         let horizontalPadding: CGFloat = 40
         let interTabSpacing: CGFloat = 8
 
-        #expect(SettingsTab.allCases.count == 7)
+        #expect(SettingsTab.allCases.count == 8)
         #expect(
             SettingsWindowLayout.contentSize.width
                 >= CGFloat(SettingsTab.allCases.count) * minimumUsableTabWidth
@@ -31,6 +31,7 @@ struct SettingsWindowLayoutTests {
     func everyExistingSettingsRouteRemainsDeclared() throws {
         #expect(Set(SettingsTab.allCases) == [
             .general,
+            .provider,
             .appearance,
             .notifications,
             .proxy,
@@ -46,7 +47,7 @@ struct SettingsWindowLayoutTests {
             .appendingPathComponent("Sources/CopetsMac/Settings/SettingsView.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
 
-        for route in ["general", "appearance", "notifications", "proxy", "gateway", "devices", "archivedSessions"] {
+        for route in ["general", "provider", "appearance", "notifications", "proxy", "gateway", "devices", "archivedSessions"] {
             #expect(contents.contains("case .\(route):"))
         }
         #expect(contents.contains("LocalWallpaperSettingsView()"))
@@ -57,5 +58,19 @@ struct SettingsWindowLayoutTests {
         #expect(contents.contains("Button(L10n(\"Close\"))"))
         #expect(contents.contains("Button(L10n(\"Save\"))"))
         #expect(contents.contains("await saveAllSettings()"))
+        let general = contents.components(separatedBy: "private var generalSettingsTab")[1]
+            .components(separatedBy: "private var providerSettingsTab")[0]
+        #expect(!general.contains("ProviderEnvironmentSettingsView()"))
+        #expect(!general.contains("FoundationModelSettingsView("))
+        #expect(!general.contains("终端选项解析"))
+        #expect(contents.contains("TaskCreationDefaultsSettingsView("))
+        let mobileSource = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("ipad/Sources/PadAppShell.swift")
+        let mobile = try String(contentsOf: mobileSource, encoding: .utf8)
+        #expect(mobile.contains("case .provider:"))
+        #expect(mobile.contains("TaskCreationDefaultsSettingsView("))
+        #expect(mobile.contains("api.saveTaskCreationSettings(value)"))
     }
 }

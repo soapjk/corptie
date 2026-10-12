@@ -28,7 +28,7 @@ export function handleSessionContextReferenceHttpRequest({ request, response, ur
       const sessionId = decodeURIComponent(memberMatch[1]);
       const referenceId = decodeURIComponent(memberMatch[2]);
       if (request.method === "PATCH") {
-        return sendJson(response, 200, { reference: service.update(sessionId, referenceId, await readJson(request)) });
+        return sendJson(response, 200, { reference: await service.update(sessionId, referenceId, await readJson(request)) });
       }
       if (request.method === "DELETE") {
         service.delete(sessionId, referenceId);

@@ -791,6 +791,10 @@ final class BackendClient: ObservableObject {
         await contextReferenceController.refreshContextReference(reference)
     }
 
+    func replaceContextReferenceFile(_ reference: SessionContextReference, path: String) async {
+        await contextReferenceController.replaceContextReferenceFile(reference, path: path)
+    }
+
     func deleteContextReference(_ reference: SessionContextReference) async {
         await contextReferenceController.deleteContextReference(reference)
     }

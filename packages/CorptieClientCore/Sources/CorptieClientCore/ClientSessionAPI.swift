@@ -714,6 +714,22 @@ public struct ClientSessionAPI: Sendable {
         let query = providerId.map { [URLQueryItem(name: "providerId", value: $0)] } ?? []
         return try await read(transport.endpoint.request(path: ["client", "v1", "sessions", sourceSessionId, "tasks"], query: query))
     }
+    public func taskCreationSettings(providerId: String? = nil) async throws -> TaskCreationSettings {
+        let query = providerId.map { [URLQueryItem(name: "providerId", value: $0)] } ?? []
+        let value: TaskCreationSettings = try await read(transport.endpoint.request(
+            path: ["client", "v1", "provider-settings", "task-creation"], query: query))
+        guard value.schemaVersion == 1 else { throw ClientConnectionError.invalidResponse }
+        return value
+    }
+    public func saveTaskCreationSettings(_ body: TaskCreationDefaults) async throws -> TaskCreationSettings {
+        var request = try transport.endpoint.request(path: ["client", "v1", "provider-settings", "task-creation"])
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(body)
+        let value: TaskCreationSettings = try await read(request)
+        guard value.schemaVersion == 1 else { throw ClientConnectionError.invalidResponse }
+        return value
+    }
     // MARK: Work / Task management (macOS outline context menus)
     public func taskManagement(taskId: String) async throws -> ClientTaskManagement {
         try await read(transport.endpoint.request(path: ["client", "v1", "tasks", taskId, "management"]))

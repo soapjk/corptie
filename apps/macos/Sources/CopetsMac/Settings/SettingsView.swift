@@ -7,13 +7,14 @@ import SwiftUI
 import UserNotifications
 
 enum SettingsWindowLayout {
-    // Keep enough room for six equal tab targets, including the longest
+    // Keep enough room for eight equal tab targets, including the longest
     // supported localized labels, without truncation or an overflow control.
     static let contentSize = NSSize(width: 880, height: 680)
 }
 
 enum SettingsTab: Hashable, CaseIterable {
     case general
+    case provider
     case appearance
     case notifications
     case devices
@@ -24,6 +25,7 @@ enum SettingsTab: Hashable, CaseIterable {
     var titleKey: String {
         switch self {
         case .general: "General"
+        case .provider: "Provider"
         case .appearance: "外观"
         case .notifications: "Notifications"
         case .devices: "设备接入"
@@ -36,6 +38,7 @@ enum SettingsTab: Hashable, CaseIterable {
     var systemImage: String {
         switch self {
         case .general: "gearshape"
+        case .provider: "cpu"
         case .appearance: "paintpalette"
         case .notifications: "bell"
         case .devices: "ipad.and.iphone"
@@ -128,7 +131,6 @@ struct SettingsView: View {
             await feishuStore.loadFeishuBots()
             await feishuStore.loadFeishuProfiles()
             selectDefaultFeishuProfileIfNeeded()
-            await backendClient.loadModels(for: "codex-pty")
             dataRoot = backendClient.settings?.dataRoot
                 ?? (dataRoot.isEmpty ? defaultDataRoot : dataRoot)
             choiceParser = backendClient.settings?.choiceParser ?? .defaults
@@ -346,6 +348,8 @@ struct SettingsView: View {
         switch selectedTab {
         case .general:
             generalSettingsTab
+        case .provider:
+            providerSettingsTab
         case .appearance:
             LocalWallpaperSettingsView()
         case .notifications:
@@ -365,7 +369,6 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 12) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-            ProviderEnvironmentSettingsView()
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(L10n("Storage"))
@@ -467,20 +470,6 @@ struct SettingsView: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text(L10n("Codex Backend"))
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(CorptiePalette.secondaryText)
-                Picker(L10n(""), selection: $codexBackend.mode) {
-                    Text(L10n("App Server")).tag("app-server")
-                    Text(L10n("PTY Legacy")).tag("pty")
-                }
-                .pickerStyle(.segmented)
-                .help(L10n("Choose how new Codex sessions are created. App Server uses Codex JSON-RPC; PTY Legacy drives the terminal UI."))
-                Text(codexBackend.mode == "app-server" ? L10n("New Codex sessions use the official Codex app-server protocol.") : L10n("New Codex sessions use the legacy terminal adapter."))
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(CorptiePalette.secondaryText)
-            }
 
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -503,6 +492,41 @@ struct SettingsView: View {
                 }
                 .labelsHidden()
                 .frame(width: 180)
+            }
+
+
+            if let error = backendClient.lastError {
+                Text(error)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+            }
+                }
+                .padding(.trailing, 8)
+            }
+
+        }
+    }
+
+    private var providerSettingsTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+            ProviderEnvironmentSettingsView()
+                TaskCreationDefaultsSettingsView(load: { try await ProviderSettingsAPI.readTaskDefaults(providerId: $0) },
+                    save: { try await ProviderSettingsAPI.saveTaskDefaults($0) })
+            VStack(alignment: .leading, spacing: 8) {
+                Text(L10n("Codex Backend"))
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(CorptiePalette.secondaryText)
+                Picker(L10n(""), selection: $codexBackend.mode) {
+                    Text(L10n("App Server")).tag("app-server")
+                    Text(L10n("PTY Legacy")).tag("pty")
+                }
+                .pickerStyle(.segmented)
+                .help(L10n("Choose how new Codex sessions are created. App Server uses Codex JSON-RPC; PTY Legacy drives the terminal UI."))
+                Text(codexBackend.mode == "app-server" ? L10n("New Codex sessions use the official Codex app-server protocol.") : L10n("New Codex sessions use the legacy terminal adapter."))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(CorptiePalette.secondaryText)
             }
 
             FoundationModelSettingsView(modelCatalog: backendClient.modelCatalog)
@@ -600,17 +624,10 @@ struct SettingsView: View {
             }
             }
 
-            if let error = backendClient.lastError {
-                Text(error)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.red)
-                    .lineLimit(2)
             }
-                }
-                .padding(.trailing, 8)
-            }
-
+            .padding(.trailing, 8)
         }
+        .task { await backendClient.loadModels(for: "codex-pty") }
     }
 
     private var archivedSessionsTab: some View {
