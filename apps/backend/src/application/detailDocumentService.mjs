@@ -310,8 +310,9 @@ export class DetailDocumentService {
   attachV2(response, authenticate, id, request, input) {
     validateDetailV2Envelope(input, "Request");
     const profile = detailV2CatalogOptions(input);
-    // Recognizing rich Request syntax does not enable its HTTP subscription.
-    // Keep catalog/capability negotiation out of legacy scoped caches.
+    // The strict wire recognizes the opt-in profile before business projection,
+    // but recognition must not enable a public subscription or silently discard
+    // its capability set into the legacy scoped cache.
     if (input.catalog !== "native-v2") throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
     this.#attachV2Profile(response, authenticate, id, request, input, profile);
   }
