@@ -1,0 +1,1624 @@
+{
+  "catalog": "native-v2-components-1",
+  "clientCapabilities": [
+    "detail.button",
+    "detail.chart",
+    "detail.dateTime",
+    "detail.form",
+    "detail.image",
+    "detail.keyValue",
+    "detail.markdown",
+    "detail.progress",
+    "detail.resourceList",
+    "detail.status"
+  ],
+  "snapshot": {
+    "protocolVersion": 2,
+    "documentId": "detail:logical:business-date-fixture",
+    "sessionId": "logical:business-date-fixture",
+    "generation": "business-date-fixture-v1",
+    "revision": 1,
+    "templates": {
+      "sha256:a6b71e0cc7302a38e95f3cb27d20dce365e2fe77779e0b44e9e6567cabb7f2c8": {
+        "templateVersion": 1,
+        "catalogProfile": "native-v2-components-1",
+        "requiredCapabilities": [
+          "detail.markdown",
+          "detail.status"
+        ],
+        "fieldSchema": {
+          "title": {
+            "type": "string",
+            "required": true,
+            "maxLength": 512
+          },
+          "body": {
+            "type": "string",
+            "required": true,
+            "maxLength": 32768
+          },
+          "state": {
+            "type": "string",
+            "required": true,
+            "maxLength": 1024
+          }
+        },
+        "collectionSchema": {},
+        "card": {
+          "title": {
+            "fallback": "Detail"
+          },
+          "titleBinding": "title",
+          "semanticKind": "information",
+          "rootNodeId": "root",
+          "fallback": {
+            "fallback": "暂时无法显示"
+          },
+          "nodes": [
+            {
+              "id": "root",
+              "kind": "column",
+              "props": {},
+              "children": [
+                "state",
+                "body"
+              ]
+            },
+            {
+              "id": "state",
+              "kind": "detail.status",
+              "props": {
+                "semantic": "neutral"
+              },
+              "children": [],
+              "binding": "state"
+            },
+            {
+              "id": "body",
+              "kind": "detail.markdown",
+              "props": {},
+              "children": [],
+              "binding": "body"
+            }
+          ]
+        },
+        "templateId": "native:information:5584a6288b0911d0c3b5a91a01de7acd5208ea48fb5d57889a41d96a5ec41315"
+      },
+      "sha256:28a537c269a0abffbe5e3bc98731439af1d74c89ce6196106b608b5a5952ae30": {
+        "templateVersion": 1,
+        "catalogProfile": "native-v2-components-1",
+        "requiredCapabilities": [
+          "detail.markdown",
+          "detail.resourceList",
+          "detail.status"
+        ],
+        "fieldSchema": {
+          "title": {
+            "type": "string",
+            "required": true,
+            "maxLength": 512
+          },
+          "body": {
+            "type": "string",
+            "required": true,
+            "maxLength": 32768
+          },
+          "state": {
+            "type": "string",
+            "required": true,
+            "maxLength": 1024
+          }
+        },
+        "collectionSchema": {
+          "resources": {
+            "maxItems": 20,
+            "itemSchema": {
+              "title": {
+                "type": "string",
+                "required": true,
+                "maxLength": 512
+              },
+              "resourceType": {
+                "type": "string",
+                "required": true,
+                "maxLength": 512
+              },
+              "id": {
+                "type": "string",
+                "required": true,
+                "maxLength": 512
+              }
+            }
+          }
+        },
+        "card": {
+          "title": {
+            "fallback": "Detail"
+          },
+          "titleBinding": "title",
+          "semanticKind": "information",
+          "rootNodeId": "root",
+          "fallback": {
+            "fallback": "暂时无法显示"
+          },
+          "nodes": [
+            {
+              "id": "root",
+              "kind": "column",
+              "props": {},
+              "children": [
+                "state",
+                "resources",
+                "body"
+              ]
+            },
+            {
+              "id": "state",
+              "kind": "detail.status",
+              "props": {
+                "semantic": "neutral"
+              },
+              "children": [],
+              "binding": "state"
+            },
+            {
+              "id": "resources",
+              "kind": "detail.resourceList",
+              "props": {
+                "collection": "resources"
+              },
+              "children": []
+            },
+            {
+              "id": "body",
+              "kind": "detail.markdown",
+              "props": {},
+              "children": [],
+              "binding": "body"
+            }
+          ]
+        },
+        "templateId": "native:information:fa3cbf284009daafef38a47580f61f2bdb77fff7c914a716d7c840fa3f67bd06"
+      },
+      "sha256:234547bd3ca638fdfcb33e433f4c59cb5b05e1b44d633aa8d7040c1cf545c871": {
+        "templateVersion": 1,
+        "catalogProfile": "native-v2-components-1",
+        "requiredCapabilities": [
+          "detail.dateTime",
+          "detail.keyValue",
+          "detail.markdown",
+          "detail.resourceList",
+          "detail.status"
+        ],
+        "fieldSchema": {
+          "title": {
+            "type": "string",
+            "required": true,
+            "maxLength": 512
+          },
+          "body": {
+            "type": "string",
+            "required": true,
+            "maxLength": 32768
+          },
+          "state": {
+            "type": "string",
+            "required": true,
+            "maxLength": 1024
+          },
+          "date0": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "scheduledDate0": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "dateLabel0": {
+            "type": "string",
+            "required": false,
+            "maxLength": 512
+          },
+          "date1": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "scheduledDate1": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "dateLabel1": {
+            "type": "string",
+            "required": false,
+            "maxLength": 512
+          },
+          "date2": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "scheduledDate2": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "dateLabel2": {
+            "type": "string",
+            "required": false,
+            "maxLength": 512
+          },
+          "date3": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "scheduledDate3": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "dateLabel3": {
+            "type": "string",
+            "required": false,
+            "maxLength": 512
+          },
+          "date4": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "scheduledDate4": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "dateLabel4": {
+            "type": "string",
+            "required": false,
+            "maxLength": 512
+          },
+          "date5": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "scheduledDate5": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "dateLabel5": {
+            "type": "string",
+            "required": false,
+            "maxLength": 512
+          },
+          "date6": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "scheduledDate6": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "dateLabel6": {
+            "type": "string",
+            "required": false,
+            "maxLength": 512
+          },
+          "date7": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "scheduledDate7": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "dateLabel7": {
+            "type": "string",
+            "required": false,
+            "maxLength": 512
+          },
+          "date8": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "scheduledDate8": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "dateLabel8": {
+            "type": "string",
+            "required": false,
+            "maxLength": 512
+          },
+          "date9": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "scheduledDate9": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "dateLabel9": {
+            "type": "string",
+            "required": false,
+            "maxLength": 512
+          },
+          "date10": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "scheduledDate10": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "dateLabel10": {
+            "type": "string",
+            "required": false,
+            "maxLength": 512
+          },
+          "date11": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "scheduledDate11": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "dateLabel11": {
+            "type": "string",
+            "required": false,
+            "maxLength": 512
+          },
+          "date12": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "scheduledDate12": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "dateLabel12": {
+            "type": "string",
+            "required": false,
+            "maxLength": 512
+          },
+          "date13": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "scheduledDate13": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "dateLabel13": {
+            "type": "string",
+            "required": false,
+            "maxLength": 512
+          },
+          "date14": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "scheduledDate14": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "dateLabel14": {
+            "type": "string",
+            "required": false,
+            "maxLength": 512
+          },
+          "date15": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "scheduledDate15": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "dateLabel15": {
+            "type": "string",
+            "required": false,
+            "maxLength": 512
+          },
+          "date16": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "scheduledDate16": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "dateLabel16": {
+            "type": "string",
+            "required": false,
+            "maxLength": 512
+          },
+          "date17": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "scheduledDate17": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "dateLabel17": {
+            "type": "string",
+            "required": false,
+            "maxLength": 512
+          },
+          "date18": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "scheduledDate18": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "dateLabel18": {
+            "type": "string",
+            "required": false,
+            "maxLength": 512
+          },
+          "date19": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "scheduledDate19": {
+            "type": "string",
+            "required": false,
+            "maxLength": 64
+          },
+          "dateLabel19": {
+            "type": "string",
+            "required": false,
+            "maxLength": 512
+          }
+        },
+        "collectionSchema": {
+          "resources": {
+            "maxItems": 20,
+            "itemSchema": {
+              "title": {
+                "type": "string",
+                "required": true,
+                "maxLength": 512
+              },
+              "resourceType": {
+                "type": "string",
+                "required": true,
+                "maxLength": 512
+              },
+              "id": {
+                "type": "string",
+                "required": true,
+                "maxLength": 512
+              }
+            }
+          }
+        },
+        "card": {
+          "title": {
+            "fallback": "Detail"
+          },
+          "titleBinding": "title",
+          "semanticKind": "information",
+          "rootNodeId": "root",
+          "fallback": {
+            "fallback": "暂时无法显示"
+          },
+          "nodes": [
+            {
+              "id": "root",
+              "kind": "column",
+              "props": {},
+              "children": [
+                "state",
+                "resources",
+                "body",
+                "dateLabel0",
+                "date0",
+                "scheduledDate0",
+                "dateLabel1",
+                "date1",
+                "scheduledDate1",
+                "dateLabel2",
+                "date2",
+                "scheduledDate2",
+                "dateLabel3",
+                "date3",
+                "scheduledDate3",
+                "dateLabel4",
+                "date4",
+                "scheduledDate4",
+                "dateLabel5",
+                "date5",
+                "scheduledDate5",
+                "dateLabel6",
+                "date6",
+                "scheduledDate6",
+                "dateLabel7",
+                "date7",
+                "scheduledDate7",
+                "dateLabel8",
+                "date8",
+                "scheduledDate8",
+                "dateLabel9",
+                "date9",
+                "scheduledDate9",
+                "dateLabel10",
+                "date10",
+                "scheduledDate10",
+                "dateLabel11",
+                "date11",
+                "scheduledDate11",
+                "dateLabel12",
+                "date12",
+                "scheduledDate12",
+                "dateLabel13",
+                "date13",
+                "scheduledDate13",
+                "dateLabel14",
+                "date14",
+                "scheduledDate14",
+                "dateLabel15",
+                "date15",
+                "scheduledDate15",
+                "dateLabel16",
+                "date16",
+                "scheduledDate16",
+                "dateLabel17",
+                "date17",
+                "scheduledDate17",
+                "dateLabel18",
+                "date18",
+                "scheduledDate18",
+                "dateLabel19",
+                "date19",
+                "scheduledDate19"
+              ]
+            },
+            {
+              "id": "state",
+              "kind": "detail.status",
+              "props": {
+                "semantic": "neutral"
+              },
+              "children": [],
+              "binding": "state"
+            },
+            {
+              "id": "resources",
+              "kind": "detail.resourceList",
+              "props": {
+                "collection": "resources"
+              },
+              "children": []
+            },
+            {
+              "id": "body",
+              "kind": "detail.markdown",
+              "props": {},
+              "children": [],
+              "binding": "body"
+            },
+            {
+              "id": "dateLabel0",
+              "kind": "detail.keyValue",
+              "props": {},
+              "children": [],
+              "binding": "dateLabel0"
+            },
+            {
+              "id": "date0",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "date0"
+            },
+            {
+              "id": "scheduledDate0",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "scheduledDate0"
+            },
+            {
+              "id": "dateLabel1",
+              "kind": "detail.keyValue",
+              "props": {},
+              "children": [],
+              "binding": "dateLabel1"
+            },
+            {
+              "id": "date1",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "date1"
+            },
+            {
+              "id": "scheduledDate1",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "scheduledDate1"
+            },
+            {
+              "id": "dateLabel2",
+              "kind": "detail.keyValue",
+              "props": {},
+              "children": [],
+              "binding": "dateLabel2"
+            },
+            {
+              "id": "date2",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "date2"
+            },
+            {
+              "id": "scheduledDate2",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "scheduledDate2"
+            },
+            {
+              "id": "dateLabel3",
+              "kind": "detail.keyValue",
+              "props": {},
+              "children": [],
+              "binding": "dateLabel3"
+            },
+            {
+              "id": "date3",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "date3"
+            },
+            {
+              "id": "scheduledDate3",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "scheduledDate3"
+            },
+            {
+              "id": "dateLabel4",
+              "kind": "detail.keyValue",
+              "props": {},
+              "children": [],
+              "binding": "dateLabel4"
+            },
+            {
+              "id": "date4",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "date4"
+            },
+            {
+              "id": "scheduledDate4",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "scheduledDate4"
+            },
+            {
+              "id": "dateLabel5",
+              "kind": "detail.keyValue",
+              "props": {},
+              "children": [],
+              "binding": "dateLabel5"
+            },
+            {
+              "id": "date5",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "date5"
+            },
+            {
+              "id": "scheduledDate5",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "scheduledDate5"
+            },
+            {
+              "id": "dateLabel6",
+              "kind": "detail.keyValue",
+              "props": {},
+              "children": [],
+              "binding": "dateLabel6"
+            },
+            {
+              "id": "date6",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "date6"
+            },
+            {
+              "id": "scheduledDate6",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "scheduledDate6"
+            },
+            {
+              "id": "dateLabel7",
+              "kind": "detail.keyValue",
+              "props": {},
+              "children": [],
+              "binding": "dateLabel7"
+            },
+            {
+              "id": "date7",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "date7"
+            },
+            {
+              "id": "scheduledDate7",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "scheduledDate7"
+            },
+            {
+              "id": "dateLabel8",
+              "kind": "detail.keyValue",
+              "props": {},
+              "children": [],
+              "binding": "dateLabel8"
+            },
+            {
+              "id": "date8",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "date8"
+            },
+            {
+              "id": "scheduledDate8",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "scheduledDate8"
+            },
+            {
+              "id": "dateLabel9",
+              "kind": "detail.keyValue",
+              "props": {},
+              "children": [],
+              "binding": "dateLabel9"
+            },
+            {
+              "id": "date9",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "date9"
+            },
+            {
+              "id": "scheduledDate9",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "scheduledDate9"
+            },
+            {
+              "id": "dateLabel10",
+              "kind": "detail.keyValue",
+              "props": {},
+              "children": [],
+              "binding": "dateLabel10"
+            },
+            {
+              "id": "date10",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "date10"
+            },
+            {
+              "id": "scheduledDate10",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "scheduledDate10"
+            },
+            {
+              "id": "dateLabel11",
+              "kind": "detail.keyValue",
+              "props": {},
+              "children": [],
+              "binding": "dateLabel11"
+            },
+            {
+              "id": "date11",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "date11"
+            },
+            {
+              "id": "scheduledDate11",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "scheduledDate11"
+            },
+            {
+              "id": "dateLabel12",
+              "kind": "detail.keyValue",
+              "props": {},
+              "children": [],
+              "binding": "dateLabel12"
+            },
+            {
+              "id": "date12",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "date12"
+            },
+            {
+              "id": "scheduledDate12",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "scheduledDate12"
+            },
+            {
+              "id": "dateLabel13",
+              "kind": "detail.keyValue",
+              "props": {},
+              "children": [],
+              "binding": "dateLabel13"
+            },
+            {
+              "id": "date13",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "date13"
+            },
+            {
+              "id": "scheduledDate13",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "scheduledDate13"
+            },
+            {
+              "id": "dateLabel14",
+              "kind": "detail.keyValue",
+              "props": {},
+              "children": [],
+              "binding": "dateLabel14"
+            },
+            {
+              "id": "date14",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "date14"
+            },
+            {
+              "id": "scheduledDate14",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "scheduledDate14"
+            },
+            {
+              "id": "dateLabel15",
+              "kind": "detail.keyValue",
+              "props": {},
+              "children": [],
+              "binding": "dateLabel15"
+            },
+            {
+              "id": "date15",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "date15"
+            },
+            {
+              "id": "scheduledDate15",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "scheduledDate15"
+            },
+            {
+              "id": "dateLabel16",
+              "kind": "detail.keyValue",
+              "props": {},
+              "children": [],
+              "binding": "dateLabel16"
+            },
+            {
+              "id": "date16",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "date16"
+            },
+            {
+              "id": "scheduledDate16",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "scheduledDate16"
+            },
+            {
+              "id": "dateLabel17",
+              "kind": "detail.keyValue",
+              "props": {},
+              "children": [],
+              "binding": "dateLabel17"
+            },
+            {
+              "id": "date17",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "date17"
+            },
+            {
+              "id": "scheduledDate17",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "scheduledDate17"
+            },
+            {
+              "id": "dateLabel18",
+              "kind": "detail.keyValue",
+              "props": {},
+              "children": [],
+              "binding": "dateLabel18"
+            },
+            {
+              "id": "date18",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "date18"
+            },
+            {
+              "id": "scheduledDate18",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "scheduledDate18"
+            },
+            {
+              "id": "dateLabel19",
+              "kind": "detail.keyValue",
+              "props": {},
+              "children": [],
+              "binding": "dateLabel19"
+            },
+            {
+              "id": "date19",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "date19"
+            },
+            {
+              "id": "scheduledDate19",
+              "kind": "detail.dateTime",
+              "props": {
+                "format": "dateTime"
+              },
+              "children": [],
+              "binding": "scheduledDate19"
+            }
+          ]
+        },
+        "templateId": "native:information:0c8d1c52978f917b85fda22c12df2a520495521e123958ffdbbaeaa8fb4acd5f"
+      }
+    },
+    "instances": {
+      "task-information": {
+        "fields": {
+          "title": "日期业务",
+          "state": "只读 Task 定义",
+          "body": "描述\n\n只读日期与列表验证\n\n验收标准\n\n\n\n验证标准\n\n"
+        },
+        "collections": {},
+        "actions": {},
+        "hash": "sha256:fe443e15b96e19e2289772c54247faf175e9b54c0fb70c1f33f3beca698ce25c",
+        "revision": 1
+      },
+      "business-focusTasks": {
+        "fields": {
+          "title": "重点 Task",
+          "state": "暂无内容",
+          "body": ""
+        },
+        "collections": {
+          "resources": {
+            "order": [],
+            "items": {},
+            "nextCursor": null,
+            "revision": 1
+          }
+        },
+        "actions": {},
+        "hash": "sha256:340e623a3d3b07f8cf4ba5f2942e7a32c5b3d003fc989fb601a11845e694ec6d",
+        "revision": 1
+      },
+      "business-references": {
+        "fields": {
+          "title": "引用",
+          "state": "",
+          "body": "只读引用\n\nwebURL\n\n已停用"
+        },
+        "collections": {
+          "resources": {
+            "order": [
+              "reference"
+            ],
+            "items": {
+              "reference": {
+                "resourceType": "contextReference",
+                "id": "reference",
+                "title": "只读引用"
+              }
+            },
+            "nextCursor": null,
+            "revision": 1
+          }
+        },
+        "actions": {},
+        "hash": "sha256:9db56cab9b6238622051564f3ce0171784f8d7bbc477d2c56347a347cd560583",
+        "revision": 1
+      },
+      "business-artifacts": {
+        "fields": {
+          "title": "Artifact",
+          "state": "",
+          "body": "固定 Artifact\n\n固定版本：2\n\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\nrequired\n\n待确认版本：3 / bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "collections": {
+          "resources": {
+            "order": [
+              "artifact"
+            ],
+            "items": {
+              "artifact": {
+                "resourceType": "artifact",
+                "id": "artifact",
+                "title": "固定 Artifact"
+              }
+            },
+            "nextCursor": null,
+            "revision": 1
+          }
+        },
+        "actions": {},
+        "hash": "sha256:cc80a46fbe99a945028f70f31f519544701abb16d70252dadd261958ec76f550",
+        "revision": 1
+      },
+      "business-memories": {
+        "fields": {
+          "title": "记忆",
+          "state": "暂无内容",
+          "body": ""
+        },
+        "collections": {
+          "resources": {
+            "order": [],
+            "items": {},
+            "nextCursor": null,
+            "revision": 1
+          }
+        },
+        "actions": {},
+        "hash": "sha256:df95550d54b57340b1404d6ffda2c323e575a6fd6b3228e4a5cf92d09ba97cbf",
+        "revision": 1
+      },
+      "business-recalls": {
+        "fields": {
+          "title": "记忆召回诊断",
+          "state": "",
+          "body": "planning\n\nautomatic\n\neligible\n\ninjected",
+          "date0": "2026-10-11T12:00:00+08:00",
+          "dateLabel0": "planning · 召回时间"
+        },
+        "collections": {
+          "resources": {
+            "order": [
+              "recall"
+            ],
+            "items": {
+              "recall": {
+                "resourceType": "memoryRecall",
+                "id": "recall",
+                "title": "planning"
+              }
+            },
+            "nextCursor": null,
+            "revision": 1
+          }
+        },
+        "actions": {},
+        "hash": "sha256:1ff0079a2486446e57022e6014daf276e7d909d0ceb72bcd0e0b662dde0ff1d3",
+        "revision": 1
+      },
+      "business-schedules": {
+        "fields": {
+          "title": "计划任务",
+          "state": "当前页（更多内容尚未接线）",
+          "body": "计划 0\n\nonce\n\nactive\n\nAmerica/Los_Angeles\n\n---\n\n计划 1\n\nonce\n\nactive\n\nAmerica/Los_Angeles\n\n---\n\n计划 2\n\nonce\n\nactive\n\nAmerica/Los_Angeles\n\n---\n\n计划 3\n\nonce\n\nactive\n\nAmerica/Los_Angeles\n\n---\n\n计划 4\n\nonce\n\nactive\n\nAmerica/Los_Angeles\n\n---\n\n计划 5\n\nonce\n\nactive\n\nAmerica/Los_Angeles\n\n---\n\n计划 6\n\nonce\n\nactive\n\nAmerica/Los_Angeles\n\n---\n\n计划 7\n\nonce\n\nactive\n\nAmerica/Los_Angeles\n\n---\n\n计划 8\n\nonce\n\nactive\n\nAmerica/Los_Angeles\n\n---\n\n计划 9\n\nonce\n\nactive\n\nAmerica/Los_Angeles\n\n---\n\n计划 10\n\nonce\n\nactive\n\nAmerica/Los_Angeles\n\n---\n\n计划 11\n\nonce\n\nactive\n\nAmerica/Los_Angeles\n\n---\n\n计划 12\n\nonce\n\nactive\n\nAmerica/Los_Angeles\n\n---\n\n计划 13\n\nonce\n\nactive\n\nAmerica/Los_Angeles\n\n---\n\n计划 14\n\nonce\n\nactive\n\nAmerica/Los_Angeles\n\n---\n\n计划 15\n\nonce\n\nactive\n\nAmerica/Los_Angeles\n\n---\n\n计划 16\n\nonce\n\nactive\n\nAmerica/Los_Angeles\n\n---\n\n计划 17\n\nonce\n\nactive\n\nAmerica/Los_Angeles\n\n---\n\n计划 18\n\nonce\n\nactive\n\nAmerica/Los_Angeles\n\n---\n\n计划 19\n\nonce\n\nactive\n\nAmerica/Los_Angeles",
+          "date1": "2026-03-08T01:59:59-08:00",
+          "scheduledDate1": "2026-10-10T04:00:00Z",
+          "dateLabel1": "计划 1 · 下一次执行 / 计划执行",
+          "date2": "2026-03-08T03:00:00-07:00",
+          "scheduledDate2": "2026-10-10T04:00:00Z",
+          "dateLabel2": "计划 2 · 下一次执行 / 计划执行",
+          "date3": "2026-11-01T01:30:00-07:00",
+          "scheduledDate3": "2026-10-10T04:00:00Z",
+          "dateLabel3": "计划 3 · 下一次执行 / 计划执行",
+          "date4": "2026-11-01T01:30:00-08:00",
+          "scheduledDate4": "2026-10-10T04:00:00Z",
+          "dateLabel4": "计划 4 · 下一次执行 / 计划执行",
+          "date5": "2026-10-11T12:00:00+08:00",
+          "scheduledDate5": "2026-10-10T04:00:00Z",
+          "dateLabel5": "计划 5 · 下一次执行 / 计划执行",
+          "date6": "2026-10-11T04:00:00Z",
+          "scheduledDate6": "2026-10-10T04:00:00Z",
+          "dateLabel6": "计划 6 · 下一次执行 / 计划执行",
+          "date7": "2024-02-29T23:59:59.123+05:30",
+          "scheduledDate7": "2026-10-10T04:00:00Z",
+          "dateLabel7": "计划 7 · 下一次执行 / 计划执行",
+          "scheduledDate8": "2026-10-10T04:00:00Z",
+          "dateLabel8": "计划 8 · 下一次执行 / 计划执行",
+          "date9": "2026-03-08T01:59:59-08:00",
+          "scheduledDate9": "2026-10-10T04:00:00Z",
+          "dateLabel9": "计划 9 · 下一次执行 / 计划执行",
+          "date10": "2026-03-08T03:00:00-07:00",
+          "scheduledDate10": "2026-10-10T04:00:00Z",
+          "dateLabel10": "计划 10 · 下一次执行 / 计划执行",
+          "date11": "2026-11-01T01:30:00-07:00",
+          "scheduledDate11": "2026-10-10T04:00:00Z",
+          "dateLabel11": "计划 11 · 下一次执行 / 计划执行",
+          "date12": "2026-11-01T01:30:00-08:00",
+          "scheduledDate12": "2026-10-10T04:00:00Z",
+          "dateLabel12": "计划 12 · 下一次执行 / 计划执行",
+          "date13": "2026-10-11T12:00:00+08:00",
+          "scheduledDate13": "2026-10-10T04:00:00Z",
+          "dateLabel13": "计划 13 · 下一次执行 / 计划执行",
+          "date14": "2026-10-11T04:00:00Z",
+          "scheduledDate14": "2026-10-10T04:00:00Z",
+          "dateLabel14": "计划 14 · 下一次执行 / 计划执行",
+          "date15": "2024-02-29T23:59:59.123+05:30",
+          "scheduledDate15": "2026-10-10T04:00:00Z",
+          "dateLabel15": "计划 15 · 下一次执行 / 计划执行",
+          "scheduledDate16": "2026-10-10T04:00:00Z",
+          "dateLabel16": "计划 16 · 下一次执行 / 计划执行",
+          "date17": "2026-03-08T01:59:59-08:00",
+          "scheduledDate17": "2026-10-10T04:00:00Z",
+          "dateLabel17": "计划 17 · 下一次执行 / 计划执行",
+          "date18": "2026-03-08T03:00:00-07:00",
+          "scheduledDate18": "2026-10-10T04:00:00Z",
+          "dateLabel18": "计划 18 · 下一次执行 / 计划执行",
+          "date19": "2026-11-01T01:30:00-07:00",
+          "scheduledDate19": "2026-10-10T04:00:00Z",
+          "dateLabel19": "计划 19 · 下一次执行 / 计划执行"
+        },
+        "collections": {
+          "resources": {
+            "order": [
+              "schedule:0",
+              "schedule:1",
+              "schedule:2",
+              "schedule:3",
+              "schedule:4",
+              "schedule:5",
+              "schedule:6",
+              "schedule:7",
+              "schedule:8",
+              "schedule:9",
+              "schedule:10",
+              "schedule:11",
+              "schedule:12",
+              "schedule:13",
+              "schedule:14",
+              "schedule:15",
+              "schedule:16",
+              "schedule:17",
+              "schedule:18",
+              "schedule:19"
+            ],
+            "items": {
+              "schedule:0": {
+                "resourceType": "automation",
+                "id": "schedule:0",
+                "title": "计划 0"
+              },
+              "schedule:1": {
+                "resourceType": "automation",
+                "id": "schedule:1",
+                "title": "计划 1"
+              },
+              "schedule:2": {
+                "resourceType": "automation",
+                "id": "schedule:2",
+                "title": "计划 2"
+              },
+              "schedule:3": {
+                "resourceType": "automation",
+                "id": "schedule:3",
+                "title": "计划 3"
+              },
+              "schedule:4": {
+                "resourceType": "automation",
+                "id": "schedule:4",
+                "title": "计划 4"
+              },
+              "schedule:5": {
+                "resourceType": "automation",
+                "id": "schedule:5",
+                "title": "计划 5"
+              },
+              "schedule:6": {
+                "resourceType": "automation",
+                "id": "schedule:6",
+                "title": "计划 6"
+              },
+              "schedule:7": {
+                "resourceType": "automation",
+                "id": "schedule:7",
+                "title": "计划 7"
+              },
+              "schedule:8": {
+                "resourceType": "automation",
+                "id": "schedule:8",
+                "title": "计划 8"
+              },
+              "schedule:9": {
+                "resourceType": "automation",
+                "id": "schedule:9",
+                "title": "计划 9"
+              },
+              "schedule:10": {
+                "resourceType": "automation",
+                "id": "schedule:10",
+                "title": "计划 10"
+              },
+              "schedule:11": {
+                "resourceType": "automation",
+                "id": "schedule:11",
+                "title": "计划 11"
+              },
+              "schedule:12": {
+                "resourceType": "automation",
+                "id": "schedule:12",
+                "title": "计划 12"
+              },
+              "schedule:13": {
+                "resourceType": "automation",
+                "id": "schedule:13",
+                "title": "计划 13"
+              },
+              "schedule:14": {
+                "resourceType": "automation",
+                "id": "schedule:14",
+                "title": "计划 14"
+              },
+              "schedule:15": {
+                "resourceType": "automation",
+                "id": "schedule:15",
+                "title": "计划 15"
+              },
+              "schedule:16": {
+                "resourceType": "automation",
+                "id": "schedule:16",
+                "title": "计划 16"
+              },
+              "schedule:17": {
+                "resourceType": "automation",
+                "id": "schedule:17",
+                "title": "计划 17"
+              },
+              "schedule:18": {
+                "resourceType": "automation",
+                "id": "schedule:18",
+                "title": "计划 18"
+              },
+              "schedule:19": {
+                "resourceType": "automation",
+                "id": "schedule:19",
+                "title": "计划 19"
+              }
+            },
+            "nextCursor": null,
+            "revision": 1
+          }
+        },
+        "actions": {},
+        "hash": "sha256:636d33b7e649f4ab73e4a6b1236c4499b57d1e0a325083f57db46267d560772f",
+        "revision": 1
+      },
+      "business-provider": {
+        "fields": {
+          "title": "Provider 能力",
+          "state": "",
+          "body": "fixture-model\n\nProvider\n\n可用\n\nsession.create\n\nsession.fork\n\nsession.fork.whileBusy\n\nsession.resume\n\nsession.delete\n\nsession.restart\n\nsession.disconnect\n\nsession.rename\n\nsession.execution.prepare\n\nsession.binding.probe\n\nturn.execution.probe\n\nsession.recovery.stabilize\n\nsession.failedBinding.recover\n\nconversation.send\n\nconversation.command\n\nconversation.send.image\n\nconversation.clear\n\nconversation.interrupt\n\nconversation.approve\n\nconversation.userInput\n\nexecution.plan.events\n\nconfiguration.model.list\n\nconfiguration.validate\n\nconnection.test\n\nconfiguration.model.switch\n\nconfiguration.reasoning.switch\n\nconfiguration.permissions.update\n\nworkspace.transition\n\nworkspace.bind\n\nbackground.prompt\n\nusage.account.read\n\nusage.session.read\n\ntools.attach\n\nagent.skills.lazyLoad\n\nagent.skills.mcpDependencies\n\nturn.changes.manage"
+        },
+        "collections": {
+          "resources": {
+            "order": [
+              "fixture-provider"
+            ],
+            "items": {
+              "fixture-provider": {
+                "resourceType": "provider",
+                "id": "fixture-provider",
+                "title": "Provider"
+              }
+            },
+            "nextCursor": null,
+            "revision": 1
+          }
+        },
+        "actions": {},
+        "hash": "sha256:290ef671b0f8eb55d2eaa51cda6277fa159620fd30f50588d078d904bb646cd2",
+        "revision": 1
+      },
+      "business-turn": {
+        "fields": {
+          "title": "Turn 分析",
+          "state": "只读",
+          "body": "partial\n\nWall\n\ntotalMs: 12\n\nWall partition\n\n\n\nInclusive\n\n"
+        },
+        "collections": {},
+        "actions": {},
+        "hash": "sha256:16888d18825c18a412a2f66a620e66d61fdf754e98f3f5671aa3f80fae959ea3",
+        "revision": 1
+      },
+      "business-worktree": {
+        "fields": {
+          "title": "Workspace / Worktree",
+          "state": "只读",
+          "body": "已关联\n\nfixture\n\n自动跟随未启用"
+        },
+        "collections": {},
+        "actions": {},
+        "hash": "sha256:46b8cd6ae646c8a5471b9f370053ee45a5f2fd629d7f113987b821f7b03143ee",
+        "revision": 1
+      }
+    },
+    "manifest": {
+      "cards": {
+        "task-information": {
+          "templateId": "native:information:5584a6288b0911d0c3b5a91a01de7acd5208ea48fb5d57889a41d96a5ec41315",
+          "templateHash": "sha256:a6b71e0cc7302a38e95f3cb27d20dce365e2fe77779e0b44e9e6567cabb7f2c8"
+        },
+        "business-focusTasks": {
+          "templateId": "native:information:fa3cbf284009daafef38a47580f61f2bdb77fff7c914a716d7c840fa3f67bd06",
+          "templateHash": "sha256:28a537c269a0abffbe5e3bc98731439af1d74c89ce6196106b608b5a5952ae30"
+        },
+        "business-references": {
+          "templateId": "native:information:fa3cbf284009daafef38a47580f61f2bdb77fff7c914a716d7c840fa3f67bd06",
+          "templateHash": "sha256:28a537c269a0abffbe5e3bc98731439af1d74c89ce6196106b608b5a5952ae30"
+        },
+        "business-artifacts": {
+          "templateId": "native:information:fa3cbf284009daafef38a47580f61f2bdb77fff7c914a716d7c840fa3f67bd06",
+          "templateHash": "sha256:28a537c269a0abffbe5e3bc98731439af1d74c89ce6196106b608b5a5952ae30"
+        },
+        "business-memories": {
+          "templateId": "native:information:fa3cbf284009daafef38a47580f61f2bdb77fff7c914a716d7c840fa3f67bd06",
+          "templateHash": "sha256:28a537c269a0abffbe5e3bc98731439af1d74c89ce6196106b608b5a5952ae30"
+        },
+        "business-recalls": {
+          "templateId": "native:information:0c8d1c52978f917b85fda22c12df2a520495521e123958ffdbbaeaa8fb4acd5f",
+          "templateHash": "sha256:234547bd3ca638fdfcb33e433f4c59cb5b05e1b44d633aa8d7040c1cf545c871"
+        },
+        "business-schedules": {
+          "templateId": "native:information:0c8d1c52978f917b85fda22c12df2a520495521e123958ffdbbaeaa8fb4acd5f",
+          "templateHash": "sha256:234547bd3ca638fdfcb33e433f4c59cb5b05e1b44d633aa8d7040c1cf545c871"
+        },
+        "business-provider": {
+          "templateId": "native:information:fa3cbf284009daafef38a47580f61f2bdb77fff7c914a716d7c840fa3f67bd06",
+          "templateHash": "sha256:28a537c269a0abffbe5e3bc98731439af1d74c89ce6196106b608b5a5952ae30"
+        },
+        "business-turn": {
+          "templateId": "native:information:5584a6288b0911d0c3b5a91a01de7acd5208ea48fb5d57889a41d96a5ec41315",
+          "templateHash": "sha256:a6b71e0cc7302a38e95f3cb27d20dce365e2fe77779e0b44e9e6567cabb7f2c8"
+        },
+        "business-worktree": {
+          "templateId": "native:information:5584a6288b0911d0c3b5a91a01de7acd5208ea48fb5d57889a41d96a5ec41315",
+          "templateHash": "sha256:a6b71e0cc7302a38e95f3cb27d20dce365e2fe77779e0b44e9e6567cabb7f2c8"
+        }
+      },
+      "order": [
+        "task-information",
+        "business-focusTasks",
+        "business-references",
+        "business-artifacts",
+        "business-memories",
+        "business-recalls",
+        "business-schedules",
+        "business-provider",
+        "business-turn",
+        "business-worktree"
+      ],
+      "hash": "sha256:30112bb28d48e8d7fd7cfdebf74d3ebda4ae5ddd84dbcef44e062b9219554531",
+      "revision": 1
+    },
+    "stateHash": "sha256:6354c06ed20f949e3130ac33d9c78e4cc3d69e93e1d0f6e260f51804a40530ea"
+  },
+  "commit": {
+    "protocolVersion": 2,
+    "documentId": "detail:logical:business-date-fixture",
+    "sessionId": "logical:business-date-fixture",
+    "generation": "business-date-fixture-v1",
+    "baseRevision": 1,
+    "revision": 2,
+    "baseStateHash": "sha256:6354c06ed20f949e3130ac33d9c78e4cc3d69e93e1d0f6e260f51804a40530ea",
+    "resultStateHash": "sha256:08ab57ee705c0c6afef12080f479b9286d7921efc22677fdeb2dbaeebdbf1e7a",
+    "templates": {},
+    "manifestChange": null,
+    "instanceChanges": [
+      {
+        "cardId": "business-schedules",
+        "baseRevision": 1,
+        "revision": 2,
+        "baseHash": "sha256:636d33b7e649f4ab73e4a6b1236c4499b57d1e0a325083f57db46267d560772f",
+        "resultHash": "sha256:91f2896855c11536908a22156e5b03061c4d8135d21dbe0c67b701de47d815e7",
+        "fields": {
+          "set": {
+            "date0": "2026-10-11T04:00:00Z",
+            "dateLabel0": "计划 0 · 下一次执行 / 计划执行",
+            "date4": "2026-11-01T09:30:00Z"
+          },
+          "remove": [
+            "scheduledDate1"
+          ]
+        },
+        "actions": {
+          "set": {},
+          "remove": []
+        },
+        "collections": {
+          "set": {},
+          "remove": []
+        }
+      }
+    ],
+    "removeInstanceIds": []
+  },
+  "expectedStateHash": "sha256:08ab57ee705c0c6afef12080f479b9286d7921efc22677fdeb2dbaeebdbf1e7a",
+  "expectedDateInstants": {
+    "2026-03-08T01:59:59-08:00": "2026-03-08T09:59:59.000Z",
+    "2026-03-08T03:00:00-07:00": "2026-03-08T10:00:00.000Z",
+    "2026-11-01T01:30:00-07:00": "2026-11-01T08:30:00.000Z",
+    "2026-11-01T01:30:00-08:00": "2026-11-01T09:30:00.000Z",
+    "2026-10-11T12:00:00+08:00": "2026-10-11T04:00:00.000Z",
+    "2026-10-11T04:00:00Z": "2026-10-11T04:00:00.000Z",
+    "2024-02-29T23:59:59.123+05:30": "2024-02-29T18:29:59.123Z"
+  }
+}
