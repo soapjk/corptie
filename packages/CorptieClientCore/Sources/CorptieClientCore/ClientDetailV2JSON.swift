@@ -67,7 +67,11 @@ enum ClientDetailV2JSON {
             try keys(manifest, allowed: ["revision", "hash", "cards", "order"], required: ["revision", "hash", "cards", "order"])
             for ref in manifest["cards"].fields.values { try keys(ref, allowed: ["templateId", "templateHash"], required: ["templateId", "templateHash"]) }
         }
-        for template in value["templates"].fields.values { try keys(template, allowed: ["templateId", "templateVersion", "card"], required: ["templateId", "templateVersion", "card"]) }
+        for template in value["templates"].fields.values {
+            let extra: Set<String> = template["catalogProfile"].text == ClientDetailV2Catalog.profile
+                ? ["catalogProfile", "requiredCapabilities", "fieldSchema", "collectionSchema"] : []
+            try keys(template, allowed: Set(["templateId", "templateVersion", "card"]).union(extra), required: Set(["templateId", "templateVersion", "card"]).union(extra))
+        }
         func instance(_ value: ClientInspectorValue) throws {
             try keys(value, allowed: ["revision", "hash", "fields", "collections", "actions"], required: ["revision", "hash", "fields", "collections", "actions"])
         }
@@ -78,8 +82,9 @@ enum ClientDetailV2JSON {
                     try instance(change["replacement"])
                 } else {
                     let fields: Set<String> = ["cardId", "baseRevision", "revision", "baseHash", "resultHash", "fields", "actions"]
-                    try keys(change, allowed: fields, required: fields)
+                    try keys(change, allowed: fields.union(["collections"]), required: fields)
                     for key in ["fields", "actions"] { try keys(change[key], allowed: ["set", "remove"], required: ["set", "remove"]) }
+                    if let collections = change.fields["collections"] { try keys(collections, allowed: ["set", "remove"], required: ["set", "remove"]) }
                 }
             }
         } else { for item in value["instances"].fields.values { try instance(item) } }

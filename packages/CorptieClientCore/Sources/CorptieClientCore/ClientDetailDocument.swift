@@ -99,6 +99,16 @@ public struct ClientDetailCard: Codable, Equatable, Identifiable, Sendable {
     public let data: [String: ClientInspectorValue]
     public let actions: [ClientDetailAction]
     public let fallback: ClientDetailText
+    public var v2Presentation: ClientDetailV2Presentation? = nil
+    // Local metadata must never extend the frozen v1 wire contract.
+    private enum CodingKeys: String, CodingKey {
+        case id, templateRevision, dataRevision, title, semanticKind, rootNodeId, nodes, data, actions, fallback
+    }
+
+    public var displayTitle: String {
+        if let name = v2Presentation?.titleBinding, let value = data[name]?.text { return value }
+        return title.fallback
+    }
 
     public func value(for node: ClientDetailNode) -> String {
         guard let binding = node.binding else { return node.props.text?.fallback ?? "" }
@@ -271,6 +281,7 @@ public enum ClientDetailEvent: Sendable {
     public private(set) var error: String?
     @ObservationIgnored private var document: ClientDetailDocument?
     @ObservationIgnored private var scopeKey = ""
+    public var renderingScope: String { scopeKey }
     @ObservationIgnored private var token = UUID()
     public init() {}
 
