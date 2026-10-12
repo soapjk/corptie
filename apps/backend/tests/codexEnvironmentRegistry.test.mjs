@@ -5,18 +5,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexEnvironmentRegistry } from "../src/runtime/codexEnvironmentRegistry.mjs";
 
-async function fixture(t) {
+async function fixture(t, { legacyConfig = false, hasExistingSessions = () => false } = {}) {
   const root = await mkdtemp(join(tmpdir(), "corptie-environments-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const options = { path: () => join(root, "environments.json"),
-    isolatedHome: join(root, "isolated"), nativeHome: join(root, "native") };
+    isolatedHome: join(root, "isolated"), nativeHome: join(root, "native"), hasExistingSessions };
   await mkdir(options.isolatedHome); await mkdir(options.nativeHome);
+  if (legacyConfig) await writeFile(join(options.isolatedHome, "config.toml"), 'model = "legacy-model"\n');
   const registry = new CodexEnvironmentRegistry(options);
   await registry.initialize();
   return { registry, root, options };
 }
 
-test("an unsaved selection defaults to native while historical threads remain isolated", async t => {
+test("a new installation defaults to native while unindexed threads remain isolated", async t => {
   const { registry, options } = await fixture(t);
   assert.equal(registry.current.mode, "native");
   assert.equal(registry.current.home, options.nativeHome);
@@ -24,6 +25,32 @@ test("an unsaved selection defaults to native while historical threads remain is
   const restored = new CodexEnvironmentRegistry(options);
   await restored.initialize();
   assert.equal(restored.current.mode, "native");
+});
+
+test("upgrading an existing isolated runtime preserves its Home and configuration", async t => {
+  const { registry, options } = await fixture(t, { legacyConfig: true });
+  assert.equal(registry.current.profileId, registry.legacy.profileId);
+  const config = await readFile(join(options.isolatedHome, "config.toml"), "utf8");
+  assert.equal(config, 'model = "legacy-model"\n');
+  const restored = new CodexEnvironmentRegistry(options);
+  await restored.initialize();
+  assert.equal(restored.current.profileId, restored.forThread("old-thread").profileId);
+  assert.equal(await readFile(join(options.isolatedHome, "config.toml"), "utf8"), config);
+});
+
+test("existing sessions preserve the legacy Home even when its config is missing", async t => {
+  const { registry } = await fixture(t, { hasExistingSessions: () => true });
+  assert.equal(registry.current.mode, "isolated");
+});
+
+test("an explicitly saved native selection survives upgrade evidence", async t => {
+  const { registry, options } = await fixture(t, { legacyConfig: true });
+  await registry.register(registry.selection({ mode: "native" }), { makeDefault: true, threadId: "native-thread" });
+  const restored = new CodexEnvironmentRegistry(options);
+  await restored.initialize();
+  assert.equal(restored.current.mode, "native");
+  assert.equal(restored.forThread("native-thread").mode, "native");
+  assert.equal(restored.forThread("old-thread").mode, "isolated");
 });
 
 test("a saved isolated selection is preserved on restart", async t => {

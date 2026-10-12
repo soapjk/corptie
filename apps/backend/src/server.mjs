@@ -705,7 +705,8 @@ let toolHostService = null;
 const codexAppServerCommand = () => firstRunSetup.command("codex-app-server", resolveCodexCommand);
 const codexEnvironmentRegistry = new CodexEnvironmentRegistry({
   path: () => join(store.dataRoot, "codex-environments.json"),
-  isolatedHome: corptieCodexRuntimePaths.codexHome
+  isolatedHome: corptieCodexRuntimePaths.codexHome,
+  hasExistingSessions: () => store.listSessions().some(session => session.external?.provider === "codex-app-server")
 });
 const codexRuntimeOptions = { environmentName, bundledMemoryPath: bundledAgentMemoryPath,
   bundledSkillPath: bundledCollaborationSkillPath, bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath,

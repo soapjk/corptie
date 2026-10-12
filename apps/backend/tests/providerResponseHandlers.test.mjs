@@ -4,6 +4,7 @@ import { createProviderResponseHandlers } from "../src/application/providerRespo
 
 function fixture() {
   const calls = [];
+  let timestamp = "2026-01-01T00:00:00Z";
   const turn = { execution_status: "running" };
   let applied = true;
   const service = { interrupt: async (...args) => calls.push(["interrupt", ...args]) };
@@ -21,14 +22,28 @@ function fixture() {
     },
     sessionApplicationService: service,
     handleCommittedProviderTerminalLifecycle: (result) => calls.push(["terminal", result]),
-    now: () => "2026-01-01T00:00:00Z"
+    now: () => timestamp
   });
   const entry = {
     providerId: "test-provider", providerSessionId: "native", bindingId: "binding",
     logicalSessionId: "logical", sessionId: "session", routingVersion: 2, turnId: "turn"
   };
-  return { calls, handlers, entry, turn, service, ignore: () => { applied = false; } };
+  return { calls, handlers, entry, turn, service, ignore: () => { applied = false; },
+    setTime: value => { timestamp = value; } };
 }
+
+test("first-output and repeated idle warnings cannot reuse an event ID with different content", () => {
+  const f = fixture();
+  f.handlers.handleProviderResponseDelayed(f.entry);
+  f.handlers.handleProviderResponseDelayed({ ...f.entry, warningKind: "stream_idle" });
+  f.setTime("2026-01-01T00:05:00Z");
+  f.handlers.handleProviderResponseDelayed({ ...f.entry, warningKind: "stream_idle" });
+  const events = f.calls.map(([, event]) => event);
+  assert.equal(new Set(events.map(event => event.providerEventId)).size, 3);
+  assert.notEqual(events[0].payload.error.message, events[1].payload.error.message);
+  assert.notEqual(events[1].occurredAt, events[2].occurredAt);
+  assert.ok(events.every(event => event.turnId === f.entry.turnId && event.payload.willRetry));
+});
 
 test("delay warning is a retryable provider event and does not interrupt execution", () => {
   const f = fixture();

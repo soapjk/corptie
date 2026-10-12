@@ -35,6 +35,32 @@ const turn = {
   turnId: "turn:one"
 };
 
+test("synchronous and asynchronous callback failures are contained without disarming the Turn", async t => {
+  const errors = t.mock.method(console, "error", () => {});
+  for (const asynchronous of [false, true]) {
+    const timers = scheduler();
+    let timedOut = false;
+    const fail = () => { throw new Error("PROVIDER_EVENT_ID_CONFLICT"); };
+    const watchdog = new ProviderTurnResponseWatchdog({
+      warningAfterMs: 20, timeoutAfterMs: 120,
+      schedule: timers.schedule, cancel: timers.cancel,
+      onDelayed: asynchronous ? async () => fail() : fail,
+      onTimeout: () => { timedOut = true; }
+    });
+    watchdog.watch(turn);
+    timers.run(20);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(timedOut, false);
+    assert.equal(timers.countDelay(120), 1);
+    timers.run(120);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(timedOut, true);
+    watchdog.close();
+  }
+  assert.equal(errors.mock.callCount(), 2);
+  assert.ok(errors.mock.calls.every(call => /callback failed: PROVIDER_EVENT_ID_CONFLICT/.test(call.arguments[0])));
+});
+
 test("positive status probe cancels first-output deadline but not a retry-failure deadline", () => {
   const timers = scheduler();
   const watchdog = new ProviderTurnResponseWatchdog({ schedule:timers.schedule,cancel:timers.cancel });

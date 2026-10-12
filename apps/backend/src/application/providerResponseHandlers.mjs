@@ -13,7 +13,10 @@ export function createProviderResponseHandlers({
       bindingId: entry.bindingId,
       logicalSessionId: entry.logicalSessionId,
       routingVersion: entry.routingVersion,
-      providerEventId: `corptie:provider-response-watchdog:${type}:${entry.turnId}`,
+      // A Turn can warn before its first output and again after each idle
+      // interval. These are separate observations, with different content.
+      providerEventId: `corptie:provider-response-watchdog:${type}:${entry.turnId}${type === "provider.error"
+        ? `:${entry.warningKind ?? "first_activity"}:${timestamp}` : ""}`,
       providerSequence: null,
       turnId: entry.turnId,
       type,

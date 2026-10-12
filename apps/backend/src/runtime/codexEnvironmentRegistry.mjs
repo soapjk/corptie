@@ -7,8 +7,8 @@ import os from "node:os";
 // Adapter-owned provider state. Thread IDs remain resources, not actors.
 // Existing/unindexed threads always route to the legacy isolated Home.
 export class CodexEnvironmentRegistry {
-  constructor({ path, isolatedHome, nativeHome = process.env.CODEX_HOME || join(os.homedir(), ".codex") }) {
-    Object.assign(this, { path, isolatedHome: resolve(isolatedHome), nativeHome: resolve(nativeHome) });
+  constructor({ path, isolatedHome, nativeHome = process.env.CODEX_HOME || join(os.homedir(), ".codex"), hasExistingSessions = () => false }) {
+    Object.assign(this, { path, isolatedHome: resolve(isolatedHome), nativeHome: resolve(nativeHome), hasExistingSessions });
     if (this.nativeHome === this.isolatedHome) this.nativeHome = join(os.homedir(), ".codex");
     this.legacy = this.profile("isolated", this.isolatedHome);
     this.state = { version: 1, defaultProfileId: this.legacy.profileId,
@@ -32,8 +32,19 @@ export class CodexEnvironmentRegistry {
       this.state.profiles[this.legacy.profileId] ??= this.legacy;
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
-      // An unsaved selection always defaults to the existing native Home.
-      // Historical thread bindings still resolve through the legacy profile.
+      // Before environment selection existed, Corptie always used its isolated
+      // Home. Upgrade defaults must inherit that Home just like old threads.
+      // Inspect local existence only; never read/import native credentials.
+      const hasLegacyConfig = await stat(join(this.isolatedHome, "config.toml"))
+        .then(info => info.isFile()).catch(error => {
+          if (error.code === "ENOENT") return false;
+          throw error;
+        });
+      if (hasLegacyConfig || await this.hasExistingSessions()) {
+        await this.save();
+        return;
+      }
+      // A genuinely new installation may start with the native Home.
       const native = this.profile("native", this.nativeHome);
       this.state.profiles[native.profileId] = native;
       this.state.defaultProfileId = native.profileId;
@@ -72,7 +83,7 @@ export class CodexEnvironmentRegistry {
 
   descriptor(profile = this.current) {
     return { ...profile, options: [
-      { mode: "native", title: "使用现有 Codex 环境（推荐）", home: this.nativeHome },
+      { mode: "native", title: "使用现有 Codex 环境", home: this.nativeHome },
       { mode: "isolated", title: "使用独立 Corptie 环境", home: this.isolatedHome }
     ], canImportAuthentication: profile.mode === "isolated" };
   }

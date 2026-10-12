@@ -148,9 +148,13 @@ export class ProviderTurnResponseWatchdog {
   }
 
   #invoke(callback, entry, additions = {}) {
-    queueMicrotask(() => Promise.resolve(callback({ ...publicEntry(entry), ...additions })).catch((error) => {
-      console.error(`[provider-response-watchdog] callback failed: ${error?.message ?? error}`);
-    }));
+    queueMicrotask(async () => {
+      try {
+        await callback({ ...publicEntry(entry), ...additions });
+      } catch (error) {
+        console.error(`[provider-response-watchdog] callback failed: ${error?.message ?? error}`);
+      }
+    });
   }
 
   #recordSubstantiveActivity(key, current, event) {
