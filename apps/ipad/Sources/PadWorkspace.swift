@@ -1161,6 +1161,64 @@ final class PadWorkspace {
         return normalizedSessionID(selection) == normalizedSessionID(sessionID)
     }
 
+    private func authorityScope(_ connection: PadConnection) -> String {
+        "\(connection.serverID)|\(connection.deviceID ?? "")|\(connection.recoveryRevision)"
+    }
+
+    func synchronizeTimelineAuthorityScope(_ connection: PadConnection) {
+        let scope = authorityScope(connection)
+        guard timelineAuthorityScope != scope else { return }
+        timelineBootstrapWorker?.cancel()
+        timelineBootstrapWorker = nil
+        timelineBootstrapKey = nil
+        timelineBootstrapToken = nil
+        authoritativeTimelineSessionIDs.removeAll(keepingCapacity: true)
+        timelineAuthorityScope = scope
+    }
+
+    func selectedTimelineIsAuthoritative(_ connection: PadConnection) -> Bool {
+        synchronizeTimelineAuthorityScope(connection)
+        guard let selection else { return false }
+        return authoritativeTimelineSessionIDs.contains(normalizedSessionID(selection))
+    }
+
+    func markTimelineAuthoritative(_ connection: PadConnection, sessionIDs: [String]) {
+        synchronizeTimelineAuthorityScope(connection)
+        let normalized = Set(sessionIDs.map(normalizedSessionID).filter { !$0.isEmpty })
+        if !normalized.isSubset(of: authoritativeTimelineSessionIDs),
+           authoritativeTimelineSessionIDs.count + normalized.count > 48 {
+            authoritativeTimelineSessionIDs.removeAll(keepingCapacity: true)
+        }
+        authoritativeTimelineSessionIDs.formUnion(normalized)
+    }
+
+    /// Coalesces repeated SwiftUI appearance/recalculation requests into one
+    /// bounded latest-window read for the selected Session and connection.
+    func ensureSelectedTimelineAuthoritative(_ connection: PadConnection) async {
+        synchronizeTimelineAuthorityScope(connection)
+        guard let selection, !selectedTimelineIsAuthoritative(connection) else { return }
+        let key = timelineAuthorityScope + "|" + normalizedSessionID(selection)
+        if timelineBootstrapKey == key, let worker = timelineBootstrapWorker {
+            await worker.value
+            return
+        }
+        timelineBootstrapWorker?.cancel()
+        let token = UUID()
+        let worker = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.load(connection)
+        }
+        timelineBootstrapKey = key
+        timelineBootstrapToken = token
+        timelineBootstrapWorker = worker
+        await worker.value
+        if timelineBootstrapToken == token {
+            timelineBootstrapWorker = nil
+            timelineBootstrapKey = nil
+            timelineBootstrapToken = nil
+        }
+    }
+
     func applyBackgroundTimeline(_ snapshot: ClientTimelineSnapshot) {
         recordFormalMessageActivity(sessionID: snapshot.sessionId, messages: snapshot.messages.items)
         let key = residentKey(for: snapshot.sessionId) ?? snapshot.sessionId
@@ -1336,6 +1394,13 @@ final class PadWorkspace {
     @ObservationIgnored let messageDeliveryLifetime = PadMessageDeliveryLifetime()
     @ObservationIgnored let persistentTimelineCache: PersistentTimelineCache
     @ObservationIgnored private var persistentTimelineScope: String?
+    /// Disk/resident timelines are display caches, never proof that the current
+    /// server connection supplied a complete latest window.
+    @ObservationIgnored private var timelineAuthorityScope = ""
+    @ObservationIgnored private var authoritativeTimelineSessionIDs: Set<String> = []
+    @ObservationIgnored private var timelineBootstrapWorker: Task<Void, Never>?
+    @ObservationIgnored private var timelineBootstrapKey: String?
+    @ObservationIgnored private var timelineBootstrapToken: UUID?
     var outboxSaving = false
     var cancellingQueuedMessages: Set<String> = []
     var deliveryRevision = 0
@@ -1394,7 +1459,7 @@ final class PadWorkspace {
         rebuildGroups()
     }
 
-    func applyRealtimeTimeline(_ snapshot: ClientTimelineSnapshot) {
+    func applyRealtimeTimeline(_ snapshot: ClientTimelineSnapshot, connection: PadConnection? = nil) {
         guard snapshot.schemaVersion == 2 else { return }
         recordFormalMessageActivity(sessionID: snapshot.sessionId, messages: snapshot.messages.items)
         guard isSelectedTimeline(snapshot.sessionId) else {
@@ -1408,6 +1473,9 @@ final class PadWorkspace {
         applyLatestWindow(snapshot.messages.items, cursor: snapshot.messages.nextBefore, revision: snapshot.revision,
             authoritativeItemIDs: snapshot.messages.authoritativeItemIds,
             supplementalItemIDs: snapshot.messages.supplementalItemIds)
+        if let connection {
+            markTimelineAuthoritative(connection, sessionIDs: [snapshot.sessionId, snapshot.capabilities.sessionId])
+        }
         if let selection { saveResidentState(for: selection) }
         isLoadingDetail = false
         liveStatus = "实时连接正常"
@@ -1635,6 +1703,8 @@ final class PadWorkspace {
 
     func load(_ connection: PadConnection, older: Bool = false) async {
         guard let id = selection else { return }
+        synchronizeTimelineAuthorityScope(connection)
+        let expectedAuthorityScope = authorityScope(connection)
         let operation: PadConversationReadOperation = older ? .history : .messages
         clearConversationReadNotice(operation)
         if !older {
@@ -1649,14 +1719,17 @@ final class PadWorkspace {
             } else {
                 caps = try await api.capabilities(sessionId: id)
             }
-            guard !Task.isCancelled, selection == id, generation == timelineGeneration else { return }
+            guard !Task.isCancelled, selection == id, generation == timelineGeneration,
+                  authorityScope(connection) == expectedAuthorityScope else { return }
             capabilities = caps
             guard caps.readMessages else {
                 conversationNotice = "当前 Mac 后端没有提供消息读取能力。"
+                if !older { markTimelineAuthoritative(connection, sessionIDs: [id, caps.sessionId]) }
                 return
             }
             let page = try await api.messages(sessionId: caps.sessionId, before: older ? before : nil)
-            guard !Task.isCancelled, selection == id, generation == timelineGeneration else { return }
+            guard !Task.isCancelled, selection == id, generation == timelineGeneration,
+                  authorityScope(connection) == expectedAuthorityScope else { return }
             clearConversationReadNotice(operation)
             if older {
                 let anchorID = messages.first?.id
@@ -1667,6 +1740,7 @@ final class PadWorkspace {
                 applyLatestWindow(page.items, cursor: page.nextBefore, revision: page.revision,
                     authoritativeItemIDs: page.authoritativeItemIds,
                     supplementalItemIDs: page.supplementalItemIds)
+                markTimelineAuthoritative(connection, sessionIDs: [id, caps.sessionId, page.sessionId])
                 isLoadingDetail = false
             }
             saveResidentState(for: id)

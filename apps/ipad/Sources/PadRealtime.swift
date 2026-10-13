@@ -89,22 +89,26 @@ extension PadWorkspace {
     ) async {
         // A cold selection is no longer necessarily in the small bootstrap
         // window. Load it on demand instead of waiting for an unrelated update.
-        if revision == nil && !selectedTimelineReady && hasReceivedRealtimeState {
+        if revision == nil && !selectedTimelineIsAuthoritative(connection) && hasReceivedRealtimeState {
             guard !Task.isCancelled else { return }
-            await load(connection)
+            await ensureSelectedTimelineAuthoritative(connection)
             return
         }
         for _ in 0..<graceAttempts {
             if Task.isCancelled { return }
             if let revision {
                 if (lastTimelineRevision ?? 0) > revision { return }
-            } else if selectedTimelineReady {
+            } else if selectedTimelineIsAuthoritative(connection) {
                 return
             }
             try? await Task.sleep(for: .milliseconds(100))
         }
         guard !Task.isCancelled else { return }
-        await load(connection)
+        if revision == nil {
+            await ensureSelectedTimelineAuthoritative(connection)
+        } else {
+            await load(connection)
+        }
     }
 
     /// Start a fresh foreground recovery without presenting an old background failure.
@@ -119,6 +123,7 @@ extension PadWorkspace {
     func runRealtime(_ connection: PadConnection) async {
         await restorePersistentTimelines(connection)
         guard !Task.isCancelled else { return }
+        synchronizeTimelineAuthorityScope(connection)
         let generation = UUID()
         let connectionRevision = connection.recoveryRevision
         refreshWorker?.cancel(); refreshWorker = nil
@@ -185,7 +190,7 @@ extension PadWorkspace {
                         directControlSnapshot = snapshot
                         controlRevision += 1
                     case .timelineSnapshot(let snapshot):
-                        applyRealtimeTimeline(snapshot)
+                        applyRealtimeTimeline(snapshot, connection: connection)
                     case .timelineDelta(let delta):
                         let deleted = Set(delta.changes.filter { $0.operation == "delete" }.map(\.itemId))
                         if !deleted.isEmpty, let deviceID = connection.deviceID {
@@ -447,6 +452,7 @@ extension PadWorkspace {
             applyLatestWindow(latest, cursor: cursor, revision: page.revision,
                 authoritativeItemIDs: authoritativeItemIDs,
                 supplementalItemIDs: supplementalItemIDs)
+            markTimelineAuthoritative(connection, sessionIDs: [id, caps.sessionId, page.sessionId])
             await loadUsage(api, sessionID: id, routedID: caps.sessionId, generation: generation)
             guard !Task.isCancelled, selection == id, generation == timelineGeneration else { return }
             if caps.composer == true, composerConfiguration == nil

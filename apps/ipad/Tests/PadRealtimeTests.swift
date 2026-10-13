@@ -56,6 +56,8 @@ struct PadRealtimeTests {
         workspace.selection = "session:test"
         RealtimeProtocol.phase = 0
         RealtimeProtocol.rejectStreams = false
+        RealtimeProtocol.cachedWindowMode = false
+        RealtimeProtocol.requests = []
         return (connection, workspace)
     }
 
@@ -214,6 +216,21 @@ struct PadRealtimeTests {
         await workspace.waitForRealtimeTimelineOrFallback(connection, graceAttempts: 0)
         #expect(workspace.messages.first?.text == "partial")
         #expect(workspace.selectedTimelineReady)
+    }
+
+    @Test func incompleteCachedTimelineStillPerformsOneAuthoritativeBootstrap() async throws {
+        let (connection, workspace) = try fixture()
+        workspace.messages = [ClientMessage(id: "cached-user", text: "latest cached user message")]
+        workspace.lastTimelineRevision = 99
+        RealtimeProtocol.cachedWindowMode = true
+        #expect(workspace.messages.map(\.text) == ["latest cached user message"])
+
+        await workspace.waitForRealtimeTimelineOrFallback(connection, graceAttempts: 1)
+        await workspace.waitForRealtimeTimelineOrFallback(connection, graceAttempts: 1)
+
+        #expect(workspace.messages.contains { $0.text == "earlier history" })
+        #expect(workspace.messages.contains { $0.text == "completed response" })
+        #expect(RealtimeProtocol.requests.filter { $0.hasSuffix("/messages") }.count == 1)
     }
 
     @Test func unchangedSnapshotDoesNotInvalidateMessageLayoutAndHistorySurvives() async throws {
@@ -407,13 +424,16 @@ private final class ReadyOnlyRealtimeProtocol: URLProtocol, @unchecked Sendable 
 }
 
 private final class RealtimeProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var requests: [String] = []
     nonisolated(unsafe) static var phase = 0
+    nonisolated(unsafe) static var cachedWindowMode = false
     nonisolated(unsafe) static var rejectStreams = false
     nonisolated(unsafe) static var stream: RealtimeProtocol?
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         let path = request.url!.path
+        Self.requests.append(path)
         #expect(request.httpMethod == "GET") // this workflow must never replay send/stop
         let streaming = path.hasSuffix("/events")
         if streaming && Self.rejectStreams {
@@ -430,7 +450,9 @@ private final class RealtimeProtocol: URLProtocol, @unchecked Sendable {
         if path.hasSuffix("/capabilities") {
             json = "{\"schemaVersion\":1,\"sessionId\":\"session:test\",\"readMessages\":true,\"send\":{\"available\":true},\"stop\":{\"available\":\(Self.phase == 0)}}"
         } else if path.hasSuffix("/messages") {
-            json = "{\"schemaVersion\":1,\"sessionId\":\"session:test\",\"hasEarlier\":false,\"items\":[{\"id\":\"item:1\",\"type\":\"agentMessage\",\"text\":\"\(Self.phase == 0 ? "partial" : "completed response")\"}]}"
+            json = Self.cachedWindowMode
+                ? #"{"schemaVersion":1,"sessionId":"session:test","revision":99,"hasEarlier":false,"authoritativeItemIds":["history","item:1"],"items":[{"id":"history","type":"userMessage","text":"earlier history"},{"id":"item:1","type":"agentMessage","text":"completed response"}]}"#
+                : "{\"schemaVersion\":1,\"sessionId\":\"session:test\",\"hasEarlier\":false,\"items\":[{\"id\":\"item:1\",\"type\":\"agentMessage\",\"text\":\"\(Self.phase == 0 ? "partial" : "completed response")\"}]}"
         } else if path.hasSuffix("/sessions") {
             json = "{\"schemaVersion\":1,\"hasMore\":false,\"items\":[{\"id\":\"session:test\",\"title\":\"Test\",\"executionStatus\":\"\(Self.phase == 0 ? "running" : "complete")\",\"updatedAt\":\"now\"}]}"
         } else { json = #"{"schemaVersion":1,"hasMore":false,"items":[]}"# }
