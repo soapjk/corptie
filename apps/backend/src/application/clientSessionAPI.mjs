@@ -126,8 +126,9 @@ function publicClientMessage(item) {
 
 /** v1 text messaging + stop commands. Provider-neutral callbacks, durable at-most-once dispatch. */
 export class ClientSessionAPI {
-  constructor({ providerSettings = null, chatCreation = null, searchPage = null, deleteUserMessage = null, cancelQueuedMessage = null, quickMessages = null, store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null, respondToApproval = null, respondToUserInput = null, respondToCollaborationConfirmation = null, respondToSessionChannelRequest = null, onReceiptChanged = null, inspector = null, admitReliableMessage = null }) {
+  constructor({ preparations = null, providerSettings = null, chatCreation = null, searchPage = null, deleteUserMessage = null, cancelQueuedMessage = null, quickMessages = null, store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null, respondToApproval = null, respondToUserInput = null, respondToCollaborationConfirmation = null, respondToSessionChannelRequest = null, onReceiptChanged = null, inspector = null, admitReliableMessage = null }) {
     this.providerSettings = providerSettings;
+    this.preparations = preparations;
     this.chatCreation = chatCreation;
     this.deleteUserMessage = deleteUserMessage;
     this.cancelQueuedMessageHandler = cancelQueuedMessage;
@@ -533,6 +534,7 @@ export class ClientSessionAPI {
         retryable: typeof readiness.notReadyReason.retryable === "boolean" ? readiness.notReadyReason.retryable : null }
       : null;
     return { schemaVersion: 1, sessionId,
+      preparation: Boolean(this.preparations),
       readiness: readiness?.readiness === "ready" ? "ready" : readiness?.readiness === "not_ready" ? "not_ready" : null,
       notReadyReason: readiness?.readiness === "not_ready" ? notReadyReason : null,
       composer: Boolean(this.composer),
@@ -555,6 +557,30 @@ export class ClientSessionAPI {
       readMessages: true,
       send: { available: actions.send?.available === true, reason: actions.send?.reason ?? null },
       stop: { available: actions.interrupt?.available === true, reason: actions.interrupt?.reason ?? null } };
+  }
+
+  async preparation(identity, sessionId, action, attemptId, authenticate) {
+    if (!this.preparations || !this.inspector) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
+    const scope = this.inspector.scope(sessionId, identity);
+    const canonical = scope.logicalSessionId ?? scope.sessionId;
+    const scopeKey = JSON.stringify([canonical, scope.sessionId, scope.routingVersion]);
+    const key = value => JSON.stringify([value.deviceId, value.accountId, value.principalId, value.serverId]);
+    const pinned = key(identity);
+    const check = () => {
+      const fresh = authenticate();
+      const current = this.inspector.scope(sessionId, fresh);
+      if (key(fresh) !== pinned || JSON.stringify([
+        current.logicalSessionId ?? current.sessionId, current.sessionId, current.routingVersion
+      ]) !== scopeKey) {
+        throw deviceError("AUTHORITY_CHANGED", 403);
+      }
+    };
+    check();
+    const preparation = action === "start" ? await this.preparations.start(canonical)
+      : action === "cancel" ? await this.preparations.cancel(canonical, attemptId)
+      : await this.preparations.current(canonical);
+    check();
+    return { schemaVersion: 1, preparation };
   }
 
   /** Context window and account quota of a Session: the desktop ChatUsageBar data, read-only. */

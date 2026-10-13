@@ -1139,6 +1139,15 @@ struct ConversationView: View {
     }
 
     private var conversationStatusRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if workspace.capabilities?.readiness == "not_ready",
+               workspace.capabilities?.preparation == true {
+                SessionPreparationNotice(sessionID: sessionID, api: {
+                    ClientSessionPreparationAPI(transport: try await connection.transport(), route: .paired)
+                }, didPrepare: {
+                    await workspace.refreshPreparedCapabilities(connection, sessionID: sessionID)
+                })
+            }
         HStack(spacing: 8) {
             PadThreadMetaView(session: workspace.sessionsByID[sessionID],
                               capabilities: workspace.capabilities, usage: workspace.selectedSessionUsage,
@@ -1175,6 +1184,7 @@ struct ConversationView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     private var canStopCurrentSession: Bool {

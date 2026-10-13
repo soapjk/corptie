@@ -317,6 +317,8 @@ public struct ClientSessionCapabilities: Decodable, Sendable {
     public let readiness: String?
     /// Present only while `readiness == "not_ready"`.
     public let notReadyReason: ClientSessionNotReadyReason?
+    /// Async Session preparation support, absent on older hosts.
+    public let preparation: Bool?
 }
 
 /// Why the host reports a Session as not ready; codes mirror the desktop `SessionNotReadyReason`.

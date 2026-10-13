@@ -1768,6 +1768,17 @@ final class PadWorkspace {
         }
     }
 
+    func refreshPreparedCapabilities(_ connection: PadConnection, sessionID: String) async {
+        guard selection == sessionID else { return }
+        let generation = timelineGeneration
+        do {
+            let api = ClientSessionAPI(transport: try await connection.transport())
+            let snapshot = try await api.capabilities(sessionId: sessionID)
+            guard !Task.isCancelled, selection == sessionID, timelineGeneration == generation else { return }
+            capabilities = snapshot
+        } catch { /* Preserve authoritative projection and the existing draft. */ }
+    }
+
     func loadCommandCatalog(_ connection: PadConnection) async {
         guard let id = selection else { return }
         let routedID = capabilities?.sessionId ?? id

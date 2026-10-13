@@ -3,6 +3,7 @@ import {
   AGENT_PROVIDER_HEARTBEAT_RELIABILITY
 } from "../contracts.mjs";
 import { CallbackAgentProvider } from "../callbackAgentProvider.mjs";
+import { createReadinessRuntimeEpoch } from "../readinessRuntimeEpoch.mjs";
 
 export const OPENCLACKY_PROVIDER_ID = "openclacky";
 
@@ -50,6 +51,10 @@ const OPENCLACKY_BRIDGE_CAPABILITIES = Object.freeze([
 
 export function createOpenClackyProvider(manager, options = {}) {
   if (!manager) throw new TypeError("OpenClacky Provider requires a manager.");
+  const readinessEpoch = createReadinessRuntimeEpoch(reference => {
+    const socket = manager.sockets instanceof Map ? manager.sockets.get(reference.providerSessionId) : null;
+    return { object: socket, state: socket?.readyState ?? "absent" };
+  });
   return new CallbackAgentProvider({
     id: OPENCLACKY_PROVIDER_ID,
     displayName: "OpenClacky",
@@ -59,6 +64,7 @@ export function createOpenClackyProvider(manager, options = {}) {
     runtime: { lifecycle: "managed" },
     metadata: {
       ...(options.metadata ?? {}),
+      bindingReadiness: { version: 1, reconciliation: "unsupported", runtimeEpoch: true },
       turnLiveness: {
         heartbeat: AGENT_PROVIDER_HEARTBEAT_RELIABILITY.BEST_EFFORT,
         supportsStatusProbe: false
@@ -82,7 +88,12 @@ export function createOpenClackyProvider(manager, options = {}) {
     resumeSession: (reference, context = {}) => manager.resume(reference.providerSessionId, {
       toolHost: context.toolHost ?? null
     }),
-    probeBinding: (reference) => manager.refreshOne(reference.providerSessionId),
+    readinessEpoch,
+    probeBinding: async (reference, context = {}) => {
+      if (context.reconcileOnly === true) return { ready: false, reasonCode: "PROVIDER_RECONCILIATION_UNSUPPORTED" };
+      const result = await manager.refreshOne(reference.providerSessionId);
+      return { ...result, runtimeEpoch: readinessEpoch(reference) };
+    },
     deleteSession: (reference) => manager.delete(reference.providerSessionId),
     disconnectSession: (reference) => manager.disconnect(reference.providerSessionId),
     renameSession: (reference, title) => manager.rename(reference.providerSessionId, title),

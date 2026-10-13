@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { CodexStdioTransport } from "../src/adapters/codexStdioTransport.mjs";
+import { CodexAppServerClient } from "../src/adapters/codexAppServer.mjs";
 
 function fakeChild() {
   const child = new EventEmitter();
@@ -125,4 +126,125 @@ test("response normalization retains the safe missing-session recovery classific
   } finally {
     await transport.close();
   }
+});
+
+test("sent RPC timeout reports unknown remote outcome without payload or replay", async () => {
+  const child = fakeChild();
+  const transport = new CodexStdioTransport({ spawnProcess: () => child });
+  try {
+    await transport.initialize();
+    const promise = transport.request("turn/start", { secret: "private-input" }, 5);
+    const request = child.requests.at(-1);
+    await assert.rejects(promise, error => {
+      assert.equal(error.code, "PROVIDER_RPC_TIMEOUT");
+      assert.equal(error.requestId, request.id);
+      assert.equal(error.method, "turn/start");
+      assert.equal(error.processGeneration, transport.activeProcessGeneration);
+      assert.equal(error.requestWritten, true);
+      assert.equal(error.remoteDisposition, "unknown");
+      assert.equal(error.safeToRetry, false);
+      assert.equal(error.timeoutMs, 5);
+      assert.ok(error.elapsedMs >= 0);
+      assert.ok(!JSON.stringify(error).includes("private-input"));
+      return true;
+    });
+    transport.handleLine(JSON.stringify({ id: request.id, result: { accepted: true } }));
+    assert.equal(transport.pending.size, 0);
+    assert.equal(child.requests.filter(value => value.method === "turn/start").length, 1);
+  } finally {
+    await transport.close();
+  }
+});
+
+test("serialization and synchronous write failures release pending RPC timers", async () => {
+  const child = fakeChild();
+  const transport = new CodexStdioTransport({ spawnProcess: () => child });
+  try {
+    await transport.initialize();
+    const circular = {}; circular.self = circular;
+    await assert.rejects(transport.request("thread/read", circular), /circular/i);
+    assert.equal(transport.pending.size, 0);
+    child.stdin.write = () => { throw new Error("write failure"); };
+    await assert.rejects(transport.request("thread/read", {}), /write failure/);
+    assert.equal(transport.pending.size, 0);
+  } finally {
+    await transport.close();
+  }
+});
+
+test("cold resume has its own budget and preserves explicit caller overrides", async () => {
+  for (const [configuration, requested, expected] of [
+    [{}, undefined, 60000], [{ threadResumeTimeoutMs: 45000 }, undefined, 45000],
+    [{}, 12, 12]
+  ]) {
+    const client = new CodexAppServerClient(configuration);
+    client.initialize = async () => {};
+    client.requireThreadToolPlanConfirmation = () => {};
+    client.request = async (method, params, timeout) => {
+      assert.equal(method, "thread/resume");
+      assert.equal(params.threadId, "thread:test");
+      assert.equal(timeout, expected);
+      return { thread: { id: params.threadId } };
+    };
+    await client.resumeThread("thread:test", { requestTimeoutMs: requested });
+    assert.equal(client.requestTimeoutMs, 8000);
+    assert.equal(client.transport.initializationTimeoutMs, 30000);
+  }
+});
+
+test("late same-generation resume proof reconciles without resurrecting Promise or repeating RPC", async () => {
+  const child = fakeChild();
+  const client = new CodexAppServerClient({ spawnProcess: () => child });
+  client.requireThreadToolPlanConfirmation = () => {};
+  try {
+    await assert.rejects(client.resumeThread("thread", { requestTimeoutMs: 5 }), { code: "PROVIDER_RPC_TIMEOUT" });
+    const request = child.requests.at(-1);
+    assert.equal(client.inspectThreadResume("thread").ready, false);
+    await assert.rejects(client.ensureThreadResumed("thread"), { code: "PROVIDER_RESUME_OUTCOME_UNKNOWN" });
+    assert.equal(child.requests.filter(value => value.method === "thread/resume").length, 1);
+    client.transport.handleLine(JSON.stringify({ id: request.id, result: { privateHistory: "must-not-emit" } }));
+    assert.equal(client.inspectThreadResume("thread").ready, true);
+    assert.equal((await client.ensureThreadResumed("thread")).alreadyLoaded, true);
+    assert.equal(child.requests.filter(value => value.method === "thread/resume").length, 1);
+    assert.equal(client.inspectThreadResume("thread", { model: "changed" }).ready, false);
+    await client.close();
+    assert.equal(client.inspectThreadResume("thread").ready, false);
+  } finally {
+    await client.close();
+  }
+});
+
+test("expired resume tombstones do not publish proof or clear unknown outcomes", async () => {
+  const child = fakeChild();
+  const proofs = [];
+  const transport = new CodexStdioTransport({ spawnProcess: () => child,
+    onLateResumeResponse: proof => proofs.push(proof) });
+  try {
+    await transport.initialize();
+    await assert.rejects(transport.request("thread/resume", {}, 5));
+    const id = child.requests.at(-1).id;
+    transport.resumeTombstones.get(id).expiresAt = 0;
+    transport.handleLine(JSON.stringify({ id, result: "private" }));
+    assert.deepEqual(proofs, []);
+    assert.equal(transport.resumeTombstones.size, 0);
+  } finally { await transport.close(); }
+});
+
+test("late proof binds exact host Tool identity and cannot revive a released thread", async () => {
+  const child = fakeChild();
+  const client = new CodexAppServerClient({ spawnProcess: () => child });
+  client.requireThreadToolPlanConfirmation = () => {};
+  const options = { dynamicToolAgentId: "agent", dynamicToolMetadata: { bindingId: "binding" }, requestTimeoutMs: 5 };
+  try {
+    await assert.rejects(client.resumeThread("thread", options));
+    client.transport.handleLine(JSON.stringify({ id: child.requests.at(-1).id, result: {} }));
+    assert.equal(client.dynamicToolAgentsByThread.get("thread"), "agent");
+    assert.deepEqual(client.dynamicToolMetadataByThread.get("thread"), { bindingId: "binding" });
+    await assert.rejects(client.resumeThread("released", options));
+    const id = child.requests.at(-1).id;
+    client.releaseThreadRuntimeState("released");
+    client.transport.handleLine(JSON.stringify({ id, result: {} }));
+    assert.equal(client.inspectThreadResume("released", options).ready, false);
+    assert.equal(client.dynamicToolAgentsByThread.has("released"), false);
+  } finally { await client.close(); }
 });

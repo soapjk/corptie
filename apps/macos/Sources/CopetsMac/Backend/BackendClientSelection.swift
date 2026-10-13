@@ -94,7 +94,7 @@ extension BackendClient {
         defer { bindingVerificationSessionIDs.remove(session.id) }
         do {
             var request = URLRequest(
-                url: baseURL.appending(path: "sessions/\(session.id)/actions/probe-binding")
+                url: baseURL.appending(path: "sessions/\(session.id)/preparation")
             )
             request.httpMethod = "POST"
             let (data, response) = try await URLSession.shared.data(for: request)

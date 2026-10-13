@@ -93,7 +93,7 @@ struct CorptieTaskDeletionInteractionTests {
         let source = try backendClientSource()
             + warRoomSource("Backend/BackendClientSelection.swift")
 
-        #expect(source.contains("actions/probe-binding"))
+        #expect(source.contains("/preparation"))
         #expect(source.contains("selectionRequiresProviderBindingVerification"))
         #expect(source.contains("sessionIsReady: self.selectedSession?.isReady == true"))
         #expect(source.contains("bindingVerificationSessionIDs.insert(session.id)"))

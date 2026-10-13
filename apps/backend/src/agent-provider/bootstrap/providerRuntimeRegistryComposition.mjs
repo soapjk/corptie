@@ -36,6 +36,7 @@ export function createProviderRuntimeRegistryComposition({
       forkSession: forkCodexSession,
       resumeSession: resumeCodexProviderSession,
       probeBinding: probeCodexProviderBinding,
+      readinessEpoch: reference => codexRuntime.readinessRuntimeEpoch(reference.providerSessionId),
       ...(typeof codexRuntime.probeTurnExecution === "function" ? {
         probeTurnExecution: (reference, turnId) => codexRuntime.probeTurnExecution(reference.providerSessionId, turnId)
       } : {}),

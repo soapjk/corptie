@@ -1,4 +1,5 @@
 import { CodexProviderRuntime } from "./codexProviderRuntime.mjs";
+import { createReadinessRuntimeEpoch } from "../readinessRuntimeEpoch.mjs";
 
 const threadMethods = new Set([
   "executeCommand", "bindThreadToolContext", "confirmThreadToolPlan", "restoreThreadToolPlanConfirmation",
@@ -18,6 +19,11 @@ export function createCodexEnvironmentRuntime({ registry, environment, prepare, 
   const runtimes = new Map();
   const activity = new Map();
   const prepared = new Map();
+  const readinessEpoch = createReadinessRuntimeEpoch(threadId => {
+    const runtime = runtimes.get(registry.forThread(threadId).profileId);
+    return { object: runtime?.client?.transport?.process,
+      state: runtime?.client?.transport?.initialized === true ? "ready" : "not_ready" };
+  });
   let replacingExecutable = false;
   const recyclable = (id, runtime) => typeof runtime.client === "object" && runtime.client !== null
     && canRelease(activity.get(id)?.profile)
@@ -84,6 +90,24 @@ export function createCodexEnvironmentRuntime({ registry, environment, prepare, 
     return { ...input, developerInstructions: [await instructions(profile), input.developerInstructions].filter(Boolean).join("\n\n") };
   };
   const target = {
+    readinessRuntimeEpoch: readinessEpoch,
+    async inspectThreadResume(threadId, input = {}) {
+      const profile = registry.forThread(threadId);
+      const runtime = runtimes.get(profile.profileId);
+      if (!runtime || !prepared.has(profile.profileId)) {
+        return { ready: false, reasonCode: "PROVIDER_RESUME_OUTCOME_UNKNOWN" };
+      }
+      await prepared.get(profile.profileId);
+      const options = profile.mode === "native" && input.baseInstructions === undefined
+        ? { ...input, developerInstructions: [await instructions(profile), input.developerInstructions].filter(Boolean).join("\n\n") }
+        : input;
+      const epoch = readinessEpoch(threadId);
+      const proof = await runtime.inspectThreadResume(threadId, options);
+      if (runtime !== runtimes.get(profile.profileId) || epoch !== readinessEpoch(threadId)) {
+        return { ready: false, reasonCode: "PROVIDER_RESUME_OUTCOME_UNKNOWN" };
+      }
+      return { ...proof, runtimeEpoch: epoch };
+    },
     async withExecutableTransition(operation) {
       target.assertExecutableChangeAllowed();
       replacingExecutable = true;

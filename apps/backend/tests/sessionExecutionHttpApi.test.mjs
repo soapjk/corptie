@@ -86,3 +86,23 @@ test("execution errors remain structured and unmatched methods fall through", as
   assert.equal(f.dispatch("/sessions/public/actions/resume", "GET").handled, false);
   assert.equal(f.dispatch("/other").handled, false);
 });
+
+test("preparation endpoints are additive, async and cancel exact attempts only", async () => {
+  const f = fixture();
+  f.dependencies.sessionBindingReadinessProbe.preparations = {
+    start: async id => { f.calls.push(["start", id]); return { id: "attempt", state: "queued" }; },
+    current: async id => { f.calls.push(["current", id]); return null; },
+    cancel: async (...args) => { f.calls.push(["cancel-preparation", ...args]); return { state: "cancelled" }; }
+  };
+  assert.equal((await f.dispatch("/sessions/public%2Fid/preparation").result).status, 202);
+  assert.deepEqual(f.calls.at(-1), ["start", "public/id"]);
+  assert.deepEqual(await f.dispatch("/sessions/public/preparation", "GET").result,
+    { status: 200, body: { schemaVersion: 1, preparation: null } });
+  assert.equal((await f.dispatch("/sessions/public/preparation/attempt%2Fone/cancel").result).status, 200);
+  assert.deepEqual(f.calls.at(-1), ["cancel-preparation", "public", "attempt/one"]);
+  assert.equal(f.dispatch("/sessions/public/preparation/attempt/cancel", "GET").handled, false);
+  f.dependencies.sessionBindingReadinessProbe.preparations.start = async () => {
+    throw Object.assign(new Error("full"), { code: "SESSION_PREPARATION_BUSY", statusCode: 429 });
+  };
+  assert.equal((await f.dispatch("/sessions/public/preparation").result).status, 429);
+});

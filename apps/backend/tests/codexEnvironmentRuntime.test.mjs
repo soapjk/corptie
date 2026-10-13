@@ -2,6 +2,39 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createCodexEnvironmentRuntime } from "../src/agent-provider/bootstrap/codexEnvironmentRuntime.mjs";
 
+test("read-only resume proof follows exact thread environment without spawning or preparing a cold runtime", async t => {
+  const profile = { profileId: "native", mode: "native" };
+  let created = 0, preparations = 0;
+  const attachments = [];
+  const runtime = createCodexEnvironmentRuntime({ registry: { current: profile, forThread: () => profile },
+    environment: () => ({}), prepare: async () => { preparations++; },
+    instructions: async () => "scoped instructions",
+    createRuntime: () => {
+      created++;
+      return { client: { transport: { process: {}, initialized: true } }, close: async () => {},
+        ensureThreadResumed: async (_id, input) => { attachments.push(input); return {}; },
+        inspectThreadResume: async (_id, input) => { attachments.push(input); return { ready: true }; } };
+    } });
+  t.after(() => runtime.close());
+  const coldEpoch = runtime.readinessRuntimeEpoch("thread");
+  assert.equal((await runtime.inspectThreadResume("thread", {})).ready, false);
+  assert.equal(created, 0);
+  assert.equal(preparations, 0);
+  await runtime.ensureThreadResumed("thread", { cwd: "/workspace" });
+  const epoch = runtime.readinessRuntimeEpoch("thread");
+  assert.notEqual(epoch, coldEpoch);
+  const proof = await runtime.inspectThreadResume("thread", { cwd: "/workspace" });
+  assert.equal(proof.ready, true);
+  assert.equal(proof.runtimeEpoch, epoch);
+  assert.deepEqual(attachments[0], attachments[1]);
+  assert.equal(created, 1);
+  assert.equal(preparations, 1);
+  await runtime.close();
+  assert.notEqual(runtime.readinessRuntimeEpoch("thread"), epoch);
+  assert.equal((await runtime.inspectThreadResume("thread")).ready, false);
+  assert.equal(created, 1);
+});
+
 test("executable transition blocks new work and rejects every busy runtime state", async t => {
   const profile = { profileId: "native", mode: "native" };
   const client = { freshThreadIds: new Set(), transport: { pending: new Map() },

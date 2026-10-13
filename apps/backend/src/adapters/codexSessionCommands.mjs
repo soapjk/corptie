@@ -156,6 +156,11 @@ export function createCodexSessionCommands({
       ?? reference.metadata?.session?.external?.cwd
       ?? null;
     const startedAt = Date.now();
+    if (context.reconcileOnly === true) {
+      return codexRuntime.inspectThreadResume(reference.providerSessionId, {
+        cwd: cwd ?? undefined, runtimeWorkspaceRoots: cwd ? [cwd] : undefined
+      });
+    }
     const result = await codexRuntime.ensureThreadResumed(reference.providerSessionId, {
       cwd: cwd ?? undefined,
       runtimeWorkspaceRoots: cwd ? [cwd] : undefined
@@ -165,7 +170,8 @@ export function createCodexSessionCommands({
       sessionId: reference.logicalSessionId ?? reference.sessionId,
       providerSessionId: reference.providerSessionId,
       threadAlreadyLoaded: result?.alreadyLoaded === true,
-      durationMs: Date.now() - startedAt
+      durationMs: Date.now() - startedAt,
+      runtimeEpoch: codexRuntime.readinessRuntimeEpoch?.(reference.providerSessionId)
     };
   }
 
