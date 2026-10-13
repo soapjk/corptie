@@ -20,8 +20,15 @@ public struct SessionPreparationNotice: View {
 
     public var body: some View {
         HStack(spacing: 8) {
-            Text(issue ?? preparation?.statusText ?? "正在核验会话，草稿已保留")
-                .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(issue ?? preparation?.statusText ?? "正在核验会话，草稿已保留")
+                if let detail = preparation?.failureDetail, issue == nil {
+                    Text(detail)
+                }
+            }
+            .font(.caption).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
             Spacer(minLength: 4)
             if let preparation, preparation.isActive, issue == nil {
                 Button("停止等待") { cancelAttemptID = preparation.id; revision += 1 }
@@ -61,7 +68,7 @@ public struct SessionPreparationNotice: View {
             return
         } catch {
             guard !Task.isCancelled else { return }
-            issue = "暂时无法核验会话，草稿已保留"
+            issue = "\(ClientSessionPreparation.requestFailureDetail(error))；草稿已保留"
         }
     }
 }

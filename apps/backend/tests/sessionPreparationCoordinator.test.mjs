@@ -3,6 +3,32 @@ import test from "node:test";
 import { SessionBindingReadinessProbe } from "../src/application/sessionBindingReadinessProbe.mjs";
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
+test("server composition before Store opens does not permanently poison preparation storage", async () => {
+  let storeOpen = false;
+  let reads = 0;
+  let snapshot = null;
+  const persistence = {
+    read: () => {
+      reads++;
+      assert.ok(storeOpen, "must not read an unopened Store");
+      return snapshot;
+    },
+    write: value => { assert.ok(storeOpen); snapshot = value; }
+  };
+  const f = fixture({ deferRestore: true }, persistence);
+  assert.equal(reads, 0);
+  storeOpen = true;
+  await f.preparations.resumeAtStartup();
+  assert.equal(reads, 1);
+  const first = await f.preparations.start("one");
+  await tick();
+  f.gates.get("one").resolve({ prepared: true });
+  await tick();
+  assert.equal((await f.preparations.current("one")).state, "ready");
+  assert.equal(snapshot.records[0].id, first.id);
+  assert.equal(reads, 1);
+});
+
 function fixture(limits = {}, persistence = null) {
   const gates = new Map();
   let binding = "binding";

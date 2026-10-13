@@ -1302,6 +1302,9 @@ const { toolBootstrapBindingPreflight, emptyCodexBindingPreflight } = createProv
   requireSessionReference, sessionApplicationService
 });
 sessionBindingReadinessProbe = new SessionBindingReadinessProbe({
+  // Composition precedes Store.initialize(); restore only during startup
+  // maintenance (or the first admitted request) after the Store is open.
+  preparationLimits: { deferRestore: true },
   preparationPersistence: {
     read: () => store.getRuntimeState("session-preparations/v1"),
     write: snapshot => store.setRuntimeState("session-preparations/v1", snapshot)

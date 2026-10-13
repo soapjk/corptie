@@ -8,10 +8,12 @@ public struct DevicePairingFailure: Error, Sendable {
 public struct ClientServiceFailure: Error, Equatable, Sendable {
     public let statusCode: Int
     public let code: String
+    public let message: String?
 
-    public init(statusCode: Int, code: String) {
+    public init(statusCode: Int, code: String, message: String? = nil) {
         self.statusCode = statusCode
         self.code = code
+        self.message = message == code ? nil : message
     }
 }
 
@@ -62,7 +64,11 @@ public struct BackendByteStream: AsyncSequence, Sendable {
 
 /// Explicit endpoint ownership: no global URLSession overrides or automatic mutation retries.
 public final class BackendTransport: Sendable {
-    private struct ServiceFailureBody: Decodable { let code: String }
+    private struct ServiceFailureBody: Decodable {
+        let code: String
+        let error: String?
+        let message: String?
+    }
     public typealias DataHandler = @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
     public typealias ByteHandler = @Sendable (URLRequest) async throws -> (BackendByteStream, HTTPURLResponse)
 
@@ -136,7 +142,7 @@ public final class BackendTransport: Sendable {
             let (data, response) = try await dataHandler(prepared)
             if !(200..<300).contains(response.statusCode),
                let body = try? JSONDecoder().decode(ServiceFailureBody.self, from: data) {
-                throw ClientServiceFailure(statusCode: response.statusCode, code: body.code)
+                throw ClientServiceFailure(statusCode: response.statusCode, code: body.code, message: body.message ?? body.error)
             }
             guard (200..<300).contains(response.statusCode) else { throw ClientConnectionError.httpStatus(response.statusCode) }
             return (data, response)
@@ -149,7 +155,7 @@ public final class BackendTransport: Sendable {
         }
         if let response = response as? HTTPURLResponse, !(200..<300).contains(response.statusCode),
            let body = try? JSONDecoder().decode(ServiceFailureBody.self, from: data) {
-            throw ClientServiceFailure(statusCode: response.statusCode, code: body.code)
+            throw ClientServiceFailure(statusCode: response.statusCode, code: body.code, message: body.message ?? body.error)
         }
         return (data, try Self.requireSuccess(response))
     }
@@ -189,7 +195,7 @@ public final class BackendTransport: Sendable {
             body.append(byte)
         }
         if let failure = try? JSONDecoder().decode(ServiceFailureBody.self, from: body) {
-            throw ClientServiceFailure(statusCode: response.statusCode, code: failure.code)
+            throw ClientServiceFailure(statusCode: response.statusCode, code: failure.code, message: failure.message ?? failure.error)
         }
         throw ClientConnectionError.httpStatus(response.statusCode)
     }

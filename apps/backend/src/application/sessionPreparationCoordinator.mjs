@@ -13,7 +13,7 @@ const identity = reference => JSON.stringify([
 export class SessionPreparationCoordinator {
   constructor({ resolveReference, verify, reconcile = null, invalidate, onChanged = () => {},
     concurrency = 2, queueLimit = 16, recordLimit = 64, deadlineMs = 120000,
-    persistence = null }) {
+    persistence = null, deferRestore = false }) {
     this.resolveReference = resolveReference;
     this.verify = verify;
     this.reconcile = reconcile;
@@ -31,10 +31,13 @@ export class SessionPreparationCoordinator {
     this.active = 0;
     this.persistence = persistence;
     this.storageError = null;
-    this.#restore();
+    this.restored = false;
+    if (!deferRestore) this.#restore();
   }
 
   #restore() {
+    if (this.restored) return;
+    this.restored = true;
     if (!this.persistence) return;
     try {
       const snapshot = this.persistence.read();
@@ -106,6 +109,7 @@ export class SessionPreparationCoordinator {
   resumeAtStartup({ sleep = milliseconds => new Promise(resolve => {
     const timer = setTimeout(resolve, milliseconds); timer.unref?.();
   }) } = {}) {
+    this.#restore();
     if (this.startupTask) return this.startupTask;
     // Only recover attempts that the user previously requested, not all
     // historical Sessions. Cancellation is deliberately never auto-resumed.
@@ -140,6 +144,7 @@ export class SessionPreparationCoordinator {
   }
 
   async start(sessionId) {
+    this.#restore();
     const reference = await this.resolveReference(sessionId);
     this.#assertStorage();
     const key = identity(reference);
@@ -206,6 +211,7 @@ export class SessionPreparationCoordinator {
   }
 
   async current(sessionId) {
+    this.#restore();
     const reference = await this.resolveReference(sessionId);
     this.#assertStorage();
     const record = this.records.get(identity(reference));
@@ -217,6 +223,7 @@ export class SessionPreparationCoordinator {
   }
 
   async cancel(sessionId, attemptId) {
+    this.#restore();
     const reference = await this.resolveReference(sessionId);
     const record = this.records.get(identity(reference));
     if (!record || record.id !== attemptId) throw Object.assign(new Error("Preparation attempt changed."), {
