@@ -143,3 +143,36 @@ test("a route change during verification never marks the replacement binding rea
     "SESSION_BINDING_CHANGED"
   );
 });
+
+for (const invalidation of ["binding", "provider"]) {
+  for (const lateFailure of [false, true]) {
+    test(`${invalidation} invalidation prevents late ${lateFailure ? "failure" : "success"} overwriting fresh readiness`, async () => {
+      let release;
+      const gate = new Promise(resolve => { release = resolve; });
+      const f = fixture({ gate, error: lateFailure ? new Error("old failure") : null });
+      const old = f.coordinator.verify("session:one");
+      await new Promise(resolve => setImmediate(resolve));
+      if (invalidation === "provider") f.coordinator.invalidateProvider("provider:one");
+      else f.coordinator.invalidateBinding({ logicalSessionId: "logical:one", bindingId: "binding:one" });
+      f.coordinator.probe = async () => ({ fresh: true });
+      assert.equal((await f.coordinator.verify("session:one")).ready, true);
+      release();
+      const stale = await old;
+      assert.equal(stale.ready, false);
+      assert.equal(stale.readiness.reasonCode, "BINDING_VERIFICATION_SUPERSEDED");
+      assert.equal(f.coordinator.readiness("logical:one", "binding:one"), null);
+      assert.equal(f.coordinator.inFlight.size, 0);
+    });
+  }
+}
+
+test("a timeout is distinct from a missing Session and exposes no RPC details", async () => {
+  const f = fixture({ error: Object.assign(new Error("private rpc metadata"), {
+    code: "PROVIDER_RPC_TIMEOUT", remoteDisposition: "unknown", safeToRetry: false
+  }) });
+  const result = await f.coordinator.verify("session:one");
+  assert.equal(result.ready, false);
+  assert.equal(result.readiness.reasonCode, "PROVIDER_RPC_TIMEOUT");
+  assert.match(result.readiness.message, /remote result is unknown/);
+  assert.ok(!result.readiness.message.includes("private rpc metadata"));
+});

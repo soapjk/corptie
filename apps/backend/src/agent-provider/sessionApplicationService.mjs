@@ -399,6 +399,10 @@ export class SessionApplicationService {
   // same probe contract using its own authoritative protocol operation.
   async probeBindingReadiness(sessionId, context = {}) {
     const reference = await this.referenceFor(sessionId);
+    if (context.reconcileOnly === true
+        && this.registry.get(reference.providerId).descriptor.metadata?.bindingReadiness?.reconciliation !== "local-proof") {
+      return { ready: false, reasonCode: "PROVIDER_RECONCILIATION_UNSUPPORTED" };
+    }
     return this.registry.invoke(
       reference.providerId,
       AGENT_PROVIDER_CAPABILITIES.SESSION_BINDING_PROBE,

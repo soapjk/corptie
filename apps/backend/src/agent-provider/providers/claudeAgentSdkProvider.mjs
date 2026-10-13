@@ -4,6 +4,7 @@ import {
   AGENT_PROVIDER_HEARTBEAT_RELIABILITY
 } from "../contracts.mjs";
 import { validateClaudeProviderConfiguration } from "./claudeProviderConfiguration.mjs";
+import { createReadinessRuntimeEpoch } from "../readinessRuntimeEpoch.mjs";
 
 export const CLAUDE_AGENT_SDK_PROVIDER_ID = "claude-sdk";
 export const CLAUDE_TOOL_SCHEMA_CAPABILITIES = Object.freeze({
@@ -27,6 +28,10 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     && manager.structuredPlanEvents !== (options.structuredPlanEvents !== false)) {
     throw new TypeError("Claude plan-event declaration must match its Adapter configuration.");
   }
+  const readinessEpoch = createReadinessRuntimeEpoch(reference => {
+    const session = typeof manager.get === "function" ? manager.get(reference.providerSessionId) : null;
+    return { object: session?.query, state: session?.queryClosed ? "closed" : session?.query ? "ready" : "absent" };
+  });
   return new CallbackAgentProvider({
     id: CLAUDE_AGENT_SDK_PROVIDER_ID,
     displayName: "Claude Code",
@@ -50,6 +55,7 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
       ]
     },
     metadata: {
+      bindingReadiness: { version: 1, reconciliation: "unsupported", runtimeEpoch: true },
       backgroundPermissionProfiles: ["read-only"],
       backgroundExecutionPolicies: ["no-tools"],
       turnLiveness: {
@@ -118,7 +124,12 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     resumeSession: (reference, context = {}) => manager.reconnect(reference.providerSessionId, {
       runtimeOptions: context.toolHost?.providerAttachment
     }),
-    probeBinding: (reference) => manager.probeBinding(reference.providerSessionId),
+    readinessEpoch,
+    probeBinding: async (reference, context = {}) => {
+      if (context.reconcileOnly === true) return { ready: false, reasonCode: "PROVIDER_RECONCILIATION_UNSUPPORTED" };
+      const result = await manager.probeBinding(reference.providerSessionId);
+      return { ...result, runtimeEpoch: readinessEpoch(reference) };
+    },
     deleteSession: (reference) => manager.delete(reference.providerSessionId),
     disconnectSession: (reference) => manager.disconnect(reference.providerSessionId),
     renameSession: (reference, title) => manager.rename(reference.providerSessionId, title),

@@ -188,6 +188,21 @@ export class ClientDeviceGateway {
         authenticate(); return reply(response, 200, result);
       }
       this.sockets.set(request.socket, identity.deviceId);
+      const preparationRoute = /^\/client\/v1\/sessions\/([^/]+)\/preparation(?:\/([^/]+)\/cancel)?$/.exec(path);
+      if (preparationRoute && this.sessionAPI) {
+        if (!(["GET", "POST"].includes(request.method))
+            || preparationRoute[2] && request.method !== "POST") throw deviceError("REQUEST_NOT_ALLOWED", 405);
+        const input = request.method === "POST" ? await body(request, 1024) : {};
+        if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length) {
+          throw deviceError("REQUEST_NOT_ALLOWED", 400);
+        }
+        const id = decode(preparationRoute[1], "INVALID_SESSION_ID");
+        const attempt = preparationRoute[2] ? decode(preparationRoute[2], "INVALID_ATTEMPT_ID") : null;
+        const result = await this.sessionAPI.preparation(this.authenticateRequest(request), id,
+          attempt ? "cancel" : request.method === "POST" ? "start" : "current", attempt,
+          () => this.authenticateRequest(request));
+        return reply(response, request.method === "POST" && !attempt ? 202 : 200, result);
+      }
       if (path === "/client/v1/provider-settings/task-creation" && this.sessionAPI?.providerSettings) {
         if ([...url.searchParams.keys()].some(key => key !== "providerId")
             || url.searchParams.getAll("providerId").length > 1) throw deviceError("INVALID_QUERY", 400);

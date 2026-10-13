@@ -13,6 +13,7 @@ export function createProviderStartupMaintenance({
   toolBootstrapBindingPreflight, setProviderRuntimeReadiness,
   collaborationCore, store, codexResetForecastMonitor,
   resumeSessionRecoveryAttemptsAtStartup, deleteHistoricalUnusableTaskSessionsAtStartup,
+  resumeSessionPreparationsAtStartup = async () => {},
   recoverPendingWorkspaceTransitions, reconcileMovedWorkspaceRoutes, sessionRuntimeReleaseService,
   ensureCorptieCodexRuntime = prepareCodexRuntime,
   ensureCorptieClaudeRuntime = prepareClaudeRuntime,
@@ -106,6 +107,7 @@ export function createProviderStartupMaintenance({
         codexResetForecastMonitor.start();
       }),
       runContainedStartupOperation("session-recovery", resumeSessionRecoveryAttemptsAtStartup),
+      runContainedStartupOperation("session-preparation", resumeSessionPreparationsAtStartup),
       runContainedStartupOperation("replaced-session-cleanup", async () => {
         const deleted = await deleteHistoricalUnusableTaskSessionsAtStartup();
         if (deleted > 0) {

@@ -23,6 +23,8 @@ export class CodexStdioTransport {
     this.readline = null;
     this.nextRequestId = 1;
     this.pending = new Map();
+    this.resumeTombstones = new Map();
+    this.onLateResumeResponse = options.onLateResumeResponse ?? (() => {});
     this.initialized = false;
     this.initializePromise = null;
     this.processGeneration = 0;
@@ -144,6 +146,7 @@ export class CodexStdioTransport {
   #clearProcessGeneration(generation, child, error) {
     if (this.activeProcessGeneration !== generation || this.process !== child) return false;
     this.onBeforeClear();
+    this.resumeTombstones.clear();
     for (const [id, pending] of this.pending) {
       if (pending.generation !== generation) continue;
       this.pending.delete(id);
@@ -170,9 +173,27 @@ export class CodexStdioTransport {
     const message = { method, id, params };
 
     return new Promise((resolve, reject) => {
+      const startedAt = performance.now();
+      let requestWritten = false;
       const timer = setTimeout(() => {
         if (this.pending.get(id)?.generation === generation) this.pending.delete(id);
-        reject(new Error(`Codex app-server request timed out: ${method}`));
+        if (method === "thread/resume" && requestWritten) {
+          const now = Date.now();
+          for (const [key, value] of this.resumeTombstones) {
+            if (value.expiresAt <= now) this.resumeTombstones.delete(key);
+          }
+          if (this.resumeTombstones.size < 128) this.resumeTombstones.set(id,
+            { generation, expiresAt: now + 120000 });
+        }
+        // A local deadline is not a remote rejection. Never classify a sent
+        // Turn or resume as safe to replay solely because its response is late.
+        reject(Object.assign(new Error(`Codex app-server request timed out: ${method}`), {
+          code: "PROVIDER_RPC_TIMEOUT", method, requestId: id,
+          processGeneration: generation, timeoutMs,
+          elapsedMs: Math.round(performance.now() - startedAt), requestWritten,
+          remoteDisposition: requestWritten ? "unknown" : "not_sent",
+          safeToRetry: false
+        }));
       }, timeoutMs);
 
       this.pending.set(id, {
@@ -187,7 +208,17 @@ export class CodexStdioTransport {
         }
       });
 
-      child.stdin.write(`${JSON.stringify(message)}\n`);
+      try {
+        const serialized = `${JSON.stringify(message)}\n`;
+        // Mark before write: a stream throwing after partial acceptance cannot
+        // prove that the remote process did not receive the request.
+        requestWritten = true;
+        child.stdin.write(serialized);
+      } catch (error) {
+        this.pending.delete(id);
+        clearTimeout(timer);
+        reject(error);
+      }
     });
   }
 
@@ -219,6 +250,14 @@ export class CodexStdioTransport {
     if ("id" in message) {
       const pending = this.pending.get(message.id);
       if (!pending) {
+        const tombstone = this.resumeTombstones.get(message.id);
+        this.resumeTombstones.delete(message.id);
+        if (tombstone && tombstone.generation === this.activeProcessGeneration
+            && tombstone.expiresAt > Date.now()) {
+          // No params, thread history or remote payload crosses this seam.
+          this.onLateResumeResponse({ requestId: message.id,
+            processGeneration: tombstone.generation, accepted: !("error" in message) });
+        }
         return;
       }
 

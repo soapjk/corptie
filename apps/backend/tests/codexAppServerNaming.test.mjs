@@ -445,7 +445,7 @@ test("resumeThread restores collaboration MCP config and Agent identity", async 
       excludeTurns: undefined,
       initialTurnsPage: undefined
     },
-    timeoutMs: 30000
+    timeoutMs: 60000
   }]);
   assert.equal(client.dynamicToolAgentsByThread.get("thread-a"), "agent-a");
 });

@@ -52,6 +52,21 @@ export function handleSessionExecutionHttpRequest({
   request, response, url, sessionApplicationService, sessionBindingReadinessProbe,
   sendJson, unifiedErrorStatus
 }) {
+  const preparationMatch = url.pathname.match(/^\/sessions\/([^/]+)\/preparation(?:\/([^/]+)\/cancel)?$/);
+  if (preparationMatch && sessionBindingReadinessProbe?.preparations
+      && ((request.method === "GET" && !preparationMatch[2]) || request.method === "POST")) {
+    const sessionId = decodeURIComponent(preparationMatch[1]);
+    const preparations = sessionBindingReadinessProbe.preparations;
+    const operation = preparationMatch[2]
+      ? preparations.cancel(sessionId, decodeURIComponent(preparationMatch[2]))
+      : request.method === "GET" ? preparations.current(sessionId) : preparations.start(sessionId);
+    operation.then(preparation => sendJson(response,
+      request.method === "POST" && !preparationMatch[2] ? 202 : 200, { schemaVersion: 1, preparation }))
+      .catch(error => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message, code: error.code ?? "SESSION_PREPARATION_FAILED"
+      }));
+    return true;
+  }
   const sessionExecutionPreparationMatch = url.pathname.match(/^\/sessions\/([^/]+)\/actions\/prepare-execution$/);
   if (request.method === "POST" && sessionExecutionPreparationMatch) {
     const rawId = decodeURIComponent(sessionExecutionPreparationMatch[1]);

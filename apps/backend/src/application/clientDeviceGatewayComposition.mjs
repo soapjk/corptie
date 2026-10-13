@@ -22,7 +22,8 @@ export function startClientDeviceGateway({
   sessionApplicationService, workSessionStartApplicationService, chatResourceService, launchAgentSession,
   decorateSessionForClient, readSessionUsage, setTaskArchivedForEntityRoutes,
   restartTaskForEntityRoutes, taskDeletionService, clearWorkAvatarFile,
-  sessionBindingRepository, createTaskAndSession, getClientDeviceGateway, onReady
+  sessionBindingRepository, createTaskAndSession, getClientDeviceGateway, onReady,
+  sessionPreparations = null
 }) {
   const startDeviceAccess = process.env.CORPTIE_REMOTE_ACCESS === "1" ? startConfiguredDeviceGateway : createDeviceSetup;
   void startDeviceAccess({ directory: join(store.dataRoot, "client-devices"), preview: developmentPreview,
@@ -39,6 +40,7 @@ export function startClientDeviceGateway({
       emit: emitEvent
     }),
     sessionAPIFactory: () => new ClientSessionAPI({ store,
+      preparations: sessionPreparations,
       providerSettings: new TaskCreationSettingsService({ store, registry: agentProviderRegistry,
         sessions: sessionApplicationService, readOnly: developmentPreview }),
       searchPage: query => getTimelineReadPool().readUnifiedSearch({ query: query.toString() }), readWindow: readSessionTimelineWindow,

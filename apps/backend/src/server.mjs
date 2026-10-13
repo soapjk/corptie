@@ -1302,7 +1302,20 @@ const { toolBootstrapBindingPreflight, emptyCodexBindingPreflight } = createProv
   requireSessionReference, sessionApplicationService
 });
 sessionBindingReadinessProbe = new SessionBindingReadinessProbe({
-  resolveReference: (sessionId) => sessionApplicationService.referenceFor(sessionId),
+  preparationPersistence: {
+    read: () => store.getRuntimeState("session-preparations/v1"),
+    write: snapshot => store.setRuntimeState("session-preparations/v1", snapshot)
+  },
+  resolveReference: async sessionId => {
+    const reference = await sessionApplicationService.referenceFor(sessionId);
+    const materialization = reference.logicalSessionId && reference.bindingId
+      ? store.getSessionToolCatalogMaterialization(reference.logicalSessionId, reference.bindingId) : null;
+    return { ...reference, readinessContractRevision: materialization ? JSON.stringify([
+      materialization.appliedVersion, materialization.appliedCatalogVersion,
+      materialization.providerReceipt?.providerDefinitionsHash, materialization.providerReceipt?.providerRevision
+    ]) : null,
+      readinessRuntimeEpoch: agentProviderRegistry.get(reference.providerId).readinessEpoch?.(reference) ?? null };
+  },
   probe: (sessionId, context) => sessionApplicationService.probeBindingReadiness(sessionId, context),
   onChanged: (sessionId) => store.touchSessionProjectionDependency(sessionId)
 });
@@ -2313,6 +2326,7 @@ function startBackendRuntime() {
   taskSummaryService.start();
   worktreeAutoFollowService.start();
   startClientDeviceGateway({
+    sessionPreparations: sessionBindingReadinessProbe.preparations,
     store, environmentName, developmentPreview, worktreeIntegrationJobService, projectApplicationService,
     emitEvent, readSessionTimelineWindow, getTimelineReadPool, requireSessionReference,
     sessionContextReferenceService, artifactService, scheduledSessionTaskService,
@@ -2348,6 +2362,7 @@ const {
   workspaceTransitionRuntimeForLogicalSession
 });
 const { runProviderStartupMaintenance } = createProviderStartupMaintenance({
+  resumeSessionPreparationsAtStartup: () => sessionBindingReadinessProbe.preparations.resumeAtStartup(),
   workSessionStartupCoordinator, projectToolsetInitializer,
   environmentName, bundledAgentMemoryPath, bundledCollaborationSkillPath,
   bundledProjectToolsetReferencePath, collaborationMcpServerPath,

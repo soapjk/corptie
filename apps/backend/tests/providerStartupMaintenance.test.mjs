@@ -17,6 +17,7 @@ function fixture(overrides = {}) {
     collaborationCore: {}, store: {},
     codexResetForecastMonitor: { start: record("monitor") },
     resumeSessionRecoveryAttemptsAtStartup: record("session-recovery"),
+    resumeSessionPreparationsAtStartup: record("session-preparation"),
     deleteHistoricalUnusableTaskSessionsAtStartup: record("cleanup", 0),
     recoverPendingWorkspaceTransitions: record("transitions"),
     reconcileMovedWorkspaceRoutes: (worktrees, options) => events.push({ worktrees, options }),
@@ -46,6 +47,7 @@ test("construction is inert and startup preserves initialization and cleanup bar
   for (const prerequisite of ["codex-initialize", "claude", "openclacky-start"]) {
     before(prerequisite, "empty-run");
     before(prerequisite, "session-recovery");
+    before(prerequisite, "session-preparation");
   }
   before("empty-run", "tool-run");
   before("tool-run", "release");

@@ -95,6 +95,13 @@ struct SessionNotReadyComposerNotice: View {
     let reason: SessionNotReadyReason
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            SessionPreparationNotice(sessionID: session.id, api: {
+                let transport = try BackendTransport(endpoint: BackendEndpoint(backendClient.baseURL))
+                return ClientSessionPreparationAPI(transport: transport, route: .desktop)
+            }, didPrepare: {
+                await AppStateSyncController.shared.refreshSnapshot()
+            })
         HStack(alignment: .center, spacing: 9) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 11, weight: .semibold))
@@ -136,6 +143,7 @@ struct SessionNotReadyComposerNotice: View {
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(Color.orange.opacity(0.2), lineWidth: 1)
+        }
         }
     }
 }

@@ -25,6 +25,9 @@ function threadResumeFingerprint(options = {}) {
   return JSON.stringify({
     cwd: options.cwd ?? null,
     runtimeWorkspaceRoots: options.runtimeWorkspaceRoots ?? null,
+    model: options.model ?? null, modelProvider: options.modelProvider ?? null,
+    approvalPolicy: options.approvalPolicy ?? null, approvalsReviewer: options.approvalsReviewer ?? null,
+    sandbox: options.sandbox ?? null, permissions: options.permissions ?? null,
     config: options.config ?? null,
     developerInstructions: options.developerInstructions ?? null,
     dynamicTools: options.dynamicTools ?? null,
@@ -36,6 +39,9 @@ function threadResumeFingerprint(options = {}) {
 
 export class CodexAppServerClient {
   constructor(options = {}) {
+    // Cold Session restoration has a separate budget from ordinary RPCs and
+    // process initialization. Callers may explicitly choose a shorter budget.
+    this.threadResumeTimeoutMs = options.threadResumeTimeoutMs ?? 60000;
     this.onNotification = typeof options.onNotification === "function" ? options.onNotification : null;
     this.onDynamicToolCall = typeof options.onDynamicToolCall === "function" ? options.onDynamicToolCall : null;
     this.notifications = [];
@@ -59,6 +65,7 @@ export class CodexAppServerClient {
     this.dynamicToolMetadataByThread = new Map();
     this.confirmedToolSchemasByThread = new Map();
     this.threadResumeFingerprints = new Map();
+    this.unsettledResumes = new Map();
     this.threadResumePromises = new Map();
     this.recoveryStabilizationThreads = new Map();
     // thread/start creates an in-memory thread before Codex has written its
@@ -71,6 +78,19 @@ export class CodexAppServerClient {
       onNotification: (message) => this.handleNotification(message),
       onServerRequest: (message) => this.handleServerRequest(message),
       onBeforeClear: () => this.expireGenerationInteractions(),
+      onLateResumeResponse: proof => {
+        for (const [threadId, pending] of this.unsettledResumes) {
+          if (pending.requestId !== proof.requestId || pending.generation !== proof.processGeneration) continue;
+          if (proof.accepted && !pending.retired) {
+            if (pending.dynamicToolAgentId) {
+              this.dynamicToolAgentsByThread.set(threadId, pending.dynamicToolAgentId);
+              this.dynamicToolMetadataByThread.set(threadId, pending.dynamicToolMetadata);
+            }
+            this.threadResumeFingerprints.set(threadId, pending.fingerprint);
+          }
+          this.unsettledResumes.delete(threadId);
+        }
+      },
       onCleared: () => this.clearGenerationThreadState()
     });
     this.backgroundOperations = createCodexBackgroundOperations({
@@ -199,6 +219,8 @@ export class CodexAppServerClient {
   }
 
   releaseThreadRuntimeState(threadId) {
+    const uncertain = this.unsettledResumes.get(threadId);
+    if (uncertain) uncertain.retired = true;
     this.liveThreadCache.releaseThread(threadId);
     this.serverRequestsByThread.delete(threadId);
     this.dynamicToolAgentsByThread.delete(threadId);
@@ -298,7 +320,19 @@ export class CodexAppServerClient {
   async resumeThread(threadId, options = {}) {
     await this.initialize();
     this.requireThreadToolPlanConfirmation(threadId, options);
-    const result = await this.request("thread/resume", {
+    if (this.unsettledResumes.has(threadId) || this.unsettledResumes.size >= 128) {
+      throw Object.assign(new Error("Previous Session resume outcome must be reconciled."), {
+        code: "PROVIDER_RESUME_OUTCOME_UNKNOWN", safeToRetry: false
+      });
+    }
+    const pending = { fingerprint: threadResumeFingerprint(options),
+      dynamicToolAgentId: options.dynamicToolAgentId, dynamicToolMetadata: options.dynamicToolMetadata ?? null,
+      generation: this.transport.activeProcessGeneration };
+    this.unsettledResumes.set(threadId, pending);
+    this.threadResumeFingerprints.delete(threadId);
+    let result;
+    try {
+      result = await this.request("thread/resume", {
       threadId,
       cwd: options.cwd ?? undefined,
       runtimeWorkspaceRoots: options.runtimeWorkspaceRoots ?? undefined,
@@ -312,13 +346,31 @@ export class CodexAppServerClient {
       developerInstructions: options.developerInstructions ?? undefined,
       excludeTurns: options.excludeTurns ?? undefined,
       initialTurnsPage: options.initialTurnsPage ?? undefined
-    }, options.requestTimeoutMs ?? 30000);
+      }, options.requestTimeoutMs ?? this.threadResumeTimeoutMs);
+    } catch (error) {
+      if (error.code === "PROVIDER_RPC_TIMEOUT" && error.remoteDisposition === "unknown") {
+        pending.requestId = error.requestId;
+      } else if (this.unsettledResumes.get(threadId) === pending) this.unsettledResumes.delete(threadId);
+      throw error;
+    }
+    if (this.unsettledResumes.get(threadId) === pending) this.unsettledResumes.delete(threadId);
+    if (pending.retired || pending.generation !== this.transport.activeProcessGeneration) {
+      throw Object.assign(new Error("Session resume proof was superseded."), { code: "SESSION_BINDING_CHANGED" });
+    }
     if (options.dynamicToolAgentId) {
       this.dynamicToolAgentsByThread.set(threadId, options.dynamicToolAgentId);
       this.dynamicToolMetadataByThread.set(threadId, options.dynamicToolMetadata ?? null);
     }
     this.threadResumeFingerprints.set(threadId, threadResumeFingerprint(options));
     return result;
+  }
+
+  inspectThreadResume(threadId, options = {}) {
+    this.requireThreadToolPlanConfirmation(threadId, options);
+    return { ready: Boolean(this.transport.activeProcessGeneration)
+      && !this.unsettledResumes.has(threadId)
+      && this.threadResumeFingerprints.get(threadId) === threadResumeFingerprint(options),
+      reasonCode: "PROVIDER_RESUME_OUTCOME_UNKNOWN" };
   }
 
   bindThreadToolContext(threadId, options = {}) {
@@ -652,6 +704,7 @@ export class CodexAppServerClient {
   }
 
   clearGenerationThreadState() {
+    this.unsettledResumes.clear();
     this.threadResumeFingerprints.clear();
     this.threadResumePromises.clear();
     this.freshThreadIds.clear();
