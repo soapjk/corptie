@@ -6,8 +6,9 @@
   <string>com.corptie.cloud</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/sh</string>
-    <string>/Volumes/T9/data/corptie-cloud/current/ops/run-cloud.sh</string>
+    <string>/Volumes/T9/data/corptie-cloud/shared/runtime/node</string>
+    <string>--env-file=/Volumes/T9/data/corptie-cloud/shared/config/cloud.env</string>
+    <string>/Volumes/T9/data/corptie-cloud/current/dist/src/main.js</string>
   </array>
   <key>RunAtLoad</key>
   <true/>

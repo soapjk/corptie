@@ -79,7 +79,8 @@ export function parseBridgeConfig(text) {
   if (!common.match(/^vkey\s*=\s*\S+\s*$/m)) throw new Error("Missing bridge credential");
   return { host: match[1], port: +match[2] };
 }
-export async function acquireLock(directory) {
+export async function acquireLock(directory, bootSession = null) {
+  if (bootSession !== null && !/^[0-9a-f-]{36}$/i.test(bootSession)) throw new Error("Invalid boot session");
   if (!isAbsolute(directory)) throw new Error("Absolute state directory required");
   if (["/", "/tmp", "/private/tmp"].includes(directory)) throw new Error("Dedicated state directory required");
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -87,7 +88,9 @@ export async function acquireLock(directory) {
   if (info.isSymbolicLink() || !info.isDirectory() || (info.mode & 0o077) !== 0 || info.uid !== process.getuid()) {
     throw new Error("State directory must be owned, private and not a symlink");
   }
-  const lock = join(directory, "supervisor.lock");
+  // A previous boot's process cannot own a lock in this boot. Keep same-boot
+  // exclusion fail-closed without deleting locks or killing unknown PIDs.
+  const lock = join(directory, bootSession ? `supervisor-${bootSession.toLowerCase()}.lock` : "supervisor.lock");
   const handle = await open(lock, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
   await handle.writeFile(String(process.pid));
   await handle.close();
@@ -108,7 +111,8 @@ async function main(args) {
     return { local, publicHealth, bridgeReachable };
   };
   if (!opts["--supervise"]) { emit("diagnostic", { ...await sample(), existingNPCCount: (await existingNPCs()).length }); return; }
-  const release = await acquireLock(opts["--state-dir"]);
+  const { stdout: bootSession } = await promisify(execFile)("/usr/sbin/sysctl", ["-n", "kern.bootsessionuuid"]);
+  const release = await acquireLock(opts["--state-dir"], bootSession.trim());
   let child, stopping = false;
   const statePath = join(opts["--state-dir"], "restart-state.json");
   try {
