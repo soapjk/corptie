@@ -54,6 +54,24 @@ test("HTTP and bridge probes are bounded and redirects do not leak to another de
   assert.equal(await probeBridge("127.0.0.1", port), false);
 });
 
+test("reboot isolates stale locks while preserving same-boot exclusion and restart budget", async () => {
+  const root = await mkdtemp("/private/tmp/corptie-npc-boot-");
+  try {
+    const a = "11111111-1111-1111-1111-111111111111";
+    const b = "22222222-2222-2222-2222-222222222222";
+    const releaseA = await acquireLock(root, a);
+    await writeFile(join(root, "restart-state.json"), "[123]", { mode: 0o600 });
+    await assert.rejects(acquireLock(root, a));
+    const releaseB = await acquireLock(root, b);
+    await assert.rejects(acquireLock(root, b));
+    await assert.rejects(acquireLock(root, "../../unsafe"));
+    assert.equal(await readFile(join(root, "restart-state.json"), "utf8"), "[123]");
+    await releaseB();
+    assert.equal(await readFile(join(root, `supervisor-${a}.lock`), "utf8"), String(process.pid));
+    await releaseA();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("owned process lifecycle is local-only, redacts output and refuses competing NPCs", async () => {
   const root = await mkdtemp("/private/tmp/corptie-npc-lifecycle-");
   let child;
