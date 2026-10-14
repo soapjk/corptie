@@ -1275,6 +1275,10 @@
 "Agent finished; automatic validation needs attention" = "Agent 已完成，但自动验证需要处理";
 "Agent resolved the conflicts; validating and continuing automatically…" = "Agent 已解决冲突，正在验证并自动继续…";
 "Retry Agent for Remaining Worktrees" = "重试 Agent 并继续剩余 Worktree";
+"Restart Conflict Agent" = "重新启动冲突 Agent";
+"Starting Conflict Agent…" = "正在启动冲突 Agent…";
+"Corptie is starting the conflict Agent in the preserved Integration Worktree. The merge will be marked as running only after its first instruction is durably accepted." = "Corptie 正在保留的 Integration Worktree 中启动冲突 Agent。只有首条指令被可靠接收后，合并才会标记为运行中。";
+"The Integration Worktree, conflict files, and completed merge progress were preserved. Restart the Agent, inspect the failed Session, continue manually, or cancel safely." = "Integration Worktree、冲突文件和已完成的合并进度均已保留。你可以重新启动 Agent、查看失败会话、手动继续，或安全取消。";
 "Integration plan completed. All planned Worktrees reached a final state." = "合并计划已完成，全部计划内 Worktree 均已进入最终状态。";
 "Automatic conflict resolution is blocked at %@." = "自动冲突处理在 %@ 处阻塞。";
 "Conflicting files: %@" = "冲突文件：%@";

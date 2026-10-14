@@ -92,12 +92,17 @@ async function fixture(overrides = {}) {
     calls.inspectBinding += 1;
     const error = new Error("not bound"); error.code = "START_PROVIDER_BINDING_NOT_FOUND"; throw error;
   });
-  const dispatchInitialTurn = overrides.activateSession ?? (async ({ receipt }) => {
+  const dispatchInitialTurn = overrides.activateSession ?? (async (activation) => {
     calls.activate += 1;
+    const state = store.selectOne(
+      "SELECT state FROM work_session_startup_operations WHERE startup_operation_id=?",
+      [activation.startupOperationId ?? activation.receipt?.startupOperationId]
+    ).state;
     assert.equal(store.selectOne(
       "SELECT state FROM work_session_startup_operations WHERE startup_operation_id=?",
-      [receipt.startupOperationId]
-    ).state, "ready", "first Turn may dispatch only after ready receipt commits");
+      [activation.startupOperationId ?? activation.receipt?.startupOperationId]
+    ).state, activation.receipt ? "ready" : "provider_bound",
+    `first Turn dispatched from unexpected startup state ${state}`);
   });
   const service = new WorkSessionStartupCoordinator({
     store,
@@ -131,7 +136,18 @@ async function fixture(overrides = {}) {
             instructionSourcesHash: "d".repeat(64)
           };
         }
-        return dispatchInitialTurn(activation);
+        await dispatchInitialTurn(activation);
+        const binding = store.selectOne(
+          "SELECT provider_resource_id FROM work_session_startup_bindings WHERE provider_binding_id=?",
+          [activation.providerBindingId]
+        );
+        return {
+          providerResourceId: binding?.provider_resource_id ?? activation.activationProof?.providerResourceId,
+          canonicalWorkingDirectory: activation.workingDirectory
+            ?? activation.activationProof?.canonicalWorkingDirectory,
+          toolContractHash: "c".repeat(64),
+          instructionSourcesHash: "d".repeat(64)
+        };
       },
       compensateSession: overrides.compensateSession ?? (async () => {})
     },
@@ -162,6 +178,29 @@ test("startup persists model settings and delivers them through the shared Provi
     await f.service.start(command);
     assert.equal(observed.length, 1);
     await assert.rejects(f.service.start({ ...command, model: "different" }));
+  } finally { await cleanup(f); }
+});
+
+test("startup persists a custom initial prompt and binds it to the idempotency fingerprint", async () => {
+  const observed = [];
+  const f = await fixture({
+    activateSession: async (activation) => {
+      observed.push(activation.initialPrompt);
+    }
+  });
+  try {
+    const command = { ...input(), initialPrompt: "Resolve only the preserved conflict." };
+    const ready = await f.service.start(command);
+    assert.equal(ready.turnDispatch.status, "accepted");
+    assert.deepEqual(observed, [command.initialPrompt]);
+    assert.equal(
+      f.store.selectOne("SELECT initial_prompt FROM work_session_startup_operations").initial_prompt,
+      command.initialPrompt
+    );
+    await assert.rejects(
+      () => f.service.start({ ...command, initialPrompt: "A different instruction." }),
+      { code: "START_IDEMPOTENCY_CONFLICT" }
+    );
   } finally { await cleanup(f); }
 });
 
@@ -216,7 +255,7 @@ test("an existing Worker Session rejects a second startup before side effects", 
   } finally { await cleanup(f); }
 });
 
-test("commits a complete hash-verifiable StartupBindingReceipt before first Turn dispatch", async () => {
+test("accepts the first Turn before committing a complete hash-verifiable StartupBindingReceipt", async () => {
   const f = await fixture();
   try {
     const result = await f.service.start(input());
@@ -332,11 +371,15 @@ test("initial Turn failure is explicit and the same idempotency key retries with
       code: "START_INITIAL_TURN_FAILED",
       stage: "initial_turn"
     });
-    assert.equal(f.store.getTask("task:one").execution_status, "running");
+    assert.equal(f.store.getTask("task:one").execution_status, "idle");
+    assert.equal(
+      f.store.selectOne("SELECT state FROM work_session_startup_operations").state,
+      "provider_bound"
+    );
     assert.equal(f.calls.create, 1);
     const replay = await f.service.start(input());
     assert.equal(replay.status, "ready");
-    assert.equal(replay.idempotentReplay, true);
+    assert.equal(replay.idempotentReplay, false);
     assert.equal(replay.turnDispatch.status, "accepted");
     assert.equal(f.calls.create, 1);
     assert.equal(attempts, 2);
@@ -460,7 +503,7 @@ test("receipt write failure rolls back ready state atomically", async () => {
       f.store.selectOne("SELECT state FROM work_session_startup_operations").state,
       "ready"
     );
-    assert.equal(f.calls.activate, 0);
+    assert.equal(f.calls.activate, 1);
   } finally { await cleanup(f); }
 });
 
@@ -622,7 +665,7 @@ test("backend reopen recovers an expired worktree_prepared lease without duplica
         },
         bindWorkspace: async (value) => proof(value, "resource:recovered"),
         inspectBinding: async () => null,
-        activateSession: async (activation) => activation.dispatchInitialTurn === true ? undefined : ({
+        activateSession: async (activation) => ({
           providerResourceId: "resource:recovered",
           canonicalWorkingDirectory: activation.workingDirectory,
           toolContractHash: "c".repeat(64), instructionSourcesHash: "d".repeat(64)

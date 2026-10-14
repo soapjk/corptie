@@ -107,7 +107,7 @@ test("message dispatch reuses binding readiness and invalidates it after Provide
   assert.match(body, /catch \(error\) \{[\s\S]*sessionBindingReadinessProbe\.invalidateBinding\(reference\)/);
 });
 
-test("Worker initial prompts drain only after the authoritative ready receipt commit", async () => {
+test("Worker initial prompts are durably admitted by the authoritative startup activation", async () => {
   const root = await readFile(sourceURL, "utf8");
   assert.match(root, /createWorkSessionStartupComposition\(/);
   const source = await readFile(new URL("../src/application/workSessionStartupComposition.mjs", import.meta.url), "utf8");
@@ -122,7 +122,8 @@ test("Worker initial prompts drain only after the authoritative ready receipt co
   const activateIndex = serviceBody.indexOf("activateSession:");
   assert.ok(finalizeIndex >= 0 && activateIndex > finalizeIndex);
   assert.match(serviceBody.slice(activateIndex), /sessionApplicationService\.resumeSession\(session\.id,[\s\S]*purpose:\s*"session-create-finalization"/);
-  assert.match(serviceBody.slice(activateIndex), /sendUnifiedSessionMessage\(session\.id, taskExecutionPrompt\(task\)/);
+  assert.match(serviceBody.slice(activateIndex), /admitReliableSessionMessage\([\s\S]*initialPrompt \?\? taskExecutionPrompt\(task\)/);
+  assert.match(serviceBody.slice(activateIndex), /messageId:\s*initialMessageId[\s\S]*deliveryId:/);
 });
 
 test("Worker startup composition consumes only the authoritative assignee Agent identity", async () => {
@@ -166,7 +167,7 @@ test("a replaced Worker Session cannot overwrite its Task lifecycle", async () =
 
 test("every supported streaming Provider isolates lifecycle callback failures", async () => {
   const source = await readFile(sourceURL, "utf8");
-  assert.match(source, /onNotification:\s*\(message\)[\s\S]*handleCodexAppServerNotificationSafely/);
+  assert.match(source, /onNotification:\s*\(message(?:,\s*profile)?\)[\s\S]*handleCodexAppServerNotificationSafely/);
   assert.match(source, /onTurnSettled:\s*handleClaudeTurnSettledSafely/);
   const openClackyReceiver = await readFile(new URL("../src/agent-provider/bootstrap/openClackyRuntimeManagerComposition.mjs", import.meta.url), "utf8");
   assert.match(openClackyReceiver, /provider=openclacky[\s\S]*markProviderBindingCursorDegraded/);

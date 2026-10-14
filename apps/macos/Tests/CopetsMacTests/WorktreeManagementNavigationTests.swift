@@ -542,6 +542,8 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(view.contains("The Agent result was not promoted"))
         XCTAssertTrue(view.contains("Revalidate and Continue"))
         XCTAssertTrue(view.contains("worktree.integrate.retry-agent-conflicts"))
+        XCTAssertTrue(view.contains("Restart Conflict Agent"))
+        XCTAssertTrue(view.contains("job.isStartingConflictAgent"))
         XCTAssertTrue(view.contains("Automatic conflict resolution is blocked at %@."))
         XCTAssertTrue(view.contains("Conflicting files: %@"))
         XCTAssertTrue(view.contains("Integration plan completed. All planned Worktrees reached a final state."))
@@ -590,6 +592,8 @@ final class WorktreeManagementNavigationTests: XCTestCase {
             "\"Stopping at a safe boundary\" = \"正在安全步骤边界停止\";",
             "\"The integration plan is stale. Regenerate and review it before continuing.\" = \"代码状态已变化，当前集成计划已失效。请重新生成并审阅后再继续。\";",
             "\"Let Agent Resolve Conflicts\" = \"让 Agent 一键解决冲突\";",
+            "\"Restart Conflict Agent\" = \"重新启动冲突 Agent\";",
+            "\"Starting Conflict Agent…\" = \"正在启动冲突 Agent…\";",
             "\"View Agent Session\" = \"查看 Agent 会话\";",
             "\"Conflict resolved; continuing automatically\" = \"冲突已解决，正在自动继续\";",
             "\"Agent resolved the conflicts; validating and continuing automatically…\" = \"Agent 已解决冲突，正在验证并自动继续…\";",

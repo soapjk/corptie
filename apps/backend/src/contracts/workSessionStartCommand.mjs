@@ -1,6 +1,6 @@
 export const WORK_SESSION_START_FIELDS = Object.freeze([
   "taskId", "assigneeAgentId", "expectedTaskVersion", "providerId", "title",
-  "idempotencyKey", "sourceSessionId", "dispatchInitialTurn", "model", "reasoningLevel"
+  "idempotencyKey", "sourceSessionId", "dispatchInitialTurn", "initialPrompt", "model", "reasoningLevel"
 ]);
 
 const FIELDS = new Set(WORK_SESSION_START_FIELDS);
@@ -38,6 +38,13 @@ export function decodeWorkSessionStartCommand(input = {}) {
   if (input.dispatchInitialTurn != null && typeof input.dispatchInitialTurn !== "boolean") {
     throw startContractError("INVALID_INPUT", "dispatchInitialTurn must be a boolean.");
   }
+  const initialPrompt = optionalPrompt(input.initialPrompt);
+  if (initialPrompt && input.dispatchInitialTurn === false) {
+    throw startContractError(
+      "INVALID_INPUT",
+      "initialPrompt requires dispatchInitialTurn to be enabled."
+    );
+  }
   return Object.freeze({
     taskId,
     assigneeAgentId,
@@ -48,8 +55,24 @@ export function decodeWorkSessionStartCommand(input = {}) {
     ...(text(input.title) ? { title: text(input.title) } : {}),
     idempotencyKey: boundedText(input.idempotencyKey, "idempotencyKey", 200),
     sourceSessionId,
-    dispatchInitialTurn: input.dispatchInitialTurn !== false
+    dispatchInitialTurn: input.dispatchInitialTurn !== false,
+    ...(initialPrompt ? { initialPrompt } : {})
   });
+}
+
+function optionalPrompt(value) {
+  if (value == null) return null;
+  if (typeof value !== "string") {
+    throw startContractError("INVALID_INPUT", "initialPrompt must be a string.");
+  }
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 100_000) {
+    throw startContractError(
+      "INVALID_INPUT",
+      "initialPrompt must be a non-empty string of at most 100000 characters."
+    );
+  }
+  return normalized;
 }
 
 function optionalSetting(input, field) {

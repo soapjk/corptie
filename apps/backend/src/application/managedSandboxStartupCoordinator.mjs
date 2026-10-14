@@ -59,7 +59,9 @@ export class ManagedSandboxStartupCoordinator {
       providerId: authorization.providerId,
       assigneeAgentId: command.assigneeAgentId,
       expectedTaskVersion: command.expectedTaskVersion,
-      idempotencyKey: command.idempotencyKey
+      idempotencyKey: command.idempotencyKey,
+      dispatchInitialTurn: command.dispatchInitialTurn !== false,
+      initialPromptHash: command.initialPrompt ? digest(command.initialPrompt) : null
     }));
     let row = this.#allocate({ operationId, command, authorization, sourcePath, workspaceId, fingerprint });
     if (row.request_fingerprint !== fingerprint) {
@@ -100,7 +102,8 @@ export class ManagedSandboxStartupCoordinator {
         workspaceId,
         executionStrategy: "managedSandbox",
         workingDirectory: rootPath,
-        dispatchInitialTurn: false
+        startupOperationId: operationId,
+        dispatchInitialTurn: command.dispatchInitialTurn !== false
       });
       const logical = this.store.getLogicalSessionByLegacySessionId(session.id);
       const now = this.clock();
@@ -120,6 +123,7 @@ export class ManagedSandboxStartupCoordinator {
         baseWorkspaceRevision: row.base_workspace_revision,
         toolContractHash: activation?.toolContractHash ?? null,
         instructionSourcesHash: activation?.instructionSourcesHash ?? null,
+        initialTurnState: command.dispatchInitialTurn === false ? "deferred" : "accepted",
         readyAt: now
       };
       const receipt = { ...unsignedReceipt, receiptHash: digest(stableJson(unsignedReceipt)) };
@@ -151,11 +155,6 @@ export class ManagedSandboxStartupCoordinator {
       this.store.scheduleSave();
       this.onChanged("TaskChanged", { action: "startup-ready", entity: this.store.getTask(command.taskId) });
       if (command.dispatchInitialTurn !== false) {
-        await this.providerWorkSessionPort.activateSession({
-          ...command, session, workId: authorization.workId, workspaceId,
-          executionStrategy: "managedSandbox", workingDirectory: rootPath,
-          dispatchInitialTurn: true, receipt
-        });
         return {
           ...this.#view(this.#row(operationId), false),
           turnDispatch: { status: "accepted", errorCode: null }
@@ -254,10 +253,11 @@ export class ManagedSandboxStartupCoordinator {
         error: row.error_code ? { code: row.error_code, message: row.error_message } : null
       };
     }
+    const receipt = JSON.parse(row.receipt_json);
     return {
       status: "ready",
       idempotentReplay,
-      receipt: JSON.parse(row.receipt_json),
+      receipt,
       operation: {
         startupOperationId: row.execution_space_id,
         taskId: row.task_id,
@@ -266,7 +266,10 @@ export class ManagedSandboxStartupCoordinator {
       },
       session: this.store.getSession(row.session_id),
       task: this.store.getTask(row.task_id),
-      turnDispatch: { status: "deferred", errorCode: null }
+      turnDispatch: {
+        status: receipt.initialTurnState === "accepted" ? "accepted" : "deferred",
+        errorCode: null
+      }
     };
   }
 }

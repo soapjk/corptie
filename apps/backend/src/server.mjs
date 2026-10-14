@@ -1502,7 +1502,8 @@ taskExecutionOrchestrator = composedTaskExecutionOrchestrator;
   ensureTaskWorkspace,
   createProviderWorkSession: (input) => createProviderWorkSession(input),
   requiredWorkspaceInstructionSources, knownGlobalInstructionSources,
-  sendUnifiedSessionMessage, projectApplicationService, gitWorkspaces,
+  admitReliableSessionMessage: (...args) => sessionMessageOperation.admitReliableMessage(...args),
+  projectApplicationService, gitWorkspaces,
   projectCodeApplicationService, resolveSessionProviderId, emitEvent
 }));
 const { sessionForkService, prepareConversationForkWorkspace } = createSessionForkOperations({
@@ -1515,7 +1516,8 @@ const { sessionForkService, prepareConversationForkWorkspace } = createSessionFo
 const { projectWorktreeIntegrationService, worktreeIntegrationJobService } = createWorktreeIntegrationServices({
   store, projectApplicationService, gitWorkspaces, gitHubPushes, gitCommitProtection,
   workService, artifactService, agentProviderRegistry, startPreparedWorkSession,
-  sendUnifiedSessionMessage, emitEvent, presentTaskForClient,
+  admitReliableSessionMessage: (...args) => sessionMessageOperation.admitReliableMessage(...args),
+  emitEvent, presentTaskForClient,
   authorizeAutomaticFollow: job => worktreeAutoFollowService?.authorizes(job) === true
 });
 worktreeAutoFollowService = new WorktreeAutoFollowService({

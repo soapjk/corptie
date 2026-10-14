@@ -249,7 +249,9 @@ export class WorkSessionStartupCoordinator {
         try {
           operation = await this.#ensureProviderActivated(operation, allocation);
         } catch (error) {
-          throw phaseFailure(error, "START_PROVIDER_BINDING_FAILED", "provider_activation");
+          throw operation.dispatch_initial_turn === 0
+            ? phaseFailure(error, "START_PROVIDER_BINDING_FAILED", "provider_activation")
+            : phaseFailure(error, "START_INITIAL_TURN_FAILED", "initial_turn");
         }
         const ready = this.#commitReady(operation, allocation);
         this.#notifyReady(ready);
@@ -260,6 +262,14 @@ export class WorkSessionStartupCoordinator {
     } catch (error) {
       operation = this.#operation(operationId);
       if (operation?.state === "ready") throw error;
+      if (operation?.state === "provider_bound" && error?.stage === "initial_turn") {
+        this.#recordInitialTurnFailure(operation, error);
+        error.startup = {
+          ...this.#pendingView(this.#operation(operationId)),
+          turnDispatch: { status: "failed", errorCode: "START_INITIAL_TURN_FAILED" }
+        };
+        throw error;
+      }
       await this.#failAndCompensate(operation, error);
       error.startup = this.#failureView(this.#operation(operationId));
       throw error;
@@ -279,6 +289,7 @@ export class WorkSessionStartupCoordinator {
     );
     const providerId = command.providerId;
     const dispatchInitialTurn = command.dispatchInitialTurn !== false;
+    const initialPrompt = optionalText(command.initialPrompt);
     const normalized = {
       sourceSessionId,
       workId,
@@ -290,6 +301,7 @@ export class WorkSessionStartupCoordinator {
       title: optionalText(command.title),
       ...(command.model ? { model: command.model } : {}),
       ...(command.reasoningLevel ? { reasoningLevel: command.reasoningLevel } : {}),
+      ...(initialPrompt ? { initialPromptHash: sha256(initialPrompt) } : {}),
       // Preserve the pre-policy fingerprint for the default behavior so
       // startup idempotency remains compatible across upgrades.
       ...(dispatchInitialTurn ? {} : { dispatchInitialTurn: false })
@@ -358,12 +370,14 @@ export class WorkSessionStartupCoordinator {
         `INSERT INTO work_session_startup_operations (
           startup_operation_id, work_id, task_id, assignee_agent_id, expected_task_version, provider_id,
           repository_id, source_session_id,
-          idempotency_key, request_fingerprint, source, requested_title, requested_model, requested_reasoning_level, dispatch_initial_turn, state,
+          idempotency_key, request_fingerprint, source, requested_title, requested_model, requested_reasoning_level,
+          initial_prompt, dispatch_initial_turn, state,
           lease_owner, lease_expires_at, correlation_id, allocated_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'application', ?, ?, ?, ?, 'allocated', ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'application', ?, ?, ?, ?, ?, 'allocated', ?, ?, ?, ?, ?)`,
         [operationId, workId, taskId, assigneeAgentId, expectedTaskVersion, providerId,
           repositoryId, sourceSessionId, idempotencyKey, fingerprint,
-          normalized.title, command.model ?? null, command.reasoningLevel ?? null, dispatchInitialTurn ? 1 : 0, this.leaseOwner,
+          normalized.title, command.model ?? null, command.reasoningLevel ?? null,
+          initialPrompt, dispatchInitialTurn ? 1 : 0, this.leaseOwner,
           expiresAt(now, this.leaseTtlMs), correlationId, now, now]
       );
       result = this.store.selectOne(
@@ -501,34 +515,42 @@ export class WorkSessionStartupCoordinator {
     if (!binding) throw coded("START_PROVIDER_BINDING_FAILED", "Provider binding disappeared before activation.", 409, true);
     if (binding.activation_proof_json) {
       this.#verifiedActivationProof(binding, jsonObject(binding.activation_proof_json), allocation);
-      return operation;
+      if (operation.dispatch_initial_turn === 0 || operation.initial_turn_state === "accepted") {
+        return operation;
+      }
     }
     const proof = await this.providerWorkSessionPort.activateSession({
       ...this.#inputFor(operation),
       ...this.#providerBindingInput(operation, binding, allocation),
       session: this.store.getSession(operation.legacy_session_id),
-      dispatchInitialTurn: false
+      startupOperationId: operation.startup_operation_id,
+      dispatchInitialTurn: operation.dispatch_initial_turn !== 0
     });
     const verified = this.#verifiedActivationProof(binding, proof, allocation);
     const now = this.clock();
     const nextVersion = operation.resource_version + 1;
     this.store.runInTransaction(() => {
+      if (!binding.activation_proof_json) {
+        this.store.db.run(
+          `UPDATE work_session_startup_bindings SET tool_contract_hash=?, instruction_sources_hash=?,
+           activation_proof_json=?, resource_version=resource_version+1
+           WHERE provider_binding_id=? AND status='binding' AND activation_proof_json IS NULL`,
+          [verified.toolContractHash, verified.instructionSourcesHash, canonicalJson(verified), binding.provider_binding_id]
+        );
+        requireSingleRowChange(this.store, "Provider activation proof lost its binding claim.");
+      }
       this.store.db.run(
-        `UPDATE work_session_startup_bindings SET tool_contract_hash=?, instruction_sources_hash=?,
-         activation_proof_json=?, resource_version=resource_version+1
-         WHERE provider_binding_id=? AND status='binding' AND activation_proof_json IS NULL`,
-        [verified.toolContractHash, verified.instructionSourcesHash, canonicalJson(verified), binding.provider_binding_id]
-      );
-      requireSingleRowChange(this.store, "Provider activation proof lost its binding claim.");
-      this.store.db.run(
-        `UPDATE work_session_startup_operations SET resource_version=?, updated_at=?
+        `UPDATE work_session_startup_operations SET resource_version=?,
+         initial_turn_state=CASE WHEN dispatch_initial_turn=1 THEN 'accepted' ELSE initial_turn_state END,
+         initial_turn_error_code=NULL, updated_at=?
          WHERE startup_operation_id=? AND state='provider_bound' AND resource_version=?`,
         [nextVersion, now, operation.startup_operation_id, operation.resource_version]
       );
       requireSingleRowChange(this.store, "Provider activation proof lost its startup claim.");
       this.#insertAudit(operation, "startup.provider_activated", operation.resource_version, nextVersion, {
         toolContractHash: verified.toolContractHash,
-        instructionSourcesHash: verified.instructionSourcesHash
+        instructionSourcesHash: verified.instructionSourcesHash,
+        initialTurnAccepted: operation.dispatch_initial_turn !== 0
       });
     });
     this.store.scheduleSave();
@@ -833,6 +855,30 @@ export class WorkSessionStartupCoordinator {
     this.onChanged("TaskChanged", { action: "startup-failed", entity: this.store.getTask(current.task_id) });
   }
 
+  #recordInitialTurnFailure(operation, error) {
+    const now = this.clock();
+    const nextVersion = operation.resource_version + 1;
+    this.store.runInTransaction(() => {
+      this.store.db.run(
+        `UPDATE work_session_startup_operations SET initial_turn_state='failed',
+         initial_turn_error_code='START_INITIAL_TURN_FAILED', error_code='START_INITIAL_TURN_FAILED',
+         error_stage='initial_turn', error_message_redacted=?, error_retryable=1,
+         resource_version=?, lease_owner=NULL, lease_expires_at=NULL, updated_at=?
+         WHERE startup_operation_id=? AND state='provider_bound' AND resource_version=?`,
+        [safeSummary(error?.message), nextVersion, now,
+          operation.startup_operation_id, operation.resource_version]
+      );
+      requireSingleRowChange(this.store, "Initial Turn failure lost its startup claim.");
+      this.#insertAudit(operation, "startup.initial_turn_dispatch_failed",
+        operation.resource_version, nextVersion, { errorCode: "START_INITIAL_TURN_FAILED" });
+    });
+    this.store.scheduleSave();
+    this.onChanged("TaskChanged", {
+      action: "startup-initial-turn-failed",
+      entity: this.store.getTask(operation.task_id)
+    });
+  }
+
   #takeLease(operation) {
     const now = this.clock();
     let taken = false;
@@ -991,7 +1037,8 @@ export class WorkSessionStartupCoordinator {
       ...(operation.requested_reasoning_level ? { reasoningLevel: operation.requested_reasoning_level } : {}),
       idempotencyKey: operation.idempotency_key,
       sourceSessionId: operation.source_session_id,
-      dispatchInitialTurn: operation.dispatch_initial_turn !== 0
+      dispatchInitialTurn: operation.dispatch_initial_turn !== 0,
+      ...(operation.initial_prompt ? { initialPrompt: operation.initial_prompt } : {})
     };
   }
 

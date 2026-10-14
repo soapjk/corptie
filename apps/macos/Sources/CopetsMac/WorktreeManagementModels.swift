@@ -446,8 +446,14 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
     }
 
     var isActive: Bool { ["queued", "running", "cancellation_requested", "replanning"].contains(status) }
+    var isStartingConflictAgent: Bool {
+        status == "paused"
+            && conflictAutomation?.status == "running"
+            && currentConflictResolution == nil
+            && hasMergeConflict
+    }
     var shouldPoll: Bool {
-        isActive || currentConflictResolution?.status == "running"
+        isActive || isStartingConflictAgent || currentConflictResolution?.status == "running"
     }
     var requiresPlanRegeneration: Bool {
         let code = audit.last(where: { $0.code != nil })?.code

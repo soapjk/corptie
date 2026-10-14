@@ -987,12 +987,14 @@ struct WorktreeManagementView: View {
                             .accessibilityIdentifier("worktree.integrate.open-plan-conflict-agent")
                     }
                     Button(L10n(job.conflictAutomation?.status == "blocked"
-                        ? "Retry Agent for Remaining Worktrees"
-                        : "Let Agent Resolve Conflicts")) {
+                        ? "Restart Conflict Agent"
+                        : (job.isStartingConflictAgent
+                            ? "Starting Conflict Agent…"
+                            : "Let Agent Resolve Conflicts"))) {
                         Task { await client.resolveConflictWithAgent() }
                     }
                     .controlSize(.small)
-                    .disabled(client.isMutating)
+                    .disabled(client.isMutating || job.isStartingConflictAgent)
                     .accessibilityIdentifier("worktree.integrate.resolve-with-agent")
                     manualConflictRetryButton()
                 } else if job.supports("repreflight") {
@@ -1052,6 +1054,10 @@ struct WorktreeManagementView: View {
                 .foregroundStyle(.orange)
             } else if job.requiresPlanRegeneration {
                 Text(localizedIntegrationRecovery(job))
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if job.isStartingConflictAgent {
+                Text(L10n("Corptie is starting the conflict Agent in the preserved Integration Worktree. The merge will be marked as running only after its first instruction is durably accepted."))
                     .font(.caption)
                     .foregroundStyle(.orange)
             } else if job.conflictAutomation?.status == "blocked" {
@@ -1199,7 +1205,7 @@ struct WorktreeManagementView: View {
     }
 
     private func agentConflictRetryButton() -> some View {
-        Button(L10n("Retry Agent for Remaining Worktrees")) {
+        Button(L10n("Restart Conflict Agent")) {
             Task { await client.resolveConflictWithAgent() }
         }
         .controlSize(.small)
@@ -1225,6 +1231,9 @@ struct WorktreeManagementView: View {
                 .font(.caption)
                 .foregroundStyle(.red)
                 .textSelection(.enabled)
+            Text(L10n("The Integration Worktree, conflict files, and completed merge progress were preserved. Restart the Agent, inspect the failed Session, continue manually, or cancel safely."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
