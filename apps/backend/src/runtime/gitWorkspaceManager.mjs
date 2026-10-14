@@ -1433,6 +1433,14 @@ export class GitWorkspaceManager {
 
   async inspectIntegrationConflictResolutionForProject(input) {
     const workspacePath = absolutePath(input.workspace?.path);
+    try {
+      await access(workspacePath);
+    } catch {
+      throw integrationGitError(
+        "RESOLUTION_WORKTREE_UNAVAILABLE",
+        "The dedicated conflict-resolution Worktree no longer exists. Restart conflict handling to create a replacement Worktree."
+      );
+    }
     const snapshot = await createGitWorkspaceSnapshot(workspacePath);
     if (snapshot.repository.id !== input.repositoryId) {
       throw integrationGitError("RESOLUTION_REPOSITORY_CHANGED", "The conflict-resolution Worktree belongs to a different repository.");

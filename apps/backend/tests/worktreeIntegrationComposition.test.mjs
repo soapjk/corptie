@@ -28,7 +28,7 @@ function fixture(overrides = {}) {
     },
     gitHubPushes: {}, gitCommitProtection: {},
     workService: {
-      createTask: () => ({ id: "created" }),
+      createTask: (input) => { calls.push(["create", input]); return { ...input, id: input.id ?? "created" }; },
       deleteTask: (id) => calls.push(["delete", id]),
       updateTask: (...args) => calls.push(["update", ...args])
     },
@@ -110,9 +110,9 @@ test("a new plan Session atomically starts with exactly one conflict prompt", as
   });
 
   assert.equal(result.reused, false);
-  assert.deepEqual(calls.map(([kind]) => kind), ["start"]);
-  assert.equal(calls[0][1].dispatchInitialTurn, true);
-  assert.ok(calls[0][1].initialPrompt.includes("source-head"));
+  assert.deepEqual(calls.map(([kind]) => kind), ["create", "start"]);
+  assert.equal(calls[1][1].dispatchInitialTurn, true);
+  assert.ok(calls[1][1].initialPrompt.includes("source-head"));
   assert.equal(calls.filter(([kind]) => ["send", "admit"].includes(kind)).length, 0);
 });
 
@@ -141,9 +141,9 @@ test("a new conflict plan inherits the source Task Session Provider", async () =
     expectedMainHead: "main-head"
   });
 
-  assert.equal(calls[0][0], "start");
-  assert.equal(calls[0][1].providerId, "source-provider");
-  assert.equal(calls[0][1].sourceSessionId, "logical:source");
+  assert.equal(calls[1][0], "start");
+  assert.equal(calls[1][1].providerId, "source-provider");
+  assert.equal(calls[1][1].sourceSessionId, "logical:source");
 });
 
 test("a recorded plan with a missing Session never creates a duplicate Task", async () => {
@@ -151,6 +151,44 @@ test("a recorded plan with a missing Session never creates a duplicate Task", as
   store.getSession = () => null;
   await assert.rejects(jobs.launchConflictResolution(conflictInput()), { code: "CONFLICT_PLAN_SESSION_UNAVAILABLE" });
   assert.deepEqual(calls, []);
+});
+
+test("an explicitly deleted conflict plan can be replaced without reusing its startup identity", async () => {
+  const { worktreeIntegrationJobService: jobs, store, calls } = fixture();
+  const deletedTask = {
+    id: "task", work_id: "work", title: "Deleted conflict plan", main_agent_id: "agent",
+    description: "Worktree Integration Job worktree_integration:plan",
+    deletion_status: "deleted"
+  };
+  const sourceTask = {
+    id: "source-task", work_id: "work", title: "Source task", main_agent_id: "agent"
+  };
+  store.listTasks = () => [deletedTask];
+  store.getTask = (id) => id === "task" ? deletedTask : (id === "source-task" ? sourceTask : null);
+  store.getSession = (id) => id === "session" ? { id, status: "deleted" } : null;
+  const item = {
+    worktreeId: "source", branchName: "feature/source", conflictFiles: ["source.swift"],
+    associations: [{ taskId: "source-task" }]
+  };
+
+  const result = await jobs.launchConflictResolution({
+    job: {
+      id: "worktree_integration:plan",
+      conflictAutomation: { taskId: "task", sessionId: "session", agentId: "agent" },
+      plan: { items: [item] }
+    },
+    item,
+    workspace: { path: "/integration" },
+    sourceHead: "source-head",
+    expectedMainHead: "main-head"
+  });
+
+  assert.equal(result.reused, false);
+  assert.equal(calls[0][0], "create");
+  assert.equal(calls[0][1].id, "task:integration_conflicts:plan:replacement-1");
+  assert.equal(calls[1][0], "start");
+  assert.equal(calls[1][1].idempotencyKey,
+    "integration-plan:worktree_integration:plan:start:replacement-1");
 });
 
 test("a plan startup whose first Turn failed resumes the same Task and startup operation", async () => {
@@ -199,5 +237,5 @@ test("failed conflict Session startup rolls back the newly created Task", async 
     work: { id: "work" }, agent: { agentId: "agent" }, workspace: { path: "/integration" },
     title: "Conflict", integrationRunId: "run"
   }), (failure) => failure === error);
-  assert.deepEqual(calls, [["delete", "created"]]);
+  assert.deepEqual(calls.map(([kind]) => kind), ["create", "delete"]);
 });

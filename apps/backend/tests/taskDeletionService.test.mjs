@@ -10,6 +10,7 @@ function fixture(options = {}) {
     listSessionsByTask: () => options.sessions ?? [],
     selectOne: () => options.activeStart ? { operation_id: "start:one" } : null,
     listTaskDeletionBlockingAssociations: () => options.associations ?? { artifacts: [] },
+    getActiveWorktreeIntegrationJobForConflictTask: () => options.integrationJob ?? null,
     markTaskDeletion: (...args) => calls.push(["mark", ...args]),
     markTaskWorktreeRemoved: (...args) => {
       calls.push(["removed", ...args]);
@@ -126,6 +127,24 @@ test("main and shared Worktrees can never be force deleted", async () => {
     );
     assert.equal(calls.some(([name]) => name === "remove"), false);
   }
+});
+
+test("an unfinished Worktree integration owns its conflict Task and Worktree", async () => {
+  const { service, calls } = fixture({
+    integrationJob: { id: "worktree_integration:one", status: "paused" },
+    inspection: {
+      status: "available",
+      worktree: { worktreeId: "worktree:integration", branchName: "integration/one" }
+    }
+  });
+  const plan = await service.inspect("task:one");
+  assert.equal(plan.status, "blocked");
+  assert.equal(plan.blockers[0].code, "ACTIVE_WORKTREE_INTEGRATION_JOB");
+  await assert.rejects(
+    service.delete("task:one", { mode: "force", deleteWorktree: false }),
+    (error) => error.code === "TASK_DELETE_BLOCKED"
+  );
+  assert.deepEqual(calls, []);
 });
 
 test("Task without a Worktree deletes metadata without unnecessary Git cleanup", async () => {

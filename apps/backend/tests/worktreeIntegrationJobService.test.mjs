@@ -4,7 +4,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { WorktreeIntegrationJobService } from "../src/application/worktreeIntegrationJobService.mjs";
+import {
+  WorktreeIntegrationJobService,
+  presentJob
+} from "../src/application/worktreeIntegrationJobService.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
 function memoryFixture({
@@ -1750,12 +1753,29 @@ test("an invalid Agent result stays paused and is never promoted into main", asy
   await service.resolveConflictWithAgent(plan.id);
   assert.equal(service.get(plan.id).phase, "conflict_resolution_resume_queued");
   const rejected = await waitForJobWhere(service, plan.id, (job) =>
-    job.status === "paused" && job.phase === "failed");
+    job.status === "paused" && job.conflictResolution?.status === "failed");
 
-  assert.equal(rejected.phase, "failed");
+  assert.equal(rejected.phase, "conflict");
+  assert.equal(rejected.conflictResolution.failureCode, "RESOLUTION_WORKTREE_DIRTY");
+  assert.equal(rejected.conflictAutomation.status, "blocked");
+  assert.equal(rejected.availableActions.includes("resolve_conflict_with_agent"), true);
   assert.equal(rejected.audit.some((entry) => entry.code === "RESOLUTION_WORKTREE_DIRTY"), true);
   assert.match(rejected.error, /Commit every resolved project change/);
   assert.equal(calls.some((call) => call.startsWith("merge:integration:")), false);
+});
+
+test("presentation normalizes legacy numeric audit codes for strict clients", () => {
+  const presented = presentJob({
+    id: "worktree_integration:legacy-audit",
+    status: "paused",
+    phase: "failed",
+    details: {
+      audit: [{ at: "2026-10-14T08:02:57.000Z", event: "execution_paused", code: 128 }],
+      plan: { items: [] }
+    }
+  });
+  assert.equal(presented.audit[0].code, "PROCESS_EXIT_128");
+  assert.doesNotThrow(() => JSON.stringify(presented));
 });
 
 test("an externally resolved conflict is detected and the paused job resumes idempotently", async () => {

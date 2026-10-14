@@ -231,6 +231,20 @@ export class ProjectIntegrationRepository {
     return worktreeIntegrationJobFromRow(row);
   }
 
+  getActiveWorktreeIntegrationJobForConflictTask(taskId) {
+    const row = this.selectOne(
+      `SELECT * FROM worktree_integration_jobs
+       WHERE status IN ('awaiting_confirmation', 'queued', 'running', 'paused', 'cancellation_requested', 'replanning')
+         AND (
+           json_extract(details_json, '$.conflictAutomation.taskId') = ?
+           OR json_extract(details_json, '$.conflictResolution.taskId') = ?
+         )
+       ORDER BY created_at DESC LIMIT 1`,
+      [taskId, taskId]
+    );
+    return worktreeIntegrationJobFromRow(row);
+  }
+
   listRecoverableWorktreeIntegrationJobs() {
     return this.selectAll(
       `SELECT * FROM worktree_integration_jobs
