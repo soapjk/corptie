@@ -114,7 +114,10 @@ export class WorktreeIntegrationJobService {
         ...project,
         worktrees: project.worktrees.map((worktree) => ({ ...worktree, gitHubPush: null }))
       },
-      latestJob: presentJob(this.store.getLatestWorktreeIntegrationJob(repository.id))
+      latestJob: (() => {
+        const latest = this.store.getLatestWorktreeIntegrationJob(repository.id);
+        return latest ? presentJob(this.#reconcileConflictResolution(latest)) : null;
+      })()
     };
   }
 
@@ -1500,6 +1503,7 @@ export class WorktreeIntegrationJobService {
             sessionName: created.sessionName ?? null,
             agentId: created.agentId,
             agentName: created.agentName,
+            instructionId: created.instructionId ?? null,
             retryCount
           }
         },
@@ -2216,17 +2220,53 @@ export class WorktreeIntegrationJobService {
         auditData: { worktreeId: job.details.currentWorktreeId }
       });
     }
-    if (resolution?.status === "failed" && resolution.failureCode) return job;
+    if (resolution?.status === "failed" && resolution.failureCode) {
+      if (resolution.failureCode === "RESOLUTION_SOURCE_MISSING") {
+        const failedInstruction = (this.store.listAgentTasksForSession?.(resolution.sessionId) ?? [])
+          .filter(operation => ["session-initialization", "worktree-integration"].includes(operation.source?.type)).at(-1);
+        if (failedInstruction?.status === "failed") {
+          return this.#rejectConflictResolution(job, item, resolution, {
+            code: "CONFLICT_INSTRUCTION_FAILED",
+            message: failedInstruction.lastError ?? "The conflict instruction failed before execution."
+          });
+        }
+      }
+      return job;
+    }
     if (!["running", "failed"].includes(resolution?.status) || !resolution.sessionId) return job;
     const session = this.store.getSession(resolution.sessionId);
     if (!session) return job;
+    const operations = this.store.listAgentTasksForSession?.(resolution.sessionId) ?? [];
+    const instruction = resolution.instructionId
+      ? operations.find(operation => operation.taskId === resolution.instructionId)
+      : operations.filter(operation => ["session-initialization", "worktree-integration"].includes(operation.source?.type)).at(-1);
+    if (instruction && ["failed", "cancelled"].includes(instruction.status)) {
+      return this.#rejectConflictResolution(job, item, resolution, {
+        code: "CONFLICT_INSTRUCTION_FAILED",
+        message: instruction.lastError ?? "The conflict instruction failed before a verified result was produced."
+      });
+    }
+    const delivery = instruction?.source?.deliveryId
+      ? this.store.getMessageDelivery?.(instruction.source.deliveryId) : null;
+    const turn = instruction?.targetTurnId && delivery?.bindingId
+      ? this.store.getSessionTurn?.(resolution.sessionId, delivery.bindingId, instruction.targetTurnId) : null;
+    const hasExecutionEvidence = instruction?.status === "completed" && Boolean(instruction.targetTurnId)
+      && (!this.store.getSessionTurn || turn?.execution_status === "completed");
     const hasUnsettledConflictInstruction = (this.store.listAgentTasksForSession?.(
       resolution.sessionId,
       { statuses: ["queued", "running"] }
     ) ?? []).length > 0;
+    if (!hasUnsettledConflictInstruction && session.status === "complete"
+      && this.store.getSessionTurn && !hasExecutionEvidence) {
+      return this.#rejectConflictResolution(job, item, resolution, {
+        code: "CONFLICT_EXECUTION_UNCONFIRMED",
+        message: "The conflict Session is idle, but this instruction has no verified successful Turn. Verify or recover the Session before retrying."
+      });
+    }
     const nextStatus = hasUnsettledConflictInstruction
       ? "running"
-      : session.status === "complete"
+      : session.status === "complete" && (hasExecutionEvidence
+        || (!this.store.getSessionTurn && !instruction))
       ? "ready"
       : (["failed", "cancelled"].includes(session.status) ? "failed" : "running");
     if (nextStatus === resolution.status) return job;

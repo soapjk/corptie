@@ -56,6 +56,37 @@ test("existence probe keeps a fresh empty Thread's full Tool context without try
   assert.equal(client.threadResumeFingerprints.get("fresh"), before);
 });
 
+test("fresh thread creation, tool finalization and first readiness probe preserve one workspace without rollout resume", async () => {
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  client.transport.activeProcessGeneration = 1;
+  const calls = [];
+  client.request = async method => {
+    calls.push(method);
+    if (method === "thread/start") return { thread: { id: "fresh" } };
+    throw Object.assign(new Error("no rollout found"), { code: "PROVIDER_SESSION_UNAVAILABLE" });
+  };
+  const session = { id: "session", external: { cwd: "/integration" } };
+  const commands = createCodexSessionCommands({
+    store: {
+      getSession: () => session,
+      getLogicalSession: () => ({ activeBinding: { bindingId: "binding", boundCwd: "/integration" } })
+    },
+    codexRuntime: client,
+    withPersistedCodexToolConfirmation: (_reference, options) => options,
+    collaborationThreadOptionsForSession: async () => ({ dynamicTools: [] })
+  });
+  const reference = { sessionId: "session", logicalSessionId: "logical", bindingId: "binding", providerSessionId: "fresh" };
+  await client.startThread({ cwd: "/integration", approvalPolicy: "never", sandbox: "danger-full-access" });
+  await commands.resumeCodexProviderSession(reference, { purpose: "session-create-finalization" });
+  assert.equal((await commands.probeCodexProviderBinding(reference)).ready, true);
+  const proof = JSON.parse(client.threadResumeFingerprints.get("fresh"));
+  assert.equal(proof.cwd, "/integration");
+  assert.equal(proof.approvalPolicy, "never");
+  assert.equal(proof.sandbox, "danger-full-access");
+  assert.deepEqual(calls, ["thread/start"]);
+});
+
 test("turn dispatch refuses a transitioning workspace before modifying choices or contacting the Provider", async () => {
   const calls = [];
   const dispatcher = createCodexTurnDispatcher({

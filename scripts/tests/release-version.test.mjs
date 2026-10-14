@@ -74,6 +74,19 @@ test("do not overwrite a version edited while packaging", async t => {
   assert.deepEqual(await readNextRelease(root), { version: "0.6.1", buildNumber: 8 });
 });
 
+test("fresh checkout packages without tracked version state and writes only after success", async t => {
+  const root = await mkdtemp(join(tmpdir(), "corptie-version-fresh-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, ".corptie/release-version.lock"), { recursive: true });
+  const file = join(root, "release-version.json");
+  const next = await readNextRelease(root);
+  assert.deepEqual(next, { version: "0.5.15", buildNumber: 10 });
+  await assert.rejects(readFile(file), { code: "ENOENT" });
+  await commitRelease(root, next);
+  assert.deepEqual(JSON.parse(await readFile(file, "utf8")), next);
+  assert.deepEqual(await readNextRelease(root), { version: "0.5.16", buildNumber: 11 });
+});
+
 test("packaging uses one version for plist, installer and names; commits after DMG", async () => {
   const root = fileURLToPath(new URL("../..", import.meta.url));
   const script = await readFile(join(root, "scripts/package-macos-installer.sh"), "utf8");

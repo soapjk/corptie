@@ -115,11 +115,21 @@ export function createCodexSessionCommands({
     const previous = reference.metadata?.session
       ?? store.getSession(reference.sessionId);
     if (!previous) throw new Error("Session not found.");
-    const runtimeOptions = withPersistedCodexToolConfirmation(
+    const attachment = withPersistedCodexToolConfirmation(
       reference,
       context.toolHost?.providerAttachment
         ?? await collaborationThreadOptionsForSession(reference.sessionId)
     );
+    // Tool attachment does not own execution configuration. Finalization must
+    // retain the workspace identity established by thread/start.
+    const logical = reference.logicalSessionId
+      ? store.getLogicalSession?.(reference.logicalSessionId)
+      : store.getLogicalSessionByLegacySessionId?.(reference.sessionId);
+    const cwd = logical?.activeBinding?.boundCwd ?? previous.external?.cwd;
+    const runtimeOptions = {
+      ...attachment,
+      ...(cwd ? { cwd, runtimeWorkspaceRoots: previous.external?.runtimeWorkspaceRoots ?? [cwd] } : {})
+    };
     if (context.purpose === "session-unarchive") {
       await codexRuntime.unarchiveThread(reference.providerSessionId);
     }

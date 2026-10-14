@@ -388,7 +388,9 @@ export class CodexAppServerClient {
       this.dynamicToolAgentsByThread.set(threadId, options.dynamicToolAgentId);
       this.dynamicToolMetadataByThread.set(threadId, options.dynamicToolMetadata ?? null);
     }
-    this.threadResumeFingerprints.set(threadId, threadResumeFingerprint(options));
+    const previousProof = this.threadResumeFingerprints.get(threadId);
+    const previousOptions = previousProof ? JSON.parse(previousProof) : {};
+    this.threadResumeFingerprints.set(threadId, threadResumeFingerprint({ ...previousOptions, ...options }));
     return { alreadyLoaded: true, toolContextBound: true, thread: { id: threadId } };
   }
 

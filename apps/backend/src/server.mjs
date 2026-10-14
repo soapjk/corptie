@@ -1517,6 +1517,21 @@ const { projectWorktreeIntegrationService, worktreeIntegrationJobService } = cre
   store, projectApplicationService, gitWorkspaces, gitHubPushes, gitCommitProtection,
   workService, artifactService, agentProviderRegistry, startPreparedWorkSession,
   admitReliableSessionMessage: (...args) => sessionMessageOperation.admitReliableMessage(...args),
+  prepareConflictSession: async sessionId => {
+    try {
+      return await sessionApplicationService.prepareExecution(sessionId);
+    } catch (error) {
+      if (!["PROVIDER_SESSION_UNAVAILABLE", "PROVIDER_EMPTY_THREAD_UNRECOVERABLE"].includes(error?.code)) throw error;
+      const reference = requireSessionReference(sessionId);
+      await sessionRecoveryCoordinator.recover({
+        logicalSessionId: reference.logicalSessionId,
+        providerId: reference.providerId,
+        idempotencyKey: `integration-binding-recovery:${reference.bindingId}`,
+        reason: error.code
+      });
+      return sessionApplicationService.prepareExecution(sessionId);
+    }
+  },
   emitEvent, presentTaskForClient,
   authorizeAutomaticFollow: job => worktreeAutoFollowService?.authorizes(job) === true
 });
