@@ -11,6 +11,48 @@ const profile = { catalog: DETAIL_COMPONENTS_CATALOG, clientCapabilities: [...DE
 const scope = { session: { id: "legacy", sessionKind: "worker" }, logicalSessionId: "logical:sample",
   task: { id: "task", title: "Task", description: "Definition", acceptance_criteria: "Acceptance", verification_criteria: "Verification" } };
 const options = { profile, generation: "generation" };
+const focusRow = (id, sessionTarget) => ({ resource: { resourceType: "task", id }, title: id, sessionTarget });
+const focusReads = items => ({ focusTasks: { state: "ready", data: { items } }, artifacts: result("artifact") });
+test("focus navigation preserves Task keys and targets exact associated Sessions, never wire bindings", () => {
+  const state = projectDetailBusinessRich(scope, focusReads([
+    focusRow("task-a", { resourceType: "session", id: "session-a" }),
+    focusRow("task-b", { resourceType: "session", id: "session-b" })
+  ]), { ...options, navigation: true });
+  const instance = state.instances["business-focusTasks"], page = instance.collections.resources;
+  assert.deepEqual(page.order, ["task-a", "task-b"]);
+  for (const [task, session] of [["task-a", "session-a"], ["task-b", "session-b"]]) {
+    assert.equal(page.items[task].resourceType, "task");
+    assert.deepEqual(instance.actions[page.items[task].actionId].target, { resourceType: "session", id: session });
+  }
+  assert.doesNotMatch(JSON.stringify(state), /sessionTarget|navigationTargets/);
+  assert.doesNotThrow(() => validateDetailV2(state, profile));
+  assert.equal(Object.values(state.instances["business-artifacts"].actions)[0].target.resourceType, "artifact");
+});
+test("focus binding switch changes action identity and converges without replacing unrelated instances/templates", () => {
+  const reads = focusReads([focusRow("task-a", { resourceType: "session", id: "session-a" })]);
+  const before = projectDetailBusinessRich(scope, reads, { ...options, navigation: true });
+  assert.strictEqual(projectDetailBusinessRich(scope, reads, { ...options, navigation: true, previous: before }), before);
+  reads.focusTasks.data.items[0].sessionTarget.id = "session-other";
+  const after = projectDetailBusinessRich(scope, reads, { ...options, navigation: true, previous: before });
+  const card = "business-focusTasks";
+  assert.notEqual(before.instances[card].collections.resources.items["task-a"].actionId, after.instances[card].collections.resources.items["task-a"].actionId);
+  assert.equal(before.manifest.cards[card].templateHash, after.manifest.cards[card].templateHash);
+  assert.strictEqual(before.templates[before.manifest.cards[card].templateHash], after.templates[after.manifest.cards[card].templateHash]);
+  assert.strictEqual(before.instances["business-artifacts"], after.instances["business-artifacts"]);
+  assert.equal(canonicalDetailV2(applyDetailV2(before, diffDetailV2(before, after, profile), profile)), canonicalDetailV2(after));
+});
+test("missing or invalid focus associations and unavailable navigation never fall back to Task", () => {
+  for (const target of [undefined, null, { resourceType: "task", id: "task-a" }, { resourceType: "session", id: "" },
+    { resourceType: "session", id: "bad\nID" }, { resourceType: "session", id: "x".repeat(513) }, { resourceType: "session", id: 123 }]) {
+    const state = projectDetailBusinessRich(scope, focusReads([focusRow("task-a", target)]), { ...options, navigation: true });
+    assert.deepEqual(state.instances["business-focusTasks"].actions, {});
+    assert.equal(state.instances["business-focusTasks"].collections.resources.items["task-a"].actionId, undefined);
+  }
+  const reads = focusReads([focusRow("task-a", { resourceType: "session", id: "session-a" })]);
+  for (const opts of [options, { ...options, navigation: true, profile: { ...profile, clientCapabilities: profile.clientCapabilities.filter(c => c !== "detail.button") } }]) {
+    assert.deepEqual(projectDetailBusinessRich(scope, reads, opts).instances["business-focusTasks"].actions, {});
+  }
+});
 const result = name => ({ state: "ready", data: { items: [{ resource: { resourceType: name, id: `${name}:1` },
   title: "Artifact", displayName: "Reference", status: "available", contentHash: "a".repeat(64), version: 2,
   references: [{ required: true, pendingVersion: 3, pendingHash: "b".repeat(64) }], locator: "/private/secret", metadata: { hidden: "secret" } }] } });

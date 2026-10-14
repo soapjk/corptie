@@ -1,0 +1,22 @@
+{
+  "fixtureKind": "business-read-contract-audit-not-wire",
+  "rootEvidence": {
+    "artifactId": "artifact:72a595cd-c483-4b52-b1f9-83bf043be8bf",
+    "version": 7,
+    "contentHash": "f0f58bb544b67cf9e995c8e030101920eb43324fa1018b62ab5e9d3d1dcc0d4b"
+  },
+  "modules": {
+    "provider": { "maximumRows": 20, "hasMoreRequired": true, "cacheable": false, "nativeBehaviorPending": true },
+    "worktree": { "cacheable": false, "nativeBehaviorPending": true },
+    "turn": { "cacheable": false, "sourceScopeMustMatch": true, "latestSummaryOnly": true },
+    "recalls": { "sourceLimit": 8, "cacheable": false, "recentPreviewNotCompleteHistory": true },
+    "schedules": { "maximumRows": 20, "hasMoreRequired": true, "rawTimezoneRequired": true }
+  },
+  "boundary": {
+    "defaultProjectionActions": "none",
+    "defaultProjectionCursor": null,
+    "opaqueServerPagingSupportedInRoot": ["references", "artifacts", "memories", "schedules"],
+    "providerRegistryCapabilitiesAreNotClientNodeCapabilities": true,
+    "nodeTestsAreNotDevicePerformance": true
+  }
+}
