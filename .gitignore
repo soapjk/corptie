@@ -100,3 +100,4 @@ development-docs/
 !/apps/backend/resources/codex/skills/corptie-collaboration/SKILL.md
 !/apps/backend/resources/codex/skills/corptie-collaboration/references/project-tools-set.md
 /.claude
+release-version.json
