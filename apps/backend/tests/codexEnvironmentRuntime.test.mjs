@@ -146,6 +146,18 @@ test("native resume receives scoped instructions without overwriting user Home",
   assert.equal(f.clients.length, 1);
 });
 
+test("fork boundary inspection follows the fork's persisted environment after a profile switch", async t => {
+  const f = fixture();
+  t.after(() => f.runtime.close());
+  const source = await f.runtime.startThread({});
+  f.registry.current = f.native;
+  const fork = await f.runtime.forkThread(source.thread.id, { excludeTurns: true });
+  await f.runtime.readLastThreadTurn(fork.thread.id);
+  assert.equal(f.calls.at(-1).method, "readLastThreadTurn");
+  assert.deepEqual(f.calls.at(-1).args, [fork.thread.id]);
+  assert.equal(f.calls.at(-1).home, "/old");
+});
+
 test("no-tools background operations do not inherit Corptie tool instructions", async t => {
   const f = fixture(); t.after(() => f.runtime.close()); f.registry.current = f.native;
   await f.runtime.runEphemeralPrompt({ executionPolicy: "no-tools", developerInstructions: "transform only" });

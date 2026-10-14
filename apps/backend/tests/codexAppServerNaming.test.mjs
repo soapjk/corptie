@@ -541,7 +541,7 @@ test("forkThread fixes the forked thread to the target workspace and completed s
   assert.equal(calls[0].params.sandbox, "workspace-write");
   assert.equal(calls[0].params.deferGoalContinuation, true);
   assert.equal(Object.prototype.hasOwnProperty.call(calls[0].params, "dynamicTools"), false);
-  assert.equal(calls[0].timeoutMs, 30000);
+  assert.equal(calls[0].timeoutMs, 60000);
   assert.deepEqual(result.instructionSources, ["/repo/feature worktree/AGENTS.md"]);
   assert.equal(client.dynamicToolAgentsByThread.get("thread-feature"), "agent-a");
   assert.match(

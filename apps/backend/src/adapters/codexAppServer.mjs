@@ -51,6 +51,9 @@ export class CodexAppServerClient {
     // Cold Session restoration has a separate budget from ordinary RPCs and
     // process initialization. Callers may explicitly choose a shorter budget.
     this.threadResumeTimeoutMs = options.threadResumeTimeoutMs ?? 60000;
+    // Fork restores/copies persisted history too; ordinary 30-second RPC
+    // deadlines can expire just before a large Thread finishes cloning.
+    this.threadForkTimeoutMs = options.threadForkTimeoutMs ?? 60000;
     this.onNotification = typeof options.onNotification === "function" ? options.onNotification : null;
     this.onDynamicToolCall = typeof options.onDynamicToolCall === "function" ? options.onDynamicToolCall : null;
     this.notifications = [];
@@ -454,7 +457,7 @@ export class CodexAppServerClient {
       ephemeral: options.ephemeral ?? false,
       excludeTurns: options.excludeTurns ?? false,
       deferGoalContinuation: options.deferGoalContinuation ?? true
-    }, options.requestTimeoutMs ?? 30000);
+    }, options.requestTimeoutMs ?? this.threadForkTimeoutMs);
     if (result?.thread?.id && options.dynamicToolAgentId) {
       this.dynamicToolAgentsByThread.set(result.thread.id, options.dynamicToolAgentId);
       this.dynamicToolMetadataByThread.set(result.thread.id, options.dynamicToolMetadata ?? null);
@@ -479,6 +482,22 @@ export class CodexAppServerClient {
 
   async clearThreadGoal(threadId) {
     return this.request("thread/goal/clear", { threadId });
+  }
+
+  // A fork boundary needs one Turn identity, not reconstructed messages or
+  // Tool output. Never fall back to the full-history read on paging failure.
+  async readLastThreadTurn(threadId) {
+    await this.initialize();
+    const page = await this.request("thread/turns/list", {
+      threadId, limit: 1, sortDirection: "desc", itemsView: "notLoaded"
+    });
+    if (!Array.isArray(page?.data) || page.data.length !== 1
+        || typeof page.data[0]?.id !== "string" || !page.data[0].id) {
+      throw Object.assign(new Error("无法核验 Codex 分支的最后一轮，分支未完成创建。"), {
+        code: "FORK_HISTORY_UNVERIFIED"
+      });
+    }
+    return { id: page.data[0].id };
   }
 
   requireThreadToolPlanConfirmation(threadId, options = {}, overrides = {}) {

@@ -49,26 +49,39 @@ async function createCodexProviderSessionNow(input = {}, forkSource = null) {
       developerInstructions: [providerThreadOptions.developerInstructions, input.recoveryContext]
         .filter(Boolean).join("\n\n") || undefined
     };
-    const started = forkSource
-      ? await codexRuntime.forkThread(forkSource.reference.providerSessionId, {
-          ...withPersistedCodexToolConfirmation(forkSource.reference, threadOptions),
-          lastTurnId: forkSource.point.turnId, deferGoalContinuation: true
-        })
-      : await codexRuntime.startThread(threadOptions);
+    let started;
+    try {
+      started = forkSource
+        ? await codexRuntime.forkThread(forkSource.reference.providerSessionId, {
+            ...withPersistedCodexToolConfirmation(forkSource.reference, threadOptions),
+            lastTurnId: forkSource.point.turnId, deferGoalContinuation: true,
+            excludeTurns: true
+          })
+        : await codexRuntime.startThread(threadOptions);
+    } catch (error) {
+      if (forkSource && error.code === "PROVIDER_RPC_TIMEOUT" && error.remoteDisposition === "unknown") {
+        const seconds = Number.isFinite(error.timeoutMs) ? `（${Math.ceil(error.timeoutMs / 1000)} 秒）` : "";
+        error.message = `复制会话历史等待超时${seconds}，Codex 可能仍在创建分支，远端结果尚未确认；未自动重试。`;
+      }
+      throw error;
+    }
     if (forkSource) {
       try {
         const actualCwd = started.cwd ?? started.thread?.cwd;
         if (!actualCwd || resolve(actualCwd) !== resolve(input.cwd)) {
           throw Object.assign(new Error("Codex 分支未绑定到新工作区。"), { code: "FORK_CWD_MISMATCH" });
         }
-        const lastTurn = started.thread?.turns?.at(-1);
-        if (lastTurn && lastTurn.id !== forkSource.point.turnId) {
+        if (!started.thread?.id) {
+          throw Object.assign(new Error("Codex 分支返回的会话标识无效。"), { code: "FORK_IDENTITY_UNVERIFIED" });
+        }
+        const lastTurn = await codexRuntime.readLastThreadTurn(started.thread.id);
+        if (lastTurn.id !== forkSource.point.turnId) {
           throw Object.assign(new Error("Codex 分支历史未截止到选中的轮次。"), { code: "FORK_HISTORY_MISMATCH" });
         }
         await codexRuntime.clearThreadGoal(started.thread.id);
       }
       catch (error) {
-        await codexRuntime.archiveThread(started.thread.id).catch(() => {});
+        if (started.thread?.id) await codexRuntime.archiveThread(started.thread.id).catch(() => {});
         throw error;
       }
     }

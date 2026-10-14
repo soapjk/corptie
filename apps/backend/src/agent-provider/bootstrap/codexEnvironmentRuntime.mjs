@@ -3,7 +3,7 @@ import { createReadinessRuntimeEpoch } from "../readinessRuntimeEpoch.mjs";
 
 const threadMethods = new Set([
   "executeCommand", "bindThreadToolContext", "confirmThreadToolPlan", "restoreThreadToolPlanConfirmation",
-  "archiveThread", "deleteThread", "execResumeThread", "ensureThreadResumed", "clearThreadGoal",
+  "archiveThread", "deleteThread", "execResumeThread", "ensureThreadResumed", "clearThreadGoal", "readLastThreadTurn",
   "interruptTurn", "probeTurnExecution", "inspectEmptyThreadForRouteCommit", "liveItemsForThread",
   "attachManagedImagesToLiveItem", "readThreadForLegacyHistoryRepair", "respondToApproval",
   "respondToUserInput", "resumeThread", "setThreadName", "stabilizeRecoveryThread", "startTurn",
