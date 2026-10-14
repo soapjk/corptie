@@ -11,6 +11,7 @@ import { handleDetailActionHttp } from "../src/application/detailActionHttpAdapt
 import { Readable } from "node:stream";
 import { readFile } from "node:fs/promises";
 import { validateDetailContract } from "../src/application/detailDocumentContract.mjs";
+import { detailV2Hash, detailV2StateHash } from "../src/application/detailSyncV2.mjs";
 
 const identity = { kind: "local_user", principalId: "authenticated-desktop-owner" };
 async function fixture({ legacyJournal = false } = {}) {
@@ -45,6 +46,33 @@ async function fixture({ legacyJournal = false } = {}) {
     close: async () => { await store.close(); await rm(directory, { recursive: true, force: true }); } };
 }
 const command = (f, input = f.input, session = "logical:ours", auth = async () => identity) => f.service.command(identity, session, input, auth);
+
+test("strict rich action resolution uses only a host-scoped instance action, not client operation or target", async () => {
+  const f = await fixture();
+  try {
+    const data = JSON.parse(await readFile(new URL("./fixtures/detail-v2-business-dates.json", import.meta.url), "utf8"));
+    const state = data.snapshot, cardId = state.manifest.order[0];
+    state.instances[cardId].actions = { cancel: { ...f.action, label: { fallback: "Cancel" } } };
+    const { fields, collections, actions } = state.instances[cardId];
+    state.instances[cardId].hash = detailV2Hash({ fields, collections, actions });
+    state.stateHash = detailV2StateHash(state);
+    f.service.authorizeScope = async () => ({ sessionId: state.sessionId, catalog: data.catalog, clientCapabilities: data.clientCapabilities });
+    f.ports["schedule.cancel"].authorize = async scope => scope.sessionId === state.sessionId;
+    f.setDocument(state);
+    const request = { ...f.input, documentId: state.documentId, cardId };
+    assert.equal((await command(f, request, state.sessionId)).status, "completed"); assert.equal(f.calls(), 1);
+    await assert.rejects(command(f, { ...request, requestId: "unknown-card-001", cardId: "not-present" }, state.sessionId), { code: "DETAIL_ACTION_NOT_FOUND" });
+    await assert.rejects(command(f, { ...request, requestId: "forged-target-001", target: { id: "foreign" } }, state.sessionId), { code: "DETAIL_CONTRACT_INVALID" });
+  } finally { await f.close(); }
+});
+test("same device with changed account authority cannot dispatch", async () => {
+  const f = await fixture();
+  try {
+    const owner = { deviceId: "device", accountId: "account" };
+    await assert.rejects(f.service.command(owner, "logical:ours", f.input, () => ({ ...owner, accountId: "other" })), { code: "INVALID_CREDENTIAL" });
+    assert.equal(f.calls(), 0);
+  } finally { await f.close(); }
+});
 
 test("shared native action fixture matches closed operation schemas and target mappings", async () => {
   const fixture = JSON.parse(await readFile(new URL("../../../packages/CorptieClientCore/Tests/CorptieClientCoreTests/Fixtures/detail-actions-v1.json", import.meta.url), "utf8"));

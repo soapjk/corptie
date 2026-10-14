@@ -65,6 +65,21 @@ test("offline producer requires explicit capabilities and does not enable action
   assert.doesNotMatch(JSON.stringify(state), /private|secret|locator|hidden/);
   assert.match(state.instances["task-information"].fields.body, /Acceptance[\s\S]*Verification/);
 });
+test("native Task editor uses the existing navigation token only behind host editor gate and actual button capability", () => {
+  const input = { ...scope, task: { ...scope.task, revision: 14 } };
+  const closed = projectDetailBusinessRich(input, {}, options);
+  assert.deepEqual(closed.instances["task-information"].actions, {});
+  const enabled = projectDetailBusinessRich(input, {}, { ...options, editors: true });
+  validateDetailV2(enabled, profile);
+  assert.deepEqual(enabled.instances["task-information"].actions.edit.target, { resourceType: "task", id: "task" });
+  assert.equal(enabled.instances["task-information"].actions.edit.operation, "editor.open");
+  assert.equal(enabled.instances["task-information"].actions.edit.expectedResourceRevision, "14");
+  assert.equal(Object.values(enabled.templates).some(template => template.card.nodes.some(node => node.id === "edit")), true);
+  const reduced = { ...profile, clientCapabilities: profile.clientCapabilities.filter(token => token !== "detail.button") };
+  const unavailable = projectDetailBusinessRich(input, {}, { ...options, profile: reduced, editors: true });
+  assert.deepEqual(unavailable.instances["task-information"].actions, {});
+  assert.equal(unavailable.manifest.cards["task-information"].templateHash, closed.manifest.cards["task-information"].templateHash);
+});
 test("list templates share structure across resources and collection updates preserve unrelated cards", () => {
   const reads = { artifacts: result("artifact"), references: result("reference") };
   const before = projectDetailBusinessRich(scope, reads, options);

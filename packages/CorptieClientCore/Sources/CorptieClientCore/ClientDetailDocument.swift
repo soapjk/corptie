@@ -282,8 +282,37 @@ public enum ClientDetailEvent: Sendable {
     @ObservationIgnored private var document: ClientDetailDocument?
     @ObservationIgnored private var scopeKey = ""
     public var renderingScope: String { scopeKey }
+    public var documentID: String? { document?.documentId }
+    public var canonicalSessionID: String? { document?.sessionId }
     @ObservationIgnored private var token = UUID()
     public init() {}
+
+    /// Retire the previous scope before an asynchronous capability read. This
+    /// prevents a failed negotiation from retaining another Session's cards.
+    public func beginPresentation(scope: String) {
+        token = UUID()
+        if scope != scopeKey { scopeKey = scope; document = nil; orderedCards = []; error = nil }
+    }
+    public func presentationFailed(scope: String, failure: (any Error)? = nil) {
+        guard scope == scopeKey else { return }
+        if let failure, ClientDetailAPI.isAccessFailure(failure) {
+            document = nil; orderedCards = []; error = "Detail 访问已失效"
+        } else { error = "Detail 能力协商失败，可重试" }
+    }
+    public func applyActionRead(_ value: ClientInspectorValue, negotiation: ClientDetailV2Negotiation,
+                                expectedSessionID: String?) throws {
+        let data = try JSONEncoder().encode(value)
+        if value["protocolVersion"] == .number(2) {
+            let strict = try ClientDetailV2JSON.decode(data)
+            try ClientDetailV2JSON.validateEnvelope(strict, commit: false)
+            let state = try JSONDecoder().decode(ClientDetailV2State.self, from: data)
+            try apply(.snapshot(state.renderingDocument(catalogProfile: negotiation.catalog,
+                clientCapabilities: negotiation.clientCapabilities)), expectedSessionID: expectedSessionID)
+        } else {
+            guard negotiation.isLegacy else { throw ClientDetailV2Canonical.Failure.shape }
+            try apply(.snapshot(ClientDetailDocument.decode(data)), expectedSessionID: expectedSessionID)
+        }
+    }
 
     public func refresh(sessionID: String, api: @escaping @Sendable () async throws -> ClientDetailAPI) async {
         let generation = token
@@ -326,7 +355,10 @@ public enum ClientDetailEvent: Sendable {
         var failures = 0
         while !Task.isCancelled, token == generation {
             do {
-                let events = await ClientDetailSubscriptionPool.shared.subscribe(scope: scope, sessionID: sessionID, api: api)
+                let selected = try await api()
+                guard generation == token, !Task.isCancelled else { return }
+                let events = await ClientDetailSubscriptionPool.shared.subscribe(scope: scope, sessionID: sessionID,
+                    negotiation: selected.negotiation, api: api)
                 for try await event in events {
                     guard token == generation, !Task.isCancelled else { return }
                     // The server canonicalizes legacy routes to a logical Session. The first
@@ -337,6 +369,18 @@ public enum ClientDetailEvent: Sendable {
             } catch {
                 guard token == generation, !Task.isCancelled else { return }
                 if ClientDetailAPI.isAccessFailure(error) {
+                    // An expired token may have been replaced by the credential
+                    // owner. One authenticated read can prove continuity; a
+                    // revoked scope or a failed read still clears all cards.
+                    let expired = (error as? ClientServiceFailure)?.statusCode == 401
+                    if expired {
+                        do {
+                            let current = try await api().renderingSnapshot(sessionID: sessionID)
+                            guard generation == token, !Task.isCancelled else { return }
+                            try apply(.snapshot(current), expectedSessionID: document?.sessionId)
+                            failures = 0; continue
+                        } catch { /* No read proof: fail closed below. */ }
+                    }
                     document = nil; orderedCards = []; self.error = "Detail 访问已失效"; return
                 }
                 self.error = "Detail 正在重新同步"

@@ -40,7 +40,8 @@ export class DetailBusinessReadCache {
     } else this.active++;
   }
   release() { const next = this.queue.shift(); if (next) next(); else this.active--; }
-  async read(scope, name, identity, { force = true } = {}) {
+  async read(scope, name, identity, { force = true, sourceRead, selector = null } = {}) {
+    if (sourceRead !== undefined && typeof sourceRead !== "function") throw new TypeError("Invalid host read port");
     const port = this.ports[name];
     if (!port) return { state: "error", code: "DETAIL_MODULE_UNAVAILABLE" };
     const resources = { sessionId: scope.session.id, taskId: scope.task?.id ?? null, workId: scope.work?.id ?? null };
@@ -54,6 +55,7 @@ export class DetailBusinessReadCache {
     }
     let module = entry.modules.get(name);
     if (!module) { module = { epoch: 0, dirty: true, value: null, pending: null, bytes: 0 }; entry.modules.set(name, module); }
+    if (module.selector !== selector) { module.selector = selector; module.epoch++; module.dirty = true; }
     if (module.pending) return module.pending;
     if (port.cacheable !== false && !force && !module.dirty && module.value) return module.value;
     const epoch = module.epoch;
@@ -63,7 +65,7 @@ export class DetailBusinessReadCache {
         await this.admit();
         try {
           if (entry.retired || module.epoch !== epoch) throw invalidated();
-          const data = await port.read(scope, identity);
+          const data = await (sourceRead ? sourceRead() : port.read(scope, identity));
           value = { state: data === null || (Array.isArray(data?.items) && data.items.length === 0) ? "empty" : "ready", data };
           if (Buffer.byteLength(JSON.stringify(value)) > 64 * 1024) value = { state: "error", code: "DETAIL_MODULE_TOO_LARGE" };
         } finally { this.release(); }

@@ -187,7 +187,7 @@ enum ArtifactVersionSelectionPolicy {
     }
 }
 
-private struct ArtifactDetailContainer: View {
+struct ArtifactDetailContainer: View {
     @ObservedObject private var client = ArtifactAPIClient.shared
     let artifactId: String
     let workId: String

@@ -3,6 +3,25 @@ import Testing
 @testable import CorptieClientCore
 
 struct ConversationInspectorTests {
+    @Test func residentResourceSelectionRequiresCurrentUnambiguousNonErrorSection() throws {
+        func snapshot(_ sections: [String: ClientInspectorValue], _ errors: [String: String] = [:]) -> ClientInspectorSnapshot {
+            .init(schemaVersion: 1, sessionId: "s", resolvedSessionId: "s", workId: nil, taskId: nil,
+                taskDefinition: nil, workDescription: nil, summary: nil, environment: .object([:]), sections: sections, errors: errors)
+        }
+        let memory = ClientInspectorValue.object(["id": .string("memory:ours"), "content": .string("Current")])
+        let section = ClientInspectorValue.object(["items": .array([memory])])
+        let current = snapshot(["memories": section])
+        #expect(current.residentDetailResource(kind: "memory", id: "memory:ours") == memory)
+        #expect(current.residentDetailResource(kind: "memory", id: "memory:foreign") == nil)
+        #expect(snapshot([:]).residentDetailResource(kind: "memory", id: "memory:ours") == nil)
+        #expect(snapshot(["memories": section], ["memories": "DENIED"]).residentDetailResource(kind: "memory", id: "memory:ours") == nil)
+        #expect(snapshot(["memories": .object(["items": .array([memory, memory])])]).residentDetailResource(kind: "memory", id: "memory:ours") == nil)
+        #expect(current.residentDetailResource(kind: "unregistered", id: "memory:ours") == nil)
+        let artifact = ClientInspectorValue.object(["artifactId": .string("artifact:ours"), "currentVersion": .number(4)])
+        #expect(snapshot(["artifacts": .object(["items": .array([artifact])])]).residentDetailResource(kind: "artifact", id: "artifact:ours") == artifact)
+        let reference = ClientInspectorValue.object(["referenceId": .string("reference:ours")])
+        #expect(snapshot(["references": .array([reference])]).residentDetailResource(kind: "reference", id: "reference:ours") == reference)
+    }
     @Test func sharedVersionSelectionAndNanosecondDurations() {
         #expect(ConversationInspectorPolicy.preferredArtifactVersion(pinned: 2, approved: 4, current: 5) == 2)
         #expect(ConversationInspectorPolicy.preferredArtifactVersion(pinned: nil, approved: 4, current: 5) == 4)

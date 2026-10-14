@@ -170,3 +170,49 @@ test("context resolution obeys a total budget and disabled references are omitte
     await rm(value.directory, { recursive: true, force: true });
   }
 });
+
+test("web snapshots stop native streaming reads at bounds and preserve split Unicode", async t => {
+  const value = await fixture();
+  t.after(async () => { await value.store.close(); await rm(value.directory, { recursive: true, force: true }); });
+  let cancelled = false;
+  value.service.maxSourceCharacters = 3;
+  value.service.fetch = async () => new Response(new ReadableStream({
+    start(controller) { controller.enqueue(new Uint8Array([0xF0, 0x9F])); controller.enqueue(new Uint8Array([0x98, 0x80, 0x41])); },
+    cancel() { cancelled = true; }
+  }), { headers: { "content-type": "text/plain" } });
+  const split = await value.service.fetchWebSnapshot("https://fixture.invalid/split");
+  assert.equal(split.snapshotText, "😀A"); assert.equal(split.metadata.sourceCharacters, 3); assert.equal(cancelled, true);
+  value.service.maxSourceCharacters = 3;
+  value.service.fetch = async () => new Response("😀😀😀", { headers: { "content-type": "text/plain" } });
+  const clipped = await value.service.fetchWebSnapshot("https://fixture.invalid/clip");
+  assert.equal(clipped.snapshotText, "😀"); assert.equal(clipped.snapshotText.length, 2);
+});
+
+test("web snapshot timeout covers fetch and body without inserting a reference", async t => {
+  const value = await fixture();
+  t.after(async () => { await value.store.close(); await rm(value.directory, { recursive: true, force: true }); });
+  value.service.webFetchTimeoutMilliseconds = 10;
+  for (const body of [false, true]) {
+    let signal, cancelled = false;
+    value.service.fetch = async (_url, options) => {
+      signal = options.signal;
+      if (!body) return new Promise(() => {}); // Injected fetch ignores abort; deadline must still settle.
+      return new Response(new ReadableStream({ cancel() { cancelled = true; } }), { headers: { "content-type": "text/plain" } });
+    };
+    await assert.rejects(value.service.create("assistant-session", { targetType: "webURL", locator: "https://fixture.invalid/timeout" }), { code: "WEB_FETCH_TIMEOUT" });
+    assert.equal(signal.aborted, true); assert.equal(value.service.list("assistant-session").length, 0);
+    if (body) assert.equal(cancelled, true);
+  }
+});
+
+test("web snapshot HTTP failure releases the body and constructor rejects unbounded options", async t => {
+  const value = await fixture();
+  t.after(async () => { await value.store.close(); await rm(value.directory, { recursive: true, force: true }); });
+  let cancelled = false;
+  value.service.fetch = async () => new Response(new ReadableStream({ cancel() { cancelled = true; } }), { status: 503 });
+  await assert.rejects(value.service.fetchWebSnapshot("https://fixture.invalid/failure"), { code: "WEB_FETCH_FAILED" });
+  assert.equal(cancelled, true);
+  for (const options of [{ maxSourceCharacters: Infinity }, { maxSourceCharacters: 0 }, { webFetchTimeoutMilliseconds: 0 }, { webFetchTimeoutMilliseconds: 60_001 }]) {
+    assert.throws(() => new SessionContextReferenceService({ store: value.store, ...options }), TypeError);
+  }
+});

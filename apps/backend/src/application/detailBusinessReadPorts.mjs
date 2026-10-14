@@ -55,7 +55,7 @@ export function createDetailBusinessReadPorts({ store, references, artifacts, sc
   providerRegistry, readWorktree, localScheduleActor = { type: "user", id: "user:local-macos" } }) {
   const context = (scope, identity) => ({ kind: "local_user", actorId: identity.principalId
     ?? (identity.deviceId ? `client-device:${identity.deviceId}` : "local-user"), workId: scope.work?.id });
-  return {
+  const ports = {
     focusTasks: { dependencies: ["task", "work", "sessionMetadata"], read: scope => {
       if (scope.session.sessionKind !== "workChat" || !scope.work) return page([]);
       const rows = store.listTasksByWork(scope.work.id).filter(row => !row.archived && !row.deletion_status && row.lifecycle_state !== "done")
@@ -132,4 +132,44 @@ export function createDetailBusinessReadPorts({ store, references, artifacts, sc
         job: value.job ? { resource: ref("worktreeJob", value.job.id), status: string(value.job.status, 64), phase: string(value.job.phase, 64) } : null };
     } }
   };
+  const bounds = (cursor, limit) => {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20
+      || cursor != null && (typeof cursor !== "string" || !cursor.length || cursor.length > 512)) {
+      throw Object.assign(new Error("Invalid page query"), { code: "DETAIL_CURSOR_INVALID", status: 409 });
+    }
+  };
+  const offset = cursor => {
+    if (cursor == null) return 0;
+    if (!/^(0|[1-9][0-9]{0,8})$/.test(cursor)) throw Object.assign(new Error("Invalid page query"), { code: "DETAIL_CURSOR_INVALID", status: 409 });
+    return Number(cursor);
+  };
+  ports.references.readPage = (scope, _identity, cursor = null, limit = 20) => {
+    bounds(cursor, limit); const start = offset(cursor), rows = references.list(scope.session.id);
+    const hasMore = start + limit < rows.length;
+    return { items: rows.slice(start, start + limit).map(safeReference), hasMore, sourceCursor: hasMore ? String(start + limit) : null };
+  };
+  ports.artifacts.readPage = (scope, identity, cursor = null, limit = 20) => {
+    bounds(cursor, limit); const start = offset(cursor);
+    if (!scope.work) return { items: [], hasMore: false, sourceCursor: null };
+    const options = { limit: limit + 1, offset: start, currentWorkOnly: true };
+    const rows = scope.task ? artifacts.listForTask(context(scope, identity), scope.task.id, options) : artifacts.list(context(scope, identity), options);
+    return { items: rows.slice(0, limit).map(row => artifact(row, scope)), hasMore: rows.length > limit,
+      sourceCursor: rows.length > limit ? String(start + limit) : null };
+  };
+  ports.memories.readPage = (scope, _identity, cursor = undefined, limit = 20) => {
+    bounds(cursor, limit); const ownerType = scope.task ? "task" : "work", ownerId = scope.task?.id ?? scope.work?.id;
+    if (!ownerId) return { items: [], hasMore: false, sourceCursor: null };
+    const result = store.listMemoryPage({ ownerType, ownerId, includeRevoked: true, limit, ...(cursor != null ? { cursor } : {}) });
+    return { items: result.items.map(memory), hasMore: result.hasMore, sourceCursor: result.hasMore ? result.nextCursor : null };
+  };
+  ports.schedules.readPage = (scope, identity, cursor = null, limit = 20) => {
+    bounds(cursor, limit); const start = offset(cursor);
+    const rows = schedules.list({ logicalSessionId: scope.logicalSessionId, status: "active" }, identity.deviceId ? pairedDeviceActor(identity) : localScheduleActor);
+    const hasMore = start + limit < rows.length;
+    return { items: rows.slice(start, start + limit).map(row => ({ resource: ref("automation", row.taskId), name: string(row.name, 512),
+      scheduleType: string(row.scheduleType, 64), status: string(row.status, 64), runAt: date(row.runAt), nextRunAt: date(row.nextRunAt),
+      scheduleTimezone: string(row.timezone, 128), resourceVersion: integer(row.resourceVersion) })),
+      hasMore, sourceCursor: hasMore ? String(start + limit) : null };
+  };
+  return ports;
 }
