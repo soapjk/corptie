@@ -8,6 +8,38 @@ import AppKit
 #endif
 
 struct ConversationDetailComponentsTests {
+    @MainActor @Test func presentationV2UsesIndependentNativeDisclosureWithoutLayoutMeasurement() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("CorptieClientCore/Tests/CorptieClientCoreTests/Fixtures/detail-v2-presentation.json")
+        let fixture = try ClientDetailV2JSON.decode(Data(contentsOf: url))
+        let initial = try JSONDecoder().decode(ClientDetailV2State.self, from: JSONEncoder().encode(fixture["snapshot"]))
+        let caps = fixture["profile"]["clientCapabilities"].items.compactMap(\.text)
+        let profile = try #require(fixture["profile"]["catalog"].text)
+        try initial.validate(catalogProfile: profile, clientCapabilities: caps)
+        let store = ClientDetailStore()
+        try store.apply(.snapshot(initial.renderingDocument(catalogProfile: profile, clientCapabilities: caps)))
+        let first = store.orderedCards[0], second = store.orderedCards[1]
+        first.setNodeExpanded("section", true)
+        first.setResourceExpanded(collection: "resources", id: "memory:1", true)
+        #expect(first.isNodeExpanded("section"))
+        #expect(!second.isNodeExpanded("section"))
+        #expect(!second.isResourceExpanded(collection: "resources", id: "memory:1"))
+        let callbacks = ConversationDetailActions(canPerform: { _ in false }, perform: { _, _ in Issue.record("Rendering must not execute") })
+        #if os(macOS)
+        for width in [240.0, 375.0, 768.0] {
+            let view = NSHostingView(rootView: ConversationDetailRenderer(store: store, actions: callbacks).frame(width: width))
+            view.frame = NSRect(x: 0, y: 0, width: width, height: 800)
+            view.layoutSubtreeIfNeeded()
+            #expect(view.fittingSize.width <= width + 1)
+            #expect(view.fittingSize.height.isFinite && view.fittingSize.height > 0)
+            first.setNodeExpanded("section", false)
+            first.setResourceExpanded(collection: "resources", id: "memory:1", false)
+            view.layoutSubtreeIfNeeded()
+            #expect(view.fittingSize.height.isFinite && view.fittingSize.height > 0)
+        }
+        #endif
+    }
     @Test func editorInputPolicyKeepsMultilineMemoryAndRejectsUnsafeReferenceLocators() {
         #expect(ConversationDetailFormInputPolicy.isMultiline(operation: "memory.update", field: "content"))
         #expect(!ConversationDetailFormInputPolicy.isMultiline(operation: "reference.add", field: "locator"))

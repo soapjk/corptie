@@ -1,0 +1,605 @@
+{
+  "profile": {
+    "catalog": "native-v2-components-2",
+    "clientCapabilities": [
+      "detail.button",
+      "detail.chart",
+      "detail.dateTime",
+      "detail.form",
+      "detail.image",
+      "detail.keyValue",
+      "detail.markdown",
+      "detail.progress",
+      "detail.resourceList",
+      "detail.status"
+    ]
+  },
+  "snapshot": {
+    "protocolVersion": 2,
+    "documentId": "detail:fixture",
+    "sessionId": "session:fixture",
+    "generation": "presentation:1",
+    "revision": 1,
+    "stateHash": "sha256:2653fc380c8cc876463ff218dad1f8b3fadf501b8d3c0f537756ac4f730e2d3b",
+    "manifest": {
+      "revision": 1,
+      "hash": "sha256:675c3345be38e7c825c3b015dc119a5426a7756e4ac6e4310a4b6181d6734e44",
+      "order": [
+        "a",
+        "b"
+      ],
+      "cards": {
+        "a": {
+          "templateId": "native:information:8596972ccf448be867225cca67d6ec09a787073b65fc42f239d64875a99fd296",
+          "templateHash": "sha256:a920c1f7014fce2c4c83bd8f35c6e967f19ea254a166fc81ab74ef4b7aabc006"
+        },
+        "b": {
+          "templateId": "native:information:8596972ccf448be867225cca67d6ec09a787073b65fc42f239d64875a99fd296",
+          "templateHash": "sha256:a920c1f7014fce2c4c83bd8f35c6e967f19ea254a166fc81ab74ef4b7aabc006"
+        }
+      }
+    },
+    "templates": {
+      "sha256:a920c1f7014fce2c4c83bd8f35c6e967f19ea254a166fc81ab74ef4b7aabc006": {
+        "templateVersion": 1,
+        "catalogProfile": "native-v2-components-2",
+        "requiredCapabilities": [
+          "detail.button",
+          "detail.markdown",
+          "detail.resourceList"
+        ],
+        "fieldSchema": {
+          "title": {
+            "type": "string",
+            "required": true,
+            "maxLength": 512
+          },
+          "preview": {
+            "type": "string",
+            "required": true,
+            "maxLength": 512
+          },
+          "body": {
+            "type": "string",
+            "required": true,
+            "maxLength": 16000
+          },
+          "webData": {
+            "type": "object",
+            "required": true,
+            "properties": {
+              "headline": {
+                "type": "string",
+                "required": true,
+                "maxLength": 512
+              }
+            }
+          }
+        },
+        "collectionSchema": {
+          "resources": {
+            "maxItems": 20,
+            "itemSchema": {
+              "resourceType": {
+                "type": "string",
+                "required": true,
+                "maxLength": 512
+              },
+              "id": {
+                "type": "string",
+                "required": true,
+                "maxLength": 512
+              },
+              "title": {
+                "type": "string",
+                "required": true,
+                "maxLength": 512
+              },
+              "preview": {
+                "type": "string",
+                "required": true,
+                "maxLength": 512
+              },
+              "body": {
+                "type": "string",
+                "required": true,
+                "maxLength": 16000
+              },
+              "metadata": {
+                "type": "string",
+                "required": true,
+                "maxLength": 512
+              }
+            }
+          }
+        },
+        "card": {
+          "title": {
+            "fallback": "Presentation"
+          },
+          "titleBinding": "title",
+          "semanticKind": "information",
+          "rootNodeId": "root",
+          "render": {
+            "kind": "native"
+          },
+          "fallback": {
+            "fallback": "Unavailable"
+          },
+          "nodes": [
+            {
+              "id": "root",
+              "kind": "column",
+              "props": {},
+              "children": [
+                "section",
+                "resources",
+                "manage"
+              ]
+            },
+            {
+              "id": "section",
+              "kind": "disclosure",
+              "props": {
+                "label": {
+                  "fallback": "Description"
+                },
+                "previewBinding": "preview",
+                "initiallyExpanded": false
+              },
+              "children": [
+                "body"
+              ]
+            },
+            {
+              "id": "body",
+              "kind": "detail.markdown",
+              "binding": "body",
+              "props": {},
+              "children": []
+            },
+            {
+              "id": "resources",
+              "kind": "detail.resourceList",
+              "props": {
+                "collection": "resources",
+                "presentation": "disclosure",
+                "itemBindings": {
+                  "preview": "preview",
+                  "body": "body",
+                  "metadata": "metadata"
+                }
+              },
+              "children": []
+            },
+            {
+              "id": "manage",
+              "kind": "detail.button",
+              "props": {
+                "actionId": "manage",
+                "presentationRole": "primary"
+              },
+              "children": []
+            }
+          ]
+        },
+        "templateId": "native:information:8596972ccf448be867225cca67d6ec09a787073b65fc42f239d64875a99fd296"
+      }
+    },
+    "instances": {
+      "a": {
+        "revision": 1,
+        "hash": "sha256:05e041f03dd2f0b35cc74b21b1ea60ef26597561f6584d9c1a78d934831da384",
+        "fields": {
+          "title": "Task",
+          "preview": "Compact preview",
+          "body": "Complete body",
+          "webData": {
+            "headline": "Task"
+          }
+        },
+        "collections": {
+          "resources": {
+            "revision": 1,
+            "order": [
+              "memory:1"
+            ],
+            "nextCursor": null,
+            "items": {
+              "memory:1": {
+                "resourceType": "memory",
+                "id": "memory:1",
+                "title": "Preference",
+                "preview": "A preview",
+                "body": "Full memory",
+                "metadata": "Trusted"
+              }
+            }
+          }
+        },
+        "actions": {
+          "manage": {
+            "id": "manage",
+            "kind": "navigation",
+            "operation": "editor.open",
+            "label": {
+              "fallback": "Manage"
+            },
+            "available": true,
+            "target": {
+              "resourceType": "task",
+              "id": "task:1"
+            }
+          }
+        }
+      },
+      "b": {
+        "revision": 1,
+        "hash": "sha256:090643d5f9f162b548445c440436be55d89dfa1a2a20ef681bf93bd4c1ed593f",
+        "fields": {
+          "title": "Unchanged",
+          "preview": "Compact preview",
+          "body": "Complete body",
+          "webData": {
+            "headline": "Unchanged"
+          }
+        },
+        "collections": {
+          "resources": {
+            "revision": 1,
+            "order": [
+              "memory:1"
+            ],
+            "nextCursor": null,
+            "items": {
+              "memory:1": {
+                "resourceType": "memory",
+                "id": "memory:1",
+                "title": "Preference",
+                "preview": "A preview",
+                "body": "Full memory",
+                "metadata": "Trusted"
+              }
+            }
+          }
+        },
+        "actions": {
+          "manage": {
+            "id": "manage",
+            "kind": "navigation",
+            "operation": "editor.open",
+            "label": {
+              "fallback": "Manage"
+            },
+            "available": true,
+            "target": {
+              "resourceType": "task",
+              "id": "task:1"
+            }
+          }
+        }
+      }
+    }
+  },
+  "commit": {
+    "protocolVersion": 2,
+    "documentId": "detail:fixture",
+    "sessionId": "session:fixture",
+    "generation": "presentation:1",
+    "baseRevision": 1,
+    "revision": 2,
+    "baseStateHash": "sha256:2653fc380c8cc876463ff218dad1f8b3fadf501b8d3c0f537756ac4f730e2d3b",
+    "resultStateHash": "sha256:8ae494a8173ef167407346ab39837dcefd37a3e8bf0d4f17cc853c10ad14e443",
+    "templates": {},
+    "manifestChange": null,
+    "instanceChanges": [
+      {
+        "cardId": "a",
+        "baseRevision": 1,
+        "revision": 2,
+        "baseHash": "sha256:05e041f03dd2f0b35cc74b21b1ea60ef26597561f6584d9c1a78d934831da384",
+        "resultHash": "sha256:7a1657ae23423a0e70f106fefd16880ff028a28dfa3067197eda5a0948962c81",
+        "fields": {
+          "set": {
+            "body": "Updated complete body"
+          },
+          "remove": []
+        },
+        "actions": {
+          "set": {},
+          "remove": []
+        },
+        "collections": {
+          "set": {
+            "resources": {
+              "revision": 2,
+              "order": [
+                "memory:1"
+              ],
+              "nextCursor": null,
+              "items": {
+                "memory:1": {
+                  "resourceType": "memory",
+                  "id": "memory:1",
+                  "title": "Preference",
+                  "preview": "A preview",
+                  "body": "Updated full memory",
+                  "metadata": "Trusted"
+                }
+              }
+            }
+          },
+          "remove": []
+        }
+      }
+    ],
+    "removeInstanceIds": []
+  },
+  "expectedState": {
+    "protocolVersion": 2,
+    "documentId": "detail:fixture",
+    "sessionId": "session:fixture",
+    "generation": "presentation:1",
+    "revision": 2,
+    "stateHash": "sha256:8ae494a8173ef167407346ab39837dcefd37a3e8bf0d4f17cc853c10ad14e443",
+    "manifest": {
+      "revision": 1,
+      "hash": "sha256:675c3345be38e7c825c3b015dc119a5426a7756e4ac6e4310a4b6181d6734e44",
+      "order": [
+        "a",
+        "b"
+      ],
+      "cards": {
+        "a": {
+          "templateId": "native:information:8596972ccf448be867225cca67d6ec09a787073b65fc42f239d64875a99fd296",
+          "templateHash": "sha256:a920c1f7014fce2c4c83bd8f35c6e967f19ea254a166fc81ab74ef4b7aabc006"
+        },
+        "b": {
+          "templateId": "native:information:8596972ccf448be867225cca67d6ec09a787073b65fc42f239d64875a99fd296",
+          "templateHash": "sha256:a920c1f7014fce2c4c83bd8f35c6e967f19ea254a166fc81ab74ef4b7aabc006"
+        }
+      }
+    },
+    "templates": {
+      "sha256:a920c1f7014fce2c4c83bd8f35c6e967f19ea254a166fc81ab74ef4b7aabc006": {
+        "templateVersion": 1,
+        "catalogProfile": "native-v2-components-2",
+        "requiredCapabilities": [
+          "detail.button",
+          "detail.markdown",
+          "detail.resourceList"
+        ],
+        "fieldSchema": {
+          "title": {
+            "type": "string",
+            "required": true,
+            "maxLength": 512
+          },
+          "preview": {
+            "type": "string",
+            "required": true,
+            "maxLength": 512
+          },
+          "body": {
+            "type": "string",
+            "required": true,
+            "maxLength": 16000
+          },
+          "webData": {
+            "type": "object",
+            "required": true,
+            "properties": {
+              "headline": {
+                "type": "string",
+                "required": true,
+                "maxLength": 512
+              }
+            }
+          }
+        },
+        "collectionSchema": {
+          "resources": {
+            "maxItems": 20,
+            "itemSchema": {
+              "resourceType": {
+                "type": "string",
+                "required": true,
+                "maxLength": 512
+              },
+              "id": {
+                "type": "string",
+                "required": true,
+                "maxLength": 512
+              },
+              "title": {
+                "type": "string",
+                "required": true,
+                "maxLength": 512
+              },
+              "preview": {
+                "type": "string",
+                "required": true,
+                "maxLength": 512
+              },
+              "body": {
+                "type": "string",
+                "required": true,
+                "maxLength": 16000
+              },
+              "metadata": {
+                "type": "string",
+                "required": true,
+                "maxLength": 512
+              }
+            }
+          }
+        },
+        "card": {
+          "title": {
+            "fallback": "Presentation"
+          },
+          "titleBinding": "title",
+          "semanticKind": "information",
+          "rootNodeId": "root",
+          "render": {
+            "kind": "native"
+          },
+          "fallback": {
+            "fallback": "Unavailable"
+          },
+          "nodes": [
+            {
+              "id": "root",
+              "kind": "column",
+              "props": {},
+              "children": [
+                "section",
+                "resources",
+                "manage"
+              ]
+            },
+            {
+              "id": "section",
+              "kind": "disclosure",
+              "props": {
+                "label": {
+                  "fallback": "Description"
+                },
+                "previewBinding": "preview",
+                "initiallyExpanded": false
+              },
+              "children": [
+                "body"
+              ]
+            },
+            {
+              "id": "body",
+              "kind": "detail.markdown",
+              "binding": "body",
+              "props": {},
+              "children": []
+            },
+            {
+              "id": "resources",
+              "kind": "detail.resourceList",
+              "props": {
+                "collection": "resources",
+                "presentation": "disclosure",
+                "itemBindings": {
+                  "preview": "preview",
+                  "body": "body",
+                  "metadata": "metadata"
+                }
+              },
+              "children": []
+            },
+            {
+              "id": "manage",
+              "kind": "detail.button",
+              "props": {
+                "actionId": "manage",
+                "presentationRole": "primary"
+              },
+              "children": []
+            }
+          ]
+        },
+        "templateId": "native:information:8596972ccf448be867225cca67d6ec09a787073b65fc42f239d64875a99fd296"
+      }
+    },
+    "instances": {
+      "a": {
+        "revision": 2,
+        "hash": "sha256:7a1657ae23423a0e70f106fefd16880ff028a28dfa3067197eda5a0948962c81",
+        "fields": {
+          "title": "Task",
+          "preview": "Compact preview",
+          "body": "Updated complete body",
+          "webData": {
+            "headline": "Task"
+          }
+        },
+        "collections": {
+          "resources": {
+            "revision": 2,
+            "order": [
+              "memory:1"
+            ],
+            "nextCursor": null,
+            "items": {
+              "memory:1": {
+                "resourceType": "memory",
+                "id": "memory:1",
+                "title": "Preference",
+                "preview": "A preview",
+                "body": "Updated full memory",
+                "metadata": "Trusted"
+              }
+            }
+          }
+        },
+        "actions": {
+          "manage": {
+            "id": "manage",
+            "kind": "navigation",
+            "operation": "editor.open",
+            "label": {
+              "fallback": "Manage"
+            },
+            "available": true,
+            "target": {
+              "resourceType": "task",
+              "id": "task:1"
+            }
+          }
+        }
+      },
+      "b": {
+        "revision": 1,
+        "hash": "sha256:090643d5f9f162b548445c440436be55d89dfa1a2a20ef681bf93bd4c1ed593f",
+        "fields": {
+          "title": "Unchanged",
+          "preview": "Compact preview",
+          "body": "Complete body",
+          "webData": {
+            "headline": "Unchanged"
+          }
+        },
+        "collections": {
+          "resources": {
+            "revision": 1,
+            "order": [
+              "memory:1"
+            ],
+            "nextCursor": null,
+            "items": {
+              "memory:1": {
+                "resourceType": "memory",
+                "id": "memory:1",
+                "title": "Preference",
+                "preview": "A preview",
+                "body": "Full memory",
+                "metadata": "Trusted"
+              }
+            }
+          }
+        },
+        "actions": {
+          "manage": {
+            "id": "manage",
+            "kind": "navigation",
+            "operation": "editor.open",
+            "label": {
+              "fallback": "Manage"
+            },
+            "available": true,
+            "target": {
+              "resourceType": "task",
+              "id": "task:1"
+            }
+          }
+        }
+      }
+    }
+  }
+}

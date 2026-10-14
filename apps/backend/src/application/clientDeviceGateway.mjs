@@ -5,7 +5,7 @@ import { createReadStream } from "node:fs";
 import { ClientDeviceAuthority, deviceError } from "./clientDeviceAuthority.mjs";
 import { ClientEventStream, parseRealtimeResumeQuery } from "./clientEventStream.mjs";
 import { ClientInspectorStream } from "./clientInspectorStream.mjs";
-import { detailServiceFor, acceptsNativeDetail, sendNegotiatedDetailSnapshot } from "./detailDocumentService.mjs";
+import { detailServiceFor, acceptsNativeDetail, sendNegotiatedDetailSnapshot, detailCapabilitiesVersion } from "./detailDocumentService.mjs";
 import { readDetailV2Request } from "./detailV2JSON.mjs";
 import { detailV2GetNegotiation, detailV2PinnedAuthenticate } from "./detailV2Negotiation.mjs";
 import { createDetailBusinessActionService } from "./detailBusinessActionComposition.mjs";
@@ -186,10 +186,10 @@ export class ClientDeviceGateway {
       if (detail && this.sessionAPI?.inspector) {
         if (request.method !== "GET") throw deviceError("DETAIL_REQUEST_NOT_ALLOWED", 405);
         if (detail[2] === "capabilities") {
-          if (request.headers.accept !== "application/json") throw deviceError("DETAIL_CATALOG_UNSUPPORTED", 409);
+          const version = detailCapabilitiesVersion(request.headers.accept);
           const id = decode(detail[1], "INVALID_SESSION_ID");
           this.sessionAPI.inspector.scope(id, identity);
-          return reply(response, 200, detailServiceFor(this.sessionAPI.inspector.store).deliveryCapabilities());
+          return reply(response, 200, detailServiceFor(this.sessionAPI.inspector.store).deliveryCapabilities(version));
         }
         const negotiation = !detail[2] ? detailV2GetNegotiation(request) : null;
         const v2 = negotiation !== null;

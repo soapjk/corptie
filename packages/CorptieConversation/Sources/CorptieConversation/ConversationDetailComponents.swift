@@ -59,8 +59,10 @@ struct ConversationDetailComponentView: View {
                 Text(value.text ?? "").textSelection(.enabled).frame(maxWidth: .infinity, alignment: .trailing)
             }.font(.caption)
         case "detail.status":
-            Label(value.text ?? "", systemImage: symbol(component.semantic ?? "neutral"))
-                .font(.caption).foregroundStyle(color(component.semantic ?? "neutral"))
+            if let text = value.text, !text.isEmpty {
+                Label(text, systemImage: symbol(component.semantic ?? "neutral"))
+                    .font(.caption).foregroundStyle(color(component.semantic ?? "neutral"))
+            }
         case "detail.progress":
             ProgressView(value: value.number ?? 0, total: 100) {
                 if let label = component.label { Text(label.fallback).font(.caption) }
@@ -101,7 +103,7 @@ struct ConversationDetailComponentView: View {
     }
     @ViewBuilder private func actionButton(_ id: String?, fields: [String: ClientInspectorValue] = [:], navigationSource: [String: ClientInspectorValue]? = nil) -> some View {
         if let id, let action = state.card.actions.first(where: { $0.id == id }) {
-            Button(action.label.fallback) {
+            let button = Button(action.label.fallback, role: component.presentationRole == "destructive" ? .destructive : nil) {
                 // Local native navigation context only; never augment command
                 // or read RPC fields with collection metadata.
                 var context = fields
@@ -113,6 +115,12 @@ struct ConversationDetailComponentView: View {
             }
                 .disabled(!action.available || !actions.canPerform(action))
                 .help(action.reason?.fallback ?? "")
+            switch component.presentationRole {
+            case "primary", "link": button.buttonStyle(.plain).foregroundStyle(Color.accentColor)
+            case "secondary": button.buttonStyle(.plain)
+            case "destructive": button
+            default: button // Frozen profile1 preserves platform defaults.
+            }
         }
     }
     @ViewBuilder private var resourceList: some View {
@@ -120,11 +128,15 @@ struct ConversationDetailComponentView: View {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(page.order, id: \.self) { id in
                     if let item = page.items[id] {
-                        HStack(alignment: .top, spacing: 8) {
-                            Label(item["title"]?.text ?? "", systemImage: "doc")
-                                .font(.caption).fixedSize(horizontal: false, vertical: true)
-                            Spacer(minLength: 0)
-                            actionButton(item["actionId"]?.text, navigationSource: item)
+                        if component.presentation == "disclosure" {
+                            resourceDisclosure(name: name, id: id, item: item)
+                        } else {
+                            HStack(alignment: .top, spacing: 8) {
+                                Label(item["title"]?.text ?? "", systemImage: "doc")
+                                    .font(.caption).fixedSize(horizontal: false, vertical: true)
+                                Spacer(minLength: 0)
+                                actionButton(item["actionId"]?.text, navigationSource: item)
+                            }
                         }
                     }
                 }
@@ -133,6 +145,27 @@ struct ConversationDetailComponentView: View {
                     // Match the closed Action operation fields exactly.
                     actionButton(component.actionId, fields: ["collectionName": .string(name), "cursor": .string(cursor)])
                 }
+            }
+        }
+    }
+    private func resourceDisclosure(name: String, id: String, item: [String: ClientInspectorValue]) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            DisclosureGroup(isExpanded: Binding(get: { state.isResourceExpanded(collection: name, id: id) },
+                set: { state.setResourceExpanded(collection: name, id: id, $0) })) {
+                if state.isResourceExpanded(collection: name, id: id) {
+                    if let field = component.itemBindings?["body"], let body = item[field]?.text, !body.isEmpty {
+                        ConversationDetailPreparedContent(source: body, identity: state.id + ":" + node.id + ":" + id,
+                            format: .markdown, scope: scope)
+                    }
+                    if let field = component.itemBindings?["metadata"], let metadata = item[field]?.text, !metadata.isEmpty {
+                        Text(metadata).font(.caption).foregroundStyle(.secondary)
+                    }
+                    actionButton(item["actionId"]?.text, navigationSource: item)
+                }
+            } label: { Text(item["title"]?.text ?? "").font(.caption) }
+            if !state.isResourceExpanded(collection: name, id: id), let field = component.itemBindings?["preview"],
+               let preview = item[field]?.text, !preview.isEmpty {
+                Text(preview).font(.caption).foregroundStyle(.secondary).lineLimit(5)
             }
         }
     }

@@ -205,7 +205,7 @@ const domainDelegates = Object.freeze({
     "validateMemoryAssociation", "listMemoriesByKind", "listAllMemories",
     "listMemoryPage", "updateMemory", "deleteMemory",
     "createMemoryAudit", "getMemoryAudit", "listMemoryAudit",
-    "rollbackMemoryAudit", "createMemoryRecallAudit", "listMemoryRecallAudit", "listSessionMemoryHits", "hasMemoryStartupRecall", "updateMemoryRecallAuditInjection",
+    "rollbackMemoryAudit", "createMemoryRecallAudit", "listMemoryRecallAudit", "listSessionMemoryHits", "listSessionMemoryHitsPage", "hasMemoryStartupRecall", "updateMemoryRecallAuditInjection",
     "decayMemories", "touchMemory", "applyConfidenceDecay",
     "listPromotionCandidates", "promoteMemoryToSkill", "createSkill",
     "getSkill", "listSkillsByAgent", "listDiscoverableSkills",

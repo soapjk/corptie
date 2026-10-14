@@ -266,13 +266,52 @@ public enum ClientDetailEvent: Sendable {
     public private(set) var card: ClientDetailCard
     public private(set) var nodes: [String: ClientDetailNode]
     public var expandedNodes: Set<String> = []
+    private var expansionChoices: [String: Bool] = [:]
+    private var resourceExpansionChoices: [String: Bool] = [:]
+    public private(set) var webExpandedSections: [String: Bool] = [:]
     init(_ card: ClientDetailCard) {
         id = card.id; self.card = card
         nodes = Dictionary(uniqueKeysWithValues: card.nodes.map { ($0.id, $0) })
     }
     func update(_ next: ClientDetailCard) {
+        guard next != card else { return }
         if next.nodes != card.nodes { nodes = Dictionary(uniqueKeysWithValues: next.nodes.map { ($0.id, $0) }) }
+        let nodeIDs = Set(next.nodes.map(\.id))
+        expandedNodes.formIntersection(nodeIDs)
+        expansionChoices = expansionChoices.filter { nodeIDs.contains($0.key) }
+        let resourceKeys = Set((next.v2Presentation?.collections ?? [:]).flatMap { name, page in
+            page.order.compactMap { id in page.items[id].map { Self.resourceKey(name, id, $0["resourceType"]?.text ?? "") } }
+        })
+        resourceExpansionChoices = resourceExpansionChoices.filter { resourceKeys.contains($0.key) }
+        let webIDs: Set<String>
+        if let binding = next.v2Presentation?.render?.dataBinding { webIDs = Set(next.data[binding]?["sections"].items.compactMap { $0["id"].text } ?? []) }
+        else { webIDs = [] }
+        webExpandedSections = webExpandedSections.filter { webIDs.contains($0.key) }
         if next != card { card = next }
+    }
+    public func isNodeExpanded(_ id: String, initiallyExpanded: Bool = false) -> Bool {
+        expansionChoices[id] ?? (expandedNodes.contains(id) || initiallyExpanded)
+    }
+    public func setNodeExpanded(_ id: String, _ expanded: Bool) {
+        guard nodes[id]?.kind == "disclosure" else { return }
+        expansionChoices[id] = expanded
+        if expanded { expandedNodes.insert(id) } else { expandedNodes.remove(id) }
+    }
+    private static func resourceKey(_ collection: String, _ id: String, _ type: String) -> String {
+        "\(collection.utf8.count):\(collection)\(type.utf8.count):\(type)\(id.utf8.count):\(id)"
+    }
+    public func isResourceExpanded(collection: String, id: String) -> Bool {
+        guard let item = card.v2Presentation?.collections[collection]?.items[id] else { return false }
+        return resourceExpansionChoices[Self.resourceKey(collection, id, item["resourceType"]?.text ?? "")] ?? false
+    }
+    public func setResourceExpanded(collection: String, id: String, _ expanded: Bool) {
+        guard let item = card.v2Presentation?.collections[collection]?.items[id] else { return }
+        resourceExpansionChoices[Self.resourceKey(collection, id, item["resourceType"]?.text ?? "")] = expanded
+    }
+    public func setWebSectionExpanded(_ id: String, _ expanded: Bool) {
+        guard let binding = card.v2Presentation?.render?.dataBinding,
+              card.data[binding]?["sections"].items.contains(where: { $0["id"].text == id }) == true else { return }
+        if webExpandedSections[id] != expanded { webExpandedSections[id] = expanded }
     }
 }
 
@@ -337,14 +376,15 @@ public enum ClientDetailEvent: Sendable {
             next = try previous.applying(patch)
         }
         try next.validate()
-        let previous = Dictionary(uniqueKeysWithValues: orderedCards.map { ($0.id, $0) })
+        let continuity = document?.documentId == next.documentId && document?.sessionId == next.sessionId && document?.generation == next.generation
+        let previous = continuity ? Dictionary(uniqueKeysWithValues: orderedCards.map { ($0.id, $0) }) : [:]
         let cards = Dictionary(uniqueKeysWithValues: next.cards.map { ($0.id, $0) })
         let ordered = next.order.map { id -> ClientDetailCardState in
             let card = cards[id]!
             if let state = previous[id] { state.update(card); return state }
             return ClientDetailCardState(card)
         }
-        if orderedCards.map(\.id) != next.order { orderedCards = ordered }
+        if !continuity || orderedCards.map(\.id) != next.order { orderedCards = ordered }
         document = next; error = nil
     }
 

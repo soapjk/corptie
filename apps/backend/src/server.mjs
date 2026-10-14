@@ -3,6 +3,7 @@ import { deleteUnreceivedUserMessage } from "./application/userMessageDeletion.m
 import { routeBackendHttpRequest } from "./application/backendHttpRouter.mjs";
 import { detailServiceFor } from "./application/detailDocumentService.mjs";
 import { detailMigrationConfiguration } from "./application/detailMigrationConfiguration.mjs";
+import { parseDetailWebCards } from "./application/detailWebPresentation.mjs";
 import { createDetailBusinessActionService } from "./application/detailBusinessActionComposition.mjs";
 import { ClientSessionAPI } from "./application/clientSessionAPI.mjs";
 import { ClientInspectorAPI } from "./application/clientInspectorAPI.mjs";
@@ -363,7 +364,8 @@ const runtimeActivity = new BackendRuntimeActivity({
 const reportedUnclassifiedProviderSessionIds = new Set();
 const sessionCollaborationV2Enabled = process.env.CORPTIE_SESSION_COLLABORATION_V2 !== "0";
 const store = new CorptieStore();
-const detailMigration = detailMigrationConfiguration({ developmentPreview });
+const detailMigration = detailMigrationConfiguration({ developmentPreview,
+  webCardIDs: parseDetailWebCards(process.env.CORPTIE_DETAIL_WEB_CARDS) });
 const {
   sessionToolMetadata, resolveDynamicToolCallMetadata, resolveToolHostBinding,
   prospectiveToolHostBinding, prepareDesiredWorkspaceToolMaterialization

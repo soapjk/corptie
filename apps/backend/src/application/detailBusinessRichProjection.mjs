@@ -1,6 +1,9 @@
 import { DETAIL_COMPONENTS_CATALOG, detailV2TemplateID } from "./detailV2Catalog.mjs";
 import { detailV2Hash, detailV2StateHash, validateDetailV2, canonicalDetailV2 } from "./detailSyncV2.mjs";
 import { detailBusinessDate } from "./detailBusinessDate.mjs";
+import { DETAIL_COMPONENTS_PROFILE_2 } from "./detailPresentationCatalog.mjs";
+import { refineBusinessPresentation, DETAIL_PRESENTATION_BUSINESS_MODULES } from "./detailBusinessPresentationV2.mjs";
+import { selectWebPresentation, parseDetailWebCards } from "./detailWebPresentation.mjs";
 
 const text = fallback => ({ fallback });
 const stringSchema = maxLength => ({ type: "string", required: true, maxLength });
@@ -90,6 +93,7 @@ const listDefinitions = {
         reference.pendingVersion ? `待确认版本：${reference.pendingVersion} / ${bounded(reference.pendingHash, 64)}` : ""])] },
   memories: { title: "记忆", rowTitle: row => row.kind,
     facts: row => [row.content, row.sourceType, row.trustLevel, row.revokedAt ? "已撤销" : row.promotionStatus] },
+  memoryHits: { title: "本 Session 已命中记忆", rowTitle: row => row.kind, facts: row => [row.content] },
   recalls: { title: "记忆召回诊断", rowTitle: row => row.phase,
     date: row => row.createdAt, dateLabel: "召回时间",
     facts: row => [row.mode, row.reason, row.injectionStatus, ...(row.selectedEntries ?? []).slice(0, 20)
@@ -174,8 +178,10 @@ function moduleCard(name, result) {
 /** Offline producer against the fixed shared catalog, not a renderer or HTTP
  * gate. Navigation and actions are explicit host opt-ins for normalized,
  * registered targets. Old UI remains active. */
-export function projectDetailBusinessRich(scope, readResults = {}, { profile, generation, previous = null, navigation = false, editors = false, nativeEditors = false, pages = {}, operations = [] } = {}) {
-  if (profile?.catalog !== DETAIL_COMPONENTS_CATALOG) throw new Error("DETAIL_BUSINESS_RICH_PROFILE_REQUIRED");
+export function projectDetailBusinessRich(scope, readResults = {}, { profile, generation, previous = null, navigation = false, editors = false, nativeEditors = false, pages = {}, operations = [], webCardIDs = [] } = {}) {
+  const selectedWebCards = parseDetailWebCards(webCardIDs);
+  const presentation = profile?.catalog === DETAIL_COMPONENTS_PROFILE_2;
+  if (!presentation && profile?.catalog !== DETAIL_COMPONENTS_CATALOG) throw new Error("DETAIL_BUSINESS_RICH_PROFILE_REQUIRED");
   if (previous) validateDetailV2(previous, profile);
   const documentId = `detail:${scope.logicalSessionId}`;
   if (previous && (previous.documentId !== documentId || previous.sessionId !== scope.logicalSessionId || previous.generation !== generation)) previous = null;
@@ -194,7 +200,7 @@ export function projectDetailBusinessRich(scope, readResults = {}, { profile, ge
   if (scope.session.sessionKind === "workChat" && scope.work) cards.push({ id: "work-overview", template: contentTemplate,
     fields: { title: bounded(scope.work.name, 512), state: "只读 Work 概述", body: bounded(scope.work.description, 32768) } });
   for (const [name, result] of Object.entries(readResults)) {
-    if (!DETAIL_RICH_BUSINESS_MODULES.includes(name)) throw new Error("DETAIL_BUSINESS_RICH_MODULE_UNAVAILABLE");
+    if (!(presentation ? DETAIL_PRESENTATION_BUSINESS_MODULES : DETAIL_RICH_BUSINESS_MODULES).includes(name)) throw new Error("DETAIL_BUSINESS_RICH_MODULE_UNAVAILABLE");
     cards.push(moduleCard(name, result));
   }
   for (const operation of operations) {
@@ -206,7 +212,7 @@ export function projectDetailBusinessRich(scope, readResults = {}, { profile, ge
   }
   const templates = Object.create(null), instances = Object.create(null), references = Object.create(null);
   for (const card of cards) {
-    const actions = card.actions ?? {};
+    const actions = card.actions ?? {}; card.actions = actions;
     if (nativeEditors && profile.clientCapabilities.includes("detail.button")) {
       const provider = readResults.provider?.state === "ready" ? readResults.provider.data : null;
       const worktree = readResults.worktree?.state === "ready" ? readResults.worktree.data : null;
@@ -243,7 +249,16 @@ export function projectDetailBusinessRich(scope, readResults = {}, { profile, ge
     }
     if (actions.manage) card.template = actions.manage.target.resourceType === "provider"
       ? navigable ? managedProviderNavigationTemplate : managedProviderTemplate : managedWorktreeTemplate;
-    const templateHash = templateHashes.get(card.template), old = previous?.instances[card.id];
+    if (presentation) {
+      if (profile.clientCapabilities.includes("detail.button")) actions.refresh = { id: "refresh", kind: "read", operation: "detail.refresh",
+        label: text("刷新"), available: true, target: { resourceType: "session", id: scope.logicalSessionId } };
+      refineBusinessPresentation(card, scope, readResults);
+    }
+    if (presentation && selectedWebCards.includes(card.id) && profile.clientCapabilities.includes("detail.web")) {
+      const structure = selectWebPresentation(card);
+      card.template = freeze({ ...structure, templateId: detailV2TemplateID(structure) });
+    }
+    const templateHash = templateHashes.get(card.template) ?? detailV2Hash(card.template), old = previous?.instances[card.id];
     templates[templateHash] = card.template; references[card.id] = { templateId: card.template.templateId, templateHash };
     const collections = {};
     if (card.page) {

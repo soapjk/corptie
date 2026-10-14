@@ -1,13 +1,12 @@
 import { detailV2Hash } from "./detailSyncV2.mjs";
+import { DETAIL_COMPONENTS_PROFILE_1, DETAIL_NATIVE_COMPONENTS, DETAIL_PRESENTATION_PROFILES,
+  detailPresentationCapabilities } from "./detailPresentationCatalog.mjs";
 
-export const DETAIL_COMPONENTS_CATALOG = "native-v2-components-1";
+export const DETAIL_COMPONENTS_CATALOG = DETAIL_COMPONENTS_PROFILE_1;
 // Keep rich routes closed until the scoped service and strict schema are
 // integrated and accepted together; recognizing a header is not enablement.
 export const DETAIL_TRANSPORT_CATALOGS = Object.freeze(["native-v2"]);
-export const DETAIL_REGISTERED_CAPABILITIES = new Set([
-  "detail.button", "detail.chart", "detail.dateTime", "detail.form", "detail.image",
-  "detail.keyValue", "detail.markdown", "detail.progress", "detail.resourceList", "detail.status"
-]);
+export const DETAIL_REGISTERED_CAPABILITIES = new Set(DETAIL_NATIVE_COMPONENTS);
 const reject = () => { throw Object.assign(new Error("DETAIL_CAPABILITIES_INVALID"), { code: "DETAIL_CAPABILITIES_INVALID", status: 400, statusCode: 400 }); };
 
 /** Transport normalization only; authority and schema stay in their services. */
@@ -16,22 +15,24 @@ export function detailV2Negotiation(catalog, clientCapabilities) {
     if (clientCapabilities !== undefined) reject();
     return { catalog, clientCapabilities: [], capabilityDigest: detailV2Hash([]) };
   }
-  if (catalog !== DETAIL_COMPONENTS_CATALOG || !Array.isArray(clientCapabilities) || clientCapabilities.length > 32) reject();
+  const registered = detailPresentationCapabilities(catalog);
+  if (!registered || !Array.isArray(clientCapabilities) || clientCapabilities.length > 32) reject();
   for (let index = 0; index < clientCapabilities.length; index++) {
     const token = clientCapabilities[index];
     if (typeof token !== "string" || token.length > 64 || !/^[\x21-\x7e]+$/.test(token) ||
-        !DETAIL_REGISTERED_CAPABILITIES.has(token) || (index > 0 && clientCapabilities[index - 1] >= token)) reject();
+        !registered.includes(token) || (index > 0 && clientCapabilities[index - 1] >= token)) reject();
   }
   return { catalog, clientCapabilities: [...clientCapabilities], capabilityDigest: detailV2Hash(clientCapabilities) };
 }
 
 export function detailV2GetNegotiation(request) {
   if (request.headers.accept === "application/json; corptie-detail=native-v2") return detailV2Negotiation("native-v2");
-  if (request.headers.accept !== `application/json; corptie-detail=${DETAIL_COMPONENTS_CATALOG}`) return null;
+  const catalog = DETAIL_PRESENTATION_PROFILES.find(profile => request.headers.accept === `application/json; corptie-detail=${profile}`);
+  if (!catalog) return null;
   const header = request.headers["x-corptie-detail-capabilities"];
   if (typeof header !== "string" || header.length > 2048) reject();
   const tokens = header === "" ? [] : header.split(",").map(token => token.trim());
-  return detailV2Negotiation(DETAIL_COMPONENTS_CATALOG, tokens);
+  return detailV2Negotiation(catalog, tokens);
 }
 
 export function detailV2ServiceOptions(identity, negotiation) {

@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { validateDetailContract } from "./detailDocumentContract.mjs";
 import { validateDetailV2Envelope } from "./detailV2Contract.mjs";
-import { DETAIL_COMPONENTS_CATALOG, detailV2CatalogOptions, validateDetailV2Components, validateDetailV2CollectionTransition } from "./detailV2Catalog.mjs";
+import { detailV2CatalogOptions, validateDetailV2Components, validateDetailV2CollectionTransition } from "./detailV2Catalog.mjs";
+import { isDetailPresentationProfile } from "./detailPresentationCatalog.mjs";
 
 // native-v2 is not enabled on HTTP routes until both endpoints support the
 // contract. These pure functions are the shared synchronization boundary.
@@ -68,7 +69,7 @@ export function validateDetailV2(state, profile = {}) {
   if (Object.keys(state.templates).length > 30) fail("DETAIL_V2_LIMIT");
   for (const [hash, template] of Object.entries(state.templates)) {
     if (!hashPattern.test(hash) || hash !== detailV2Hash(template)) fail("DETAIL_V2_HASH");
-    if (options.catalog === DETAIL_COMPONENTS_CATALOG ? template.catalogProfile !== options.catalog : template.catalogProfile !== undefined) fail("DETAIL_V2_CATALOG");
+    if (isDetailPresentationProfile(options.catalog) ? template.catalogProfile !== options.catalog : template.catalogProfile !== undefined) fail("DETAIL_V2_CATALOG");
   }
   let nodeCount = 0;
   for (const cardId of manifest.order) {
@@ -85,7 +86,7 @@ export function validateDetailV2(state, profile = {}) {
     nodeCount += template.card?.nodes?.length ?? 0;
     if (nodeCount > 500 || Object.entries(instance.actions).some(([key, action]) => key !== action.id)) fail("DETAIL_V2_CATALOG");
     if (template.templateId !== ref.templateId) fail("DETAIL_V2_CATALOG");
-    if (options.catalog === DETAIL_COMPONENTS_CATALOG) {
+    if (isDetailPresentationProfile(options.catalog)) {
       validateDetailV2Components(template, instance, state, cardId, options);
       continue;
     }
@@ -142,7 +143,7 @@ export function diffDetailV2(before, after, profile = {}) {
         if (next.revision <= old.revision) fail("DETAIL_V2_REVISION");
         changes.push({ cardId, baseRevision: old.revision, revision: next.revision, baseHash: old.hash, resultHash: next.hash,
           fields: fieldDelta(old.fields, next.fields), actions: fieldDelta(old.actions, next.actions),
-          ...(options.catalog === DETAIL_COMPONENTS_CATALOG ? { collections: fieldDelta(old.collections, next.collections) } : {}) });
+          ...(isDetailPresentationProfile(options.catalog) ? { collections: fieldDelta(old.collections, next.collections) } : {}) });
       }
     }
   }
@@ -165,7 +166,7 @@ export function applyDetailV2(before, commit, profile = {}) {
   const options = detailV2CatalogOptions(profile);
   validateDetailV2Envelope(commit, "Commit");
   validateDetailV2(before, options); bounded(commit);
-  if (options.catalog !== DETAIL_COMPONENTS_CATALOG && commit.instanceChanges.some(change => own(change, "collections"))) fail("DETAIL_V2_CATALOG");
+  if (!isDetailPresentationProfile(options.catalog) && commit.instanceChanges.some(change => own(change, "collections"))) fail("DETAIL_V2_CATALOG");
   if (commit.protocolVersion !== 2 || commit.documentId !== before.documentId || commit.sessionId !== before.sessionId || commit.generation !== before.generation) fail("DETAIL_V2_BASE");
   if (commit.revision === before.revision && commit.resultStateHash === before.stateHash) return before;
   revision(commit.revision);

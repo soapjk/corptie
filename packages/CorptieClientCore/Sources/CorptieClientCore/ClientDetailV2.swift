@@ -85,14 +85,15 @@ public struct ClientDetailV2State: Codable, Equatable, Sendable {
     }
     private func validateNegotiation(catalogProfile: String, clientCapabilities: [String]?) throws {
         let capabilities = clientCapabilities ?? []
-        guard catalogProfile == "native-v2" || catalogProfile == ClientDetailV2Catalog.profile,
+        let registered = ClientDetailPresentationCatalog.capabilities(for: catalogProfile)
+        guard catalogProfile == "native-v2" || registered != nil,
               capabilities == capabilities.sorted(), Set(capabilities).count == capabilities.count,
-              Set(capabilities).isSubset(of: ClientDetailV2Catalog.componentKinds),
-              catalogProfile == ClientDetailV2Catalog.profile ? clientCapabilities != nil : capabilities.isEmpty else {
+              Set(capabilities).isSubset(of: registered ?? []),
+              registered != nil ? clientCapabilities != nil : capabilities.isEmpty else {
             throw ClientDetailV2Canonical.Failure.shape
         }
         for template in templates.values {
-            if catalogProfile == ClientDetailV2Catalog.profile {
+            if registered != nil {
                 guard template["catalogProfile"].text == catalogProfile,
                       case .array(let required) = template["requiredCapabilities"],
                       required.allSatisfy({ $0.text != nil }),
@@ -123,8 +124,8 @@ public struct ClientDetailV2State: Codable, Equatable, Sendable {
             guard Self.validID(cardID), let reference = manifest.cards[cardID], Self.validID(reference.templateId),
                   let template = templates[reference.templateHash], template["templateId"].text == reference.templateId,
                   let instance = instances[cardID], Self.validRevision(instance.revision) else { throw Failure.shape }
-            if template["catalogProfile"].text == ClientDetailV2Catalog.profile {
-                guard catalogProfile == ClientDetailV2Catalog.profile else { throw Failure.shape }
+            if ClientDetailPresentationCatalog.capabilities(for: template["catalogProfile"].text ?? "") != nil {
+                guard template["catalogProfile"].text == catalogProfile else { throw Failure.shape }
                 try ClientDetailV2Catalog.validate(template: template, instance: instance)
             } else {
                 guard template.fields["catalogProfile"] == nil, instance.collections.isEmpty,
@@ -136,7 +137,7 @@ public struct ClientDetailV2State: Codable, Equatable, Sendable {
             guard try ClientDetailV2Canonical.hash(instance.body) == instance.hash else { throw Failure.hash }
             // Reuse the existing rooted native tree contract; do not enable new
             // rendering semantics without catalog negotiation.
-            var card = template["card"].fields
+            var card = ClientDetailV2Catalog.nativeDefinition(template)
             card["id"] = .string(cardID)
             card["templateRevision"] = template["templateVersion"]
             card["dataRevision"] = .string(instance.hash)
@@ -165,17 +166,17 @@ public struct ClientDetailV2State: Codable, Equatable, Sendable {
         let oldCards = Dictionary(uniqueKeysWithValues: (document?.cards ?? []).map { ($0.id, $0) })
         let cards = try manifest.order.map { cardID -> ClientDetailCard in
             guard let reference = manifest.cards[cardID], let instance = instances[cardID], let template = templates[reference.templateHash] else { throw ClientDetailV2Canonical.Failure.shape }
-            guard template.fields["catalogProfile"] == nil || (catalogProfile == ClientDetailV2Catalog.profile && template["catalogProfile"].text == catalogProfile) else { throw ClientDetailV2Canonical.Failure.shape }
+            guard template.fields["catalogProfile"] == nil || (ClientDetailPresentationCatalog.capabilities(for: catalogProfile) != nil && template["catalogProfile"].text == catalogProfile) else { throw ClientDetailV2Canonical.Failure.shape }
             if previous?.generation == generation, previous?.documentId == documentId,
                document?.generation == renderGeneration,
                previous?.instances[cardID] == instance, previous?.manifest.cards[cardID] == reference,
                let old = oldCards[cardID] { return old }
-            var definition = template["card"].fields
+            var definition = ClientDetailV2Catalog.nativeDefinition(template)
             definition["id"] = .string(cardID); definition["templateRevision"] = template["templateVersion"]
             definition["dataRevision"] = .string(instance.hash); definition["data"] = .object(instance.fields)
             definition["actions"] = .array(instance.actions.keys.sorted().map { instance.actions[$0]! })
             var card = try JSONDecoder().decode(ClientDetailCard.self, from: JSONEncoder().encode(ClientInspectorValue.object(definition)))
-            if template["catalogProfile"].text == ClientDetailV2Catalog.profile {
+            if ClientDetailPresentationCatalog.capabilities(for: template["catalogProfile"].text ?? "") != nil {
                 try ClientDetailV2Catalog.validate(template: template, instance: instance)
                 card.v2Presentation = try ClientDetailV2Catalog.presentation(template: template, instance: instance)
             }

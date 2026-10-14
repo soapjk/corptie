@@ -13,7 +13,7 @@ let package = Package(
         .target(name: "CorptieConversation", dependencies: [
             .product(name: "CorptieClientCore", package: "CorptieClientCore"),
             .product(name: "Markdown", package: "swift-markdown")
-        ]),
+        ], resources: [.copy("Resources/DetailWeb")]),
         .testTarget(name: "CorptieConversationTests", dependencies: ["CorptieConversation"])
     ]
 )
