@@ -143,10 +143,10 @@
           "type": "object"
         },
         "catalogProfile": {
-          "const": "native-v2-components-1"
+          "enum": ["native-v2-components-1", "native-v2-components-2"]
         },
         "requiredCapabilities": {
-          "$ref": "#/definitions/ComponentCapabilities"
+          "$ref": "#/definitions/PresentationCapabilities"
         },
         "fieldSchema": {
           "$ref": "#/definitions/FieldMap"
@@ -173,7 +173,11 @@
       ],
       "additionalProperties": false,
       "if": { "required": ["catalogProfile"] },
-      "then": { "required": ["requiredCapabilities", "fieldSchema", "collectionSchema"] },
+      "then": {
+        "required": ["requiredCapabilities", "fieldSchema", "collectionSchema"],
+        "if": { "properties": { "catalogProfile": { "const": "native-v2-components-1" } } },
+        "then": { "properties": { "requiredCapabilities": { "$ref": "#/definitions/ComponentCapabilities" } } }
+      },
       "else": { "not": { "anyOf": [
         { "required": ["requiredCapabilities"] },
         { "required": ["fieldSchema"] },
@@ -185,6 +189,12 @@
       "maxItems": 10,
       "uniqueItems": true,
       "items": { "enum": ["detail.button", "detail.chart", "detail.dateTime", "detail.form", "detail.image", "detail.keyValue", "detail.markdown", "detail.progress", "detail.resourceList", "detail.status"] }
+    },
+    "PresentationCapabilities": {
+      "type": "array",
+      "maxItems": 11,
+      "uniqueItems": true,
+      "items": { "enum": ["detail.button", "detail.chart", "detail.dateTime", "detail.form", "detail.image", "detail.keyValue", "detail.markdown", "detail.progress", "detail.resourceList", "detail.status", "detail.web"] }
     },
     "FieldMap": {
       "type": "object",
@@ -515,10 +525,10 @@
           "const": 2
         },
         "catalog": {
-          "enum": ["native-v2", "native-v2-components-1"]
+          "enum": ["native-v2", "native-v2-components-1", "native-v2-components-2"]
         },
         "clientCapabilities": {
-          "$ref": "#/definitions/ComponentCapabilities"
+          "$ref": "#/definitions/PresentationCapabilities"
         },
         "resume": {
           "anyOf": [
@@ -547,9 +557,13 @@
         "cachedTemplateHashes"
       ],
       "additionalProperties": false,
-      "if": { "properties": { "catalog": { "const": "native-v2-components-1" } } },
+      "if": { "properties": { "catalog": { "enum": ["native-v2-components-1", "native-v2-components-2"] } } },
       "then": { "required": ["clientCapabilities"] },
-      "else": { "not": { "required": ["clientCapabilities"] } }
+      "else": { "not": { "required": ["clientCapabilities"] } },
+      "allOf": [{
+        "if": { "properties": { "catalog": { "const": "native-v2-components-1" } } },
+        "then": { "properties": { "clientCapabilities": { "$ref": "#/definitions/ComponentCapabilities" } } }
+      }]
     }
   },
   "oneOf": [

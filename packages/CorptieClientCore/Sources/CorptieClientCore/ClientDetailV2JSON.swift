@@ -68,7 +68,7 @@ enum ClientDetailV2JSON {
             for ref in manifest["cards"].fields.values { try keys(ref, allowed: ["templateId", "templateHash"], required: ["templateId", "templateHash"]) }
         }
         for template in value["templates"].fields.values {
-            let extra: Set<String> = template["catalogProfile"].text == ClientDetailV2Catalog.profile
+            let extra: Set<String> = ClientDetailPresentationCatalog.capabilities(for: template["catalogProfile"].text ?? "") != nil
                 ? ["catalogProfile", "requiredCapabilities", "fieldSchema", "collectionSchema"] : []
             try keys(template, allowed: Set(["templateId", "templateVersion", "card"]).union(extra), required: Set(["templateId", "templateVersion", "card"]).union(extra))
         }

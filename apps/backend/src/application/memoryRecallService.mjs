@@ -167,7 +167,10 @@ export function presentMemoryRecallAudit(store, audit) {
 }
 
 export function presentSessionMemoryHits(store, sessionId) {
-  return store.listSessionMemoryHits(sessionId).map((hit) => {
+  return store.listSessionMemoryHits(sessionId).map(hit => presentSessionMemoryHit(store, hit));
+}
+
+export function presentSessionMemoryHit(store, hit) {
     const snapshot = Array.isArray(hit.diagnostics?.selectedEntries)
       ? hit.diagnostics.selectedEntries.find((entry) => entry.id === hit.memoryId)
       : null;
@@ -176,7 +179,15 @@ export function presentSessionMemoryHits(store, sessionId) {
     return current ? memoryRecallEntry(current, false)
       : { id: hit.memoryId, kind: null, content: null,
         ownerType: null, ownerId: null, snapshotAtRecall: false };
-  });
+}
+
+export function presentSessionMemoryHitsPage(store, sessionId, options) {
+  const page = store.listSessionMemoryHitsPage(sessionId, options);
+  return { ...page, items: page.items.map(hit => {
+    const entry = presentSessionMemoryHit(store, hit), current = store.getMemory(hit.memoryId);
+    const unavailable = !current || Boolean(current.revoked_at);
+    return { ...entry, content: unavailable ? null : entry.content, unavailable, lastHitAt: hit.lastHitAt };
+  }) };
 }
 
 function isRecallableMemory(memory) {

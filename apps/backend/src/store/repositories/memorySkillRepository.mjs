@@ -508,6 +508,31 @@ export class MemorySkillRepository {
     }));
   }
 
+  listSessionMemoryHitsPage(sessionId, { limit = 20, cursor = null } = {}) {
+    const invalid = () => Object.assign(new Error("Invalid memory hit page"), { code: "DETAIL_CURSOR_INVALID", status: 409 });
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw invalid();
+    let position = null;
+    if (cursor !== null) {
+      if (typeof cursor !== "string" || cursor.length > 512 || !/^[A-Za-z0-9_-]+$/.test(cursor)) throw invalid();
+      try { position = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")); } catch { throw invalid(); }
+      if (!Array.isArray(position) || position.length !== 2 || position.some(v => typeof v !== "string" || !v.length)
+        || position[0].length > 64 || position[1].length > 256) throw invalid();
+    }
+    const rows = this.selectAll(`WITH hits AS (
+      SELECT CAST(selected.value AS TEXT) AS memory_id, audit.diagnostics_json, audit.created_at,
+        ROW_NUMBER() OVER (PARTITION BY selected.value ORDER BY audit.created_at DESC, audit.rowid DESC) AS rank
+      FROM memory_recall_audit AS audit JOIN json_each(audit.selected_ids_json) AS selected
+      WHERE audit.session_id = ? AND json_extract(audit.diagnostics_json, '$.injection.status')
+        IN ('provider_accepted', 'context_included')
+    ) SELECT memory_id, diagnostics_json, created_at FROM hits WHERE rank = 1
+      ${position ? "AND (created_at < ? OR (created_at = ? AND memory_id > ?))" : ""}
+      ORDER BY created_at DESC, memory_id LIMIT ?`,
+      [sessionId, ...(position ? [position[0], position[0], position[1]] : []), limit + 1]);
+    const selected = rows.slice(0, limit), last = selected.at(-1), hasMore = rows.length > limit;
+    return { items: selected.map(row => ({ memoryId: row.memory_id, diagnostics: safeJsonValue(row.diagnostics_json, {}), lastHitAt: row.created_at })),
+      hasMore, nextCursor: hasMore && last ? Buffer.from(JSON.stringify([last.created_at, last.memory_id])).toString("base64url") : null };
+  }
+
   hasMemoryStartupRecall(sessionId) {
     return Boolean(this.selectOne(
       `SELECT 1 FROM memory_recall_audit

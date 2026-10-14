@@ -1,11 +1,10 @@
 import { detailV2Hash, canonicalDetailV2 } from "./detailSyncV2.mjs";
 import { validateDetailContract, DETAIL_COMPONENT_KINDS } from "./detailDocumentContract.mjs";
+import { DETAIL_COMPONENTS_PROFILE_1, DETAIL_COMPONENTS_PROFILE_2, DETAIL_NATIVE_COMPONENTS,
+  detailPresentationCapabilities } from "./detailPresentationCatalog.mjs";
 
-export const DETAIL_COMPONENTS_CATALOG = "native-v2-components-1";
-export const DETAIL_COMPONENT_CAPABILITIES = Object.freeze([
-  "detail.button", "detail.chart", "detail.dateTime", "detail.form", "detail.image",
-  "detail.keyValue", "detail.markdown", "detail.progress", "detail.resourceList", "detail.status"
-]);
+export const DETAIL_COMPONENTS_CATALOG = DETAIL_COMPONENTS_PROFILE_1;
+export const DETAIL_COMPONENT_CAPABILITIES = DETAIL_NATIVE_COMPONENTS;
 const invalid = () => { throw Object.assign(new Error("DETAIL_V2_CATALOG"), { code: "DETAIL_V2_CATALOG", status: 400 }); };
 const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
 const token = value => typeof value === "string" && /^[\x20-\x7e]{1,512}$/.test(value);
@@ -32,8 +31,9 @@ export function detailV2CatalogOptions({ catalog = "native-v2", clientCapabiliti
     if (clientCapabilities !== undefined && (!Array.isArray(clientCapabilities) || clientCapabilities.length)) invalid();
     return { catalog, clientCapabilities: [] };
   }
-  if (catalog !== DETAIL_COMPONENTS_CATALOG || !Array.isArray(clientCapabilities) || clientCapabilities.length > 10 ||
-      clientCapabilities.some((v, i) => !DETAIL_COMPONENT_CAPABILITIES.includes(v) || (i && clientCapabilities[i - 1] >= v))) invalid();
+  const registered = detailPresentationCapabilities(catalog);
+  if (!registered || !Array.isArray(clientCapabilities) || clientCapabilities.length > registered.length ||
+      clientCapabilities.some((v, i) => !registered.includes(v) || (i && clientCapabilities[i - 1] >= v))) invalid();
   return { catalog, clientCapabilities: [...clientCapabilities] };
 }
 export function detailV2TemplateID(structure) {
@@ -72,17 +72,28 @@ export function validateDetailV2Field(schema, value, depth = 0, schemaOnly = fal
 }
 function component(node, template, instance) {
   const props = node.props;
+  const presentation = template.catalogProfile === DETAIL_COMPONENTS_PROFILE_2;
   const allowed = {
     "detail.keyValue": ["label"], "detail.image": ["label"], "detail.progress": ["label"],
-    "detail.status": ["semantic"], "detail.dateTime": ["format"], "detail.resourceList": ["collection", "actionId"],
-    "detail.button": ["actionId"], "detail.form": ["actionId", "controls"], "detail.markdown": [], "detail.chart": []
+    "detail.status": ["semantic"], "detail.dateTime": ["format"], "detail.resourceList": ["collection", "actionId", ...(presentation ? ["presentation", "itemBindings", "presentationRole"] : [])],
+    "detail.button": ["actionId", ...(presentation ? ["presentationRole"] : [])], "detail.form": ["actionId", "controls"], "detail.markdown": [], "detail.chart": []
   }[node.kind];
   keys(props, allowed);
+  if (props.presentationRole !== undefined && !["primary", "link", "secondary", "destructive"].includes(props.presentationRole)) invalid();
   if (props.label !== undefined) text(props.label);
   if (props.actionId !== undefined && (!token(props.actionId) || !Object.hasOwn(instance.actions, props.actionId))) invalid();
-  if (node.kind === "detail.button") { if (!props.actionId) invalid(); return; }
+  if (node.kind === "detail.button") {
+    if (!props.actionId || props.presentationRole !== undefined && !["primary", "link", "secondary", "destructive"].includes(props.presentationRole)) invalid();
+    return;
+  }
   if (node.kind === "detail.resourceList") {
     if (!token(props.collection) || !Object.hasOwn(template.collectionSchema, props.collection)) invalid();
+    if (props.presentation !== undefined && !["plain", "disclosure"].includes(props.presentation)) invalid();
+    if (props.presentation === "disclosure") {
+      keys(props.itemBindings, ["preview", "body", "metadata"], ["preview", "body"]);
+      const itemSchema = template.collectionSchema[props.collection].itemSchema;
+      for (const binding of Object.values(props.itemBindings)) if (!token(binding) || itemSchema[binding]?.type !== "string") invalid();
+    } else if (props.itemBindings !== undefined) invalid();
     for (const item of Object.values(Object.hasOwn(instance.collections, props.collection) ? instance.collections[props.collection].items : {})) {
       if (!token(item.resourceType) || !token(item.id) || typeof item.title !== "string" ||
           (item.actionId !== undefined && !Object.hasOwn(instance.actions, item.actionId))) invalid();
@@ -124,9 +135,9 @@ export function validateDetailV2Components(template, instance, state, cardId, op
   keys(template, ["templateId", "templateVersion", "catalogProfile", "requiredCapabilities", "fieldSchema", "collectionSchema", "card"],
     ["templateId", "templateVersion", "catalogProfile", "requiredCapabilities", "fieldSchema", "collectionSchema", "card"]);
   const { templateId, ...structure } = template;
-  if (templateId !== detailV2TemplateID(structure) || template.catalogProfile !== DETAIL_COMPONENTS_CATALOG || !revision(template.templateVersion)) invalid();
+  if (templateId !== detailV2TemplateID(structure) || template.catalogProfile !== options.catalog || !detailPresentationCapabilities(template.catalogProfile) || !revision(template.templateVersion)) invalid();
   const capabilities = template.requiredCapabilities;
-  detailV2CatalogOptions({ catalog: DETAIL_COMPONENTS_CATALOG, clientCapabilities: capabilities });
+  detailV2CatalogOptions({ catalog: template.catalogProfile, clientCapabilities: capabilities });
   if (capabilities.some(c => !options.clientCapabilities.includes(c))) invalid();
   validateDetailV2FieldMap(template.fieldSchema, instance.fields);
   if (!object(template.collectionSchema) || Object.keys(template.collectionSchema).length > 64 || Object.keys(instance.collections).some(k => !Object.hasOwn(template.collectionSchema, k))) invalid();
@@ -142,7 +153,20 @@ export function validateDetailV2Components(template, instance, state, cardId, op
     Object.values(page.items).forEach(item => validateDetailV2FieldMap(schema.itemSchema, item));
   }
   const card = template.card;
-  keys(card, ["title", "titleBinding", "semanticKind", "rootNodeId", "nodes", "fallback"], ["title", "semanticKind", "rootNodeId", "nodes", "fallback"]);
+  const presentation = template.catalogProfile === DETAIL_COMPONENTS_PROFILE_2;
+  keys(card, ["title", "titleBinding", "semanticKind", "rootNodeId", "nodes", "fallback", ...(presentation ? ["render"] : [])],
+    ["title", "semanticKind", "rootNodeId", "nodes", "fallback", ...(presentation ? ["render"] : [])]);
+  if (presentation) {
+    if (card.render?.kind === "native") keys(card.render, ["kind"], ["kind"]);
+    else if (card.render?.kind === "web") {
+      keys(card.render, ["kind", "rendererId", "rendererVersion", "assetHash", "dataBinding", "bridgeVersion"],
+        ["kind", "rendererId", "rendererVersion", "assetHash", "dataBinding", "bridgeVersion"]);
+      if (!capabilities.includes("detail.web") || !token(card.render.rendererId) || !revision(card.render.rendererVersion)
+        || typeof card.render.assetHash !== "string" || card.render.assetHash.length !== 71
+        || !/^sha256:[0-9a-f]{64}$/.test(card.render.assetHash) || card.render.bridgeVersion !== 1
+        || !token(card.render.dataBinding) || template.fieldSchema[card.render.dataBinding]?.type !== "object") invalid();
+    } else invalid();
+  }
   text(card.title); text(card.fallback);
   if (card.titleBinding !== undefined && template.fieldSchema[card.titleBinding]?.type !== "string") invalid();
   if (!Array.isArray(card.nodes)) invalid();
@@ -156,11 +180,18 @@ export function validateDetailV2Components(template, instance, state, cardId, op
       return { id: node.id, kind: "text", props: {}, children: [] };
     }
     if (!DETAIL_COMPONENT_KINDS.includes(node.kind)) invalid();
-    keys(node.props, ["text", "label", "semantic", "actionId"]);
+    const disclosure = presentation && node.kind === "disclosure";
+    keys(node.props, ["text", "label", "semantic", "actionId", ...(disclosure ? ["previewBinding", "initiallyExpanded"] : [])]);
     for (const name of ["text", "label"]) if (node.props[name] !== undefined) text(node.props[name]);
+    if (disclosure) {
+      if (node.props.initiallyExpanded !== undefined && typeof node.props.initiallyExpanded !== "boolean") invalid();
+      if (node.props.previewBinding !== undefined && (!token(node.props.previewBinding) || template.fieldSchema[node.props.previewBinding]?.type !== "string")) invalid();
+      const { previewBinding, initiallyExpanded, ...props } = node.props;
+      return { ...node, props };
+    }
     return node;
   });
-  const { titleBinding, ...definition } = card;
+  const { titleBinding, render, ...definition } = card;
   validateDetailContract({ schemaVersion: 1, documentId: state.documentId, sessionId: state.sessionId, generation: state.generation,
     revision: state.revision, order: [cardId], cards: [{ ...definition, id: cardId, nodes, templateRevision: template.templateVersion,
       dataRevision: instance.hash, data: instance.fields, actions: Object.values(instance.actions) }] }, "Document");

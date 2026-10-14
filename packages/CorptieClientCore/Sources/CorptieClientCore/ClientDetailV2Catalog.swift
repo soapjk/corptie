@@ -24,6 +24,9 @@ public struct ClientDetailComponent: Codable, Equatable, Sendable {
     public let format: String?
     public let collection: String?
     public let controls: [Control]?
+    public let presentationRole: String?
+    public let presentation: String?
+    public let itemBindings: [String: String]?
 }
 
 /// Presentation metadata is local only; it is never encoded as native-v1.
@@ -33,12 +36,13 @@ public struct ClientDetailV2Presentation: Equatable, Sendable {
     public let components: [String: ClientDetailComponent]
     public let dates: [String: Date]
     public let fieldLimits: [String: Int]
+    public var render: ClientDetailRenderDescriptor? = nil
+    public var disclosures: [String: ClientDetailDisclosurePresentation] = [:]
 }
 
 public enum ClientDetailV2Catalog {
-    public static let profile = "native-v2-components-1"
-    public static let componentKinds: Set<String> = ["detail.dateTime", "detail.resourceList", "detail.image",
-        "detail.markdown", "detail.chart", "detail.form", "detail.keyValue", "detail.status", "detail.progress", "detail.button"]
+    public static let profile = ClientDetailPresentationCatalog.profile1
+    public static let componentKinds = ClientDetailPresentationCatalog.nativeCapabilities
     private static func fail() throws { throw ClientDetailV2Canonical.Failure.shape }
     static func decode<T: Decodable>(_ type: T.Type, _ value: ClientInspectorValue) throws -> T {
         try JSONDecoder().decode(type, from: JSONEncoder().encode(value))
@@ -135,12 +139,14 @@ public enum ClientDetailV2Catalog {
         try keys(template, ["templateId", "templateVersion", "catalogProfile", "requiredCapabilities", "fieldSchema", "collectionSchema", "card"],
             ["templateId", "templateVersion", "catalogProfile", "requiredCapabilities", "fieldSchema", "collectionSchema", "card"])
         var structure = template.fields; structure.removeValue(forKey: "templateId")
-        guard template["catalogProfile"].text == profile, template["templateId"].text == (try templateID(structure: .object(structure))),
+        guard let catalog = template["catalogProfile"].text,
+              let registered = ClientDetailPresentationCatalog.capabilities(for: catalog),
+              template["templateId"].text == (try templateID(structure: .object(structure))),
               let version = template["templateVersion"].number, version >= 1, version <= Double(ClientDetailProtocol.maxRevision), version.rounded() == version,
               case .array(let capabilities) = template["requiredCapabilities"] else { try fail(); return }
         let tokens = capabilities.compactMap(\.text)
         guard tokens.count == capabilities.count, tokens == tokens.sorted(), Set(tokens).count == tokens.count,
-              Set(tokens).isSubset(of: componentKinds), instance.collections.count <= 64 else { try fail(); return }
+              Set(tokens).isSubset(of: registered), instance.collections.count <= 64 else { try fail(); return }
         try fieldMap(template["fieldSchema"], values: .object(instance.fields), depth: 0)
         let collectionSchema = template["collectionSchema"]
         guard case .object(let schemas) = collectionSchema, schemas.count <= 64,
@@ -158,7 +164,27 @@ public enum ClientDetailV2Catalog {
             for item in page.items.values { try fieldMap(schema["itemSchema"], values: .object(item), depth: 0) }
         }
         let card = template["card"]
-        try keys(card, ["title", "titleBinding", "semanticKind", "rootNodeId", "nodes", "fallback"], ["title", "semanticKind", "rootNodeId", "nodes", "fallback"])
+        let presentation = catalog == ClientDetailPresentationCatalog.profile2
+        let renderKeys: Set<String> = presentation ? ["render"] : []
+        try keys(card, Set(["title", "titleBinding", "semanticKind", "rootNodeId", "nodes", "fallback"]).union(renderKeys),
+                 Set(["title", "semanticKind", "rootNodeId", "nodes", "fallback"]).union(renderKeys))
+        if presentation {
+            let render = card["render"]
+            switch render["kind"].text {
+            case "native": try keys(render, ["kind"], ["kind"])
+            case "web":
+                let names: Set<String> = ["kind", "rendererId", "rendererVersion", "assetHash", "dataBinding", "bridgeVersion"]
+                try keys(render, names, names)
+                guard tokens.contains("detail.web"), token(render["rendererId"].text ?? ""),
+                      let version = render["rendererVersion"].number, version >= 1,
+                      version <= Double(ClientDetailProtocol.maxRevision), version.rounded() == version,
+                      render["assetHash"].text?.utf8.count == 71,
+                      render["assetHash"].text?.range(of: #"^sha256:[0-9a-f]{64}$"#, options: .regularExpression) != nil,
+                      render["bridgeVersion"] == .number(1), let binding = render["dataBinding"].text, token(binding),
+                      template["fieldSchema"][binding]["type"].text == "object" else { try fail(); return }
+            default: try fail()
+            }
+        }
         try text(card["title"]); try text(card["fallback"])
         if let binding = card.fields["titleBinding"] {
             guard let name = binding.text, template["fieldSchema"][name]["type"].text == "string" else { try fail(); return }
@@ -170,32 +196,49 @@ public enum ClientDetailV2Catalog {
                 guard tokens.contains(kind), node["children"].items.isEmpty else { try fail(); return }
                 try validateComponent(node, template: template, instance: instance)
             } else {
-                try keys(node["props"], ["text", "label", "semantic", "actionId"])
+                let disclosure = presentation && kind == "disclosure"
+                try keys(node["props"], Set(["text", "label", "semantic", "actionId"]).union(disclosure ? ["previewBinding", "initiallyExpanded"] : []))
                 for name in ["text", "label"] { if let label = node["props"].fields[name] { try text(label) } }
+                if disclosure {
+                    if let binding = node["props"].fields["previewBinding"] {
+                        guard let name = binding.text, token(name), template["fieldSchema"][name]["type"].text == "string" else { try fail(); return }
+                    }
+                    if let expanded = node["props"].fields["initiallyExpanded"], case .bool = expanded {} else if node["props"].fields["initiallyExpanded"] != nil { try fail() }
+                }
             }
         }
     }
 
     private static func validateComponent(_ node: ClientInspectorValue, template: ClientInspectorValue, instance: ClientDetailV2State.Instance) throws {
         let kind = node["kind"].text!, props = node["props"]
+        let presentation = template["catalogProfile"].text == ClientDetailPresentationCatalog.profile2
         let allowed: Set<String>
         switch kind {
         case "detail.keyValue", "detail.image", "detail.progress": allowed = ["label"]
         case "detail.status": allowed = ["semantic"]
         case "detail.dateTime": allowed = ["format"]
-        case "detail.resourceList": allowed = ["collection", "actionId"]
-        case "detail.button": allowed = ["actionId"]
+        case "detail.resourceList": allowed = Set(["collection", "actionId"]).union(presentation ? ["presentation", "itemBindings", "presentationRole"] : [])
+        case "detail.button": allowed = Set(["actionId"]).union(presentation ? ["presentationRole"] : [])
         case "detail.form": allowed = ["actionId", "controls"]
         default: allowed = []
         }
         try keys(props, allowed)
         let component = try decode(ClientDetailComponent.self, props)
+        guard component.presentationRole.map({ ["primary", "link", "secondary", "destructive"].contains($0) }) ?? true else { try fail(); return }
         if let label = props.fields["label"] { try text(label) }
         if let action = component.actionId { guard instance.actions[action] != nil else { try fail(); return } }
         switch kind {
-        case "detail.button": guard component.actionId != nil else { try fail(); return }
+        case "detail.button":
+            guard component.actionId != nil,
+                  component.presentationRole.map({ ["primary", "link", "secondary", "destructive"].contains($0) }) ?? true else { try fail(); return }
         case "detail.resourceList":
             guard let name = component.collection, template["collectionSchema"].fields[name] != nil else { try fail(); return }
+            guard component.presentation.map({ ["plain", "disclosure"].contains($0) }) ?? true else { try fail(); return }
+            if component.presentation == "disclosure" {
+                try keys(props["itemBindings"], ["preview", "body", "metadata"], ["preview", "body"])
+                guard let bindings = component.itemBindings,
+                      bindings.values.allSatisfy({ token($0) && template["collectionSchema"][name]["itemSchema"][$0]["type"].text == "string" }) else { try fail(); return }
+            } else if props.fields["itemBindings"] != nil { try fail(); return }
             if let page = instance.collections[name] {
                 for item in page["items"].fields.values {
                     guard token(item["resourceType"].text ?? ""), token(item["id"].text ?? ""), item["title"].text != nil,
@@ -255,7 +298,7 @@ public enum ClientDetailV2Catalog {
     }
 
     static func presentation(template: ClientInspectorValue, instance: ClientDetailV2State.Instance) throws -> ClientDetailV2Presentation {
-        .init(titleBinding: template["card"]["titleBinding"].text,
+        var result = ClientDetailV2Presentation(titleBinding: template["card"]["titleBinding"].text,
             collections: try instance.collections.mapValues { try decode(ClientDetailCollection.self, $0) },
             components: try Dictionary(uniqueKeysWithValues: template["card"]["nodes"].items.filter { componentKinds.contains($0["kind"].text ?? "") }.map {
                 ( $0["id"].text!, try decode(ClientDetailComponent.self, $0["props"]) )
@@ -265,5 +308,26 @@ public enum ClientDetailV2Catalog {
                 return (node["id"].text!, date)
             }),
             fieldLimits: template["fieldSchema"].fields.mapValues { Int($0["maxLength"].number ?? 4096) })
+        if template["catalogProfile"].text == ClientDetailPresentationCatalog.profile2 {
+            result.render = try decode(ClientDetailRenderDescriptor.self, template["card"]["render"])
+            result.disclosures = try Dictionary(uniqueKeysWithValues: template["card"]["nodes"].items.filter { $0["kind"].text == "disclosure" }.map {
+                ($0["id"].text!, try decode(ClientDetailDisclosurePresentation.self, $0["props"]))
+            })
+        }
+        return result
+    }
+
+    /// Only after rich validation: adapt known extensions for the frozen graph.
+    static func nativeDefinition(_ template: ClientInspectorValue) -> [String: ClientInspectorValue] {
+        var definition = template["card"].fields
+        guard template["catalogProfile"].text == ClientDetailPresentationCatalog.profile2 else { return definition }
+        definition.removeValue(forKey: "render")
+        definition["nodes"] = .array(template["card"]["nodes"].items.map { node in
+            guard node["kind"].text == "disclosure" else { return node }
+            var clean = node.fields, props = node["props"].fields
+            props.removeValue(forKey: "previewBinding"); props.removeValue(forKey: "initiallyExpanded")
+            clean["props"] = .object(props); return .object(clean)
+        })
+        return definition
     }
 }

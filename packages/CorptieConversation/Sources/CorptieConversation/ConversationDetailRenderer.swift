@@ -27,7 +27,7 @@ public struct ConversationServerDetail: View {
     }
     private var presentsRichDocument: Bool? {
         guard let presentationAPI else { return nil }
-        guard presentationAPI.negotiation.catalog == "native-v2-components-1" else { return false }
+        guard !presentationAPI.negotiation.isLegacy else { return false }
         return store.documentID != nil && !store.orderedCards.isEmpty ? true : nil
     }
 
@@ -74,7 +74,7 @@ public struct ConversationServerDetail: View {
             store.beginPresentation(scope: scope)
             do {
                 let configured = try await api().forPresentation(sessionID: sessionID,
-                    clientCapabilities: Self.readCapabilities + (coordinatorFactory != nil ? ["detail.button", "detail.form"] : platformActions == nil ? [] : ["detail.button"]))
+                    clientCapabilities: Self.readCapabilities + ConversationDetailWebRegistry.capabilities + (coordinatorFactory != nil ? ["detail.button", "detail.form"] : platformActions == nil ? [] : ["detail.button"]))
                 guard !Task.isCancelled else { return }
                 presentationAPI = configured
                 let factory = api
@@ -143,7 +143,12 @@ private struct ConversationDetailRenderedCard: View {
                     .accessibilityLabel(action.label.fallback)
             }
         } content: {
-            ConversationDetailNodeView(state: state, nodeID: state.card.rootNodeId, actions: scoped, scope: scope)
+            if let descriptor = state.card.v2Presentation?.render, descriptor.kind == .web {
+                ConversationDetailWebCard(state: state, descriptor: descriptor, actions: scoped, scope: scope)
+                    .id("\(scope):\(ObjectIdentifier(state)):\(descriptor.rendererId ?? ""):\(descriptor.assetHash ?? "")")
+            } else {
+                ConversationDetailNodeView(state: state, nodeID: state.card.rootNodeId, actions: scoped, scope: scope)
+            }
         }
         .accessibilityIdentifier("detail-card-\(state.id)")
     }
@@ -181,13 +186,25 @@ private struct ConversationDetailNodeView: View {
                 ConversationDetailText(text: state.card.value(for: node))
             case "divider": Divider()
             case "disclosure":
-                DisclosureGroup(isExpanded: Binding(get: { state.expandedNodes.contains(node.id) }, set: { expanded in
-                    if expanded { state.expandedNodes.insert(node.id) } else { state.expandedNodes.remove(node.id) }
-                })) { if state.expandedNodes.contains(node.id) { children(node) } }
-                label: { Text(node.props.label?.fallback ?? state.card.fallback.fallback) }
+                disclosure(node)
             default:
                 Label(state.card.fallback.fallback, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
             }
+            }
+        }
+    }
+    private func disclosure(_ node: ClientDetailNode) -> some View {
+        let config = state.card.v2Presentation?.disclosures[node.id]
+        let initiallyExpanded = config?.initiallyExpanded ?? false
+        return VStack(alignment: .leading, spacing: 5) {
+            DisclosureGroup(isExpanded: Binding(get: { state.isNodeExpanded(node.id, initiallyExpanded: initiallyExpanded) },
+                set: { state.setNodeExpanded(node.id, $0) })) {
+                if state.isNodeExpanded(node.id, initiallyExpanded: initiallyExpanded) { children(node) }
+            } label: { Text(node.props.label?.fallback ?? state.card.fallback.fallback).font(.caption.weight(.semibold)) }
+            if !state.isNodeExpanded(node.id, initiallyExpanded: initiallyExpanded),
+               let field = config?.previewBinding, let preview = state.card.data[field]?.text, !preview.isEmpty {
+                Text(preview).font(.caption).foregroundStyle(.secondary).lineLimit(5)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }

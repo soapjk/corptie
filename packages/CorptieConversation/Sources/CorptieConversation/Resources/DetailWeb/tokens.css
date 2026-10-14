@@ -1,0 +1,14 @@
+:root { color-scheme: light dark; --accent: #007aff; }
+:root[data-scheme="dark"] { color-scheme: dark; }
+:root[data-scheme="light"] { color-scheme: light; }
+html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+body { font: 12px -apple-system, BlinkMacSystemFont, sans-serif; color: CanvasText; }
+#detail-root { box-sizing: border-box; width: 100%; overflow-wrap: anywhere; }
+details { margin: 0 0 10px; }
+summary { cursor: pointer; font-weight: 600; }
+.preview { margin: 5px 0 0; opacity: .65; white-space: pre-wrap; }
+.body { margin: 6px 0 0; white-space: pre-wrap; line-height: 1.45; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; }
+button { border: 0; background: transparent; padding: 3px 0; font: inherit; color: var(--accent); cursor: pointer; }
+button:disabled { opacity: .45; cursor: default; }
+button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
