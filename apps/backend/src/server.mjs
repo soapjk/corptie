@@ -2,6 +2,7 @@ import http from "node:http";
 import { deleteUnreceivedUserMessage } from "./application/userMessageDeletion.mjs";
 import { routeBackendHttpRequest } from "./application/backendHttpRouter.mjs";
 import { detailServiceFor } from "./application/detailDocumentService.mjs";
+import { detailMigrationConfiguration } from "./application/detailMigrationConfiguration.mjs";
 import { createDetailBusinessActionService } from "./application/detailBusinessActionComposition.mjs";
 import { ClientSessionAPI } from "./application/clientSessionAPI.mjs";
 import { ClientInspectorAPI } from "./application/clientInspectorAPI.mjs";
@@ -328,7 +329,7 @@ const stateSyncPublisher = createStateSyncPublisher({
   recordSessionDiagnostic: (...args) => sessionStateDiagnostics.record(...args),
   invalidateDevices: () => {
     clientDeviceGateway?.inspectorEvents.invalidate();
-    detailServiceFor(store).invalidateStateChanges();
+    detailServiceFor(store, detailMigration).invalidateStateChanges();
     clientDeviceGateway?.events.invalidate({ inventory: true, control: true });
     clientDeviceGateway?.events.publishState();
   }
@@ -362,6 +363,7 @@ const runtimeActivity = new BackendRuntimeActivity({
 const reportedUnclassifiedProviderSessionIds = new Set();
 const sessionCollaborationV2Enabled = process.env.CORPTIE_SESSION_COLLABORATION_V2 !== "0";
 const store = new CorptieStore();
+const detailMigration = detailMigrationConfiguration({ developmentPreview });
 const {
   sessionToolMetadata, resolveDynamicToolCallMetadata, resolveToolHostBinding,
   prospectiveToolHostBinding, prepareDesiredWorkspaceToolMaterialization
@@ -1338,7 +1340,7 @@ platformOperationService = createPlatformOperationComposition({
 });
 const sessionContextReferenceService = new SessionContextReferenceService({
   store,
-  onChanged: change => detailServiceFor(store).invalidate(change),
+  onChanged: change => detailServiceFor(store, detailMigration).invalidate(change),
   readSessionDetail: (sessionId) => readStoredSessionDetail(requireSessionReference(sessionId))
 });
 const foundationModelSettings = new FoundationModelSettings(store.dataRoot);
@@ -1666,7 +1668,7 @@ function emitEvent(type, payload, options = {}) {
   productEventPublisher ??= createProductEventPublisher({
     store, eventLog, sseClients, now,
     getClientDeviceGateway: () => clientDeviceGateway,
-    invalidateDetail: (type, payload, sessionId) => detailServiceFor(store).invalidateProductEvent(type, payload, sessionId),
+    invalidateDetail: (type, payload, sessionId) => detailServiceFor(store, detailMigration).invalidateProductEvent(type, payload, sessionId),
     scheduleStateSyncPublish: () => scheduleStateSyncPublish(),
     requestTaskSummary: (taskId) => taskSummaryService.request(taskId),
     notifySessionEventListeners: (event) => notifySessionEventListeners(event),
@@ -2070,6 +2072,7 @@ const handleEntityRoutes = createEntityHttpRoutes({
 });
 
 const backendHttpPorts = Object.freeze({
+  get detailWritesAllowed() { return detailMigration.detailWritesAllowed; },
   get detailActionService() { return detailActionService; },
   get clientDeviceGateway() { return clientDeviceGateway; },
   get sendJson() { return sendJson; },
@@ -2281,6 +2284,7 @@ await migrateStoreOffMainThread({
   dataRoot: store.dataRoot
 });
 await store.initialize({ resolveDataPath: false, performMigrations: false });
+detailServiceFor(store, detailMigration);
 await firstRunSetup.initialize();
 await codexEnvironmentRegistry.initialize();
 if (firstRunSetup.state.defaultProviderId) {
@@ -2294,17 +2298,17 @@ await seedDevelopmentFixtures({
   bundledCollaborationSkillPath, now, marker: developmentFixtureMarker,
   enabled: shouldSeedDevelopmentFixtures
 });
-detailServiceFor(store).configureBusinessPorts(createDetailBusinessReadPorts({
+detailServiceFor(store, detailMigration).configureBusinessPorts(createDetailBusinessReadPorts({
   store, references: sessionContextReferenceService, artifacts: artifactService,
   schedules: scheduledSessionTaskService, observability: turnObservability,
   providerRegistry: agentProviderRegistry,
   readWorktree: id => projectWorktreeStatusReader.worktreeDetail(id)
 }));
 detailActionService = createDetailBusinessActionService({ commandAPI: new ClientSessionAPI({ store }),
-  documentService: detailServiceFor(store), inspector: new ClientInspectorAPI({ store,
+  documentService: detailServiceFor(store, detailMigration), inspector: new ClientInspectorAPI({ store,
     resolveSession: requireSessionReference, references: sessionContextReferenceService,
     artifacts: artifactService, schedules: scheduledSessionTaskService, observability: turnObservability }) });
-detailServiceFor(store).configureBusinessActionRegistry(detailActionService.registry);
+detailServiceFor(store, detailMigration).configureBusinessActionRegistry(detailActionService.registry);
 
 await initializeBackendStoreReadiness({
   store, benchmarkControlPlane, runIsolationCoordinator, runIsolationDataRoot,
@@ -2339,6 +2343,7 @@ function startBackendRuntime() {
   taskSummaryService.start();
   worktreeAutoFollowService.start();
   startClientDeviceGateway({
+    detailActionService, detailWritesAllowed: detailMigration.detailWritesAllowed,
     sessionPreparations: sessionBindingReadinessProbe.preparations,
     store, environmentName, developmentPreview, worktreeIntegrationJobService, projectApplicationService,
     emitEvent, readSessionTimelineWindow, getTimelineReadPool, requireSessionReference,

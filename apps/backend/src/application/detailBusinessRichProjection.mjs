@@ -69,6 +69,16 @@ const taskEditorTemplateStructure = { ...taskEditorStructure,
     ? { ...item, children: [...item.children, "edit"] } : item).concat(node("edit", "detail.button", null, { actionId: "edit" })) } };
 const taskEditorTemplate = freeze({ ...taskEditorTemplateStructure, templateId: detailV2TemplateID(taskEditorTemplateStructure) });
 templateHashes.set(taskEditorTemplate, detailV2Hash(taskEditorTemplate));
+function managedTemplate(base) {
+  const { templateId, ...structure } = base;
+  const next = { ...structure, requiredCapabilities: [...new Set(["detail.button", ...structure.requiredCapabilities])].sort(),
+    card: { ...structure.card, nodes: structure.card.nodes.map(item => item.id === "root"
+      ? { ...item, children: [...item.children, "manage"] } : item).concat(node("manage", "detail.button", null, { actionId: "manage" })) } };
+  const value = freeze({ ...next, templateId: detailV2TemplateID(next) });
+  templateHashes.set(value, detailV2Hash(value)); return value;
+}
+const managedProviderTemplate = managedTemplate(listTemplate), managedProviderNavigationTemplate = managedTemplate(navigationListTemplate),
+  managedWorktreeTemplate = managedTemplate(contentTemplate);
 const listDefinitions = {
   focusTasks: { title: "重点 Task", rowTitle: row => row.title,
     facts: row => [row.summary?.focus, row.summary?.progress, row.summary?.reason] },
@@ -164,7 +174,7 @@ function moduleCard(name, result) {
 /** Offline producer against the fixed shared catalog, not a renderer or HTTP
  * gate. Navigation and actions are explicit host opt-ins for normalized,
  * registered targets. Old UI remains active. */
-export function projectDetailBusinessRich(scope, readResults = {}, { profile, generation, previous = null, navigation = false, editors = false, pages = {}, operations = [] } = {}) {
+export function projectDetailBusinessRich(scope, readResults = {}, { profile, generation, previous = null, navigation = false, editors = false, nativeEditors = false, pages = {}, operations = [] } = {}) {
   if (profile?.catalog !== DETAIL_COMPONENTS_CATALOG) throw new Error("DETAIL_BUSINESS_RICH_PROFILE_REQUIRED");
   if (previous) validateDetailV2(previous, profile);
   const documentId = `detail:${scope.logicalSessionId}`;
@@ -197,6 +207,18 @@ export function projectDetailBusinessRich(scope, readResults = {}, { profile, ge
   const templates = Object.create(null), instances = Object.create(null), references = Object.create(null);
   for (const card of cards) {
     const actions = card.actions ?? {};
+    if (nativeEditors && profile.clientCapabilities.includes("detail.button")) {
+      const provider = readResults.provider?.state === "ready" ? readResults.provider.data : null;
+      const worktree = readResults.worktree?.state === "ready" ? readResults.worktree.data : null;
+      const target = card.id === "business-provider" && provider?.currentProviderId
+        ? { resourceType: "provider", id: provider.currentProviderId }
+        : card.id === "business-worktree" && worktree?.attached && worktree?.workspace?.resourceType === "worktree"
+          ? { resourceType: "worktree", id: worktree.workspace.id } : null;
+      if (target && typeof target.id === "string" && /^[\x20-\x7e]{1,512}$/.test(target.id)) {
+        card.template = target.resourceType === "provider" ? managedProviderTemplate : managedWorktreeTemplate;
+        actions.manage = { id: "manage", kind: "navigation", operation: "editor.open", label: text("管理"), available: true, target };
+      }
+    }
     const dated = card.template === datedListTemplate;
     const navigable = navigation && profile.clientCapabilities.includes("detail.button") && card.page;
     const paged = profile.clientCapabilities.includes("detail.button") && card.page && Object.hasOwn(pages, card.id);
@@ -219,6 +241,8 @@ export function projectDetailBusinessRich(scope, readResults = {}, { profile, ge
       actions.page = { id: "page", kind: "read", operation: "detail.collection.page", label: text("下一页"),
         available: card.page.nextCursor !== null, target: { resourceType: "session", id: scope.logicalSessionId } };
     }
+    if (actions.manage) card.template = actions.manage.target.resourceType === "provider"
+      ? navigable ? managedProviderNavigationTemplate : managedProviderTemplate : managedWorktreeTemplate;
     const templateHash = templateHashes.get(card.template), old = previous?.instances[card.id];
     templates[templateHash] = card.template; references[card.id] = { templateId: card.template.templateId, templateHash };
     const collections = {};

@@ -24,15 +24,20 @@ struct SessionDetailPanel: View {
     @State private var providerCatalogLoadFailed = false
     @State private var showsAllContextReferences = false
     private enum DetailNativeSheet: Identifiable {
-        case artifact(WorkArtifact), task(CorptieTask)
+        case artifact(WorkArtifact), task(CorptieTask), provider(String), worktree(String)
         var id: String {
             switch self {
             case .artifact(let value): "artifact:\(value.artifactId)"
             case .task(let value): "task:\(value.id)"
+            case .provider(let id): "provider:\(id)"
+            case .worktree(let id): "worktree:\(id)"
             }
         }
     }
     @State private var detailNativeSheet: DetailNativeSheet?
+    @State private var detailOpeningGeneration = UUID()
+    @State private var richDetailReady: Bool?
+    @State private var nativeManagementExpanded = false
 
     private var detailKind: ConversationDetailKind? {
         ConversationDetailKind.resolve(session.resolvedSessionKind)
@@ -84,11 +89,41 @@ struct SessionDetailPanel: View {
                 ArtifactDetailContainer(artifactId: artifact.artifactId, workId: artifact.workId, taskId: session.taskId) { }
             case .task(let task):
                 CorptieTaskEditView(task: task) { }
+            case .provider:
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(L10n("Provider 管理")).font(.headline)
+                    providerPicker
+                    providerSwitchStatus
+                    Button(L10n("重新加载")) { Task { await reloadProviderCatalog() } }
+                    Button(L10n("关闭")) { detailNativeSheet = nil }
+                }.padding(20).frame(minWidth: 320)
+                    .interactiveDismissDisabled(isSwitchingProvider)
+                    .alert(L10n("切换 Provider？"), isPresented: $showProviderSwitchConfirmation) {
+                        Button(L10n("切换")) { performProviderSwitch() }
+                        Button(L10n("取消"), role: .cancel) { pendingProviderId = nil }
+                    } message: { Text(providerSwitchConfirmationMessage) }
+            case .worktree(let id):
+                VStack(alignment: .leading, spacing: 12) {
+                    ConversationWorktreeCard(sessionID: session.id, refreshID: session.updatedAt,
+                        api: { ClientSessionWorktreeAPI(transport: try BackendTransport(endpoint: BackendEndpoint(CorptieAppEnvironment.backendBaseURL)),
+                            route: .desktop, expectedWorktreeID: id) }, onJob: { job in
+                            if job.status != "awaiting_confirmation" {
+                                OperationNotificationManager.shared.track(jobID: job.id, resourceName: "Worktree")
+                                if let notification = job.notification { OperationNotificationManager.shared.observe(notification) }
+                            }
+                        }, localize: { L10n($0) })
+                    Button(L10n("关闭")) { detailNativeSheet = nil }
+                }.padding(20).frame(minWidth: 360)
             }
         }
-        .onChange(of: session.taskId) { _, _ in detailNativeSheet = nil }
-        .onChange(of: session.workId) { _, _ in detailNativeSheet = nil }
-        .alert(L10n("切换 Provider？"), isPresented: $showProviderSwitchConfirmation) {
+        .onChange(of: session.id) { _, _ in richDetailReady = nil; nativeManagementExpanded = false; retireDetailDestination() }
+        .onChange(of: session.taskId) { _, _ in retireDetailDestination() }
+        .onChange(of: session.workId) { _, _ in retireDetailDestination() }
+        .onChange(of: session.external?.provider) { _, _ in retireDetailDestination() }
+        .onDisappear { retireDetailDestination() }
+        .alert(L10n("切换 Provider？"), isPresented: Binding(
+            get: { showProviderSwitchConfirmation && detailNativeSheet == nil },
+            set: { showProviderSwitchConfirmation = $0 })) {
             Button(L10n("切换")) { performProviderSwitch() }
             Button(L10n("取消"), role: .cancel) { pendingProviderId = nil }
         } message: {
@@ -107,10 +142,22 @@ struct SessionDetailPanel: View {
             ConversationServerDetail(scope: "\(CorptieAppEnvironment.backendBaseURL):\(session.id)", sessionID: session.id,
                 actions: nativeDetailNavigation,
                 coordinator: { selected, canonical in try await detailCoordinator(selected: selected, canonicalSessionID: canonical) },
+                onPresentationChanged: { richDetailReady = $0 },
                 api: { [baseURL = CorptieAppEnvironment.backendBaseURL] in
                     ClientDetailAPI(transport: try BackendTransport(endpoint: BackendEndpoint(baseURL)), route: .desktop)
                 })
                 .id(session.id)
+            if richDetailReady != false {
+                DisclosureGroup(L10n("管理与完整诊断"), isExpanded: $nativeManagementExpanded) {
+                    if nativeManagementExpanded { nativeDetailContent }
+                }
+                    .font(.caption)
+            } else { nativeDetailContent }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private var nativeDetailContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
             if detailKind == .taskDetail, let taskId = session.taskId, !taskId.isEmpty {
                 SessionCorptieTaskDetailCard(
                     taskId: taskId,
@@ -169,6 +216,8 @@ struct SessionDetailPanel: View {
             guard action.available, action.kind == "navigation",
                   let target = action.target else { return false }
             if action.operation == "editor.open" {
+                if target.resourceType == "provider" { return session.external?.provider == target.id && !isSwitchingProvider }
+                if target.resourceType == "worktree" { return !target.id.isEmpty && session.archived != true }
                 return target.resourceType == "task" && target.id == session.taskId
                     && backendClient.appState.task(target.id).map { action.expectedResourceRevision == String($0.revision) } == true
             }
@@ -182,10 +231,24 @@ struct SessionDetailPanel: View {
             }
             if target.resourceType == "reference" { return detailReferenceURL(target.id) != nil }
             return target.resourceType == "schedule"
-        }, perform: { action, _ in
+        }, perform: { action, fields in
             guard action.available, action.kind == "navigation",
                   let target = action.target else { return }
             if action.operation == "editor.open" {
+                if target.resourceType == "provider", session.external?.provider == target.id, !isSwitchingProvider {
+                    detailNativeSheet = .provider(target.id)
+                } else if target.resourceType == "worktree" {
+                    let token = detailOpeningGeneration, sessionID = session.id, expected = target.id
+                    Task {
+                        do {
+                            _ = try await ClientSessionWorktreeAPI(transport: BackendTransport(endpoint: BackendEndpoint(CorptieAppEnvironment.backendBaseURL)),
+                                route: .desktop, expectedWorktreeID: expected).detail(sessionID: sessionID)
+                            guard token == detailOpeningGeneration, let current = backendClient.appState.session(sessionID),
+                                  current.archived != true, current.workId == session.workId, current.taskId == session.taskId else { return }
+                            detailNativeSheet = .worktree(expected)
+                        } catch { if token == detailOpeningGeneration { providerSwitchError = L10n("Worktree 绑定已变化或无权读取") } }
+                    }
+                }
                 if target.resourceType == "task", target.id == session.taskId,
                    let task = backendClient.appState.task(target.id), action.expectedResourceRevision == String(task.revision) {
                     detailNativeSheet = .task(task)
@@ -195,7 +258,7 @@ struct SessionDetailPanel: View {
             guard action.operation == "resource.open" else { return }
             switch target.resourceType {
             case "session":
-                if let id = residentDetailSessionID(target.id) {
+                if let id = residentDetailSessionID(target.id, expectedTaskID: fields["sourceResourceType"]?.text == "task" ? fields["sourceResourceId"]?.text : nil) {
                     AppTabRouter.shared.openSession(id, source: .userSelection)
                 }
             case "task":
@@ -220,8 +283,19 @@ struct SessionDetailPanel: View {
               ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil, url.user == nil, url.password == nil else { return nil }
         return url
     }
-    private func residentDetailSessionID(_ id: String) -> String? {
-        guard let destination = backendClient.appState.session(id), destination.archived != true else { return nil }
+    private func retireDetailDestination() {
+        detailOpeningGeneration = UUID(); detailNativeSheet = nil
+        pendingProviderId = nil; showProviderSwitchConfirmation = false
+    }
+    private func residentDetailSessionID(_ id: String, expectedTaskID: String? = nil) -> String? {
+        guard let destination = backendClient.appState.session(id) else { return nil }
+        let task = destination.taskId.flatMap { backendClient.appState.task($0) }
+        let bound = task?.currentSessionId.flatMap { backendClient.appState.session($0)?.id }
+        guard ClientDetailNavigationPolicy.permitsSession(targetID: destination.id, sourceWorkID: session.workId,
+            destinationWorkID: destination.workId ?? task?.workId, destinationTaskID: destination.taskId,
+            taskID: task?.id, taskWorkID: task?.workId, taskCurrentSessionID: bound,
+            retired: destination.archived == true || task?.archived == true || task?.deletionStatus != nil,
+            expectedTaskID: expectedTaskID) else { return nil }
         return destination.id
     }
     private func detailCoordinator(selected: ClientDetailAPI, canonicalSessionID: String) async throws -> ClientDetailActionCoordinator {
@@ -439,7 +513,7 @@ struct SessionDetailPanel: View {
                     Text(provider.displayName)
                 }
             }
-            .disabled(provider.matches(session.external?.provider))
+            .disabled(provider.matches(session.external?.provider) || !session.canSwitchProviderNow || isSwitchingProvider)
         }
     }
 
@@ -529,7 +603,7 @@ struct SessionDetailPanel: View {
     }
 
     private func performProviderSwitch() {
-        guard let target = pendingProviderId else { return }
+        guard let target = pendingProviderId, session.canSwitchProviderNow else { return }
         pendingProviderId = nil
         providerSwitchError = nil
         isSwitchingProvider = true

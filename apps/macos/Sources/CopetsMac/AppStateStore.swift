@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import CorptieClientCore
 
 struct ControlPlaneStatePayload: Decodable, Sendable {
     var sessions: [TaskSession]
@@ -68,11 +69,13 @@ final class AppStateStore: ObservableObject {
             // (tasks/works/agents…) must not drop the sort cache.
             if oldValue.sessions != state.sessions {
                 cachedSessions = nil
+                cachedSessionAliases = nil
             }
         }
     }
     @Published private(set) var syncError: String?
     private var cachedSessions: [TaskSession]?
+    private var cachedSessionAliases: [String: String]?
     private var hasAppliedAuthoritativeState = false
     private(set) var pendingCreatedSessionIDs = Set<String>()
     /// Authoritative server reachability, flipped by the sync engine on every
@@ -96,7 +99,15 @@ final class AppStateStore: ObservableObject {
         state.integrationRuns.values.sorted { $0.createdAt > $1.createdAt }
     }
 
-    func session(_ id: String) -> TaskSession? { state.sessions[id] }
+    func session(_ id: String) -> TaskSession? {
+        if let direct = state.sessions[id] { return direct }
+        if cachedSessionAliases == nil {
+            cachedSessionAliases = ClientDetailNavigationPolicy.sessionAliases(state.sessions.values
+                .filter { $0.archived != true }.map { (id: $0.id, logicalID: $0.external?.logicalSessionId) })
+        }
+        guard let resolved = cachedSessionAliases?[id] else { return nil }
+        return state.sessions[resolved]
+    }
     func task(_ id: String) -> CorptieTask? { state.tasks[id] }
     func work(_ id: String) -> Work? { state.works[id] }
     func agent(_ id: String) -> Agent? { state.agents[id] }

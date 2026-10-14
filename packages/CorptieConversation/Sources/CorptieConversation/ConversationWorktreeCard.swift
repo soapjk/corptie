@@ -193,14 +193,14 @@ public struct ConversationWorktreeCard: View {
     @MainActor private func prepare(_ action: ClientWorktreePlanOperation) async {
         guard !mutating else { return }; mutating = true; error = nil
         defer { mutating = false }
-        do { let value = try await api().prepare(sessionID: sessionID, action: action); job = value; review = value }
+        do { let value = try await api().prepare(sessionID: sessionID, action: action, expectedWorktreeID: detail?.worktree?.worktreeId); job = value; review = value }
         catch { self.error = describe(error) }
     }
     @MainActor private func confirm(_ value: ClientWorktreeJob) async {
         guard !mutating else { return }; mutating = true; error = nil
         defer { mutating = false }
         do {
-            let next = try await api().confirm(value); job = next; onJob(next); review = nil; pollRevision += 1
+            let next = try await api().confirm(value, sessionID: sessionID); job = next; onJob(next); review = nil; pollRevision += 1
         } catch { self.error = describe(error) }
     }
     private func cancelDraftIfNeeded() {
@@ -209,7 +209,7 @@ public struct ConversationWorktreeCard: View {
     }
     @MainActor private func jobAction(_ value: ClientWorktreeJob, action: String) async {
         guard !mutating else { return }; mutating = true; error = nil
-        do { let next = try await api().jobAction(value.id, action: action); job = next; onJob(next); pollRevision += 1 }
+        do { let next = try await api().jobAction(value.id, action: action, sessionID: sessionID); job = next; onJob(next); pollRevision += 1 }
         catch { self.error = describe(error) }
         mutating = false
         await reload()

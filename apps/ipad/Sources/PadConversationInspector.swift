@@ -19,11 +19,20 @@ struct PadConversationInspector: View {
         let scope: ClientDetailActionScope
     }
     @State private var detailTaskEditor: TaskEditorDestination?
+    private enum NativeManagement: Identifiable {
+        case provider(String), worktree(String, ClientDetailActionScope)
+        var id: String { switch self { case .provider(let id): "provider:\(id)"; case .worktree(let id, _): "worktree:\(id)" } }
+    }
+    @State private var nativeManagement: NativeManagement?
+    @State private var detailOpeningGeneration = UUID()
+    @State private var richDetailReady: Bool?
     @Environment(\.openURL) private var openURL
     private var inspector: PadInspectorStore { workspace.inspectorStore(for: sessionID) }
     private var session: ClientSession? { workspace.sessionsByID[sessionID] }
     private var resourceScope: String {
-        "\(connection.serverID):\(connection.address):\(connection.deviceID ?? ""):\(connection.cloudCurrentDeviceID?.uuidString ?? "lan"):\(sessionID)"
+        if let scope = try? connection.detailActionScope(sessionID: sessionID, negotiation: .legacy),
+           let key = try? PadInspectorStore.contextKey(scope) { return key }
+        return "unavailable:\(connection.serverID):\(connection.address):\(sessionID)"
     }
     private var activeDetailDocumentIsCurrent: Bool {
         guard let document = detailDocument else { return true }
@@ -39,17 +48,19 @@ struct PadConversationInspector: View {
         ConversationDetailDashboard {
             if let session {
                 PadInspectorResources(store: inspector, connection: connection, sessionID: sessionID, workspace: workspace,
-                    kind: kind, onOpenAutomation: onOpenAutomation) {
-                    ConversationServerDetail(scope: "\(connection.serverID):\(connection.address):\(connection.deviceID ?? ""):\(connection.cloudCurrentDeviceID?.uuidString ?? "lan"):\(sessionID)",
+                    kind: kind, onOpenAutomation: onOpenAutomation, richPresentation: richDetailReady != false) {
+                    ConversationServerDetail(scope: resourceScope,
                         sessionID: sessionID, actions: nativeDetailNavigation,
-                        coordinator: { selected, canonical in try await detailCoordinator(selected: selected, canonicalSessionID: canonical) }, api: {
+                        coordinator: { selected, canonical in try await detailCoordinator(selected: selected, canonicalSessionID: canonical) },
+                        onPresentationChanged: { richDetailReady = $0 }, api: {
                             ClientDetailAPI(transport: try await connection.transport(), route: .pairedDevice)
                         })
-                        .id("\(connection.serverID):\(connection.address):\(connection.deviceID ?? ""):\(connection.cloudCurrentDeviceID?.uuidString ?? "lan"):\(sessionID)")
+                        .id(resourceScope)
                 } secondary: {
                     primaryDetail(for: session)
+                    let authority = try? connection.detailActionScope(sessionID: sessionID, negotiation: .legacy)
                     ConversationWorktreeCard(sessionID: session.id, refreshID: session.updatedAt,
-                        api: { ClientSessionWorktreeAPI(transport: try await connection.transport(), route: .pairedDevice) },
+                        api: { try await pinnedWorktreeAPI(authority: authority) },
                         onJob: { job in
                             if job.status != "awaiting_confirmation" {
                                 PadOperationNotifications.shared.track(job.id, resourceName: "Worktree")
@@ -58,6 +69,7 @@ struct PadConversationInspector: View {
                         })
                         .id("\(connection.serverID):\(connection.address):\(session.id)")
                 }
+                .id(resourceScope)
             } else {
                 ContentUnavailableView("会话尚未同步", systemImage: "bubble.left.and.bubble.right")
             }
@@ -70,25 +82,60 @@ struct PadConversationInspector: View {
             PadEditTaskSheet(connection: connection, commands: entityCommands, task: destination.task,
                 detailDefinition: destination.definition, detailScope: destination.scope, detailSessionID: sessionID) { }
         }
+        .sheet(item: $nativeManagement) { destination in
+            NavigationStack {
+                ScrollView {
+                    switch destination {
+                    case .provider(let id):
+                        PadInspectorResources(store: inspector, connection: connection, sessionID: sessionID, workspace: workspace,
+                            kind: kind, onOpenAutomation: onOpenAutomation, providerManagementID: id) {
+                            EmptyView()
+                        } secondary: { EmptyView() }
+                    case .worktree(let id, let authority):
+                        ConversationWorktreeCard(sessionID: sessionID, refreshID: session?.updatedAt ?? "",
+                            api: { try await pinnedWorktreeAPI(expectedWorktreeID: id, authority: authority) },
+                            onJob: { job in
+                                if job.status != "awaiting_confirmation" {
+                                    PadOperationNotifications.shared.track(job.id, resourceName: "Worktree")
+                                    if let notification = job.notification { PadOperationNotifications.shared.observe(notification) }
+                                }
+                            })
+                    }
+                }.padding()
+                .navigationTitle("原生管理")
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("关闭") { nativeManagement = nil } } }
+            }
+        }
         .onChange(of: inspector.connected) { _, connected in if !connected { detailDocument = nil; detailTaskEditor = nil } }
         .onChange(of: inspector.snapshot?.taskId) { _, _ in detailDocument = nil; detailTaskEditor = nil }
         .onChange(of: inspector.snapshot?.workId) { _, _ in detailDocument = nil; detailTaskEditor = nil }
         .onChange(of: activeDetailDocumentIsCurrent) { _, current in if !current { detailDocument = nil } }
         .task(id: resourceScope) {
+            richDetailReady = nil
+            detailOpeningGeneration = UUID(); nativeManagement = nil
             detailDocument = nil
             detailTaskEditor = nil
             await inspector.observe(sessionID: sessionID, connection: connection)
         }
+        .onChange(of: inspector.connected) { _, value in if !value { retireNativeManagement() } }
+        .onChange(of: inspector.snapshot?.environment["provider"].text) { _, _ in retireNativeManagement() }
+        .onChange(of: inspector.snapshot?.taskId) { _, _ in retireNativeManagement() }
+        .onChange(of: inspector.snapshot?.workId) { _, _ in retireNativeManagement() }
+        .onDisappear { retireNativeManagement() }
     }
     private var nativeDetailNavigation: ConversationDetailActions {
         ConversationDetailActions(canPerform: { action in
             guard inspector.connected, inspector.snapshot?.sessionId == sessionID,
                   action.available, action.kind == "navigation",
                   let target = action.target else { return false }
-            if action.operation == "editor.open" { return canOpenTaskEditor(action) }
+            if action.operation == "editor.open" {
+                if target.resourceType == "provider" { return inspector.snapshot?.environment["provider"].text == target.id && !inspector.busy && inspector.pending == nil }
+                if target.resourceType == "worktree" { return !target.id.isEmpty && !inspector.busy }
+                return canOpenTaskEditor(action)
+            }
             guard action.operation == "resource.open" else { return false }
             if target.resourceType == "schedule" { return true }
-            if target.resourceType == "session" { return workspace.sessionsByID[target.id] != nil }
+            if target.resourceType == "session" { return permittedDetailSession(target.id) != nil }
             if target.resourceType == "artifact" { return detailArtifact(target.id) != nil }
             if target.resourceType == "memory" { return detailMemory(target.id) != nil }
             if target.resourceType == "reference" { return detailReferenceURL(target.id) != nil }
@@ -96,15 +143,32 @@ struct PadConversationInspector: View {
                 return workspace.tasks.first(where: { $0.id == target.id })?.currentSessionId != nil
             }
             return false
-        }, perform: { action, _ in
+        }, perform: { action, fields in
             guard inspector.connected, inspector.snapshot?.sessionId == sessionID,
                   action.available, action.kind == "navigation",
                   let target = action.target else { return }
-            if action.operation == "editor.open" { openTaskEditor(action); return }
+            if action.operation == "editor.open" {
+                if target.resourceType == "provider", inspector.snapshot?.environment["provider"].text == target.id, !inspector.busy, inspector.pending == nil {
+                    nativeManagement = .provider(target.id)
+                } else if target.resourceType == "worktree" {
+                    let token = detailOpeningGeneration, expected = target.id
+                    Task {
+                        do {
+                            let scope = try connection.detailActionScope(sessionID: sessionID, negotiation: .legacy)
+                            _ = try await ClientSessionWorktreeAPI(transport: connection.transport(), route: .pairedDevice, expectedWorktreeID: expected).detail(sessionID: sessionID)
+                            guard token == detailOpeningGeneration, inspector.connected, inspector.snapshot?.sessionId == sessionID,
+                                  try connection.detailActionScope(sessionID: sessionID, negotiation: .legacy) == scope else { return }
+                            nativeManagement = .worktree(expected, scope)
+                        } catch { if token == detailOpeningGeneration { inspector.error = "Worktree 绑定已变化或无权读取" } }
+                    }
+                } else { openTaskEditor(action) }
+                return
+            }
             guard action.operation == "resource.open" else { return }
             switch target.resourceType {
             case "schedule": onOpenAutomation(target.id)
-            case "session": if workspace.sessionsByID[target.id] != nil { workspace.selection = target.id }
+            case "session":
+                if let id = permittedDetailSession(target.id, expectedTaskID: fields["sourceResourceType"]?.text == "task" ? fields["sourceResourceId"]?.text : nil) { workspace.selection = id }
             case "artifact":
                 if let artifact = detailArtifact(target.id) {
                     detailDocument = .init(title: artifact["title"].text ?? "Artifact", resource: "artifact", value: artifact,
@@ -123,6 +187,28 @@ struct PadConversationInspector: View {
     }
     private func detailArtifact(_ id: String) -> ClientInspectorValue? {
         inspector.snapshot?.residentDetailResource(kind: "artifact", id: id)
+    }
+    private func retireNativeManagement() { detailOpeningGeneration = UUID(); nativeManagement = nil }
+    private func pinnedWorktreeAPI(expectedWorktreeID: String? = nil, authority: ClientDetailActionScope?) async throws -> ClientSessionWorktreeAPI {
+        guard let authority, try connection.detailActionScope(sessionID: sessionID, negotiation: .legacy) == authority else {
+            throw ClientServiceFailure(statusCode: 401, code: "DETAIL_SCOPE_REVOKED")
+        }
+        let transport = try await connection.transport()
+        guard try connection.detailActionScope(sessionID: sessionID, negotiation: .legacy) == authority else {
+            throw ClientServiceFailure(statusCode: 401, code: "DETAIL_SCOPE_REVOKED")
+        }
+        return ClientSessionWorktreeAPI(transport: transport, route: .pairedDevice, expectedWorktreeID: expectedWorktreeID)
+    }
+    private func permittedDetailSession(_ id: String, expectedTaskID: String? = nil) -> String? {
+        guard inspector.connected, inspector.snapshot?.sessionId == sessionID,
+              let destination = workspace.detailSession(id) else { return nil }
+        let task = destination.taskId.flatMap { taskID in workspace.tasks.first { $0.id == taskID } }
+        let bound = task?.currentSessionId.flatMap { workspace.detailSession($0)?.id }
+        guard ClientDetailNavigationPolicy.permitsSession(targetID: destination.id, sourceWorkID: session?.workId,
+            destinationWorkID: destination.workId ?? task?.workId, destinationTaskID: destination.taskId,
+            taskID: task?.id, taskWorkID: task?.workId, taskCurrentSessionID: bound,
+            retired: task?.archived == true || task?.deletionStatus != nil, expectedTaskID: expectedTaskID) else { return nil }
+        return destination.id
     }
     private func canOpenTaskEditor(_ action: ClientDetailAction) -> Bool {
         guard let target = action.target, target.resourceType == "task", target.id == session?.taskId,
