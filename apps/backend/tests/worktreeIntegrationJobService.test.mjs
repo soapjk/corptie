@@ -1764,6 +1764,37 @@ test("an invalid Agent result stays paused and is never promoted into main", asy
   assert.equal(calls.some((call) => call.startsWith("merge:integration:")), false);
 });
 
+test("failed first instruction cannot be mistaken for completion of a newly created Session", async () => {
+  const { service, store, calls } = memoryFixture({ conflictOnce: true, conflictSessionStatus: "running" });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  await waitForJob(service, plan.id, "paused");
+  await service.resolveConflictWithAgent(plan.id);
+  store.getSession = id => ({ id, status: "complete" });
+  store.listAgentTasksForSession = () => [{
+    taskId: "initial", status: "failed", targetTurnId: null,
+    source: { type: "session-initialization" }, lastError: "Provider Session unavailable"
+  }];
+  const rejected = service.get(plan.id);
+  assert.equal(rejected.conflictResolution.status, "failed");
+  assert.equal(rejected.conflictResolution.failureCode, "CONFLICT_INSTRUCTION_FAILED");
+  assert.equal(rejected.conflictAutomation.status, "blocked");
+  assert.match(rejected.error, /Provider Session unavailable/);
+  assert.equal(calls.some(call => call.startsWith("merge:integration:")), false);
+});
+
+test("idle Session without a successful instruction and Turn does not promote any result", async () => {
+  const { service, store, calls } = memoryFixture({ conflictOnce: true, conflictSessionStatus: "running" });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  await waitForJob(service, plan.id, "paused");
+  await service.resolveConflictWithAgent(plan.id);
+  store.getSession = id => ({ id, status: "complete" });
+  store.getSessionTurn = () => null;
+  assert.equal(service.get(plan.id).conflictResolution.failureCode, "CONFLICT_EXECUTION_UNCONFIRMED");
+  assert.equal(calls.some(call => call.startsWith("merge:integration:")), false);
+});
+
 test("presentation normalizes legacy numeric audit codes for strict clients", () => {
   const presented = presentJob({
     id: "worktree_integration:legacy-audit",

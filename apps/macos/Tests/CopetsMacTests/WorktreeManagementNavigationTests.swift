@@ -554,7 +554,7 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(client.contains("worktree-management/jobs/\\(job.id)/resolve-conflict"))
         XCTAssertTrue(client.contains("func resolveConflictWithAgent() async"))
         XCTAssertTrue(client.contains("await AppStateSyncController.shared.refreshSnapshot()"))
-        XCTAssertTrue(client.contains("if changed { job = envelope.job }"))
+        XCTAssertTrue(client.contains("if changed { applyJob(envelope.job) }"))
         XCTAssertTrue(models.contains("let conflictAutomation: WorktreeConflictAutomation?"))
         XCTAssertFalse(client.contains("return envelope.job.currentConflictResolution?.sessionId"))
         XCTAssertFalse(client.contains("codex"))
@@ -729,7 +729,7 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(client.contains("force: true"))
     }
 
-    func testCompletedMergeRefreshIsNotCancelledByPollingStateChange() throws {
+    func testPollingRestartsAfterPausedJobResumesWithoutCancellingCompletionRefresh() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -738,8 +738,14 @@ final class WorktreeManagementNavigationTests: XCTestCase {
             contentsOf: root.appendingPathComponent("Sources/CopetsMac/WorktreeManagementView.swift"),
             encoding: .utf8
         )
+        let client = try String(
+            contentsOf: root.appendingPathComponent("Sources/CopetsMac/WorktreeManagementClient.swift"),
+            encoding: .utf8
+        )
 
-        XCTAssertTrue(view.contains(".task(id: client.job?.id)"))
+        XCTAssertTrue(view.contains(".task(id: client.jobPollingTaskID)"))
+        XCTAssertTrue(client.contains("job?.shouldPoll != true"))
+        XCTAssertTrue(client.contains("jobPollingGeneration &+= 1"))
         XCTAssertFalse(view.contains("\\($0.id):\\($0.shouldPoll)"))
         XCTAssertTrue(view.contains("client.job?.status == \"completed\""))
         XCTAssertTrue(view.contains("mergeStatus == \"completed\""))

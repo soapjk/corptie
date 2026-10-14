@@ -130,7 +130,7 @@ export function createProductEventPublisher({
         );
       }
     }
-    if (type === "AgentWorkCompleted" && sessionId) {
+    if (["AgentWorkCompleted", "AgentWorkFailed", "AgentWorkStarted"].includes(type) && sessionId) {
       defer(() => {
         try {
           reconcileConflictResolutionSession(sessionId);

@@ -297,7 +297,7 @@ struct WorktreeManagementView: View {
                 router.consumeWorktreeNavigation(request.id)
             }
         }
-        .task(id: client.job?.id) {
+        .task(id: client.jobPollingTaskID) {
             guard let jobId = client.job?.id else { return }
             var unchangedPolls = 0
             // Job changes are infrequent while an Agent works. Back off capped

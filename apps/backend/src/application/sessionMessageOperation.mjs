@@ -80,6 +80,12 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
     );
     error.code = "SESSION_NOT_READY";
     error.reason = bindingVerification.readiness?.reasonCode ?? "PROVIDER_SESSION_UNAVAILABLE";
+    error.safeToRetry = true;
+    const deliveryId = source.deliveryId ?? options.agentTask?.source?.deliveryId;
+    if (deliveryId && store.getMessageDelivery(deliveryId)) {
+      store.updateMessageDelivery(deliveryId, { status: "failed", lastError: error.message });
+      error.deliveryStatus = "failed";
+    }
     throw error;
   }
 

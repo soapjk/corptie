@@ -82,3 +82,24 @@ test("failed binding verification never admits queued work", async () => {
   });
   assert.equal(calls.length, 0);
 });
+
+test("pre-dispatch readiness failure settles the queued Delivery for every Provider", async () => {
+  for (const providerId of [CODEX_APP_SERVER_PROVIDER_ID, CLAUDE_AGENT_SDK_PROVIDER_ID, OPENCLACKY_PROVIDER_ID]) {
+    const updates = [];
+    const { operation } = fixture({
+      requireSessionReference: () => ({ sessionId: "session", logicalSessionId: "logical", providerId, metadata: { session: { id: "session" } } }),
+      store: {
+        getLogicalSession: () => ({ transitionState: null }),
+        getMessageDelivery: () => ({ status: "queued" }),
+        updateMessageDelivery: (id, patch) => updates.push({ id, ...patch })
+      },
+      sessionBindingReadinessProbe: {
+        verify: async () => ({ ready: false, readiness: { reasonCode: "PROVIDER_SESSION_UNAVAILABLE", message: "binding unavailable" } })
+      }
+    });
+    await assert.rejects(operation.sendUnifiedSessionMessage("session", "resolve", {
+      deliveryId: "delivery:initial"
+    }, { fromAgentWorkQueue: true }), { code: "SESSION_NOT_READY", deliveryStatus: "failed" });
+    assert.deepEqual(updates, [{ id: "delivery:initial", status: "failed", lastError: "binding unavailable" }]);
+  }
+});

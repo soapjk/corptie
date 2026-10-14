@@ -10,6 +10,7 @@ final class WorktreeManagementClient: ObservableObject {
     @Published private(set) var detail: ManagedRepositoryDetail?
     @Published private(set) var projectStatus: ProjectDevelopmentServiceStatus?
     @Published private(set) var job: WorktreeIntegrationJob?
+    @Published private(set) var jobPollingGeneration: UInt = 0
     // Candidate review changes only at direct prepare/confirm boundaries; it is never polled.
     @Published private(set) var candidateReview = WorktreeIntegrationCandidateReviewState.empty
     @Published var selection = WorktreeManagementSelection()
@@ -68,6 +69,9 @@ final class WorktreeManagementClient: ObservableObject {
     var candidate: WorktreeIntegrationCandidate? { candidateReview.candidate }
     var candidateRefreshDiff: WorktreeIntegrationCandidateDiff? { candidateReview.refreshDiff }
     var candidatePreparationError: String? { candidateReview.preparationError }
+    var jobPollingTaskID: String? {
+        job.map { "\($0.id):\(jobPollingGeneration)" }
+    }
 
     func activate() async {
         let hasVisibleContent = !repositories.isEmpty
@@ -190,7 +194,7 @@ final class WorktreeManagementClient: ObservableObject {
                 if let jobId = target.jobId, target.repositoryId == repositoryId {
                     let envelope: WorktreeIntegrationJobEnvelope = try await get("worktree-management/jobs/\(jobId)")
                     guard envelope.job.repositoryId == repositoryId else { return false }
-                    job = envelope.job
+                    applyJob(envelope.job)
                     selection.worktreeId = target.matchingWorktree(in: worktrees)?.worktreeId
                     return true
                 }
@@ -621,7 +625,7 @@ final class WorktreeManagementClient: ObservableObject {
             )
             OperationNotificationManager.shared.track(jobID: envelope.job.id, resourceName: detail?.repository.name)
             if let notification = envelope.job.notification { OperationNotificationManager.shared.observe(notification) }
-            job = envelope.job
+            applyJob(envelope.job)
             detailCache.removeValue(forKey: repositoryId)
             setCandidateReview(.empty)
             lastCandidatePreparationBody = nil
@@ -708,7 +712,7 @@ final class WorktreeManagementClient: ObservableObject {
                 "worktree-management/jobs/\(job.id)/cancel",
                 body: ["replan": false]
             )
-            self.job = envelope.job
+            self.applyJob(envelope.job)
         }
     }
 
@@ -719,7 +723,7 @@ final class WorktreeManagementClient: ObservableObject {
                 "worktree-management/jobs/\(job.id)/retry",
                 body: [:]
             )
-            self.job = envelope.job
+            self.applyJob(envelope.job)
         }
     }
 
@@ -734,7 +738,7 @@ final class WorktreeManagementClient: ObservableObject {
                 "worktree-management/jobs/\(job.id)/cancel",
                 body: ["replan": false]
             )
-            self.job = envelope.job
+            self.applyJob(envelope.job)
             errorMessage = nil
             return envelope.job.status == "canceled"
         } catch {
@@ -755,7 +759,7 @@ final class WorktreeManagementClient: ObservableObject {
                 "worktree-management/jobs/\(job.id)/commit-policy-prepare",
                 body: [:]
             )
-            self.job = envelope.job
+            self.applyJob(envelope.job)
             errorMessage = nil
             return envelope.job.isWaitingForCommitPolicyDecision
         } catch {
@@ -788,7 +792,7 @@ final class WorktreeManagementClient: ObservableObject {
                     }
                 ]
             )
-            self.job = envelope.job
+            self.applyJob(envelope.job)
             errorMessage = nil
             return true
         } catch {
@@ -819,7 +823,7 @@ final class WorktreeManagementClient: ObservableObject {
                     }
                 ]
             )
-            self.job = envelope.job
+            self.applyJob(envelope.job)
             errorMessage = nil
             return true
         } catch {
@@ -839,7 +843,7 @@ final class WorktreeManagementClient: ObservableObject {
                 "worktree-management/jobs/\(job.id)/resolve-conflict",
                 body: [:]
             )
-            self.job = envelope.job
+            self.applyJob(envelope.job)
             errorMessage = nil
             await AppStateSyncController.shared.refreshSnapshot()
         } catch {
@@ -857,7 +861,7 @@ final class WorktreeManagementClient: ObservableObject {
             )
             if let notification = envelope.job.notification { OperationNotificationManager.shared.observe(notification) }
             let changed = envelope.job != current
-            if changed { job = envelope.job }
+            if changed { applyJob(envelope.job) }
             if current.shouldPoll && !envelope.job.shouldPoll { await refreshSelected() }
             return changed
         } catch {
@@ -911,7 +915,7 @@ final class WorktreeManagementClient: ObservableObject {
             let detailMilliseconds = milliseconds(since: startedAt)
             guard generation == detailGeneration, selection.repositoryId == id else { return }
             detail = response
-            job = response.latestJob
+            applyJob(response.latestJob)
             selection.reconcile(repositories: repositories, worktrees: response.project.worktrees)
             listLoadState = .loaded
             errorMessage = nil
@@ -962,11 +966,18 @@ final class WorktreeManagementClient: ObservableObject {
         guard selection.repositoryId == repositoryId else { return }
         detail = cached.detail
         projectStatus = cached.projectStatus
-        job = cached.detail.latestJob
+        applyJob(cached.detail.latestJob)
         selection.reconcile(repositories: repositories, worktrees: cached.detail.project.worktrees)
         listLoadState = .loaded
         errorMessage = nil
         scheduleGitHubPushInspection()
+    }
+
+    private func applyJob(_ nextJob: WorktreeIntegrationJob?) {
+        let shouldRestartPolling = nextJob?.shouldPoll == true
+            && (job?.id != nextJob?.id || job?.shouldPoll != true)
+        job = nextJob
+        if shouldRestartPolling { jobPollingGeneration &+= 1 }
     }
 
     private func scheduleGitHubPushInspection() {

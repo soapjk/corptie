@@ -17,7 +17,16 @@ export function nextReleaseVersion(current) {
 }
 
 export async function readNextRelease(root) {
-  return nextReleaseVersion(JSON.parse(await readFile(join(root, "release-version.json"), "utf8")));
+  let current;
+  try {
+    current = JSON.parse(await readFile(join(root, "release-version.json"), "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    // Fresh checkouts have no local packaging counter. Keep reads free of
+    // writes; only successful packaging materializes the next version.
+    current = { version: "0.5.14", buildNumber: 9 };
+  }
+  return nextReleaseVersion(current);
 }
 
 // The packaging caller holds .corptie/release-version.lock until cleanup.

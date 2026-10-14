@@ -93,6 +93,33 @@ test("an existing plan reuses its Session and sends through the common execution
   assert.equal(options, undefined);
 });
 
+test("conflict retry prepares the existing binding and uses a new identity only after a failed attempt", async () => {
+  const prepared = [];
+  const { worktreeIntegrationJobService: jobs, calls } = fixture({
+    prepareConflictSession: async id => prepared.push(id)
+  });
+  const input = conflictInput();
+  const first = await jobs.launchConflictResolution(input);
+  const replay = await jobs.launchConflictResolution(input);
+  const retry = await jobs.launchConflictResolution({
+    ...input, job: { ...input.job, audit: [{ event: "failed_conflict_resolution_cleared" }] }
+  });
+  assert.deepEqual(prepared, ["session", "session", "session"]);
+  assert.equal(first.instructionId, replay.instructionId);
+  assert.notEqual(first.instructionId, retry.instructionId);
+  assert.equal(calls.filter(([kind]) => kind === "create").length, 0);
+});
+
+test("failed conflict binding preparation does not admit another instruction", async () => {
+  const { worktreeIntegrationJobService: jobs, calls } = fixture({
+    prepareConflictSession: async () => {
+      throw Object.assign(new Error("recovery outcome unknown"), { code: "PROVIDER_RPC_TIMEOUT" });
+    }
+  });
+  await assert.rejects(jobs.launchConflictResolution(conflictInput()), { code: "PROVIDER_RPC_TIMEOUT" });
+  assert.deepEqual(calls, []);
+});
+
 test("a new plan Session atomically starts with exactly one conflict prompt", async () => {
   const { worktreeIntegrationJobService: jobs, calls } = fixture();
   const item = {

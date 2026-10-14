@@ -59,7 +59,7 @@ function isDeletedSession(session) {
 export function createWorktreeIntegrationServices({
   store, projectApplicationService, gitWorkspaces, gitHubPushes, gitCommitProtection,
   workService, artifactService, agentProviderRegistry, startPreparedWorkSession,
-  admitReliableSessionMessage, emitEvent, presentTaskForClient,
+  admitReliableSessionMessage, prepareConflictSession, emitEvent, presentTaskForClient,
   authorizeAutomaticFollow
 }) {
   const applyArtifactDecision = async (input, { removeSource, allowTracking }) => {
@@ -360,6 +360,15 @@ export function createWorktreeIntegrationServices({
         };
       }
       if (hasExistingPlanSession) {
+        const previousInstruction = (store.listAgentTasksForSession?.(existingSession.id) ?? [])
+          .filter(operation => ["session-initialization", "worktree-integration"].includes(operation.source?.type)).at(-1);
+        const previousDelivery = previousInstruction?.source?.deliveryId
+          ? store.getMessageDelivery?.(previousInstruction.source.deliveryId) : null;
+        if (previousDelivery?.status === "delivery_unknown") {
+          throw Object.assign(new Error("The previous conflict instruction has an unknown delivery outcome. Verify its result before starting another attempt."), {
+            code: "CONFLICT_DELIVERY_OUTCOME_UNKNOWN"
+          });
+        }
         const sessionCwd = existingSession.external?.cwd ?? existingSession.cwd ?? null;
         if (sessionCwd && resolve(sessionCwd) !== resolve(workspace.path)) {
           const error = new Error(
@@ -368,6 +377,7 @@ export function createWorktreeIntegrationServices({
           error.code = "CONFLICT_PLAN_SESSION_WORKSPACE_CHANGED";
           throw error;
         }
+        await prepareConflictSession?.(existingSession.id);
         workService.updateTask(existingTask.id, {
           title,
           description,
@@ -376,7 +386,8 @@ export function createWorktreeIntegrationServices({
           mainAgentId: agent.agentId
         });
         const continuationIdentity = createHash("sha256").update([
-          job.id, item.worktreeId, sourceHead, expectedMainHead
+          job.id, item.worktreeId, sourceHead, expectedMainHead,
+          String((job.audit ?? []).filter(entry => entry.event === "failed_conflict_resolution_cleared").length)
         ].join("\0")).digest("hex").slice(0, 32);
         await admitReliableSessionMessage(
           existingSession.id,
@@ -394,6 +405,7 @@ export function createWorktreeIntegrationServices({
           sessionName: existingSession.title,
           agentId: agent.agentId,
           agentName: agent.name,
+          instructionId: `integration-conflict:${continuationIdentity}`,
           reused: true
         };
       }
@@ -436,6 +448,8 @@ export function createWorktreeIntegrationServices({
         sessionName: session.title,
         agentId: agent.agentId,
         agentName: agent.name,
+        instructionId: store.listAgentTasksForSession?.(session.id)
+          ?.find(operation => operation.source?.type === "session-initialization")?.taskId ?? null,
         reused: false
       };
     },
