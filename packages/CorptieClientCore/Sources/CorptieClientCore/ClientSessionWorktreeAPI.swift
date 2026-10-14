@@ -52,20 +52,31 @@ public struct ClientSessionWorktreeAPI: Sendable {
     public enum Route: Sendable { case desktop, pairedDevice }
     private let transport: BackendTransport
     private let route: Route
-    public init(transport: BackendTransport, route: Route) { self.transport = transport; self.route = route }
+    private let expectedWorktreeID: String?
+    public init(transport: BackendTransport, route: Route, expectedWorktreeID: String? = nil) {
+        self.transport = transport; self.route = route; self.expectedWorktreeID = expectedWorktreeID
+    }
     private var root: [String] {
         switch route { case .desktop: ["worktree-management"]; case .pairedDevice: ["client", "v1", "worktrees"] }
     }
     public func detail(sessionID: String) async throws -> ClientSessionWorktreeDetail {
+        let detail: ClientSessionWorktreeDetail
         switch route {
-        case .desktop: return try await request(["sessions", sessionID, "worktree-detail"])
+        case .desktop: detail = try await request(["sessions", sessionID, "worktree-detail"])
         case .pairedDevice:
             let value = try await ClientInspectorAPI(transport: transport).read(sessionID: sessionID, resource: "session-worktree")
-            return try JSONDecoder().decode(ClientSessionWorktreeDetail.self, from: JSONEncoder().encode(value))
+            detail = try JSONDecoder().decode(ClientSessionWorktreeDetail.self, from: JSONEncoder().encode(value))
         }
+        if let expectedWorktreeID, detail.worktree?.worktreeId != expectedWorktreeID {
+            throw ClientServiceFailure(statusCode: 409, code: "WORKTREE_BINDING_CHANGED")
+        }
+        return detail
     }
-    public func prepare(sessionID: String, action: ClientWorktreePlanOperation) async throws -> ClientWorktreeJob {
+    public func prepare(sessionID: String, action: ClientWorktreePlanOperation, expectedWorktreeID: String? = nil) async throws -> ClientWorktreeJob {
         let current = try await detail(sessionID: sessionID)
+        if let expectedWorktreeID, current.worktree?.worktreeId != expectedWorktreeID {
+            throw ClientServiceFailure(statusCode: 409, code: "WORKTREE_BINDING_CHANGED")
+        }
         guard current.canPerform(action), let repository = current.repositoryId,
               let source = current.worktree?.worktreeId, let target = current.mainWorktreeId else {
             throw ClientServiceFailure(statusCode: 409, code: current.blockedReason ?? "WORKTREE_STATE_CHANGED")
@@ -77,6 +88,9 @@ public struct ClientSessionWorktreeAPI: Sendable {
         return result.job
     }
     public func setAutoFollow(sessionID: String, worktreeID: String, enabled: Bool) async throws {
+        if let expectedWorktreeID, expectedWorktreeID != worktreeID {
+            throw ClientServiceFailure(statusCode: 409, code: "WORKTREE_BINDING_CHANGED")
+        }
         switch route {
         case .desktop:
             struct Body: Encodable { let enabled: Bool; let expectedWorktreeId: String }
@@ -92,7 +106,14 @@ public struct ClientSessionWorktreeAPI: Sendable {
             }
         }
     }
-    public func confirm(_ job: ClientWorktreeJob) async throws -> ClientWorktreeJob {
+    public func confirm(_ job: ClientWorktreeJob, sessionID: String? = nil) async throws -> ClientWorktreeJob {
+        try validateJobBinding(job)
+        if let sessionID {
+            let current = try await detail(sessionID: sessionID)
+            guard let id = current.worktree?.worktreeId, job.plan.items.contains(where: { $0.worktreeId == id }) else {
+                throw ClientServiceFailure(statusCode: 409, code: "WORKTREE_BINDING_CHANGED")
+            }
+        }
         guard job.status == "awaiting_confirmation", job.plan.blockingRisks.isEmpty,
               job.plan.items.allSatisfy({ !$0.dirty && $0.commitStatus == "not_needed" }) else {
             throw ClientServiceFailure(statusCode: 409, code: "WORKTREE_REVIEW_BLOCKED")
@@ -102,13 +123,27 @@ public struct ClientSessionWorktreeAPI: Sendable {
         return value.job
     }
     public func job(_ id: String) async throws -> ClientWorktreeJob {
-        let result: Envelope = try await request(root + ["jobs", id]); return result.job
+        let result: Envelope = try await request(root + ["jobs", id]); try validateJobBinding(result.job); return result.job
     }
-    public func jobAction(_ id: String, action: String) async throws -> ClientWorktreeJob {
+    public func jobAction(_ id: String, action: String, sessionID: String? = nil) async throws -> ClientWorktreeJob {
         guard ["cancel", "retry"].contains(action) else { throw ClientConnectionError.invalidEndpoint }
+        if expectedWorktreeID != nil || sessionID != nil {
+            let currentJob = try await job(id)
+            if action == "retry", let sessionID {
+                let current = try await detail(sessionID: sessionID)
+                guard let treeID = current.worktree?.worktreeId, currentJob.plan.items.contains(where: { $0.worktreeId == treeID }) else {
+                    throw ClientServiceFailure(statusCode: 409, code: "WORKTREE_BINDING_CHANGED")
+                }
+            }
+        }
         let result: Envelope = try await request(root + ["jobs", id, action], body: Data("{}".utf8)); return result.job
     }
     private struct Envelope: Decodable { let job: ClientWorktreeJob }
+    private func validateJobBinding(_ job: ClientWorktreeJob) throws {
+        if let expectedWorktreeID, !job.plan.items.contains(where: { $0.worktreeId == expectedWorktreeID }) {
+            throw ClientServiceFailure(statusCode: 409, code: "WORKTREE_BINDING_CHANGED")
+        }
+    }
     private func request<T: Decodable>(_ path: [String], body: Data? = nil) async throws -> T {
         var request = try transport.endpoint.request(path: path)
         if let body {

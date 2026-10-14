@@ -23,10 +23,11 @@ export function startClientDeviceGateway({
   decorateSessionForClient, readSessionUsage, setTaskArchivedForEntityRoutes,
   restartTaskForEntityRoutes, taskDeletionService, clearWorkAvatarFile,
   sessionBindingRepository, createTaskAndSession, getClientDeviceGateway, onReady,
-  sessionPreparations = null
+  sessionPreparations = null, detailActionService = null, detailWritesAllowed = false
 }) {
   const startDeviceAccess = process.env.CORPTIE_REMOTE_ACCESS === "1" ? startConfiguredDeviceGateway : createDeviceSetup;
   void startDeviceAccess({ directory: join(store.dataRoot, "client-devices"), preview: developmentPreview,
+    detailActionService, detailWritesAllowed: detailWritesAllowed === true && !developmentPreview,
     readAPI: new ClientReadAPI(store, { environmentName }),
     controlAPI: new ClientControlReadAPI({ lists: {
       automations: () => store.listScheduledSessionTasks({ environment: environmentName }),

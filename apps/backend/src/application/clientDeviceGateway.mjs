@@ -658,7 +658,7 @@ export class ClientDeviceGateway {
 }
 
 export async function startConfiguredDeviceGateway({ directory, preview, readAPI = null, controlAPI = null,
-  worktreeAPI = null, sessionAPIFactory = null, environment = process.env }) {
+  worktreeAPI = null, sessionAPIFactory = null, environment = process.env, detailActionService = null, detailWritesAllowed = false }) {
   if (preview || environment.CORPTIE_REMOTE_ACCESS !== "1") return null;
   const host = environment.CORPTIE_REMOTE_HOST;
   const port = Number(environment.CORPTIE_REMOTE_PORT);
@@ -672,6 +672,7 @@ export async function startConfiguredDeviceGateway({ directory, preview, readAPI
   const authority = new ClientDeviceAuthority(directory);
   await authority.initialize();
   const gateway = new ClientDeviceGateway(authority, {
+    detailActionService, detailWritesAllowed,
     readAPI, controlAPI, worktreeAPI, sessionAPI: sessionAPIFactory?.() ?? null
   });
   try { await gateway.start({ host, port, key, cert }); }

@@ -19,7 +19,7 @@ test("preview permits only the existing read surfaces and denies writes even on 
     "/session-timelines/revisions", "/works", "/tasks", "/agents", "/workspaces", "/repositories", "/artifacts", "/memories",
     "/automations", "/scheduled-tasks", "/scheduled-session-tasks", "/scene-templates", "/scenes",
     "/sessions/id/stored-snapshot", "/sessions/id/timeline/window", "/sessions/id/fork", "/sessions/id/images", "/sessions/id/quick-messages",
-    "/sessions/id/detail", "/sessions/id/detail/events",
+    "/sessions/id/detail", "/sessions/id/detail/events", "/sessions/id/detail/capabilities", "/sessions/id/detail/receipts/request-1234",
     "/works/id/tasks", "/tasks/id/snapshots", "/artifacts/id", "/scenes/id/views/view", "/scenes/id/changes"]) {
     assert.equal(check(rejectDevelopmentPreviewWrite, path).blocked, false, path);
     for (const method of ["POST", "PUT", "PATCH", "DELETE", "HEAD"]) {
@@ -32,6 +32,17 @@ test("preview permits only the existing read surfaces and denies writes even on 
     assert.equal(check(rejectDevelopmentPreviewWrite, path).blocked, true);
   }
   assert.equal(check(rejectDevelopmentPreviewWrite, "/unknown", "POST", { developmentPreview: false }).blocked, false);
+});
+
+test("preview Detail permits closed read RPC but never action writes or query-selected handlers", () => {
+  for (const path of ["/sessions/id/detail/read", "/sessions/id/detail/sync"]) {
+    assert.equal(check(rejectDevelopmentPreviewWrite, path, "POST").blocked, false);
+    assert.equal(check(rejectDevelopmentPreviewWrite, path + "?operation=write", "POST").blocked, true);
+    for (const method of ["PUT", "DELETE", "PATCH"]) assert.equal(check(rejectDevelopmentPreviewWrite, path, method).blocked, true);
+  }
+  for (const path of ["/sessions/id/detail/actions", "/sessions/id/detail/read/extra", "/sessions/id/detail/receipts/bad"]) {
+    assert.equal(check(rejectDevelopmentPreviewWrite, path, "POST").blocked, true);
+  }
 });
 
 test("initializing Store permits only health, events and settings reads", () => {

@@ -5,6 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { ClientReadAPI } from "../src/application/clientReadAPI.mjs";
+test("inventory shares the explicit logical Session identity without exposing Provider payload or credentials", () => {
+  const api = new ClientReadAPI({ listSessionPage: () => ({ items: [{ id: "legacy", title: "Session", executionStatus: "idle", updatedAt: "now",
+    external: { logicalSessionId: "logical:exact", privateKey: "SECRET", rawProviderEvent: { private: "SECRET" } } }], hasMore: false }) });
+  const row = api.list("sessions", new URLSearchParams()).items[0];
+  assert.equal(row.id, "legacy"); assert.equal(row.logicalSessionId, "logical:exact");
+  assert.equal(Object.hasOwn(row, "external"), false);
+  assert.equal(JSON.stringify(row).includes("SECRET"), false);
+});
 
 test("session activity is an explicit nullable presentation field, never a Provider payload", () => {
   let activityStatus = "Running command";

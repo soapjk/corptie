@@ -1,5 +1,30 @@
 import Foundation
 
+/// Re-evaluate resident bindings at the instant of navigation. A rendered
+/// Session target is never permission to substitute a Task's newer Session.
+public enum ClientDetailNavigationPolicy {
+    public static func sessionAliases(_ bindings: [(id: String, logicalID: String?)]) -> [String: String] {
+        var result: [String: String] = [:], ambiguous = Set<String>()
+        for binding in bindings {
+            guard let logical = binding.logicalID, !logical.isEmpty, logical.utf8.count <= 512,
+                  !binding.id.isEmpty, binding.id.utf8.count <= 512, !ambiguous.contains(logical) else { continue }
+            if let existing = result[logical], existing != binding.id {
+                result.removeValue(forKey: logical); ambiguous.insert(logical)
+            } else { result[logical] = binding.id }
+        }
+        return result
+    }
+    public static func permitsSession(targetID: String, sourceWorkID: String?, destinationWorkID: String?,
+                                      destinationTaskID: String?, taskID: String?, taskWorkID: String?,
+                                      taskCurrentSessionID: String?, retired: Bool = false, expectedTaskID: String? = nil) -> Bool {
+        guard !retired, !targetID.isEmpty, targetID.unicodeScalars.count <= 512,
+              let sourceWorkID, destinationWorkID == sourceWorkID else { return false }
+        if let expectedTaskID, destinationTaskID != expectedTaskID { return false }
+        guard let destinationTaskID else { return true }
+        return destinationTaskID == taskID && taskWorkID == sourceWorkID && taskCurrentSessionID == targetID
+    }
+}
+
 /// Bounded structured supplementary data; never interpreted as executable UI or code.
 public enum ClientInspectorValue: Codable, Equatable, Sendable {
     case object([String: Self]), array([Self]), string(String), number(Double), bool(Bool), null

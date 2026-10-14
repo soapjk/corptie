@@ -17,15 +17,32 @@ final class PadInspectorStore {
     var pending: Pending?
     private var scope = ""
     private var generation = UUID()
+    private var authority: ClientDetailActionScope?
     private let defaults: UserDefaults
     init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    static func contextKey(_ authority: ClientDetailActionScope) throws -> String {
+        guard authority.isValid else { throw ClientServiceFailure(statusCode: 401, code: "DETAIL_SCOPE_REVOKED") }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(authority)
+        return "corptie.inspector.v2:" + (try ClientDetailV2Canonical.hash(.string(String(decoding: data, as: UTF8.self))))
+    }
+    func retireAccess() {
+        generation = UUID(); connected = false; snapshot = nil; sections = [:]; authority = nil
+        error = "详情访问已失效，请重新连接后核对原操作结果"
+        // Keep pending identities: retirement is not proof of command failure.
+    }
 
     func observe(sessionID: String, connection: PadConnection) async {
-        let key = "corptie.inspector:\(connection.serverID):\(connection.address):\(connection.deviceID ?? ""):\(sessionID)"
+        let pinned: ClientDetailActionScope, key: String
+        do {
+            pinned = try connection.detailActionScope(sessionID: sessionID, negotiation: .legacy)
+            key = try Self.contextKey(pinned)
+        } catch { retireAccess(); self.error = "详情连接身份尚未就绪"; return }
         if scope != key {
             scope = key; snapshot = nil; sections = [:]; error = nil; busy = false
             pending = defaults.data(forKey: key).flatMap { try? JSONDecoder().decode(Pending.self, from: $0) }
         }
+        authority = pinned
         let token = UUID(); generation = token
         var failures = 0
         defer { if token == generation { connected = false } }
@@ -34,6 +51,9 @@ final class PadInspectorStore {
                 let api = ClientInspectorAPI(transport: try await connection.transport())
                 for try await next in api.subscribe(sessionID: sessionID) {
                     guard generation == token, !Task.isCancelled else { return }
+                    guard try connection.detailActionScope(sessionID: sessionID, negotiation: .legacy) == pinned else {
+                        throw ClientServiceFailure(statusCode: 401, code: "DETAIL_SCOPE_REVOKED")
+                    }
                     apply(next, sessionID: sessionID)
                     connected = true; error = nil; failures = 0
                 }
@@ -44,8 +64,8 @@ final class PadInspectorStore {
                 if snapshot == nil || failures >= 2 {
                     self.error = PadWorktreeFailure.describe(error, stage: "读取 Detail")
                 }
-                if let failure = error as? ClientServiceFailure, [401, 403, 404].contains(failure.statusCode) { return }
-                if case ClientConnectionError.httpStatus(let code) = error, [401, 403, 404].contains(code) { return }
+                if let failure = error as? ClientServiceFailure, [401, 403, 404].contains(failure.statusCode) { retireAccess(); return }
+                if case ClientConnectionError.httpStatus(let code) = error, [401, 403, 404].contains(code) { retireAccess(); return }
             }
             failures += 1
             let delaySeconds = failures == 1 ? 0.4 : min(30.0, pow(2.0, Double(min(failures, 5))))
@@ -56,10 +76,16 @@ final class PadInspectorStore {
     func apply(_ next: ClientInspectorSnapshot, sessionID: String) {
         guard next.sessionId == sessionID, next.schemaVersion == 1 else { return }
         snapshot = next
+        for (key, code) in next.errors where code == "AUTHORIZATION_REVOKED" || code == "INVALID_CREDENTIAL"
+            || code == "ACCESS_DENIED" || code == "FORBIDDEN" || code.hasSuffix("_ACCESS_DENIED")
+            || code.hasSuffix("_FORBIDDEN") || code.hasSuffix("_NOT_FOUND") {
+            sections.removeValue(forKey: key)
+        }
         for (key, value) in next.sections where sections[key] != value { sections[key] = value }
     }
     func command(_ action: String, fields: [String: ClientInspectorValue], sessionID: String, connection: PadConnection) async {
-        guard !busy, pending == nil, snapshot?.sessionId == sessionID else { return }
+        guard connected, !busy, pending == nil, snapshot?.sessionId == sessionID, let authority,
+              (try? connection.detailActionScope(sessionID: sessionID, negotiation: .legacy)) == authority else { return }
         busy = true; error = nil
         let key = scope
         let record = Pending(requestID: UUID().uuidString, sessionID: sessionID, action: action)
@@ -70,6 +96,9 @@ final class PadInspectorStore {
         defer { if scope == key { busy = false } }
         do {
             let api = ClientInspectorAPI(transport: try await connection.transport())
+            guard scope == key, connected, (try? connection.detailActionScope(sessionID: sessionID, negotiation: .legacy)) == authority else {
+                throw ClientServiceFailure(statusCode: 401, code: "DETAIL_SCOPE_REVOKED")
+            }
             let receipt = try await api.command(sessionID: sessionID, requestID: record.requestID, action: action, fields: fields)
             finish(receipt, key: key, record: record)
         } catch {
@@ -83,7 +112,8 @@ final class PadInspectorStore {
         }
     }
     func reconcile(connection: PadConnection) async {
-        guard let record = pending, !busy else { return }
+        guard let record = pending, !busy, let authority,
+              (try? connection.detailActionScope(sessionID: authority.sessionID, negotiation: .legacy)) == authority else { return }
         let key = scope; busy = true
         defer { if scope == key { busy = false } }
         do {

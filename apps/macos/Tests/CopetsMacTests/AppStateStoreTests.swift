@@ -4,6 +4,23 @@ import Testing
 
 @MainActor
 struct AppStateStoreTests {
+    @Test func logicalSessionLookupUsesExactMetadataAndRetiresAmbiguousOrArchivedAliases() throws {
+        func session(_ id: String, archived: Bool = false) throws -> TaskSession {
+            var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(TaskSession.fixture(id: id, title: id))) as! [String: Any]
+            object["external"] = ["provider": "test-provider", "logicalSessionId": "logical:exact"]
+            object["archived"] = archived
+            return try JSONDecoder().decode(TaskSession.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+        let store = AppStateStore(), first = try session("legacy-a"), second = try session("legacy-b")
+        _ = store.apply(snapshot: .init(revision: 1, state: .fixture(sessions: [first])))
+        #expect(store.session("logical:exact")?.id == "legacy-a")
+        _ = store.apply(snapshot: .init(revision: 2, state: .fixture(sessions: [second])))
+        #expect(store.session("logical:exact")?.id == "legacy-b")
+        _ = store.apply(snapshot: .init(revision: 3, state: .fixture(sessions: [first, second])))
+        #expect(store.session("logical:exact") == nil)
+        _ = store.apply(snapshot: .init(revision: 4, state: .fixture(sessions: [try session("legacy-b", archived: true)])))
+        #expect(store.session("logical:exact") == nil)
+    }
     @Test func liveDevelopmentSnapshotDecodesIntoConsoleCollections() async throws {
         guard let port = ProcessInfo.processInfo.environment["CORPTIE_TEST_LIVE_PREVIEW_PORT"],
               let url = URL(string: "http://127.0.0.1:\(port)/state/snapshot") else {

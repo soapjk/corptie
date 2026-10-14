@@ -37,6 +37,8 @@ const projectors = {
     };
   },
   sessions: (row, _store, context) => ({ id: row.id, title: row.title, workId: row.workId ?? null,
+    ...(typeof row.external?.logicalSessionId === "string" && row.external.logicalSessionId.length <= 512
+      && row.external.logicalSessionId.length > 0 ? { logicalSessionId: row.external.logicalSessionId } : {}),
     taskId: row.taskId ?? null, sessionKind: row.sessionKind, executionStatus: row.executionStatus ?? row.status,
     activityStatus: typeof row.activityStatus === "string" ? row.activityStatus : null,
     // Same read-receipt inputs the desktop unread policy consumes; the device applies the identical rule.

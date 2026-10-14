@@ -8,6 +8,7 @@ public struct ConversationServerDetail: View {
     private let sessionID: String
     private let api: @Sendable () async throws -> ClientDetailAPI
     private let platformActions: ConversationDetailActions?
+    private let onPresentationChanged: (Bool?) -> Void
     private let coordinatorFactory: (@MainActor @Sendable (ClientDetailAPI, String) async throws -> ClientDetailActionCoordinator)?
     @State private var actionRuntime = ConversationDetailActionRuntime()
     @State private var store = ClientDetailStore()
@@ -19,8 +20,15 @@ public struct ConversationServerDetail: View {
 
     public init(scope: String, sessionID: String, actions: ConversationDetailActions? = nil,
                 coordinator: (@MainActor @Sendable (ClientDetailAPI, String) async throws -> ClientDetailActionCoordinator)? = nil,
+                onPresentationChanged: @escaping (Bool?) -> Void = { _ in },
                 api: @escaping @Sendable () async throws -> ClientDetailAPI) {
         self.scope = scope; self.sessionID = sessionID; self.api = api; self.platformActions = actions; self.coordinatorFactory = coordinator
+        self.onPresentationChanged = onPresentationChanged
+    }
+    private var presentsRichDocument: Bool? {
+        guard let presentationAPI else { return nil }
+        guard presentationAPI.negotiation.catalog == "native-v2-components-1" else { return false }
+        return store.documentID != nil && !store.orderedCards.isEmpty ? true : nil
     }
 
     public var body: some View {
@@ -94,7 +102,8 @@ public struct ConversationServerDetail: View {
             Button("确认", role: actionRuntime.confirmation?.confirmation == "destructive" ? .destructive : nil) { actionRuntime.confirm(true) }
             Button("取消", role: .cancel) { actionRuntime.confirm(false) }
         }
-        .onDisappear { actionRuntime.retire() }
+        .onChange(of: presentsRichDocument, initial: true) { _, value in onPresentationChanged(value) }
+        .onDisappear { actionRuntime.retire(); onPresentationChanged(nil) }
     }
 }
 

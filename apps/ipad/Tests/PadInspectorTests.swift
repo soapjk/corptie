@@ -5,6 +5,39 @@ import CorptieClientCore
 
 @Suite(.serialized) @MainActor
 struct PadInspectorTests {
+    @Test func mobileLogicalSessionIndexResolvesExactlyAndRejectsDuplicateActors() throws {
+        func session(_ id: String) throws -> ClientSession {
+            try JSONDecoder().decode(ClientSession.self, from: Data("""
+            {"id":"\(id)","logicalSessionId":"logical:exact","title":"Session","executionStatus":"idle","updatedAt":"now"}
+            """.utf8))
+        }
+        let workspace = PadWorkspace()
+        workspace.sessions = [try session("legacy-a")]; workspace.rebuildGroups()
+        #expect(workspace.detailSession("logical:exact")?.id == "legacy-a")
+        workspace.sessions = [try session("legacy-a"), try session("legacy-b")]; workspace.rebuildGroups()
+        #expect(workspace.detailSession("logical:exact") == nil)
+    }
+    @Test func revokedModuleNeverRetainsPrivateLastConfirmedRows() throws {
+        let store = PadInspectorStore()
+        store.apply(try snapshot("s", sections: #"{"memories":[{"id":"private"}]}"#), sessionID: "s")
+        store.apply(try snapshot("s", sections: "{}", errors: #"{"memories":"ARTIFACT_ACCESS_DENIED"}"#), sessionID: "s")
+        #expect(store.sections["memories"] == nil)
+        #expect(store.snapshot?.errors["memories"] == "ARTIFACT_ACCESS_DENIED")
+    }
+    @Test func fullAuthorityPartitionsRecoveryIdentityAndRetirementClearsVisibleDataWithoutReplaying() throws {
+        func authority(_ account: String, binding: String = "binding") -> ClientDetailActionScope {
+            .init(serverID: "server", principalID: "principal", sessionID: "s", accountID: account,
+                credentialBindingID: binding, catalog: "native-v2", capabilityDigest: "caps")
+        }
+        #expect(try PadInspectorStore.contextKey(authority("a")) != PadInspectorStore.contextKey(authority("b")))
+        #expect(try PadInspectorStore.contextKey(authority("a")) != PadInspectorStore.contextKey(authority("a", binding: "rotated")))
+        let store = PadInspectorStore()
+        store.apply(try snapshot("s", sections: #"{"memories":[{"id":"private"}]}"#), sessionID: "s")
+        store.pending = .init(requestID: "original-request", sessionID: "s", action: "memory.update")
+        store.retireAccess()
+        #expect(store.snapshot == nil && store.sections.isEmpty && !store.connected)
+        #expect(store.pending?.requestID == "original-request")
+    }
     private func snapshot(_ id: String, sections: String, errors: String = "{}") throws -> ClientInspectorSnapshot {
         try JSONDecoder().decode(ClientInspectorSnapshot.self, from: Data("""
         {"schemaVersion":1,"sessionId":"\(id)","resolvedSessionId":"\(id)","workId":null,"taskId":null,"taskDefinition":null,"summary":null,"workDescription":null,"environment":{},"sections":\(sections),"errors":\(errors)}

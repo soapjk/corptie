@@ -7,14 +7,17 @@ export function rejectDevelopmentPreviewWrite({ request, response, url, developm
       "/works", "/tasks", "/agents", "/workspaces", "/repositories", "/artifacts", "/memories",
       "/automations", "/scheduled-tasks", "/scheduled-session-tasks"].includes(url.pathname)
       || /^\/sessions\/[^/]+\/(stored-snapshot|history|timeline\/window|timeline\/changes|events|usage|quick-messages|context-references|images|resources|fork|worktree-detail)$/.test(url.pathname)
-      || /^\/sessions\/[^/]+\/detail(?:\/events)?$/.test(url.pathname)
+      || /^\/sessions\/[^/]+\/detail(?:\/(events|capabilities))?$/.test(url.pathname)
+      || /^\/sessions\/[^/]+\/detail\/receipts\/[A-Za-z0-9_-]{8,128}$/.test(url.pathname)
       || /^\/works\/[^/]+(?:\/(tasks|artifacts))?$/.test(url.pathname)
       || /^\/tasks\/[^/]+(?:\/(sessions|snapshots|artifacts))?$/.test(url.pathname)
       || /^\/artifacts\/[^/]+$/.test(url.pathname)
       || url.pathname === "/scene-templates"
       || url.pathname === "/scenes"
       || /^\/scenes\/[^/]+(?:\/(views\/[^/]+|changes))?$/.test(url.pathname);
-    const detailSyncRead = request.method === "POST" && /^\/sessions\/[^/]+\/detail\/sync$/.test(url.pathname) && !url.search;
+    // The read adapter accepts only registered read operations; command RPCs
+    // remain denied here and again by the host's writesAllowed=false boundary.
+    const detailSyncRead = request.method === "POST" && /^\/sessions\/[^/]+\/detail\/(sync|read)$/.test(url.pathname) && !url.search;
     if (!detailSyncRead && (request.method !== "GET" || !readable)) {
       sendJson(response, 403, { code: "DEVELOPMENT_PREVIEW_READ_ONLY",
         error: "开发版数据预览：只浏览、不执行；此操作已禁用。" });

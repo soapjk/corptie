@@ -14,8 +14,10 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
     let onOpenAutomation: (String) -> Void
     let primary: Primary
     let secondary: Secondary
+    let providerManagementID: String?
+    let richPresentation: Bool
     init(store: PadInspectorStore, connection: PadConnection, sessionID: String, workspace: PadWorkspace, kind: ConversationInspectorKind,
-         onOpenAutomation: @escaping (String) -> Void,
+         onOpenAutomation: @escaping (String) -> Void, providerManagementID: String? = nil, richPresentation: Bool = false,
          @ViewBuilder primary: () -> Primary, @ViewBuilder secondary: () -> Secondary) {
         self.store = store
         self.connection = connection
@@ -25,6 +27,8 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
         self.onOpenAutomation = onOpenAutomation
         self.primary = primary()
         self.secondary = secondary()
+        self.providerManagementID = providerManagementID
+        self.richPresentation = richPresentation
     }
     @Environment(\.openURL) private var openURL
     @State private var editor: PadInspectorEdit?
@@ -44,26 +48,29 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
     @State private var acknowledgingUnknown = false
     @State private var recallsExpanded = false
     @State private var turnExpanded = false
+    @State private var nativeManagementExpanded = false
     private var locked: Bool { store.busy || store.pending != nil }
     private func section(_ key: String) -> ClientInspectorValue { store.sections[key] ?? .null }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             connectionStatus
+            if let providerManagementID {
+                if store.connected, store.snapshot?.sessionId == sessionID,
+                   store.snapshot?.environment["provider"].text == providerManagementID {
+                    environment
+                    if let error = store.error { Text(error).font(.caption).foregroundStyle(.red) }
+                } else {
+                    ContentUnavailableView("Provider 绑定已变化", systemImage: "exclamationmark.triangle")
+                }
+            } else {
             primary
-            taskControls
-            secondary
-            if store.snapshot?.taskDefinition?["lifecycleState"].text == "done" { taskWorktree }
-            if store.snapshot?.workId != nil { artifacts; memories }
-            references
-            if let scheduleError = store.snapshot?.errors["schedules"] {
-                scheduleFailure(scheduleError)
-            } else if !section("schedules").items.isEmpty { schedules }
-            if !section("recalls").items.isEmpty { recalls.modifier(ConversationDetailModuleSurface()) }
-            if section("turn")["identity"]["turnExecutionId"] != .null {
-                turnAnalysis.modifier(ConversationDetailModuleSurface())
+            if richPresentation {
+                DisclosureGroup("管理与完整诊断", isExpanded: $nativeManagementExpanded) {
+                    if nativeManagementExpanded { nativeManagementContent }
+                }.font(.caption)
+            } else { nativeManagementContent }
             }
-            environment
         }
         .sheet(item: $editor) { edit in
             PadInspectorEditor(edit: edit) { values in
@@ -97,6 +104,21 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
             Button("取消", role: .cancel) { }
         } message: {
             Text("原操作可能已经执行。这只解除本地操作锁，不撤销、不重发，也不将未知结果标记为成功。请先在实际数据中核对结果。")
+        }
+    }
+
+    private var nativeManagementContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            taskControls
+            secondary
+            if store.snapshot?.taskDefinition?["lifecycleState"].text == "done" { taskWorktree }
+            if store.snapshot?.workId != nil { artifacts; memories }
+            references
+            if let scheduleError = store.snapshot?.errors["schedules"] { scheduleFailure(scheduleError) }
+            else if !section("schedules").items.isEmpty { schedules }
+            if !section("recalls").items.isEmpty { recalls.modifier(ConversationDetailModuleSurface()) }
+            if section("turn")["identity"]["turnExecutionId"] != .null { turnAnalysis.modifier(ConversationDetailModuleSurface()) }
+            environment
         }
     }
 

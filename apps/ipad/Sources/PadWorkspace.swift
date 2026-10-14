@@ -517,6 +517,10 @@ final class PadWorkspace {
     /// Sessions outside any Work (macOS "Chat" group), in inventory order.
     private(set) var independentSessions: [ClientSession] = []
     var sessionsByID: [String: ClientSession] = [:]
+    var logicalSessionAliases: [String: String] = [:]
+    func detailSession(_ reference: String) -> ClientSession? {
+        sessionsByID[reference] ?? logicalSessionAliases[reference].flatMap { sessionsByID[$0] }
+    }
     /// Client-recorded formal-message timestamps by Session id. Only user
     /// messages and final model replies may advance Work/Task ordering.
     private(set) var recordedFormalMessageActivityBySession: [String: String] = [:]
@@ -1565,10 +1569,11 @@ final class PadWorkspace {
         // The desktop outline hides archived Tasks (`archived != true`) and completed Tasks (`lifecycleState != "done"`).
         // Also filter tasks whose bound currentSessionId is known unavailable (session was archived by effectiveSessionArchivedSQL).
         sessionsByID = Dictionary(sessions.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        logicalSessionAliases = ClientDetailNavigationPolicy.sessionAliases(sessions.map { (id: $0.id, logicalID: $0.logicalSessionId) })
         tasksByWork = Dictionary(grouping: tasks.filter { task in
             guard !task.archived && task.lifecycleState != "done" else { return false }
             if let sessionID = task.currentSessionId, !sessionID.isEmpty,
-               sessionCursor == nil && sessionsByID[sessionID] == nil {
+               sessionCursor == nil && detailSession(sessionID) == nil {
                 return false
             }
             return true
@@ -1603,7 +1608,7 @@ final class PadWorkspace {
         }
         for task in tasks {
             let bindingID = task.currentSessionId?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let bound = bindingID.flatMap { sessionsByID[$0] } ?? latestByTask[task.id]
+            let bound = bindingID.flatMap { detailSession($0) } ?? latestByTask[task.id]
             if let sessionID = bound?.id ?? bindingID, !sessionID.isEmpty {
                 resolvedSessionIDs[task.id] = sessionID
                 let recorded = effectiveRecordedFormalMessageActivity(for: sessionID)

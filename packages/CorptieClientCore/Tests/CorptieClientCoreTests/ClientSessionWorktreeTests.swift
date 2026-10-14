@@ -3,6 +3,28 @@ import Testing
 @testable import CorptieClientCore
 
 struct ClientSessionWorktreeTests {
+    @Test func nativeEditorPinnedWorktreeRejectsRebindingBeforePlanOrPreferenceMutationOnBothRoutes() async throws {
+        let data = Data(#"{"attached":true,"repositoryId":"repo","mainWorktreeId":"main","worktree":{"worktreeId":"replacement","path":"/tree","isMain":false,"availability":"available","dirty":false,"changedFiles":[],"conflictFiles":[],"aheadOfMain":1,"behindMain":0}}"#.utf8)
+        for route in [ClientSessionWorktreeAPI.Route.desktop, .pairedDevice] {
+            let transport = BackendTransport(endpoint: try BackendEndpoint(URL(string: "http://127.0.0.1:1")!), data: { request in
+                #expect(request.url!.path.hasSuffix("worktree-detail") || request.url!.path.hasSuffix("inspector/read"))
+                return (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            }, bytes: { _ in throw ClientConnectionError.invalidResponse })
+            let api = ClientSessionWorktreeAPI(transport: transport, route: route, expectedWorktreeID: "original")
+            for operation in 0..<4 {
+                do {
+                    if operation == 0 { _ = try await api.detail(sessionID: "session") }
+                    else if operation == 1 { _ = try await api.prepare(sessionID: "session", action: .merge) }
+                    else if operation == 2 { try await api.setAutoFollow(sessionID: "session", worktreeID: "replacement", enabled: true) }
+                    else {
+                        _ = try await ClientSessionWorktreeAPI(transport: transport, route: route)
+                            .prepare(sessionID: "session", action: .merge, expectedWorktreeID: "original")
+                    }
+                    Issue.record("Rebound native destination must reject")
+                } catch let failure as ClientServiceFailure { #expect(failure.code == "WORKTREE_BINDING_CHANGED") }
+            }
+        }
+    }
     @Test func absentPreferenceIsOffAndBothHostsUseExactBoundMutationRoutes() async throws {
         #expect(try Self.detail().autoFollow?.enabled != true)
         for route in [ClientSessionWorktreeAPI.Route.desktop, .pairedDevice] {

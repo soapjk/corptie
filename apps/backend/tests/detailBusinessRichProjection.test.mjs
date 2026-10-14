@@ -11,6 +11,31 @@ const profile = { catalog: DETAIL_COMPONENTS_CATALOG, clientCapabilities: [...DE
 const scope = { session: { id: "legacy", sessionKind: "worker" }, logicalSessionId: "logical:sample",
   task: { id: "task", title: "Task", description: "Definition", acceptance_criteria: "Acceptance", verification_criteria: "Verification" } };
 const options = { profile, generation: "generation" };
+test("registered native management uses exact normalized Provider and Worktree targets without inventing commands", () => {
+  const reads = {
+    provider: { state: "ready", data: { currentProviderId: "provider-a", providers: [{ resource: { resourceType: "provider", id: "provider-a" }, name: "Provider", capabilities: [], available: true }] } },
+    worktree: { state: "ready", data: { attached: true, workspace: { resourceType: "worktree", id: "tree-a" }, tree: { availability: "available", branchName: "feature" } } }
+  };
+  const closed = projectDetailBusinessRich(scope, reads, { ...options, navigation: true });
+  assert.deepEqual(closed.instances["business-provider"].actions, {});
+  assert.deepEqual(closed.instances["business-worktree"].actions, {});
+  const opened = projectDetailBusinessRich(scope, reads, { ...options, navigation: true, nativeEditors: true });
+  validateDetailV2(opened, profile);
+  for (const [module, type, id] of [["provider", "provider", "provider-a"], ["worktree", "worktree", "tree-a"]]) {
+    const card = opened.instances[`business-${module}`];
+    assert.deepEqual(card.actions.manage.target, { resourceType: type, id });
+    assert.equal(card.actions.manage.operation, "editor.open");
+    const template = opened.templates[opened.manifest.cards[`business-${module}`].templateHash];
+    assert.equal(template.card.nodes.some(node => node.id === "manage" && node.kind === "detail.button"), true);
+  }
+  assert.strictEqual(projectDetailBusinessRich(scope, reads, { ...options, navigation: true, nativeEditors: true, previous: opened }), opened);
+  const reduced = { ...profile, clientCapabilities: profile.clientCapabilities.filter(cap => cap !== "detail.button") };
+  const unavailable = projectDetailBusinessRich(scope, reads, { ...options, profile: reduced, nativeEditors: true });
+  assert.deepEqual(unavailable.instances["business-provider"].actions, {});
+  reads.worktree.data.workspace.id = "bad\nID";
+  const invalid = projectDetailBusinessRich(scope, reads, { ...options, nativeEditors: true });
+  assert.deepEqual(invalid.instances["business-worktree"].actions, {});
+});
 const focusRow = (id, sessionTarget) => ({ resource: { resourceType: "task", id }, title: id, sessionTarget });
 const focusReads = items => ({ focusTasks: { state: "ready", data: { items } }, artifacts: result("artifact") });
 test("focus navigation preserves Task keys and targets exact associated Sessions, never wire bindings", () => {

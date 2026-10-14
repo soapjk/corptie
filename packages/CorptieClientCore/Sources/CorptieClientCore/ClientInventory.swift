@@ -69,6 +69,7 @@ public struct ClientTask: Decodable, Sendable, Identifiable, Equatable {
 public struct ClientSession: Decodable, Sendable, Identifiable, Equatable {
     public let summary: String?
     public let id: String
+    public let logicalSessionId: String?
     public let title: String
     public let workId: String?
     public let taskId: String?
@@ -83,12 +84,13 @@ public struct ClientSession: Decodable, Sendable, Identifiable, Equatable {
     public let updatedAt: String
 
     enum CodingKeys: String, CodingKey {
-        case id, title, workId, taskId, sessionKind, executionStatus, activityStatus, summary
+        case id, logicalSessionId, title, workId, taskId, sessionKind, executionStatus, activityStatus, summary
         case lastAgentMessageSequence, lastReadMessageSequence, lastMessageAt, updatedAt
     }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
+        logicalSessionId = try container.decodeIfPresent(String.self, forKey: .logicalSessionId)
         title = try container.decode(String.self, forKey: .title)
         workId = try container.decodeIfPresent(String.self, forKey: .workId)
         taskId = try container.decodeIfPresent(String.self, forKey: .taskId)

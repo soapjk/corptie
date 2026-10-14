@@ -68,12 +68,14 @@ export class DetailDocumentService {
   #richReadEnabled;
   #richNavigationEnabled;
   #richWritesEnabled;
+  #richNativeEditorsEnabled;
   #businessActionRegistry;
-  constructor(store, { modules = DEFAULT_DETAIL_MODULES, richReadEnabled = false, richWritesEnabled = false } = {}) {
-    if (typeof richReadEnabled !== "boolean" || typeof richWritesEnabled !== "boolean") throw failure("DETAIL_GATE_INVALID", 500);
+  constructor(store, { modules = DEFAULT_DETAIL_MODULES, richReadEnabled = false, richWritesEnabled = false, richNativeEditorsEnabled = false } = {}) {
+    if ([richReadEnabled, richWritesEnabled, richNativeEditorsEnabled].some(value => typeof value !== "boolean")) throw failure("DETAIL_GATE_INVALID", 500);
     this.#richReadEnabled = richReadEnabled;
     this.#richNavigationEnabled = richReadEnabled;
     this.#richWritesEnabled = richReadEnabled && richWritesEnabled;
+    this.#richNativeEditorsEnabled = richReadEnabled && richNativeEditorsEnabled;
     this.store = store; this.generation = randomUUID(); this.cache = new Map();
     this.modules = detailModuleNames(modules);
     this.businessInvalidation = new DetailBusinessInvalidation(store, change => this.invalidate(change));
@@ -108,7 +110,7 @@ export class DetailDocumentService {
     const writes = Boolean(richRead && this.#richWritesEnabled && this.#businessActionRegistry);
     return { schemaVersion: 1, catalogs: richRead ? ["native-v2", "native-v2-components-1"] : ["native-v2"],
       requiredCapabilities: richRead ? [...new Set([...(pagination || writes ? ["detail.button"] : []),
-        ...DETAIL_RICH_BUSINESS_CAPABILITIES, ...(writes ? ["detail.form"] : [])])].sort() : [],
+        ...DETAIL_RICH_BUSINESS_CAPABILITIES, ...(this.#richNativeEditorsEnabled ? ["detail.button"] : []), ...(writes ? ["detail.form"] : [])])].sort() : [],
       pagination, writes };
   }
   configureBusinessActionRegistry(registry) {
@@ -355,7 +357,7 @@ export class DetailDocumentService {
           .map(name => [`business-${name}`, { nextCursor: previous?.instances[`business-${name}`]?.collections.resources.nextCursor ?? null }]));
         const project = () => projectDetailBusinessRich(scope, results,
           { profile, generation: journal.detailGeneration, previous, navigation: this.#richNavigationEnabled,
-            editors: this.#richWritesEnabled && Boolean(this.#businessActionRegistry), pages, operations });
+            editors: this.#richWritesEnabled && Boolean(this.#businessActionRegistry), nativeEditors: this.#richNativeEditorsEnabled, pages, operations });
         const provisional = project();
         for (const [cardId, config] of Object.entries(pages)) {
           const name = cardId.slice(9), context = { authority: { serverId: identityScope.serverId, accountId: identityScope.accountId,

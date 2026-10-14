@@ -3,6 +3,33 @@ import Testing
 @testable import CorptieClientCore
 
 struct ConversationInspectorTests {
+    @Test func logicalAliasesAreExactAmbiguityFailsClosedAndOlderInventoryStillDecodes() throws {
+        let aliases = ClientDetailNavigationPolicy.sessionAliases([(id: "legacy-a", logicalID: "logical:a"),
+            (id: "legacy-b", logicalID: "logical:b"), (id: "legacy-c", logicalID: "logical:b"), (id: "old", logicalID: nil)])
+        #expect(aliases["logical:a"] == "legacy-a")
+        #expect(aliases["logical:b"] == nil)
+        let base = #"{"id":"legacy-a","title":"S","executionStatus":"idle","updatedAt":"now"}"#
+        #expect(try JSONDecoder().decode(ClientSession.self, from: Data(base.utf8)).logicalSessionId == nil)
+        let current = base.replacingOccurrences(of: "\"title\":", with: "\"logicalSessionId\":\"logical:a\",\"title\":")
+        #expect(try JSONDecoder().decode(ClientSession.self, from: Data(current.utf8)).logicalSessionId == "logical:a")
+        #expect(!ClientDetailNavigationPolicy.permitsSession(targetID: "exact", sourceWorkID: "w", destinationWorkID: "w",
+            destinationTaskID: "new-task", taskID: "new-task", taskWorkID: "w", taskCurrentSessionID: "exact", expectedTaskID: "original-task"))
+    }
+    @Test func exactSessionNavigationRejectsRebindingAndForeignOrRetiredDestinations() {
+        func permits(_ current: String?, work: String? = "w", retired: Bool = false, task: String? = "t") -> Bool {
+            ClientDetailNavigationPolicy.permitsSession(targetID: "exact", sourceWorkID: "w",
+                destinationWorkID: work, destinationTaskID: "t", taskID: task, taskWorkID: "w",
+                taskCurrentSessionID: current, retired: retired)
+        }
+        #expect(permits("exact"))
+        #expect(!permits("replacement"))
+        #expect(!permits(nil))
+        #expect(!permits("exact", work: "foreign"))
+        #expect(!permits("exact", retired: true))
+        #expect(!permits("exact", task: "other"))
+        #expect(!ClientDetailNavigationPolicy.permitsSession(targetID: "exact", sourceWorkID: nil,
+            destinationWorkID: nil, destinationTaskID: nil, taskID: nil, taskWorkID: nil, taskCurrentSessionID: nil))
+    }
     @Test func residentResourceSelectionRequiresCurrentUnambiguousNonErrorSection() throws {
         func snapshot(_ sections: [String: ClientInspectorValue], _ errors: [String: String] = [:]) -> ClientInspectorSnapshot {
             .init(schemaVersion: 1, sessionId: "s", resolvedSessionId: "s", workId: nil, taskId: nil,

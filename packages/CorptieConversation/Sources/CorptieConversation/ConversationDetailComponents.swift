@@ -99,9 +99,18 @@ struct ConversationDetailComponentView: View {
     private func color(_ semantic: String) -> Color {
         switch semantic { case "failure": .red; case "warning": .orange; case "success": .green; default: .secondary }
     }
-    @ViewBuilder private func actionButton(_ id: String?, fields: [String: ClientInspectorValue] = [:]) -> some View {
+    @ViewBuilder private func actionButton(_ id: String?, fields: [String: ClientInspectorValue] = [:], navigationSource: [String: ClientInspectorValue]? = nil) -> some View {
         if let id, let action = state.card.actions.first(where: { $0.id == id }) {
-            Button(action.label.fallback) { actions.perform(action, fields) }
+            Button(action.label.fallback) {
+                // Local native navigation context only; never augment command
+                // or read RPC fields with collection metadata.
+                var context = fields
+                if action.kind == "navigation", let navigationSource {
+                    context = ["sourceResourceType": navigationSource["resourceType"] ?? .null,
+                               "sourceResourceId": navigationSource["id"] ?? .null]
+                }
+                actions.perform(action, context)
+            }
                 .disabled(!action.available || !actions.canPerform(action))
                 .help(action.reason?.fallback ?? "")
         }
@@ -115,7 +124,7 @@ struct ConversationDetailComponentView: View {
                             Label(item["title"]?.text ?? "", systemImage: "doc")
                                 .font(.caption).fixedSize(horizontal: false, vertical: true)
                             Spacer(minLength: 0)
-                            actionButton(item["actionId"]?.text)
+                            actionButton(item["actionId"]?.text, navigationSource: item)
                         }
                     }
                 }
