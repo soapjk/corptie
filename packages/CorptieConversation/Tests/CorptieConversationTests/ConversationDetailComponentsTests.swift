@@ -8,6 +8,52 @@ import AppKit
 #endif
 
 struct ConversationDetailComponentsTests {
+    @Test func editorInputPolicyKeepsMultilineMemoryAndRejectsUnsafeReferenceLocators() {
+        #expect(ConversationDetailFormInputPolicy.isMultiline(operation: "memory.update", field: "content"))
+        #expect(!ConversationDetailFormInputPolicy.isMultiline(operation: "reference.add", field: "locator"))
+        #expect(!ConversationDetailFormInputPolicy.isMultiline(operation: "unregistered.operation", field: "content"))
+        for value in ["https://example.invalid/path", "http://example.invalid/path?q=value"] {
+            #expect(ConversationDetailFormInputPolicy.acceptsReferenceLocator(value))
+        }
+        for value in ["", "relative/path", "file:///private/document", "javascript:alert(1)",
+                      "https://user:password@example.invalid/path", "https://example.invalid/" + String(repeating: "😀", count: 2048)] {
+            #expect(!ConversationDetailFormInputPolicy.acceptsReferenceLocator(value))
+        }
+        let content = "First paragraph\n\n第二段\n" + String(repeating: "有界原生编辑器\n", count: 500)
+        var draft = ConversationDetailFormDraft()
+        draft.receive(values: ["content": .string(content)], resourceRevision: "before")
+        draft.edit("content", value: .string(content + "Local change"))
+        draft.receive(values: ["content": .string("Remote change")], resourceRevision: "after")
+        #expect(draft.conflict && draft.values["content"] == .string(content + "Local change"))
+    }
+    @MainActor @Test func actualBusinessEditorAndPagedStateRenderWithoutLosingDirtyDrafts() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("CorptieClientCore/Tests/CorptieClientCoreTests/Fixtures/detail-v2-business-interactive.json")
+        let fixture = try ClientDetailV2JSON.decode(Data(contentsOf: url))
+        let caps = fixture["clientCapabilities"].items.compactMap(\.text), profile = try #require(fixture["catalog"].text)
+        let initial = try JSONDecoder().decode(ClientDetailV2State.self, from: JSONEncoder().encode(fixture["snapshot"]))
+        let expected = try JSONDecoder().decode(ClientDetailV2State.self, from: JSONEncoder().encode(fixture["expectedState"]))
+        let document = try initial.renderingDocument(catalogProfile: profile, clientCapabilities: caps)
+        let store = ClientDetailStore(); try store.apply(.snapshot(document))
+        let callbacks = ConversationDetailActions(canPerform: { _ in false }, perform: { _, _ in Issue.record("Layout cannot dispatch commands") })
+        var draft = ConversationDetailFormDraft()
+        draft.receive(values: ["content": .string("Original content")], resourceRevision: "revision-1")
+        draft.edit("content", value: .string("Unsaved local content"))
+        let updated = try expected.renderingDocument(previous: initial, document: document, catalogProfile: profile, clientCapabilities: caps)
+        try store.apply(.snapshot(updated))
+        draft.receive(values: ["content": .string("Saved content")], resourceRevision: "revision-2")
+        #expect(draft.conflict && draft.values["content"] == .string("Unsaved local content"))
+        #expect(store.orderedCards.count == 3)
+        #if os(macOS)
+        for width in [240.0, 375.0, 768.0] {
+            let view = NSHostingView(rootView: ConversationDetailRenderer(store: store, actions: callbacks).frame(width: width))
+            view.frame = NSRect(x: 0, y: 0, width: width, height: 800); view.layoutSubtreeIfNeeded()
+            #expect(abs(view.fittingSize.width - width) < 1)
+            #expect(view.fittingSize.height.isFinite && view.fittingSize.height > 0 && view.fittingSize.height < 5000)
+        }
+        #endif
+    }
     @MainActor @Test func actualBusinessDateStateRendersNativeWithBoundedPreparation() throws {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()

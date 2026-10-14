@@ -2,6 +2,9 @@ import http from "node:http";
 import { deleteUnreceivedUserMessage } from "./application/userMessageDeletion.mjs";
 import { routeBackendHttpRequest } from "./application/backendHttpRouter.mjs";
 import { detailServiceFor } from "./application/detailDocumentService.mjs";
+import { createDetailBusinessActionService } from "./application/detailBusinessActionComposition.mjs";
+import { ClientSessionAPI } from "./application/clientSessionAPI.mjs";
+import { ClientInspectorAPI } from "./application/clientInspectorAPI.mjs";
 import { createDetailBusinessReadPorts } from "./application/detailBusinessReadPorts.mjs";
 import { createProductEventPublisher } from "./application/productEventPublisher.mjs";
 import { createStartupRecoveryOperations } from "./application/startupRecoveryOperations.mjs";
@@ -335,6 +338,7 @@ let stateSyncService = null;
 let sessionBindingReadinessProbe = null;
 let backendStoreReady = false;
 let clientDeviceGateway = null;
+let detailActionService = null;
 const sessionStateDiagnostics = new SessionStateDiagnostics();
 let taskExecutionOrchestrator = null;
 let sessionWorkspaceOperations = null;
@@ -2063,6 +2067,7 @@ const handleEntityRoutes = createEntityHttpRoutes({
 });
 
 const backendHttpPorts = Object.freeze({
+  get detailActionService() { return detailActionService; },
   get clientDeviceGateway() { return clientDeviceGateway; },
   get sendJson() { return sendJson; },
   get developmentPreview() { return developmentPreview; },
@@ -2292,6 +2297,11 @@ detailServiceFor(store).configureBusinessPorts(createDetailBusinessReadPorts({
   providerRegistry: agentProviderRegistry,
   readWorktree: id => projectWorktreeStatusReader.worktreeDetail(id)
 }));
+detailActionService = createDetailBusinessActionService({ commandAPI: new ClientSessionAPI({ store }),
+  documentService: detailServiceFor(store), inspector: new ClientInspectorAPI({ store,
+    resolveSession: requireSessionReference, references: sessionContextReferenceService,
+    artifacts: artifactService, schedules: scheduledSessionTaskService, observability: turnObservability }) });
+detailServiceFor(store).configureBusinessActionRegistry(detailActionService.registry);
 
 await initializeBackendStoreReadiness({
   store, benchmarkControlPlane, runIsolationCoordinator, runIsolationDataRoot,

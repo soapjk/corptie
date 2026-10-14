@@ -340,21 +340,53 @@ struct PadRenameTaskSheet: View {
 }
 
 struct PadEditTaskSheet: View {
+    private struct AgentChoice: Identifiable { let id: String; let name: String }
     let connection: PadConnection
     let commands: PadEntityCommandState
     let task: ClientTask
+    let detailDefinition: ClientInspectorValue?
+    let detailScope: ClientDetailActionScope?
+    let detailSessionID: String?
+    private let agentChoices: [AgentChoice]
     let onFinished: () -> Void
     @State private var title: String
+    @State private var description: String
+    @State private var acceptance: String
+    @State private var verification: String
+    @State private var priority: String
+    @State private var mainAgentID: String
+    @State private var management: ClientTaskManagement?
     @State private var submitting = false
     @State private var commandNotice: String?
     @Environment(\.dismiss) private var dismiss
 
-    init(connection: PadConnection, commands: PadEntityCommandState, task: ClientTask, onFinished: @escaping () -> Void) {
+    init(connection: PadConnection, commands: PadEntityCommandState, task: ClientTask,
+         detailDefinition: ClientInspectorValue? = nil, detailScope: ClientDetailActionScope? = nil,
+         detailSessionID: String? = nil, onFinished: @escaping () -> Void) {
         self.connection = connection
         self.commands = commands
         self.task = task
+        self.detailDefinition = detailDefinition; self.detailScope = detailScope; self.detailSessionID = detailSessionID
         self.onFinished = onFinished
-        _title = State(initialValue: task.title)
+        var seen = Set<String>()
+        agentChoices = (detailDefinition?["agents"].items ?? []).compactMap { value in
+            guard let id = value["id"].text, id != detailDefinition?["mainAgentId"].text, seen.insert(id).inserted else { return nil }
+            return AgentChoice(id: id, name: value["name"].text ?? id)
+        }
+        _title = State(initialValue: detailDefinition?["title"].text ?? task.title)
+        _description = State(initialValue: detailDefinition?["description"].text ?? task.description ?? "")
+        _acceptance = State(initialValue: detailDefinition?["acceptanceCriteria"].text ?? task.acceptanceCriteria ?? "")
+        _verification = State(initialValue: detailDefinition?["verificationCriteria"].text ?? task.verificationCriteria ?? "")
+        _priority = State(initialValue: detailDefinition?["priority"].text ?? "medium")
+        _mainAgentID = State(initialValue: detailDefinition?["mainAgentId"].text ?? "")
+    }
+    private var detailHasChanges: Bool {
+        guard let definition = detailDefinition else { return true }
+        return title.trimmingCharacters(in: .whitespacesAndNewlines) != (definition["title"].text ?? task.title)
+            || description != (definition["description"].text ?? task.description ?? "")
+            || acceptance != (definition["acceptanceCriteria"].text ?? task.acceptanceCriteria ?? "")
+            || verification != (definition["verificationCriteria"].text ?? task.verificationCriteria ?? "")
+            || priority != (definition["priority"].text ?? "medium") || mainAgentID != (definition["mainAgentId"].text ?? "")
     }
 
     var body: some View {
@@ -362,6 +394,21 @@ struct PadEditTaskSheet: View {
             Form {
                 Section("Task 信息") {
                     TextField("标题", text: $title)
+                }
+                if let definition = detailDefinition {
+                    Section("描述") { TextEditor(text: $description).frame(minHeight: 100, maxHeight: 180).accessibilityLabel("描述") }
+                    Section("验收标准") { TextEditor(text: $acceptance).frame(minHeight: 100, maxHeight: 180).accessibilityLabel("验收标准") }
+                    Section("验证标准") { TextEditor(text: $verification).frame(minHeight: 100, maxHeight: 180).accessibilityLabel("验证标准") }
+                    Section("执行设置") {
+                        Picker("优先级", selection: $priority) {
+                            ForEach(["low", "medium", "high", "urgent"], id: \.self) { Text($0).tag($0) }
+                        }
+                        Picker("Agent", selection: $mainAgentID) {
+                            Text("保留当前设置").tag(definition["mainAgentId"].text ?? "")
+                            ForEach(agentChoices) { agent in Text(agent.name).tag(agent.id) }
+                        }
+                    }
+                    if management == nil { Section { Text("正在核验 Task 编辑能力").font(.footnote) } }
                 }
                 if let commandNotice {
                     Section {
@@ -382,8 +429,27 @@ struct PadEditTaskSheet: View {
                         Task {
                             let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
                             let receipt = await commands.run(connection, target: .task(task.id), kind: "task_update", label: "编辑 Task") { api, requestID in
+                                if let detailScope, let detailSessionID {
+                                    guard try connection.detailActionScope(sessionID: detailSessionID, negotiation: .legacy) == detailScope else {
+                                        throw ClientServiceFailure(statusCode: 401, code: "INVALID_CREDENTIAL")
+                                    }
+                                    let current = try await api.taskManagement(taskId: task.id)
+                                    guard current.task.id == task.id, current.actions.edit.available else {
+                                        throw ClientServiceFailure(statusCode: 403, code: "CAPABILITY_UNSUPPORTED")
+                                    }
+                                    guard try connection.detailActionScope(sessionID: detailSessionID, negotiation: .legacy) == detailScope else {
+                                        throw ClientServiceFailure(statusCode: 401, code: "INVALID_CREDENTIAL")
+                                    }
+                                }
                                 var req = ClientTaskUpdate(requestId: requestID)
-                                req.title = trimmed
+                                if detailDefinition == nil || trimmed != detailDefinition?["title"].text { req.title = trimmed }
+                                if let definition = detailDefinition {
+                                    if description != (definition["description"].text ?? task.description ?? "") { req.description = description }
+                                    if acceptance != (definition["acceptanceCriteria"].text ?? task.acceptanceCriteria ?? "") { req.acceptanceCriteria = acceptance }
+                                    if verification != (definition["verificationCriteria"].text ?? task.verificationCriteria ?? "") { req.verificationCriteria = verification }
+                                    if priority != (definition["priority"].text ?? "medium") { req.priority = priority }
+                                    if mainAgentID != (definition["mainAgentId"].text ?? "") { req.mainAgentId = mainAgentID }
+                                }
                                 return try await api.taskCommand(taskId: task.id, command: .update, body: req)
                             }
                             submitting = false
@@ -395,9 +461,25 @@ struct PadEditTaskSheet: View {
                             }
                         }
                     }
-                    .disabled(submitting || commands.isBusy || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(submitting || commands.isBusy || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || !detailHasChanges || detailDefinition != nil && management?.actions.edit.available != true)
                 }
             }
+        }
+        .task(id: task.id) {
+            guard detailDefinition != nil else { return }
+            do {
+                let transport = try await connection.transport()
+                let current = try await ClientSessionAPI(transport: transport).taskManagement(taskId: task.id)
+                guard !Task.isCancelled, current.task.id == task.id else { return }
+                if let detailScope, let detailSessionID {
+                    guard try connection.detailActionScope(sessionID: detailSessionID, negotiation: .legacy) == detailScope else {
+                        throw ClientServiceFailure(statusCode: 401, code: "INVALID_CREDENTIAL")
+                    }
+                }
+                management = current
+                if !current.actions.edit.available { commandNotice = current.actions.edit.reason ?? "当前凭据不具备 Task 编辑能力" }
+            } catch { if !Task.isCancelled { commandNotice = PadConnection.explain(error) } }
         }
     }
 }
