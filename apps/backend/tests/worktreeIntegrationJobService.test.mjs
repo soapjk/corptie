@@ -23,6 +23,7 @@ function memoryFixture({
   abortMergeError = null,
   conflictSessionStatus = "complete",
   conflictSessionHasQueuedWork = false,
+  conflictSessionFailure = null,
   protectedPaths = [],
   activeFeatureSession = false,
   prepareConflictErrors = [],
@@ -125,6 +126,9 @@ function memoryFixture({
         ? [{ taskId: "queued:conflict", status: "queued" }]
         : []
     ),
+    latestFailedSessionTurn: (id) => id?.startsWith("session:conflict") && conflictSessionFailure
+      ? { failure_json: JSON.stringify(conflictSessionFailure) }
+      : null,
     getTask: (id) => tasks.get(id) ?? null
   };
   const calls = [];
@@ -1238,6 +1242,36 @@ test("a completed Session with a queued conflict instruction remains running unt
   assert.equal(unchanged.phase, "conflict_resolution_running");
   assert.equal(unchanged.conflictResolution.status, "running");
   assert.equal(unchanged.audit.some((entry) => entry.event === "conflict_agent_completed"), false);
+});
+
+test("a failed conflict Session preserves the Provider failure and retryability", async () => {
+  const providerFailure = {
+    code: "UPSTREAM_PROVIDER_UNAVAILABLE",
+    message: "All inference gateway upstream providers failed. Check gateway and upstream account status.",
+    retryable: true
+  };
+  const { service } = memoryFixture({
+    conflictOnce: true,
+    conflictSessionStatus: "failed",
+    conflictSessionFailure: providerFailure
+  });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  const paused = await waitForJob(service, plan.id, "paused");
+  const delegated = await service.resolveConflictWithAgent(paused.id);
+
+  const [failed] = service.reconcileConflictResolutionSession(delegated.conflictResolution.sessionId);
+  assert.equal(failed.status, "paused");
+  assert.equal(failed.phase, "conflict");
+  assert.equal(failed.error, providerFailure.message);
+  assert.equal(failed.conflictResolution.status, "failed");
+  assert.equal(failed.conflictResolution.failureCode, providerFailure.code);
+  assert.equal(failed.conflictResolution.retryable, true);
+  assert.equal(failed.conflictAutomation.status, "blocked");
+  assert.equal(failed.conflictAutomation.failureCode, providerFailure.code);
+  assert.equal(failed.conflictAutomation.failureReason, providerFailure.message);
+  assert.ok(failed.audit.some((entry) => entry.event === "conflict_agent_stopped"
+    && entry.code === providerFailure.code && entry.retryable === true));
 });
 
 test("conflict Session title collisions are retried automatically with structured identifiers", async () => {

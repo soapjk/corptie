@@ -332,6 +332,23 @@ export class ProviderEventRepository {
     return row ?? null;
   }
 
+  latestFailedSessionTurn(sessionId, bindingId = null) {
+    const row = bindingId
+      ? this.selectOne(
+        `SELECT * FROM session_turns
+         WHERE session_id = ? AND binding_id = ? AND execution_status = 'failed'
+         ORDER BY COALESCE(ended_at, updated_at) DESC, turn_id DESC LIMIT 1`,
+        [sessionId, bindingId]
+      )
+      : this.selectOne(
+        `SELECT * FROM session_turns
+         WHERE session_id = ? AND execution_status = 'failed'
+         ORDER BY COALESCE(ended_at, updated_at) DESC, turn_id DESC LIMIT 1`,
+        [sessionId]
+      );
+    return row ?? null;
+  }
+
   enqueueEventOutbox({ outboxId, topic, sessionId = null, revision = null, eventType, payload, createdAt }) {
     this.db.run(
       `INSERT INTO event_outbox (

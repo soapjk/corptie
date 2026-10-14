@@ -55,31 +55,18 @@ export function createWorkSessionStartupComposition({
     }) => {
       const task = workService.getTask(taskId);
       try {
-        if (dispatchInitialTurn === true) {
-          const initialMessageId = `startup-initial:${createHash("sha256")
-            .update(String(startupOperationId ?? session.id))
-            .digest("hex")
-            .slice(0, 32)}`;
-          await admitReliableSessionMessage(
-            session.id,
-            initialPrompt ?? taskExecutionPrompt(task),
-            {
-              type: "session-initialization",
-              origin: initialPrompt ? "work-session-start" : "task-start",
-              messageId: initialMessageId,
-              deliveryId: `delivery:${initialMessageId}`
-            }
-          );
-        } else {
-          await sessionApplicationService.resumeSession(session.id, {
-            source: "task-start",
-            purpose: "session-create-finalization",
-            actorId: assigneeAgentId,
-            workId: task.work_id,
-            taskId,
-            sessionKind: "worker"
-          });
-        }
+        // Creation deliberately defers Tool Host finalization until the
+        // authoritative logical binding exists. Finalize and verify that
+        // binding before admitting the first Turn; durable admission alone
+        // does not apply the Provider Tool contract.
+        await sessionApplicationService.resumeSession(session.id, {
+          source: "task-start",
+          purpose: "session-create-finalization",
+          actorId: assigneeAgentId,
+          workId: task.work_id,
+          taskId,
+          sessionKind: "worker"
+        });
         const current = store.getSession(session.id);
         const logical = store.getLogicalSessionByLegacySessionId(session.id);
         const activeBinding = logical?.activeBinding;
@@ -108,17 +95,42 @@ export function createWorkSessionStartupComposition({
           ...await requiredWorkspaceInstructionSources(expectedCwd),
           ...await knownGlobalInstructionSources()
         ].sort();
-        return {
+        const proof = {
           providerResourceId: activeBinding.providerSessionId,
           canonicalWorkingDirectory: actualCwd,
           toolContractHash,
           instructionSourcesHash: createHash("sha256").update(JSON.stringify(instructionSources)).digest("hex")
         };
+        if (dispatchInitialTurn === true) {
+          const initialMessageId = `startup-initial:${createHash("sha256")
+            .update(String(startupOperationId ?? session.id))
+            .digest("hex")
+            .slice(0, 32)}`;
+          try {
+            await admitReliableSessionMessage(
+              session.id,
+              initialPrompt ?? taskExecutionPrompt(task),
+              {
+                type: "session-initialization",
+                origin: initialPrompt ? "work-session-start" : "task-start",
+                messageId: initialMessageId,
+                deliveryId: `delivery:${initialMessageId}`
+              }
+            );
+          } catch (error) {
+            error.code = "START_INITIAL_TURN_FAILED";
+            error.stage = "initial_turn";
+            console.error(`[task-start] initial prompt enqueue failed session=${session.id}: ${error.message}`);
+            throw error;
+          }
+        }
+        return proof;
       } catch (error) {
-        const initialTurn = dispatchInitialTurn === true;
-        error.code = initialTurn ? "START_INITIAL_TURN_FAILED" : "START_PROVIDER_BINDING_FAILED";
-        error.stage = initialTurn ? "initial_turn" : "provider_activation";
-        console.error(`[task-start] ${initialTurn ? "initial prompt enqueue" : "provider activation"} failed session=${session.id}: ${error.message}`);
+        if (error?.code !== "START_INITIAL_TURN_FAILED") {
+          error.code = "START_PROVIDER_BINDING_FAILED";
+          error.stage = "provider_activation";
+          console.error(`[task-start] provider activation failed session=${session.id}: ${error.message}`);
+        }
         throw error;
       }
     },

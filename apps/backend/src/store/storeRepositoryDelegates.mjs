@@ -109,7 +109,7 @@ const foundationalDelegates = Object.freeze({
     "hasSessionTurnForBinding", "upsertSessionContextUsage", "getSessionContextUsage",
     "upsertProviderModelUsage", "getProviderModelUsage", "upsertSessionUsageSnapshot",
     "getSessionUsageSnapshot", "listUnsettledSessionTurns",
-    "latestCompletedSessionTurn", "enqueueEventOutbox",
+    "latestCompletedSessionTurn", "latestFailedSessionTurn", "enqueueEventOutbox",
     "listPendingEventOutbox", "markEventOutboxPublished"
   ],
   messageDeliveryRepository: [

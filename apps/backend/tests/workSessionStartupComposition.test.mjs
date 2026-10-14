@@ -86,11 +86,30 @@ test("activation durably admits one deterministic custom initial Turn before ret
     initialPrompt: "Resolve the preserved conflict."
   });
   assert.equal(proof.providerResourceId, "native:1");
-  assert.deepEqual(f.calls.map(([kind]) => kind), ["admit"]);
-  assert.equal(f.calls[0][2], "Resolve the preserved conflict.");
+  assert.deepEqual(f.calls.map(([kind]) => kind), ["resume", "admit"]);
+  assert.equal(f.calls[0][2].purpose, "session-create-finalization");
+  assert.equal(f.calls[1][2], "Resolve the preserved conflict.");
   const identity = createHash("sha256").update("startup:one").digest("hex").slice(0, 32);
-  assert.equal(f.calls[0][3].messageId, `startup-initial:${identity}`);
-  assert.equal(f.calls[0][3].deliveryId, `delivery:startup-initial:${identity}`);
+  assert.equal(f.calls[1][3].messageId, `startup-initial:${identity}`);
+  assert.equal(f.calls[1][3].deliveryId, `delivery:startup-initial:${identity}`);
+});
+
+test("activation reports Tool finalization failures separately from initial Turn admission", async () => {
+  const f = fixture();
+  f.store.getSessionToolCatalogMaterialization = () => null;
+  await assert.rejects(
+    () => f.port.activateSession({
+      session: f.session,
+      taskId: "task:1",
+      assigneeAgentId: "agent:1",
+      workingDirectory: "/workspace",
+      startupOperationId: "startup:tool-failure",
+      dispatchInitialTurn: true,
+      initialPrompt: "Resolve the preserved conflict."
+    }),
+    { code: "START_PROVIDER_BINDING_FAILED", stage: "provider_activation" }
+  );
+  assert.deepEqual(f.calls.map(([kind]) => kind), ["resume"]);
 });
 
 test("both execution strategies share one Provider port and one application authorization owner", () => {
