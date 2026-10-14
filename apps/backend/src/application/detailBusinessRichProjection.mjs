@@ -9,7 +9,7 @@ const freeze = value => { for (const child of Object.values(value)) if (child &&
 const node = (id, kind, binding, props = {}, children = []) => ({ id, kind, props, children, ...(binding ? { binding } : {}) });
 export const DETAIL_RICH_BUSINESS_MODULES = Object.freeze(["focusTasks", "references", "artifacts", "memories", "recalls", "schedules", "provider", "turn", "worktree"]);
 export const DETAIL_RICH_BUSINESS_CAPABILITIES = Object.freeze(["detail.dateTime", "detail.keyValue", "detail.markdown", "detail.resourceList", "detail.status"]);
-const template = (list, dated = false) => {
+const template = (list, dated = false, navigation = false) => {
   // Twenty fixed optional date pairs keep template identity independent of rows.
   // Dates are never formatted by the backend; native locale/timezone owns display.
   const dateFields = dated ? Object.fromEntries(Array.from({ length: 20 }, (_, i) => [
@@ -23,10 +23,11 @@ const template = (list, dated = false) => {
     node(`scheduledDate${i}`, "detail.dateTime", `scheduledDate${i}`, { format: "dateTime" })
   ]).flat() : [];
   const structure = { templateVersion: 1, catalogProfile: DETAIL_COMPONENTS_CATALOG,
-    requiredCapabilities: [...(dated ? ["detail.dateTime", "detail.keyValue"] : []), "detail.markdown", ...(list ? ["detail.resourceList"] : []), "detail.status"],
+    requiredCapabilities: [...(navigation ? ["detail.button"] : []), ...(dated ? ["detail.dateTime", "detail.keyValue"] : []), "detail.markdown", ...(list ? ["detail.resourceList"] : []), "detail.status"],
     fieldSchema: { title: stringSchema(512), body: stringSchema(32768), state: stringSchema(1024), ...dateFields },
     collectionSchema: list ? { resources: { maxItems: 20, itemSchema: {
-      title: stringSchema(512), resourceType: stringSchema(512), id: stringSchema(512)
+      title: stringSchema(512), resourceType: stringSchema(512), id: stringSchema(512),
+      ...(navigation ? { actionId: { type: "string", required: false, maxLength: 128 } } : {})
     } } } : {},
     card: { title: text("Detail"), titleBinding: "title", semanticKind: "information", rootNodeId: "root",
       fallback: text("暂时无法显示"), nodes: [node("root", "column", null, {}, ["state", ...(list ? ["resources"] : []), "body", ...dateNodes.map(n => n.id)]),
@@ -36,7 +37,8 @@ const template = (list, dated = false) => {
   return freeze({ ...structure, templateId: detailV2TemplateID(structure) });
 };
 const contentTemplate = template(false), listTemplate = template(true), datedListTemplate = template(true, true);
-const templateHashes = new Map([contentTemplate, listTemplate, datedListTemplate].map(value => [value, detailV2Hash(value)]));
+const navigationListTemplate = template(true, false, true), navigationDatedListTemplate = template(true, true, true);
+const templateHashes = new Map([contentTemplate, listTemplate, datedListTemplate, navigationListTemplate, navigationDatedListTemplate].map(value => [value, detailV2Hash(value)]));
 const listDefinitions = {
   focusTasks: { title: "重点 Task", rowTitle: row => row.title,
     facts: row => [row.summary?.focus, row.summary?.progress, row.summary?.reason] },
@@ -79,12 +81,18 @@ function listCard(name, result) {
   if (!definition) throw new Error("DETAIL_BUSINESS_RICH_MODULE_UNAVAILABLE");
   const errorState = readState(result);
   const rows = resourcePage(result), items = Object.create(null), order = [];
+  // Host-only mapping: never add Session bindings to wire collection fields.
+  const navigationTargets = Object.create(null);
   for (const row of rows) {
     const { resourceType, id } = row.resource ?? {};
     if (!/^[\x20-\x7e]{1,512}$/.test(id ?? "") || !/^[\x20-\x7e]{1,512}$/.test(resourceType ?? "") || Object.hasOwn(items, id)) {
       throw new Error("DETAIL_BUSINESS_RESOURCE_ID");
     }
     order.push(id); items[id] = { resourceType, id, title: bounded(definition.rowTitle(row), 512) };
+    if (name === "focusTasks" && resourceType === "task" && row.sessionTarget?.resourceType === "session"
+      && typeof row.sessionTarget.id === "string" && /^[\x20-\x7e]{1,512}$/.test(row.sessionTarget.id)) {
+      navigationTargets[id] = { resourceType: "session", id: row.sessionTarget.id };
+    }
   }
   const state = errorState ?? (rows.length === 0 ? "暂无内容"
     : result.data.hasMore ? "当前页（更多内容尚未接线）" : "");
@@ -99,7 +107,7 @@ function listCard(name, result) {
     if (date !== null || secondDate !== null) fields[`dateLabel${i}`] = bounded(`${definition.rowTitle(row) ?? ""} · ${definition.dateLabel}`, 512);
   });
   return { id: `business-${name}`, template: definition.date ? datedListTemplate : listTemplate, fields,
-    page: { order, items, nextCursor: null } };
+    page: { order, items, nextCursor: null }, navigationTargets };
 }
 const metrics = value => Object.entries(value ?? {}).filter(([key, v]) => /^[A-Za-z0-9_.]{1,64}$/.test(key)
   && (typeof v === "number" || (typeof v === "string" && /^\d+(\.\d+)?$/.test(v))) && Number.isFinite(Number(v)) && Number(v) >= 0)
@@ -124,9 +132,9 @@ function moduleCard(name, result) {
 }
 
 /** Offline producer against the fixed shared catalog, not a renderer or HTTP
- * gate. Only normalized read-port results are accepted; no guessed actions,
- * cursors, editors or resource loaders are published. Old UI remains active. */
-export function projectDetailBusinessRich(scope, readResults = {}, { profile, generation, previous = null } = {}) {
+ * gate. Navigation is explicit host opt-in for normalized registered targets;
+ * no command, cursor, editor or resource loader is invented. Old UI remains active. */
+export function projectDetailBusinessRich(scope, readResults = {}, { profile, generation, previous = null, navigation = false } = {}) {
   if (profile?.catalog !== DETAIL_COMPONENTS_CATALOG) throw new Error("DETAIL_BUSINESS_RICH_PROFILE_REQUIRED");
   if (previous) validateDetailV2(previous, profile);
   const documentId = `detail:${scope.logicalSessionId}`;
@@ -145,6 +153,18 @@ export function projectDetailBusinessRich(scope, readResults = {}, { profile, ge
   }
   const templates = Object.create(null), instances = Object.create(null), references = Object.create(null);
   for (const card of cards) {
+    const actions = {};
+    if (navigation && profile.clientCapabilities.includes("detail.button") && card.page) {
+      card.template = card.template === datedListTemplate ? navigationDatedListTemplate : navigationListTemplate;
+      for (const item of Object.values(card.page.items)) {
+        const target = card.id === "business-focusTasks" ? card.navigationTargets[item.id]
+          : { resourceType: { contextReference: "reference", automation: "schedule" }[item.resourceType] ?? item.resourceType, id: item.id };
+        if (!target || !["session", "task", "work", "schedule", "artifact", "memory", "reference"].includes(target.resourceType)) continue;
+        const id = `open-${detailV2Hash({ type: target.resourceType, id: target.id }).slice(7, 31)}`;
+        item.actionId = id;
+        actions[id] = { id, kind: "navigation", operation: "resource.open", label: text("打开"), available: true, target };
+      }
+    }
     const templateHash = templateHashes.get(card.template), old = previous?.instances[card.id];
     templates[templateHash] = card.template; references[card.id] = { templateId: card.template.templateId, templateHash };
     const collections = {};
@@ -154,7 +174,7 @@ export function projectDetailBusinessRich(scope, readResults = {}, { profile, ge
       collections.resources = { ...card.page, revision: oldPage
         ? oldPage.revision + (canonicalDetailV2(oldBody) === canonicalDetailV2(card.page) ? 0 : 1) : 1 };
     }
-    const body = { fields: card.fields, collections, actions: {} }, hash = detailV2Hash(body);
+    const body = { fields: card.fields, collections, actions }, hash = detailV2Hash(body);
     instances[card.id] = old?.hash === hash ? old : { ...body, hash, revision: old ? old.revision + 1 : 1 };
   }
   const manifestBody = { cards: references, order: cards.map(card => card.id) }, hash = detailV2Hash(manifestBody);
