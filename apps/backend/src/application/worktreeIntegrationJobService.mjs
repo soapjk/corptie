@@ -1758,13 +1758,20 @@ export class WorktreeIntegrationJobService {
           && resolution?.status === "ready"
           && resolution.worktreeId === item.worktreeId
           && resolution.conflictKey === expectedConflictKey) {
-          const verified = await this.inspectConflictResolution({
-            repositoryId: job.repositoryId,
-            mainPath: job.details.plan.executionPath ?? job.details.plan.mainPath,
-            workspace: resolution.workspace,
-            sourceHead: originalSourceHead,
-            expectedMainHead: expectedResolutionMainHead
-          });
+          let verified;
+          try {
+            verified = await this.inspectConflictResolution({
+              repositoryId: job.repositoryId,
+              mainPath: job.details.plan.executionPath ?? job.details.plan.mainPath,
+              workspace: resolution.workspace,
+              sourceHead: originalSourceHead,
+              expectedMainHead: expectedResolutionMainHead
+            });
+          } catch (error) {
+            if (!isConflictResolutionRejection(error)) throw error;
+            this.#rejectConflictResolution(job, item, resolution, error);
+            return;
+          }
           sourceHead = verified.resolvedHead;
           job = this.#item(job, item.worktreeId, {
             resolutionHead: verified.resolvedHead,
@@ -2157,11 +2164,42 @@ export class WorktreeIntegrationJobService {
     if (patch.auditEvent) {
       details = {
         ...details,
-        audit: [...(details.audit ?? []), { at, event: patch.auditEvent, ...(patch.auditData ?? {}) }]
+        audit: [...(details.audit ?? []), normalizeAuditEvent({
+          at, event: patch.auditEvent, ...(patch.auditData ?? {})
+        })]
       };
     }
     const updated = this.store.updateWorktreeIntegrationJob(job.id, { ...patch, details });
     this.onEvent("WorktreeIntegrationJobChanged", { job: presentJob(updated) });
+    return updated;
+  }
+
+  #rejectConflictResolution(job, item, resolution, error) {
+    const code = normalizedErrorCode(error?.code, "RESOLUTION_VALIDATION_FAILED");
+    const updated = this.#update(job, {
+      status: "paused",
+      phase: "conflict",
+      error: error?.message ?? "The conflict Agent result could not be verified.",
+      details: {
+        ...job.details,
+        conflictResolution: {
+          ...resolution,
+          status: "failed",
+          failureCode: code,
+          failureReason: error?.message ?? null,
+          failedAt: new Date().toISOString()
+        },
+        ...(job.details.conflictAutomation ? {
+          conflictAutomation: blockedConflictAutomation(job, item, {
+            code,
+            message: error?.message ?? "The conflict Agent result could not be verified."
+          })
+        } : {})
+      },
+      auditEvent: "conflict_resolution_rejected",
+      auditData: { worktreeId: item.worktreeId, code }
+    });
+    this.onEvent("WorktreeIntegrationJobPaused", { job: presentJob(updated) });
     return updated;
   }
 
@@ -2178,6 +2216,7 @@ export class WorktreeIntegrationJobService {
         auditData: { worktreeId: job.details.currentWorktreeId }
       });
     }
+    if (resolution?.status === "failed" && resolution.failureCode) return job;
     if (!["running", "failed"].includes(resolution?.status) || !resolution.sessionId) return job;
     const session = this.store.getSession(resolution.sessionId);
     if (!session) return job;
@@ -2900,9 +2939,42 @@ function integrationExecutionProgressed(job) {
   ].includes(entry.event));
 }
 
+const CONFLICT_RESOLUTION_REJECTION_CODES = new Set([
+  "RESOLUTION_REPOSITORY_CHANGED",
+  "RESOLUTION_WORKTREE_UNAVAILABLE",
+  "RESOLUTION_BRANCH_CHANGED",
+  "RESOLUTION_WORKTREE_DIRTY",
+  "RESOLUTION_BASE_MISSING",
+  "RESOLUTION_SOURCE_MISSING",
+  "RESOLUTION_COMMIT_MISSING"
+]);
+
+function isConflictResolutionRejection(error) {
+  return CONFLICT_RESOLUTION_REJECTION_CODES.has(normalizedErrorCode(error?.code, ""));
+}
+
+function normalizedErrorCode(code, fallback) {
+  if (typeof code === "string" && code.trim()) return code;
+  if (typeof code === "number" && Number.isFinite(code)) return `PROCESS_EXIT_${code}`;
+  return fallback;
+}
+
+function normalizeAuditEvent(event) {
+  if (!event || typeof event !== "object") return event;
+  if (event.code == null) return event;
+  return { ...event, code: normalizedErrorCode(event.code, "UNKNOWN_FAILURE") };
+}
+
+function normalizeJobDetailsForPresentation(details) {
+  if (!details || typeof details !== "object") return details ?? {};
+  if (!Array.isArray(details.audit)) return details;
+  return { ...details, audit: details.audit.map(normalizeAuditEvent) };
+}
+
 export function presentJob(job) {
   if (!job) return null;
-  const presented = { ...job, ...job.details, details: undefined };
+  const details = normalizeJobDetailsForPresentation(job.details);
+  const presented = { ...job, ...details, details: undefined };
   const commitPolicyResidue = legacyCommitPolicyResidue(job);
   const availableActions = integrationJobAvailableActions({ ...presented, commitPolicyResidue });
   return {

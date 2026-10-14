@@ -45,6 +45,15 @@ function providerIdForSourceTask(store, registry, task) {
   return (identity && registry.resolveId?.(identity)) ?? registry.defaultProviderId;
 }
 
+function isDeletedTask(task) {
+  return task?.deletion_status === "deleted" || task?.deletionStatus === "deleted";
+}
+
+function isDeletedSession(session) {
+  return session?.status === "deleted" || session?.deletion_status === "deleted"
+    || session?.deletionStatus === "deleted" || Boolean(session?.deleted_at ?? session?.deletedAt);
+}
+
 // Project-level integration wiring, including explicit conflict Session launch.
 // Both services share the host's Store and Git services; no runtime is started here.
 export function createWorktreeIntegrationServices({
@@ -236,20 +245,29 @@ export function createWorktreeIntegrationServices({
     launchConflictResolution: async ({ job, item, workspace, sourceHead, expectedMainHead }) => {
       const planIdentity = job.id.replace(/^worktree_integration:/, "");
       const planLabel = planIdentity.slice(0, 8);
-      const planTaskId = `task:integration_conflicts:${planIdentity}`;
+      const basePlanTaskId = `task:integration_conflicts:${planIdentity}`;
       const existingAutomation = job.conflictAutomation ?? null;
-      const legacyPlanTask = existingAutomation?.taskId ? null : store.listTasks()
-        .filter((candidate) => String(candidate.description ?? "").includes(job.id))
-        .sort((left, right) => String(left.created_at ?? "").localeCompare(String(right.created_at ?? "")))[0] ?? null;
-      const existingTask = existingAutomation?.taskId
+      const recordedTask = existingAutomation?.taskId
         ? store.getTask(existingAutomation.taskId)
+        : null;
+      const recordedSession = existingAutomation?.sessionId
+        ? store.getSession(existingAutomation.sessionId)
+        : null;
+      const recordedPlanWasDeleted = isDeletedTask(recordedTask) || isDeletedSession(recordedSession);
+      const legacyPlanTask = existingAutomation?.taskId ? null : store.listTasks()
+        .filter((candidate) => !isDeletedTask(candidate)
+          && String(candidate.description ?? "").includes(job.id))
+        .sort((left, right) => String(left.created_at ?? "").localeCompare(String(right.created_at ?? "")))[0] ?? null;
+      const existingTask = existingAutomation?.taskId && !recordedPlanWasDeleted
+        ? recordedTask
         : legacyPlanTask;
       const existingSessionId = existingAutomation?.sessionId ?? existingTask?.current_session_id ?? null;
-      const existingSession = existingSessionId ? store.getSession(existingSessionId) : null;
+      const existingSessionCandidate = existingSessionId ? store.getSession(existingSessionId) : null;
+      const existingSession = isDeletedSession(existingSessionCandidate) ? null : existingSessionCandidate;
       const existingAgent = existingAutomation?.agentId
         ? store.getAgent(existingAutomation.agentId)
         : (existingTask?.main_agent_id ? store.getAgent(existingTask.main_agent_id) : null);
-      const hasRecordedPlanSession = Boolean(existingAutomation?.taskId
+      const hasRecordedPlanSession = !recordedPlanWasDeleted && Boolean(existingAutomation?.taskId
         || existingAutomation?.sessionId || legacyPlanTask);
       const hasExistingPlanSession = Boolean(existingTask && existingSession && existingAgent);
       const recoverableStartup = existingTask && !existingSession && existingAgent
@@ -283,6 +301,11 @@ export function createWorktreeIntegrationServices({
         ? store.getWork(existingTask.work_id)
         : context.work;
       const agent = existingAgent ?? context.agent;
+      const deletedPlanCount = store.listTasks().filter((candidate) => isDeletedTask(candidate)
+        && String(candidate.description ?? "").includes(job.id)).length;
+      const replacementSuffix = recordedPlanWasDeleted ? `:replacement-${Math.max(1, deletedPlanCount)}` : "";
+      const planTaskId = `${basePlanTaskId}${replacementSuffix}`;
+      const startupIdempotencyKey = `integration-plan:${job.id}:start${replacementSuffix}`;
       const branchLabel = item.branchName ?? item.worktreeId;
       const title = `解决 Worktree 合并计划 ${planLabel} 的全部冲突`;
       const conflictFiles = item.conflictFiles.length > 0 ? item.conflictFiles.join(", ") : "请通过 Git 状态确认";
@@ -322,7 +345,7 @@ export function createWorktreeIntegrationServices({
           providerId: recoverableStartup.provider_id,
           title,
           workspace,
-          idempotencyKey: `integration-plan:${job.id}:start`,
+          idempotencyKey: startupIdempotencyKey,
           sourceSessionId: recoverableStartup.source_session_id,
           dispatchInitialTurn: true,
           initialPrompt: prompt
@@ -395,7 +418,7 @@ export function createWorktreeIntegrationServices({
           providerId,
           title,
           workspace,
-          idempotencyKey: `integration-plan:${job.id}:start`,
+          idempotencyKey: startupIdempotencyKey,
           sourceSessionId: sourceLogical?.logicalSessionId,
           // The plan-specific prompt is dispatched atomically by the shared
           // Work Session startup transaction. Never create a promptless

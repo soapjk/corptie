@@ -114,6 +114,13 @@ export class TaskDeletionService {
     const associations = this.store.listTaskDeletionBlockingAssociations(taskId);
     const artifacts = Array.isArray(associations?.artifacts) ? associations.artifacts : [];
     const associatedSessionCount = this.store.listSessionsByTask(taskId).length;
+    const owningIntegrationJob = this.store.getActiveWorktreeIntegrationJobForConflictTask?.(taskId) ?? null;
+    if (owningIntegrationJob) {
+      return deletionPlan(item, null, [], [{
+        code: "ACTIVE_WORKTREE_INTEGRATION_JOB",
+        message: "该冲突任务及其 Integration Worktree 正被未完成的一键合并占用。请先完成或取消该合并任务。"
+      }], associatedSessionCount, artifacts);
+    }
     if (item.deletion_worktree_removed_at) {
       return deletionPlan(item, { status: "removed", worktree: null }, [], [], associatedSessionCount, artifacts);
     }
@@ -190,7 +197,9 @@ export class TaskDeletionService {
     }
     const effectiveBlockers = deleteWorktree
       ? plan.blockers
-      : plan.blockers.filter((blocker) => blocker.code === "START_IN_PROGRESS");
+      : plan.blockers.filter((blocker) => [
+        "START_IN_PROGRESS", "ACTIVE_WORKTREE_INTEGRATION_JOB"
+      ].includes(blocker.code));
     if (effectiveBlockers.length > 0) {
       throw coded("TASK_DELETE_BLOCKED", effectiveBlockers[0].message, 409, { deletion: plan });
     }
