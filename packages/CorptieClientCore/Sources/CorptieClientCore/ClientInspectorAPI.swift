@@ -47,6 +47,34 @@ public struct ClientInspectorSnapshot: Decodable, Equatable, Sendable {
     public let environment: ClientInspectorValue
     public let sections: [String: ClientInspectorValue]
     public let errors: [String: String]
+
+    /// A native destination selector, not an authorization grant. It uses only
+    /// this current snapshot; the existing resource API rechecks server scope.
+    public func residentDetailResource(kind: String, id: String) -> ClientInspectorValue? {
+        guard schemaVersion == 1, !id.isEmpty, id.unicodeScalars.count <= 512 else { return nil }
+        let section: String, field: String
+        switch kind {
+        case "artifact": section = "artifacts"; field = "artifactId"
+        case "memory": section = "memories"; field = "id"
+        case "reference": section = "references"; field = "referenceId"
+        default: return nil
+        }
+        guard errors[section] == nil else { return nil }
+        let rows: [ClientInspectorValue]
+        switch sections[section] {
+        case .array(let values): rows = values
+        case .object(let page):
+            guard case .array(let values) = page["items"] else { return nil }
+            rows = values
+        default: return nil
+        }
+        var result: ClientInspectorValue?
+        for row in rows where row[field].text == id {
+            guard result == nil else { return nil } // Ambiguous entries fail closed.
+            result = row
+        }
+        return result
+    }
 }
 
 public struct ClientInspectorAPI: Sendable {

@@ -193,7 +193,7 @@ export class ScheduledSessionTaskService {
     return updated;
   }
 
-  cancel(taskId, actor) {
+  cancel(taskId, actor, { expectedResourceVersion } = {}) {
     this.#expireDueTasks(this.now());
     const task = this.#task(taskId);
     this.#authorize(actor, task.logicalSessionId, "cancel", task);
@@ -205,7 +205,7 @@ export class ScheduledSessionTaskService {
     const updated = this.store.updateScheduledSessionTask(taskId, {
       status: "cancelled", cancelledAt: timestamp, nextRunAt: null,
       leaseOwner: null, leaseExpiresAt: null
-    });
+    }, expectedResourceVersion);
     this.#record("ScheduledSessionTaskCancelled", updated, null, actor, {});
     return updated;
   }

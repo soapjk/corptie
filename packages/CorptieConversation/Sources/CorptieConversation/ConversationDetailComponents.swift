@@ -8,10 +8,20 @@ import CorptieClientCore
     public let canPerform: (ClientDetailAction) -> Bool
     public let perform: (ClientDetailAction, [String: ClientInspectorValue]) -> Void
     public let resolveImage: (@Sendable (ClientDetailAction.Target) async throws -> Data)?
+    private let performInCard: ((String, ClientDetailAction, [String: ClientInspectorValue]) -> Void)?
+    private let canPerformInCard: ((String, ClientDetailAction) -> Bool)?
     public init(canPerform: @escaping (ClientDetailAction) -> Bool,
                 perform: @escaping (ClientDetailAction, [String: ClientInspectorValue]) -> Void,
-                resolveImage: (@Sendable (ClientDetailAction.Target) async throws -> Data)? = nil) {
+                resolveImage: (@Sendable (ClientDetailAction.Target) async throws -> Data)? = nil,
+                performInCard: ((String, ClientDetailAction, [String: ClientInspectorValue]) -> Void)? = nil,
+                canPerformInCard: ((String, ClientDetailAction) -> Bool)? = nil) {
         self.canPerform = canPerform; self.perform = perform; self.resolveImage = resolveImage
+        self.performInCard = performInCard; self.canPerformInCard = canPerformInCard
+    }
+    func scoped(to cardID: String) -> Self {
+        .init(canPerform: { action in canPerform(action) && (canPerformInCard?(cardID, action) ?? true) }, perform: { action, fields in
+            if let performInCard { performInCard(cardID, action, fields) } else { perform(action, fields) }
+        }, resolveImage: resolveImage)
     }
 }
 
@@ -110,10 +120,24 @@ struct ConversationDetailComponentView: View {
                     }
                 }
                 if let cursor = page.nextCursor {
-                    actionButton(component.actionId, fields: ["collection": .string(name), "cursor": .string(cursor), "collectionRevision": .number(Double(page.revision))])
+                    // Cursor already binds the server-side revision/scope.
+                    // Match the closed Action operation fields exactly.
+                    actionButton(component.actionId, fields: ["collectionName": .string(name), "cursor": .string(cursor)])
                 }
             }
         }
+    }
+}
+
+enum ConversationDetailFormInputPolicy {
+    static func isMultiline(operation: String?, field: String) -> Bool {
+        operation == "memory.update" && field == "content"
+    }
+    static func acceptsReferenceLocator(_ value: String) -> Bool {
+        guard value.utf16.count <= 4096, let url = URL(string: value),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              let host = url.host, !host.isEmpty, url.user == nil, url.password == nil else { return false }
+        return true
     }
 }
 
@@ -129,7 +153,12 @@ private struct ConversationDetailForm: View {
         })
     }
     private var valid: Bool {
-        (component.controls ?? []).allSatisfy { control in
+        if action?.operation == "memory.update" {
+            let content = draft.values["content"]?.text ?? ""
+            if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || content.utf16.count > 16000 { return false }
+        }
+        if action?.operation == "reference.add", !ConversationDetailFormInputPolicy.acceptsReferenceLocator(draft.values["locator"]?.text ?? "") { return false }
+        return (component.controls ?? []).allSatisfy { control in
             switch control.kind {
             case "text": (draft.values[control.field]?.text?.unicodeScalars.count ?? 0) <= (state.card.v2Presentation?.fieldLimits[control.field] ?? 4096)
             case "toggle": if case .bool = draft.values[control.field] { true } else { false }
@@ -143,8 +172,13 @@ private struct ConversationDetailForm: View {
             ForEach(component.controls ?? [], id: \.field) { control in
                 switch control.kind {
                 case "text":
-                    TextField(control.label.fallback, text: Binding(get: { draft.values[control.field]?.text ?? "" },
-                        set: { draft.edit(control.field, value: .string($0)) }))
+                    if ConversationDetailFormInputPolicy.isMultiline(operation: action?.operation, field: control.field) {
+                        TextField(control.label.fallback, text: binding(control.field), axis: .vertical)
+                            .lineLimit(3...8)
+                    } else {
+                        TextField(control.label.fallback, text: binding(control.field))
+                            .autocorrectionDisabled(action?.operation == "reference.add" && control.field == "locator")
+                    }
                 case "toggle":
                     Toggle(control.label.fallback, isOn: Binding(get: { draft.values[control.field] == .bool(true) },
                         set: { draft.edit(control.field, value: .bool($0)) }))
@@ -168,6 +202,9 @@ private struct ConversationDetailForm: View {
         .onAppear { draft.receive(values: source, resourceRevision: action?.expectedResourceRevision) }
         .onChange(of: source) { _, values in draft.receive(values: values, resourceRevision: action?.expectedResourceRevision) }
         .onChange(of: action?.expectedResourceRevision) { _, revision in draft.receive(values: source, resourceRevision: revision) }
+    }
+    private func binding(_ field: String) -> Binding<String> {
+        Binding(get: { draft.values[field]?.text ?? "" }, set: { draft.edit(field, value: .string($0)) })
     }
 }
 

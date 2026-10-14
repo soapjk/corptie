@@ -11,6 +11,7 @@ import { DEFAULT_DETAIL_MODULES, DETAIL_BUSINESS_MODULES, detailModuleNames, pro
 import { DetailBusinessReadCache } from "./detailBusinessReadCache.mjs";
 import { DetailBusinessInvalidation, DETAIL_RESOURCE_TYPES } from "./detailBusinessInvalidation.mjs";
 import { projectDetailBusinessRich, DETAIL_RICH_BUSINESS_MODULES, DETAIL_RICH_BUSINESS_CAPABILITIES } from "./detailBusinessRichProjection.mjs";
+import { DetailBusinessCollectionPager } from "./detailBusinessCollectionPager.mjs";
 
 const services = new WeakMap();
 const digest = value => createHash("sha256").update(JSON.stringify(value ?? null)).digest("hex");
@@ -64,7 +65,15 @@ export function projectDetailDocument(scope, modules = DEFAULT_DETAIL_MODULES) {
 
 export class DetailDocumentService {
   #streamAttachments = new Map();
-  constructor(store, { modules = DEFAULT_DETAIL_MODULES } = {}) {
+  #richReadEnabled;
+  #richNavigationEnabled;
+  #richWritesEnabled;
+  #businessActionRegistry;
+  constructor(store, { modules = DEFAULT_DETAIL_MODULES, richReadEnabled = false, richWritesEnabled = false } = {}) {
+    if (typeof richReadEnabled !== "boolean" || typeof richWritesEnabled !== "boolean") throw failure("DETAIL_GATE_INVALID", 500);
+    this.#richReadEnabled = richReadEnabled;
+    this.#richNavigationEnabled = richReadEnabled;
+    this.#richWritesEnabled = richReadEnabled && richWritesEnabled;
     this.store = store; this.generation = randomUUID(); this.cache = new Map();
     this.modules = detailModuleNames(modules);
     this.businessInvalidation = new DetailBusinessInvalidation(store, change => this.invalidate(change));
@@ -74,6 +83,7 @@ export class DetailDocumentService {
         ? { name: "detail-patch", value: detailPatch(previous, next) } : { name: "detail-snapshot", value: next } });
     this.v2Journals = new Map();
     this.richHostPending = new Map(); this.businessPortsEpoch = 0;
+    this.collectionPager = new DetailBusinessCollectionPager();
     this.v2Events = new ClientInspectorStream({ snapshot: (identity, id) => this.v2Snapshot(id, { identity, invalidatedOnly: true }),
       eventPrefix: "detail", sessionScopedLimit: true, maxFrameBytes: 256 * 1024 + 1024 });
     for (const events of [this.events, this.v2Events]) {
@@ -86,6 +96,27 @@ export class DetailDocumentService {
       };
     }
   }
+  /** Host configuration only. Requests cannot enable a catalog or write UI. */
+  acceptsDeliveryCatalog(catalog) {
+    return DETAIL_TRANSPORT_CATALOGS.includes(catalog)
+      || this.#richReadEnabled && catalog === "native-v2-components-1";
+  }
+  deliveryCapabilities() {
+    const richRead = this.#richReadEnabled && this.businessReader
+      && richHostModules.every(name => this.businessReader.ports[name]);
+    const pagination = Boolean(richRead && Object.values(this.businessReader.ports).some(port => typeof port.readPage === "function"));
+    const writes = Boolean(richRead && this.#richWritesEnabled && this.#businessActionRegistry);
+    return { schemaVersion: 1, catalogs: richRead ? ["native-v2", "native-v2-components-1"] : ["native-v2"],
+      requiredCapabilities: richRead ? [...new Set([...(pagination || writes ? ["detail.button"] : []),
+        ...DETAIL_RICH_BUSINESS_CAPABILITIES, ...(writes ? ["detail.form"] : [])])].sort() : [],
+      pagination, writes };
+  }
+  configureBusinessActionRegistry(registry) {
+    if (!registry || typeof registry.prepare !== "function") throw failure("DETAIL_ACTION_REGISTRY_INVALID", 500);
+    this.#businessActionRegistry = registry;
+    for (const [key, journal] of this.v2Journals) if (journal.detailCacheScope.catalogProfile !== "native-v2") this.retireJournal(key);
+  }
+  richPageLimit(profile) { return this.#richWritesEnabled && profile.clientCapabilities.includes("detail.form") ? 4 : 20; }
   #attachScoped(events, response, authenticate, id, request, options, profile) {
     const initial = cacheScope(trustedIdentity(authenticate(), true), this.scope(id).logicalSessionId, profile.catalog, profile.clientCapabilities);
     // New consumers check current facts, including changes while no consumer was attached.
@@ -141,6 +172,48 @@ export class DetailDocumentService {
     revalidate();
     return { profile, journal, revalidate };
   }
+  async prepareRichActionSnapshot(id, options) {
+    const pinned = this.#pinRichRead(id, options), state = pinned.journal.entries.at(-1)?.state;
+    if (!state) return this.prepareRichSnapshot(id, options);
+    pinned.revalidate(); return Object.freeze({ state, revalidate: pinned.revalidate });
+  }
+  richPageContext(id, { authenticate, catalog, clientCapabilities, cardId, collectionName, cursor }) {
+    const pinned = this.#pinRichRead(id, { authenticate, catalog, clientCapabilities });
+    const name = cardId?.startsWith("business-") ? cardId.slice(9) : "";
+    const context = pinned.journal.detailPageContexts?.get(name);
+    if (collectionName !== "resources" || !context || !this.businessReader.ports[name]?.readPage
+      || !this.acceptsDeliveryCatalog(pinned.profile.catalog)) throw failure("DETAIL_CURSOR_INVALID", 409);
+    const entry = this.collectionPager.validate(context, cursor);
+    return { ...pinned, name, entry, context };
+  }
+  async richBusinessPage(id, options) {
+    const pinned = this.richPageContext(id, options), reader = this.businessReader;
+    const page = await this.collectionPager.read(pinned.context, options.cursor,
+      async continuation => {
+        await reader.admit();
+        try { pinned.revalidate(); return await reader.ports[pinned.name].readPage(this.scope(id),
+          pinned.revalidate(), continuation, this.richPageLimit(pinned.profile)); } finally { reader.release(); }
+      }, () => {
+        pinned.revalidate();
+        const current = pinned.journal.detailPageContexts.get(pinned.name);
+        if (!current) throw failure("DETAIL_CURSOR_INVALID", 409);
+        this.collectionPager.validate(current, options.cursor);
+      });
+    pinned.revalidate();
+    if (this.richHostPending.has(digest(pinned.journal.detailCacheScope))) throw failure("DETAIL_READ_BUSY", 429);
+    // Only the host's opaque continuation selects a page. Keep the current
+    // page position across unrelated SSE invalidations, never append >20 rows.
+    const previous = pinned.journal.detailPagePositions.get(pinned.name);
+    pinned.journal.detailPagePositions.set(pinned.name, pinned.entry.continuation);
+    try {
+      return await this.richBusinessSnapshot(id, { authenticate: pinned.revalidate, ...pinned.profile,
+        pageOverride: { name: pinned.name, data: page } });
+    } catch (error) {
+      if (previous === undefined) pinned.journal.detailPagePositions.delete(pinned.name);
+      else pinned.journal.detailPagePositions.set(pinned.name, previous);
+      throw error;
+    }
+  }
   clearCache(filter = {}) {
     this.businessInvalidation.clear();
     this.businessReader?.clear(filter);
@@ -155,6 +228,17 @@ export class DetailDocumentService {
   }
   markDirty(change) {
     this.businessReader?.invalidate(change);
+    for (const journal of this.v2Journals.values()) {
+      if (change?.sessionId && ![journal.detailCacheScope.sessionId, journal.detailResourceScope?.session?.id].includes(change.sessionId)) continue;
+      if (change?.taskId && journal.detailResourceScope?.task?.id !== change.taskId) continue;
+      if (change?.workId && journal.detailResourceScope?.work?.id !== change.workId) continue;
+      for (const name of journal.detailPageContexts?.keys() ?? []) {
+        if (!knownDependencies.has(change?.resourceType) || this.businessReader?.ports[name]?.dependencies.includes(change.resourceType)) {
+          this.collectionPager.clear({ generation: journal.detailGeneration, collectionName: name });
+          journal.detailPageContexts.delete(name); journal.detailPagePositions.delete(name);
+        }
+      }
+    }
     // Product-level callers can supply resource changes without coupling to a
     // Provider. Unknown/global hints conservatively invalidate every module.
     for (const entry of this.cache.values()) {
@@ -175,7 +259,7 @@ export class DetailDocumentService {
   /** Internal preparation only: not mounted by GET or attachV2. The complete
    * currently supported producer set is mandatory, never a claim of full UI
    * coverage. authenticate must resolve trusted authority, not wire fields. */
-  async richBusinessSnapshot(id, { authenticate, catalog, clientCapabilities, invalidatedOnly = false, modules = richHostModules } = {}) {
+  async richBusinessSnapshot(id, { authenticate, catalog, clientCapabilities, invalidatedOnly = false, modules = richHostModules, pageOverride } = {}) {
     if (typeof authenticate !== "function") throw failure("AUTHENTICATED_PRINCIPAL_REQUIRED", 403);
     const identity = trustedIdentity(authenticate(), true);
     const context = this.v2Context(id, { identity, catalog, clientCapabilities });
@@ -206,7 +290,7 @@ export class DetailDocumentService {
       }
     };
     let pending = this.richHostPending.get(key);
-    if (pending && pending.invalidatedOnly !== invalidatedOnly) throw failure("DETAIL_READ_BUSY", 429);
+    if (pending && (pageOverride || pending.invalidatedOnly !== invalidatedOnly && !pending.pageOverride)) throw failure("DETAIL_READ_BUSY", 429);
     if (!pending) {
       if (this.richHostPending.size >= 8) throw failure("DETAIL_READ_BUSY", 429);
       const journal = this.v2Journal(id, { identity, ...profile });
@@ -218,18 +302,80 @@ export class DetailDocumentService {
           while (nextModule < richHostModules.length) {
             const index = nextModule++;
             guard(journal);
-            values[index] = await reader.read(scope, richHostModules[index], identityScope, { force: !invalidatedOnly });
+            const name = richHostModules[index], port = reader.ports[name];
+            const paged = this.#richReadEnabled && profile.clientCapabilities.includes("detail.button") && typeof port.readPage === "function";
+            const position = journal.detailPagePositions.get(name) ?? null;
+            values[index] = await reader.read(scope, name, identityScope, { force: !invalidatedOnly,
+              ...(paged ? { selector: position ?? "first-page", sourceRead: () => pageOverride?.name === name ? pageOverride.data
+                : port.readPage(scope, identity, position, this.richPageLimit(profile)) } : {}) });
           }
         }));
         guard(journal);
         const previous = journal.entries.at(-1)?.state;
-        const state = projectDetailBusinessRich(scope, Object.fromEntries(richHostModules.map((name, i) => [name, values[i]])),
-          { profile, generation: journal.detailGeneration, previous });
+        const results = Object.fromEntries(richHostModules.map((name, i) => [name, values[i]]));
+        const operations = [];
+        if (this.#richWritesEnabled && this.#businessActionRegistry && profile.clientCapabilities.includes("detail.form")
+          && profile.clientCapabilities.includes("detail.button")) {
+          const identityForActions = identity.principalId === "local-user" && !identity.deviceId ? { ...identity, kind: "local_user" } : identity;
+          const actionScope = { sessionId: scope.logicalSessionId, identity: identityForActions };
+          const prepare = async (operation, target, fields, id, label) => {
+            const port = this.#businessActionRegistry.ports[operation];
+            if (!port?.resource || !port?.revision) return null;
+            try {
+              const resource = await port.resource(actionScope, target), expectedResourceRevision = port.revision(resource);
+              const action = { id, kind: "command", operation, target, expectedResourceRevision, available: true,
+                label: { fallback: label }, confirmation: operation === "memory.delete" || operation.endsWith(".remove") || operation === "schedule.cancel" ? "destructive" : "none" };
+              await this.#businessActionRegistry.prepare({ action, fields, expectedResourceRevision, scope: actionScope });
+              guard(journal); return action;
+            } catch { guard(journal); return null; }
+          };
+          for (const row of results.memories?.data?.items ?? []) {
+            const target = { resourceType: "memory", id: row.resource.id }, resource = this.store.getMemory?.(target.id);
+            if (!resource || resource.revoked_at || typeof resource.content !== "string" || resource.content.length > 16000) continue;
+            const save = await prepare("memory.update", target, { content: resource.content }, "save", "保存记忆");
+            const remove = await prepare("memory.delete", target, { confirmed: true }, "remove", "撤销记忆");
+            if (save && remove) operations.push({ kind: "memory", id: `memory-editor-${detailV2Hash(target).slice(7)}`,
+              fields: { title: `记忆 · ${row.kind}`, state: "修改后需要保存；资源变化时请重新加载", content: resource.content }, actions: { save, remove } });
+          }
+          for (const [name, operation, type, label] of [["references", "reference.remove", "reference", "移除引用"],
+            ["schedules", "schedule.cancel", "schedule", "取消计划"]]) {
+            for (const row of results[name]?.data?.items ?? []) {
+              const target = { resourceType: type, id: row.resource.id }, remove = await prepare(operation, target, { confirmed: true }, "remove", label);
+              if (remove) operations.push({ kind: "remove", id: `${name}-operation-${detailV2Hash(target).slice(7)}`,
+                fields: { title: row.displayName || row.name || label, state: "操作前需要确认" }, actions: { remove } });
+            }
+          }
+          const target = { resourceType: "session", id: scope.logicalSessionId };
+          const save = await prepare("reference.add", target, { locator: "https://example.invalid" }, "save", "添加引用");
+          if (save) operations.push({ kind: "reference-add", id: "reference-add", fields: {
+            title: "添加网页引用", state: "提交后将由服务器联网读取该地址", locator: "", displayName: "" }, actions: { save } });
+        }
+        const pages = Object.fromEntries(richHostModules.filter(name => this.#richReadEnabled
+          && profile.clientCapabilities.includes("detail.button") && typeof reader.ports[name].readPage === "function")
+          .map(name => [`business-${name}`, { nextCursor: previous?.instances[`business-${name}`]?.collections.resources.nextCursor ?? null }]));
+        const project = () => projectDetailBusinessRich(scope, results,
+          { profile, generation: journal.detailGeneration, previous, navigation: this.#richNavigationEnabled,
+            editors: this.#richWritesEnabled && Boolean(this.#businessActionRegistry), pages, operations });
+        const provisional = project();
+        for (const [cardId, config] of Object.entries(pages)) {
+          const name = cardId.slice(9), context = { authority: { serverId: identityScope.serverId, accountId: identityScope.accountId,
+            principalId: identityScope.principalId, deviceId: identityScope.deviceId }, sessionId: identityScope.sessionId,
+            catalog: profile.catalog, clientCapabilities: profile.clientCapabilities, generation: journal.detailGeneration,
+            collectionName: name, revision: provisional.instances[cardId].collections.resources.revision };
+          const source = results[name]?.data?.sourceCursor ?? null;
+          let next = this.collectionPager.issue(context, source);
+          if (previous && next !== config.nextCursor && context.revision === previous.instances[cardId]?.collections.resources.revision) {
+            if (next) this.collectionPager.revoke(next);
+            context.revision++; next = this.collectionPager.issue(context, source);
+          }
+          config.nextCursor = next; journal.detailPageContexts.set(name, context);
+        }
+        const state = project();
         guard(journal);
         if (state !== previous) journal.publish(state);
         return journal.entries.at(-1).state;
       };
-      pending = { journal, invalidatedOnly, promise: operation() };
+      pending = { journal, invalidatedOnly, pageOverride: Boolean(pageOverride), promise: operation() };
       this.richHostPending.set(key, pending);
       void pending.promise.finally(() => { if (this.richHostPending.get(key) === pending) this.richHostPending.delete(key); }).catch(() => {});
     }
@@ -263,11 +409,14 @@ export class DetailDocumentService {
   // rich producer or HTTP gate. Publication still validates the same profile.
   v2Journal(id, options = {}) {
     const { profile, identityScope, key } = this.v2Context(id, options);
+    const resources = resourceScope(this.scope(id)), resourceBinding = digest(resources);
     const documentGeneration = this.cache.get(key)?.document.generation;
     let journal = this.v2Journals.get(key);
-    if (!journal || (documentGeneration && journal.detailGeneration !== documentGeneration)) {
+    if (!journal || journal.detailResourceBinding !== resourceBinding || (documentGeneration && journal.detailGeneration !== documentGeneration)) {
       this.retireJournal(key);
       journal = new DetailV2Journal(profile);
+      journal.detailResourceBinding = resourceBinding; journal.detailResourceScope = resources;
+      journal.detailPageContexts = new Map(); journal.detailPagePositions = new Map();
       const generation = documentGeneration ?? randomUUID(), publish = journal.publish.bind(journal), resume = journal.resume.bind(journal);
       Object.defineProperty(journal, "detailGeneration", { value: generation, enumerable: true });
       journal.publish = state => {
@@ -288,7 +437,11 @@ export class DetailDocumentService {
   }
   retireJournal(key) {
     const journal = this.v2Journals.get(key);
-    if (journal) { journal.detailRetired = true; journal.entries = []; journal.bytes = 0; }
+    if (journal) {
+      this.collectionPager.clear({ generation: journal.detailGeneration });
+      journal.detailRetired = true; journal.entries = []; journal.bytes = 0;
+      journal.detailPageContexts?.clear(); journal.detailPagePositions?.clear();
+    }
     this.v2Journals.delete(key);
   }
   v2Snapshot(id, options = {}) {
@@ -312,8 +465,11 @@ export class DetailDocumentService {
     const profile = detailV2CatalogOptions(input);
     // Recognizing the strict rich wire must not enable either a public
     // subscription or scoped business caches, nor discard its capability set.
-    if (input.catalog !== "native-v2") throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
-    this.#attachV2Profile(response, authenticate, id, request, input, profile);
+    if (!this.acceptsDeliveryCatalog(profile.catalog)) throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
+    if (profile.catalog === "native-v2-components-1") {
+      const pinned = this.#pinRichRead(id, { authenticate, ...profile });
+      this.#attachV2Profile(response, pinned.revalidate, id, request, input, profile, true);
+    } else this.#attachV2Profile(response, authenticate, id, request, input, profile);
   }
   /** Internal validation seam only. No HTTP handler calls this entry point. */
   attachRichBusiness(response, authenticate, id, request, input) {
@@ -426,15 +582,28 @@ export function detailPatch(previous, next) {
     ...(JSON.stringify(previous.order) !== JSON.stringify(next.order) ? { order: next.order } : {}) }, "Patch");
 }
 
-export function detailServiceFor(store) {
+export function detailServiceFor(store, hostOptions) {
   let service = services.get(store);
-  if (!service) { service = new DetailDocumentService(store); services.set(store, service); }
+  if (!service) { service = new DetailDocumentService(store, hostOptions); services.set(store, service); }
   return service;
+}
+
+/** Actual HTTP delivery, with no host guard/container or authority on the wire. */
+export async function sendNegotiatedDetailSnapshot(service, request, response, id, authenticate, negotiation) {
+  if (!service.acceptsDeliveryCatalog(negotiation.catalog)) throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
+  if (negotiation.catalog === "native-v2-components-1") {
+    const prepared = await service.prepareRichSnapshot(id, { authenticate,
+      catalog: negotiation.catalog, clientCapabilities: negotiation.clientCapabilities });
+    prepared.revalidate();
+    return sendDetailV2Snapshot(request, response, prepared.state, authenticate, { beforeWrite: prepared.revalidate });
+  }
+  const identity = authenticate();
+  return sendDetailV2Snapshot(request, response, service.v2Snapshot(id, detailV2ServiceOptions(identity, negotiation)), authenticate);
 }
 
 /** The desktop facade uses the existing loopback trust boundary, never a fabricated device. */
 export function handleDesktopDetail({ request, response, url, store, sendJson }) {
-  const match = /^\/sessions\/([^/]+)\/detail(?:\/(events))?$/.exec(url.pathname);
+  const match = /^\/sessions\/([^/]+)\/detail(?:\/(events|capabilities))?$/.exec(url.pathname);
   if (!match) return false;
   const authenticate = () => {
     if (request.headers.origin || request.headers["x-corptie-agent-id"] ||
@@ -444,15 +613,20 @@ export function handleDesktopDetail({ request, response, url, store, sendJson })
   try {
     const identity = authenticate();
     if (request.method !== "GET" || url.search) throw failure("DETAIL_REQUEST_NOT_ALLOWED", 405);
+    if (match[2] === "capabilities") {
+      if (request.headers.accept !== "application/json") throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
+      const service = detailServiceFor(store); service.scope(decodeURIComponent(match[1]));
+      sendJson(response, 200, service.deliveryCapabilities()); return true;
+    }
     const negotiation = !match[2] ? detailV2GetNegotiation(request) : null;
     const v2 = negotiation !== null;
-    if (v2 && !DETAIL_TRANSPORT_CATALOGS.includes(negotiation.catalog)) throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
     if (!v2 && !acceptsNativeDetail(request)) throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
     const id = decodeURIComponent(match[1]), service = detailServiceFor(store);
+    if (v2 && !service.acceptsDeliveryCatalog(negotiation.catalog)) throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
     const scoped = service.scope(id);
     const authenticatedScope = detailV2PinnedAuthenticate(authenticate, () => service.scope(id).logicalSessionId, identity, scoped.logicalSessionId);
     if (match[2]) service.events.attach(response, authenticatedScope, id, request);
-    else if (v2) void sendDetailV2Snapshot(request, response, service.v2Snapshot(id, detailV2ServiceOptions(identity, negotiation)), authenticatedScope)
+    else if (v2) void sendNegotiatedDetailSnapshot(service, request, response, id, authenticatedScope, negotiation)
       .catch(error => { if (!response.destroyed && !response.headersSent) sendJson(response, error.status ?? 400, { code: error.code ?? "INVALID_DETAIL_REQUEST" }); });
     else sendJson(response, 200, service.snapshot(id, { identity }));
   } catch (error) { if (!response.headersSent) sendJson(response, error.status ?? 400, { code: error.code ?? "INVALID_DETAIL_REQUEST" }); }

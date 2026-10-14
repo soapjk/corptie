@@ -64,6 +64,36 @@ struct ClientDetailV2ProfileTransportTests {
     private func fixture() throws -> Data {
         try Data(contentsOf: #require(Bundle.module.url(forResource: "detail-v2-components-state", withExtension: "json", subdirectory: "Fixtures")))
     }
+    @Test func realBusinessFormsAndPaginationCrossBothProfileAPIsWithoutContractRelaxation() async throws {
+        let data = try Data(contentsOf: #require(Bundle.module.url(forResource: "detail-v2-business-interactive", withExtension: "json", subdirectory: "Fixtures")))
+        let fixture = try ClientDetailV2JSON.decode(data)
+        let initial = try JSONDecoder().decode(ClientDetailV2State.self, from: JSONEncoder().encode(fixture["snapshot"]))
+        let expected = try JSONDecoder().decode(ClientDetailV2State.self, from: JSONEncoder().encode(fixture["expectedState"]))
+        let config = try ClientDetailV2Negotiation.components(clientCapabilities: fixture["clientCapabilities"].items.compactMap(\.text))
+        let events = try ["snapshot", "commit"].map { key in
+            let payload = try JSONEncoder().encode(fixture[key])
+            return Data("event: detail-\(key)\ndata: \(String(decoding: payload, as: UTF8.self))\n\n".utf8)
+        }
+        for route in [ClientDetailAPI.Route.desktop, .pairedDevice] {
+            let transport = BackendTransport(endpoint: try BackendEndpoint(URL(string: "http://127.0.0.1:1234")!), data: { _ in throw ClientConnectionError.invalidResponse }, bytes: { _ in
+                let (stream, continuation) = AsyncThrowingStream<Data, Error>.makeStream()
+                for event in events { continuation.yield(event) }; continuation.finish()
+                return (BackendByteStream(chunks: stream), HTTPURLResponse(url: URL(string: "http://127.0.0.1:1234")!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "text/event-stream"])!)
+            })
+            var received: [ClientDetailV2State] = []
+            for try await state in ClientDetailV2API(transport: transport, route: route, negotiation: config).subscribe(sessionID: initial.sessionId) { received.append(state) }
+            #expect(received == [initial, expected])
+            let document = try expected.renderingDocument(catalogProfile: config.catalog, clientCapabilities: config.clientCapabilities)
+            let editor = try #require(document.cards.first { $0.id == "memory-editor-interactive" })
+            #expect(editor.actions.first { $0.id == "save" }?.expectedResourceRevision == "revision-2")
+            let nativeTask = try #require(document.cards.first { $0.id == "task-information" })
+            #expect(nativeTask.actions.first { $0.id == "edit" }?.operation == "editor.open")
+            #expect(nativeTask.actions.first { $0.id == "edit" }?.target?.resourceType == "task")
+            #expect(nativeTask.actions.first { $0.id == "edit" }?.expectedResourceRevision == "1")
+            #expect(initial.instances["business-references"]?.collections["resources"]?["nextCursor"].text == "opaque-lease-interactive")
+            #expect(expected.instances["business-references"]?.collections["resources"]?["nextCursor"] == .null)
+        }
+    }
     @Test func fixedRichStateRequiresExplicitProfileAndRetainsLocalPresentation() throws {
         let data = try fixture()
         try ClientDetailV2JSON.validateEnvelope(ClientDetailV2JSON.decode(data), commit: false)

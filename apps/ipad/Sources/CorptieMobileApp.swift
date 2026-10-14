@@ -318,7 +318,7 @@ struct WorkspaceView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     if let id = workspace.selection {
                         PadConversationInspector(workspace: workspace, connection: connection, sessionID: id,
-                            onOpenAutomation: onOpenAutomation)
+                            onOpenAutomation: onOpenAutomation, entityCommands: commands)
                             .id(id)
                             .frame(width: 320)
                     }
@@ -435,7 +435,7 @@ struct WorkspaceView: View {
                             .padWorkspaceNavigationBackground()
                     case .detail(let id):
                         PadConversationInspector(workspace: workspace, connection: connection, sessionID: id,
-                            onOpenAutomation: onOpenAutomation)
+                            onOpenAutomation: onOpenAutomation, entityCommands: commands)
                             .safeAreaInset(edge: .top, spacing: 0) { compactDetailHeader }
                             .toolbar(.hidden, for: .navigationBar)
                             .modifier(CompactBackSwipe(enabled: navigationGesturesEnabled && compactPath.last == .detail(id)) {

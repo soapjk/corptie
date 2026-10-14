@@ -122,6 +122,25 @@ final class PadConnection {
     private var endpoint: BackendEndpoint?
     private var credentials: DeviceCredentials?
     var deviceID: String? { credentials?.deviceId }
+    /// Opaque credential-owner bindings for local recovery encryption only.
+    /// They are never sent as server authority or decoded from a JWT by the UI.
+    func detailActionScope(sessionID: String, negotiation: ClientDetailV2Negotiation) throws -> ClientDetailActionScope {
+        guard connected else { throw ClientServiceFailure(statusCode: 401, code: "DETAIL_SCOPE_REVOKED") }
+        if connectedThroughCloud {
+            guard let credential = cloudCredential, let mac = connectedCloudMacID else {
+                throw ClientServiceFailure(statusCode: 401, code: "DETAIL_SCOPE_REVOKED")
+            }
+            let binding = try ClientDetailV2Canonical.hash(.string(credential.identity.privateKey.base64EncodedString()))
+            return .init(serverID: "cloud-mac:\(mac.uuidString)", principalID: credential.identity.id.uuidString,
+                sessionID: sessionID, accountID: "cloud-credential-owner:\(credential.identity.id.uuidString)",
+                credentialBindingID: binding, catalog: negotiation.catalog, capabilityDigest: negotiation.capabilityDigest)
+        }
+        guard let credentials, let endpoint else { throw ClientServiceFailure(statusCode: 401, code: "DETAIL_SCOPE_REVOKED") }
+        let binding = try ClientDetailV2Canonical.hash(.string("\(credentials.deviceId):\(pairingCertificate ?? endpoint.baseURL.absoluteString)"))
+        return .init(serverID: serverID, principalID: credentials.deviceId, sessionID: sessionID,
+            accountID: "paired-credential-owner:\(credentials.deviceId)", credentialBindingID: binding,
+            catalog: negotiation.catalog, capabilityDigest: negotiation.capabilityDigest)
+    }
     private var pairingCertificate: String?
     private let vault = DeviceCredentialVault()
     @ObservationIgnored private let lanAuthDependencies: LANAuthDependencies?

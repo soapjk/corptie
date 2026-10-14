@@ -5,10 +5,11 @@ import { createReadStream } from "node:fs";
 import { ClientDeviceAuthority, deviceError } from "./clientDeviceAuthority.mjs";
 import { ClientEventStream, parseRealtimeResumeQuery } from "./clientEventStream.mjs";
 import { ClientInspectorStream } from "./clientInspectorStream.mjs";
-import { detailServiceFor, acceptsNativeDetail } from "./detailDocumentService.mjs";
+import { detailServiceFor, acceptsNativeDetail, sendNegotiatedDetailSnapshot } from "./detailDocumentService.mjs";
 import { readDetailV2Request } from "./detailV2JSON.mjs";
-import { sendDetailV2Snapshot } from "./detailSnapshotTransport.mjs";
-import { detailV2GetNegotiation, detailV2ServiceOptions, detailV2PinnedAuthenticate, DETAIL_TRANSPORT_CATALOGS } from "./detailV2Negotiation.mjs";
+import { detailV2GetNegotiation, detailV2PinnedAuthenticate } from "./detailV2Negotiation.mjs";
+import { createDetailBusinessActionService } from "./detailBusinessActionComposition.mjs";
+import { handleDetailActionHttp } from "./detailActionHttpAdapter.mjs";
 
 export const reply = (response, status, body) => {
   response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store",
@@ -54,10 +55,15 @@ function streamFile(response, { path, contentType, size, etag }) {
 
 /** Separate TLS listener with a closed route list; never forwards to the legacy router. */
 export class ClientDeviceGateway {
-  constructor(authority, { readAPI = null, sessionAPI = null, controlAPI = null, worktreeAPI = null } = {}) {
+  constructor(authority, { readAPI = null, sessionAPI = null, controlAPI = null, worktreeAPI = null,
+    detailActionService = null, detailWritesAllowed = false } = {}) {
+    if (typeof detailWritesAllowed !== "boolean") throw deviceError("DETAIL_GATE_INVALID", 500);
     this.authority = authority;
     this.readAPI = readAPI;
     this.sessionAPI = sessionAPI;
+    this.detailWritesAllowed = detailWritesAllowed;
+    this.detailActions = detailActionService ?? (sessionAPI?.inspector?.store ? createDetailBusinessActionService({ commandAPI: sessionAPI,
+      inspector: sessionAPI.inspector, documentService: detailServiceFor(sessionAPI.inspector.store) }) : null);
     this.controlAPI = controlAPI;
     this.worktreeAPI = worktreeAPI;
     this.inspectorEvents = new ClientInspectorStream({ snapshot: (identity, id) => this.sessionAPI.inspector.snapshot(identity, id) });
@@ -152,6 +158,16 @@ export class ClientDeviceGateway {
         return reply(response, 200, await this.authority.refresh(await body(request)));
       }
       const identity = this.authenticateRequest(request);
+      const detailAction = /^\/client\/v1\/sessions\/([^/]+)\/detail\/(read|actions|receipts\/[A-Za-z0-9_-]{8,128})$/.exec(path);
+      if (detailAction && this.detailActions) {
+        const id = decode(detailAction[1], "INVALID_SESSION_ID"), scope = this.sessionAPI.inspector.scope(id, identity);
+        const authenticate = detailV2PinnedAuthenticate(() => this.authenticateRequest(request), current => {
+          const next = this.sessionAPI.inspector.scope(id, current); return next.logicalSessionId ?? next.sessionId;
+        }, identity, scope.logicalSessionId ?? scope.sessionId);
+        handleDetailActionHttp({ request, response, url, service: this.detailActions, authenticate, sendJson: reply,
+          route: "pairedDevice", writesAllowed: this.detailWritesAllowed });
+        return;
+      }
       const detailSync = /^\/client\/v1\/sessions\/([^/]+)\/detail\/sync$/.exec(path);
       if (detailSync && this.sessionAPI?.inspector) {
         if (request.method !== "POST") throw deviceError("DETAIL_REQUEST_NOT_ALLOWED", 405);
@@ -166,12 +182,17 @@ export class ClientDeviceGateway {
         }, identity, canonical);
         return service.attachV2(response, authenticate, canonical, request, input);
       }
-      const detail = /^\/client\/v1\/sessions\/([^/]+)\/detail(?:\/(events))?$/.exec(path);
+      const detail = /^\/client\/v1\/sessions\/([^/]+)\/detail(?:\/(events|capabilities))?$/.exec(path);
       if (detail && this.sessionAPI?.inspector) {
         if (request.method !== "GET") throw deviceError("DETAIL_REQUEST_NOT_ALLOWED", 405);
+        if (detail[2] === "capabilities") {
+          if (request.headers.accept !== "application/json") throw deviceError("DETAIL_CATALOG_UNSUPPORTED", 409);
+          const id = decode(detail[1], "INVALID_SESSION_ID");
+          this.sessionAPI.inspector.scope(id, identity);
+          return reply(response, 200, detailServiceFor(this.sessionAPI.inspector.store).deliveryCapabilities());
+        }
         const negotiation = !detail[2] ? detailV2GetNegotiation(request) : null;
         const v2 = negotiation !== null;
-        if (v2 && !DETAIL_TRANSPORT_CATALOGS.includes(negotiation.catalog)) throw deviceError("DETAIL_CATALOG_UNSUPPORTED", 409);
         if (!v2 && !acceptsNativeDetail(request)) throw deviceError("DETAIL_CATALOG_UNSUPPORTED", 409);
         const id = decode(detail[1], "INVALID_SESSION_ID");
         const scope = this.sessionAPI.inspector.scope(id, identity);
@@ -179,12 +200,13 @@ export class ClientDeviceGateway {
           const next = this.sessionAPI.inspector.scope(id, current); return next.logicalSessionId ?? next.sessionId;
         }, identity, scope.logicalSessionId ?? scope.sessionId);
         const service = detailServiceFor(this.sessionAPI.inspector.store);
+        if (v2 && !service.acceptsDeliveryCatalog(negotiation.catalog)) throw deviceError("DETAIL_CATALOG_UNSUPPORTED", 409);
         if (detail[2]) return service.events.attach(response, () => {
           const identity = authenticate(); this.sessionAPI.inspector.scope(id, identity); return identity;
         }, scope.logicalSessionId ?? scope.sessionId, request);
-        const result = v2 ? service.v2Snapshot(scope.logicalSessionId ?? scope.sessionId, detailV2ServiceOptions(identity, negotiation))
-          : service.snapshot(scope.logicalSessionId ?? scope.sessionId, { identity });
-        if (v2) return await sendDetailV2Snapshot(request, response, result, authenticate);
+        if (v2) return await sendNegotiatedDetailSnapshot(service, request, response,
+          scope.logicalSessionId ?? scope.sessionId, authenticate, negotiation);
+        const result = service.snapshot(scope.logicalSessionId ?? scope.sessionId, { identity });
         authenticate(); return reply(response, 200, result);
       }
       this.sockets.set(request.socket, identity.deviceId);

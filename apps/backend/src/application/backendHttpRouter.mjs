@@ -1,9 +1,10 @@
 import { handleDesktopDetail, handleDesktopDetailSync } from "./detailDocumentService.mjs";
+import { handleDetailActionHttp } from "./detailActionHttpAdapter.mjs";
 
 export function routeBackendHttpRequest(request, response, ports) {
   const {
     clientDeviceGateway, sendJson, developmentPreview, clientCapabilities, backendStoreReady,
-    store, taskCollaborationEdges, foundationModelSettings, rejectDevelopmentPreviewWrite, handleFoundationModelUpdateHttpRequest,
+    store, detailActionService, detailWritesAllowed = false, taskCollaborationEdges, foundationModelSettings, rejectDevelopmentPreviewWrite, handleFoundationModelUpdateHttpRequest,
     agentProviderRegistry, backgroundAgentService, taskSummaryService, readJson, rejectUnavailableStoreRequest,
     dataRootMigrationCoordinator, handleSceneHttpRequest, sceneService, handleBackendRestartHttpRequest, shutdown,
     handlePlatformConfirmationHttpRequest, platformConfirmationService, errorStatus, handleSessionToolHttpRequest, collaborationCore,
@@ -76,6 +77,14 @@ export function routeBackendHttpRequest(request, response, ports) {
 
   if (handleDesktopDetailSync({ request, response, url, store, sendJson }) ||
       handleDesktopDetail({ request, response, url, store, sendJson })) return;
+  if (detailActionService && handleDetailActionHttp({ request, response, url, service: detailActionService, sendJson,
+    writesAllowed: detailWritesAllowed === true && !developmentPreview, authenticate: () => {
+      if (request.headers.origin || request.headers["x-corptie-agent-id"]
+        || !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(request.socket.remoteAddress)) {
+        throw Object.assign(new Error("LOCAL_USER_REQUIRED"), { code: "LOCAL_USER_REQUIRED", status: 403 });
+      }
+      return { kind: "local_user", principalId: "local-user" };
+    } })) return;
 
   if (request.method === "GET" && url.pathname === "/search") {
     const failed = error => sendJson(response, error.statusCode ?? 500, { code: error.code ?? "SEARCH_FAILED", error: error.statusCode === 400 ? error.message : "Search unavailable." });

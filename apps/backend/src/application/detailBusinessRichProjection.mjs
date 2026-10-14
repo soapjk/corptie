@@ -9,7 +9,7 @@ const freeze = value => { for (const child of Object.values(value)) if (child &&
 const node = (id, kind, binding, props = {}, children = []) => ({ id, kind, props, children, ...(binding ? { binding } : {}) });
 export const DETAIL_RICH_BUSINESS_MODULES = Object.freeze(["focusTasks", "references", "artifacts", "memories", "recalls", "schedules", "provider", "turn", "worktree"]);
 export const DETAIL_RICH_BUSINESS_CAPABILITIES = Object.freeze(["detail.dateTime", "detail.keyValue", "detail.markdown", "detail.resourceList", "detail.status"]);
-const template = (list, dated = false, navigation = false) => {
+const template = (list, dated = false, navigation = false, pagination = false) => {
   // Twenty fixed optional date pairs keep template identity independent of rows.
   // Dates are never formatted by the backend; native locale/timezone owns display.
   const dateFields = dated ? Object.fromEntries(Array.from({ length: 20 }, (_, i) => [
@@ -23,7 +23,7 @@ const template = (list, dated = false, navigation = false) => {
     node(`scheduledDate${i}`, "detail.dateTime", `scheduledDate${i}`, { format: "dateTime" })
   ]).flat() : [];
   const structure = { templateVersion: 1, catalogProfile: DETAIL_COMPONENTS_CATALOG,
-    requiredCapabilities: [...(navigation ? ["detail.button"] : []), ...(dated ? ["detail.dateTime", "detail.keyValue"] : []), "detail.markdown", ...(list ? ["detail.resourceList"] : []), "detail.status"],
+    requiredCapabilities: [...(navigation || pagination ? ["detail.button"] : []), ...(dated ? ["detail.dateTime", "detail.keyValue"] : []), "detail.markdown", ...(list ? ["detail.resourceList"] : []), "detail.status"],
     fieldSchema: { title: stringSchema(512), body: stringSchema(32768), state: stringSchema(1024), ...dateFields },
     collectionSchema: list ? { resources: { maxItems: 20, itemSchema: {
       title: stringSchema(512), resourceType: stringSchema(512), id: stringSchema(512),
@@ -32,13 +32,43 @@ const template = (list, dated = false, navigation = false) => {
     card: { title: text("Detail"), titleBinding: "title", semanticKind: "information", rootNodeId: "root",
       fallback: text("暂时无法显示"), nodes: [node("root", "column", null, {}, ["state", ...(list ? ["resources"] : []), "body", ...dateNodes.map(n => n.id)]),
         node("state", "detail.status", "state", { semantic: "neutral" }),
-        ...(list ? [node("resources", "detail.resourceList", null, { collection: "resources" })] : []),
+        ...(list ? [node("resources", "detail.resourceList", null, { collection: "resources", ...(pagination ? { actionId: "page" } : {}) })] : []),
         node("body", "detail.markdown", "body"), ...dateNodes] } };
   return freeze({ ...structure, templateId: detailV2TemplateID(structure) });
 };
 const contentTemplate = template(false), listTemplate = template(true), datedListTemplate = template(true, true);
 const navigationListTemplate = template(true, false, true), navigationDatedListTemplate = template(true, true, true);
-const templateHashes = new Map([contentTemplate, listTemplate, datedListTemplate, navigationListTemplate, navigationDatedListTemplate].map(value => [value, detailV2Hash(value)]));
+const pagedListTemplate = template(true, false, false, true), pagedDatedListTemplate = template(true, true, false, true);
+const navigationPagedListTemplate = template(true, false, true, true), navigationPagedDatedListTemplate = template(true, true, true, true);
+const templateHashes = new Map([contentTemplate, listTemplate, datedListTemplate, navigationListTemplate, navigationDatedListTemplate,
+  pagedListTemplate, pagedDatedListTemplate, navigationPagedListTemplate, navigationPagedDatedListTemplate].map(value => [value, detailV2Hash(value)]));
+function operationTemplate(kind) {
+  const fields = { title: stringSchema(512), state: stringSchema(1024),
+    ...(kind === "memory" ? { content: stringSchema(16000) } : kind === "reference-add" ? {
+      locator: stringSchema(4096), displayName: stringSchema(512)
+    } : {}) };
+  const controls = kind === "memory" ? [{ field: "content", kind: "text", label: text("内容") }]
+    : kind === "reference-add" ? [{ field: "locator", kind: "text", label: text("网页地址") },
+      { field: "displayName", kind: "text", label: text("显示名称") }] : null;
+  const structure = { templateVersion: 1, catalogProfile: DETAIL_COMPONENTS_CATALOG,
+    requiredCapabilities: ["detail.button", ...(controls ? ["detail.form"] : []), "detail.status"],
+    fieldSchema: fields, collectionSchema: {}, card: { title: text("操作"), titleBinding: "title", semanticKind: "information",
+      fallback: text("操作暂不可用"), rootNodeId: "root", nodes: [
+        node("root", "column", null, {}, ["state", ...(controls ? ["form"] : []), ...(kind !== "reference-add" ? ["remove"] : [])]),
+        node("state", "detail.status", "state", { semantic: "neutral" }),
+        ...(controls ? [node("form", "detail.form", null, { actionId: "save", controls })] : []),
+        ...(kind !== "reference-add" ? [node("remove", "detail.button", null, { actionId: "remove" })] : [])
+      ] } };
+  const result = freeze({ ...structure, templateId: detailV2TemplateID(structure) }); templateHashes.set(result, detailV2Hash(result)); return result;
+}
+const memoryOperationTemplate = operationTemplate("memory"), referenceAddTemplate = operationTemplate("reference-add"), removeTemplate = operationTemplate("remove");
+const { templateId: ignoredTaskTemplateID, ...taskEditorStructure } = contentTemplate;
+const taskEditorTemplateStructure = { ...taskEditorStructure,
+  requiredCapabilities: ["detail.button", ...taskEditorStructure.requiredCapabilities],
+  card: { ...taskEditorStructure.card, nodes: taskEditorStructure.card.nodes.map(item => item.id === "root"
+    ? { ...item, children: [...item.children, "edit"] } : item).concat(node("edit", "detail.button", null, { actionId: "edit" })) } };
+const taskEditorTemplate = freeze({ ...taskEditorTemplateStructure, templateId: detailV2TemplateID(taskEditorTemplateStructure) });
+templateHashes.set(taskEditorTemplate, detailV2Hash(taskEditorTemplate));
 const listDefinitions = {
   focusTasks: { title: "重点 Task", rowTitle: row => row.title,
     facts: row => [row.summary?.focus, row.summary?.progress, row.summary?.reason] },
@@ -132,9 +162,9 @@ function moduleCard(name, result) {
 }
 
 /** Offline producer against the fixed shared catalog, not a renderer or HTTP
- * gate. Navigation is explicit host opt-in for normalized registered targets;
- * no command, cursor, editor or resource loader is invented. Old UI remains active. */
-export function projectDetailBusinessRich(scope, readResults = {}, { profile, generation, previous = null, navigation = false } = {}) {
+ * gate. Navigation and actions are explicit host opt-ins for normalized,
+ * registered targets. Old UI remains active. */
+export function projectDetailBusinessRich(scope, readResults = {}, { profile, generation, previous = null, navigation = false, editors = false, pages = {}, operations = [] } = {}) {
   if (profile?.catalog !== DETAIL_COMPONENTS_CATALOG) throw new Error("DETAIL_BUSINESS_RICH_PROFILE_REQUIRED");
   if (previous) validateDetailV2(previous, profile);
   const documentId = `detail:${scope.logicalSessionId}`;
@@ -145,17 +175,33 @@ export function projectDetailBusinessRich(scope, readResults = {}, { profile, ge
       "描述", bounded(scope.task.description, 10000), "验收标准", bounded(scope.task.acceptance_criteria, 10000),
       "验证标准", bounded(scope.task.verification_criteria, 10000)
     ].join("\n\n"), 32768) } });
+  if (cards[0]?.id === "task-information" && editors && profile.clientCapabilities.includes("detail.button")
+    && Number.isSafeInteger(scope.task.revision) && scope.task.revision > 0) {
+    cards[0].template = taskEditorTemplate;
+    cards[0].actions = { edit: { id: "edit", kind: "navigation", operation: "editor.open", label: text("编辑 Task"), available: true,
+      target: { resourceType: "task", id: scope.task.id }, expectedResourceRevision: String(scope.task.revision) } };
+  }
   if (scope.session.sessionKind === "workChat" && scope.work) cards.push({ id: "work-overview", template: contentTemplate,
     fields: { title: bounded(scope.work.name, 512), state: "只读 Work 概述", body: bounded(scope.work.description, 32768) } });
   for (const [name, result] of Object.entries(readResults)) {
     if (!DETAIL_RICH_BUSINESS_MODULES.includes(name)) throw new Error("DETAIL_BUSINESS_RICH_MODULE_UNAVAILABLE");
     cards.push(moduleCard(name, result));
   }
+  for (const operation of operations) {
+    const type = operation.kind;
+    if (!["memory", "reference-add", "remove"].includes(type) || !profile.clientCapabilities.includes("detail.button")
+      || type !== "remove" && !profile.clientCapabilities.includes("detail.form")) throw new Error("DETAIL_BUSINESS_OPERATION_INVALID");
+    const template = type === "memory" ? memoryOperationTemplate : type === "reference-add" ? referenceAddTemplate : removeTemplate;
+    cards.push({ id: operation.id, template, fields: operation.fields, actions: operation.actions });
+  }
   const templates = Object.create(null), instances = Object.create(null), references = Object.create(null);
   for (const card of cards) {
-    const actions = {};
-    if (navigation && profile.clientCapabilities.includes("detail.button") && card.page) {
-      card.template = card.template === datedListTemplate ? navigationDatedListTemplate : navigationListTemplate;
+    const actions = card.actions ?? {};
+    const dated = card.template === datedListTemplate;
+    const navigable = navigation && profile.clientCapabilities.includes("detail.button") && card.page;
+    const paged = profile.clientCapabilities.includes("detail.button") && card.page && Object.hasOwn(pages, card.id);
+    if (navigable) {
+      card.template = dated ? navigationDatedListTemplate : navigationListTemplate;
       for (const item of Object.values(card.page.items)) {
         const target = card.id === "business-focusTasks" ? card.navigationTargets[item.id]
           : { resourceType: { contextReference: "reference", automation: "schedule" }[item.resourceType] ?? item.resourceType, id: item.id };
@@ -164,6 +210,14 @@ export function projectDetailBusinessRich(scope, readResults = {}, { profile, ge
         item.actionId = id;
         actions[id] = { id, kind: "navigation", operation: "resource.open", label: text("打开"), available: true, target };
       }
+    }
+    if (paged) {
+      card.template = navigable ? dated ? navigationPagedDatedListTemplate : navigationPagedListTemplate
+        : dated ? pagedDatedListTemplate : pagedListTemplate;
+      card.page.nextCursor = pages[card.id].nextCursor;
+      if (card.fields.state === "当前页（更多内容尚未接线）") card.fields.state = "当前页";
+      actions.page = { id: "page", kind: "read", operation: "detail.collection.page", label: text("下一页"),
+        available: card.page.nextCursor !== null, target: { resourceType: "session", id: scope.logicalSessionId } };
     }
     const templateHash = templateHashes.get(card.template), old = previous?.instances[card.id];
     templates[templateHash] = card.template; references[card.id] = { templateId: card.template.templateId, templateHash };

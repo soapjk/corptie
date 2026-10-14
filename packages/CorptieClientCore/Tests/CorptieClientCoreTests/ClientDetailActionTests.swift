@@ -86,6 +86,13 @@ struct ClientDetailActionTests {
         {"id":"cancel","kind":"\(kind)","operation":"\(operation)","label":{"fallback":"Cancel schedule A"},"available":true,"target":{"resourceType":"schedule","id":"schedule:ours"},"expectedResourceRevision":"7","confirmation":"none"}
         """.utf8))
     }
+    @Test func nativeDispatchCapabilityRejectsUnregisteredCommandsBeforeShowingEnabledUI() throws {
+        #expect(ClientDetailActionCoordinator.supports(try action("memory.update")))
+        #expect(ClientDetailActionCoordinator.supports(try action("reference.add")))
+        #expect(ClientDetailActionCoordinator.supports(try action("detail.collection.page", kind: "read")))
+        #expect(!ClientDetailActionCoordinator.supports(try action("provider.switch")))
+        #expect(!ClientDetailActionCoordinator.supports(try action("resource.open", kind: "navigation")))
+    }
     func coordinator(_ journal: Journal, _ probe: Probe) -> ClientDetailActionCoordinator {
         ClientDetailActionCoordinator(scope: Self.scope, transport: probe, journal: journal,
             phaseChanged: { _, phase in await probe.phase(phase) })

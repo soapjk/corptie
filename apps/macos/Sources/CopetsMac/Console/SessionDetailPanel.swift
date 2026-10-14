@@ -1,10 +1,12 @@
 import Combine
 import CorptieClientCore
 import CorptieConversation
+import CorptieClientSecurity
 import AppKit
 import SwiftUI
 
 struct SessionDetailPanel: View {
+    private static let detailJournalKeyOwner = ReliableMessageOutbox()
     @ObservedObject private var modelCatalog = BackendClient.shared.modelCatalog
     @ObservedObject private var entityClient = EntityAPIClient.shared
     private let backendClient = BackendClient.shared
@@ -21,6 +23,16 @@ struct SessionDetailPanel: View {
     @State private var isLoadingProviderCatalog = false
     @State private var providerCatalogLoadFailed = false
     @State private var showsAllContextReferences = false
+    private enum DetailNativeSheet: Identifiable {
+        case artifact(WorkArtifact), task(CorptieTask)
+        var id: String {
+            switch self {
+            case .artifact(let value): "artifact:\(value.artifactId)"
+            case .task(let value): "task:\(value.id)"
+            }
+        }
+    }
+    @State private var detailNativeSheet: DetailNativeSheet?
 
     private var detailKind: ConversationDetailKind? {
         ConversationDetailKind.resolve(session.resolvedSessionKind)
@@ -50,6 +62,8 @@ struct SessionDetailPanel: View {
         .frame(width: railWidth)
         .task(id: session.id) {
             showsAllContextReferences = false
+            detailNativeSheet = nil
+            contextReferences = []
             await loadProviderCatalogIfNeeded()
         }
         .onReceive(backendClient.supplementaryDataController.$selectedContextReferences) { references in
@@ -64,6 +78,16 @@ struct SessionDetailPanel: View {
         .sheet(item: $contextReferenceAddMode) { mode in
             ContextReferenceAddSheet(session: session, mode: mode)
         }
+        .sheet(item: $detailNativeSheet) { destination in
+            switch destination {
+            case .artifact(let artifact):
+                ArtifactDetailContainer(artifactId: artifact.artifactId, workId: artifact.workId, taskId: session.taskId) { }
+            case .task(let task):
+                CorptieTaskEditView(task: task) { }
+            }
+        }
+        .onChange(of: session.taskId) { _, _ in detailNativeSheet = nil }
+        .onChange(of: session.workId) { _, _ in detailNativeSheet = nil }
         .alert(L10n("切换 Provider？"), isPresented: $showProviderSwitchConfirmation) {
             Button(L10n("切换")) { performProviderSwitch() }
             Button(L10n("取消"), role: .cancel) { pendingProviderId = nil }
@@ -81,6 +105,8 @@ struct SessionDetailPanel: View {
     private var sessionDetailContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             ConversationServerDetail(scope: "\(CorptieAppEnvironment.backendBaseURL):\(session.id)", sessionID: session.id,
+                actions: nativeDetailNavigation,
+                coordinator: { selected, canonical in try await detailCoordinator(selected: selected, canonicalSessionID: canonical) },
                 api: { [baseURL = CorptieAppEnvironment.backendBaseURL] in
                     ClientDetailAPI(transport: try BackendTransport(endpoint: BackendEndpoint(baseURL)), route: .desktop)
                 })
@@ -136,6 +162,83 @@ struct SessionDetailPanel: View {
                 actions: { EmptyView() }, statusContent: { providerSwitchStatus })
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var nativeDetailNavigation: ConversationDetailActions {
+        ConversationDetailActions(canPerform: { action in
+            guard action.available, action.kind == "navigation",
+                  let target = action.target else { return false }
+            if action.operation == "editor.open" {
+                return target.resourceType == "task" && target.id == session.taskId
+                    && backendClient.appState.task(target.id).map { action.expectedResourceRevision == String($0.revision) } == true
+            }
+            guard action.operation == "resource.open" else { return false }
+            if target.resourceType == "task" {
+                return entityClient.tasks.first(where: { $0.id == target.id })?.currentSessionId != nil
+            }
+            if target.resourceType == "session" { return residentDetailSessionID(target.id) != nil }
+            if target.resourceType == "artifact", let workID = session.workId {
+                return ArtifactAPIClient.shared.artifact(artifactId: target.id, workId: workID, taskId: session.taskId) != nil
+            }
+            if target.resourceType == "reference" { return detailReferenceURL(target.id) != nil }
+            return target.resourceType == "schedule"
+        }, perform: { action, _ in
+            guard action.available, action.kind == "navigation",
+                  let target = action.target else { return }
+            if action.operation == "editor.open" {
+                if target.resourceType == "task", target.id == session.taskId,
+                   let task = backendClient.appState.task(target.id), action.expectedResourceRevision == String(task.revision) {
+                    detailNativeSheet = .task(task)
+                }
+                return
+            }
+            guard action.operation == "resource.open" else { return }
+            switch target.resourceType {
+            case "session":
+                if let id = residentDetailSessionID(target.id) {
+                    AppTabRouter.shared.openSession(id, source: .userSelection)
+                }
+            case "task":
+                if let id = entityClient.tasks.first(where: { $0.id == target.id })?.currentSessionId {
+                    AppTabRouter.shared.openTaskSession(taskId: target.id, sessionId: id, source: .userSelection)
+                }
+            case "schedule": AppTabRouter.shared.openAutomation(target.id)
+            case "artifact":
+                if let workID = session.workId {
+                    if let artifact = ArtifactAPIClient.shared.artifact(artifactId: target.id, workId: workID, taskId: session.taskId) {
+                        detailNativeSheet = .artifact(artifact)
+                    }
+                }
+            case "reference": if let url = detailReferenceURL(target.id) { NSWorkspace.shared.open(url) }
+            default: break
+            }
+        })
+    }
+    private func detailReferenceURL(_ id: String) -> URL? {
+        guard let reference = contextReferences.first(where: { $0.id == id && $0.enabled && $0.status == "available" }),
+              reference.targetType == .webURL, let locator = reference.locator, let url = URL(string: locator),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil, url.user == nil, url.password == nil else { return nil }
+        return url
+    }
+    private func residentDetailSessionID(_ id: String) -> String? {
+        guard let destination = backendClient.appState.session(id), destination.archived != true else { return nil }
+        return destination.id
+    }
+    private func detailCoordinator(selected: ClientDetailAPI, canonicalSessionID: String) async throws -> ClientDetailActionCoordinator {
+        let origin = CorptieAppEnvironment.backendBaseURL
+        let scope = ClientDetailActionScope(serverID: origin.absoluteString, principalID: "local-user",
+            sessionID: canonicalSessionID, accountID: "os-user:\(NSUserName())",
+            credentialBindingID: "local-loopback:\(NSUserName()):\(Bundle.main.bundleIdentifier ?? "corptie")",
+            catalog: selected.negotiation.catalog, capabilityDigest: selected.negotiation.capabilityDigest)
+        let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: false).appendingPathComponent("Corptie/DetailActionRecovery", isDirectory: true)
+        let journal = ClientDetailActionFileJournal(directory: directory, key: try await Self.detailJournalKeyOwner.timelinePersistenceKey())
+        let transport = ClientDetailDynamicActionTransport(api: {
+            ClientDetailActionAPI(transport: try BackendTransport(endpoint: BackendEndpoint(origin)), route: .desktop,
+                negotiation: selected.negotiation)
+        })
+        return ClientDetailActionCoordinator(scope: scope, transport: transport, journal: journal,
+            navigation: .init(registrations: ["resource.open": ["task", "schedule"]]))
     }
 
     private var statusCard: some View {

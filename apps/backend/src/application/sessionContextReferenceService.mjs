@@ -22,6 +22,11 @@ export class SessionContextReferenceService {
     this.fetch = options.fetch ?? globalThis.fetch;
     this.readSessionDetail = options.readSessionDetail ?? null;
     this.maxSourceCharacters = options.maxSourceCharacters ?? MAX_SOURCE_CHARACTERS;
+    this.webFetchTimeoutMilliseconds = options.webFetchTimeoutMilliseconds ?? 10_000;
+    if (!Number.isSafeInteger(this.maxSourceCharacters) || this.maxSourceCharacters < 1 || this.maxSourceCharacters > MAX_SOURCE_CHARACTERS
+      || !Number.isSafeInteger(this.webFetchTimeoutMilliseconds) || this.webFetchTimeoutMilliseconds < 1 || this.webFetchTimeoutMilliseconds > 60_000) {
+      throw new TypeError("Invalid context reference source bounds.");
+    }
     this.defaultContextBudget = options.defaultContextBudget ?? DEFAULT_CONTEXT_BUDGET;
     if (!this.store) throw new TypeError("SessionContextReferenceService requires a store.");
   }
@@ -31,7 +36,8 @@ export class SessionContextReferenceService {
     return this.store.listSessionContextReferences(ownerSessionId).map(publicReference);
   }
 
-  async create(ownerSessionId, input = {}) {
+  async create(ownerSessionId, input = {}, { beforeWrite } = {}) {
+    if (beforeWrite !== undefined && typeof beforeWrite !== "function") throw serviceError("CONTEXT_REFERENCE_GUARD_INVALID", "Invalid host guard.", 500);
     const owner = this.assertOwner(ownerSessionId);
     const targetType = requiredType(input.targetType);
     if (targetType === "localFile" && this.store.listSessionContextReferences(ownerSessionId)
@@ -42,6 +48,13 @@ export class SessionContextReferenceService {
       throw serviceError("INVALID_FILE_REFERENCE", "Reference display name is too long.", 400);
     }
     const normalized = await this.normalizeTarget(owner, targetType, input);
+    // A host guard can bind an authenticated command across async metadata
+    // reads. It is never consumed from input or called after a mutation.
+    const checked = beforeWrite?.();
+    if (checked?.then) {
+      void Promise.resolve(checked).catch(() => {});
+      throw serviceError("CONTEXT_REFERENCE_GUARD_INVALID", "A host guard must be synchronous.", 500);
+    }
     try {
       const created = this.store.createSessionContextReference({
         referenceId: input.referenceId ?? `context_ref:${randomUUID()}`,
@@ -270,17 +283,30 @@ export class SessionContextReferenceService {
 
   async fetchWebSnapshot(locator) {
     if (typeof this.fetch !== "function") throw serviceError("WEB_FETCH_UNAVAILABLE", "Web fetching is unavailable.", 503);
-    const response = await this.fetch(locator, { headers: { accept: "text/html,text/plain,application/json;q=0.9" } });
-    if (!response.ok) throw serviceError("WEB_FETCH_FAILED", `Web page returned HTTP ${response.status}.`, 400);
-    const raw = (await response.text()).slice(0, this.maxSourceCharacters);
-    const contentType = response.headers.get("content-type") ?? "";
+    const controller = new AbortController();
+    let timer;
+    const timeout = new Promise((_, reject) => { timer = setTimeout(() => {
+      const error = serviceError("WEB_FETCH_TIMEOUT", "Web reference reading timed out.", 504);
+      controller.abort(error); reject(error);
+    }, this.webFetchTimeoutMilliseconds); });
+    let raw, contentType;
+    try {
+      const response = await Promise.race([this.fetch(locator, {
+        headers: { accept: "text/html,text/plain,application/json;q=0.9" }, signal: controller.signal
+      }), timeout]);
+      if (!response.ok) { void Promise.resolve(response.body?.cancel?.()).catch(() => {}); throw serviceError("WEB_FETCH_FAILED", `Web page returned HTTP ${response.status}.`, 400); }
+      raw = await boundedWebSource(response, this.maxSourceCharacters, timeout);
+      contentType = response.headers.get("content-type") ?? "";
+    } finally {
+      clearTimeout(timer); controller.abort();
+    }
     const title = contentType.includes("html") ? htmlTitle(raw) : null;
     const text = contentType.includes("html") ? htmlToText(raw) : raw.trim();
     const snapshotAt = new Date().toISOString();
     return {
       status: "available",
       snapshotTitle: title ?? new URL(locator).hostname,
-      snapshotText: text.slice(0, this.maxSourceCharacters),
+      snapshotText: boundedSourceText(text, this.maxSourceCharacters),
       snapshotAt,
       contentHash: sha256(text),
       metadata: { contentType, sourceCharacters: text.length }
@@ -398,6 +424,35 @@ function normalizedWebURL(value) {
   if (!['http:', 'https:'].includes(url.protocol)) throw serviceError("INVALID_WEB_URL", "Only http and https URLs are supported.", 400);
   url.hash = "";
   return url.toString();
+}
+
+function boundedSourceText(value, maximum) {
+  const result = value.slice(0, maximum), last = result.charCodeAt(result.length - 1);
+  return last >= 0xD800 && last <= 0xDBFF ? result.slice(0, -1) : result;
+}
+
+async function boundedWebSource(response, maximum, timeout) {
+  if (!response.body?.getReader) {
+    // Compatibility for host-injected non-streaming fetch adapters. Real Fetch
+    // responses use the bounded reader below, including the production path.
+    return boundedSourceText(await Promise.race([response.text(), timeout]), maximum);
+  }
+  const reader = response.body.getReader(), decoder = new TextDecoder();
+  const maximumBytes = maximum * 4;
+  let bytes = 0, text = "";
+  try {
+    while (bytes < maximumBytes && text.length < maximum) {
+      const { done, value } = await Promise.race([reader.read(), timeout]);
+      if (done) break;
+      const chunk = value.subarray(0, maximumBytes - bytes);
+      bytes += chunk.byteLength;
+      text += decoder.decode(chunk, { stream: true });
+    }
+    return boundedSourceText(text + decoder.decode(), maximum);
+  } finally {
+    void reader.cancel().catch(() => {});
+    try { reader.releaseLock(); } catch { /* Pending custom readers may still be cancelling. */ }
+  }
 }
 
 function htmlTitle(value) {

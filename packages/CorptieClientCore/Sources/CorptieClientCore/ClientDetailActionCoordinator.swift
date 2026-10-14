@@ -73,6 +73,11 @@ public actor ClientDetailActionCoordinator {
     private static let commands: Set<String> = ["schedule.cancel", "memory.update", "memory.delete", "reference.add", "reference.remove"]
     private static let destructive: Set<String> = ["schedule.cancel", "memory.delete", "reference.remove"]
 
+    public nonisolated static func supports(_ action: ClientDetailAction) -> Bool {
+        (action.kind == "read" && ["detail.refresh", "detail.collection.page"].contains(action.operation)) ||
+            (action.kind == "command" && commands.contains(action.operation))
+    }
+
     public init(scope: ClientDetailActionScope, transport: any ClientDetailActionTransport,
                 journal: any ClientDetailActionJournal, navigation: ClientDetailActionRouting.Resolver = .init(),
                 phaseChanged: @escaping PhaseChange = { _, _ in }) {
@@ -84,8 +89,7 @@ public actor ClientDetailActionCoordinator {
         guard active, scope.isValid else { throw ClientServiceFailure(statusCode: 401, code: "DETAIL_SCOPE_REVOKED") }
         guard action.available else { throw ClientServiceFailure(statusCode: 409, code: "DETAIL_ACTION_UNAVAILABLE") }
         if action.kind == "navigation" { return .navigation(try navigation.target(for: action)) }
-        guard (action.kind == "read" && ["detail.refresh", "detail.collection.page"].contains(action.operation)) ||
-                (action.kind == "command" && Self.commands.contains(action.operation)) else {
+        guard Self.supports(action) else {
             throw ClientServiceFailure(statusCode: 409, code: "DETAIL_OPERATION_UNSUPPORTED")
         }
         let key = Key(document: documentID, card: cardID, action: action.id)
