@@ -32,7 +32,7 @@ export function prepareClaudeProviderSessionInput(input = {}, {
 // This port checks inventory ownership; it does not create or switch a Workspace.
 export async function startPreparedWorkSession({
   taskId, assigneeAgentId, providerId, title, workspace, idempotencyKey, sourceSessionId,
-  dispatchInitialTurn = true
+  dispatchInitialTurn = true, initialPrompt
 }, { store, workService, workSessionStartApplicationService }) {
   const task = workService.getTask(taskId);
   const taskRepositoryId = store.getTaskWorkspaceContext(task)?.repository?.id;
@@ -72,7 +72,8 @@ export async function startPreparedWorkSession({
     title,
     idempotencyKey,
     sourceSessionId,
-    dispatchInitialTurn
+    dispatchInitialTurn,
+    ...(initialPrompt ? { initialPrompt } : {})
   });
   return started.session;
 }

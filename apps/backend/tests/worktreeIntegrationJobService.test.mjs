@@ -22,6 +22,7 @@ function memoryFixture({
   resolutionInspectionError = null,
   abortMergeError = null,
   conflictSessionStatus = "complete",
+  conflictSessionHasQueuedWork = false,
   protectedPaths = [],
   activeFeatureSession = false,
   prepareConflictErrors = [],
@@ -117,6 +118,13 @@ function memoryFixture({
     getSession: (id) => id?.startsWith("session:conflict")
       ? { id, status: conflictSessionStatus }
       : (id === "session:active" ? { id, status: "running" } : null),
+    listAgentTasksForSession: (id, { statuses } = {}) => (
+      id?.startsWith("session:conflict")
+        && conflictSessionHasQueuedWork
+        && (statuses ?? []).includes("queued")
+        ? [{ taskId: "queued:conflict", status: "queued" }]
+        : []
+    ),
     getTask: (id) => tasks.get(id) ?? null
   };
   const calls = [];
@@ -1216,6 +1224,20 @@ test("a paused merge conflict launches an Agent and resumes automatically when i
     && entry.worktreePath === "/repo-integration"
     && entry.retryCount === 0
     && entry.failureStage === "completed"));
+});
+
+test("a completed Session with a queued conflict instruction remains running until delivery settles", async () => {
+  const { service } = memoryFixture({ conflictOnce: true, conflictSessionHasQueuedWork: true });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  const paused = await waitForJob(service, plan.id, "paused");
+  const delegated = await service.resolveConflictWithAgent(paused.id);
+
+  const [unchanged] = service.reconcileConflictResolutionSession(delegated.conflictResolution.sessionId);
+  assert.equal(unchanged.status, "paused");
+  assert.equal(unchanged.phase, "conflict_resolution_running");
+  assert.equal(unchanged.conflictResolution.status, "running");
+  assert.equal(unchanged.audit.some((entry) => entry.event === "conflict_agent_completed"), false);
 });
 
 test("conflict Session title collisions are retried automatically with structured identifiers", async () => {

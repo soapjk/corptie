@@ -23,6 +23,7 @@ export function migrateStartupOperations({ ensureColumn, selectAll, db, runDataM
     ensureColumn("work_session_startup_operations", "error_stage", "TEXT");
     ensureColumn("work_session_startup_operations", "requested_model", "TEXT");
     ensureColumn("work_session_startup_operations", "requested_reasoning_level", "TEXT");
+    ensureColumn("work_session_startup_operations", "initial_prompt", "TEXT");
     ensureColumn(
       "work_session_startup_operations",
       "initial_turn_state",

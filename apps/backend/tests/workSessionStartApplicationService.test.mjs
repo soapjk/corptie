@@ -96,6 +96,23 @@ test("strict WorkSessionStartCommand preserves an explicit deferred initial Turn
       () => f.service.start(command({ idempotencyKey: "start:invalid", dispatchInitialTurn: "false" })),
       { code: "INVALID_INPUT" }
     );
+    await assert.rejects(
+      () => f.service.start(command({
+        idempotencyKey: "start:prompt-deferred",
+        dispatchInitialTurn: false,
+        initialPrompt: "conflict prompt"
+      })),
+      { code: "INVALID_INPUT" }
+    );
+  } finally { await cleanup(f); }
+});
+
+test("strict WorkSessionStartCommand preserves a custom initial prompt", async () => {
+  const f = await fixture();
+  try {
+    await f.service.start(command({ initialPrompt: "  resolve this conflict  " }));
+    assert.equal(f.calls[0].initialPrompt, "resolve this conflict");
+    assert.equal(f.calls[0].dispatchInitialTurn, true);
   } finally { await cleanup(f); }
 });
 

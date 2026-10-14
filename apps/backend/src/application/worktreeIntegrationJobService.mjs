@@ -2181,7 +2181,13 @@ export class WorktreeIntegrationJobService {
     if (!["running", "failed"].includes(resolution?.status) || !resolution.sessionId) return job;
     const session = this.store.getSession(resolution.sessionId);
     if (!session) return job;
-    const nextStatus = session.status === "complete"
+    const hasUnsettledConflictInstruction = (this.store.listAgentTasksForSession?.(
+      resolution.sessionId,
+      { statuses: ["queued", "running"] }
+    ) ?? []).length > 0;
+    const nextStatus = hasUnsettledConflictInstruction
+      ? "running"
+      : session.status === "complete"
       ? "ready"
       : (["failed", "cancelled"].includes(session.status) ? "failed" : "running");
     if (nextStatus === resolution.status) return job;
@@ -2815,6 +2821,9 @@ function isRecoverableConflictFallbackError(error) {
   return new Set([
     "SESSION_TITLE_CONFLICT",
     "SESSION_CREATION_IN_PROGRESS",
+    "START_INITIAL_TURN_FAILED",
+    "SESSION_NOT_READY",
+    "QUEUE_UNAVAILABLE",
     "INTEGRATION_WORKSPACE_NAME_OCCUPIED",
     "INTEGRATION_WORKSPACE_CREATE_RETRYABLE",
     "INTEGRATION_WORKSPACE_INVENTORY_STALE",

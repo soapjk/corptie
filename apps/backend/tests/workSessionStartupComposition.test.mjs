@@ -33,7 +33,7 @@ function fixture() {
     createProviderWorkSession: async (input) => { calls.push(["create", input]); return session; },
     requiredWorkspaceInstructionSources: async () => ["workspace"],
     knownGlobalInstructionSources: async () => ["global"],
-    sendUnifiedSessionMessage: async (...args) => calls.push(["send", ...args]),
+    admitReliableSessionMessage: async (...args) => calls.push(["admit", ...args]),
     projectApplicationService: {}, gitWorkspaces: {}, projectCodeApplicationService: {},
     resolveSessionProviderId: (id) => id, emitEvent: () => {}
   };
@@ -56,7 +56,7 @@ test("startup creation uses the assigned Agent and defers both initial dispatch 
   assert.equal(input.deferInitialPromptUntilBound, true);
   assert.equal(input.deferToolHostFinalization, true);
   assert.deepEqual(input.forkSource, { taskId: "task:1" });
-  assert.equal(f.calls.some(([kind]) => kind === "send"), false);
+  assert.equal(f.calls.some(([kind]) => kind === "admit"), false);
 });
 
 test("activation returns exact workspace, Tool and instruction proofs without sending an initial Turn", async () => {
@@ -72,6 +72,25 @@ test("activation returns exact workspace, Tool and instruction proofs without se
   });
   assert.deepEqual(f.calls.map(([kind]) => kind), ["resume"]);
   assert.equal(f.calls[0][2].purpose, "session-create-finalization");
+});
+
+test("activation durably admits one deterministic custom initial Turn before returning proofs", async () => {
+  const f = fixture();
+  const proof = await f.port.activateSession({
+    session: f.session,
+    taskId: "task:1",
+    assigneeAgentId: "agent:1",
+    workingDirectory: "/workspace",
+    startupOperationId: "startup:one",
+    dispatchInitialTurn: true,
+    initialPrompt: "Resolve the preserved conflict."
+  });
+  assert.equal(proof.providerResourceId, "native:1");
+  assert.deepEqual(f.calls.map(([kind]) => kind), ["admit"]);
+  assert.equal(f.calls[0][2], "Resolve the preserved conflict.");
+  const identity = createHash("sha256").update("startup:one").digest("hex").slice(0, 32);
+  assert.equal(f.calls[0][3].messageId, `startup-initial:${identity}`);
+  assert.equal(f.calls[0][3].deliveryId, `delivery:startup-initial:${identity}`);
 });
 
 test("both execution strategies share one Provider port and one application authorization owner", () => {

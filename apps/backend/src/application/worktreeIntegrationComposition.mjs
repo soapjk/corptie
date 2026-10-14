@@ -44,7 +44,8 @@ function commitPolicyArtifactBinding(store, item) {
 export function createWorktreeIntegrationServices({
   store, projectApplicationService, gitWorkspaces, gitHubPushes, gitCommitProtection,
   workService, artifactService, agentProviderRegistry, startPreparedWorkSession,
-  sendUnifiedSessionMessage, emitEvent, presentTaskForClient, authorizeAutomaticFollow
+  admitReliableSessionMessage, emitEvent, presentTaskForClient,
+  authorizeAutomaticFollow
 }) {
   const applyArtifactDecision = async (input, { removeSource, allowTracking }) => {
     const binding = commitPolicyArtifactBinding(store, input.item);
@@ -245,7 +246,14 @@ export function createWorktreeIntegrationServices({
       const hasRecordedPlanSession = Boolean(existingAutomation?.taskId
         || existingAutomation?.sessionId || legacyPlanTask);
       const hasExistingPlanSession = Boolean(existingTask && existingSession && existingAgent);
-      if (hasRecordedPlanSession && !hasExistingPlanSession) {
+      const recoverableStartup = existingTask && !existingSession && existingAgent
+        ? store.selectOne?.(
+          `SELECT source_session_id FROM work_session_startup_operations
+           WHERE task_id=? AND idempotency_key=? AND state='provider_bound' LIMIT 1`,
+          [existingTask.id, `integration-plan:${job.id}:start`]
+        ) ?? null
+        : null;
+      if (hasRecordedPlanSession && !hasExistingPlanSession && !recoverableStartup) {
         const error = new Error(
           "The integration plan's conflict Task or Session is no longer available. Restore that plan Session or generate a fresh plan; Corptie will not create a duplicate Task."
         );
@@ -254,10 +262,10 @@ export function createWorktreeIntegrationServices({
       }
       const context = hasExistingPlanSession
         ? null
-        : [item, ...(job.plan.items ?? []).filter((candidate) => candidate.worktreeId !== item.worktreeId)]
+        : [item, ...(job.plan?.items ?? []).filter((candidate) => candidate.worktreeId !== item.worktreeId)]
           .map((candidate) => resolveConflictResolutionAgentContext(candidate, store))
           .find(Boolean);
-      if (!hasExistingPlanSession && !context) {
+      if (!hasExistingPlanSession && !recoverableStartup && !context) {
         const error = new Error(
           "No Independent Contributor Agent could be recovered from any Worktree in this integration plan. Bind one Agent-backed Task to the plan, then retry."
         );
@@ -265,7 +273,7 @@ export function createWorktreeIntegrationServices({
         throw error;
       }
       const sourceTask = existingTask ?? context.sourceTask;
-      const work = hasExistingPlanSession
+      const work = hasExistingPlanSession || recoverableStartup
         ? store.getWork(existingTask.work_id)
         : context.work;
       const agent = existingAgent ?? context.agent;
@@ -301,6 +309,27 @@ export function createWorktreeIntegrationServices({
         "6. 不得切换、提交、清理或合并 main；不得推送远端，不得删除来源分支或 Worktree。",
         "7. 完成本轮后正常结束当前执行；Corptie 会校验结果并在同一个 Task 和 Session 中投递下一个冲突，直至整个计划完成。"
       ].join("\n");
+      if (recoverableStartup) {
+        const recoveredSession = await startPreparedWorkSession({
+          assigneeAgentId: existingAgent.agentId,
+          taskId: existingTask.id,
+          providerId: agentProviderRegistry.defaultProviderId,
+          title,
+          workspace,
+          idempotencyKey: `integration-plan:${job.id}:start`,
+          sourceSessionId: recoverableStartup.source_session_id,
+          dispatchInitialTurn: true,
+          initialPrompt: prompt
+        });
+        return {
+          taskId: existingTask.id,
+          sessionId: recoveredSession.id,
+          sessionName: recoveredSession.title,
+          agentId: existingAgent.agentId,
+          agentName: existingAgent.name,
+          reused: true
+        };
+      }
       if (hasExistingPlanSession) {
         const sessionCwd = existingSession.external?.cwd ?? existingSession.cwd ?? null;
         if (sessionCwd && resolve(sessionCwd) !== resolve(workspace.path)) {
@@ -317,11 +346,18 @@ export function createWorktreeIntegrationServices({
           lifecycleState: "in_progress",
           mainAgentId: agent.agentId
         });
-        await sendUnifiedSessionMessage(
+        const continuationIdentity = createHash("sha256").update([
+          job.id, item.worktreeId, sourceHead, expectedMainHead
+        ].join("\0")).digest("hex").slice(0, 32);
+        await admitReliableSessionMessage(
           existingSession.id,
           prompt,
-          { type: "worktree-integration", localVisibility: "normal" },
-          { fromAgentWorkQueue: true }
+          {
+            type: "worktree-integration",
+            localVisibility: "normal",
+            messageId: `integration-conflict:${continuationIdentity}`,
+            deliveryId: `delivery:integration-conflict:${continuationIdentity}`
+          }
         );
         return {
           taskId: existingTask.id,
@@ -354,18 +390,16 @@ export function createWorktreeIntegrationServices({
           workspace,
           idempotencyKey: `integration-plan:${job.id}:start`,
           sourceSessionId: sourceLogical?.logicalSessionId,
-          // The plan-specific prompt below is the single initial execution
-          // message. Startup still activates the Provider and Tool contract.
-          dispatchInitialTurn: false
+          // The plan-specific prompt is dispatched atomically by the shared
+          // Work Session startup transaction. Never create a promptless
+          // Provider Session and race a second message against its teardown.
+          dispatchInitialTurn: true,
+          initialPrompt: prompt
         });
       } catch (error) {
-        workService.deleteTask(task.id);
+        if (error?.code !== "START_INITIAL_TURN_FAILED") workService.deleteTask(task.id);
         throw error;
       }
-      await sendUnifiedSessionMessage(session.id, prompt, {
-        type: "session-initialization",
-        origin: "worktree-integration"
-      });
       return {
         taskId: task.id,
         sessionId: session.id,

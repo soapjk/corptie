@@ -14,7 +14,7 @@ export function createWorkSessionStartupComposition({
   store, workService, agentProviderRegistry, sessionApplicationService,
   forkContextForTask, prepareConversationForkWorkspace, ensureTaskWorkspace,
   createProviderWorkSession, requiredWorkspaceInstructionSources, knownGlobalInstructionSources,
-  sendUnifiedSessionMessage, projectApplicationService, gitWorkspaces,
+  admitReliableSessionMessage, projectApplicationService, gitWorkspaces,
   projectCodeApplicationService, resolveSessionProviderId, emitEvent
 }) {
   const startupWorktreePreparer = new WorktreeStartupPreparer({
@@ -49,10 +49,28 @@ export function createWorkSessionStartupComposition({
         deferToolHostFinalization: true
       });
     },
-    activateSession: async ({ session, taskId, assigneeAgentId, workingDirectory, dispatchInitialTurn }) => {
+    activateSession: async ({
+      session, taskId, assigneeAgentId, workingDirectory, dispatchInitialTurn,
+      initialPrompt, startupOperationId, activationProof
+    }) => {
       const task = workService.getTask(taskId);
       try {
-        if (dispatchInitialTurn !== true) {
+        if (dispatchInitialTurn === true) {
+          const initialMessageId = `startup-initial:${createHash("sha256")
+            .update(String(startupOperationId ?? session.id))
+            .digest("hex")
+            .slice(0, 32)}`;
+          await admitReliableSessionMessage(
+            session.id,
+            initialPrompt ?? taskExecutionPrompt(task),
+            {
+              type: "session-initialization",
+              origin: initialPrompt ? "work-session-start" : "task-start",
+              messageId: initialMessageId,
+              deliveryId: `delivery:${initialMessageId}`
+            }
+          );
+        } else {
           await sessionApplicationService.resumeSession(session.id, {
             source: "task-start",
             purpose: "session-create-finalization",
@@ -61,44 +79,41 @@ export function createWorkSessionStartupComposition({
             taskId,
             sessionKind: "worker"
           });
-          const current = store.getSession(session.id);
-          const logical = store.getLogicalSessionByLegacySessionId(session.id);
-          const activeBinding = logical?.activeBinding;
-          const materialization = activeBinding?.bindingId
-            ? store.getSessionToolCatalogMaterialization(logical.logicalSessionId, activeBinding.bindingId)
-            : null;
-          const toolContractHash = materialization?.status === "applied"
-            ? materialization.providerReceipt?.providerDefinitionsHash
-            : null;
-          const actualCwdValue = current?.external?.cwd ?? activeBinding?.boundCwd;
-          if (typeof actualCwdValue !== "string" || !actualCwdValue.trim()
-            || typeof workingDirectory !== "string" || !workingDirectory.trim()) {
-            const error = new Error("Provider Session activation omitted its working-directory proof.");
-            error.code = "START_PROVIDER_BINDING_FAILED";
-            throw error;
-          }
-          const actualCwd = resolve(actualCwdValue);
-          const expectedCwd = resolve(workingDirectory);
-          if (!toolContractHash || actualCwd !== expectedCwd) {
-            const error = new Error("Provider Session activation did not apply the required Tool contract in the bound ExecutionSpace.");
-            error.code = "START_PROVIDER_BINDING_FAILED";
-            throw error;
-          }
-          const instructionSources = [
-            ...await requiredWorkspaceInstructionSources(expectedCwd),
-            ...await knownGlobalInstructionSources()
-          ].sort();
-          return {
-            providerResourceId: activeBinding.providerSessionId,
-            canonicalWorkingDirectory: actualCwd,
-            toolContractHash,
-            instructionSourcesHash: createHash("sha256").update(JSON.stringify(instructionSources)).digest("hex")
-          };
         }
-        return await sendUnifiedSessionMessage(session.id, taskExecutionPrompt(task), {
-          type: "session-initialization",
-          origin: "task-start"
-        });
+        const current = store.getSession(session.id);
+        const logical = store.getLogicalSessionByLegacySessionId(session.id);
+        const activeBinding = logical?.activeBinding;
+        const materialization = activeBinding?.bindingId
+          ? store.getSessionToolCatalogMaterialization(logical.logicalSessionId, activeBinding.bindingId)
+          : null;
+        const toolContractHash = materialization?.status === "applied"
+          ? materialization.providerReceipt?.providerDefinitionsHash
+          : null;
+        const actualCwdValue = current?.external?.cwd ?? activeBinding?.boundCwd;
+        const expectedWorkingDirectory = workingDirectory ?? activationProof?.canonicalWorkingDirectory;
+        if (typeof actualCwdValue !== "string" || !actualCwdValue.trim()
+          || typeof expectedWorkingDirectory !== "string" || !expectedWorkingDirectory.trim()) {
+          const error = new Error("Provider Session activation omitted its working-directory proof.");
+          error.code = "START_PROVIDER_BINDING_FAILED";
+          throw error;
+        }
+        const actualCwd = resolve(actualCwdValue);
+        const expectedCwd = resolve(expectedWorkingDirectory);
+        if (!toolContractHash || actualCwd !== expectedCwd) {
+          const error = new Error("Provider Session activation did not apply the required Tool contract in the bound ExecutionSpace.");
+          error.code = "START_PROVIDER_BINDING_FAILED";
+          throw error;
+        }
+        const instructionSources = [
+          ...await requiredWorkspaceInstructionSources(expectedCwd),
+          ...await knownGlobalInstructionSources()
+        ].sort();
+        return {
+          providerResourceId: activeBinding.providerSessionId,
+          canonicalWorkingDirectory: actualCwd,
+          toolContractHash,
+          instructionSourcesHash: createHash("sha256").update(JSON.stringify(instructionSources)).digest("hex")
+        };
       } catch (error) {
         const initialTurn = dispatchInitialTurn === true;
         error.code = initialTurn ? "START_INITIAL_TURN_FAILED" : "START_PROVIDER_BINDING_FAILED";
