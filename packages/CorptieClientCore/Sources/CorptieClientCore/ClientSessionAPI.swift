@@ -477,7 +477,9 @@ public struct ClientSessionAPI: Sendable {
     public func messages(sessionId: String, before: String? = nil) async throws -> ClientMessagePage {
         let query = [URLQueryItem(name: "limit", value: "40")] + (before.map { [URLQueryItem(name: "before", value: $0)] } ?? [])
         let request = try transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "messages"], query: query)
-        return try await read(request)
+        // Message window v2 adds authoritative/supplemental identities. Other
+        // API routes retain their own v1 contract.
+        return try await read(request, supportedVersions: [1, 2])
     }
     public func capabilities(sessionId: String) async throws -> ClientSessionCapabilities {
         try await read(transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "capabilities"]))
@@ -770,10 +772,11 @@ public struct ClientSessionAPI: Sendable {
         request.httpBody = try JSONEncoder().encode(body)
         return try await read(request)
     }
-    private func read<Value: Decodable>(_ request: URLRequest) async throws -> Value {
+    private func read<Value: Decodable>(_ request: URLRequest, supportedVersions: Set<Int> = [1]) async throws -> Value {
         let (data, _) = try await transport.data(for: request)
-        guard try ClientDecodingDiagnostics.decode(Version.self, from: data,
-            context: request.url?.path ?? "client-api").schemaVersion == 1 else {
+        let version = try ClientDecodingDiagnostics.decode(Version.self, from: data,
+            context: request.url?.path ?? "client-api").schemaVersion
+        guard supportedVersions.contains(version) else {
             throw ClientConnectionError.invalidResponse
         }
         return try ClientDecodingDiagnostics.decode(Value.self, from: data, context: request.url?.path ?? "client-api")

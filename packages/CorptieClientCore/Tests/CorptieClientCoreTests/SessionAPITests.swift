@@ -3,6 +3,33 @@ import Testing
 @testable import CorptieClientCore
 
 struct SessionAPITests {
+    @Test func messageAPIReadsSupportedWindowVersionsAndRejectsUnknownVersions() async throws {
+        for version in [1, 2, 3] {
+            let endpoint = try BackendEndpoint(URL(string: "http://127.0.0.1:1234")!)
+            let transport = BackendTransport(endpoint: endpoint, data: { request in
+                #expect(request.url?.path == "/client/v1/sessions/session:test/messages")
+                let identities = version == 2 ? #", "authoritativeItemIds":["reply"], "supplementalItemIds":[]"# : ""
+                let body = """
+                {"schemaVersion":\(version),"sessionId":"session:test","revision":7,
+                 "items":[{"id":"reply","type":"agentMessage","text":"latest reply"}],
+                 "hasEarlier":true,"nextBefore":"reply"\(identities)}
+                """
+                return (Data(body.utf8), HTTPURLResponse(url: request.url!, statusCode: 200,
+                    httpVersion: nil, headerFields: nil)!)
+            }, bytes: { _ in throw ClientConnectionError.invalidResponse })
+            do {
+                let page = try await ClientSessionAPI(transport: transport).messages(sessionId: "session:test")
+                #expect(version != 3)
+                #expect(page.items.first?.text == "latest reply")
+                #expect(page.revision == 7)
+                #expect(page.authoritativeItemIds == (version == 2 ? ["reply"] : nil))
+            } catch {
+                #expect(version == 3)
+                #expect(error as? ClientConnectionError == .invalidResponse)
+            }
+        }
+    }
+
     @Test func messagePageDecodesAuthoritativeAndSupplementalWindowIdentity() throws {
         let page = try JSONDecoder().decode(ClientMessagePage.self, from: Data(#"""
         {"schemaVersion":2,"sessionId":"session:test","revision":7,
