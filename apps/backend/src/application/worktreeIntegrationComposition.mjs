@@ -39,6 +39,12 @@ function commitPolicyArtifactBinding(store, item) {
   return { workId, taskId };
 }
 
+function providerIdForSourceTask(store, registry, task) {
+  const session = task?.current_session_id ? store.getSession(task.current_session_id) : null;
+  const identity = session?.external?.provider ?? session?.providerId ?? session?.provider ?? null;
+  return (identity && registry.resolveId?.(identity)) ?? registry.defaultProviderId;
+}
+
 // Project-level integration wiring, including explicit conflict Session launch.
 // Both services share the host's Store and Git services; no runtime is started here.
 export function createWorktreeIntegrationServices({
@@ -248,7 +254,7 @@ export function createWorktreeIntegrationServices({
       const hasExistingPlanSession = Boolean(existingTask && existingSession && existingAgent);
       const recoverableStartup = existingTask && !existingSession && existingAgent
         ? store.selectOne?.(
-          `SELECT source_session_id FROM work_session_startup_operations
+          `SELECT source_session_id, provider_id FROM work_session_startup_operations
            WHERE task_id=? AND idempotency_key=? AND state='provider_bound' LIMIT 1`,
           [existingTask.id, `integration-plan:${job.id}:start`]
         ) ?? null
@@ -313,7 +319,7 @@ export function createWorktreeIntegrationServices({
         const recoveredSession = await startPreparedWorkSession({
           assigneeAgentId: existingAgent.agentId,
           taskId: existingTask.id,
-          providerId: agentProviderRegistry.defaultProviderId,
+          providerId: recoverableStartup.provider_id,
           title,
           workspace,
           idempotencyKey: `integration-plan:${job.id}:start`,
@@ -379,13 +385,14 @@ export function createWorktreeIntegrationServices({
       });
       let session;
       try {
+        const providerId = providerIdForSourceTask(store, agentProviderRegistry, sourceTask);
         const sourceLogical = sourceTask.current_session_id
           ? store.getLogicalSessionByLegacySessionId(sourceTask.current_session_id)
           : null;
         session = await startPreparedWorkSession({
           assigneeAgentId: agent.agentId,
           taskId: task.id,
-          providerId: agentProviderRegistry.defaultProviderId,
+          providerId,
           title,
           workspace,
           idempotencyKey: `integration-plan:${job.id}:start`,

@@ -316,7 +316,7 @@ async function establishWorkSession({ store, source }) {
         canonicalWorkingDirectory: input.workingDirectory, trustedContextHash: input.trustedContextHash,
         acceptedAt: new Date().toISOString() }),
       inspectBinding: async () => { throw Object.assign(new Error("not yet bound"), { code: "START_PROVIDER_BINDING_NOT_FOUND" }); },
-      activateSession: async (activation) => activation.dispatchInitialTurn === true ? undefined : ({
+      activateSession: async (activation) => ({
         providerResourceId: "provider-resource:benchmark",
         canonicalWorkingDirectory: activation.workingDirectory,
         toolContractHash: "c".repeat(64), instructionSourcesHash: "d".repeat(64)

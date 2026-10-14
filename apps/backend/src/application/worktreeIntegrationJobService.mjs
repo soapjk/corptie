@@ -2191,26 +2191,41 @@ export class WorktreeIntegrationJobService {
       ? "ready"
       : (["failed", "cancelled"].includes(session.status) ? "failed" : "running");
     if (nextStatus === resolution.status) return job;
+    const sessionFailure = nextStatus === "failed"
+      ? conflictSessionFailure(this.store, resolution.sessionId)
+      : null;
+    const failure = nextStatus === "failed"
+      ? Object.assign(new Error(
+        sessionFailure?.message ?? "The conflict-resolution Agent stopped before completing."
+      ), {
+        code: sessionFailure?.code ?? "CONFLICT_AGENT_STOPPED",
+        retryable: sessionFailure?.retryable === true
+      })
+      : null;
     const updated = this.#update(job, {
       status: nextStatus === "ready" ? "queued" : "paused",
       phase: nextStatus === "ready" ? "conflict_resolution_resume_queued" : "conflict",
-      error: nextStatus === "failed" ? "The conflict-resolution Agent stopped before completing." : null,
+      error: failure?.message ?? null,
       details: {
         ...job.details,
-        conflictResolution: { ...resolution, status: nextStatus, sessionStatus: session.status },
+        conflictResolution: {
+          ...resolution,
+          status: nextStatus,
+          sessionStatus: session.status,
+          ...(failure ? {
+            failureCode: failure.code,
+            failureReason: failure.message,
+            retryable: failure.retryable
+          } : {})
+        },
         ...(nextStatus === "failed" && job.details.conflictAutomation ? {
-          conflictAutomation: blockedConflictAutomation(
-            job,
-            item,
-            Object.assign(new Error("The conflict-resolution Agent stopped before completing."), {
-              code: "CONFLICT_AGENT_STOPPED"
-            })
-          )
+          conflictAutomation: blockedConflictAutomation(job, item, failure)
         } : {})
       },
       auditEvent: nextStatus === "ready" ? "conflict_agent_completed" : "conflict_agent_stopped",
       auditData: {
         worktreeId: job.details.currentWorktreeId,
+        ...(failure ? { code: failure.code, retryable: failure.retryable } : {}),
         ...(nextStatus === "ready" ? { automaticResume: true } : {})
       }
     });
@@ -2305,6 +2320,26 @@ export class WorktreeIntegrationJobService {
     const job = this.store.getWorktreeIntegrationJob(String(jobId ?? "").trim());
     if (!job) throw new WorktreeIntegrationJobError("INTEGRATION_JOB_NOT_FOUND", "Integration task not found.", 404);
     return job;
+  }
+}
+
+function conflictSessionFailure(store, sessionId) {
+  const row = store.latestFailedSessionTurn?.(sessionId);
+  if (!row?.failure_json) return null;
+  try {
+    const failure = typeof row.failure_json === "string"
+      ? JSON.parse(row.failure_json)
+      : row.failure_json;
+    const message = typeof failure?.message === "string" ? failure.message.trim() : "";
+    const code = typeof failure?.code === "string" ? failure.code.trim() : "";
+    if (!message) return null;
+    return {
+      message,
+      code: code || "CONFLICT_AGENT_PROVIDER_FAILED",
+      retryable: failure?.retryable === true
+    };
+  } catch {
+    return null;
   }
 }
 

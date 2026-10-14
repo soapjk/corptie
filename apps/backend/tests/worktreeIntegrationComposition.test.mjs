@@ -32,7 +32,10 @@ function fixture(overrides = {}) {
       deleteTask: (id) => calls.push(["delete", id]),
       updateTask: (...args) => calls.push(["update", ...args])
     },
-    agentProviderRegistry: { defaultProviderId: "test-provider" },
+    agentProviderRegistry: {
+      defaultProviderId: "test-provider",
+      resolveId: (identity) => identity === "source-provider-alias" ? "source-provider" : null
+    },
     startPreparedWorkSession: async (input) => { calls.push(["start", input]); return { id: "created-session" }; },
     sendUnifiedSessionMessage: async (...args) => calls.push(["send", ...args]),
     admitReliableSessionMessage: async (...args) => calls.push(["admit", ...args]),
@@ -113,6 +116,36 @@ test("a new plan Session atomically starts with exactly one conflict prompt", as
   assert.equal(calls.filter(([kind]) => ["send", "admit"].includes(kind)).length, 0);
 });
 
+test("a new conflict plan inherits the source Task Session Provider", async () => {
+  const { worktreeIntegrationJobService: jobs, store, calls } = fixture();
+  store.getTask = () => ({
+    id: "task", work_id: "work", title: "Conflict", main_agent_id: "agent",
+    current_session_id: "source-session"
+  });
+  store.getSession = (id) => id === "source-session"
+    ? { id, external: { provider: "source-provider-alias" } }
+    : null;
+  store.getLogicalSessionByLegacySessionId = () => ({ logicalSessionId: "logical:source" });
+  const item = {
+    worktreeId: "source",
+    branchName: "feature/source",
+    conflictFiles: ["source.swift"],
+    associations: [{ taskId: "task" }]
+  };
+
+  await jobs.launchConflictResolution({
+    job: { id: "worktree_integration:provider-plan", plan: { items: [item] } },
+    item,
+    workspace: { path: "/integration" },
+    sourceHead: "source-head",
+    expectedMainHead: "main-head"
+  });
+
+  assert.equal(calls[0][0], "start");
+  assert.equal(calls[0][1].providerId, "source-provider");
+  assert.equal(calls[0][1].sourceSessionId, "logical:source");
+});
+
 test("a recorded plan with a missing Session never creates a duplicate Task", async () => {
   const { worktreeIntegrationJobService: jobs, store, calls } = fixture();
   store.getSession = () => null;
@@ -123,7 +156,7 @@ test("a recorded plan with a missing Session never creates a duplicate Task", as
 test("a plan startup whose first Turn failed resumes the same Task and startup operation", async () => {
   const { worktreeIntegrationJobService: jobs, store, calls } = fixture();
   store.getSession = () => null;
-  store.selectOne = () => ({ source_session_id: "logical:source" });
+  store.selectOne = () => ({ source_session_id: "logical:source", provider_id: "persisted-provider" });
   const item = {
     worktreeId: "source",
     branchName: "feature/source",
@@ -146,6 +179,7 @@ test("a plan startup whose first Turn failed resumes the same Task and startup o
   assert.deepEqual(calls.map(([kind]) => kind), ["start"]);
   assert.equal(calls[0][1].idempotencyKey, "integration-plan:worktree_integration:plan:start");
   assert.equal(calls[0][1].sourceSessionId, "logical:source");
+  assert.equal(calls[0][1].providerId, "persisted-provider");
   assert.ok(calls[0][1].initialPrompt.includes("source-head"));
 });
 
