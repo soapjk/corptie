@@ -3,40 +3,71 @@ import { normalizeSessionTitle } from "../../utils/sessionTitles.mjs";
 export function migrateCanonicalSessionNames({ selectAll, db }) {
   const rows = selectAll(
     `SELECT ls.logical_session_id, ls.legacy_session_id, ls.title, ls.session_name,
+            ls.session_name_key, ls.deleted_at,
             s.title AS legacy_title
      FROM logical_sessions ls
      LEFT JOIN sessions s ON s.id = ls.legacy_session_id
      ORDER BY ls.created_at ASC, ls.logical_session_id ASC`
   );
+  const baseName = row => String(row.session_name || row.legacy_title || row.title || "Agent").trim() || "Agent";
+  const reserved = new Set(rows.filter(row => !row.deleted_at).map(row => normalizeSessionTitle(baseName(row))));
   const used = new Set();
+  const planned = [];
   for (const row of rows) {
-    const base = String(row.session_name || row.legacy_title || row.title || "Agent").trim() || "Agent";
+    // Tombstones retain audit labels, but their names can be reused by live
+    // Sessions. Reassigning the old key here makes a later startup fail.
+    if (row.deleted_at) {
+      planned.push({ row, sessionNameKey: null });
+      continue;
+    }
+    const base = baseName(row);
     let sessionName = base;
     let suffix = 1;
-    while (used.has(normalizeSessionTitle(sessionName))) {
+    while (used.has(normalizeSessionTitle(sessionName))
+        || (sessionName !== base && reserved.has(normalizeSessionTitle(sessionName)))) {
       sessionName = `${base} ${suffix}`;
       suffix += 1;
     }
     const sessionNameKey = normalizeSessionTitle(sessionName);
     used.add(sessionNameKey);
-    db.run(
-      `UPDATE logical_sessions
+    planned.push({ row, sessionName, sessionNameKey });
+  }
+  // The UNIQUE index already exists on subsequent startups. Release changing
+  // keys before assigning their final values, atomically with the label edits.
+  db.run("SAVEPOINT canonical_session_names");
+  try {
+    for (const { row, sessionNameKey } of planned) {
+      if (row.session_name_key != null && row.session_name_key !== sessionNameKey) {
+        db.run("UPDATE logical_sessions SET session_name_key = NULL WHERE logical_session_id = ?",
+          [row.logical_session_id]);
+      }
+    }
+    for (const { row, sessionName, sessionNameKey } of planned) {
+      if (row.deleted_at) continue;
+      db.run(
+        `UPDATE logical_sessions
        SET session_name = ?, session_name_key = ?, title = ?
        WHERE logical_session_id = ?
          AND (session_name IS NOT ? OR session_name_key IS NOT ? OR title IS NOT ?)`,
-      [sessionName, sessionNameKey, sessionName, row.logical_session_id,
-        sessionName, sessionNameKey, sessionName]
-    );
-    if (row.legacy_session_id) {
-      db.run(
-        "UPDATE sessions SET title = ? WHERE id = ? AND title IS NOT ?",
-        [sessionName, row.legacy_session_id, sessionName]
+        [sessionName, sessionNameKey, sessionName, row.logical_session_id,
+          sessionName, sessionNameKey, sessionName]
       );
+      if (row.legacy_session_id) {
+        db.run(
+          "UPDATE sessions SET title = ? WHERE id = ? AND title IS NOT ?",
+          [sessionName, row.legacy_session_id, sessionName]
+        );
+      }
     }
+    // Session names are replaceable labels, not durable routes. Stable IDs
+    // supersede the legacy alias table, so old names must stop resolving.
+    db.run("DELETE FROM session_name_aliases");
+    db.run("RELEASE canonical_session_names");
+  } catch (error) {
+    db.run("ROLLBACK TO canonical_session_names");
+    db.run("RELEASE canonical_session_names");
+    throw error;
   }
-  // Session names are replaceable labels, not durable routes. Stable IDs
-  // supersede the legacy alias table, so old names must stop resolving.
-  db.run("DELETE FROM session_name_aliases");
 }
 
 export function migrateCollaborationSessionIdentities({ db }) {
