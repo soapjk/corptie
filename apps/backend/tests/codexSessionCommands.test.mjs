@@ -2,6 +2,59 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createCodexSessionCommands } from "../src/adapters/codexSessionCommands.mjs";
 import { createCodexTurnDispatcher } from "../src/adapters/codexTurnDispatcher.mjs";
+import { CodexAppServerClient } from "../src/adapters/codexAppServer.mjs";
+
+test("binding probes between configured sends preserve the live Thread proof without another resume", async () => {
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  client.transport.activeProcessGeneration = 1;
+  const requests = [];
+  client.request = async (method, params) => {
+    requests.push({ method, params });
+    return { thread: { id: params.threadId } };
+  };
+  const cwd = "/workspace";
+  const fullOptions = { cwd, runtimeWorkspaceRoots: [cwd, "/shared"],
+    developerInstructions: "session instructions", dynamicToolAgentId: "session-owner",
+    config: { tools: true } };
+  const commands = createCodexSessionCommands({
+    store: { getLogicalSession: () => ({ activeBinding: { bindingId: "binding", boundCwd: cwd } }) },
+    codexRuntime: client
+  });
+  const reference = { sessionId: "session", logicalSessionId: "logical", bindingId: "binding", providerSessionId: "thread" };
+  await client.ensureThreadResumed("thread", fullOptions);
+  for (let i = 0; i < 2; i++) {
+    const probe = await commands.probeCodexProviderBinding(reference);
+    assert.equal(probe.threadAlreadyLoaded, true);
+    assert.equal((await client.ensureThreadResumed("thread", fullOptions)).alreadyLoaded, true);
+  }
+  assert.equal(requests.filter(request => request.method === "thread/resume").length, 1);
+  assert.equal((await commands.probeCodexProviderBinding(reference, { reconcileOnly: true })).ready, true);
+  assert.equal((await client.ensureThreadResumed("thread", fullOptions)).alreadyLoaded, true);
+  // Existence is not configuration authorization: a changed Tool context or
+  // process generation must still force dispatch to obtain a fresh proof.
+  await client.ensureThreadResumed("thread", { ...fullOptions, config: { tools: false } });
+  assert.equal(requests.length, 2);
+  client.clearGenerationThreadState();
+  await client.ensureThreadResumed("thread", fullOptions);
+  assert.equal(requests.length, 3);
+  await client.ensureThreadResumed("thread", { cwd: "/another-workspace", bindingReadinessProbe: true });
+  assert.equal(requests.length, 4);
+});
+
+test("existence probe keeps a fresh empty Thread's full Tool context without trying to resume its rollout", async () => {
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  client.request = async () => { throw new Error("fresh Thread has no rollout"); };
+  const options = { cwd: "/workspace", dynamicToolAgentId: "owner", config: { tools: true } };
+  client.bindThreadToolContext("fresh", options);
+  client.freshThreadIds.add("fresh");
+  const before = client.threadResumeFingerprints.get("fresh");
+  assert.equal((await client.ensureThreadResumed("fresh", {
+    cwd: "/workspace", bindingReadinessProbe: true
+  })).alreadyLoaded, true);
+  assert.equal(client.threadResumeFingerprints.get("fresh"), before);
+});
 
 test("turn dispatch refuses a transitioning workspace before modifying choices or contacting the Provider", async () => {
   const calls = [];

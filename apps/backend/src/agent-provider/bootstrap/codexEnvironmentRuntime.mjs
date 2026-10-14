@@ -34,7 +34,6 @@ export function createCodexEnvironmentRuntime({ registry, environment, prepare, 
     && !runtime.client.recoveryStabilizationThreads?.size;
   const release = (id) => {
     const runtime = runtimes.get(id);
-    clearTimeout(activity.get(id)?.timer);
     activity.delete(id);
     runtimes.delete(id);
     prepared.delete(id);
@@ -42,20 +41,7 @@ export function createCodexEnvironmentRuntime({ registry, environment, prepare, 
   };
   const assertProfileCapacity = (profile) => {
     if (runtimes.has(profile.profileId) || runtimes.size < maxEnvironments) return;
-    const idle = [...runtimes.entries()].find(([id, runtime]) => recyclable(id, runtime));
-    if (idle) { void release(idle[0]); return; }
-    throw Object.assign(new Error("已打开多个正在使用的 Codex 环境，请结束任务后再切换。已有会话不会被终止。"), { code: "PROVIDER_ENVIRONMENT_LIMIT" });
-  };
-  const scheduleIdleRelease = (id) => {
-    const entry = activity.get(id);
-    if (!entry) return;
-    clearTimeout(entry.timer);
-    entry.timer = setTimeout(() => {
-      const runtime = runtimes.get(id);
-      if (runtime && recyclable(id, runtime)) void release(id);
-      else scheduleIdleRelease(id);
-    }, 5 * 60_000);
-    entry.timer.unref?.();
+    throw Object.assign(new Error("已达到打开 Codex 环境的数量上限。已有环境将保持运行，无法继续打开新环境。"), { code: "PROVIDER_ENVIRONMENT_LIMIT" });
   };
   const runtimeFor = (profile) => {
     if (replacingExecutable) throw Object.assign(new Error("Provider 程序正在切换，请稍后重试。"), { code: "PROVIDER_BUSY" });
@@ -73,7 +59,8 @@ export function createCodexEnvironmentRuntime({ registry, environment, prepare, 
         } });
       runtimes.set(profile.profileId, runtime);
     }
-    scheduleIdleRelease(profile.profileId);
+    // Keep shared Provider processes warm for the backend lifetime. Idleness
+    // and capacity pressure must not terminate existing Sessions' runtimes.
     return runtime;
   };
   const prepareProfile = async (profile) => {
@@ -169,7 +156,6 @@ export function createCodexEnvironmentRuntime({ registry, environment, prepare, 
       return runtimeFor(threadId ? registry.forThread(threadId) : registry.current).readAccountRateLimits();
     },
     async close() {
-      for (const entry of activity.values()) clearTimeout(entry.timer);
       activity.clear();
       await Promise.all([...runtimes.values()].map((runtime) => runtime.close())); runtimes.clear(); prepared.clear();
     }

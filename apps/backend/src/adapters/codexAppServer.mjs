@@ -37,6 +37,15 @@ function threadResumeFingerprint(options = {}) {
   });
 }
 
+function threadResumeProofMatches(proof, options) {
+  if (!proof) return false;
+  if (options.bindingReadinessProbe !== true) return proof === threadResumeFingerprint(options);
+  // Existence probes may reuse a fully configured, live Thread in the same
+  // cwd. They do not authorize a Turn; dispatch still matches the entire
+  // configuration and Tool contract before turn/start.
+  return JSON.parse(proof).cwd === (options.cwd ?? null);
+}
+
 export class CodexAppServerClient {
   constructor(options = {}) {
     // Cold Session restoration has a separate budget from ordinary RPCs and
@@ -369,7 +378,7 @@ export class CodexAppServerClient {
     this.requireThreadToolPlanConfirmation(threadId, options);
     return { ready: Boolean(this.transport.activeProcessGeneration)
       && !this.unsettledResumes.has(threadId)
-      && this.threadResumeFingerprints.get(threadId) === threadResumeFingerprint(options),
+      && threadResumeProofMatches(this.threadResumeFingerprints.get(threadId), options),
       reasonCode: "PROVIDER_RESUME_OUTCOME_UNKNOWN" };
   }
 
@@ -387,7 +396,7 @@ export class CodexAppServerClient {
     await this.initialize();
     this.requireThreadToolPlanConfirmation(threadId, options);
     const fingerprint = threadResumeFingerprint(options);
-    if (this.freshThreadIds.has(threadId)) {
+    if (this.freshThreadIds.has(threadId) && options.bindingReadinessProbe !== true) {
       if (options.dynamicToolAgentId) {
         this.dynamicToolAgentsByThread.set(threadId, options.dynamicToolAgentId);
         this.dynamicToolMetadataByThread.set(threadId, options.dynamicToolMetadata ?? null);
@@ -395,7 +404,7 @@ export class CodexAppServerClient {
       this.threadResumeFingerprints.set(threadId, fingerprint);
       return { alreadyLoaded: true, fresh: true, thread: { id: threadId } };
     }
-    if (this.threadResumeFingerprints.get(threadId) === fingerprint) {
+    if (threadResumeProofMatches(this.threadResumeFingerprints.get(threadId), options)) {
       return { alreadyLoaded: true, thread: { id: threadId } };
     }
     const pending = this.threadResumePromises.get(threadId);
@@ -406,7 +415,7 @@ export class CodexAppServerClient {
         // A speculative prewarm must not make the foreground send inherit its
         // failure. Retry below using the caller's current runtime context.
       }
-      if (this.threadResumeFingerprints.get(threadId) === fingerprint) {
+      if (threadResumeProofMatches(this.threadResumeFingerprints.get(threadId), options)) {
         return { alreadyLoaded: true, coalesced: true, thread: { id: threadId } };
       }
     }

@@ -156,15 +156,17 @@ export function createCodexSessionCommands({
       ?? reference.metadata?.session?.external?.cwd
       ?? null;
     const startedAt = Date.now();
-    if (context.reconcileOnly === true) {
-      return codexRuntime.inspectThreadResume(reference.providerSessionId, {
-        cwd: cwd ?? undefined, runtimeWorkspaceRoots: cwd ? [cwd] : undefined
-      });
-    }
-    const result = await codexRuntime.ensureThreadResumed(reference.providerSessionId, {
+    // This proves existence only. Full Tool/configuration matching remains
+    // owned by dispatch; do not overwrite its proof with a cwd-only resume.
+    const runtimeOptions = {
       cwd: cwd ?? undefined,
-      runtimeWorkspaceRoots: cwd ? [cwd] : undefined
-    });
+      runtimeWorkspaceRoots: cwd ? [cwd] : undefined,
+      bindingReadinessProbe: true
+    };
+    if (context.reconcileOnly === true) {
+      return codexRuntime.inspectThreadResume(reference.providerSessionId, runtimeOptions);
+    }
+    const result = await codexRuntime.ensureThreadResumed(reference.providerSessionId, runtimeOptions);
     return {
       ready: true,
       sessionId: reference.logicalSessionId ?? reference.sessionId,

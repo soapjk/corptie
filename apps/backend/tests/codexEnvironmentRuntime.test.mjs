@@ -2,6 +2,39 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createCodexEnvironmentRuntime } from "../src/agent-provider/bootstrap/codexEnvironmentRuntime.mjs";
 
+test("idle shared environment stays warm and capacity pressure never evicts it", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const profile = { profileId: "shared", mode: "native" };
+  let created = 0, closed = 0, preparations = 0;
+  const runtime = createCodexEnvironmentRuntime({
+    registry: { current: profile, forThread: () => profile }, maxEnvironments: 1,
+    environment: () => ({}), instructions: async () => "", prepare: async () => { preparations++; },
+    createRuntime: () => {
+      created++;
+      return { client: { transport: { process: {}, initialized: true, pending: new Map() },
+        freshThreadIds: new Set(), serverRequestsByThread: new Map(),
+        threadResumePromises: new Map(), recoveryStabilizationThreads: new Map() },
+        close: async () => { closed++; }, ensureThreadResumed: async () => ({ ready: true }) };
+    }
+  });
+  t.after(() => runtime.close());
+  await runtime.ensureThreadResumed("first", { cwd: "/workspace" });
+  const epoch = runtime.readinessRuntimeEpoch("first");
+  t.mock.timers.tick(30 * 60_000);
+  assert.equal(closed, 0);
+  assert.equal(runtime.readinessRuntimeEpoch("first"), epoch);
+  await runtime.ensureThreadResumed("second", { cwd: "/workspace" });
+  assert.equal(created, 1);
+  assert.equal(preparations, 1);
+  assert.throws(() => runtime.runtimeFor({ profileId: "other", mode: "native" }), {
+    code: "PROVIDER_ENVIRONMENT_LIMIT"
+  });
+  assert.equal(closed, 0);
+  assert.equal(runtime.readinessRuntimeEpoch("first"), epoch);
+  await runtime.close();
+  assert.equal(closed, 1);
+});
+
 test("read-only resume proof follows exact thread environment without spawning or preparing a cold runtime", async t => {
   const profile = { profileId: "native", mode: "native" };
   let created = 0, preparations = 0;
