@@ -60,14 +60,19 @@ NODE_DISTRIBUTION="$(bash "${ROOT}/scripts/prepare-bundled-node.sh")"
 export PATH="${NODE_DISTRIBUTION}/bin:${PATH}"
 
 echo "Building for production with macOS SDK ${MACOS_SDK_VERSION}..."
+# Merges can add Swift files without changing Package.swift. Re-plan source
+# discovery so the native backend doesn't reuse an incomplete source list;
+# object files remain incremental.
 BUILD_BIN_DIR="$(swift build \
   --package-path "${ROOT}/apps/macos" \
+  --disable-build-manifest-caching \
   --build-system native \
   --sdk "${MACOS_SDK_PATH}" \
   -c "${BUILD_CFG}" \
   --show-bin-path)"
 swift build \
   --package-path "${ROOT}/apps/macos" \
+  --disable-build-manifest-caching \
   --build-system native \
   --sdk "${MACOS_SDK_PATH}" \
   -c "${BUILD_CFG}"

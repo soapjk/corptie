@@ -136,6 +136,7 @@ echo "Building Corptie macOS development app with macOS SDK ${MACOS_SDK_VERSION}
 # system appearance while keeping macOS 14 as the deployment floor.
 swift build \
   --package-path "${MACOS_PACKAGE_DIR}" \
+  --disable-build-manifest-caching \
   --build-system native \
   --sdk "${MACOS_SDK_PATH}"
 LINKED_SDK_VERSION="$(linked_macos_sdk_version "${APP_BIN}")"
