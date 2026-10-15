@@ -8,7 +8,8 @@ import { serializeActiveChoicePrompt, toSessionSummary, toRawStatus } from "../s
 
 // Uses the Store-owned connection and notification/transaction coordinator.
 export class SessionMutationRepository {
-  constructor({ getDatabase, selectOne, selectAll, scheduleSave, runInTransaction, getSession, listSessions, ensureSessionLog, assertSessionAssociation, getLogicalSessionByLegacySessionId, getLogicalSession }) {
+  constructor({ getDatabase, selectOne, selectAll, scheduleSave, runInTransaction, getSession, listSessions, ensureSessionLog, assertSessionAssociation, getLogicalSessionByLegacySessionId, getLogicalSession, notifyTimelineDirty = () => {} }) {
+    this.notifyTimelineDirty = notifyTimelineDirty;
     this.getDatabase = getDatabase;
     this.selectOne = selectOne;
     this.selectAll = selectAll;
@@ -163,6 +164,9 @@ export class SessionMutationRepository {
     );
     this.ensureSessionLog(session.id);
     this.scheduleSave();
+    if (persistedAssociation && persistedAssociation.task_id !== (session.taskId ?? persistedAssociation.task_id)) {
+      this.notifyTimelineDirty(session.id, { quickMessagesChanged: true, quickMessagesGlobalChanged: true });
+    }
   }
 
   createSession(input = {}) {
@@ -373,6 +377,7 @@ export class SessionMutationRepository {
          WHERE id = ? AND deleted_at IS NULL`,
         [timestamp, timestamp, id]
       );
+      this.notifyTimelineDirty(id, { quickMessagesChanged: true, quickMessagesGlobalChanged: true });
     });
     this.scheduleSave();
     return true;

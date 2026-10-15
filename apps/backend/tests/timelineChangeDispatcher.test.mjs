@@ -59,3 +59,19 @@ test("only quick-message contribution changes notify the exact Task scope", () =
   f.dispatcher.scheduleTimelineChangePublish({ sessionId: "s", revision: 2, quickMessagesChanged: true });
   assert.deepEqual(changes, [{ schemaVersion: 1, sessionId: "s", taskId: "task:one" }]);
 });
+
+test("only common statistics changes or completed history construction invalidate other scopes", () => {
+  let revision = 0;
+  const changes = [];
+  const f = fixture({ store: { getSession: () => ({ taskId: "task:one" }),
+    selectOne: () => ({ common_revision: revision }) }, publishQuickMessages: change => changes.push(change) });
+  f.dispatcher.scheduleTimelineChangePublish({ sessionId: "s", quickMessagesChanged: true });
+  assert.equal(changes.at(-1).commonChanged, undefined);
+  revision++;
+  f.dispatcher.scheduleTimelineChangePublish({ sessionId: "s", quickMessagesChanged: true });
+  assert.equal(changes.at(-1).commonChanged, true);
+  f.dispatcher.scheduleTimelineChangePublish({ sessionId: "s", quickMessagesChanged: true });
+  assert.equal(changes.at(-1).commonChanged, undefined);
+  f.dispatcher.scheduleTimelineChangePublish({ sessionId: "s", quickMessagesChanged: true, quickMessagesGlobalChanged: true });
+  assert.equal(changes.at(-1).commonChanged, true);
+});

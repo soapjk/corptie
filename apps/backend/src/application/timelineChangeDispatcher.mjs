@@ -4,6 +4,11 @@ export function createTimelineChangeDispatcher({
   store, resolveSessionReference, invalidateDevices, publishDeviceTimeline, scheduleTimelineChange,
   publishQuickMessages = () => {}
 }) {
+  const commonRevision = () => {
+    try { return store?.selectOne?.("SELECT common_revision FROM quick_message_build_v1 WHERE id=1")?.common_revision; }
+    catch { return undefined; }
+  };
+  let lastCommonRevision = commonRevision();
   function resolveTimelineChangeSessionAliases(sessionId) {
     if (!sessionId || typeof sessionId !== "string") return [];
     const ids = new Set();
@@ -66,8 +71,12 @@ export function createTimelineChangeDispatcher({
     // notification matching.
     publishDeviceTimeline(change.sessionId);
     if (change.quickMessagesChanged) {
+      const revision = commonRevision();
+      const commonChanged = change.quickMessagesGlobalChanged || (revision !== undefined && revision !== lastCommonRevision);
+      lastCommonRevision = revision;
       publishQuickMessages({ schemaVersion: 1, sessionId: change.sessionId,
-        taskId: store?.getSession(change.sessionId)?.taskId ?? null });
+        taskId: store?.getSession(change.sessionId)?.taskId ?? null,
+        ...(commonChanged ? { commonChanged: true } : {}) });
     }
     scheduleTimelineChange(change);
   }

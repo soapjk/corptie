@@ -1,4 +1,5 @@
 import { initializeUnifiedSearch } from "./unifiedSearch.mjs";
+import { initializeQuickMessageIndex } from "./quickMessageIndex.mjs";
 import { randomUUID } from "node:crypto";
 import { createStoreRepositories } from "./createStoreRepositories.mjs";
 import { installStoreRepositoryDelegates } from "./storeRepositoryDelegates.mjs";
@@ -168,6 +169,9 @@ export class CorptieStore {
         this.migrate();
         initializeUnifiedSearch(this);
       }
+      // Schema migration can run in a short-lived Worker. The long-lived Store
+      // must own/resume history construction even when migrations already ran.
+      if (!readOnly) this.quickMessageBuild = initializeQuickMessageIndex(this);
     } catch (error) {
       this.db.close();
       this.db = null;

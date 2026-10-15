@@ -503,9 +503,14 @@ public struct ClientSessionAPI: Sendable {
         guard result.status == "deleted", result.messageId == messageId else { throw ClientConnectionError.invalidResponse }
     }
     public func quickMessages(sessionId: String) async throws -> ClientQuickMessageRecommendations {
-        let result: ClientQuickMessageRecommendations = try await read(
-            transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "quick-messages"]))
-        return try result.validated()
+        var request = try transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "quick-messages"])
+        request.timeoutInterval = 8
+        do {
+            let result: ClientQuickMessageRecommendations = try await read(request)
+            return try result.validated()
+        } catch let failure as ClientServiceFailure where [502, 503, 504].contains(failure.statusCode) {
+            throw URLError(.resourceUnavailable)
+        }
     }
     /// Usage snapshot behind `messages.read`; hosts without a usage reader answer 409 `CAPABILITY_UNSUPPORTED`.
     public func usage(sessionId: String, freshAccount: Bool = false) async throws -> ClientSessionUsage {

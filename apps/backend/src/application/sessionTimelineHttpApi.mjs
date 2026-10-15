@@ -11,7 +11,9 @@ export function handleSessionTimelineHttpRequest({
   if (request.method === "GET" && quickMessagesMatch) {
     sessionApplicationService.referenceFor(decodeURIComponent(quickMessagesMatch[1]))
       .then(reference => getTimelineReadPool().readQuickMessages({ sessionId: reference.sessionId }))
-      .then(result => sendJson(response, 200, result))
+      .then(result => result.preparationStatus === "building"
+        ? sendJson(response, 503, { code: "QUICK_MESSAGE_STATISTICS_PREPARING", error: "Quick-message history statistics are preparing." })
+        : sendJson(response, 200, result))
       .catch(error => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
     return true;
   }

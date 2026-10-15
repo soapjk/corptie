@@ -81,7 +81,7 @@ struct MessageComposer: View {
         ClientQuickMessageCache.scope(host: backendClient.baseURL.absoluteString, taskID: session?.taskId, sessionID: sessionId)
     }
     private var recommendationRefreshKey: String {
-        "\(recommendationScope):\(sessionId):\(quickMessageRefresh):\(BackendClient.quickMessageCache.revision(for: recommendationScope)):\(backendClient.isOnline):\(scenePhase == .active)"
+        "\(recommendationScope):\(sessionId):\(quickMessageRefresh):\(BackendClient.quickMessageCache.revision(for: recommendationScope, host: backendClient.baseURL.absoluteString)):\(backendClient.isOnline):\(scenePhase == .active)"
     }
 
     init(
@@ -157,7 +157,7 @@ struct MessageComposer: View {
             guard backendClient.isOnline, scenePhase == .active else { return }
             do {
                 try await Task.sleep(for: .milliseconds(600))
-                let result = try await BackendClient.quickMessageCache.read(scope: scope) {
+                let result = try await BackendClient.quickMessageCache.readRefreshing(scope: scope) {
                     try await backendClient.quickMessages(for: sessionId)
                 }
                 guard !Task.isCancelled, quickMessageScope == scope,

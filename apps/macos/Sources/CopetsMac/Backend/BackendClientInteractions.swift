@@ -24,9 +24,13 @@ extension BackendClient {
     }
 
     func quickMessages(for sessionID: String) async throws -> ClientQuickMessageRecommendations {
-        let (data, response) = try await URLSession.shared.data(for: URLRequest(
-            url: baseURL.appending(path: "sessions/\(sessionID)/quick-messages")))
+        var request = URLRequest(url: baseURL.appending(path: "sessions/\(sessionID)/quick-messages"))
+        request.timeoutInterval = 8
+        let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            if let http = response as? HTTPURLResponse, [502, 503, 504].contains(http.statusCode) {
+                throw URLError(.resourceUnavailable)
+            }
             throw ClientConnectionError.invalidResponse
         }
         let result = try JSONDecoder().decode(ClientQuickMessageRecommendations.self, from: data)

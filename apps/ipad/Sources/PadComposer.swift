@@ -52,7 +52,7 @@ struct PadComposer<Header: View>: View {
         ClientQuickMessageCache.scope(host: connection.serverID, taskID: quickMessageTaskID, sessionID: sessionID)
     }
     private var recommendationRefreshKey: String {
-        "\(recommendationScope):\(sessionID):\(workspace.quickMessageCache.revision(for: recommendationScope)):\(connection.connected):\(scenePhase == .active)"
+        "\(recommendationScope):\(sessionID):\(workspace.quickMessageCache.revision(for: recommendationScope, host: connection.serverID)):\(connection.connected):\(scenePhase == .active)"
     }
 
     private var draft: Binding<String> {
@@ -137,7 +137,7 @@ struct PadComposer<Header: View>: View {
                 try await Task.sleep(for: .milliseconds(600))
                 let api = ClientSessionAPI(transport: try await connection.transport())
                 let routedID = workspace.capabilities?.sessionId ?? sessionID
-                let result = try await workspace.quickMessageCache.read(scope: scope) {
+                let result = try await workspace.quickMessageCache.readRefreshing(scope: scope) {
                     try await api.quickMessages(sessionId: routedID)
                 }
                 guard !Task.isCancelled, quickMessageScope == scope,

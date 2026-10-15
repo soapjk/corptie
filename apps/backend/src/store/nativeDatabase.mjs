@@ -1,10 +1,14 @@
 import { DatabaseSync } from "node:sqlite";
 import { performance } from "node:perf_hooks";
 import { queryCallerSource, SqliteQueryObservability } from "./queryObservability.mjs";
+import { quickMessageContribution } from "../application/quickMessageRecommendations.mjs";
 
 export class NativeDatabase {
   constructor(path, options = {}) {
     this.database = new DatabaseSync(path, { readOnly: options.readOnly === true });
+    this.database.function("corptie_quick_message_eligible_v1", { deterministic: true },
+      (type, text, status, presentation_role, raw_metadata_json) =>
+        quickMessageContribution({ type, text, status, presentation_role, raw_metadata_json }) == null ? 0 : 1);
     this.rowsModified = 0;
     this.observability = new SqliteQueryObservability();
     this.writeBlocked = false;
