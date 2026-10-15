@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 export const QUICK_MESSAGE_DEFAULTS = ["继续", "开始开发", "给我一个完整方案"];
 export const QUICK_MESSAGE_LIMIT = 8;
 const DEFAULTS = new Set(QUICK_MESSAGE_DEFAULTS);
-const COMMON = new Set([...QUICK_MESSAGE_DEFAULTS, "检查并运行测试", "继续开发", "开始实现", "总结一下", "修复这个问题", "提交更改", "Continue", "Run tests"]);
+export const QUICK_MESSAGE_COMMON = [...QUICK_MESSAGE_DEFAULTS, "检查并运行测试", "继续开发", "开始实现", "总结一下", "修复这个问题", "提交更改", "Continue", "Run tests"];
+const COMMON = new Set(QUICK_MESSAGE_COMMON);
 const caches = new WeakMap();
 
 export function eligibleQuickMessage(text) {
@@ -63,29 +64,24 @@ export function readQuickMessages(store, sessionId) {
   let cache = caches.get(store);
   if (!cache) caches.set(store, cache = new Map());
   const existing = cache.get(scope);
-  // A new rowid misses status updates and deletes. Revision rows are small
-  // (one per Session) and read in this same snapshot, unlike PRAGMA data_version.
-  const watermark = store.selectOne("SELECT COALESCE(SUM(revision), 0) AS value FROM session_timeline_revisions").value;
-  if (existing && existing.watermark === watermark && Date.now() - existing.at < 15_000) return existing.value;
-  const eligible = `i.type = 'userMessage' AND COALESCE(i.presentation_role, '') IN ('', 'user')
-    AND COALESCE(i.status, '') NOT IN ('failed', 'cancelled') AND length(i.text) BETWEEN 1 AND 80 AND s.deleted_at IS NULL
-    AND CASE WHEN json_valid(COALESCE(i.raw_metadata_json, '{}'))
-      THEN COALESCE(json_array_length(i.raw_metadata_json, '$.images'), 0) = 0 ELSE 0 END`;
-  // Aggregate durable history in SQLite; only bounded candidate counts leave
-  // the read worker. Recent one-off messages must not evict older repeats.
-  const taskRows = store.selectAll(`SELECT i.text, MAX(i.created_at) AS created_at, COUNT(*) AS count, s.task_id
-    FROM session_items i JOIN sessions s ON s.id = i.session_id
-    WHERE ${eligible} AND ${session.taskId ? "s.task_id = ?" : "s.id = ?"}
-    GROUP BY i.text ORDER BY count DESC, created_at DESC, i.text LIMIT 2000`, [scopeId]);
-  // Only the small, explicit common-command allowlist is aggregated globally;
-  // arbitrary history and tool traffic never enter the common recommendation set.
+  const build = store.selectOne("SELECT ready,common_revision FROM quick_message_build_v1 WHERE id=1");
+  const revisions = store.selectAll(`SELECT s.id,COALESCE(r.revision,0) AS revision FROM sessions s
+    LEFT JOIN quick_message_revisions_v1 r ON r.session_id=s.id
+    WHERE ${session.taskId ? "s.task_id=?" : "s.id=?"} AND s.deleted_at IS NULL ORDER BY s.id`, [scopeId]);
+  const watermark = JSON.stringify([1, build.ready, build.common_revision, revisions]);
+  if (existing?.watermark === watermark) return existing.value;
+  if (!build.ready) return { ...rankQuickMessages([], [], session.taskId), preparationStatus: "building" };
+  const taskRows = store.selectAll(`SELECT q.text,MAX(q.last_at) AS created_at,SUM(q.count) AS count,s.task_id
+    FROM sessions s JOIN quick_message_stats_v1 q ON q.session_id=s.id
+    WHERE ${session.taskId ? "s.task_id=?" : "s.id=?"} AND s.deleted_at IS NULL
+    GROUP BY q.text ORDER BY count DESC,created_at DESC,q.text LIMIT 2000`, [scopeId]);
   const commonTexts = [...COMMON];
-  const commonRows = store.selectAll(`SELECT i.text, MAX(i.created_at) AS created_at, COUNT(*) AS count,
-    COUNT(DISTINCT s.task_id) AS task_count FROM session_items i JOIN sessions s ON s.id = i.session_id
-    WHERE ${eligible} AND trim(i.text) IN (${commonTexts.map(() => "?").join(",")})
-    GROUP BY i.text ORDER BY count DESC, created_at DESC LIMIT 2000`, commonTexts);
+  const commonRows = store.selectAll(`SELECT q.text,MAX(q.last_at) AS created_at,SUM(q.count) AS count,
+    COUNT(DISTINCT s.task_id) AS task_count FROM quick_message_stats_v1 q JOIN sessions s ON s.id=q.session_id
+    WHERE trim(q.text) IN (${commonTexts.map(() => "?").join(",")}) AND s.deleted_at IS NULL
+    GROUP BY q.text ORDER BY count DESC,created_at DESC LIMIT 2000`, commonTexts);
   const value = rankQuickMessages(taskRows, commonRows, session.taskId);
   if (cache.size >= 128) cache.delete(cache.keys().next().value);
-  cache.set(scope, { at: Date.now(), watermark, value });
+  cache.set(scope, { watermark, value });
   return value;
 }

@@ -673,6 +673,7 @@ final class BackendClient: ObservableObject {
     private func handleGlobalEvent(_ eventName: String, data: String) async {
         if eventName == "SessionQuickMessagesChanged", let bytes = data.data(using: .utf8),
            let change = try? ClientQuickMessageInvalidation.decodeEnvelope(bytes) {
+            if change.commonChanged == true { Self.quickMessageCache.commonChanged(host: baseURL.absoluteString) }
             Self.quickMessageCache.invalidate(host: baseURL.absoluteString,
                 taskID: change.taskId, sessionID: change.sessionId)
             return

@@ -85,6 +85,88 @@ struct QuickMessageContractTests {
         #expect(counter.calls == 2)
     }
 
+    @Test func foregroundRecoveryRetriesTransientFailuresButNeverReplacesLastGoodCache() async throws {
+        let suite = "quick-recovery-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let cache = ClientQuickMessageCache(defaults: defaults)
+        @MainActor final class Counter { var calls = 0; var pauses = 0 }
+        let counter = Counter()
+        let expected = try result(8)
+        let pause: @MainActor @Sendable (Duration) async throws -> Void = { _ in counter.pauses += 1 }
+        let recovered = try await cache.readRefreshing(scope: "a", pause: pause) {
+            counter.calls += 1
+            if counter.calls < 3 { throw URLError(.timedOut) }
+            return expected
+        }
+        #expect(recovered == expected && counter.calls == 3 && counter.pauses == 2)
+        let remembered = cache.remember(expected.items, for: "a")
+        counter.calls = 0
+        await #expect(throws: URLError.self) {
+            try await cache.readRefreshing(scope: "a", pause: pause) {
+                counter.calls += 1; throw URLError(.networkConnectionLost)
+            }
+        }
+        #expect(counter.calls == 3 && cache.items(for: "a") == remembered)
+        counter.calls = 0
+        await #expect(throws: ClientConnectionError.self) {
+            try await cache.readRefreshing(scope: "a", pause: pause) {
+                counter.calls += 1; throw ClientConnectionError.invalidResponse
+            }
+        }
+        #expect(counter.calls == 1)
+        var building = expected
+        building.preparationStatus = "building"
+        let preparing = building
+        await #expect(throws: URLError.self) {
+            try await cache.readRefreshing(scope: "a", pause: pause) { preparing }
+        }
+        #expect(cache.items(for: "a") == remembered)
+    }
+
+    @Test func staleResponsesFromCancellationIgnoringTransportCannotBeUsedAndCommonInvalidationIsHostScoped() async throws {
+        let suite = "quick-hosts-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let cache = ClientQuickMessageCache(defaults: defaults)
+        let expected = try result(8)
+        _ = cache.revision(for: "a", host: "one")
+        _ = cache.revision(for: "b", host: "two")
+        let waiter = Task { @MainActor in
+            try await cache.readRefreshing(scope: "a") {
+                try? await Task.sleep(for: .milliseconds(50))
+                return expected
+            }
+        }
+        for _ in 0..<100 { if cache.inFlightCount == 1 { break }; await Task.yield() }
+        cache.commonChanged(host: "one")
+        #expect(cache.revision(for: "a") == 1)
+        #expect(cache.revision(for: "b") == 0)
+        await #expect(throws: CancellationError.self) { try await waiter.value }
+    }
+
+    @Test func closingOneWindowDoesNotCancelAnotherWindowsSharedRequest() async throws {
+        let suite = "quick-waiters-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let cache = ClientQuickMessageCache(defaults: defaults)
+        let expected = try result(8)
+        @MainActor final class Counter { var calls = 0 }
+        let counter = Counter()
+        let load: @MainActor @Sendable () async throws -> ClientQuickMessageRecommendations = {
+            counter.calls += 1
+            try await Task.sleep(for: .milliseconds(100))
+            return expected
+        }
+        let first = Task { @MainActor in try await cache.readRefreshing(scope: "a", load: load) }
+        let second = Task { @MainActor in try await cache.readRefreshing(scope: "a", load: load) }
+        for _ in 0..<50 { await Task.yield() }
+        first.cancel()
+        #expect(try await second.value == expected)
+        await #expect(throws: CancellationError.self) { try await first.value }
+        #expect(counter.calls == 1)
+    }
+
     @Test func invalidationCancelsPreChangeFlightSoFreshReadersCannotJoinStaleRequest() async throws {
         let suite = "quick-stale-flight-\(UUID())"
         let defaults = try #require(UserDefaults(suiteName: suite))

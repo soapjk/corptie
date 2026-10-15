@@ -212,6 +212,7 @@ extension PadWorkspace {
                         pushedReceiptRevision += 1
                         if pending?.requestID == receipt.requestId { settle(receipt) }
                     case .quickMessagesChanged(let change):
+                        if change.commonChanged == true { quickMessageCache.commonChanged(host: connection.serverID) }
                         quickMessageCache.invalidate(host: connection.serverID,
                             taskID: change.taskId, sessionID: change.sessionId)
                     case .heartbeat:

@@ -10,6 +10,7 @@ export class StoreTransactionCoordinator {
     this.pendingStateDirty = false;
     this.pendingTimelineDirty = new Set();
     this.pendingQuickMessagesDirty = new Set();
+    this.pendingQuickMessagesGlobalDirty = new Set();
   }
 
   scheduleSave() {
@@ -31,17 +32,19 @@ export class StoreTransactionCoordinator {
     this.timelineDirtyListener = typeof listener === "function" ? listener : null;
   }
 
-  notifyTimelineDirty(sessionId, { quickMessagesChanged = false } = {}) {
+  notifyTimelineDirty(sessionId, { quickMessagesChanged = false, quickMessagesGlobalChanged = false } = {}) {
     if (!sessionId) return;
     if (this.transactionDepth > 0) {
       this.pendingTimelineDirty.add(sessionId);
       if (quickMessagesChanged) this.pendingQuickMessagesDirty.add(sessionId);
+      if (quickMessagesGlobalChanged) this.pendingQuickMessagesGlobalDirty.add(sessionId);
       return;
     }
     this.timelineDirtyListener?.({
       sessionId,
       revision: this.sessionTimelineRevision(sessionId),
-      ...(quickMessagesChanged ? { quickMessagesChanged: true } : {})
+      ...(quickMessagesChanged ? { quickMessagesChanged: true } : {}),
+      ...(quickMessagesGlobalChanged ? { quickMessagesGlobalChanged: true } : {})
     });
   }
 
@@ -66,6 +69,7 @@ export class StoreTransactionCoordinator {
       this.pendingStateDirty = false;
       this.pendingTimelineDirty.clear();
       this.pendingQuickMessagesDirty.clear();
+      this.pendingQuickMessagesGlobalDirty.clear();
       throw error;
     }
     this.transactionDepth = 0;
@@ -79,15 +83,18 @@ export class StoreTransactionCoordinator {
     const stateDirty = this.pendingStateDirty;
     const timelineSessionIds = [...this.pendingTimelineDirty];
     const quickMessagesSessionIds = new Set(this.pendingQuickMessagesDirty);
+    const globalQuickMessageIds = new Set(this.pendingQuickMessagesGlobalDirty);
     this.pendingStateDirty = false;
     this.pendingTimelineDirty.clear();
     this.pendingQuickMessagesDirty.clear();
+    this.pendingQuickMessagesGlobalDirty.clear();
     if (stateDirty) notifyCommittedListener(this.stateDirtyListener);
     for (const sessionId of timelineSessionIds) {
       notifyCommittedListener(this.timelineDirtyListener, {
         sessionId,
         revision: this.sessionTimelineRevision(sessionId),
-        ...(quickMessagesSessionIds.has(sessionId) ? { quickMessagesChanged: true } : {})
+        ...(quickMessagesSessionIds.has(sessionId) ? { quickMessagesChanged: true } : {}),
+        ...(globalQuickMessageIds.has(sessionId) ? { quickMessagesGlobalChanged: true } : {})
       });
     }
   }

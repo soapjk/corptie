@@ -31,32 +31,88 @@ public final class ClientQuickMessageCache {
     private var resident: [String: [ClientQuickMessage]] = [:]
     @MainActor @Observable fileprivate final class Signal { var revision = 0 }
     private var signals: [String: Signal] = [:]
+    private var signalHosts: [String: String] = [:]
     private struct Flight {
         let id: UUID
         let task: Task<ClientQuickMessageRecommendations, Error>
+        var waiters: Set<UUID> = []
     }
     private var flights: [String: Flight] = [:]
     public var inFlightCount: Int { flights.count }
     public func read(scope: String,
                      load: @escaping @MainActor @Sendable () async throws -> ClientQuickMessageRecommendations) async throws -> ClientQuickMessageRecommendations {
-        if let flight = flights[scope] { return try await flight.task.value }
+        try Task.checkCancellation()
+        if let flight = flights[scope] { return try await wait(for: flight, scope: scope) }
         guard flights.count < 32 else { throw URLError(.resourceUnavailable) }
         let id = UUID()
         let task = Task { @MainActor in
             let result = try await load()
+            try Task.checkCancellation()
             return try result.validated()
         }
         flights[scope] = Flight(id: id, task: task)
         defer { if flights[scope]?.id == id { flights.removeValue(forKey: scope) } }
-        return try await task.value
+        return try await wait(for: flights[scope]!, scope: scope)
+    }
+
+    private func wait(for flight: Flight, scope: String) async throws -> ClientQuickMessageRecommendations {
+        let waiter = UUID()
+        flights[scope]?.waiters.insert(waiter)
+        defer { releaseWaiter(waiter, scope: scope, flightID: flight.id) }
+        return try await withTaskCancellationHandler {
+            let result = try await flight.task.value
+            try Task.checkCancellation()
+            return result
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.releaseWaiter(waiter, scope: scope, flightID: flight.id) }
+        }
+    }
+
+    private func releaseWaiter(_ waiter: UUID, scope: String, flightID: UUID) {
+        guard flights[scope]?.id == flightID else { return }
+        flights[scope]?.waiters.remove(waiter)
+        if flights[scope]?.waiters.isEmpty == true {
+            flights.removeValue(forKey: scope)?.task.cancel()
+        }
+    }
+
+    /// Bounded, foreground-owned recovery. Invalidations fence stale responses,
+    /// including transports that ignore cancellation. No polling/timers survive callers.
+    public func readRefreshing(scope: String,
+        pause: @escaping @MainActor @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        load: @escaping @MainActor @Sendable () async throws -> ClientQuickMessageRecommendations
+    ) async throws -> ClientQuickMessageRecommendations {
+        for attempt in 0..<3 {
+            try Task.checkCancellation()
+            let expectedRevision = revision(for: scope)
+            do {
+                let result = try await read(scope: scope, load: load)
+                try Task.checkCancellation()
+                guard revision(for: scope) == expectedRevision else { throw CancellationError() }
+                if result.preparationStatus == "building" { throw URLError(.resourceUnavailable) }
+                return result
+            } catch {
+                try Task.checkCancellation()
+                guard attempt < 2, let network = error as? URLError,
+                    [.timedOut, .networkConnectionLost, .notConnectedToInternet, .cannotConnectToHost,
+                     .cannotFindHost, .resourceUnavailable].contains(network.code) else { throw error }
+                try await pause(.seconds(attempt == 0 ? 1 : 2))
+            }
+        }
+        throw URLError(.resourceUnavailable)
     }
 
     /// Only this Scope's readers observe its signal; cache reads/writes do not
     /// invalidate every composer or start a request for each streaming token.
-    public func revision(for scope: String) -> Int { signal(for: scope).revision }
+    public func revision(for scope: String, host: String? = nil) -> Int {
+        if let host { signalHosts[scope] = host }
+        return signal(for: scope).revision
+    }
     private func signal(for scope: String) -> Signal {
         if let value = signals[scope] { return value }
-        if signals.count >= maximumScopes, let oldest = signals.keys.first { signals.removeValue(forKey: oldest) }
+        if signals.count >= maximumScopes, let oldest = signals.keys.first {
+            signals.removeValue(forKey: oldest); signalHosts.removeValue(forKey: oldest)
+        }
         let value = Signal(); signals[scope] = value
         return value
     }
@@ -69,6 +125,13 @@ public final class ClientQuickMessageCache {
         for flight in flights.values { flight.task.cancel() }
         flights.removeAll()
         for signal in signals.values { signal.revision &+= 1 }
+    }
+
+    public func commonChanged(host: String) {
+        for scope in signals.keys where signalHosts[scope] == host {
+            flights.removeValue(forKey: scope)?.task.cancel()
+            signals[scope]?.revision &+= 1
+        }
     }
 
     public init(defaults: UserDefaults = .standard, maximumScopes: Int = 128) {
@@ -134,6 +197,7 @@ public struct ClientQuickMessageRecommendations: Codable, Equatable, Sendable {
     public let schemaVersion: Int
     public let taskId: String?
     public let items: [ClientQuickMessage]
+    public var preparationStatus: String? = nil
 
     public func validated() throws -> Self {
         guard schemaVersion == 1, items.count <= ClientQuickMessage.maximumRecommendations else {
@@ -149,6 +213,7 @@ public struct ClientQuickMessageInvalidation: Codable, Sendable {
     public let schemaVersion: Int
     public let sessionId: String
     public let taskId: String?
+    public var commonChanged: Bool? = nil
     public func validated() throws -> Self {
         guard schemaVersion == 1, !sessionId.isEmpty, sessionId.utf8.count <= 512 else {
             throw ClientConnectionError.invalidResponse

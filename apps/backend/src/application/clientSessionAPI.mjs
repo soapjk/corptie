@@ -249,7 +249,9 @@ export class ClientSessionAPI {
   async quickMessages(identity, sessionId) {
     const resolved = this.session(sessionId);
     if (!this.quickMessageReader) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
-    return this.quickMessageReader(resolved.sessionId);
+    const result = await this.quickMessageReader(resolved.sessionId);
+    if (result.preparationStatus === "building") throw deviceError("QUICK_MESSAGE_STATISTICS_PREPARING", 503);
+    return result;
   }
 
   async messageWindow(sessionId, { limit, anchor = null }) {

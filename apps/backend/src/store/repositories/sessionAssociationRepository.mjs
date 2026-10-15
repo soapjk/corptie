@@ -3,7 +3,8 @@ import { assertExplicitSessionKind } from "../../utils/sessionKinds.mjs";
 
 // Shared connection and transaction ownership remain with Store.
 export class SessionAssociationRepository {
-  constructor({ getDatabase, selectOne, selectAll, getSession, getTask, getWork, getAgent, getProjectIntegrationRun, getWorkChatSession, runInTransaction, scheduleSave }) {
+  constructor({ getDatabase, selectOne, selectAll, getSession, getTask, getWork, getAgent, getProjectIntegrationRun, getWorkChatSession, runInTransaction, scheduleSave, notifyTimelineDirty = () => {} }) {
+    this.notifyTimelineDirty = notifyTimelineDirty;
     this.getDatabase = getDatabase;
     this.selectOne = selectOne;
     this.selectAll = selectAll;
@@ -60,6 +61,7 @@ export class SessionAssociationRepository {
       throw error;
     }
     this.scheduleSave();
+    this.notifyTimelineDirty(sessionId, { quickMessagesChanged: true, quickMessagesGlobalChanged: true });
     return this.getSession(sessionId);
   }
 

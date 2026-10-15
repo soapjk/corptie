@@ -50,6 +50,7 @@ export function createStoreRepositories({ getDatabase, getSshWorkspaces, environ
       selectOne: (...args) => ports.selectOne(...args),
     });
     const sessionAssociationRepository = new SessionAssociationRepository({
+      notifyTimelineDirty: (...args) => ports.notifyTimelineDirty(...args),
       getDatabase: () => getDatabase(),
       selectOne: (...args) => ports.selectOne(...args),
       selectAll: (...args) => ports.selectAll(...args),
@@ -73,6 +74,7 @@ export function createStoreRepositories({ getDatabase, getSshWorkspaces, environ
       getWork: (...args) => ports.getWork(...args),
     });
     const sessionMutationRepository = new SessionMutationRepository({
+      notifyTimelineDirty: (...args) => ports.notifyTimelineDirty(...args),
       getDatabase: () => getDatabase(),
       selectOne: (...args) => ports.selectOne(...args),
       selectAll: (...args) => ports.selectAll(...args),
