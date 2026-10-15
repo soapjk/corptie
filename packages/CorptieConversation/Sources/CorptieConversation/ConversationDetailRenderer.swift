@@ -3,7 +3,7 @@ import CorptieClientCore
 
 /// Incrementally migrated modules share this exact renderer on all three clients.
 /// Existing resource/editor modules remain outside until their action contracts migrate.
-public struct ConversationServerDetail: View {
+struct ConversationLegacyServerDetail: View {
     private let scope: String
     private let sessionID: String
     private let api: @Sendable () async throws -> ClientDetailAPI
@@ -62,7 +62,8 @@ public struct ConversationServerDetail: View {
                 } else if let selected = presentationAPI {
                     actionRuntime.perform(cardID: cardID, action: action, fields: fields, store: store, selected: selected, api: api)
                 }
-            }, canPerformInCard: { cardID, action in actionRuntime.isIdle(cardID: cardID, actionID: action.id) }))
+            }, canPerformInCard: { cardID, action in actionRuntime.isIdle(cardID: cardID, actionID: action.id) }),
+                excludingCardIDs: [])
             if let error = store.error { Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary) }
             if let error = actionRuntime.error { Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary) }
             if actionRuntime.needsRecovery, let selected = presentationAPI {
@@ -113,16 +114,18 @@ public struct ConversationDetailRenderer: View {
     private let refreshing: Bool
     private let perform: (ClientDetailAction) -> Void
     private let actions: ConversationDetailActions
+    private var excludingCardIDs: Set<String> = []
     public init(store: ClientDetailStore, refreshing: Bool = false, perform: @escaping (ClientDetailAction) -> Void = { _ in }) {
         self.store = store; self.refreshing = refreshing; self.perform = perform
         self.actions = .init(canPerform: { $0.kind == "read" && $0.operation == "detail.refresh" && !refreshing }, perform: { action, _ in perform(action) })
     }
-    public init(store: ClientDetailStore, refreshing: Bool = false, actions: ConversationDetailActions) {
+    public init(store: ClientDetailStore, refreshing: Bool = false, actions: ConversationDetailActions, excludingCardIDs: Set<String> = []) {
         self.store = store; self.refreshing = refreshing; self.actions = actions
+        self.excludingCardIDs = excludingCardIDs
         self.perform = { action in actions.perform(action, [:]) }
     }
     public var body: some View {
-        ForEach(store.orderedCards) { state in
+        ForEach(store.orderedCards.filter { !excludingCardIDs.contains($0.id) }) { state in
             ConversationDetailRenderedCard(state: state, refreshing: refreshing, perform: perform, actions: actions, scope: store.renderingScope)
         }
     }
@@ -147,7 +150,9 @@ private struct ConversationDetailRenderedCard: View {
                 ConversationDetailWebCard(state: state, descriptor: descriptor, actions: scoped, scope: scope)
                     .id("\(scope):\(ObjectIdentifier(state)):\(descriptor.rendererId ?? ""):\(descriptor.assetHash ?? "")")
             } else {
-                ConversationDetailNodeView(state: state, nodeID: state.card.rootNodeId, actions: scoped, scope: scope)
+                ConversationDetailBoundedScroll {
+                    ConversationDetailNodeView(state: state, nodeID: state.card.rootNodeId, actions: scoped, scope: scope)
+                }
             }
         }
         .accessibilityIdentifier("detail-card-\(state.id)")
@@ -199,7 +204,17 @@ private struct ConversationDetailNodeView: View {
         return VStack(alignment: .leading, spacing: 5) {
             DisclosureGroup(isExpanded: Binding(get: { state.isNodeExpanded(node.id, initiallyExpanded: initiallyExpanded) },
                 set: { state.setNodeExpanded(node.id, $0) })) {
-                if state.isNodeExpanded(node.id, initiallyExpanded: initiallyExpanded) { children(node) }
+                if state.isNodeExpanded(node.id, initiallyExpanded: initiallyExpanded) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if config?.previewBinding != nil,
+                           let child = node.children.first.flatMap({ state.nodes[$0] }),
+                           child.kind == "detail.markdown", let field = child.binding,
+                           let body = state.card.data[field]?.text {
+                            Text(body).font(.caption).fontWeight(.regular).foregroundStyle(.secondary)
+                                .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                        } else { children(node) }
+                    }
+                }
             } label: { Text(node.props.label?.fallback ?? state.card.fallback.fallback).font(.caption.weight(.semibold)) }
             if !state.isNodeExpanded(node.id, initiallyExpanded: initiallyExpanded),
                let field = config?.previewBinding, let preview = state.card.data[field]?.text, !preview.isEmpty {

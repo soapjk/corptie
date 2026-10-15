@@ -18,6 +18,13 @@ public struct ConversationWorktreeCard: View {
     @State private var error: String?
     @State private var lastRead: Date?
     @State private var pollRevision = 0
+    private struct CommitReview: Identifiable {
+        let id: String
+        let protection: ClientGitCommitProtectionStatus
+    }
+    @State private var commitReview: CommitReview?
+    @State private var commitMessage = ""
+    @State private var privateFilesDecision = ""
 
     public init(sessionID: String, refreshID: String,
                 api: @escaping @MainActor () async throws -> ClientSessionWorktreeAPI,
@@ -37,8 +44,15 @@ public struct ConversationWorktreeCard: View {
                         .font(.caption.weight(.semibold)).frame(maxWidth: .infinity, alignment: .leading)
                         .frame(minHeight: headerHeight).contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityValue(localize(expanded ? "已展开" : "已收起"))
-                if detail?.canPerform(.synchronize) == true { actionButton(.synchronize, icon: "arrow.triangle.2.circlepath", label: "同步主分支") }
-                if detail?.canPerform(.merge) == true { actionButton(.merge, icon: "arrow.triangle.merge", label: "合并到主分支") }
+                if detail?.worktree?.dirty == true {
+                    Button { Task { await prepareCommit() } } label: { ConversationDetailHeaderIcon(systemName: "checkmark.circle") }
+                        .buttonStyle(.plain).foregroundStyle(Color.accentColor).disabled(loading || mutating)
+                        .help(localize("提交修改")).accessibilityLabel(localize("提交修改"))
+                }
+                if detail?.worktree?.isMain == false {
+                    actionButton(.synchronize, icon: "arrow.triangle.2.circlepath", label: "同步主分支")
+                    actionButton(.merge, icon: "arrow.triangle.merge", label: "合并到主分支")
+                }
                 Button { Task { await reload() } } label: { ConversationDetailHeaderIcon(systemName: "arrow.clockwise") }
                     .buttonStyle(.plain).disabled(loading || mutating).accessibilityLabel(localize("刷新 Worktree 状态"))
             }
@@ -54,10 +68,11 @@ public struct ConversationWorktreeCard: View {
                     Text(blockerText(blocker)).font(.caption).foregroundStyle(.orange)
                 }
                 if !tree.isMain, detail?.autoFollow != nil {
-                    Toggle(localize("自动跟随主分支"), isOn: Binding(
+                    Toggle(localize("自动同步主分支"), isOn: Binding(
                         get: { detail?.autoFollow?.enabled == true },
                         set: { enabled in Task { await setAutoFollow(enabled, worktreeID: tree.worktreeId) } }
                     ))
+                    .toggleStyle(.switch)
                     .font(.caption).disabled(loading || mutating)
                     .help(localize("工作区干净且会话空闲时自动 Rebase；不会自动提交、stash 或 push。"))
                     if let follow = detail?.autoFollow, follow.enabled {
@@ -103,11 +118,59 @@ public struct ConversationWorktreeCard: View {
         .sheet(item: $review, onDismiss: cancelDraftIfNeeded) { reviewed in
             reviewSheet(reviewed)
         }
+        .sheet(item: $commitReview) { draft in
+            VStack(alignment: .leading, spacing: 12) {
+                Text(localize("提交修改")).font(.headline)
+                Text(localize("仅提交当前 Worktree，不合并、同步或推送。" )).font(.caption).foregroundStyle(.secondary)
+                TextField(localize("提交信息"), text: $commitMessage, axis: .vertical).lineLimit(3...6).textFieldStyle(.roundedBorder)
+                if draft.protection.requiresDecision {
+                    Picker(localize("私密文件"), selection: $privateFilesDecision) {
+                        Text(localize("请选择处理方式")).tag("")
+                        Text(localize("忽略并继续")).tag("ignore")
+                        Text(localize("包含并继续")).tag("include")
+                    }
+                    ScrollView { VStack(alignment: .leading) { ForEach(draft.protection.protectedPaths, id: \.self) { Text($0).font(.caption.monospaced()) } } }.frame(maxHeight: 140)
+                }
+                if let error { Text(error).font(.caption).foregroundStyle(.red) }
+                HStack {
+                    Button(localize("取消")) { commitReview = nil }.disabled(mutating)
+                    Spacer()
+                    Button(localize("提交")) { Task { await commit(draft) } }
+                        .disabled(mutating || commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (draft.protection.requiresDecision && privateFilesDecision.isEmpty))
+                }
+            }.padding(20).frame(idealWidth: 400).interactiveDismissDisabled(mutating)
+        }
     }
 
     private func actionButton(_ action: ClientWorktreePlanOperation, icon: String, label: String) -> some View {
         Button { Task { await prepare(action) } } label: { ConversationDetailHeaderIcon(systemName: icon) }
-            .buttonStyle(.plain).disabled(loading || mutating).help(localize(label)).accessibilityLabel(localize(label))
+            .buttonStyle(.plain).foregroundStyle(Color.accentColor).disabled(loading || mutating || detail?.canPerform(action) != true)
+            .help(localize(label)).accessibilityLabel(localize(label))
+    }
+    @MainActor private func prepareCommit() async {
+        guard !mutating, let id = detail?.worktree?.worktreeId else { return }
+        mutating = true; error = nil
+        defer { mutating = false }
+        do {
+            let protection = try await api().prepareCommit(sessionID: sessionID, worktreeID: id)
+            try Task.checkCancellation()
+            commitMessage = ""; privateFilesDecision = ""; commitReview = CommitReview(id: id, protection: protection)
+        } catch { if !Task.isCancelled { self.error = describe(error) } }
+    }
+    @MainActor private func commit(_ draft: CommitReview) async {
+        guard !mutating else { return }; mutating = true; error = nil
+        do {
+            try await api().commit(sessionID: sessionID, worktreeID: draft.id, message: commitMessage,
+                privateFilesDecision: privateFilesDecision.isEmpty ? nil : privateFilesDecision)
+            commitReview = nil
+        } catch {
+            // A transport failure does not prove the commit failed. Do not
+            // automatically retry or leave a submit button ready to resend.
+            commitReview = nil
+            self.error = localize("提交结果需核对，请刷新 Worktree 或打开管理页面确认，勿直接重复提交。")
+        }
+        mutating = false
+        if error == nil { await reload() }
     }
     private func relation(_ tree: ClientSessionWorktreeDetail.Worktree) -> String {
         if tree.isMain { return localize("当前为主 Worktree") }

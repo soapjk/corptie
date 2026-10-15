@@ -5,7 +5,7 @@ import { createReadStream } from "node:fs";
 import { ClientDeviceAuthority, deviceError } from "./clientDeviceAuthority.mjs";
 import { ClientEventStream, parseRealtimeResumeQuery } from "./clientEventStream.mjs";
 import { ClientInspectorStream } from "./clientInspectorStream.mjs";
-import { detailServiceFor, acceptsNativeDetail, sendNegotiatedDetailSnapshot, detailCapabilitiesVersion } from "./detailDocumentService.mjs";
+import { detailServiceFor, acceptsNativeDetail, sendNegotiatedDetailSnapshot, detailCapabilitiesVersion, requestsNativeBusiness, sendNativeBusinessSnapshot } from "./detailDocumentService.mjs";
 import { readDetailV2Request } from "./detailV2JSON.mjs";
 import { detailV2GetNegotiation, detailV2PinnedAuthenticate } from "./detailV2Negotiation.mjs";
 import { createDetailBusinessActionService } from "./detailBusinessActionComposition.mjs";
@@ -201,6 +201,11 @@ export class ClientDeviceGateway {
         }, identity, scope.logicalSessionId ?? scope.sessionId);
         const service = detailServiceFor(this.sessionAPI.inspector.store);
         if (v2 && !service.acceptsDeliveryCatalog(negotiation.catalog)) throw deviceError("DETAIL_CATALOG_UNSUPPORTED", 409);
+        if (requestsNativeBusiness(request)) {
+          const canonical = scope.logicalSessionId ?? scope.sessionId;
+          if (detail[2]) return service.attachNativeBusiness(response, authenticate, canonical, request);
+          return await sendNativeBusinessSnapshot(service, request, response, canonical, authenticate);
+        }
         if (detail[2]) return service.events.attach(response, () => {
           const identity = authenticate(); this.sessionAPI.inspector.scope(id, identity); return identity;
         }, scope.logicalSessionId ?? scope.sessionId, request);

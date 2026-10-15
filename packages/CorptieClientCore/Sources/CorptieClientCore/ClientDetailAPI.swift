@@ -22,6 +22,57 @@ public struct ClientDetailAPI: Sendable {
     public var actionTransport: ClientDetailActionAPI {
         ClientDetailActionAPI(transport: transport, route: route, negotiation: negotiation)
     }
+    public var nativeBusinessPolicy: Self {
+        var selected = negotiating(.nativeBusiness)
+        selected.writesAvailable = true; selected.paginationAvailable = true
+        return selected // Host availability is still checked for every action.
+    }
+    private func businessRequest(sessionID: String, events: Bool) throws -> URLRequest {
+        let prefix = route == .desktop ? [] : ["client", "v1"]
+        var request = try transport.endpoint.request(path: prefix + ["sessions", sessionID, "detail"] + (events ? ["events"] : []))
+        request.setValue("\(events ? "text/event-stream" : "application/json"); corptie-detail=\(ClientDetailBusinessDocument.profile)", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = events ? 35 : 15
+        return request
+    }
+    public func businessSnapshot(sessionID: String) async throws -> ClientDetailBusinessDocument {
+        let (data, _) = try await transport.data(for: businessRequest(sessionID: sessionID, events: false))
+        return try ClientDetailBusinessDocument.decode(data)
+    }
+    /// Separate profile and complete card snapshots: never applies business
+    /// data as the old node-based V2 schema or reuses its resume cursor.
+    public func businessSubscribe(sessionID: String) -> AsyncThrowingStream<ClientDetailBusinessDocument, Error> {
+        AsyncThrowingStream(bufferingPolicy: .bufferingOldest(8)) { continuation in
+            let task = Task {
+                do {
+                    let (bytes, response) = try await transport.bytes(for: businessRequest(sessionID: sessionID, events: true))
+                    guard response.value(forHTTPHeaderField: "Content-Type")?.contains("text/event-stream") == true else { throw ClientConnectionError.invalidResponse }
+                    var parser = ServerSentEventParser(), count = 0
+                    for try await byte in bytes {
+                        try Task.checkCancellation(); count += 1
+                        guard count <= ClientDetailProtocol.maxFrameBytes else { throw ClientDetailFailure.limit }
+                        for event in parser.append(byte) {
+                            count = 0
+                            if event.isComment || event.name == "heartbeat" { continue }
+                            if event.name == "detail-error" {
+                                let failure = try JSONDecoder().decode([String: String].self, from: Data(event.data.utf8))
+                                throw ClientServiceFailure(statusCode: Int(failure["status"] ?? "503") ?? 503, code: failure["code"] ?? "DETAIL_FAILED")
+                            }
+                            guard event.name == "detail-snapshot" else { throw ClientConnectionError.invalidResponse }
+                            let document = try ClientDetailBusinessDocument.decode(Data(event.data.utf8))
+                            switch continuation.yield(document) {
+                            case .enqueued: break
+                            case .dropped: throw ClientDetailFailure.bufferOverflow
+                            case .terminated: return
+                            @unknown default: throw ClientDetailFailure.bufferOverflow
+                            }
+                        }
+                    }
+                    continuation.finish()
+                } catch { continuation.finish(throwing: error) }
+            }
+            continuation.onTermination = { @Sendable _ in task.cancel() }
+        }
+    }
     /// Host advertisement chooses the profile; actual renderer capabilities
     /// remain explicit. Never downgrade an already negotiated rich request.
     public func forPresentation(sessionID: String, clientCapabilities: [String]) async throws -> Self {

@@ -1,6 +1,7 @@
 import { deviceError } from "./clientDeviceAuthority.mjs";
 import { parseDetailV2JSON } from "./detailV2JSON.mjs";
 import { detailV2GetNegotiation } from "./detailV2Negotiation.mjs";
+import { DETAIL_NATIVE_BUSINESS_PROFILE } from "./detailNativeBusinessContract.mjs";
 
 async function body(request) {
   if (!/^application\/json(?:;|$)/i.test(request.headers["content-type"] ?? "")) throw deviceError("JSON_REQUIRED", 415);
@@ -26,7 +27,8 @@ export function handleDetailActionHttp({ request, response, url, service, authen
     try {
       if (url.search || (match[3] ? request.method !== "GET" : request.method !== "POST")) throw deviceError("DETAIL_REQUEST_NOT_ALLOWED", 405);
       if (request.headers.accept !== "application/json; corptie-detail=native-v1") {
-        const profile = detailV2GetNegotiation(request);
+        const profile = request.headers.accept === `application/json; corptie-detail=${DETAIL_NATIVE_BUSINESS_PROFILE}`
+          ? { catalog: DETAIL_NATIVE_BUSINESS_PROFILE, clientCapabilities: [] } : detailV2GetNegotiation(request);
         if (!profile || typeof service.forProfile !== "function") throw deviceError("DETAIL_CATALOG_UNSUPPORTED", 409);
         service = service.forProfile(profile);
       }

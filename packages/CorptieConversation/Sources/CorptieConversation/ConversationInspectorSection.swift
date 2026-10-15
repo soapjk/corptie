@@ -158,7 +158,7 @@ public struct ConversationInspectorSection<Content: View, HeaderActions: View>: 
     }
     public var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 6) {
+            HStack(alignment: .top, spacing: 6) {
                 Label(title, systemImage: systemImage)
                     .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.tail)

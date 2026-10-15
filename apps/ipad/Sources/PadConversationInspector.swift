@@ -52,7 +52,17 @@ struct PadConversationInspector: View {
                     ConversationServerDetail(scope: resourceScope,
                         sessionID: sessionID, actions: nativeDetailNavigation,
                         coordinator: { selected, canonical in try await detailCoordinator(selected: selected, canonicalSessionID: canonical) },
-                        onPresentationChanged: { richDetailReady = $0 }, api: {
+                        onPresentationChanged: { richDetailReady = $0 },
+                        platformCardKinds: ["provider", "worktree", "turnMetrics"], platformCard: { cardKind in
+                            if cardKind == "worktree" {
+                                nativeWorktreeCard
+                            } else {
+                                PadInspectorResources(store: inspector, connection: connection, sessionID: sessionID, workspace: workspace,
+                                    kind: kind, onOpenAutomation: onOpenAutomation, standaloneCard: cardKind) {
+                                    EmptyView()
+                                } secondary: { EmptyView() }
+                            }
+                        }, api: {
                             ClientDetailAPI(transport: try await connection.transport(), route: .pairedDevice)
                         })
                         .id(resourceScope)
@@ -122,6 +132,16 @@ struct PadConversationInspector: View {
         .onChange(of: inspector.snapshot?.taskId) { _, _ in retireNativeManagement() }
         .onChange(of: inspector.snapshot?.workId) { _, _ in retireNativeManagement() }
         .onDisappear { retireNativeManagement() }
+    }
+    private var nativeWorktreeCard: some View {
+        let authority = try? connection.detailActionScope(sessionID: sessionID, negotiation: .legacy)
+        return ConversationWorktreeCard(sessionID: sessionID, refreshID: session?.updatedAt ?? "",
+            api: { try await pinnedWorktreeAPI(authority: authority) }, onJob: { job in
+                if job.status != "awaiting_confirmation" {
+                    PadOperationNotifications.shared.track(job.id, resourceName: "Worktree")
+                    if let notification = job.notification { PadOperationNotifications.shared.observe(notification) }
+                }
+            }).id(resourceScope)
     }
     private var nativeDetailNavigation: ConversationDetailActions {
         ConversationDetailActions(canPerform: { action in

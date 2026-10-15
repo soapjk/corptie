@@ -143,18 +143,76 @@ struct SessionDetailPanel: View {
                 actions: nativeDetailNavigation,
                 coordinator: { selected, canonical in try await detailCoordinator(selected: selected, canonicalSessionID: canonical) },
                 onPresentationChanged: { richDetailReady = $0 },
+                platformCardKinds: ["provider", "worktree", "turnMetrics"], platformCard: { kind in
+                    switch kind {
+                    case "provider": providerConfigurationCard
+                    case "worktree": nativeWorktreeCard
+                    default: SessionTurnObservabilityView(sessionId: session.id).modifier(ConversationDetailModuleSurface())
+                    }
+                },
                 api: { [baseURL = CorptieAppEnvironment.backendBaseURL] in
                     ClientDetailAPI(transport: try BackendTransport(endpoint: BackendEndpoint(baseURL)), route: .desktop)
                 })
                 .id(session.id)
             if richDetailReady != false {
-                DisclosureGroup(L10n("管理与完整诊断"), isExpanded: $nativeManagementExpanded) {
-                    if nativeManagementExpanded { nativeDetailContent }
-                }
-                    .font(.caption)
+                Menu {
+                    Button(L10n("添加引用")) { contextReferenceAddMode = .webURL }
+                    if let workID = session.workId {
+                        Button(L10n("Work 记忆管理")) { AppTabRouter.shared.openMemory(ownerType: "work", ownerId: workID) }
+                    }
+                } label: { Label(L10n("资源管理"), systemImage: "slider.horizontal.3").font(.caption) }
             } else { nativeDetailContent }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private var nativeWorktreeCard: some View {
+        ConversationWorktreeCard(sessionID: session.id, refreshID: session.updatedAt,
+            api: { ClientSessionWorktreeAPI(transport: try BackendTransport(endpoint: BackendEndpoint(CorptieAppEnvironment.backendBaseURL)), route: .desktop) },
+            onJob: { job in
+                if job.status != "awaiting_confirmation" {
+                    OperationNotificationManager.shared.track(jobID: job.id, resourceName: "Worktree")
+                    if let notification = job.notification { OperationNotificationManager.shared.observe(notification) }
+                }
+            }, localize: { L10n($0) }).id(session.id)
+    }
+    private var providerConfigurationCard: some View {
+        ConversationProviderConfigurationCard(provider: { providerPicker }, model: {
+            Menu {
+                ForEach(modelCatalog.codexModels) { model in
+                    Button(model.name) {
+                        guard backendClient.selectedSession?.id == session.id else { return }
+                        backendClient.switchSelectedCodexModel(to: model)
+                    }
+                }
+                Button(L10n("重新加载模型")) { Task { await backendClient.loadModelsForSelectedSession(forceRefresh: true) } }
+            } label: {
+                configurationLabel(modelCatalog.codexModels.first { $0.id == session.external?.currentModel }?.name ?? session.external?.currentModel ?? "未设置")
+            }
+            .menuStyle(.borderlessButton)
+            .disabled(backendClient.selectedSession?.id != session.id || !session.canSwitchModelNow || backendClient.isSwitchingModel || isSwitchingProvider)
+            .accessibilityLabel(L10n("切换模型"))
+        }, reasoning: {
+            let model = modelCatalog.codexModels.first { $0.id == session.external?.currentModel }
+            let levels = SessionReasoningSelection.availableLevels(modelID: session.external?.currentModel ?? "", models: modelCatalog.codexModels,
+                supportsSwitch: session.actions?.switchReasoning.available ?? session.capabilities?.canSwitchReasoning ?? false)
+            let level = SessionReasoningSelection.currentLevel(sessionLevel: session.external?.currentReasoningLevel,
+                providerDefaultLevel: modelCatalog.codexDefaultReasoningLevel, model: model)
+            Menu {
+                ForEach(levels, id: \.self) { item in
+                    Button(ComposerModelLabel.reasoningTitle(item)) {
+                        guard backendClient.selectedSession?.id == session.id else { return }
+                        backendClient.switchSelectedCodexReasoning(to: item)
+                    }
+                }
+            } label: { configurationLabel(ComposerModelLabel.reasoningTitle(level)) }
+                .menuStyle(.borderlessButton)
+                .disabled(backendClient.selectedSession?.id != session.id || levels.isEmpty || backendClient.isSwitchingReasoning || isSwitchingProvider)
+                .accessibilityLabel(L10n("切换处理强度"))
+        }, status: { providerSwitchStatus })
+    }
+    private func configurationLabel(_ value: String) -> some View {
+        HStack(spacing: 6) { Text(value).lineLimit(1); Image(systemName: "chevron.up.chevron.down").font(.caption2) }
+            .foregroundStyle(Color.accentColor).frame(minHeight: 28)
     }
     private var nativeDetailContent: some View {
         VStack(alignment: .leading, spacing: 12) {

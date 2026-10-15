@@ -103,7 +103,7 @@ struct ConversationDetailComponentView: View {
     }
     @ViewBuilder private func actionButton(_ id: String?, fields: [String: ClientInspectorValue] = [:], navigationSource: [String: ClientInspectorValue]? = nil) -> some View {
         if let id, let action = state.card.actions.first(where: { $0.id == id }) {
-            let button = Button(action.label.fallback, role: component.presentationRole == "destructive" ? .destructive : nil) {
+            let button = Button(role: component.presentationRole == "destructive" ? .destructive : nil) {
                 // Local native navigation context only; never augment command
                 // or read RPC fields with collection metadata.
                 var context = fields
@@ -112,9 +112,12 @@ struct ConversationDetailComponentView: View {
                                "sourceResourceId": navigationSource["id"] ?? .null]
                 }
                 actions.perform(action, context)
+            } label: {
+                Image(systemName: actionSymbol(action)).frame(width: 24, height: 24)
             }
                 .disabled(!action.available || !actions.canPerform(action))
-                .help(action.reason?.fallback ?? "")
+                .accessibilityLabel(action.label.fallback)
+                .help(action.reason?.fallback ?? action.label.fallback)
             switch component.presentationRole {
             case "primary", "link": button.buttonStyle(.plain).foregroundStyle(Color.accentColor)
             case "secondary": button.buttonStyle(.plain)
@@ -123,9 +126,17 @@ struct ConversationDetailComponentView: View {
             }
         }
     }
+    private func actionSymbol(_ action: ClientDetailAction) -> String {
+        switch action.operation {
+        case "editor.open": "square.and.pencil"
+        case "resource.open": "arrow.up.right.square"
+        case "detail.refresh": "arrow.clockwise"
+        default: action.confirmation == "destructive" ? "trash" : "slider.horizontal.3"
+        }
+    }
     @ViewBuilder private var resourceList: some View {
         if let name = component.collection, let page = state.card.v2Presentation?.collections[name] {
-            VStack(alignment: .leading, spacing: 6) {
+            LazyVStack(alignment: .leading, spacing: 8) {
                 ForEach(page.order, id: \.self) { id in
                     if let item = page.items[id] {
                         if component.presentation == "disclosure" {
@@ -140,10 +151,8 @@ struct ConversationDetailComponentView: View {
                         }
                     }
                 }
-                if let cursor = page.nextCursor {
-                    // Cursor already binds the server-side revision/scope.
-                    // Match the closed Action operation fields exactly.
-                    actionButton(component.actionId, fields: ["collectionName": .string(name), "cursor": .string(cursor)])
+                if page.nextCursor != nil {
+                    Text("已显示当前有界列表，更多内容可在资源管理中查看").font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
@@ -169,6 +178,31 @@ struct ConversationDetailComponentView: View {
             }
         }
     }
+}
+
+/// One local measurement per list, not one observer per row. Short lists keep
+/// their natural height; long content scrolls without growing the Detail column.
+struct ConversationDetailBoundedScroll<Content: View>: View {
+    @State private var contentHeight: CGFloat = 1
+    private let content: Content
+    init(@ViewBuilder content: () -> Content) { self.content = content() }
+    var body: some View {
+        ScrollView(.vertical) {
+            content.frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .background(GeometryReader { geometry in
+                    Color.clear.preference(key: DetailScrollHeight.self, value: geometry.size.height)
+                })
+        }
+        .frame(height: min(320, max(1, contentHeight)))
+        .onPreferenceChange(DetailScrollHeight.self) { height in
+            if height.isFinite && abs(contentHeight - height) > 0.5 { contentHeight = height }
+        }
+    }
+}
+private struct DetailScrollHeight: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
 enum ConversationDetailFormInputPolicy {
