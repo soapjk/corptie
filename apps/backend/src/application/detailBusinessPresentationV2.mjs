@@ -45,6 +45,11 @@ export function refineBusinessPresentation(card, scope, results) {
         node(name + "Body", "detail.markdown", name));
     }
     if (card.actions?.edit) { root.children.push("edit"); structure.card.nodes.push(node("edit", "detail.button", null, { actionId: "edit", presentationRole: "link" })); }
+  } else if (card.id === "business-artifacts") {
+    // One resource list, not a second aggregate of the same titles and audit facts.
+    card.fields.body = "";
+    root.children = root.children.filter(id => id !== "body");
+    structure.card.nodes = structure.card.nodes.filter(item => item.id !== "body");
   } else if (card.id === "business-provider") {
     const data = results.provider?.data;
     card.fields = { title: "Provider", state: card.fields.state, providerName: data?.currentProviderName || "未获取",

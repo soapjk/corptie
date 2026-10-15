@@ -13,6 +13,7 @@ const page = (items, hasMore = false) => ({ items, hasMore });
 function summary(task) {
   const value = presentTaskSummary(task), content = value?.content;
   return { state: string(value?.state, 64), focus: string(content?.focus), progress: string(content?.progress),
+    current: value?.state === "ready" && content?.basis?.taskRevision === task.revision,
     messageSummary: string(content?.messageSummary), intervention: value?.state === "ready" ? string(content?.intervention, 64) : "unknown",
     reason: string(content?.reason), nextAction: value?.state === "ready" ? string(content?.nextAction) : "",
     generatedAt: date(content?.generatedAt) };

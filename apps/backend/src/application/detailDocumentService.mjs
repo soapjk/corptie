@@ -15,6 +15,8 @@ import { DetailBusinessCollectionPager } from "./detailBusinessCollectionPager.m
 import { DETAIL_COMPONENTS_PROFILE_2, isDetailPresentationProfile } from "./detailPresentationCatalog.mjs";
 import { DETAIL_PRESENTATION_BUSINESS_MODULES } from "./detailBusinessPresentationV2.mjs";
 import { parseDetailWebCards } from "./detailWebPresentation.mjs";
+import { DETAIL_NATIVE_BUSINESS_PROFILE } from "./detailNativeBusinessContract.mjs";
+import { projectNativeBusinessDocument, NATIVE_BUSINESS_MODULES, nativeBusinessModuleCard, nativeBusinessEnvelope } from "./detailNativeBusinessProjection.mjs";
 
 const services = new WeakMap();
 const digest = value => createHash("sha256").update(JSON.stringify(value ?? null)).digest("hex");
@@ -65,8 +67,10 @@ const resourceScope = scope => ({ session: { id: scope.session.id }, logicalSess
 // Accept is already authenticated and forwarded by the secure relay. Do not
 // introduce a new custom header that installed relay hosts would strip.
 export function acceptsNativeDetail(request) {
-  return ["application/json; corptie-detail=native-v1", "text/event-stream; corptie-detail=native-v1"].includes(request.headers.accept);
+  return ["application/json; corptie-detail=native-v1", "text/event-stream; corptie-detail=native-v1",
+    `application/json; corptie-detail=${DETAIL_NATIVE_BUSINESS_PROFILE}`, `text/event-stream; corptie-detail=${DETAIL_NATIVE_BUSINESS_PROFILE}`].includes(request.headers.accept);
 }
+export const requestsNativeBusiness = request => request.headers.accept?.endsWith(`corptie-detail=${DETAIL_NATIVE_BUSINESS_PROFILE}`) === true;
 
 /** Product projection only: no Provider adapters, arbitrary URLs or store serialization. */
 export function projectDetailDocument(scope, modules = DEFAULT_DETAIL_MODULES) {
@@ -100,15 +104,155 @@ export class DetailDocumentService {
     this.collectionPager = new DetailBusinessCollectionPager();
     this.v2Events = new ClientInspectorStream({ snapshot: (identity, id) => this.v2Snapshot(id, { identity, invalidatedOnly: true }),
       eventPrefix: "detail", sessionScopedLimit: true, maxFrameBytes: 256 * 1024 + 1024 });
-    for (const events of [this.events, this.v2Events]) {
+    this.nativeEvents = new ClientInspectorStream({ snapshot: () => { throw failure("DETAIL_IDENTITY_REQUIRED", 403); },
+      eventPrefix: "detail", sessionScopedLimit: true, maxFrameBytes: 256 * 1024 + 1024 });
+    this.nativeWriteGuards = new WeakMap(); this.nativeRetireEpoch = 0; this.nativeEntries = new Map();
+    const nativeWrite = this.nativeEvents.write.bind(this.nativeEvents);
+    this.nativeEvents.write = (client, event, value) => {
+      if (event === "detail-snapshot") {
+        try { this.nativeWriteGuards.get(client.response)?.(); } catch { client.close(); return; }
+      }
+      return nativeWrite(client, event, value);
+    };
+    for (const events of [this.events, this.v2Events, this.nativeEvents]) {
       const invalidate = events.invalidate.bind(events);
       events.invalidate = change => { this.markDirty(change); invalidate(); };
       this.#streamAttachments.set(events, events.attach.bind(events));
       events.attach = (response, authenticate, id, request, options) => {
         this.#attachScoped(events, response, authenticate, id, request, options,
-          { catalog: events === this.v2Events ? "native-v2" : "native-v1", clientCapabilities: [] });
+          { catalog: events === this.nativeEvents ? DETAIL_NATIVE_BUSINESS_PROFILE : events === this.v2Events ? "native-v2" : "native-v1", clientCapabilities: [] });
       };
     }
+  }
+  async prepareNativeBusiness(id, authenticate, { invalidatedOnly = false } = {}) {
+    if (!this.#richReadEnabled || NATIVE_BUSINESS_MODULES.some(name => !this.businessReader?.ports[name])) throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
+    const identity = trustedIdentity(authenticate(), true), scope = this.scope(id), reader = this.businessReader,
+      epoch = this.businessPortsEpoch, retired = this.nativeRetireEpoch,
+      bound = digest({ task: scope.task, work: scope.work, session: scope.logicalSessionId }),
+      authority = cacheScope(identity, scope.logicalSessionId, DETAIL_NATIVE_BUSINESS_PROFILE, []);
+    const key = digest(authority), resourceBinding = digest(resourceScope(scope));
+    let entry = this.nativeEntries.get(key);
+    if (!entry || entry.binding !== resourceBinding || entry.reader !== reader || entry.epoch !== epoch) {
+      if (entry) entry.retired = true;
+      entry = { authority, binding: resourceBinding, reader, epoch, generation: randomUUID(), mutationEpoch: 0, contexts: new Map(), pageActions: new Map(), revisions: new Map() };
+      this.nativeEntries.set(key, entry);
+      while (this.nativeEntries.size > 64) { const oldest = this.nativeEntries.keys().next().value; this.nativeEntries.get(oldest).retired = true; this.nativeEntries.delete(oldest); }
+    }
+    const mutationEpoch = entry.mutationEpoch;
+    const revalidate = () => {
+      const current = trustedIdentity(authenticate(), true), next = this.scope(id);
+      if (!matchesScope(cacheScope(current, next.logicalSessionId, DETAIL_NATIVE_BUSINESS_PROFILE, []), authority)) {
+        const { catalogProfile, capabilitiesHash, sessionId, ...owner } = authority;
+        this.clearCache(owner); throw failure("DETAIL_IDENTITY_CHANGED", 403);
+      }
+      if (reader !== this.businessReader || epoch !== this.businessPortsEpoch || retired !== this.nativeRetireEpoch || entry.retired || this.nativeEntries.get(key) !== entry || mutationEpoch !== entry.mutationEpoch
+        || bound !== digest({ task: next.task, work: next.work, session: next.logicalSessionId })) throw failure("DETAIL_READ_INVALIDATED", 409);
+      return current;
+    };
+    revalidate();
+    const results = {}; let index = 0;
+    await Promise.all(Array.from({ length: 2 }, async () => {
+      while (index < NATIVE_BUSINESS_MODULES.length) {
+        const name = NATIVE_BUSINESS_MODULES[index++], port = reader.ports[name]; revalidate();
+        results[name] = await reader.read(scope, name, authority, { force: !invalidatedOnly,
+          ...(port.readPage ? { selector: "native-business:first", sourceRead: () => port.readPage(scope, identity, null,
+            ["memories", "memoryHits"].includes(name) ? 1 : 20, { fullContent: true }) } : {}) });
+        revalidate();
+      }
+    }));
+    const operations = await this.nativeBusinessOperations(scope, identity, results, revalidate), pages = {};
+    for (const name of NATIVE_BUSINESS_MODULES) {
+      if (!reader.ports[name].readPage) continue;
+      const context = { authority: { serverId: authority.serverId, accountId: authority.accountId, principalId: authority.principalId, deviceId: authority.deviceId },
+        sessionId: scope.logicalSessionId, catalog: DETAIL_NATIVE_BUSINESS_PROFILE, clientCapabilities: [], generation: entry.generation,
+        collectionName: name, revision: digest(results[name]) };
+      const old = entry.contexts.get(name);
+      if (old && old.revision !== context.revision) entry.pageActions.delete(name);
+      entry.contexts.set(name, context);
+      pages[name] = { sessionId: scope.logicalSessionId, nextCursor: this.collectionPager.issue(context, results[name].data?.sourceCursor ?? null) };
+    }
+    revalidate(); entry.revalidate = revalidate;
+    const state = projectNativeBusinessDocument(scope, results, entry.generation, { editors: this.#richNativeEditorsEnabled, pages, operations });
+    for (const card of state.cards) entry.revisions.set(card.id, card.revision);
+    entry.state = state;
+    return Object.freeze({ state, revalidate });
+  }
+  async nativeBusinessOperations(scope, identity, results, revalidate) {
+    const operations = {};
+    if (!this.#richWritesEnabled || !this.#businessActionRegistry) return operations;
+    const actionScope = { sessionId: scope.logicalSessionId, identity: identity.principalId === "local-user" && !identity.deviceId ? { ...identity, kind: "local_user" } : identity };
+    const prepare = async (name, operation, type, id, fields, title) => {
+      const port = this.#businessActionRegistry.ports[operation];
+      if (!port?.resource || !port.revision) return;
+      try {
+        const target = { resourceType: type, id }, resource = await port.resource(actionScope, target), expectedResourceRevision = port.revision(resource);
+        const action = { id: `${operation}-${digest(id).slice(0, 24)}`, kind: "command", operation, target, expectedResourceRevision,
+          label: { fallback: title }, available: true, confirmation: operation === "memory.update" || operation === "reference.add" ? "none" : "destructive" };
+        await this.#businessActionRegistry.prepare({ action, fields, expectedResourceRevision, scope: actionScope });
+        revalidate(); (operations[name] ??= []).push(action);
+      } catch { revalidate(); }
+    };
+    for (const row of results.memories?.data?.items ?? []) {
+      if (!row.revokedAt && row.content.length <= 16000) {
+        await prepare("memories", "memory.update", "memory", row.resource.id, { content: row.content }, "保存记忆");
+        await prepare("memories", "memory.delete", "memory", row.resource.id, { confirmed: true }, "撤销记忆");
+      }
+    }
+    for (const [name, operation, type, title] of [["references", "reference.remove", "reference", "移除引用"], ["schedules", "schedule.cancel", "schedule", "取消计划"]]) {
+      for (const row of results[name]?.data?.items ?? []) await prepare(name, operation, type, row.resource.id, { confirmed: true }, title);
+    }
+    if (results.references) await prepare("references", "reference.add", "session", scope.logicalSessionId, { locator: "https://example.invalid" }, "添加引用");
+    return operations;
+  }
+  nativePageContext(id, { authenticate, cardId, collectionName, cursor }) {
+    const identity = trustedIdentity(authenticate(), true), scope = this.scope(id), authority = cacheScope(identity, scope.logicalSessionId, DETAIL_NATIVE_BUSINESS_PROFILE, []);
+    const entry = this.nativeEntries.get(digest(authority)), name = cardId?.startsWith("business-") ? cardId.slice(9) : "";
+    if (!entry || entry.retired || collectionName !== "resources" || !entry.contexts.has(name)) throw failure("DETAIL_CURSOR_INVALID", 409);
+    entry.revalidate(); const context = entry.contexts.get(name); this.collectionPager.validate(context, cursor);
+    return { entry, name, context, scope, identity };
+  }
+  async nativeBusinessPage(id, options) {
+    const { entry, name, context, scope, identity } = this.nativePageContext(id, options), reader = this.businessReader;
+    const data = await this.collectionPager.read(context, options.cursor, async cursor => {
+      await reader.admit();
+      try { entry.revalidate(); return await reader.ports[name].readPage(scope, identity, cursor, ["memories", "memoryHits"].includes(name) ? 1 : 20, { fullContent: true }); }
+      finally { reader.release(); }
+    }, () => { entry.revalidate(); if (entry.contexts.get(name) !== context) throw failure("DETAIL_CURSOR_INVALID", 409); });
+    entry.revalidate();
+    const results = { [name]: { state: data.items.length ? "ready" : "empty", data } }, operations = await this.nativeBusinessOperations(scope, identity, results, entry.revalidate);
+    const nextCursor = this.collectionPager.issue(context, data.sourceCursor ?? null);
+    const card = nativeBusinessModuleCard(name, results[name], { editors: this.#richNativeEditorsEnabled, operations: operations[name] ?? [], page: { sessionId: scope.logicalSessionId, nextCursor } });
+    card.revision = entry.revisions.get(card.id);
+    const extra = entry.pageActions.get(name) ?? new Map();
+    for (const action of card.actions) if (action.kind === "command" || action.operation === "artifact.content") extra.set(action.id, action);
+    while (extra.size > 256) extra.delete(extra.keys().next().value);
+    entry.pageActions.set(name, extra);
+    return nativeBusinessEnvelope(scope.logicalSessionId, entry.generation, [card]);
+  }
+  async nativeActionDocument(id, authenticate) {
+    const initialScope = this.scope(id), initialAuthority = cacheScope(trustedIdentity(authenticate(), true), initialScope.logicalSessionId, DETAIL_NATIVE_BUSINESS_PROFILE, []);
+    const cached = this.nativeEntries.get(digest(initialAuthority));
+    let prepared;
+    if (cached?.state && !cached.retired) {
+      try { cached.revalidate(); prepared = { state: cached.state, revalidate: cached.revalidate }; }
+      catch (error) { if ([401, 403, 404].includes(error.status)) throw error; }
+    }
+    prepared ??= await this.prepareNativeBusiness(id, authenticate);
+    const authority = cacheScope(trustedIdentity(authenticate(), true), prepared.state.sessionId, DETAIL_NATIVE_BUSINESS_PROFILE, []), entry = this.nativeEntries.get(digest(authority));
+    const cards = prepared.state.cards.map(card => {
+      const extra = entry.pageActions.get(card.id.slice(9));
+      return extra ? { ...card, actions: [...new Map([...card.actions, ...extra.values()].map(action => [action.id, action])).values()] } : card;
+    });
+    return { state: { ...prepared.state, cards }, revalidate: prepared.revalidate };
+  }
+  attachNativeBusiness(response, authenticate, id, request) {
+    if (!this.#richReadEnabled) throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
+    return this.nativeEvents.attach(response, authenticate, id, request, {
+      snapshot: async () => {
+        const prepared = await this.prepareNativeBusiness(id, authenticate, { invalidatedOnly: true });
+        this.nativeWriteGuards.set(response, prepared.revalidate); return prepared.state;
+      }
+    });
   }
   /** Host configuration only. Requests cannot enable a catalog or write UI. */
   acceptsDeliveryCatalog(catalog) {
@@ -142,6 +286,27 @@ export class DetailDocumentService {
   modulePageLimit(profile, name) {
     // Keep complete Unicode memory bodies inside the existing 64KiB read budget.
     return profile.catalog === DETAIL_COMPONENTS_PROFILE_2 && ["memories", "memoryHits"].includes(name) ? 1 : this.richPageLimit(profile);
+  }
+  async readPresentationList(port, scope, identity, position, profile, name, revalidate) {
+    const options = { fullContent: profile.catalog === DETAIL_COMPONENTS_PROFILE_2 };
+    let page = await port.readPage(scope, identity, position, this.modulePageLimit(profile, name), options);
+    if (profile.catalog !== DETAIL_COMPONENTS_PROFILE_2) return page;
+    // Pagination is a read transport detail, not a visible card control. Keep
+    // the existing 20-item/64KiB budget and scope guard across every await.
+    const seen = new Set();
+    for (let count = 0; count < 19 && page.sourceCursor && page.items.length < 20; count++) {
+      revalidate();
+      if (seen.has(page.sourceCursor)) throw failure("DETAIL_CURSOR_INVALID", 409);
+      seen.add(page.sourceCursor);
+      const next = await port.readPage(scope, identity, page.sourceCursor,
+        Math.min(this.modulePageLimit(profile, name), 20 - page.items.length), options);
+      revalidate();
+      const candidate = { ...next, items: [...page.items, ...next.items] };
+      if (Buffer.byteLength(JSON.stringify(candidate)) > 65536) break;
+      page = candidate;
+    }
+    revalidate();
+    return page;
   }
   #attachScoped(events, response, authenticate, id, request, options, profile) {
     const initial = cacheScope(trustedIdentity(authenticate(), true), this.scope(id).logicalSessionId, profile.catalog, profile.clientCapabilities);
@@ -243,18 +408,24 @@ export class DetailDocumentService {
     }
   }
   clearCache(filter = {}) {
+    this.nativeRetireEpoch++;
+    for (const [key, entry] of this.nativeEntries) if (matchesScope(entry.authority, filter)) { entry.retired = true; this.nativeEntries.delete(key); }
     this.businessInvalidation.clear();
     this.businessReader?.clear(filter);
     for (const [key, entry] of this.cache) if (matchesScope(entry.cacheScope, filter)) this.cache.delete(key);
     for (const [key, journal] of this.v2Journals) if (matchesScope(journal.detailCacheScope, filter)) this.retireJournal(key);
-    for (const events of [this.events, this.v2Events]) {
+    for (const events of [this.events, this.v2Events, this.nativeEvents]) {
       for (const client of [...events.clients]) if (client.detailCacheScope && matchesScope(client.detailCacheScope, filter)) client.close();
     }
   }
   invalidate(change) {
-    this.events.invalidate(change); this.v2Events.invalidate(change);
+    this.events.invalidate(change); this.v2Events.invalidate(change); this.nativeEvents.invalidate(change);
   }
   markDirty(change) {
+    for (const entry of this.nativeEntries?.values() ?? []) {
+      if (change?.sessionId && entry.authority.sessionId !== change.sessionId) continue;
+      entry.mutationEpoch++;
+    }
     this.businessReader?.invalidate(change);
     for (const journal of this.v2Journals.values()) {
       if (change?.sessionId && ![journal.detailCacheScope.sessionId, journal.detailResourceScope?.session?.id].includes(change.sessionId)) continue;
@@ -336,8 +507,7 @@ export class DetailDocumentService {
             const position = journal.detailPagePositions.get(name) ?? null;
             values[index] = await reader.read(scope, name, identityScope, { force: !invalidatedOnly,
               ...(paged ? { selector: position ?? "first-page", sourceRead: () => pageOverride?.name === name ? pageOverride.data
-                : port.readPage(scope, identity, position, this.modulePageLimit(profile, name),
-                  { fullContent: profile.catalog === DETAIL_COMPONENTS_PROFILE_2 }) } : {}) });
+                : this.readPresentationList(port, scope, identity, position, profile, name, () => guard(journal)) } : {}) });
           }
         }));
         guard(journal);
@@ -631,6 +801,11 @@ export async function sendNegotiatedDetailSnapshot(service, request, response, i
   const identity = authenticate();
   return sendDetailV2Snapshot(request, response, service.v2Snapshot(id, detailV2ServiceOptions(identity, negotiation)), authenticate);
 }
+export async function sendNativeBusinessSnapshot(service, request, response, id, authenticate) {
+  const prepared = await service.prepareNativeBusiness(id, authenticate);
+  prepared.revalidate();
+  return sendDetailV2Snapshot(request, response, prepared.state, authenticate, { beforeWrite: prepared.revalidate });
+}
 
 /** The desktop facade uses the existing loopback trust boundary, never a fabricated device. */
 export function handleDesktopDetail({ request, response, url, store, sendJson }) {
@@ -656,7 +831,11 @@ export function handleDesktopDetail({ request, response, url, store, sendJson })
     if (v2 && !service.acceptsDeliveryCatalog(negotiation.catalog)) throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
     const scoped = service.scope(id);
     const authenticatedScope = detailV2PinnedAuthenticate(authenticate, () => service.scope(id).logicalSessionId, identity, scoped.logicalSessionId);
-    if (match[2]) service.events.attach(response, authenticatedScope, id, request);
+    if (requestsNativeBusiness(request)) {
+      if (match[2]) service.attachNativeBusiness(response, authenticatedScope, id, request);
+      else void sendNativeBusinessSnapshot(service, request, response, id, authenticatedScope)
+        .catch(error => { if (!response.destroyed && !response.headersSent) sendJson(response, error.status ?? 400, { code: error.code ?? "INVALID_DETAIL_REQUEST" }); });
+    } else if (match[2]) service.events.attach(response, authenticatedScope, id, request);
     else if (v2) void sendNegotiatedDetailSnapshot(service, request, response, id, authenticatedScope, negotiation)
       .catch(error => { if (!response.destroyed && !response.headersSent) sendJson(response, error.status ?? 400, { code: error.code ?? "INVALID_DETAIL_REQUEST" }); });
     else sendJson(response, 200, service.snapshot(id, { identity }));

@@ -8,6 +8,7 @@ public struct ClientDetailV2Negotiation: Equatable, Sendable {
     public static let registeredCapabilities = ClientDetailPresentationCatalog.nativeCapabilities
     public static let legacy = Self(catalog: "native-v2", clientCapabilities: [],
         capabilityDigest: "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945")
+    public static let nativeBusiness = Self(catalog: "native-business-v1", clientCapabilities: [], capabilityDigest: legacy.capabilityDigest)
     public static func components(clientCapabilities: [String], catalog: String = ClientDetailPresentationCatalog.profile1) throws -> Self {
         guard let registered = ClientDetailPresentationCatalog.capabilities(for: catalog),
               clientCapabilities.count <= 32, Set(clientCapabilities).count == clientCapabilities.count,

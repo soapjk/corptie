@@ -1,5 +1,25 @@
 import SwiftUI
 
+/// Platform-owned selectors retain the existing authorization and command flow.
+public struct ConversationProviderConfigurationCard<Provider: View, Model: View, Reasoning: View, Status: View>: View {
+    private let provider: Provider
+    private let model: Model
+    private let reasoning: Reasoning
+    private let status: Status
+    public init(@ViewBuilder provider: () -> Provider, @ViewBuilder model: () -> Model,
+                @ViewBuilder reasoning: () -> Reasoning, @ViewBuilder status: () -> Status) {
+        self.provider = provider(); self.model = model(); self.reasoning = reasoning(); self.status = status()
+    }
+    public var body: some View {
+        ConversationDetailModuleCard(title: "Provider", systemImage: "cpu") {
+            LabeledContent("Provider") { provider }
+            LabeledContent("模型") { model }
+            LabeledContent("处理强度") { reasoning }
+            status
+        }.font(.caption)
+    }
+}
+
 public struct ConversationEnvironmentCard<ProviderContent: View, Actions: View, StatusContent: View>: View {
     public let agent: String?
     public let model: String?

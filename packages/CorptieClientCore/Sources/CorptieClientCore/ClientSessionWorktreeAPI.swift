@@ -106,6 +106,43 @@ public struct ClientSessionWorktreeAPI: Sendable {
             }
         }
     }
+    /// Reuses the management page's commit protection and command endpoints.
+    /// A commit never implies merge, synchronize, push, or a service restart.
+    public func prepareCommit(sessionID: String, worktreeID: String) async throws -> ClientGitCommitProtectionStatus {
+        let current = try await commitDetail(sessionID: sessionID, worktreeID: worktreeID)
+        switch route {
+        case .desktop:
+            return try await request(["sessions", sessionID, "project-worktrees", worktreeID, "commit-prepare"], body: Data("{}".utf8))
+        case .pairedDevice:
+            return try await ClientWorktreeAPI(transport: transport).commitPreparation(repositoryId: current.repositoryId!, worktreeId: worktreeID)
+        }
+    }
+    public func commit(sessionID: String, worktreeID: String, message: String, privateFilesDecision: String?) async throws {
+        let current = try await commitDetail(sessionID: sessionID, worktreeID: worktreeID)
+        guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              privateFilesDecision == nil || ["ignore", "include"].contains(privateFilesDecision!) else {
+            throw ClientServiceFailure(statusCode: 400, code: "COMMIT_REVIEW_REQUIRED")
+        }
+        switch route {
+        case .desktop:
+            struct Body: Encodable { let commitMessage: String; let privateFilesDecision: String? }
+            let _: ClientInspectorValue = try await request(["sessions", sessionID, "project-worktrees", worktreeID, "commit"],
+                body: JSONEncoder().encode(Body(commitMessage: message, privateFilesDecision: privateFilesDecision)))
+        case .pairedDevice:
+            try await ClientWorktreeAPI(transport: transport).workspaceAction(repositoryId: current.repositoryId!, worktreeId: worktreeID,
+                action: "commit", commitMessage: message, privateFilesDecision: privateFilesDecision)
+        }
+    }
+    private func commitDetail(sessionID: String, worktreeID: String) async throws -> ClientSessionWorktreeDetail {
+        let current = try await detail(sessionID: sessionID)
+        guard let tree = current.worktree, tree.worktreeId == worktreeID, current.repositoryId != nil,
+              tree.availability == "available", tree.dirty == true, tree.operationState == nil, tree.conflictFiles.isEmpty,
+              current.blockedReason == nil || ["MAIN_WORKTREE", "UNCOMMITTED_CHANGES"].contains(current.blockedReason!),
+              !["awaiting_confirmation", "queued", "running", "paused", "cancellation_requested", "replanning"].contains(current.job?.status ?? "") else {
+            throw ClientServiceFailure(statusCode: 409, code: "WORKTREE_STATE_CHANGED")
+        }
+        return current
+    }
     public func confirm(_ job: ClientWorktreeJob, sessionID: String? = nil) async throws -> ClientWorktreeJob {
         try validateJobBinding(job)
         if let sessionID {

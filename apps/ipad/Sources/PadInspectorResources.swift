@@ -16,8 +16,10 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
     let secondary: Secondary
     let providerManagementID: String?
     let richPresentation: Bool
+    let standaloneCard: String?
     init(store: PadInspectorStore, connection: PadConnection, sessionID: String, workspace: PadWorkspace, kind: ConversationInspectorKind,
          onOpenAutomation: @escaping (String) -> Void, providerManagementID: String? = nil, richPresentation: Bool = false,
+         standaloneCard: String? = nil,
          @ViewBuilder primary: () -> Primary, @ViewBuilder secondary: () -> Secondary) {
         self.store = store
         self.connection = connection
@@ -29,6 +31,7 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
         self.secondary = secondary()
         self.providerManagementID = providerManagementID
         self.richPresentation = richPresentation
+        self.standaloneCard = standaloneCard
     }
     @Environment(\.openURL) private var openURL
     @State private var editor: PadInspectorEdit?
@@ -47,13 +50,23 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
     @State private var inspectingWorktree = false
     @State private var acknowledgingUnknown = false
     @State private var recallsExpanded = false
-    @State private var turnExpanded = false
-    @State private var nativeManagementExpanded = false
+    @State private var turnExpanded = true
+    @State private var resourceManagementPresented = false
     private var locked: Bool { store.busy || store.pending != nil }
     private func section(_ key: String) -> ClientInspectorValue { store.sections[key] ?? .null }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if let standaloneCard {
+                if store.connected, store.snapshot?.sessionId == sessionID {
+                    if standaloneCard == "provider" { environment }
+                    else if standaloneCard == "turnMetrics" { turnAnalysis.modifier(ConversationDetailModuleSurface()) }
+                    else if standaloneCard == "resources" {
+                        if store.snapshot?.workId != nil { artifacts; memories }
+                        references
+                    }
+                } else { ProgressView("正在同步详情…") }
+            } else {
             connectionStatus
             if let providerManagementID {
                 if store.connected, store.snapshot?.sessionId == sessionID,
@@ -66,10 +79,24 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
             } else {
             primary
             if richPresentation {
-                DisclosureGroup("管理与完整诊断", isExpanded: $nativeManagementExpanded) {
-                    if nativeManagementExpanded { nativeManagementContent }
-                }.font(.caption)
+                Button { resourceManagementPresented = true } label: {
+                    Label("资源管理与审计", systemImage: "slider.horizontal.3").font(.caption)
+                }.buttonStyle(.plain).foregroundStyle(Color.accentColor)
             } else { nativeManagementContent }
+            }
+            }
+        }
+        .sheet(isPresented: $resourceManagementPresented) {
+            NavigationStack {
+                ScrollView {
+                    PadInspectorResources<EmptyView, EmptyView>(store: store, connection: connection, sessionID: sessionID,
+                        workspace: workspace, kind: kind, onOpenAutomation: onOpenAutomation, standaloneCard: "resources") {
+                        EmptyView()
+                    } secondary: { EmptyView() }
+                    .padding()
+                }
+                .navigationTitle("资源管理与审计")
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("关闭") { resourceManagementPresented = false } } }
             }
         }
         .sheet(item: $editor) { edit in
@@ -92,7 +119,7 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
         }
         .onChange(of: section("artifacts")) { _, _ in moreArtifacts = []; nextArtifactOffset = nil }
         .onChange(of: section("memories")) { _, _ in moreMemories = []; nextMemoryCursor = nil }
-        .onChange(of: sessionID) { _, _ in recallsExpanded = false; turnExpanded = false }
+        .onChange(of: sessionID) { _, _ in recallsExpanded = false; turnExpanded = standaloneCard == "turnMetrics" }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.data]) { result in
             switch result {
             case .success(let url): Task { await importDocument(url) }
@@ -482,7 +509,7 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
         let providers = section("providers").items
         let currentProviderName = providers.first { $0["id"].text == currentProviderID }?["name"].text
             ?? currentProviderID ?? "未知"
-        return ConversationEnvironmentCard(provider: {
+        return ConversationProviderConfigurationCard(provider: {
             Menu {
                 ForEach(providers, id: \.inspectorID) { provider in
                     let isCurrent = provider["id"].text == currentProviderID
@@ -512,16 +539,41 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
             }
             .disabled(locked || providers.isEmpty)
             .accessibilityLabel("切换 Provider")
-        },
-            agent: agentName,
-            model: workspace.selection == sessionID ? (workspace.composerConfiguration?.currentModel ?? workspace.selectedSessionUsage?.route?.modelId) : nil,
-            reasoning: workspace.selection == sessionID ? workspace.composerConfiguration?.currentReasoningLevel : nil,
-            workspacePath: store.snapshot?.environment["cwd"].text) {
-            if let cwd = store.snapshot?.environment["cwd"].text {
-                ShareLink(item: cwd) { ConversationDetailHeaderIcon(systemName: "square.and.arrow.up") }
-                    .accessibilityLabel("分享工作空间路径")
+        }, model: {
+            Menu {
+                ForEach(workspace.composerConfiguration?.models ?? []) { model in
+                    Button(model.name) { Task {
+                        guard workspace.selection == sessionID, store.connected, store.snapshot?.sessionId == sessionID else { return }
+                        await workspace.configureComposer(connection, update: ["model": model.id])
+                    } }
+                }
+                Button("重新加载模型") { Task { await workspace.configureComposer(connection) } }
+            } label: {
+                selectorLabel(workspace.composerConfiguration?.models.first { $0.id == workspace.composerConfiguration?.currentModel }?.name
+                    ?? workspace.composerConfiguration?.currentModel ?? "未设置")
             }
-        }
+            .disabled(workspace.selection != sessionID || locked || workspace.configuringComposer || workspace.composerConfiguration?.switchModel.available != true)
+            .accessibilityLabel("切换模型")
+        }, reasoning: {
+            let config = workspace.composerConfiguration
+            let model = config?.models.first { $0.id == config?.currentModel }
+            Menu {
+                ForEach(model?.reasoningLevels ?? [], id: \.self) { level in
+                    Button(ComposerModelLabel.reasoningTitle(level)) { Task {
+                        guard workspace.selection == sessionID, store.connected, store.snapshot?.sessionId == sessionID else { return }
+                        await workspace.configureComposer(connection, update: ["reasoningLevel": level])
+                    } }
+                }
+            } label: { selectorLabel(ComposerModelLabel.reasoningTitle(config?.currentReasoningLevel ?? model?.defaultReasoningLevel ?? "")) }
+                .disabled(workspace.selection != sessionID || locked || workspace.configuringComposer || config?.switchReasoning.available != true || model?.reasoningLevels.isEmpty != false)
+                .accessibilityLabel("切换处理强度")
+        }, status: {
+            if let agentName { LabeledContent("Agent", value: agentName) }
+        })
+    }
+    private func selectorLabel(_ value: String) -> some View {
+        HStack(spacing: 6) { Text(value.isEmpty ? "未设置" : value).lineLimit(1); Image(systemName: "chevron.up.chevron.down").font(.caption2) }
+            .foregroundStyle(Color.accentColor).frame(minHeight: 32).contentShape(Rectangle())
     }
     private func perform(_ action: String, id: ClientInspectorValue) {
         Task { await store.command(action, fields: ["id": id], sessionID: sessionID, connection: connection) }

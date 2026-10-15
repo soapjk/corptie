@@ -9,6 +9,7 @@ const confirmed = { const: true };
 export const DETAIL_ACTION_OPERATIONS = Object.freeze({
   "detail.refresh": { kind: "read", targetTypes: ["session"], fields: object({}) },
   "detail.collection.page": { kind: "read", targetTypes: ["session"], fields: { ...object({ collectionName: string(64, 1), cursor: string(512, 1) }), required: ["collectionName"] } },
+  "artifact.content": { kind: "read", targetTypes: ["artifact"], fields: { ...object({ version: { type: "integer", minimum: 1 }, contentHash: { type: "string", pattern: "^[a-f0-9]{64}$" }, offset: { type: "integer", minimum: 0 }, readId: { type: "string", pattern: "^[A-Za-z0-9_-]{8,128}$" } }), required: ["version", "contentHash", "offset", "readId"] } },
   "resource.open": { kind: "navigation", targetTypes: ["session", "task", "work", "schedule", "artifact", "memory", "reference"], fields: object({}) },
   "editor.open": { kind: "navigation", targetTypes: ["task", "schedule", "provider", "worktree", "artifact", "memory", "reference"], fields: object({}) },
   "schedule.cancel": { kind: "command", targetTypes: ["schedule"], confirmation: "destructive", fields: { ...object({ confirmed }), required: ["confirmed"] } },
