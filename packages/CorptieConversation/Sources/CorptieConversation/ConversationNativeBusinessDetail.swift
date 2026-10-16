@@ -3,7 +3,7 @@ import CorptieClientCore
 
 struct ConversationNativeBusinessDetail<PlatformCard: View>: View {
     let store: ClientDetailBusinessStore
-    let api: ClientDetailAPI
+    let api: ClientDetailAPI?
     let actions: ConversationDetailActions?
     let platformCardKinds: Set<String>
     let platformCard: (String) -> PlatformCard
@@ -16,6 +16,7 @@ struct ConversationNativeBusinessDetail<PlatformCard: View>: View {
             } else {
                 NativeBusinessCard(state: state, api: api, store: store, actions: actions,
                     canCommand: { canCommand(state.id, $0) }, perform: { perform(state.id, $0, $1) })
+                    .environment(\.detailSectionPrefix, state.id)
             }
         }
     }
@@ -23,7 +24,7 @@ struct ConversationNativeBusinessDetail<PlatformCard: View>: View {
 
 private struct NativeBusinessCard: View {
     @Bindable var state: ClientDetailBusinessCardState
-    let api: ClientDetailAPI
+    let api: ClientDetailAPI?
     let store: ClientDetailBusinessStore
     let actions: ConversationDetailActions?
     let canCommand: (ClientDetailAction) -> Bool
@@ -60,9 +61,11 @@ private struct NativeBusinessCard: View {
             }
         }
         .sheet(item: $artifactSelection) { selection in
+            if let api {
             ConversationNativeArtifactReader(title: selection.row.title, artifactID: selection.row.id,
                 version: selection.row.version ?? 0, hash: selection.row.contentHash, action: selection.action,
                 cardID: card.id, documentID: store.documentID ?? "", sessionID: store.sessionID ?? "", api: api)
+            }
         }
         .onChange(of: store.generation) { _, _ in artifactSelection = nil }
         .onChange(of: store.error) { _, value in if value != nil { artifactSelection = nil } }
@@ -94,7 +97,7 @@ private struct NativeBusinessCard: View {
                         }.frame(maxWidth: .infinity, alignment: .leading)
                         if let action = card.actions.first(where: { $0.operation == "artifact.content" && $0.target?.id == row.id }) {
                             Button { artifactSelection = .init(row: row, action: action) } label: { Image(systemName: "arrow.up.right.square").frame(minWidth: 24, minHeight: 24) }
-                                .buttonStyle(.plain).foregroundStyle(Color.accentColor).disabled(!action.available)
+                                .buttonStyle(.plain).foregroundStyle(Color.accentColor).disabled(!action.available || !store.isCurrent || api == nil)
                                 .accessibilityLabel("打开 Artifact").help("打开 Artifact")
                         }
                     }
@@ -135,6 +138,7 @@ private struct NativeBusinessCard: View {
                 ForEach(list.items) { row in
                     NativeBusinessMemoryRow(row: row, isHit: card.kind == "memoryHits", actions: card.actions.filter { $0.target?.id == row.id },
                         canCommand: canCommand, perform: perform, onEditingChanged: { state.setEditing(resourceID: row.id, $0) })
+                        .environment(\.detailSectionPrefix, "\(card.id):\(row.id)")
                 }
             }
         case .schedules(let list):
@@ -201,12 +205,13 @@ private struct NativeBusinessCard: View {
         if let message = state.pageError {
             VStack(alignment: .leading) {
                 Text(message).font(.caption).foregroundStyle(.secondary)
-                Button("重试加载") { Task { await store.loadMore(cardID: state.id, api: api, retry: true) } }.font(.caption)
+                Button("重试加载") { if let api { Task { await store.loadMore(cardID: state.id, api: api, retry: true) } } }.font(.caption).disabled(api == nil || !store.isCurrent)
             }
         } else if card.nextCursor != nil {
             ProgressView().controlSize(.small).frame(maxWidth: .infinity)
-                .onAppear { Task { await store.loadMore(cardID: state.id, api: api) } }
-                .id(card.nextCursor)
+                .task(id: "\(card.nextCursor ?? ""):\(store.isCurrent):\(api != nil)") {
+                    if store.isCurrent, let api { await store.loadMore(cardID: state.id, api: api) }
+                }
         }
     }
     private var title: String {
@@ -244,9 +249,20 @@ private struct NativeBusinessMemoryRow: View {
     let canCommand: (ClientDetailAction) -> Bool
     let perform: (ClientDetailAction, [String: ClientInspectorValue]) -> Void
     let onEditingChanged: (Bool) -> Void
-    @State private var editing = false
-    @State private var draft = ""
-    @State private var draftRevision: String?
+    @Environment(\.detailPresentation) private var presentation
+    @Environment(\.detailSectionPrefix) private var prefix
+    @State private var localDraft = ConversationDetailDraft()
+    private var retainedDraft: ConversationDetailDraft? { presentation?.draft(prefix) }
+    private var draftState: ConversationDetailDraft { retainedDraft ?? localDraft }
+    private var editing: Bool {
+        get { draftState.editing } nonmutating set { draftState.editing = newValue }
+    }
+    private var draft: String {
+        get { draftState.text } nonmutating set { draftState.text = String(newValue.prefix(16000)) }
+    }
+    private var draftRevision: String? {
+        get { draftState.revision } nonmutating set { draftState.revision = newValue }
+    }
     private var save: ClientDetailAction? { actions.first { $0.operation == "memory.update" } }
     private var conflicted: Bool { editing && draftRevision != save?.expectedResourceRevision }
     var body: some View {
@@ -267,7 +283,8 @@ private struct NativeBusinessMemoryRow: View {
             else { NativeBusinessTextSection(title: "内容", text: row.content) }
             if isHit && row.snapshotAtRecall { Text("命中时的内容快照").font(.caption2).foregroundStyle(.secondary) }
             if editing, let save {
-                TextEditor(text: $draft).font(.system(size: 12)).frame(height: 140)
+                TextEditor(text: Binding(get: { draft }, set: { draft = $0 })).font(.system(size: 12)).frame(height: 140)
+                if retainedDraft == nil { Text("其他草稿已占满保留窗口；此草稿仅在本次打开期间保留").font(.caption).foregroundStyle(.secondary) }
                 if conflicted {
                     Text("资源已变化，草稿保留；请重新加载后确认").font(.caption).foregroundStyle(.orange)
                     Button("重新加载") { draft = row.content; draftRevision = save.expectedResourceRevision }
@@ -280,6 +297,7 @@ private struct NativeBusinessMemoryRow: View {
             }
         }
         .onChange(of: editing) { _, value in onEditingChanged(value) }
+        .onAppear { onEditingChanged(editing) }
     }
     private var kindTitle: String { switch row.kind { case "preference": "偏好"; case "fact": "事实"; case "workflow": "工作方式"; case "lesson": "经验"; default: "记忆" } }
 }
@@ -287,11 +305,17 @@ private struct NativeBusinessMemoryRow: View {
 private struct NativeBusinessTextSection: View {
     let title: String
     let text: String
-    @State private var expanded = false
+    @Environment(\.detailPresentation) private var presentation
+    @Environment(\.detailSectionPrefix) private var prefix
+    @State private var localExpanded = false
+    private var expansion: ConversationDetailExpansion? { presentation?.section("\(prefix):\(title)") }
+    private var expanded: Bool { expansion?.expanded ?? localExpanded }
     var body: some View {
         if !text.isEmpty {
             VStack(alignment: .leading, spacing: 5) {
-                Button { expanded.toggle() } label: {
+                Button {
+                    if let expansion { expansion.expanded.toggle() } else { localExpanded.toggle() }
+                } label: {
                     Label(title, systemImage: expanded ? "chevron.down" : "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(Color.accentColor)
                 }.buttonStyle(.plain).accessibilityValue(expanded ? "已展开" : "已收起")
                 if expanded && text.count > 2000 { ScrollView(.vertical) { bodyText }.frame(height: 240) }

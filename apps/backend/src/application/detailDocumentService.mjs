@@ -105,7 +105,8 @@ export class DetailDocumentService {
     this.v2Events = new ClientInspectorStream({ snapshot: (identity, id) => this.v2Snapshot(id, { identity, invalidatedOnly: true }),
       eventPrefix: "detail", sessionScopedLimit: true, maxFrameBytes: 256 * 1024 + 1024 });
     this.nativeEvents = new ClientInspectorStream({ snapshot: () => { throw failure("DETAIL_IDENTITY_REQUIRED", 403); },
-      eventPrefix: "detail", sessionScopedLimit: true, maxFrameBytes: 256 * 1024 + 1024 });
+      eventPrefix: "detail", sessionScopedLimit: true, maxFrameBytes: 256 * 1024 + 1024,
+      retryableSnapshotError: error => error.code === "DETAIL_READ_SUPERSEDED" });
     this.nativeWriteGuards = new WeakMap(); this.nativeRetireEpoch = 0; this.nativeEntries = new Map();
     const nativeWrite = this.nativeEvents.write.bind(this.nativeEvents);
     this.nativeEvents.write = (client, event, value) => {
@@ -115,8 +116,6 @@ export class DetailDocumentService {
       return nativeWrite(client, event, value);
     };
     for (const events of [this.events, this.v2Events, this.nativeEvents]) {
-      const invalidate = events.invalidate.bind(events);
-      events.invalidate = change => { this.markDirty(change); invalidate(); };
       this.#streamAttachments.set(events, events.attach.bind(events));
       events.attach = (response, authenticate, id, request, options) => {
         this.#attachScoped(events, response, authenticate, id, request, options,
@@ -134,7 +133,7 @@ export class DetailDocumentService {
     let entry = this.nativeEntries.get(key);
     if (!entry || entry.binding !== resourceBinding || entry.reader !== reader || entry.epoch !== epoch) {
       if (entry) entry.retired = true;
-      entry = { authority, binding: resourceBinding, reader, epoch, generation: randomUUID(), mutationEpoch: 0, contexts: new Map(), pageActions: new Map(), revisions: new Map() };
+      entry = { authority, resources: resourceScope(scope), binding: resourceBinding, reader, epoch, generation: randomUUID(), mutationEpoch: 0, contexts: new Map(), pageActions: new Map(), revisions: new Map() };
       this.nativeEntries.set(key, entry);
       while (this.nativeEntries.size > 64) { const oldest = this.nativeEntries.keys().next().value; this.nativeEntries.get(oldest).retired = true; this.nativeEntries.delete(oldest); }
     }
@@ -145,8 +144,11 @@ export class DetailDocumentService {
         const { catalogProfile, capabilitiesHash, sessionId, ...owner } = authority;
         this.clearCache(owner); throw failure("DETAIL_IDENTITY_CHANGED", 403);
       }
-      if (reader !== this.businessReader || epoch !== this.businessPortsEpoch || retired !== this.nativeRetireEpoch || entry.retired || this.nativeEntries.get(key) !== entry || mutationEpoch !== entry.mutationEpoch
-        || bound !== digest({ task: next.task, work: next.work, session: next.logicalSessionId })) throw failure("DETAIL_READ_INVALIDATED", 409);
+      if (reader !== this.businessReader || epoch !== this.businessPortsEpoch || retired !== this.nativeRetireEpoch || entry.retired || this.nativeEntries.get(key) !== entry) throw failure("DETAIL_SCOPE_RETIRED", 409);
+      if (entry.resources.task?.id !== next.task?.id || entry.resources.work?.id !== next.work?.id
+        || entry.resources.session.id !== next.session.id || entry.resources.logicalSessionId !== next.logicalSessionId) throw failure("DETAIL_BINDING_CHANGED", 409);
+      if (bound !== digest({ task: next.task, work: next.work, session: next.logicalSessionId })) throw failure("DETAIL_READ_SUPERSEDED", 409);
+      if (mutationEpoch !== entry.mutationEpoch) throw failure("DETAIL_READ_SUPERSEDED", 409);
       return current;
     };
     revalidate();
@@ -154,9 +156,10 @@ export class DetailDocumentService {
     await Promise.all(Array.from({ length: 2 }, async () => {
       while (index < NATIVE_BUSINESS_MODULES.length) {
         const name = NATIVE_BUSINESS_MODULES[index++], port = reader.ports[name]; revalidate();
-        results[name] = await reader.read(scope, name, authority, { force: !invalidatedOnly,
+        try { results[name] = await reader.read(scope, name, authority, { force: !invalidatedOnly,
           ...(port.readPage ? { selector: "native-business:first", sourceRead: () => port.readPage(scope, identity, null,
-            ["memories", "memoryHits"].includes(name) ? 1 : 20, { fullContent: true }) } : {}) });
+            ["memories", "memoryHits"].includes(name) ? 1 : 20, { fullContent: true }) } : {}) }); }
+        catch (error) { if (error.code === "DETAIL_READ_INVALIDATED") revalidate(); throw error; }
         revalidate();
       }
     }));
@@ -419,11 +422,14 @@ export class DetailDocumentService {
     }
   }
   invalidate(change) {
+    this.markDirty(change);
     this.events.invalidate(change); this.v2Events.invalidate(change); this.nativeEvents.invalidate(change);
   }
   markDirty(change) {
     for (const entry of this.nativeEntries?.values() ?? []) {
       if (change?.sessionId && entry.authority.sessionId !== change.sessionId) continue;
+      if (change?.taskId && entry.resources?.task?.id !== change.taskId) continue;
+      if (change?.workId && entry.resources?.work?.id !== change.workId) continue;
       entry.mutationEpoch++;
     }
     this.businessReader?.invalidate(change);

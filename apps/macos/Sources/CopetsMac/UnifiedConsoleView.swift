@@ -4,6 +4,7 @@ import AppKit
 import SwiftUI
 
 struct UnifiedConsoleView: View {
+    @State private var detailPresentation = ConversationDetailPresentationRepository()
     @ObservedObject var modelCatalog = BackendClient.shared.modelCatalog
     let backendClient = BackendClient.shared
     @ObservedObject var sessionIndexStore = BackendClient.shared.sessionIndexStore
@@ -1070,7 +1071,7 @@ struct UnifiedConsoleView: View {
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
                 }
 
-                SessionDetailPanel(session: session, railWidth: 320)
+                SessionDetailPanel(session: session, railWidth: 320, detailPresentation: detailPresentation)
                     .frame(maxHeight: .infinity)
             }
             .padding(MainWindowPageLayoutMetrics.outerPadding)

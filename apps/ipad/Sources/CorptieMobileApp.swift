@@ -270,6 +270,7 @@ private enum CompactWorkspacePage: Hashable {
 }
 
 struct WorkspaceView: View {
+    @State private var detailPresentation = ConversationDetailPresentationRepository()
     @State private var outlineDragActive = false
     @State private var suppressOutlineTapUntil = Date.distantPast
     let connection: PadConnection
@@ -318,7 +319,7 @@ struct WorkspaceView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     if let id = workspace.selection {
                         PadConversationInspector(workspace: workspace, connection: connection, sessionID: id,
-                            onOpenAutomation: onOpenAutomation, entityCommands: commands)
+                            onOpenAutomation: onOpenAutomation, entityCommands: commands, detailPresentation: detailPresentation)
                             .id(id)
                             .frame(width: 320)
                     }
@@ -435,7 +436,7 @@ struct WorkspaceView: View {
                             .padWorkspaceNavigationBackground()
                     case .detail(let id):
                         PadConversationInspector(workspace: workspace, connection: connection, sessionID: id,
-                            onOpenAutomation: onOpenAutomation, entityCommands: commands)
+                            onOpenAutomation: onOpenAutomation, entityCommands: commands, detailPresentation: detailPresentation)
                             .safeAreaInset(edge: .top, spacing: 0) { compactDetailHeader }
                             .toolbar(.hidden, for: .navigationBar)
                             .modifier(CompactBackSwipe(enabled: navigationGesturesEnabled && compactPath.last == .detail(id)) {

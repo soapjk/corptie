@@ -37,6 +37,17 @@ final class CloudSignInCallbackBridge: @unchecked Sendable {
 
 @MainActor @Observable
 final class PadConnection {
+    let detailBusinessRepository = ClientDetailBusinessRepository()
+    private var detailBusinessOwnerID = UUID().uuidString
+    private func retireDetailBusinessOwner() {
+        detailBusinessRepository.invalidateAll(); detailBusinessOwnerID = UUID().uuidString
+    }
+    func businessDisplayScope(sessionID: String, taskID: String?, workID: String?) -> ClientDetailBusinessScope {
+        let principal = cloudTargetMacID != nil ? cloudCredential?.identity.id.uuidString : credentials?.deviceId
+        let server = cloudTargetMacID.map { "cloud-mac:\($0.uuidString)" } ?? "\(serverID):\(address)"
+        return .init(serverID: server, ownerID: detailBusinessOwnerID, principalID: principal ?? "unavailable",
+            sessionID: sessionID, taskID: taskID, workID: workID)
+    }
     enum CloudAccountState: Equatable {
         case signedOut, restoring, authenticated, temporarilyUnavailable
         case storageUnavailable, reauthenticationRequired
@@ -68,7 +79,7 @@ final class PadConnection {
     @ObservationIgnored private var cloudRecoveryTask: Task<BackendTransport, Error>?
     @ObservationIgnored private var connectionGeneration = UUID()
     @ObservationIgnored private let relayFactory: RelayFactory?
-    private var cloudTargetMacID: UUID?
+    private var cloudTargetMacID: UUID? { didSet { if oldValue != cloudTargetMacID { retireDetailBusinessOwner() } } }
     private static let recoveryLog = Logger(subsystem: "com.corptie.mobile", category: "ConnectionRecovery")
     private struct CloudOfflineLANGrant: Decodable {
         let address: String
@@ -120,7 +131,7 @@ final class PadConnection {
     private(set) var connectedCloudMacID: UUID?
     private(set) var connectedCloudMacName: String?
     private var endpoint: BackendEndpoint?
-    private var credentials: DeviceCredentials?
+    private var credentials: DeviceCredentials? { didSet { if oldValue?.deviceId != credentials?.deviceId { retireDetailBusinessOwner() } } }
     var deviceID: String? { credentials?.deviceId }
     /// Opaque credential-owner bindings for local recovery encryption only.
     /// They are never sent as server authority or decoded from a JWT by the UI.
@@ -141,7 +152,7 @@ final class PadConnection {
             accountID: "paired-credential-owner:\(credentials.deviceId)", credentialBindingID: binding,
             catalog: negotiation.catalog, capabilityDigest: negotiation.capabilityDigest)
     }
-    private var pairingCertificate: String?
+    private var pairingCertificate: String? { didSet { if oldValue != pairingCertificate { retireDetailBusinessOwner() } } }
     private let vault = DeviceCredentialVault()
     @ObservationIgnored private let lanAuthDependencies: LANAuthDependencies?
     @ObservationIgnored private var lanRefreshTasks: [String: (id: UUID, task: Task<DeviceCredentials, Error>)] = [:]
@@ -149,7 +160,7 @@ final class PadConnection {
     private var cachedToken: String?
     private let transportOverride: BackendTransport?
     private let cloudVault = CloudCredentialVault()
-    private var cloudCredential: CloudCredential?
+    private var cloudCredential: CloudCredential? { didSet { if oldValue?.identity.id != cloudCredential?.identity.id { retireDetailBusinessOwner() } } }
     @ObservationIgnored private let cloudAuthDependencies: CloudAuthDependencies?
     @ObservationIgnored private var cloudAuthGeneration = UUID()
     @ObservationIgnored private var cloudTokenRefreshTask: (id: UUID, task: Task<CloudCredential, Error>)?

@@ -66,21 +66,30 @@ import Observation
     public private(set) var order: [String] = []
     public private(set) var error: String?
     public private(set) var selected = false
+    public private(set) var isCurrent = false
+    public enum FailureDisposition { case temporary, accessRevoked, bindingRetired }
     private var cards: [String: ClientDetailBusinessCardState] = [:]
     @ObservationIgnored private var token = UUID()
+    @ObservationIgnored var contentChanged: (() -> Void)?
+    @ObservationIgnored var canRetainPage: (() -> Bool)?
     public init() {}
     public var orderedCards: [ClientDetailBusinessCardState] { order.compactMap { cards[$0] } }
+    public var estimatedRetainedBytes: Int { cards.values.reduce(0) { $0 + $1.card.estimatedRetainedBytes } }
+    public func markRefreshing() { isCurrent = false }
     public func begin() {
-        token = UUID(); sessionID = nil; documentID = nil; generation = nil; order = []; cards = [:]; error = nil; selected = false
+        token = UUID(); sessionID = nil; documentID = nil; generation = nil; order = []; cards = [:]; error = nil; selected = false; isCurrent = false
     }
-    public func fail(_ message: String, clear: Bool = true) {
-        error = message
-        if clear { token = UUID(); cards = [:]; order = [] }
+    public func fail(_ message: String, disposition: FailureDisposition) {
+        error = message; isCurrent = false
+        switch disposition {
+        case .temporary: break
+        case .accessRevoked, .bindingRetired: token = UUID(); cards = [:]; order = []; selected = false
+        }
     }
     public func receive(_ document: ClientDetailBusinessDocument, resetPages: Bool = false) throws {
         if let sessionID, sessionID != document.sessionId { throw ClientDetailFailure.invalidGraph }
         if generation != document.generation { token = UUID(); cards = [:] }
-        sessionID = document.sessionId; documentID = document.documentId; generation = document.generation; selected = true; error = nil
+        sessionID = document.sessionId; documentID = document.documentId; generation = document.generation; selected = true; isCurrent = true; error = nil
         let incoming = Set(document.order)
         cards = cards.filter { incoming.contains($0.key) }
         for card in document.cards {
@@ -89,12 +98,14 @@ import Observation
             } else { cards[card.id] = ClientDetailBusinessCardState(card) }
         }
         if order != document.order { order = document.order }
+        contentChanged?()
     }
     public func loadMore(cardID: String, api: ClientDetailAPI, retry: Bool = false) async {
-        guard let state = cards[cardID], !state.loading, let cursor = state.card.nextCursor,
+        guard isCurrent, let state = cards[cardID], !state.loading, let cursor = state.card.nextCursor,
               let action = state.card.actions.first(where: { $0.operation == "detail.collection.page" && $0.available }),
               let sessionID, let documentID, let generation else { return }
         guard state.editingResources.isEmpty else { state.pageError = "请先保存或关闭正在编辑的草稿，再继续加载"; return }
+        guard canRetainPage?() != false else { state.pageError = "详情内存窗口已达上限，请关闭其他详情或刷新本卡片"; return }
         if !retry && (state.pageError != nil || state.requestedCursors.contains(cursor)) { return }
         state.loading = true; state.pageError = nil; state.requestedCursors.insert(cursor)
         let current = token, revision = state.card.revision
@@ -110,10 +121,11 @@ import Observation
                   page.cards.count == 1, let card = page.cards.first, card.id == cardID, card.revision == revision,
                   card.nextCursor != cursor else { throw ClientDetailFailure.invalidGraph }
             try state.append(card)
+            contentChanged?()
         } catch {
             guard current == token, cards[cardID] === state else { return }
             if let failure = error as? ClientServiceFailure, [401, 403, 404].contains(failure.statusCode) {
-                fail("访问已失效，请重新连接"); return
+                fail("访问已失效，请重新连接", disposition: .accessRevoked); return
             }
             state.pageError = "未能加载更多；原有内容已保留"
         }
