@@ -5,9 +5,11 @@ import { deviceError } from "./clientDeviceAuthority.mjs";
 /** A separate, visible-only Detail projection; never reloads the conversation. */
 export class ClientInspectorStream {
   constructor({ snapshot, coalesceMs = 250, heartbeatMs = 10000, eventPrefix = "inspector",
-    sessionScopedLimit = false, maxFrameBytes = 2 * 1024 * 1024, eventForSnapshot = null }) {
+    sessionScopedLimit = false, maxFrameBytes = 2 * 1024 * 1024, eventForSnapshot = null, retryableSnapshotError = null }) {
     Object.assign(this, { snapshot, coalesceMs, heartbeatMs, eventPrefix, sessionScopedLimit, maxFrameBytes, eventForSnapshot });
     this.clients = new Set();
+    if (retryableSnapshotError !== null && typeof retryableSnapshotError !== "function") throw new TypeError("Invalid snapshot retry policy");
+    this.retryableSnapshotError = retryableSnapshotError;
   }
   attach(response, authenticate, sessionId, request = null, options = {}) {
     // Trusted host injection only; never selected by request/body fields.
@@ -72,6 +74,7 @@ export class ClientInspectorStream {
       const identity = client.authenticate();
       const value = await client.snapshot.call(this, identity, client.sessionId);
       if (client.closed) return;
+      client.snapshotRetries = 0;
       // Projection may await I/O. Revalidate before event generation as well
       // as write, so revoked results cannot affect a service journal/baseline.
       client.authenticate();
@@ -91,8 +94,13 @@ export class ClientInspectorStream {
       }
     } catch (error) {
       const status = error.statusCode ?? error.status ?? 503;
-      this.write(client, `${this.eventPrefix}-error`, { code: error.code ?? "INSPECTOR_READ_FAILED", status: String(status) });
-      if ([401, 403, 404].includes(status)) client.close();
+      if (![401, 403, 404].includes(status) && this.retryableSnapshotError?.(error) === true && (client.snapshotRetries ?? 0) < 3) {
+        client.snapshotRetries = (client.snapshotRetries ?? 0) + 1;
+        client.dirty = true;
+      } else {
+        this.write(client, `${this.eventPrefix}-error`, { code: error.code ?? "INSPECTOR_READ_FAILED", status: String(status) });
+        if ([401, 403, 404].includes(status)) client.close();
+      }
     } finally {
       client.busy = false;
       if (client.dirty && !client.closed && !client.timer) {

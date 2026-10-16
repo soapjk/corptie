@@ -17,6 +17,8 @@ final class BackendClient: ObservableObject {
     static let shared = BackendClient()
 
     let appState = AppStateStore.shared
+    let detailBusinessRepository = ClientDetailBusinessRepository()
+    let detailBusinessOwnerID = UUID().uuidString
     private let timelineDeltaProcessor = SessionTimelineDeltaProcessor()
     var sessions: [TaskSession] { appState.sessions.filter { $0.archived != true } }
     let sessionIndexStore = SessionIndexStore()

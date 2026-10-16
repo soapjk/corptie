@@ -45,7 +45,7 @@ import CorptieClientCore
     }
     func perform(cardID: String, action: ClientDetailAction, fields: [String: ClientInspectorValue],
                  store: ClientDetailBusinessStore, selected: ClientDetailAPI, api: @escaping @Sendable () async throws -> ClientDetailAPI) {
-        guard let coordinator, let documentID = store.documentID, canPerform(cardID: cardID, action: action), busy.count < 16,
+        guard store.isCurrent, let coordinator, let documentID = store.documentID, canPerform(cardID: cardID, action: action), busy.count < 16,
               store.orderedCards.first(where: { $0.id == cardID })?.card.actions.contains(action) == true else { return }
         let key = cardID + ":" + action.id, current = token
         busy.insert(key)

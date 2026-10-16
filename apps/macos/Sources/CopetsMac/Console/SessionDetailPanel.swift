@@ -37,6 +37,7 @@ struct SessionDetailPanel: View {
     @State private var detailNativeSheet: DetailNativeSheet?
     @State private var detailOpeningGeneration = UUID()
     @State private var richDetailReady: Bool?
+    let detailPresentation: ConversationDetailPresentationRepository
     @State private var nativeManagementExpanded = false
 
     private var detailKind: ConversationDetailKind? {
@@ -143,8 +144,14 @@ struct SessionDetailPanel: View {
                 actions: nativeDetailNavigation,
                 coordinator: { selected, canonical in try await detailCoordinator(selected: selected, canonicalSessionID: canonical) },
                 onPresentationChanged: { richDetailReady = $0 },
+                repository: backendClient.detailBusinessRepository,
+                displayScope: ClientDetailBusinessScope(serverID: CorptieAppEnvironment.backendBaseURL.absoluteString,
+                    ownerID: backendClient.detailBusinessOwnerID, principalID: "local-user", sessionID: session.id,
+                    taskID: session.taskId, workID: session.workId),
+                presentationRepository: detailPresentation,
                 platformCardKinds: ["provider", "worktree", "turnMetrics"], platformCard: { kind in
                     switch kind {
+                    case "resident": residentDetailPreview
                     case "provider": providerConfigurationCard
                     case "worktree": nativeWorktreeCard
                     default: SessionTurnObservabilityView(sessionId: session.id).modifier(ConversationDetailModuleSurface())
@@ -174,6 +181,17 @@ struct SessionDetailPanel: View {
                     if let notification = job.notification { OperationNotificationManager.shared.observe(notification) }
                 }
             }, localize: { L10n($0) }).id(session.id)
+    }
+    private var residentDetailPreview: some View {
+        ConversationDetailModuleCard(title: "当前会话", systemImage: "bubble.left") {
+            if let task = entityClient.tasks.first(where: { $0.id == session.taskId }) {
+                Text(task.title).font(.system(size: 12, weight: .medium)).textSelection(.enabled)
+            }
+            if let work = entityClient.works.first(where: { $0.id == session.workId }) {
+                Text(work.name).font(.caption).foregroundStyle(.secondary)
+                Text(work.description).font(.caption).foregroundStyle(.secondary).lineLimit(4)
+            }
+        }
     }
     private var providerConfigurationCard: some View {
         ConversationProviderConfigurationCard(provider: { providerPicker }, model: {

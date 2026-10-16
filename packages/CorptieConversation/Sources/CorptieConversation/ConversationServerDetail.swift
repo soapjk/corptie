@@ -12,34 +12,47 @@ public struct ConversationServerDetail<PlatformCard: View>: View {
     private let onPresentationChanged: (Bool?) -> Void
     private let platformCardKinds: Set<String>
     private let platformCard: (String) -> PlatformCard
-    @State private var store = ClientDetailBusinessStore()
+    private let repository: ClientDetailBusinessRepository
+    private let handle: ClientDetailBusinessHandle
+    private let presentation: ConversationDetailPresentation
+    private var store: ClientDetailBusinessStore { handle.store }
     @State private var runtime = ConversationNativeBusinessActionRuntime()
     @State private var selected: ClientDetailAPI?
-    @State private var legacy = false
     @State private var refreshing = false
     public init(scope: String, sessionID: String, actions: ConversationDetailActions? = nil,
                 coordinator: (@MainActor @Sendable (ClientDetailAPI, String) async throws -> ClientDetailActionCoordinator)? = nil,
                 onPresentationChanged: @escaping (Bool?) -> Void = { _ in },
+                repository: ClientDetailBusinessRepository, displayScope: ClientDetailBusinessScope,
+                presentationRepository: ConversationDetailPresentationRepository,
                 platformCardKinds: Set<String>, @ViewBuilder platformCard: @escaping (String) -> PlatformCard,
                 api: @escaping @Sendable () async throws -> ClientDetailAPI) {
         self.scope = scope; self.sessionID = sessionID; self.actions = actions
         coordinatorFactory = coordinator; self.onPresentationChanged = onPresentationChanged; self.api = api
         self.platformCardKinds = platformCardKinds; self.platformCard = platformCard
+        self.repository = repository; self.handle = repository.entry(for: displayScope)
+        self.presentation = presentationRepository.entry(for: displayScope)
     }
     public var body: some View {
         Group {
-            if legacy {
+            if handle.legacy {
                 ConversationLegacyServerDetail(scope: scope, sessionID: sessionID, actions: actions,
                     coordinator: coordinatorFactory, onPresentationChanged: onPresentationChanged, api: api)
             } else {
                 VStack(alignment: .leading, spacing: 12) {
-                    if let selected {
-                        ConversationNativeBusinessDetail(store: store, api: selected, actions: actions,
+                    if !store.order.isEmpty {
+                        if !store.isCurrent {
+                            Text("正在校验上次详情，操作暂不可用").font(.caption).foregroundStyle(.secondary)
+                        }
+                        ConversationNativeBusinessDetail(store: store, api: selected, actions: store.isCurrent ? actions : nil,
                             platformCardKinds: platformCardKinds, platformCard: platformCard,
-                            canCommand: { cardID, action in runtime.canPerform(cardID: cardID, action: action) },
+                            canCommand: { cardID, action in store.isCurrent && runtime.canPerform(cardID: cardID, action: action) },
                             perform: { cardID, action, fields in
+                                guard let selected else { return }
                                 runtime.perform(cardID: cardID, action: action, fields: fields, store: store, selected: selected, api: api)
                             })
+                    } else if !handle.retired {
+                        platformCard("resident")
+                        ProgressView("正在同步其余详情…").font(.caption)
                     }
                     if let message = store.error { Label(message, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary) }
                     if let message = runtime.error { Text(message).font(.caption).foregroundStyle(.secondary) }
@@ -51,36 +64,20 @@ public struct ConversationServerDetail<PlatformCard: View>: View {
                 }
             }
         }
-        .task(id: scope) {
-            store.begin(); runtime.retire(); selected = nil; legacy = false; onPresentationChanged(nil)
-            var attempts = 0
-            while !Task.isCancelled {
-                do {
-                    let current = try await api().nativeBusinessPolicy
-                    let initial = try await current.businessSnapshot(sessionID: sessionID)
-                    try Task.checkCancellation(); try store.receive(initial); selected = current; onPresentationChanged(true)
-                    for try await document in current.businessSubscribe(sessionID: sessionID) {
-                        try Task.checkCancellation(); try store.receive(document)
-                    }
-                    store.fail("连接中断，正在重新同步", clear: false)
-                } catch is CancellationError { return }
-                catch {
-                    guard !Task.isCancelled else { return }
-                    if let failure = error as? ClientServiceFailure {
-                        if !store.selected && failure.statusCode == 409 && failure.code == "DETAIL_CATALOG_UNSUPPORTED" {
-                            legacy = true; return
-                        }
-                        if [401, 403, 404].contains(failure.statusCode) { store.fail("访问已失效，请重新连接"); runtime.retire(); return }
-                    }
-                    store.fail("卡片暂不可用，正在重新连接")
-                }
-                attempts = min(attempts + 1, 4)
-                do { try await Task.sleep(for: .seconds(1 << attempts)) } catch { return }
+        .environment(\.detailPresentation, presentation)
+        .task(id: handle.scope) {
+            runtime.retire(); selected = nil
+            let lease = repository.acquire(handle, api: api)
+            defer { repository.release(lease, from: handle) }
+            do { selected = try await api().nativeBusinessPolicy } catch { /* Feed owns authenticated retry. */ }
+            for await _ in lease.updates {
+                guard !Task.isCancelled else { return }
+                if !handle.legacy && store.selected { onPresentationChanged(true) }
             }
         }
-        .task(id: "\(scope):\(store.sessionID ?? ""):\(store.generation ?? "")") {
+        .task(id: "\(scope):\(store.sessionID ?? ""):\(store.generation ?? ""):\(store.isCurrent):\(selected != nil)") {
             runtime.retire()
-            guard !legacy, let selected, let coordinatorFactory, let canonical = store.sessionID else { return }
+            guard !handle.legacy, store.isCurrent, !handle.retired, let selected, let coordinatorFactory, let canonical = store.sessionID else { return }
             do {
                 let coordinator = try await coordinatorFactory(selected, canonical)
                 guard !Task.isCancelled else { try? await coordinator.invalidate(clearRecoveryIdentity: false); return }
@@ -93,7 +90,7 @@ public struct ConversationServerDetail<PlatformCard: View>: View {
             Button("确认", role: runtime.confirmation?.confirmation == "destructive" ? .destructive : nil) { runtime.confirm(true) }
             Button("取消", role: .cancel) { runtime.confirm(false) }
         }
-        .onDisappear { runtime.retire(); onPresentationChanged(nil) }
+        .onDisappear { runtime.retire(); selected = nil }
     }
     private func refresh() async {
         guard !refreshing, let selected else { return }; refreshing = true
@@ -101,7 +98,12 @@ public struct ConversationServerDetail<PlatformCard: View>: View {
         do {
             let next = try await api().businessSnapshot(sessionID: store.sessionID ?? sessionID)
             try Task.checkCancellation(); try store.receive(next, resetPages: true)
-        } catch { if !Task.isCancelled { store.fail("刷新未完成，请稍后重试") } }
+        } catch {
+            guard !Task.isCancelled else { return }
+            if let failure = error as? ClientServiceFailure, [401, 403, 404].contains(failure.statusCode) {
+                store.fail("访问已失效，请重新连接", disposition: .accessRevoked); runtime.retire()
+            } else { store.fail("刷新未完成，已保留上次内容", disposition: .temporary) }
+        }
         _ = selected
     }
 }

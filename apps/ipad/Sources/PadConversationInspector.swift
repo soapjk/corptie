@@ -26,6 +26,7 @@ struct PadConversationInspector: View {
     @State private var nativeManagement: NativeManagement?
     @State private var detailOpeningGeneration = UUID()
     @State private var richDetailReady: Bool?
+    let detailPresentation: ConversationDetailPresentationRepository
     @Environment(\.openURL) private var openURL
     private var inspector: PadInspectorStore { workspace.inspectorStore(for: sessionID) }
     private var session: ClientSession? { workspace.sessionsByID[sessionID] }
@@ -53,8 +54,13 @@ struct PadConversationInspector: View {
                         sessionID: sessionID, actions: nativeDetailNavigation,
                         coordinator: { selected, canonical in try await detailCoordinator(selected: selected, canonicalSessionID: canonical) },
                         onPresentationChanged: { richDetailReady = $0 },
+                        repository: connection.detailBusinessRepository,
+                        displayScope: connection.businessDisplayScope(sessionID: sessionID, taskID: session.taskId, workID: session.workId),
+                        presentationRepository: detailPresentation,
                         platformCardKinds: ["provider", "worktree", "turnMetrics"], platformCard: { cardKind in
-                            if cardKind == "worktree" {
+                            if cardKind == "resident" {
+                                residentDetailPreview(session)
+                            } else if cardKind == "worktree" {
                                 nativeWorktreeCard
                             } else {
                                 PadInspectorResources(store: inspector, connection: connection, sessionID: sessionID, workspace: workspace,
@@ -267,6 +273,16 @@ struct PadConversationInspector: View {
         })
         return ClientDetailActionCoordinator(scope: scope, transport: transport, journal: journal,
             navigation: .init(registrations: ["resource.open": ["session", "task", "schedule"]]))
+    }
+    private func residentDetailPreview(_ session: ClientSession) -> some View {
+        ConversationDetailModuleCard(title: "当前会话", systemImage: "bubble.left") {
+            if let task = workspace.tasks.first(where: { $0.id == session.taskId }) {
+                Text(task.title).font(.system(size: 12, weight: .medium)).textSelection(.enabled)
+            }
+            if let work = workspace.works.first(where: { $0.id == session.workId }) {
+                Text(work.description ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(4)
+            }
+        }
     }
     @ViewBuilder private func primaryDetail(for session: ClientSession) -> some View {
         if kind == .work, let work = workspace.works.first(where: { $0.id == session.workId }) {

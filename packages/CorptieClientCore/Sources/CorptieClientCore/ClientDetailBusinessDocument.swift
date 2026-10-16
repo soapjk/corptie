@@ -146,4 +146,21 @@ public struct ClientDetailBusinessCard: Decodable, Equatable, Identifiable, Send
         self.id = id; self.kind = kind; self.version = version; self.revision = revision; self.loadState = loadState
         self.payload = payload; self.actions = actions; self.nextCursor = nextCursor
     }
+    var estimatedRetainedBytes: Int {
+        func texts(_ values: [String]) -> Int { values.reduce(0) { $0 + $1.utf8.count * 2 } }
+        let base = 2048 + actions.count * 2048
+        switch payload {
+        case .task(let value): return base + texts([value.title, value.description, value.acceptanceCriteria, value.verificationCriteria, value.summary.focus, value.summary.progress, value.summary.reason, value.summary.nextAction])
+        case .session(let value): return base + texts([value.sessionId, value.workName])
+        case .summary(let value): return base + texts([value.text])
+        case .work(let value): return base + texts([value.name, value.description])
+        case .artifacts(let list): return base + list.items.reduce(0) { $0 + 2048 + texts([$1.title, $1.summary]) }
+        case .memories(let list), .hits(let list): return base + list.items.reduce(0) { $0 + 2048 + texts([$1.content]) }
+        case .references(let list): return base + list.items.reduce(0) { $0 + 2048 + texts([$1.title]) }
+        case .focus(let list): return base + list.items.reduce(0) { $0 + 2048 + texts([$1.title, $1.summary.focus, $1.summary.progress, $1.summary.reason, $1.summary.nextAction]) }
+        case .schedules(let list): return base + list.items.reduce(0) { $0 + 2048 + texts([$1.name]) }
+        case .provider(let value): return base + value.providers.count * 4096 + texts([value.name, value.model, value.reasoning])
+        case .worktree, .turn, .unsupported: return base + 16 * 1024
+        }
+    }
 }
