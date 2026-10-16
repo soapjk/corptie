@@ -605,7 +605,7 @@ export class SessionCollaborationService {
         taskId: task.id,
         assigneeAgentId: agent.agentId,
         expectedTaskVersion: Number(task.resource_version ?? 1),
-        providerId: this.defaultProviderId,
+        providerId: this.store.settings?.().newSessionDefaults?.taskCreation?.providerId ?? this.defaultProviderId,
         title: optional(request.title),
         idempotencyKey: `channel-request:${channelRequest.requestId}:start`,
         sourceSessionId: channelRequest.requestingSessionId
@@ -696,7 +696,7 @@ export class SessionCollaborationService {
         taskId: task.id,
         assigneeAgentId: agent.agentId,
         expectedTaskVersion: Number(task.resource_version ?? 1),
-        providerId: this.defaultProviderId,
+        providerId: this.store.settings?.().newSessionDefaults?.taskCreation?.providerId ?? this.defaultProviderId,
         title: request.title,
         idempotencyKey: `collaboration-confirmation:${confirmation.confirmationId}:start`,
         sourceSessionId: confirmation.initiatorSessionId
@@ -815,7 +815,7 @@ export class SessionCollaborationService {
         taskId: productTask.id,
         assigneeAgentId: agent.agentId,
         expectedTaskVersion: Number(productTask.resource_version ?? 1),
-        providerId: this.defaultProviderId,
+        providerId: this.store.settings?.().newSessionDefaults?.taskCreation?.providerId ?? this.defaultProviderId,
         title: productTask.title,
         idempotencyKey: `collaboration-delivery:${task.taskId}:start`,
         sourceSessionId: task.initiatorSessionId ?? task.sourceSessionId

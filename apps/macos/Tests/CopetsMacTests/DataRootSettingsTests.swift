@@ -1,8 +1,26 @@
 import Foundation
 import Testing
+import CorptieClientCore
 @testable import CorptieMac
 
 struct DataRootSettingsTests {
+    @Test @MainActor func unifiedSaveIncludesSessionDefaultsAndCanClearOptionalSelections() throws {
+        let body = BackendSettingsAPI.updateBody(dataRoot: "/test", expectedSourceDataRoot: nil,
+            choiceParser: nil, codexBackend: nil, codeDiff: nil, agentProxy: nil, gateway: nil,
+            sessionCreationDefaults: .init(providerId: "neutral", model: "selected", reasoningLevel: "high"))
+        let settings = try #require(body["newSessionDefaults"] as? [String: Any])
+        let defaults = try #require(settings["taskCreation"] as? [String: Any])
+        #expect(defaults["model"] as? String == "selected")
+        #expect(defaults["reasoningLevel"] as? String == "high")
+        #expect(JSONSerialization.isValidJSONObject(body))
+        let cleared = BackendSettingsAPI.updateBody(dataRoot: "/test", expectedSourceDataRoot: nil,
+            choiceParser: nil, codexBackend: nil, codeDiff: nil, agentProxy: nil, gateway: nil,
+            sessionCreationDefaults: .init())
+        #expect(JSONSerialization.isValidJSONObject(cleared))
+        let clearedSettings = try #require(cleared["newSessionDefaults"] as? [String: Any])
+        let clearedDefaults = try #require(clearedSettings["taskCreation"] as? [String: Any])
+        #expect(clearedDefaults["model"] is NSNull)
+    }
     @Test func backendSettingsDecodesTheControlledMigrationOperation() throws {
         let data = Data(#"""
         {

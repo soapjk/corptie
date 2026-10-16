@@ -1,4 +1,5 @@
 import Foundation
+import CorptieClientCore
 
 @MainActor
 struct BackendSettingsAPI {
@@ -8,9 +9,17 @@ struct BackendSettingsAPI {
     static func updateBody(
         dataRoot: String, expectedSourceDataRoot: String?,
         choiceParser: ChoiceParserSettings?, codexBackend: CodexBackendSettings?,
-        codeDiff: CodeDiffSettings?, agentProxy: AgentProxySettings?, gateway: GatewaySettings?
+        codeDiff: CodeDiffSettings?, agentProxy: AgentProxySettings?, gateway: GatewaySettings?,
+        sessionCreationDefaults: TaskCreationDefaults? = nil
     ) -> [String: Any] {
         var body: [String: Any] = ["dataRoot": dataRoot]
+        if let value = sessionCreationDefaults {
+            body["newSessionDefaults"] = ["taskCreation": [
+                "providerId": value.providerId.map { $0 as Any } ?? NSNull(),
+                "model": value.model.map { $0 as Any } ?? NSNull(),
+                "reasoningLevel": value.reasoningLevel.map { $0 as Any } ?? NSNull()
+            ]]
+        }
         if let activeDataRoot = expectedSourceDataRoot {
             body["expectedSourceDataRoot"] = activeDataRoot
         }

@@ -155,7 +155,7 @@ export function createWorktreeIntegrationServices({
         session = await startPreparedWorkSession({
           assigneeAgentId: agent.agentId,
           taskId: task.id,
-          providerId: agentProviderRegistry.defaultProviderId,
+          providerId: store.settings?.().newSessionDefaults?.taskCreation?.providerId ?? agentProviderRegistry.defaultProviderId,
           title,
           workspace,
           idempotencyKey: `integration-conflict:${integrationRunId}:start`,
@@ -420,7 +420,8 @@ export function createWorktreeIntegrationServices({
       });
       let session;
       try {
-        const providerId = providerIdForSourceTask(store, agentProviderRegistry, sourceTask);
+      const providerId = store.settings?.().newSessionDefaults?.taskCreation?.providerId
+        ?? providerIdForSourceTask(store, agentProviderRegistry, sourceTask);
         const sourceLogical = sourceTask.current_session_id
           ? store.getLogicalSessionByLegacySessionId(sourceTask.current_session_id)
           : null;

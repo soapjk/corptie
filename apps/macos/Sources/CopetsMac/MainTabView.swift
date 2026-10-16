@@ -99,6 +99,7 @@ enum AppTab: String, CaseIterable, Identifiable {
     case worktrees
     case agents
     case memory
+    case settings
 
     var id: String { rawValue }
 
@@ -115,6 +116,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .worktrees: 3
         case .agents: 4
         case .memory: 5
+        case .settings: 6
         }
     }
 
@@ -126,6 +128,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .worktrees: L10n("Worktrees")
         case .agents: L10n("Agents")
         case .memory: L10n("Memory")
+        case .settings: L10n("Settings")
         }
     }
 
@@ -137,6 +140,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .worktrees: "arrow.triangle.branch"
         case .agents: "person.2"
         case .memory: "brain.head.profile"
+        case .settings: "gearshape"
         }
     }
 }
@@ -431,6 +435,8 @@ private struct MainTabPageHost: NSViewRepresentable {
             case .memory:
                 root = AnyView(MemoryCenterPage(navigation: router.memoryNavigation)
                     .padding(16).mainWindowPageCard())
+            case .settings:
+                root = AnyView(SettingsView())
             }
             let hostingView = NSHostingView(
                 rootView: root

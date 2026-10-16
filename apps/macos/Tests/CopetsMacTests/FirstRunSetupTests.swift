@@ -29,6 +29,10 @@ struct FirstRunSetupTests {
             .appendingPathComponent("Sources/CopetsMac/FirstRunSetupView.swift"), encoding: .utf8)
         #expect(source.contains("guard provider.program == nil else { return }"))
         #expect(source.contains(".task(id: checkGeneration)"))
+        #expect(source.contains("本机发现有其他版本的 Codex"))
+        #expect(!source.contains("private func chooseHome()"))
+        #expect(!source.contains("Picker(L10n(\"运行环境\")"))
+        #expect(!source.contains("Text(L10n(\"检测模型\"))"))
     }
     @Test
     func providerEnvironmentProjectionDecodesWithoutCredentials() throws {

@@ -18,7 +18,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var resetNotificationManager: CodexResetSystemNotificationManager?
     private var statusItem: NSStatusItem?
     private var statusMenu: NSMenu?
-    private var settingsWindow: NSWindow?
     private var collaborationWindow: NSWindow?
     private var warRoomWindow: NSWindow?
     private var assistantWindow: NSWindow?
@@ -349,7 +348,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func refreshLocalizedChrome() {
         refreshStatusMenu()
-        settingsWindow?.title = "\(CorptieAppEnvironment.appName) \(L10n("Settings"))"
         collaborationWindow?.title = "\(CorptieAppEnvironment.appName) \(L10n("Collaboration"))"
         warRoomWindow?.title = "\(CorptieAppEnvironment.appName) \(L10n("Workbench"))"
         assistantWindow?.title = "\(CorptieAppEnvironment.appName) 助手"
@@ -390,32 +388,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     @objc func openSettings() {
-        NSApp.activate(ignoringOtherApps: true)
-
-        if let settingsWindow {
-            settingsWindow.makeKeyAndOrderFront(nil)
-            settingsWindow.orderFrontRegardless()
-            return
-        }
-
-        let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: SettingsWindowLayout.contentSize),
-            styleMask: [.titled, .closable, .miniaturizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "\(CorptieAppEnvironment.appName) \(L10n("Settings"))"
-        window.isRestorable = false
-        window.center()
-        window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: SettingsView(
-            onClose: {
-                window.close()
-            }
-        ))
-        window.makeKeyAndOrderFront(nil)
-        window.orderFrontRegardless()
-        settingsWindow = window
+        AppTabRouter.shared.selectTab(.settings)
+        openWarRoom()
     }
 
     @objc private func openCollaboration() {

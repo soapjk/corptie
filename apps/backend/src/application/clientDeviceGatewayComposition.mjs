@@ -70,7 +70,7 @@ export function startClientDeviceGateway({
         return receipt;
       },
       chatCreation: {
-        options: () => ({ defaultProviderId: agentProviderRegistry.defaultProviderId,
+        options: () => ({ defaultProviderId: store.settings().newSessionDefaults?.taskCreation?.providerId ?? agentProviderRegistry.defaultProviderId,
           providers: agentProviderRegistry.descriptors().map(descriptor => ({ id: descriptor.id, name: descriptor.displayName,
             available: [AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE, AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
               AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND]
@@ -78,7 +78,7 @@ export function startClientDeviceGateway({
         create: input => launchAgentSession(input)
       },
       workDiscussion: {
-        options: () => ({ defaultProviderId: agentProviderRegistry.defaultProviderId,
+        options: () => ({ defaultProviderId: store.settings().newSessionDefaults?.taskCreation?.providerId ?? agentProviderRegistry.defaultProviderId,
           providers: agentProviderRegistry.descriptors().map(descriptor => ({ id: descriptor.id, name: descriptor.displayName,
             available: [AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE, AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND]
               .every(capability => agentProviderRegistry.supports(descriptor.id, capability)) })) }),

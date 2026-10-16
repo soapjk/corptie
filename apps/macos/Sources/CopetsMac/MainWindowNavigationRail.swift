@@ -11,19 +11,20 @@ struct MainWindowNavigationRail: View {
 
     var body: some View {
         PlatformNavigationRail(
-            items: AppTab.allCases.map {
+            items: AppTab.allCases.filter { $0 != .settings }.map {
                 PlatformNavigationItem(id: $0.rawValue, title: $0.title,
                                        symbol: $0.systemImage,
                                        accessibilityID: "main-tab.\($0.rawValue)")
             },
             selectedID: selection.rawValue,
             expanded: false,
+            settingsSelected: selection == .settings,
             settingsTitle: L10n("设置"),
             settingsAccessibilityID: "main-window.settings",
             onSelect: { id in
                 if let tab = AppTab(rawValue: id) { selection = tab }
             },
-            onSettings: { AppDelegate.shared?.openSettings() }
+            onSettings: { selection = .settings }
         )
         .padding(.horizontal, 8)
         .padding(.top, MainWindowLayoutMetrics.titlebarHeight + 8)

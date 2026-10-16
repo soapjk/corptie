@@ -114,8 +114,7 @@ export class ProviderExecutableDiscovery {
   describe(saved = {}) {
     const controlledPath = this.controlledPath();
     const recommendedPath = controlledPath || this.inventory.find(item => item.version && item.state === "discovered")?.path || "";
-    const mode = controlledPath ? "controlled" : saved.selectionMode
-      ?? (saved.configuredPath || saved.path ? "legacyPinned" : "auto");
+    const mode = controlledPath ? "controlled" : saved.selectionMode === "manual" ? "manual" : "auto";
     return { mode, recommendedPath, adoptedPath: controlledPath || saved.configuredPath || "",
       model: saved.probe?.model ?? "", effectiveModel: saved.probe?.effectiveModel ?? null,
       candidates: this.inventory.map(({ fingerprint, ...item }) => item) };

@@ -28,7 +28,7 @@ export class TaskCreationSettingsService {
       currentModel: catalog.currentModel ?? null, currentReasoningLevel: catalog.currentReasoningLevel ?? null };
   }
 
-  async save(input, revalidate = null) {
+  async validate(input) {
     if (this.readOnly) throw Object.assign(invalid("DEVELOPMENT_PREVIEW_READ_ONLY"), { statusCode: 403, status: 403 });
     if (!input || typeof input !== "object" || Array.isArray(input)
         || Object.keys(input).some(key => !["providerId", "model", "reasoningLevel"].includes(key))
@@ -47,6 +47,11 @@ export class TaskCreationSettingsService {
         throw invalid("REASONING_UNAVAILABLE");
       }
     } else if (value.reasoningLevel) throw invalid("MODEL_REQUIRED");
+    return value;
+  }
+
+  async save(input, revalidate = null) {
+    const value = await this.validate(input);
     revalidate?.();
     await this.store.updateSettings({ newSessionDefaults: { taskCreation: value } });
     return this.read(value.providerId);

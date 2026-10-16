@@ -6,21 +6,29 @@ public struct TaskCreationDefaultsSettingsView: View {
     private let load: @MainActor (String?) async throws -> TaskCreationSettings
     private let save: @MainActor (TaskCreationDefaults) async throws -> TaskCreationSettings
     @State private var catalog: TaskCreationSettings?
-    @State private var draft = TaskCreationDefaults()
+    @State private var localDraft = TaskCreationDefaults()
+    private let externalDraft: Binding<TaskCreationDefaults>?
+    private var draft: TaskCreationDefaults {
+        get { externalDraft?.wrappedValue ?? localDraft }
+        nonmutating set {
+            if let externalDraft { externalDraft.wrappedValue = newValue } else { localDraft = newValue }
+        }
+    }
     @State private var initialized = false
     @State private var busy = false
     @State private var notice = ""
     @State private var loadGeneration = 0
 
     public init(load: @escaping @MainActor (String?) async throws -> TaskCreationSettings,
-                save: @escaping @MainActor (TaskCreationDefaults) async throws -> TaskCreationSettings) {
-        self.load = load; self.save = save
+                save: @escaping @MainActor (TaskCreationDefaults) async throws -> TaskCreationSettings,
+                draft: Binding<TaskCreationDefaults>? = nil) {
+        self.load = load; self.save = save; self.externalDraft = draft
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Task 创建默认配置").font(.headline)
-            Text("手动创建与会话内部工具共用；只影响新建 Task，不修改已有会话。")
+            Text("创建会话默认模型").font(.headline)
+            Text("所有新建会话共用，包括 Task、聊天、内部工具与冲突处理；显式选择优先，不修改已有会话。")
                 .font(.caption).foregroundStyle(.secondary)
             if catalog?.readOnly == true {
                 Text("Development 预览只读：可查看配置，不加载模型或保存修改。")
@@ -71,8 +79,10 @@ public struct TaskCreationDefaultsSettingsView: View {
                 }
             }
             HStack {
-                Button("保存 Task 默认配置") { Task { await persist() } }
+                if externalDraft == nil {
+                Button("保存") { Task { await persist() } }
                     .disabled(busy || !initialized || selectedProvider?.available != true)
+                }
                 Button("重新加载") { Task { await refresh(initial: !initialized) } }.disabled(busy)
                 if busy { ProgressView().controlSize(.small) }
             }
@@ -101,7 +111,7 @@ public struct TaskCreationDefaultsSettingsView: View {
             let result = try await load(initial ? nil : (draft.providerId ?? catalog?.defaultProviderId))
             guard !Task.isCancelled, generation == loadGeneration else { return }
             catalog = result
-            if initial { draft = result.value; initialized = true }
+            if initial { if externalDraft == nil { draft = result.value }; initialized = true }
             notice = ""
         } catch {
             guard !Task.isCancelled, generation == loadGeneration else { return }

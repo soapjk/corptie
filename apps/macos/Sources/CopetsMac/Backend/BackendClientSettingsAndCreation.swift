@@ -1,4 +1,5 @@
 import Foundation
+import CorptieClientCore
 
 extension BackendClient {
     func loadSettings() async { await settingsController.loadSettings() }
@@ -15,11 +16,12 @@ extension BackendClient {
     func updateSettings(
         dataRoot: String, choiceParser: ChoiceParserSettings?,
         codexBackend: CodexBackendSettings? = nil, codeDiff: CodeDiffSettings? = nil,
-        agentProxy: AgentProxySettings? = nil, gateway: GatewaySettings? = nil
+        agentProxy: AgentProxySettings? = nil, gateway: GatewaySettings? = nil,
+        sessionCreationDefaults: TaskCreationDefaults? = nil
     ) async -> Bool {
         await settingsController.updateSettings(
             dataRoot: dataRoot, choiceParser: choiceParser, codexBackend: codexBackend,
-            codeDiff: codeDiff, agentProxy: agentProxy, gateway: gateway
+            codeDiff: codeDiff, agentProxy: agentProxy, gateway: gateway, sessionCreationDefaults: sessionCreationDefaults
         )
     }
 
