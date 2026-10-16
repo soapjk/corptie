@@ -1,15 +1,16 @@
 import AppKit
 import Combine
 import CorptieConversation
+import CorptieClientCore
 import os
 import QuartzCore
 import SwiftUI
 import UserNotifications
 
-enum SettingsWindowLayout {
-    // Keep enough room for eight equal tab targets, including the longest
-    // supported localized labels, without truncation or an overflow control.
-    static let contentSize = NSSize(width: 880, height: 680)
+enum SettingsPageLayout {
+    static let sidebarMinimum: CGFloat = 180
+    static let sidebarIdeal: CGFloat = 220
+    static let sidebarMaximum: CGFloat = 280
 }
 
 enum SettingsTab: Hashable, CaseIterable {
@@ -65,11 +66,11 @@ private struct DataRootMigrationDialogState: Equatable {
 }
 
 struct SettingsView: View {
-    @ObservedObject private var backendClient = BackendClient.shared
+    // Resident settings must not redraw for chat selection/streaming updates.
+    private let backendClient = BackendClient.shared
     @ObservedObject private var settingsState = BackendClient.shared.settingsController
     @ObservedObject private var feishuStore = BackendClient.shared.feishuStore
     @ObservedObject private var appLanguage = AppLanguageController.shared
-    var onClose: () -> Void = {}
     @State private var selectedTab = SettingsTab.general
     @State private var archivedSessionPendingDeletion: TaskSession?
     @State private var dataRoot = ""
@@ -90,42 +91,49 @@ struct SettingsView: View {
     @State private var newFeishuProfile = ""
     @State private var feishuPairingCodes: [String: FeishuPairingCodeResponse] = [:]
     @State private var dataRootMigrationDialog: DataRootMigrationDialogState?
+    @State private var settingsError: String?
+    @State private var sessionCreationDraft: TaskCreationDefaults?
 
     var body: some View {
-        VStack(spacing: 12) {
-            settingsTabBar
-
-            selectedSettingsTab
-
-            Divider()
-
-            HStack {
-                Spacer()
-                if selectedTab == .archivedSessions || selectedTab == .notifications || selectedTab == .devices || selectedTab == .appearance {
-                    Button(L10n("Close")) {
-                        onClose()
-                    }
-                    .keyboardShortcut(.defaultAction)
-                } else {
-                    Button(L10n("Save")) {
-                        Task {
-                            await saveAllSettings()
+        HSplitView {
+            settingsCategories
+                .frame(minWidth: SettingsPageLayout.sidebarMinimum,
+                       idealWidth: SettingsPageLayout.sidebarIdeal,
+                       maxWidth: SettingsPageLayout.sidebarMaximum, maxHeight: .infinity)
+                .mainWindowPageCard()
+                .padding(.trailing, MainWindowPageLayoutMetrics.halfColumnSpacing)
+            VStack(spacing: 12) {
+                HStack {
+                    Text(L10n(selectedTab.titleKey)).font(.title2.weight(.semibold))
+                    Spacer()
+                }
+                Divider()
+                selectedSettingsTab.frame(maxWidth: .infinity, maxHeight: .infinity)
+                if backendClient.settings != nil || sessionCreationDraft != nil {
+                    Divider()
+                    HStack {
+                        if let settingsError { Text(settingsError).font(.caption).foregroundStyle(.red).lineLimit(2) }
+                        Spacer()
+                        Button(L10n("Save")) {
+                            Task { await saveAllSettings() }
                         }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(backendClient.isUpdatingSettings
+                            || dataRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .accessibilityIdentifier("settings.save")
                     }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(
-                        backendClient.isUpdatingSettings
-                        || dataRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    )
                 }
             }
+            .padding(20)
+            .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity)
+            .mainWindowPageCard()
+            .padding(.leading, MainWindowPageLayoutMetrics.halfColumnSpacing)
         }
-        .padding(20)
-        .frame(
-            width: SettingsWindowLayout.contentSize.width,
-            height: SettingsWindowLayout.contentSize.height
-        )
+        .padding(MainWindowPageLayoutMetrics.outerPadding)
+        .accessibilityIdentifier("settings.page")
+        .environmentObject(backendClient)
+        .onReceive(backendClient.$lastError.removeDuplicates()) { settingsError = $0 }
         .task {
             await backendClient.loadSettings()
             await feishuStore.loadFeishuBots()
@@ -297,7 +305,6 @@ struct SettingsView: View {
                     case .completed:
                         Button(L10n("Done")) {
                             dataRootMigrationDialog = nil
-                            onClose()
                         }
                         .keyboardShortcut(.defaultAction)
                     case .failed:
@@ -313,34 +320,40 @@ struct SettingsView: View {
         }
     }
 
-    private var settingsTabBar: some View {
-        HStack(spacing: 8) {
-            ForEach(SettingsTab.allCases, id: \.self) { tab in
-                Button {
-                    selectedTab = tab
-                } label: {
-                    VStack(spacing: 4) {
-                        Image(systemName: tab.systemImage)
-                            .font(.system(size: 18))
-                        Text(L10n(tab.titleKey))
-                            .font(.caption)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 52)
-                    .contentShape(Rectangle())
-                    .background {
-                        if selectedTab == tab {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(Color.accentColor.opacity(0.12))
+    private var settingsCategories: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(L10n("Settings")).font(.title2.weight(.semibold)).padding(.bottom, 12)
+                ForEach(SettingsTab.allCases, id: \.self) { tab in
+                    Button {
+                        selectedTab = tab
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: tab.systemImage)
+                                .frame(width: 20)
+                            Text(L10n(tab.titleKey))
+                                .font(.body)
+                                .lineLimit(2)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 10)
+                        .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .background {
+                            if selectedTab == tab {
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(Color.accentColor.opacity(0.12))
+                            }
                         }
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("settings.tab.\(tab)")
+                    .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("settings.tab.\(tab)")
-                .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
             }
+            .padding(16)
         }
+        .accessibilityIdentifier("settings.categories")
     }
 
     @ViewBuilder
@@ -495,7 +508,7 @@ struct SettingsView: View {
             }
 
 
-            if let error = backendClient.lastError {
+            if let error = settingsError {
                 Text(error)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.red)
@@ -511,123 +524,26 @@ struct SettingsView: View {
     private var providerSettingsTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-            ProviderEnvironmentSettingsView()
-                TaskCreationDefaultsSettingsView(load: { try await ProviderSettingsAPI.readTaskDefaults(providerId: $0) },
-                    save: { try await ProviderSettingsAPI.saveTaskDefaults($0) })
-            VStack(alignment: .leading, spacing: 8) {
-                Text(L10n("Codex Backend"))
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(CorptiePalette.secondaryText)
-                Picker(L10n(""), selection: $codexBackend.mode) {
-                    Text(L10n("App Server")).tag("app-server")
-                    Text(L10n("PTY Legacy")).tag("pty")
+                Text(L10n("共用配置")).font(.title3.weight(.semibold))
+                GroupBox {
+                    TaskCreationDefaultsSettingsView(
+                        load: { try await ProviderSettingsAPI.readTaskDefaults(providerId: $0) },
+                        save: { try await ProviderSettingsAPI.saveTaskDefaults($0) },
+                        draft: Binding(
+                            get: { sessionCreationDraft ?? backendClient.settings?.newSessionDefaults?.taskCreation ?? TaskCreationDefaults() },
+                            set: { sessionCreationDraft = $0 }))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
                 }
-                .pickerStyle(.segmented)
-                .help(L10n("Choose how new Codex sessions are created. App Server uses Codex JSON-RPC; PTY Legacy drives the terminal UI."))
-                Text(codexBackend.mode == "app-server" ? L10n("New Codex sessions use the official Codex app-server protocol.") : L10n("New Codex sessions use the legacy terminal adapter."))
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(CorptiePalette.secondaryText)
-            }
-
-            FoundationModelSettingsView(modelCatalog: backendClient.modelCatalog)
-            DisclosureGroup("终端选项解析（兼容设置）") {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Toggle(L10n("Use LLM-enhanced interactions"), isOn: llmInteractionEnabled)
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(CorptiePalette.secondaryText)
-                    Spacer()
+                GroupBox {
+                    FoundationModelSettingsView(modelCatalog: backendClient.modelCatalog)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
                 }
-                .help(L10n("Enable model-assisted parsing for terminal choice prompts"))
-
-                if choiceParser.provider != "disabled" {
-                    Picker(L10n(""), selection: $choiceParser.provider) {
-                        Text(L10n("Local Agent")).tag("local-agent")
-                        Text(L10n("OpenAI-compatible")).tag("openai")
-                    }
-                    .pickerStyle(.segmented)
-                    .help(L10n("Choose how Corptie parses terminal choice prompts"))
-
-                    if choiceParser.provider == "openai" {
-                        VStack(alignment: .leading, spacing: 8) {
-                            TextField(L10n("Base URL, e.g. https://api.openai.com/v1"), text: $choiceParser.openaiBaseURL)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                            TextField(L10n("OpenAI API key"), text: $choiceParser.openaiApiKey)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                            TextField(L10n("Parser model"), text: $choiceParser.openaiModel)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        }
-                    } else {
-                        VStack(alignment: .leading, spacing: 8) {
-                            TextField(L10n("Agent command"), text: $choiceParser.localCommand)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                            TextField(L10n("Fixed arguments"), text: $choiceParser.localArgs)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                            ParserModelPicker(
-                                title: "Model",
-                                selection: $choiceParser.localModel,
-                                defaultModel: "",
-                                allowAutomatic: true
-                            )
-                        }
-                    }
-
-                    HStack {
-                        Text(L10n("Timeout"))
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(CorptiePalette.secondaryText)
-                        Stepper("\(choiceParser.timeoutMs / 1000)s", value: $choiceParser.timeoutMs, in: 1000...60000, step: 1000)
-                            .font(.system(size: 11, weight: .medium))
-                    }
-                }
-
-                HStack(spacing: 8) {
-                    Button(L10n("Test")) {
-                        Task {
-                            await testChoiceParser()
-                        }
-                    }
-                    .disabled(choiceParser.provider == "disabled" || backendClient.isTestingChoiceParser || backendClient.isUpdatingSettings)
-
-                    Button(L10n("Confirm")) {
-                        Task {
-                            await confirmChoiceParser()
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!isChoiceParserDirty || backendClient.isTestingChoiceParser || backendClient.isUpdatingSettings)
-
-                    if isChoiceParserDirty {
-                        Button(L10n("Cancel")) {
-                            choiceParser = savedChoiceParser
-                            choiceParserStatus = .idle
-                        }
-                    }
-
-                    if backendClient.isTestingChoiceParser {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-
-                    Text(choiceParserStatus.message)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(choiceParserStatus.color)
-                }
-                .onChange(of: choiceParser) { _, _ in
-                    choiceParserStatus = .idle
-                }
-            }
-            }
-
+                ProviderEnvironmentSettingsView(defaultProviderId: backendClient.settings?.newSessionDefaults?.taskCreation?.providerId)
             }
             .padding(.trailing, 8)
         }
-        .task { await backendClient.loadModels(for: "codex-pty") }
     }
 
     private var archivedSessionsTab: some View {
@@ -717,7 +633,6 @@ struct SettingsView: View {
 
         if await persistSettings(dataRoot: requestedDataRoot) {
             recordSavedSettings()
-            onClose()
         }
     }
 
@@ -750,11 +665,13 @@ struct SettingsView: View {
             codexBackend: codexBackend,
             codeDiff: codeDiff,
             agentProxy: agentProxy,
-            gateway: gateway
+            gateway: gateway,
+            sessionCreationDefaults: sessionCreationDraft
         )
     }
 
     private func recordSavedSettings() {
+        sessionCreationDraft = nil
         savedChoiceParser = choiceParser
         savedCodexBackend = codexBackend
         savedCodeDiff = codeDiff

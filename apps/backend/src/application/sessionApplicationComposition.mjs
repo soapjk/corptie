@@ -9,6 +9,7 @@ import { buildDirectUserMessageEvidence } from "./directUserMessageEvidence.mjs"
 import { skillMcpTurnContext } from "./skillMcpTurnContext.mjs";
 import { desiredToolDomainIds, appliedToolDomainIds } from "./sessionToolBindingProjection.mjs";
 import { assertNoAutomaticWorktreeMutation } from "./worktreeAutoFollowService.mjs";
+import { resolveTaskCreationDefaults } from "../utils/newSessionDefaults.mjs";
 
 // Product policy wired into the common Session service. Later-created services
 // enter through narrow deferred operations to preserve startup dependency order.
@@ -23,6 +24,11 @@ export function createSessionApplicationComposition({
 }) {
   const sessionApplicationService = new SessionApplicationService({
     registry: agentProviderRegistry,
+    resolveCreationDefaults: (providerId, input) => {
+      const runtime = resolveTaskCreationDefaults({ ...input, providerId },
+        store.settings?.().newSessionDefaults ?? {}, agentProviderRegistry.defaultProviderId);
+      return { providerId: runtime.providerId, input: { ...input, model: runtime.model, reasoningLevel: runtime.reasoningLevel } };
+    },
     observeLifecycle: ({ type, sessionId, ...payload }) => {
       console.info(`[session-lifecycle] ${JSON.stringify({ type, sessionId, ...payload })}`);
       emitEvent(type, payload, { sessionId });

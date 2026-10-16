@@ -23,7 +23,7 @@ export function handleProviderModelsHttpRequest({ request, response, url, sessio
 }
 
 export function handleProviderSetupHttpRequest({
-  request, response, url, agentProviderRegistry, firstRunSetup, readJson, sendJson, errorStatus
+  request, response, url, agentProviderRegistry, firstRunSetup, readJson, sendJson, errorStatus, store
 }) {
   const providerConfigurationActionMatch = url.pathname.match(
     /^\/providers\/([^/]+)\/(configuration\/validate|connection-test)$/
@@ -70,7 +70,7 @@ export function handleProviderSetupHttpRequest({
 
   if (request.method === "GET" && url.pathname === "/providers") {
     sendJson(response, 200, {
-      defaultProviderId: agentProviderRegistry.defaultProviderId,
+      defaultProviderId: store?.settings?.().newSessionDefaults?.taskCreation?.providerId ?? agentProviderRegistry.defaultProviderId,
       providers: agentProviderRegistry.descriptors()
     });
     return true;

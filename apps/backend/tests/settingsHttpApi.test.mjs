@@ -41,6 +41,24 @@ test("settings reads expose preview and migration state without mutations", asyn
   assert.deepEqual(f.calls, []);
 });
 
+test("the unified Save validates session defaults before committing any other settings", async () => {
+  const f = fixture();
+  f.dependencies.agentProviderRegistry = { defaultProviderId: "neutral", descriptors: () => [{ id: "neutral", displayName: "Neutral" }], supports: () => true };
+  f.dependencies.sessionApplicationService = { listModels: async () => ({ models: [{ id: "chosen", reasoningLevels: ["high"] }] }) };
+  const input = { dataRoot: "/old", codeDiff: { tool: "automatic" }, newSessionDefaults: {
+    taskCreation: { providerId: "neutral", model: "chosen", reasoningLevel: "high" } } };
+  const invalid = await f.dispatch("/settings", "PATCH", { ...input,
+    newSessionDefaults: { taskCreation: { providerId: "neutral", model: "unavailable" } } }).result;
+  assert.equal(invalid.body.code, "MODEL_UNAVAILABLE");
+  assert.equal(f.calls.length, 0);
+  assert.equal((await f.dispatch("/settings", "PATCH", input).result).status, 200);
+  assert.deepEqual(f.calls[0], ["save", input]);
+  f.calls.length = 0;
+  f.dependencies.developmentPreview = true;
+  assert.equal((await f.dispatch("/settings", "PATCH", input).result).status, 403);
+  assert.equal(f.calls.length, 0);
+});
+
 test("invalid roots and stale source preconditions fail before saving", async () => {
   const f = fixture();
   for (const body of [{ dataRoot: " " }, { dataRoot: null }, { expectedSourceDataRoot: "" }]) {

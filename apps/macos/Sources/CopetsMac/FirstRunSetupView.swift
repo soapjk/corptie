@@ -325,6 +325,7 @@ struct FirstRunProviderCard: View {
     let busy: Bool
     let scanGeneration: Int
     let isDefault: Bool
+    let allowsAutomaticChecks: Bool
     let pathChanged: (Bool) -> Void
     let updated: (FirstRunProvider) -> Void
     @State private var path: String
@@ -336,7 +337,6 @@ struct FirstRunProviderCard: View {
     @State private var editingPath = false
     @State private var environmentMode: String
     @State private var environmentHome: String
-    @State private var confirmImport = false
     @State private var authenticationBusy = false
     @State private var loginId: String?
     @State private var selectionMode: String
@@ -345,19 +345,22 @@ struct FirstRunProviderCard: View {
     @State private var activeCheckID: String?
 
     init(provider: FirstRunProvider, busy: Bool, scanGeneration: Int, isDefault: Bool,
-         pathChanged: @escaping (Bool) -> Void, updated: @escaping (FirstRunProvider) -> Void) {
+         pathChanged: @escaping (Bool) -> Void, updated: @escaping (FirstRunProvider) -> Void,
+         allowsAutomaticChecks: Bool = true) {
         self.provider = provider
         self.busy = busy
         self.scanGeneration = scanGeneration
         self.isDefault = isDefault
+        self.allowsAutomaticChecks = allowsAutomaticChecks
         self.pathChanged = pathChanged
         self.updated = updated
-        _path = State(initialValue: provider.path)
+        let automatic = provider.program.map { !["manual", "controlled"].contains($0.mode) } ?? false
+        _path = State(initialValue: automatic ? (provider.program?.recommendedPath ?? provider.path) : provider.path)
         _result = State(initialValue: provider)
-        _environmentMode = State(initialValue: provider.environment?.mode ?? "isolated")
-        _environmentHome = State(initialValue: provider.environment?.home ?? "")
-        _selectionMode = State(initialValue: provider.program?.mode ?? "manual")
-        _checkModel = State(initialValue: provider.program?.model ?? "")
+        _environmentMode = State(initialValue: "native")
+        _environmentHome = State(initialValue: provider.environment?.options.first(where: { $0.mode == "native" })?.home ?? "")
+        _selectionMode = State(initialValue: automatic ? "auto" : (provider.program?.mode ?? "manual"))
+        _checkModel = State(initialValue: "")
     }
 
     private var available: Bool {
@@ -423,7 +426,7 @@ struct FirstRunProviderCard: View {
                 .accessibilityLabel(L10nFormat("启用 %@", provider.name))
                 .disabled(!available || controlsBusy)
             }
-            if available && !editingPath {
+            if available && !editingPath && result.program == nil {
                 HStack {
                     Text(L10n("已通过实际回复检测"))
                         .font(.callout).foregroundStyle(.secondary)
@@ -455,12 +458,6 @@ struct FirstRunProviderCard: View {
                 environmentSelection(environment)
             }
             if result.program != nil {
-                HStack {
-                    Text(L10n("检测模型")).font(.callout.weight(.medium))
-                    TextField(L10n("Codex 默认模型"), text: $checkModel)
-                        .textFieldStyle(.roundedBorder)
-                        .disabled(controlsBusy || testing)
-                }
                 Text(L10n("检测会发送最小测试请求，可能消耗额度；不会读取项目或加入聊天历史。"))
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if let model = result.program?.effectiveModel {
@@ -489,6 +486,8 @@ struct FirstRunProviderCard: View {
             // Multi-installation discovery never triggers a paid reply test.
             // Its explicit check action has a separate task identity below.
             guard provider.program == nil else { return }
+            // Opening Settings must never start an implicit model reply test.
+            guard allowsAutomaticChecks || checkGeneration > 0 else { return }
             let shouldCheck = provider.environment != nil
                 ? (!authenticationBusy && !path.isEmpty && (scanGeneration > 0 || checkGeneration > 0))
                 : !resultMatchesSelection || (!path.isEmpty && (result.checkState == "unknown"
@@ -509,12 +508,6 @@ struct FirstRunProviderCard: View {
             await check()
         }
         .onDisappear { if result.program != nil { cancelCheck() } }
-        .alert(L10n("复用本机登录？"), isPresented: $confirmImport) {
-            Button(L10n("取消"), role: .cancel) { }
-            Button(L10n("导入登录")) { Task { await authenticate("import") } }
-        } message: {
-            Text(L10n("将把本机登录凭据导入独立环境；如保存在钥匙串中，macOS 可能请求授权。"))
-        }
         .task(id: loginId) {
             guard let id = loginId else { return }
             let requested = selectionKey
@@ -541,7 +534,10 @@ struct FirstRunProviderCard: View {
 
     private func programSelection(_ program: ProviderProgramInventory) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Picker(L10n("程序选择"), selection: Binding(
+            if program.candidates.contains(where: { $0.path != path }) {
+            Text(L10n("本机发现有其他版本的 Codex"))
+                .font(.caption).foregroundStyle(.secondary)
+            Picker(L10n("其他本机版本"), selection: Binding(
                 get: { selectionMode == "auto" ? "__auto__" : path },
                 set: { value in
                     if value == "__auto__" {
@@ -560,24 +556,10 @@ struct FirstRunProviderCard: View {
                 }
             }
             .disabled(controlsBusy || testing || program.mode == "controlled")
-            if selectionMode == "legacyPinned" {
-                Text(L10n("已保留原程序路径，可选择自动模式并检测后采用新版。"))
-                    .font(.caption).foregroundStyle(.secondary)
             }
             if program.mode == "controlled" {
                 Text(L10n("程序路径由运行环境指定。")) .font(.caption).foregroundStyle(.secondary)
             }
-            ForEach(program.running) { running in
-                Text(L10nFormat("当前运行：%@", running.path))
-                    .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
-                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-            }
-            if !program.adoptedPath.isEmpty && program.adoptedPath != path {
-                Text(L10nFormat("已采用：%@", program.adoptedPath))
-                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-            }
-            Button(L10n("重新扫描")) { Task { await scanPrograms() } }
-                .disabled(controlsBusy || testing)
         }
     }
 
@@ -598,35 +580,10 @@ struct FirstRunProviderCard: View {
 
     private func environmentSelection(_ environment: ProviderRuntimeEnvironment) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(L10n("运行环境")).font(.callout.weight(.medium))
-            Picker(L10n("运行环境"), selection: Binding(get: { environmentMode }, set: { mode in
-                environmentMode = mode
-                environmentHome = environment.options.first(where: { $0.mode == mode })?.home ?? ""
-            })) {
-                ForEach(environment.options) { option in Text(L10n(option.title)).tag(option.mode) }
-            }
-            .pickerStyle(.radioGroup)
-            .disabled(controlsBusy || testing)
-            Text(L10n(environmentMode == "native"
-                ? "使用本机已有配置和登录状态，认证由 Codex 管理。Codex 自身可能请求系统授权。"
-                : "使用独立配置和会话状态，不改动现有 Codex 环境。"))
+            Text(L10n("使用本机已有配置和登录状态，认证由 Codex 管理。Codex 自身可能请求系统授权。"))
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Text(environmentHome).font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 8)
-                if environmentMode == "native" {
-                    Button(L10n("更改目录…")) { chooseHome() }.disabled(controlsBusy || testing)
-                }
-            }
-            Text(L10n("环境切换仅影响新建会话，已有会话继续使用原环境。"))
-                .font(.caption).foregroundStyle(.secondary)
             if !available {
                 HStack {
-                    if environmentMode == "isolated" {
-                        Button(L10n("复用本机登录")) { confirmImport = true }
-                            .disabled(authenticationBusy)
-                    }
                     Button(L10n("登录 Codex")) { Task { await authenticate("login") } }
                         .disabled(authenticationBusy)
                     if loginId != nil {
@@ -638,16 +595,6 @@ struct FirstRunProviderCard: View {
                 .disabled((controlsBusy && loginId == nil) || testing || path.isEmpty)
             }
         }
-    }
-
-    private func chooseHome() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.showsHiddenFiles = true
-        panel.message = L10n("选择现有 Codex Home 目录")
-        if panel.runModal() == .OK, let url = panel.url { environmentHome = url.path }
     }
 
     private var environmentBody: [String: String] { ["mode": environmentMode, "home": environmentHome] }
@@ -781,21 +728,24 @@ struct FirstRunProviderCard: View {
 
 // Settings and onboarding deliberately share the exact same provider card.
 struct ProviderEnvironmentSettingsView: View {
+    var defaultProviderId: String? = nil
     @State private var status: FirstRunStatus?
     @State private var error: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(L10n("Agent 运行环境")).font(.headline)
+            Text(L10n("Provider 专属配置")).font(.title3.weight(.semibold))
+            Text(L10n("各 Provider 的程序路径、可用状态与认证配置分别管理，不影响上方的共用模型设置。"))
+                .font(.caption).foregroundStyle(.secondary)
             if let status {
-                ForEach(status.providers.filter { $0.environment != nil }) { provider in
+                ForEach(status.providers) { provider in
                     FirstRunProviderCard(provider: provider, busy: false, scanGeneration: 0,
-                        isDefault: status.defaultProviderId == provider.id, pathChanged: { _ in },
+                        isDefault: (defaultProviderId ?? status.defaultProviderId) == provider.id, pathChanged: { _ in },
                         updated: { row in
                             if let index = self.status?.providers.firstIndex(where: { $0.id == row.id }) {
                                 self.status?.providers[index] = row
                             }
-                        })
+                        }, allowsAutomaticChecks: false)
                 }
             } else if let error {
                 Text(error).font(.callout).foregroundStyle(.red)

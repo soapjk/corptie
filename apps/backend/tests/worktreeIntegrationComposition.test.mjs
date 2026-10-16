@@ -121,7 +121,8 @@ test("failed conflict binding preparation does not admit another instruction", a
 });
 
 test("a new plan Session atomically starts with exactly one conflict prompt", async () => {
-  const { worktreeIntegrationJobService: jobs, calls } = fixture();
+  const { worktreeIntegrationJobService: jobs, calls, store } = fixture();
+  store.settings = () => ({ newSessionDefaults: { taskCreation: { providerId: "configured-provider" } } });
   const item = {
     worktreeId: "source",
     branchName: "feature/source",
@@ -139,6 +140,7 @@ test("a new plan Session atomically starts with exactly one conflict prompt", as
   assert.equal(result.reused, false);
   assert.deepEqual(calls.map(([kind]) => kind), ["create", "start"]);
   assert.equal(calls[1][1].dispatchInitialTurn, true);
+  assert.equal(calls[1][1].providerId, "configured-provider");
   assert.ok(calls[1][1].initialPrompt.includes("source-head"));
   assert.equal(calls.filter(([kind]) => ["send", "admit"].includes(kind)).length, 0);
 });

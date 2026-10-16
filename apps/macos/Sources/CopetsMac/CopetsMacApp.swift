@@ -23,9 +23,10 @@ struct ExplicitWindowLaunchApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        Settings { SettingsView() }
+        Settings { EmptyView() }
             .defaultLaunchBehavior(.suppressed)
             .restorationBehavior(.disabled)
+            .commands { SettingsNavigationCommands() }
     }
 }
 
@@ -34,7 +35,17 @@ struct CorptieMacApp: App {
 
     var body: some Scene {
         Settings {
-            SettingsView()
+            EmptyView()
+        }
+        .commands { SettingsNavigationCommands() }
+    }
+}
+
+struct SettingsNavigationCommands: Commands {
+    var body: some Commands {
+        CommandGroup(replacing: .appSettings) {
+            Button(L10n("Settings...")) { AppDelegate.shared?.openSettings() }
+                .keyboardShortcut(",", modifiers: .command)
         }
     }
 }

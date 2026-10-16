@@ -187,6 +187,7 @@ export function routeBackendHttpRequest(request, response, ports) {
 
   if (handleSettingsUpdateHttpRequest({
     request, response, url, store, dataRootMigrationCoordinator,
+    agentProviderRegistry, sessionApplicationService, developmentPreview,
     configureChoiceParserRuntime, readJson, sendJson, errorStatus,
     onSettingsSaved: async (before, settings) => {
       // Preserve the existing adapter-specific configuration invalidation at composition.
@@ -230,7 +231,7 @@ export function routeBackendHttpRequest(request, response, ports) {
   })) return;
 
   if (handleProviderSetupHttpRequest({
-    request, response, url, agentProviderRegistry, firstRunSetup, readJson, sendJson, errorStatus
+    request, response, url, agentProviderRegistry, firstRunSetup, readJson, sendJson, errorStatus, store
   })) return;
 
   if (handleProjectWorkspaceHttpRequest({

@@ -80,7 +80,7 @@ test("controlled paths, legacy paths and explicitly disabled choices are preserv
   await f.service.setEnabled({ providerId: provider.id, path: f.binary, enabled: false });
   assert.equal((await f.service.check({ providerId: provider.id, path: f.binary })).enabled, false);
   delete f.service.state.providers[provider.id].selectionMode;
-  assert.equal((await f.service.status()).providers[0].program.mode, "legacyPinned");
+  assert.equal((await f.service.status()).providers[0].program.mode, "auto");
   controlled = "/missing/controlled";
   assert.equal(f.service.command(provider.id, () => "wrong"), controlled);
   assert.equal((await f.service.status()).providers[0].path, controlled);

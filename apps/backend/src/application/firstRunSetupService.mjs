@@ -29,7 +29,8 @@ export class FirstRunSetupService {
   command(id, fallback) {
     const saved = this.state.providers?.[id];
     const discovery = this.providers.find(p => p.id === id)?.programDiscovery;
-    return discovery?.controlledPath() || saved?.configuredPath || (saved?.confirmed ? saved.path : null)
+    return discovery?.controlledPath() || (discovery && saved?.selectionMode !== "manual"
+      ? discovery.describe().recommendedPath : null) || saved?.configuredPath || (saved?.confirmed ? saved.path : null)
       || discovery?.describe().recommendedPath || fallback();
   }
 
@@ -37,7 +38,7 @@ export class FirstRunSetupService {
     const saved = this.state.providers?.[provider.id];
     const check = this.checks.get(provider.id);
     const program = provider.programDiscovery?.describe(saved);
-    const path = check?.path ?? (program?.mode === "controlled" ? program.recommendedPath :
+    const path = check?.path ?? (["controlled", "auto"].includes(program?.mode) && program.recommendedPath ? program.recommendedPath :
       saved?.configuredPath ?? saved?.path ?? program?.recommendedPath ?? provider.discover());
     const fingerprint = await executableFingerprint(path);
     const environment = provider.environmentDescriptor?.();

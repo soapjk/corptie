@@ -397,7 +397,7 @@ struct NewSessionCreationSheet: View {
 
     private func reconcileProviderSelection() {
         guard !creatableProviders.contains(where: { $0.id == selectedProviderId }) else { return }
-        if let preferred = modelCatalog.defaultSessionProviderId,
+        if let preferred = backendClient.settings?.newSessionDefaults?.taskCreation?.providerId ?? modelCatalog.defaultSessionProviderId,
            creatableProviders.contains(where: { $0.id == preferred }) {
             selectedProviderId = preferred
         } else {

@@ -15,6 +15,7 @@ export class SessionNotFoundError extends Error {
 export class SessionApplicationService {
   constructor(options = {}) {
     this.registry = options.registry;
+    this.resolveCreationDefaults = options.resolveCreationDefaults ?? ((providerId, input) => ({ providerId, input }));
     this.resolveSessionReference = options.resolveSessionReference;
     this.resolveSessionBinding = options.resolveSessionBinding ?? null;
     this.bindCreatedSession = options.bindCreatedSession ?? null;
@@ -75,6 +76,8 @@ export class SessionApplicationService {
       error.code = "SESSION_AVATAR_UNSUPPORTED";
       throw error;
     }
+    // All new product Sessions share this policy. Forks retain source runtime.
+    if (!context.forkSource) ({ providerId, input } = await this.resolveCreationDefaults(providerId, input, context));
     const provider = this.registry.get(providerId);
     const preparedInput = typeof provider.prepareSessionInput === "function"
       ? await provider.prepareSessionInput(input, context)

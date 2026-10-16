@@ -48,7 +48,7 @@ export class WorkChatOperationService {
           taskId: text(args.task_id, "task_id"),
           assigneeAgentId: text(args.agent_id, "agent_id"),
           expectedTaskVersion: positiveInteger(args.resource_version, "resource_version"),
-          providerId: optionalText(args.provider_id) ?? this.defaultProviderId,
+          providerId: optionalText(args.provider_id) ?? this.store.settings?.().newSessionDefaults?.taskCreation?.providerId ?? this.defaultProviderId,
           title: optionalText(args.title),
           idempotencyKey: text(args.idempotency_key, "idempotency_key"),
           sourceSessionId: text(input.metadata.sessionId, "source_session_id")

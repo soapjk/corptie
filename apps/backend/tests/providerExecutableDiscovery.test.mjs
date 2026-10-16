@@ -32,7 +32,7 @@ test("inventory deduplicates symlinks and recommends newest independently of PAT
   await discovery.scan(); assert.equal(calls, 2);
   await writeFile(newer, "#!/bin/sh\n# updated binary\n");
   await discovery.scan(); assert.equal(calls, 3);
-  assert.equal(discovery.describe({ configuredPath: older }).mode, "legacyPinned");
+  assert.equal(discovery.describe({ configuredPath: older }).mode, "auto");
   assert.equal(discovery.describe({ configuredPath: older }).adoptedPath, older);
 });
 

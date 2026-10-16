@@ -38,12 +38,14 @@ public struct PlatformNavigationRail: View {
     public let expanded: Bool
     public let verticalAlignment: Alignment
     public let settingsTitle: String
+    public let settingsSelected: Bool
     public let settingsAccessibilityID: String
     public let onSelect: (String) -> Void
     public let onSettings: () -> Void
 
     public init(items: [PlatformNavigationItem], selectedID: String, expanded: Bool,
                 verticalAlignment: Alignment = .top,
+                settingsSelected: Bool = false,
                 settingsTitle: String, settingsAccessibilityID: String,
                 onSelect: @escaping (String) -> Void, onSettings: @escaping () -> Void) {
         self.items = items
@@ -51,6 +53,7 @@ public struct PlatformNavigationRail: View {
         self.expanded = expanded
         self.verticalAlignment = verticalAlignment
         self.settingsTitle = settingsTitle
+        self.settingsSelected = settingsSelected
         self.settingsAccessibilityID = settingsAccessibilityID
         self.onSelect = onSelect
         self.onSettings = onSettings
@@ -108,13 +111,18 @@ public struct PlatformNavigationRail: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 44, alignment: expanded ? .leading : .center)
                 .padding(.horizontal, expanded ? 8 : 0)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(settingsSelected ? Color.accentColor : .secondary)
+                .background {
+                    if settingsSelected { Capsule().fill(Color.accentColor.opacity(0.12)) }
+                }
                 .contentShape(Rectangle())
             }
             .buttonStyle(PlatformTabButtonStyle())
             .help(settingsTitle)
             .accessibilityLabel(settingsTitle)
             .accessibilityIdentifier(settingsAccessibilityID)
+            .accessibilityAddTraits(settingsSelected ? .isSelected : [])
+            .accessibilityValue(settingsSelected ? "selected" : "not-selected")
         }
         .padding(5)
         .platformGlassSurface(in: Capsule(), variant: .clear)

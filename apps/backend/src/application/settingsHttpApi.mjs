@@ -31,12 +31,18 @@ export function handleSettingsReadHttpRequest({ request, response, url, store, d
 
 export function handleSettingsUpdateHttpRequest({
   request, response, url, store, dataRootMigrationCoordinator,
-  onSettingsSaved, configureChoiceParserRuntime, readJson, sendJson, errorStatus
+  onSettingsSaved, configureChoiceParserRuntime, readJson, sendJson, errorStatus,
+  agentProviderRegistry, sessionApplicationService, developmentPreview = false
 }) {
   if (request.method === "PATCH" && url.pathname === "/settings") {
     readJson(request)
       .then(async (input) => {
         const before = store.settings();
+        if (Object.hasOwn(input.newSessionDefaults ?? {}, "taskCreation")) {
+          const service = new TaskCreationSettingsService({ store, registry: agentProviderRegistry,
+            sessions: sessionApplicationService, readOnly: developmentPreview });
+          input.newSessionDefaults.taskCreation = await service.validate(input.newSessionDefaults.taskCreation);
+        }
         if (Object.hasOwn(input, "dataRoot")
           && (typeof input.dataRoot !== "string" || !input.dataRoot.trim())) {
           const error = new TypeError("Data Root must be a non-empty absolute path.");

@@ -7,7 +7,7 @@ import os from "node:os";
 // Adapter-owned provider state. Thread IDs remain resources, not actors.
 // Existing/unindexed threads always route to the legacy isolated Home.
 export class CodexEnvironmentRegistry {
-  constructor({ path, isolatedHome, nativeHome = process.env.CODEX_HOME || join(os.homedir(), ".codex"), hasExistingSessions = () => false }) {
+  constructor({ path, isolatedHome, nativeHome = join(os.homedir(), ".codex"), hasExistingSessions = () => false }) {
     Object.assign(this, { path, isolatedHome: resolve(isolatedHome), nativeHome: resolve(nativeHome), hasExistingSessions });
     if (this.nativeHome === this.isolatedHome) this.nativeHome = join(os.homedir(), ".codex");
     this.legacy = this.profile("isolated", this.isolatedHome);
@@ -28,28 +28,17 @@ export class CodexEnvironmentRegistry {
         throw new Error("Codex 环境记录损坏，请恢复本地配置。");
       }
       this.state = saved;
-      if (saved.nativeHome) this.nativeHome = saved.nativeHome;
       this.state.profiles[this.legacy.profileId] ??= this.legacy;
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
-      // Before environment selection existed, Corptie always used its isolated
-      // Home. Upgrade defaults must inherit that Home just like old threads.
-      // Inspect local existence only; never read/import native credentials.
-      const hasLegacyConfig = await stat(join(this.isolatedHome, "config.toml"))
-        .then(info => info.isFile()).catch(error => {
-          if (error.code === "ENOENT") return false;
-          throw error;
-        });
-      if (hasLegacyConfig || await this.hasExistingSessions()) {
-        await this.save();
-        return;
-      }
-      // A genuinely new installation may start with the native Home.
-      const native = this.profile("native", this.nativeHome);
-      this.state.profiles[native.profileId] = native;
-      this.state.defaultProfileId = native.profileId;
-      await this.save();
     }
+    // New Sessions always use the official Home. Old thread bindings, including
+    // unindexed legacy threads, keep their original profile and are never moved.
+    const native = this.profile("native", this.nativeHome);
+    const changed = this.state.defaultProfileId !== native.profileId;
+    this.state.profiles[native.profileId] ??= native;
+    this.state.defaultProfileId = native.profileId;
+    if (changed) await this.save();
   }
 
   get current() { return this.state.profiles[this.state.defaultProfileId]; }
@@ -71,7 +60,10 @@ export class CodexEnvironmentRegistry {
       const home = await realpath(profile.home);
       if (home === await realpath(this.isolatedHome).catch(() => this.isolatedHome)) throw new Error();
       return this.profile("native", home);
-    } catch {
+    } catch (error) {
+      // A first official login can create its own Home. Do not create config or
+      // import credentials ourselves; custom/legacy missing directories still fail.
+      if (error.code === "ENOENT" && profile.home === this.nativeHome) return profile;
       throw Object.assign(new Error("Codex Home 不存在或无法访问，请选择现有目录。"), { code: "PROVIDER_HOME_UNAVAILABLE" });
     }
   }

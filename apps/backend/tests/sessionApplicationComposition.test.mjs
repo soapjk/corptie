@@ -1,6 +1,45 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createSessionApplicationComposition } from "../src/application/sessionApplicationComposition.mjs";
+import { AgentProviderRegistry } from "../src/agent-provider/agentProviderRegistry.mjs";
+import { CallbackAgentProvider } from "../src/agent-provider/callbackAgentProvider.mjs";
+import { AGENT_PROVIDER_CAPABILITIES as C } from "../src/agent-provider/contracts.mjs";
+
+for (const providerId of ["codex-app-server", "claude-code", "openclacky"]) {
+  test(`${providerId}: all new Session kinds use one defaults policy; explicit choices and forks win`, async () => {
+    const calls = [];
+    let saved = { providerId, model: "chosen", reasoningLevel: "high" };
+    const registry = new AgentProviderRegistry([providerId, "other"].map(id => new CallbackAgentProvider({
+      id, displayName: id, transport: "test", capabilities: [C.SESSION_CREATE, C.SESSION_FORK]
+    }, { createSession: async input => { calls.push([id, input]); return { id: `new:${calls.length}` }; },
+      forkSession: async input => { calls.push([id, input]); return { id: `fork:${calls.length}` }; } })));
+    const service = createSessionApplicationComposition({
+      store: { settings: () => ({ newSessionDefaults: { taskCreation: saved } }) }, agentProviderRegistry: registry,
+      sessionBindingRepository: { resolve: () => null }, emitEvent: () => {}
+    });
+    for (const [kind, source] of [["assistantChat", "agent"], ["worker", "entity"], ["worker", "mcp"],
+      ["worker", "integration-conflict"], ["workChat", "http"]]) {
+      await service.createSession(undefined, { sessionKind: kind }, { source, deferSessionBinding: true });
+      assert.equal(calls.at(-1)[0], providerId);
+      assert.equal(calls.at(-1)[1].model, "chosen");
+      assert.equal(calls.at(-1)[1].reasoningLevel, "high");
+    }
+    await service.createSession(providerId, { model: "explicit" }, { deferSessionBinding: true });
+    assert.equal(calls.at(-1)[1].model, "explicit");
+    assert.equal(calls.at(-1)[1].reasoningLevel, null);
+    await service.createSession("other", {}, { deferSessionBinding: true });
+    assert.equal(calls.at(-1)[1].model, null);
+    assert.equal(calls.at(-1)[1].reasoningLevel, null);
+    saved = { providerId, model: "next", reasoningLevel: "low" };
+    await service.createSession(undefined, {}, { deferSessionBinding: true });
+    assert.equal(calls.at(-1)[1].model, "next");
+    await service.createSession(providerId, { model: "source", reasoningLevel: "medium" }, {
+      deferSessionBinding: true, forkSource: { reference: { providerId } }
+    });
+    assert.equal(calls.at(-1)[1].model, "source");
+    assert.equal(calls.at(-1)[1].reasoningLevel, "medium");
+  });
+}
 
 for (const providerId of ["codex-app-server", "claude-code", "openclacky"]) {
   test(`${providerId}: existing chat receives fresh assignment hints without replacement`, async () => {

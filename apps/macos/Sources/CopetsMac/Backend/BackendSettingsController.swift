@@ -113,7 +113,7 @@ final class BackendSettingsController: ObservableObject {
     }
 
     @discardableResult
-    func updateSettings(dataRoot: String, choiceParser: ChoiceParserSettings?, codexBackend: CodexBackendSettings? = nil, codeDiff: CodeDiffSettings? = nil, agentProxy: AgentProxySettings? = nil, gateway: GatewaySettings? = nil) async -> Bool {
+    func updateSettings(dataRoot: String, choiceParser: ChoiceParserSettings?, codexBackend: CodexBackendSettings? = nil, codeDiff: CodeDiffSettings? = nil, agentProxy: AgentProxySettings? = nil, gateway: GatewaySettings? = nil, sessionCreationDefaults: TaskCreationDefaults? = nil) async -> Bool {
         let trimmed = dataRoot.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             lastError = L10n("Data root is required.")
@@ -156,7 +156,7 @@ final class BackendSettingsController: ObservableObject {
             let body = BackendSettingsAPI.updateBody(
                 dataRoot: trimmed, expectedSourceDataRoot: migrationRequested ? settings?.dataRoot : nil,
                 choiceParser: choiceParser, codexBackend: codexBackend, codeDiff: codeDiff,
-                agentProxy: agentProxy, gateway: gateway
+                agentProxy: agentProxy, gateway: gateway, sessionCreationDefaults: sessionCreationDefaults
             )
             // Migration liveness comes from its progress endpoint, not a short request timeout.
             let (data, httpResponse) = try await settingsAPI.patch(body, timeoutInterval: 60 * 60)

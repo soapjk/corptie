@@ -1823,7 +1823,8 @@ function prepareClaudeProviderSessionInput(input = {}) {
 // Normalize display tags, historical aliases and registry IDs at the composition boundary.
 function resolveSessionProviderId(provider) {
   const normalized = typeof provider === "string" ? provider.trim().toLowerCase() : "";
-  return agentProviderRegistry.resolveId(normalized, { useDefault: normalized === "" });
+  const requested = normalized || store.settings().newSessionDefaults?.taskCreation?.providerId || "";
+  return agentProviderRegistry.resolveId(requested, { useDefault: requested === "" });
 }
 
 async function startPreparedWorkSession(input) {
