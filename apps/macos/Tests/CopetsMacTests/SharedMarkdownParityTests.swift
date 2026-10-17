@@ -3,7 +3,8 @@ import XCTest
 import CorptieConversation
 @testable import CorptieMac
 
-/// Frozen pre-extraction renderer is an independent Mac compatibility oracle.
+/// The pre-extraction formatter with the existing adaptive foreground palette
+/// remains an independent oracle for non-math attributed runs.
 @MainActor
 final class SharedMarkdownParityTests: XCTestCase {
     func testEveryAttributedRunMatchesPreExtractionRenderer() {
@@ -44,7 +45,7 @@ private enum FrozenPreExtractionMarkdown {
         }
         let color = style == .user
             ? MessageTextCardPalette.userNativeForeground
-            : NSColor(calibratedRed: 0.24, green: 0.27, blue: 0.29, alpha: 1)
+            : NSColor.labelColor
         guard style != .process else {
             return NSAttributedString(string: text, attributes: [.font: baseFont, .foregroundColor: color])
         }

@@ -62,6 +62,16 @@ final class NativeTimelineTextView: NSTextView, NSTextViewDelegate {
         window?.makeFirstResponder(self)
     }
 
+    override func copy(_ sender: Any?) {
+        guard let textStorage, usesNativeTextMenu else { super.copy(sender); return }
+        let parts = selectedRanges.map { textStorage.attributedSubstring(from: $0.rangeValue) }
+        guard parts.contains(where: { MessageMarkdown.mathCopyText(from: $0) != nil }) else {
+            super.copy(sender); return
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(parts.map { MessageMarkdown.mathCopyText(from: $0) ?? $0.string }.joined(separator: "\n"), forType: .string)
+    }
+
     func endTextSelection() {
         guard usesNativeTextMenu else { return }
         setSelectedRange(NSRange(location: 0, length: 0))

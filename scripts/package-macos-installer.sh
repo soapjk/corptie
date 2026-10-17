@@ -119,7 +119,8 @@ if [ ! -d "${RESOURCE_BUNDLE}" ]; then
   echo "Required SwiftPM resource bundle not found: ${RESOURCE_BUNDLE}" >&2
   exit 1
 fi
-cp -R "${RESOURCE_BUNDLE}" "${APP_DIR}/Contents/Resources/"
+bash "${ROOT}/scripts/copy-swiftpm-resource-bundles.sh" "${BUILD_BIN_DIR}" "${APP_DIR}/Contents/Resources" \
+  CorptieMac_CorptieMac.bundle CorptieConversation_CorptieConversation.bundle SwiftMath_SwiftMath.bundle
 PACKAGED_RESOURCE_BUNDLE="${APP_DIR}/Contents/Resources/CorptieMac_CorptieMac.bundle"
 RESOURCE_ROOT="${PACKAGED_RESOURCE_BUNDLE}"
 if [ -d "${PACKAGED_RESOURCE_BUNDLE}/Contents/Resources" ]; then

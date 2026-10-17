@@ -95,7 +95,8 @@ enum PadMessageLayout {
         let entry = Entry(attributed: attributed, naturalWidth: ceil(bounds.width))
         // Conservative attributed-text estimate; NSCache may evict earlier under
         // pressure. This is a cost budget, not a promise of exact resident bytes.
-        cache.setObject(entry, forKey: key, cost: max(1, text.utf16.count) * 64 + 1024)
+        cache.setObject(entry, forKey: key, cost: max(1, text.utf16.count) * 64 + 1024
+            + MessageMarkdown.mathImageCost(in: attributed))
         return entry
     }
 

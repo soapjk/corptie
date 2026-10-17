@@ -90,7 +90,7 @@ final class NativeMarkdownTextCache {
 
     private func estimatedByteCount(for key: Key, value: NSAttributedString) -> Int {
         // Include the retained key string and headroom for attributed runs/attributes.
-        (key.text.utf16.count * 2) + (value.length * 6) + 128
+        (key.text.utf16.count * 2) + (value.length * 6) + 128 + MessageMarkdown.mathImageCost(in: value)
     }
 }
 
