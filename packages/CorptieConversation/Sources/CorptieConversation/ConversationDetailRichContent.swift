@@ -128,7 +128,9 @@ struct ConversationDetailRichContentView: View {
             case .markdown(let source):
                 // The existing native Markdown formatter has no HTML renderer
                 // or image loader; links require an explicit platform handler.
-                text = AttributedString(MessageMarkdown.make(text: source, style: .agent))
+                // SwiftUI Text cannot display NSTextAttachment. Keep formulas
+                // readable as source here; native message text hosts render them.
+                text = AttributedString(MessageMarkdown.make(text: source, style: .agent, rendersMath: false))
                 layout = nil
             case .table(let table):
                 text = nil

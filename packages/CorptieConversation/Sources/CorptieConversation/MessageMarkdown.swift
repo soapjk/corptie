@@ -16,10 +16,53 @@ public enum MessageMarkdown {
     private static let unorderedListItemRegex = try! NSRegularExpression(pattern: #"^(\s*)[-+*]\s+(.+)$"#)
     private static let orderedListItemRegex = try! NSRegularExpression(pattern: #"^(\s*)(\d+)[.)]\s+(.+)$"#)
 
+    /// Native selection copies the original LaTeX rather than an object-replacement
+    /// character. Returning nil preserves the host's normal rich-text copy path.
+    public static func mathCopyText(from text: NSAttributedString) -> String? {
+        var replacements: [(NSRange, String)] = []
+        text.enumerateAttribute(.attachment, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+            if let math = value as? MessageMathAttachment { replacements.append((range, math.source)) }
+        }
+        guard !replacements.isEmpty else { return nil }
+        let result = NSMutableString(string: text.string)
+        for (range, source) in replacements.reversed() { result.replaceCharacters(in: range, with: source) }
+        return result as String
+    }
+
+    /// Hosts' attributed-text caches must budget retained formula images too,
+    /// not just the one-character attachment placeholder.
+    public static func mathImageCost(in text: NSAttributedString) -> Int {
+        guard text.string.contains("\u{fffc}") else { return 0 }
+        var cost = 0
+        text.enumerateAttribute(.attachment, in: NSRange(location: 0, length: text.length)) { value, _, _ in
+            if let math = value as? MessageMathAttachment, let image = math.image {
+                cost += Int(image.size.width * image.size.height * 32) + 1024
+            }
+        }
+        return cost
+    }
+
     public static func make(
         text: String,
-        style: Style
+        style: Style,
+        rendersMath: Bool = true
     ) -> NSAttributedString {
+        guard style != .process, rendersMath else { return makeMarkdown(text: text, style: style, rendersMath: false) }
+        let result = NSMutableAttributedString(string: "")
+        for block in MessageMath.blocks(text) {
+            switch block {
+            case .text(let text): result.append(makeMarkdown(text: text, style: style))
+            case .formula(let formula):
+                result.append(MessageMathRenderer.attributed(formula, user: style == .user)
+                    ?? NSAttributedString(string: formula.source, attributes: [
+                        .font: MessageFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                        .foregroundColor: style == .user ? MessageTextCardPalette.userNativeForeground : secondaryText]))
+            }
+        }
+        return result
+    }
+
+    private static func makeMarkdown(text: String, style: Style, rendersMath: Bool = true) -> NSAttributedString {
         let baseFont: MessageFont = switch style {
         case .user, .agent: .systemFont(ofSize: 11, weight: .medium)
         case .process: .systemFont(ofSize: 10.5, weight: .semibold)
@@ -54,7 +97,8 @@ public enum MessageMarkdown {
                     ),
                     color: color,
                     paragraphSpacingBefore: heading.level == 1 ? 8 : 5,
-                    paragraphSpacing: 4
+                    paragraphSpacing: 4,
+                    rendersMath: rendersMath
                 ))
             } else if let listItem = unorderedListItem(in: sourceLine) {
                 attributed.append(blockLine(
@@ -62,7 +106,8 @@ public enum MessageMarkdown {
                     baseFont: baseFont,
                     color: color,
                     headIndent: CGFloat(listItem.depth * 14),
-                    firstLineHeadIndent: CGFloat(listItem.depth * 14)
+                    firstLineHeadIndent: CGFloat(listItem.depth * 14),
+                    rendersMath: rendersMath
                 ))
             } else if let listItem = orderedListItem(in: sourceLine) {
                 attributed.append(blockLine(
@@ -70,7 +115,8 @@ public enum MessageMarkdown {
                     baseFont: baseFont,
                     color: color,
                     headIndent: CGFloat(listItem.depth * 14),
-                    firstLineHeadIndent: CGFloat(listItem.depth * 14)
+                    firstLineHeadIndent: CGFloat(listItem.depth * 14),
+                    rendersMath: rendersMath
                 ))
             } else if let quote = blockQuote(in: sourceLine) {
                 attributed.append(blockLine(
@@ -78,12 +124,13 @@ public enum MessageMarkdown {
                     baseFont: baseFont,
                     color: quoteColor,
                     headIndent: 8,
-                    firstLineHeadIndent: 0
+                    firstLineHeadIndent: 0,
+                    rendersMath: rendersMath
                 ))
             } else if isThematicBreak(sourceLine) {
                 attributed.append(blockLine("────────", baseFont: baseFont, color: separatorColor))
             } else {
-                attributed.append(blockLine(sourceLine, baseFont: baseFont, color: color))
+                attributed.append(blockLine(sourceLine, baseFont: baseFont, color: color, rendersMath: rendersMath))
             }
             if index < lines.count - 1, !(line.hasPrefix("```") || line.hasPrefix("~~~")) {
                 attributed.append(NSAttributedString(string: "\n", attributes: [.font: baseFont]))
@@ -102,13 +149,27 @@ public enum MessageMarkdown {
         firstLineHeadIndent: CGFloat? = nil,
         tailIndent: CGFloat = 0,
         paragraphSpacingBefore: CGFloat = 0,
-        paragraphSpacing: CGFloat = 0
+        paragraphSpacing: CGFloat = 0,
+        rendersMath: Bool = true
     ) -> NSAttributedString {
         let effectiveFont = font ?? baseFont ?? .systemFont(ofSize: 13)
         let attributed: NSMutableAttributedString
+        // Protect math from Markdown's backslash/underscore interpretation. Use
+        // source-unique placeholders, replacing them only after inline parsing.
+        let formulas = font == nil && rendersMath ? MessageMath.inline(text) : []
+        var prepared = text
+        var replacements: [(String, NSAttributedString)] = []
+        for (index, item) in formulas.enumerated().reversed() {
+            let token = "CORPTIEMATH\(index)PLACEHOLDER"
+            guard !text.contains(token) else { continue }
+            let value = MessageMathRenderer.attributed(item.formula, user: color == MessageTextCardPalette.userNativeForeground)
+                ?? NSAttributedString(string: item.formula.source)
+            prepared.replaceSubrange(item.range, with: token)
+            replacements.append((token, value))
+        }
         if font == nil,
            let parsed = try? AttributedString(
-               markdown: text,
+               markdown: prepared,
                options: .init(
                    interpretedSyntax: .inlineOnlyPreservingWhitespace,
                    failurePolicy: .returnPartiallyParsedIfPossible
@@ -116,7 +177,11 @@ public enum MessageMarkdown {
            ) {
             attributed = NSMutableAttributedString(parsed)
         } else {
-            attributed = NSMutableAttributedString(string: text)
+            attributed = NSMutableAttributedString(string: prepared)
+        }
+        for (token, value) in replacements {
+            let range = (attributed.string as NSString).range(of: token)
+            if range.location != NSNotFound { attributed.replaceCharacters(in: range, with: value) }
         }
         let fullRange = NSRange(location: 0, length: attributed.length)
         attributed.addAttributes([.font: effectiveFont, .foregroundColor: color], range: fullRange)

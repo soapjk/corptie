@@ -43,7 +43,7 @@ struct PadMessageText: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> UITextView {
-        let view = UITextView()
+        let view = MathCopyTextView()
         view.isEditable = false
         view.isSelectable = true
         view.isScrollEnabled = false
@@ -101,5 +101,15 @@ struct PadMessageText: UIViewRepresentable {
         }
         let size = uiView.sizeThatFits(CGSize(width: targetWidth, height: .greatestFiniteMagnitude))
         return CGSize(width: min(targetWidth, ceil(size.width)), height: ceil(size.height))
+    }
+}
+
+private final class MathCopyTextView: UITextView {
+    override func copy(_ sender: Any?) {
+        guard selectedRange.length > 0, let value = attributedText,
+              let source = MessageMarkdown.mathCopyText(from: value.attributedSubstring(from: selectedRange)) else {
+            super.copy(sender); return
+        }
+        UIPasteboard.general.string = source
     }
 }
