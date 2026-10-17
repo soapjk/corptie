@@ -134,3 +134,40 @@ test("Codex advertises status query only when an adapter operation exists", () =
   assert.equal(provider.descriptor.metadata.turnLiveness.supportsStatusProbe,true);
   assert.ok(provider.descriptor.capabilities.includes("turn.execution.probe"));
 });
+
+test("accepted turns are probed without presentation state and unknown results never fail them", async () => {
+  let result = { ...entry, state: "unknown", reasonCode: "PROBE_FAILED" };
+  let status = "running";
+  const running = [], uncertain = [], events = [];
+  const service = createTurnExecutionProbe({
+    store: { getSessionTurn: () => ({ execution_status: status }), getLogicalSession: () => ({}) },
+    registry: { get: () => ({ descriptor: { capabilities: ["turn.execution.probe"] } }), invoke: async () => result },
+    bindings: { resolve: () => entry },
+    ingestion: { ingest: event => { events.push(event); return { status: "applied", event, projection: {} }; } },
+    onTerminal: () => {}, onRunning: item => running.push(item), onUncertain: item => uncertain.push(item),
+    now: () => "2026-10-17T00:00:00Z"
+  });
+  try {
+    service.observe(observation("turn.started"));
+    const target = service.entries.values().next().value;
+    const timer = target.timer;
+    service.observe(observation("turn.started"));
+    assert.equal(service.entries.size, 1, "late native starts cannot duplicate probes");
+    assert.equal(target.timer, timer, "late starts cannot postpone the first probe");
+    await service.run(target);
+    await service.run(target);
+    assert.equal(uncertain.length, 1, "same unknown status is not repeatedly surfaced");
+    assert.equal(uncertain[0].probeReasonCode, "PROBE_FAILED");
+    assert.equal(events.length, 0);
+    result = { ...entry, state: "running", reasonCode: "NATIVE_TURN_ACTIVE" };
+    await service.run(target);
+    assert.equal(running.length, 1);
+    assert.equal(events.length, 0);
+    result = { ...entry, state: "terminal", terminalStatus: "completed", reasonCode: "NATIVE_TURN_TERMINAL" };
+    await service.run(target);
+    assert.equal(events[0].type, "turn.completed");
+    status = "completed";
+    await service.run(target);
+    assert.equal(events.length, 1, "settled turns are not probed again");
+  } finally { service.close(); }
+});

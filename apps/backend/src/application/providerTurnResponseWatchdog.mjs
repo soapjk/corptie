@@ -22,7 +22,7 @@ const TERMINAL_EVENT_TYPES = new Set([
 /**
  * Provider-neutral response-activity watchdog.
  *
- * The warning and first-activity timeout cover a silent start. A rolling hard
+ * The warning and first-activity check cover a silent start. A rolling hard
  * timeout is armed only when the Provider explicitly guarantees reliable
  * heartbeats. Other Providers receive a one-shot stalled-stream warning and
  * remain interruptible; elapsed wall-clock time alone is never proof that an
@@ -39,6 +39,7 @@ export class ProviderTurnResponseWatchdog {
     this.cancel = options.cancel ?? ((handle) => clearTimeout(handle));
     this.onDelayed = options.onDelayed ?? (() => {});
     this.onTimeout = options.onTimeout ?? (() => {});
+    this.onCheckRequested = options.onCheckRequested ?? (() => {});
     this.resolveTurnLiveness = options.resolveTurnLiveness ?? (() => null);
     this.pending = new Map();
     this.resolved = new Set();
@@ -225,6 +226,17 @@ export class ProviderTurnResponseWatchdog {
     return this.schedule(() => {
       const current = this.pending.get(key);
       if (!current) return;
+      if (timeoutKind === "first_activity") {
+        // Silence alone is not failure evidence, including before first output.
+        // Keep observing so a later real connection failure still has a deadline.
+        current.timeoutTimer = null;
+        this.#invoke(this.onDelayed, current, {
+          warningKind: "execution_unknown",
+          ...(!current.turnLiveness.supportsStatusProbe ? { probeReasonCode: "PROBE_UNSUPPORTED" } : {})
+        });
+        this.#invoke(this.onCheckRequested, current);
+        return;
+      }
       this.pending.delete(key);
       if (current.warningTimer) this.cancel(current.warningTimer);
       if (current.stallWarningTimer) this.cancel(current.stallWarningTimer);

@@ -15,6 +15,7 @@ export function createSessionMessageOperation({
   resolveSessionChannelRequest, collaborationCore, resolveCollaborationConfirmation,
   sessionBindingReadinessProbe, sessionApplicationService, emitEvent, now,
   decorateSessionForClient, chatResourceService, providerTurnResponseWatchdog,
+  onTurnAccepted = () => {},
   ensureCollaborationAgentForSession, registerRuntimeQueuedWork,
   runtimeQueuePosition, publishProviderEventOutbox, scheduleAgentWorkDrain,
   scheduleMemoryExtraction = null
@@ -229,7 +230,7 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
     });
   }
   if (providerTurnId && dispatchBinding) {
-    providerTurnResponseWatchdog.watch({
+    const execution = {
       sessionId: routedSessionId,
       logicalSessionId: dispatchBinding.logicalSessionId ?? reference.logicalSessionId,
       providerId: dispatchBinding.providerId ?? reference.providerId,
@@ -238,7 +239,11 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
       routingVersion: dispatchBinding.routingVersion ?? reference.routingVersion,
       turnId: providerTurnId,
       startedAt: now()
-    });
+    };
+    if (["running", "blocked"].includes(store.getSessionTurn(routedSessionId, dispatchBindingId, providerTurnId)?.execution_status)) {
+      providerTurnResponseWatchdog.watch(execution);
+      onTurnAccepted(execution);
+    }
   }
   if (delivery) {
     const alreadySettledTurn = providerTurnId

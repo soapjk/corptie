@@ -56,6 +56,18 @@ test("delay warning is a retryable provider event and does not interrupt executi
   assert.equal(event.routingVersion, 2);
 });
 
+test("unknown status exposes query failures or unsupported capability without conflicting event IDs", () => {
+  const f = fixture();
+  for (const probeReasonCode of [undefined, "PROBE_TIMEOUT", "PROBE_UNSUPPORTED"]) {
+    f.handlers.handleProviderResponseDelayed({ ...f.entry, warningKind: "execution_unknown", probeReasonCode });
+  }
+  const events = f.calls.map(([, event]) => event);
+  assert.equal(new Set(events.map(event => event.providerEventId)).size, 3);
+  assert.match(events[1].payload.error.message, /PROBE_TIMEOUT/);
+  assert.match(events[2].payload.error.message, /不支持查询执行状态/);
+  assert.ok(events.every(event => event.type === "provider.error" && event.payload.willRetry));
+});
+
 test("stream-idle warning explains that execution continues without reliable heartbeats", () => {
   const f = fixture();
   f.handlers.handleProviderResponseDelayed({ ...f.entry, warningKind: "stream_idle" });
@@ -80,13 +92,21 @@ test("retry timeout reports a model-network failure instead of generic stream si
   assert.match(event.payload.items[0].text, /connection refused/);
 });
 
-test("timeout persists a visible failed item before terminal handling and interruption", async () => {
+test("first-output silence cannot persist a failed item or interrupt execution", async () => {
   const f = fixture();
   await f.handlers.handleProviderResponseTimeout(f.entry);
+  assert.deepEqual(f.calls.map(([name]) => name), ["ingest"]);
+  const event = f.calls[0][1];
+  assert.equal(event.type, "provider.error");
+  assert.match(event.payload.error.message, /暂时无法确认模型执行状态/);
+});
+
+test("retry timeout persists a visible failure before terminal handling and interruption", async () => {
+  const f = fixture();
+  await f.handlers.handleProviderResponseTimeout({ ...f.entry, timeoutKind: "provider_retry" });
   assert.deepEqual(f.calls.map(([name]) => name), ["ingest", "terminal", "interrupt"]);
   const event = f.calls[0][1];
   assert.equal(event.type, "turn.failed");
-  assert.equal(event.payload.error.code, "PROVIDER_FIRST_ACTIVITY_TIMEOUT");
   assert.equal(event.payload.items[0].status, "failed");
   assert.equal(f.calls[2][2].summary.external.activeTurnId, "turn");
   assert.equal(f.calls[2][2].summary.external.currentModel, "model");
@@ -108,17 +128,17 @@ test("settled turns and unapplied timeout events cannot trigger interruption", a
   const f = fixture();
   f.turn.execution_status = "completed";
   f.handlers.handleProviderResponseDelayed(f.entry);
-  await f.handlers.handleProviderResponseTimeout(f.entry);
+  await f.handlers.handleProviderResponseTimeout({ ...f.entry, timeoutKind: "provider_retry" });
   assert.deepEqual(f.calls, []);
   f.turn.execution_status = "running";
   f.ignore();
-  await f.handlers.handleProviderResponseTimeout(f.entry);
+  await f.handlers.handleProviderResponseTimeout({ ...f.entry, timeoutKind: "provider_retry" });
   assert.deepEqual(f.calls.map(([name]) => name), ["ingest"]);
 });
 
 test("provider interruption failure does not undo or reject the recorded timeout", async () => {
   const f = fixture();
   f.service.interrupt = async () => { throw new Error("offline"); };
-  await f.handlers.handleProviderResponseTimeout(f.entry);
+  await f.handlers.handleProviderResponseTimeout({ ...f.entry, timeoutKind: "provider_retry" });
   assert.deepEqual(f.calls.map(([name]) => name), ["ingest", "terminal"]);
 });

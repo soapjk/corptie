@@ -1278,12 +1278,14 @@ providerTurnResponseWatchdog = new ProviderTurnResponseWatchdog({
   timeoutAfterMs: configuredProviderResponseDelay("CORPTIE_PROVIDER_RESPONSE_TIMEOUT_MS", 120_000),
   resolveTurnLiveness: (providerId) => agentProviderRegistry.get(providerId).descriptor.metadata.turnLiveness,
   onDelayed: handleProviderResponseDelayed,
+  onCheckRequested: (entry) => turnExecutionProbe?.request(entry),
   onTimeout: handleProviderResponseTimeout
 });
 turnExecutionProbe = createTurnExecutionProbe({ store, registry: agentProviderRegistry,
   enabled: !developmentPreview,
   bindings: sessionBindingRepository, ingestion: providerEventIngestion,
   onRunning: (entry) => providerTurnResponseWatchdog.confirmRunning(entry),
+  onUncertain: (entry) => handleProviderResponseDelayed({ ...entry, warningKind: "execution_unknown" }),
   onTerminal: handleCommittedProviderTerminalLifecycle, now });
 // Re-arm only current unfinished turns after startup; no Provider history scan,
 // model prompt, resume, or replay is performed here.
@@ -1918,6 +1920,7 @@ const sessionMessageOperation = createSessionMessageOperation({
   resolveSessionChannelRequest, collaborationCore, resolveCollaborationConfirmation,
   sessionBindingReadinessProbe, sessionApplicationService, emitEvent, now,
   decorateSessionForClient, chatResourceService, providerTurnResponseWatchdog,
+  onTurnAccepted: (entry) => turnExecutionProbe.observe({ event: { ...entry, type: "turn.started" }, binding: entry }),
   ensureCollaborationAgentForSession, registerRuntimeQueuedWork,
   runtimeQueuePosition, publishProviderEventOutbox, scheduleAgentWorkDrain,
   scheduleMemoryExtraction: (sessionId, reason) => memoryExtractionScheduler.request(sessionId, reason)

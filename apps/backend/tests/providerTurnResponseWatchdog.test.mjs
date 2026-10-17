@@ -45,7 +45,7 @@ test("synchronous and asynchronous callback failures are contained without disar
       warningAfterMs: 20, timeoutAfterMs: 120,
       schedule: timers.schedule, cancel: timers.cancel,
       onDelayed: asynchronous ? async () => fail() : fail,
-      onTimeout: () => { timedOut = true; }
+      onCheckRequested: () => { timedOut = true; }
     });
     watchdog.watch(turn);
     timers.run(20);
@@ -57,7 +57,7 @@ test("synchronous and asynchronous callback failures are contained without disar
     assert.equal(timedOut, true);
     watchdog.close();
   }
-  assert.equal(errors.mock.callCount(), 2);
+  assert.equal(errors.mock.callCount(), 4);
   assert.ok(errors.mock.calls.every(call => /callback failed: PROVIDER_EVENT_ID_CONFLICT/.test(call.arguments[0])));
 });
 
@@ -73,17 +73,19 @@ test("positive status probe cancels first-output deadline but not a retry-failur
   watchdog.close();
 });
 
-test("a silent Provider Turn warns and then times out", async () => {
+test("a silent Provider Turn warns and requests a status check without failing", async () => {
   const timers = scheduler();
   const delayed = [];
   const timedOut = [];
+  const checks = [];
   const watchdog = new ProviderTurnResponseWatchdog({
     warningAfterMs: 20,
     timeoutAfterMs: 120,
     schedule: timers.schedule,
     cancel: timers.cancel,
     onDelayed: (entry) => delayed.push(entry),
-    onTimeout: (entry) => timedOut.push(entry)
+    onTimeout: (entry) => timedOut.push(entry),
+    onCheckRequested: (entry) => checks.push(entry)
   });
 
   assert.equal(watchdog.watch(turn), true);
@@ -93,8 +95,12 @@ test("a silent Provider Turn warns and then times out", async () => {
   assert.deepEqual(delayed, [{ ...turn, startedAt: null }]);
   timers.run(120);
   await Promise.resolve();
-  assert.deepEqual(timedOut, [{ ...turn, startedAt: null, timeoutKind: "first_activity" }]);
+  assert.deepEqual(timedOut, []);
+  assert.deepEqual(checks, [{ ...turn, startedAt: null }]);
+  assert.equal(delayed[1].warningKind, "execution_unknown");
   assert.equal(timers.size, 0);
+  assert.equal(watchdog.pending.size, 1, "late progress and connection failures must still be observed");
+  watchdog.close();
 });
 
 test("substantive Provider activity arms a rolling timeout when heartbeats are reliable", async () => {
@@ -148,7 +154,7 @@ test("a retry event suppresses the generic delay warning and keeps a bounded fai
   assert.equal(timedOut, true);
 });
 
-test("the watchdog delay notice does not count as Provider activity", async () => {
+test("the watchdog delay notice cannot suppress the first status check", async () => {
   const timers = scheduler();
   let timedOut = false;
   const watchdog = new ProviderTurnResponseWatchdog({
@@ -156,7 +162,7 @@ test("the watchdog delay notice does not count as Provider activity", async () =
     timeoutAfterMs: 120,
     schedule: timers.schedule,
     cancel: timers.cancel,
-    onTimeout: () => { timedOut = true; }
+    onCheckRequested: () => { timedOut = true; }
   });
   watchdog.watch(turn);
   watchdog.observe({
@@ -269,7 +275,7 @@ test("Provider without reliable heartbeats warns on stream silence but is not fa
   assert.deepEqual(timedOut, [], "elapsed wall-clock time alone cannot fail the Turn");
 });
 
-test("Provider heartbeat is not accepted as the first substantive response", async () => {
+test("Provider heartbeat does not prevent checking for the first substantive response", async () => {
   const timers = scheduler();
   const timedOut = [];
   const watchdog = new ProviderTurnResponseWatchdog({
@@ -278,7 +284,7 @@ test("Provider heartbeat is not accepted as the first substantive response", asy
     resolveTurnLiveness: () => ({ heartbeat: "reliable" }),
     schedule: timers.schedule,
     cancel: timers.cancel,
-    onTimeout: (entry) => timedOut.push(entry)
+    onCheckRequested: (entry) => timedOut.push(entry)
   });
   watchdog.watch(turn);
   watchdog.observe({
@@ -287,7 +293,7 @@ test("Provider heartbeat is not accepted as the first substantive response", asy
   });
   timers.run(120);
   await Promise.resolve();
-  assert.equal(timedOut[0].timeoutKind, "first_activity");
+  assert.equal(timedOut[0].timeoutKind, undefined);
   assert.equal(timedOut[0].lastProviderSignalAt, "2026-10-02T00:00:01.000Z");
 });
 
@@ -370,4 +376,52 @@ test("a long-running tool on a Provider without reliable heartbeats remains acti
   watchdog.observe({ event: { ...turn, type: "tool.completed" }, binding: turn });
   watchdog.observe({ event: { ...turn, type: "turn.completed" }, binding: turn });
   assert.equal(timers.size, 0);
+});
+
+test("a real retry after the silent-start check still fails within a bounded deadline", async () => {
+  const timers = scheduler();
+  const failures = [];
+  const watchdog = new ProviderTurnResponseWatchdog({
+    warningAfterMs: 20, timeoutAfterMs: 120,
+    schedule: timers.schedule, cancel: timers.cancel,
+    onTimeout: entry => failures.push(entry)
+  });
+  watchdog.watch(turn);
+  timers.run(20);
+  timers.run(120);
+  await Promise.resolve();
+  assert.equal(failures.length, 0);
+  watchdog.observe({ event: { ...turn, type: "provider.error", payload: {
+    willRetry: true, error: { code: "NETWORK", message: "connection failed" }
+  } }, binding: turn });
+  assert.equal(timers.countDelay(120), 1);
+  timers.run(120);
+  await Promise.resolve();
+  assert.equal(failures[0].timeoutKind, "provider_retry");
+  assert.equal(failures[0].lastProviderError.message, "connection failed");
+  assert.equal(watchdog.pending.size, 0);
+});
+
+test("silence never kills a turn regardless of Provider heartbeat or status-query capability", async () => {
+  for (const heartbeat of ["reliable", "best_effort", "unavailable"]) {
+    for (const supportsStatusProbe of [false, true]) {
+      const timers = scheduler();
+      const warnings = [];
+      const watchdog = new ProviderTurnResponseWatchdog({
+        warningAfterMs: 20, timeoutAfterMs: 120,
+        resolveTurnLiveness: () => ({ heartbeat, supportsStatusProbe }),
+        schedule: timers.schedule, cancel: timers.cancel,
+        onDelayed: entry => warnings.push(entry),
+        onTimeout: () => assert.fail("silence is not failure evidence")
+      });
+      watchdog.watch(turn);
+      timers.run(20);
+      timers.run(120);
+      await Promise.resolve();
+      assert.equal(warnings[1].probeReasonCode, supportsStatusProbe ? undefined : "PROBE_UNSUPPORTED");
+      watchdog.observe({ event: { ...turn, type: "turn.completed" }, binding: turn });
+      assert.equal(watchdog.pending.size, 0);
+      assert.equal(timers.size, 0);
+    }
+  }
 });

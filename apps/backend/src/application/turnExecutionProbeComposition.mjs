@@ -1,16 +1,16 @@
 import { AGENT_PROVIDER_CAPABILITIES } from "../agent-provider/contracts.mjs";
 import { TurnExecutionProbeScheduler } from "./turnExecutionProbeScheduler.mjs";
 
-export function createTurnExecutionProbe({ store, registry, bindings, ingestion, onTerminal, onRunning = () => {}, now, enabled = true }) {
+export function createTurnExecutionProbe({ store, registry, bindings, ingestion, onTerminal, onRunning = () => {}, onUncertain = () => {}, now, enabled = true }) {
   const isCurrent = entry => {
     try {
       const reference = bindings.resolve(entry.sessionId);
       const turn = store.getSessionTurn(entry.sessionId, entry.bindingId, entry.turnId);
-      const session = store.getSession(entry.sessionId);
+      // Command acceptance persists the Turn even when native start delivery
+      // is lost. Presentation fields may be missing or stale at that point.
       return reference?.bindingId === entry.bindingId && reference.routingVersion === entry.routingVersion
         && reference.providerSessionId === entry.providerSessionId
-        && ["running", "blocked"].includes(turn?.execution_status)
-        && session?.external?.activeTurnId === entry.turnId;
+        && ["running", "blocked"].includes(turn?.execution_status);
     } catch { return false; }
   };
   return new TurnExecutionProbeScheduler({
@@ -22,6 +22,11 @@ export function createTurnExecutionProbe({ store, registry, bindings, ingestion,
       if (!isCurrent(entry)) return;
       console.info(`[turn-probe] session=${entry.sessionId} binding=${entry.bindingId} turn=${entry.turnId} state=${result.state} code=${result.reasonCode} confirmed=${result.confirmed}`);
       if (result.state === "running") onRunning(entry);
+      const observationKey = `${result.state}:${result.reasonCode}`;
+      if (result.state === "unknown" && entry.lastProbeObservation !== observationKey) {
+        onUncertain({ ...entry, probeReasonCode: result.reasonCode });
+      }
+      entry.lastProbeObservation = observationKey;
       const terminal = result.state === "terminal" && ["completed", "failed", "cancelled"].includes(result.terminalStatus);
       const absent = result.state === "absent" && result.confirmed;
       if (!terminal && !absent) return;

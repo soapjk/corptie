@@ -16,7 +16,7 @@ export function createProviderResponseHandlers({
       // A Turn can warn before its first output and again after each idle
       // interval. These are separate observations, with different content.
       providerEventId: `corptie:provider-response-watchdog:${type}:${entry.turnId}${type === "provider.error"
-        ? `:${entry.warningKind ?? "first_activity"}:${timestamp}` : ""}`,
+        ? `:${entry.warningKind ?? "first_activity"}:${entry.probeReasonCode ?? "none"}:${timestamp}` : ""}`,
       providerSequence: null,
       turnId: entry.turnId,
       type,
@@ -40,9 +40,13 @@ export function createProviderResponseHandlers({
       type: "provider.error",
       error: {
         code: "PROVIDER_RESPONSE_DELAYED",
-        message: entry.warningKind === "stream_idle"
-          ? "长时间没有收到新的 Provider 数据，当前无法确认模型是否仍在执行；将继续等待至最长执行期限。"
-          : "模型服务暂未返回任何执行信息，仍在等待；如果持续无响应，本次执行会自动结束。",
+        message: entry.probeReasonCode === "PROBE_UNSUPPORTED"
+          ? "当前 Provider 不支持查询执行状态，尚未收到模型输出；仍在等待，您可以手动停止。"
+          : entry.warningKind === "execution_unknown"
+            ? `暂时无法确认模型执行状态，正在继续核验；您可以手动停止，本次消息不会自动重发。${entry.probeReasonCode ? `（${entry.probeReasonCode}）` : ""}`
+            : entry.warningKind === "stream_idle"
+              ? "长时间没有收到新的 Provider 数据，当前无法确认模型是否仍在执行；仍在等待，您可以手动停止。"
+              : "正在等待模型返回，尚未收到执行信息；您可以手动停止。",
         retryable: true
       },
       willRetry: true
@@ -55,14 +59,15 @@ export function createProviderResponseHandlers({
     const timestamp = now();
     const retryTimedOut = entry.timeoutKind === "provider_retry";
     const hadActivity = Boolean(entry.lastActivityAt);
+    if (!retryTimedOut && !hadActivity) {
+      handleProviderResponseDelayed({ ...entry, warningKind: "execution_unknown" });
+      return;
+    }
     const code = retryTimedOut ? "PROVIDER_RETRY_TIMEOUT"
-      : hadActivity ? "PROVIDER_STREAM_IDLE_TIMEOUT"
-        : "PROVIDER_FIRST_ACTIVITY_TIMEOUT";
+      : "PROVIDER_STREAM_IDLE_TIMEOUT";
     const message = retryTimedOut
       ? `模型服务连接持续失败，本次执行已自动结束；您可以检查模型网络后重试。${entry.lastProviderError?.message ? `（${entry.lastProviderError.message}）` : ""}`
-      : hadActivity
-        ? "模型流式连接长时间没有新数据，本次执行已自动结束；您可以重试或切换模型。"
-        : "模型服务长时间未返回任何执行信息。本次执行已自动结束；您可以重试或切换模型。";
+      : "模型流式连接长时间没有新数据，本次执行已自动结束；您可以重试或切换模型。";
     const ingestion = providerEventIngestion.ingest(providerResponseWatchdogEnvelope(entry, {
       type: "turn.failed",
       error: { code, message, retryable: true },
@@ -71,7 +76,7 @@ export function createProviderResponseHandlers({
         turnId: entry.turnId,
         turnStatus: "failed",
         type: "system",
-        title: retryTimedOut ? "模型连接失败" : hadActivity ? "模型流中断" : "模型响应超时",
+        title: retryTimedOut ? "模型连接失败" : "模型流中断",
         text: message,
         status: "failed",
         createdAt: timestamp

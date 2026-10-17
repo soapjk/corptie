@@ -103,3 +103,40 @@ test("pre-dispatch readiness failure settles the queued Delivery for every Provi
     assert.deepEqual(updates, [{ id: "delivery:initial", status: "failed", lastError: "binding unavailable" }]);
   }
 });
+
+test("dispatch acceptance arms both monitors without native events for every Provider", async () => {
+  for (const providerId of [CODEX_APP_SERVER_PROVIDER_ID, CLAUDE_AGENT_SDK_PROVIDER_ID, OPENCLACKY_PROVIDER_ID]) {
+    for (const settled of [false, true]) {
+      const monitored = [];
+      let turn;
+      const binding = { sessionId: "session", logicalSessionId: "logical", providerId,
+        providerSessionId: "native", bindingId: "binding", routingVersion: 2 };
+      const { operation } = fixture({
+        requireSessionReference: () => ({ ...binding, metadata: { session: { id: "session", status: "complete" } } }),
+        store: {
+          getLogicalSession: () => ({}), listUnsettledSessionTurns: () => [],
+          getAgentSessionBinding: () => binding,
+          getSessionTurn: () => turn,
+          upsertSessionTurn: input => { turn = { execution_status: input.executionStatus }; }
+        },
+        sessionApplicationService: { sendMessage: async () => {
+          if (settled) turn = { execution_status: "completed" };
+          return { turnId: "turn" };
+        } },
+        providerTurnResponseWatchdog: { watch: entry => monitored.push(["watch", entry]) },
+        onTurnAccepted: entry => {
+          assert.equal(turn.execution_status, "running", "persist before scheduling probes");
+          monitored.push(["probe", entry]);
+        }
+      });
+      const result = await operation.sendUnifiedSessionMessage("session", "hello", { type: "desktop" }, { fromAgentWorkQueue: true });
+      assert.equal(result.accepted, true);
+      assert.deepEqual(monitored.map(([name]) => name), settled ? [] : ["watch", "probe"]);
+      if (!settled) {
+        assert.deepEqual(monitored[0][1], monitored[1][1]);
+        assert.equal(monitored[1][1].turnId, "turn");
+        assert.equal(monitored[1][1].routingVersion, 2);
+      }
+    }
+  }
+});
