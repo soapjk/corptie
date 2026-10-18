@@ -4,6 +4,16 @@ import test from "node:test";
 
 import { handleArtifactHttpRequest } from "../src/application/artifactHttpApi.mjs";
 
+test("Work Artifact HTTP list always scopes rows and count to the same Work", async () => {
+  let options;
+  const result = await exchange({ method: "GET", path: "/works/work%3Aone/artifacts?limit=10", service: {
+    list(context, input) { assert.equal(context.workId, "work:one"); options = input; return []; },
+    store: { countArtifactsByWork(workId) { assert.equal(workId, "work:one"); return 0; } }
+  } });
+  assert.equal(result.statusCode, 200); assert.equal(options.currentWorkOnly, true);
+  assert.deepEqual(result.body, { artifacts: [], totalCount: 0, nextOffset: null });
+});
+
 test("Task Artifact HTTP list preserves the scoped service projection", async () => {
   const artifact = {
     artifactId: "artifact:one", currentVersion: 1, approvedVersion: null, resourceVersion: 4,

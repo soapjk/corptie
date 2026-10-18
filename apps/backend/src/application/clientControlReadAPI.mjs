@@ -21,9 +21,10 @@ const projections = {
  * services currently materialize their inventory; response size is bounded here.
  */
 export class ClientControlReadAPI {
-  constructor({ lists, repository, resolveSession = () => null }) {
+  constructor({ lists, repository, resolveSession = () => null, resourceRevision = () => null }) {
     this.lists = lists; this.readRepository = repository; this.resolveSession = resolveSession;
     this.repositoryFlights = new Map();
+    this.resourceRevision = resourceRevision;
   }
   async list(kind, params = new URLSearchParams()) {
     if (!Object.hasOwn(projections, kind) || !this.lists[kind]) throw deviceError("ROUTE_NOT_AVAILABLE", 404);
@@ -78,7 +79,8 @@ export class ClientControlReadAPI {
       } while (cursor);
       result[kind] = items;
     }
-    return { schemaVersion: 2, ...result };
+    const resourceRevision = this.resourceRevision();
+    return { schemaVersion: 2, ...result, ...(resourceRevision == null ? {} : { resourceRevision }) };
   }
   async projectRepository(id) {
     let result;

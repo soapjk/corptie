@@ -154,6 +154,7 @@ public struct ClientControlSnapshot: Decodable, Sendable {
     public let repositories: [ClientControlItem]
     public let agents: [ClientControlItem]
     public let skills: [ClientControlItem]
+    public let resourceRevision: Int?
 }
 
 public struct ClientTimelineSnapshot: Decodable, Sendable {

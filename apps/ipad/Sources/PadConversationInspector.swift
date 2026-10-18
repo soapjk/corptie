@@ -191,8 +191,9 @@ struct PadConversationInspector: View {
                 if let id = permittedDetailSession(target.id, expectedTaskID: fields["sourceResourceType"]?.text == "task" ? fields["sourceResourceId"]?.text : nil) { workspace.selection = id }
             case "artifact":
                 if let artifact = detailArtifact(target.id) {
-                    detailDocument = .init(title: artifact["title"].text ?? "Artifact", resource: "artifact", value: artifact,
-                        parameters: artifactReadParameters(artifact, taskID: inspector.snapshot?.taskId))
+                    let parameters = artifactReadParameters(artifact, taskID: inspector.snapshot?.taskId)
+                    NotificationCenter.default.post(name: .corptieOpenResource, object: ClientResourceFocus(id: target.id,
+                        version: parameters["version"]?.number.map(Int.init), hash: parameters["contentHash"]?.text, workId: artifact["workId"].text ?? ""))
                 }
             case "reference": if let url = detailReferenceURL(target.id) { openURL(url) }
             case "memory":

@@ -27,17 +27,17 @@ struct PadControlSelection: Hashable {
 }
 
 enum PadTab: Int, CaseIterable, Identifiable {
-    case workspace, automations, worktrees, agents
+    case workspace, automations, worktrees, agents, resources
     var id: Int { rawValue }
     var title: String {
-        switch self { case .workspace: "工作台"; case .automations: "自动化"; case .worktrees: "Worktrees"; case .agents: "Agents" }
+        switch self { case .workspace: "工作台"; case .automations: "自动化"; case .worktrees: "Worktrees"; case .agents: "Agents"; case .resources: "资源管理" }
     }
     var symbol: String {
         switch self { case .workspace: "circle.hexagongrid.fill"; case .automations: "bolt.badge.clock";
-        case .worktrees: "arrow.triangle.branch"; case .agents: "person.2" }
+        case .worktrees: "arrow.triangle.branch"; case .agents: "person.2"; case .resources: "tray.full" }
     }
     var resources: [ClientControlKind] {
-        switch self { case .workspace: []; case .automations: [.automations];
+        switch self { case .workspace, .resources: []; case .automations: [.automations];
         case .worktrees: [.repositories]; case .agents: [.agents, .skills] }
     }
 }

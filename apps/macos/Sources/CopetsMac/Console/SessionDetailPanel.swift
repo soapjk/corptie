@@ -284,9 +284,7 @@ struct SessionDetailPanel: View {
                 return entityClient.tasks.first(where: { $0.id == target.id })?.currentSessionId != nil
             }
             if target.resourceType == "session" { return residentDetailSessionID(target.id) != nil }
-            if target.resourceType == "artifact", let workID = session.workId {
-                return ArtifactAPIClient.shared.artifact(artifactId: target.id, workId: workID, taskId: session.taskId) != nil
-            }
+            if target.resourceType == "artifact" { return true } // Host registers the exact destination; catalog reads reauthorize it.
             if target.resourceType == "reference" { return detailReferenceURL(target.id) != nil }
             return target.resourceType == "schedule"
         }, perform: { action, fields in
@@ -325,10 +323,14 @@ struct SessionDetailPanel: View {
                 }
             case "schedule": AppTabRouter.shared.openAutomation(target.id)
             case "artifact":
-                if let workID = session.workId {
-                    if let artifact = ArtifactAPIClient.shared.artifact(artifactId: target.id, workId: workID, taskId: session.taskId) {
-                        detailNativeSheet = .artifact(artifact)
-                    }
+                let token = detailOpeningGeneration
+                Task {
+                    do {
+                        let detail = try await ClientResourceAPI(transport: CorptieAppEnvironment.backendTransport, route: .desktop).detail(target.id)
+                        guard token == detailOpeningGeneration else { return }
+                        let pin = detail.references.first { ($0.taskId != nil && $0.taskId == session.taskId) || $0.sessionId == session.id }
+                        AppTabRouter.shared.openResource(.init(id: target.id, version: pin?.version, hash: pin?.hash, workId: detail.resource.workId ?? ""))
+                    } catch { AppTabRouter.shared.navigationError = "资源打开失败，请在资源管理中重试" }
                 }
             case "reference": if let url = detailReferenceURL(target.id) { NSWorkspace.shared.open(url) }
             default: break

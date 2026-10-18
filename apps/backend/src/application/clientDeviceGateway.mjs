@@ -10,6 +10,7 @@ import { readDetailV2Request } from "./detailV2JSON.mjs";
 import { detailV2GetNegotiation, detailV2PinnedAuthenticate } from "./detailV2Negotiation.mjs";
 import { createDetailBusinessActionService } from "./detailBusinessActionComposition.mjs";
 import { handleDetailActionHttp } from "./detailActionHttpAdapter.mjs";
+import { ClientResourceAPI } from "./clientResourceAPI.mjs";
 
 export const reply = (response, status, body) => {
   response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store",
@@ -56,7 +57,7 @@ function streamFile(response, { path, contentType, size, etag }) {
 /** Separate TLS listener with a closed route list; never forwards to the legacy router. */
 export class ClientDeviceGateway {
   constructor(authority, { readAPI = null, sessionAPI = null, controlAPI = null, worktreeAPI = null,
-    detailActionService = null, detailWritesAllowed = false } = {}) {
+    detailActionService = null, detailWritesAllowed = false, resourceWritesAllowed = true } = {}) {
     if (typeof detailWritesAllowed !== "boolean") throw deviceError("DETAIL_GATE_INVALID", 500);
     this.authority = authority;
     this.readAPI = readAPI;
@@ -66,6 +67,8 @@ export class ClientDeviceGateway {
       inspector: sessionAPI.inspector, documentService: detailServiceFor(sessionAPI.inspector.store) }) : null);
     this.controlAPI = controlAPI;
     this.worktreeAPI = worktreeAPI;
+    this.resourceAPI = sessionAPI?.inspector?.artifacts ? new ClientResourceAPI({ store: sessionAPI.inspector.store,
+      artifacts: sessionAPI.inspector.artifacts, writesAllowed: resourceWritesAllowed }) : null;
     this.inspectorEvents = new ClientInspectorStream({ snapshot: (identity, id) => this.sessionAPI.inspector.snapshot(identity, id) });
     this.events = new ClientEventStream({
       stateSnapshot: async () => this.readAPI?.realtimeSnapshot?.() ?? null,
@@ -85,7 +88,7 @@ export class ClientDeviceGateway {
   limit(request) {
     const now = Date.now();
     for (const [key, value] of this.buckets) if (value.until <= now) this.buckets.delete(key);
-    const read = request.method === "GET" && /^\/client\/v1\/(works|tasks|sessions|commands|control|worktrees|task-deletion-operations|search)(\/|\?|$)/.test(request.url);
+    const read = request.method === "GET" && /^\/client\/v1\/(resources|works|tasks|sessions|commands|control|worktrees|task-deletion-operations|search)(\/|\?|$)/.test(request.url);
     const upload = /^\/client\/v1\/sessions\/[^/]+\/image-uploads(?:\/|$)/.test(request.url);
     const key = `${request.socket.remoteAddress}:${upload ? "upload" : read ? "read" : "command"}`;
     let bucket = this.buckets.get(key);
@@ -121,6 +124,7 @@ export class ClientDeviceGateway {
       const url = new URL(request.url, "https://client.invalid");
       const path = url.pathname;
       const search = path === "/client/v1/search";
+      const resource = /^\/client\/v1\/resources(?:\/([^/]+)(?:\/(read|commands))?)?$/.exec(path);
       const eventV2 = path === "/client/v2/events";
       const inventory = /^\/client\/v1\/(works|tasks|sessions)$/.exec(path);
       const discussion = /^\/client\/v1\/works\/([^/]+)\/discussion$/.exec(path);
@@ -143,7 +147,7 @@ export class ClientDeviceGateway {
       const worktreeJobAction = /^\/client\/v1\/worktrees\/jobs\/([^/]+)\/actions\/([^/]+)$/.exec(path);
       const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|message-deliveries|quick-messages|stop|capabilities|composer|conversation-commands|tasks|read-receipt|images|resources|usage|approval|user-input|collaboration-confirmation)$/.exec(path);
       const commandReceipt = /^\/client\/v1\/commands\/([A-Za-z0-9_-]{8,128})$/.exec(path);
-      if (url.search && !search && !inventory && !control && !eventV2 && !worktreeRepository
+      if (url.search && !resource && !search && !inventory && !control && !eventV2 && !worktreeRepository
           && !(path === "/client/v1/provider-settings/task-creation" && request.method === "GET")
           && !(["messages", "tasks", "images", "resources", "usage"].includes(conversation?.[2]) && request.method === "GET")) {
         throw deviceError("REQUEST_NOT_ALLOWED", 403);
@@ -158,6 +162,24 @@ export class ClientDeviceGateway {
         return reply(response, 200, await this.authority.refresh(await body(request)));
       }
       const identity = this.authenticateRequest(request);
+      if (resource && this.resourceAPI) {
+        const resourceIdentity = { ...identity, revalidate: () => {
+          const current = this.authenticateRequest(request);
+          if (current.deviceId !== identity.deviceId) throw deviceError("DEVICE_AUTH_CHANGED", 403);
+        } };
+        const id = resource[1] ? decode(resource[1], "INVALID_RESOURCE_ID") : null;
+        if (id === "works" && !resource[2] && request.method === "GET") return reply(response, 200, this.resourceAPI.works(url.searchParams));
+        if (!id && request.method === "GET") return reply(response, 200, this.resourceAPI.list(url.searchParams));
+        if (!id && request.method === "POST") return reply(response, 201, await this.resourceAPI.create(resourceIdentity, await body(request, 262144)));
+        if (id && !resource[2] && request.method === "GET") return reply(response, 200, this.resourceAPI.detail(identity, id, url.searchParams.has("version") ? Number(url.searchParams.get("version")) : null));
+        if (id && resource[2] === "read" && request.method === "GET") return reply(response, 200, await this.resourceAPI.read(resourceIdentity, id, url.searchParams));
+        if (id && resource[2] === "commands" && request.method === "POST") {
+          const input = await body(request, 262144);
+          this.authenticateRequest(request);
+          return reply(response, 200, await this.resourceAPI.command(resourceIdentity, id, input));
+        }
+        throw deviceError("RESOURCE_ROUTE_NOT_AVAILABLE", 405);
+      }
       const detailAction = /^\/client\/v1\/sessions\/([^/]+)\/detail\/(read|actions|receipts\/[A-Za-z0-9_-]{8,128})$/.exec(path);
       if (detailAction && this.detailActions) {
         const id = decode(detailAction[1], "INVALID_SESSION_ID"), scope = this.sessionAPI.inspector.scope(id, identity);

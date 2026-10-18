@@ -138,9 +138,10 @@ export class ArtifactService {
       };
     }
     if (input.kind === "local_user") {
-      const workId = requiredText(input.workId, "workId");
-      if (!this.store.getWork(workId)) throw artifactError("ARTIFACT_WORK_NOT_FOUND", "Work not found.", 404);
-      return { kind: "local_user", actorId: input.actorId ?? "local-user", workId, sessionId: null, taskId: null };
+      input.revalidateUser?.();
+      const workId = input.workId == null ? null : requiredText(input.workId, "workId");
+      if (workId && !this.store.getWork(workId)) throw artifactError("ARTIFACT_WORK_NOT_FOUND", "Work not found.", 404);
+      return { kind: "local_user", actorId: input.actorId ?? "local-user", workId, sessionId: null, taskId: null, revalidateUser: input.revalidateUser };
     }
     const resolved = this.sessionAuthorizationResolver.resolve({
       actorId: input.actorId,
@@ -229,6 +230,12 @@ export class ArtifactService {
     return results;
   }
 
+  listForSession(contextInput, sessionId, taskId, { limit = 21, offset = 0 } = {}) {
+    const context = this.context(contextInput);
+    return this.store.resourceArtifactPage({ sourceSessionId: sessionId, taskId, limit, offset })
+      .filter(row => this.#canRead(context, row)).map(row => this.#presentForContext(context, row));
+  }
+
   async get(contextInput, artifactId, options = {}) {
     const context = this.#pinnedReadContext(contextInput);
     if (options.version == null) throw artifactError("ARTIFACT_INVALID_INPUT", "version is required.", 400);
@@ -281,7 +288,12 @@ export class ArtifactService {
       }
       return current;
     };
-    const page = await this.readCoordinator.read({
+    // Human catalog reading has its own bounded window; never enlarges Agent
+    // Turn budgets or allows a tool caller to opt out of those limits.
+    const coordinator = context.kind === "local_user" && options.userRead === true
+      ? (this.userReadCoordinator ??= new ArtifactReadCoordinator({ store: this.store,
+        limits: { maxUniqueBytesPerTurn: 2 * 1024 * 1024, maxUniquePagesPerTurn: 32 } })) : this.readCoordinator;
+    const page = await coordinator.read({
       logicalSessionId: context.logicalSessionId,
       providerBindingId: context.providerBindingId,
       turnExecutionId,
@@ -382,6 +394,19 @@ export class ArtifactService {
 
   async create(contextInput, input = {}) {
     const context = this.context(contextInput);
+    const key = input.idempotencyKey ?? input.artifactId;
+    if (!key) return this.#create(contextInput, input);
+    this.createFlights ??= new Map();
+    const scope = `${context.sessionId ?? context.actorId}:${key}`;
+    if (this.createFlights.size >= 32 && !this.createFlights.has(scope)) throw artifactError("ARTIFACT_CREATE_BUSY", "Too many concurrent creations.", 429);
+    const previous = this.createFlights.get(scope) ?? Promise.resolve();
+    const flight = previous.catch(() => {}).then(() => this.#create(contextInput, input));
+    this.createFlights.set(scope, flight);
+    try { return await flight; } finally { if (this.createFlights.get(scope) === flight) this.createFlights.delete(scope); }
+  }
+
+  async #create(contextInput, input = {}) {
+    const context = this.context(contextInput);
     if (context.kind === "assistantChat") {
       if ((input.scope && input.scope !== "session")
         || (input.visibility && input.visibility !== "session_private")
@@ -405,6 +430,7 @@ export class ArtifactService {
       throw artifactError("ARTIFACT_WORKER_SCOPE_FORBIDDEN", "Worker may create only Work-public or current-Task Artifacts.", 403);
     }
     const binding = this.#validateBinding(context.workId, visibility, input);
+    if (!context.workId && visibility !== "session_private") throw artifactError("ARTIFACT_SCOPE_INVALID", "Work ownership is required for non-Session resources.", 400);
     this.#assertCanManageArtifact(context, { workId: context.workId, scope, ...binding });
     if (scope === "work" && (binding.boundTaskId || binding.boundSessionId)) {
       throw artifactError("ARTIFACT_SCOPE_INVALID", "Work-scoped Artifacts cannot be privately bound to a Task or Session.", 400);
@@ -462,6 +488,7 @@ export class ArtifactService {
         });
         this.store.updateArtifact(artifactId, { currentVersion: 1, approvedVersion: 1, updatedAt: createdAt });
         this.#audit(context, artifactId, "artifact.created", { visibility, repositoryLocator: locator }, null, 1);
+        this.#defaultCreateReference(contextInput, artifactId, input);
       });
       const created = this.store.getArtifact(artifactId);
       this.#indexArtifact(created, "");
@@ -488,6 +515,7 @@ export class ArtifactService {
           currentVersion: 1, approvedVersion: input.approvalStatus === "draft" ? null : 1, updatedAt: createdAt
         });
         this.#audit(context, artifactId, "artifact.created", { visibility, contentHash: prepared.hash }, null, 1);
+        this.#defaultCreateReference(contextInput, artifactId, input);
       });
       this.store.updateArtifactContentOperation(prepared.operationId, "completed");
       const created = this.store.getArtifact(artifactId);
@@ -497,6 +525,15 @@ export class ArtifactService {
       await this.#rollbackPrepared(prepared, error);
       throw error;
     }
+  }
+
+  #defaultCreateReference(contextInput, artifactId, input) {
+    const context = this.context(contextInput);
+    if (input.associateWithSource === false || !context.sessionId || !["worker", "workChat", "assistantChat"].includes(context.kind)) return;
+    this.createReference(contextInput, artifactId, {
+      ...(context.taskId ? { taskId: context.taskId } : { sessionId: context.sessionId }),
+      version: 1, relation: input.relation ?? "implementation_spec", required: false, versionPolicy: "fixed"
+    });
   }
 
   async #createWorkerArtifact(context, input) {
@@ -1264,6 +1301,23 @@ export class ArtifactService {
       }
     }
     return { artifactId, ok: results.every((item) => item.ok), versions: results };
+  }
+
+  async downloadForUser(contextInput, artifactId, input = {}) {
+    const context = this.context(contextInput);
+    if (context.kind !== "local_user" || input.confirmed !== true) throw artifactError("ARTIFACT_WRITE_FORBIDDEN", "Explicit user export required.", 403);
+    const artifact = this.#readableArtifact(context, artifactId);
+    const version = this.store.getArtifactVersion(artifactId, input.version);
+    if (!version?.storageKey || !safeHashEqual(version.contentHash, input.contentHash ?? "")) throw artifactError("ARTIFACT_EXPORT_UNAVAILABLE", "No matching stored version.", 409);
+    if (version.byteLength > 16 * 1024 * 1024 || (this.userDownloads ?? 0) >= 2) throw artifactError("ARTIFACT_EXPORT_LIMIT", "Export limit exceeded.", 413);
+    this.userDownloads = (this.userDownloads ?? 0) + 1;
+    try {
+      const bytes = await readFile(this.#safeStoragePath(version.storageKey));
+      this.#readableArtifact(this.context(contextInput), artifactId);
+      if (bytes.length !== version.byteLength || !safeHashEqual(sha256(bytes), version.contentHash)) throw artifactError("ARTIFACT_INTEGRITY_FAILED", "Export integrity failed.", 409);
+      this.#audit(context, artifactId, "artifact.user_downloaded", { version: version.version, contentHash: version.contentHash, byteLength: bytes.length }, version.version, version.version);
+      return { schemaVersion: 1, mimeType: version.mimeType, dataBase64: bytes.toString("base64"), fileName: artifact.title.replace(/[\\/:\x00-\x1f]/g, "_").slice(0, 100) };
+    } finally { this.userDownloads -= 1; }
   }
 
   async exportArtifact(contextInput, artifactId, input = {}) {

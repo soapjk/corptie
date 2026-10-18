@@ -50,6 +50,33 @@ export class ArtifactRepository {
     ).map(artifactFromRow);
   }
 
+  resourceArtifactPage({ workId = null, sourceSessionId = null, taskId = null, query = "", status = "all", sort = "updated", after = null, limit = 50, offset = 0 } = {}) {
+    const column = sort === "created" ? "created_at" : "updated_at";
+    const clauses = ["a.status <> 'revoked'"];
+    const params = [];
+    if (workId) { clauses.push("a.work_id = ?"); params.push(workId); }
+    if (sourceSessionId) {
+      clauses.push("(a.source_session_id = ? OR EXISTS (SELECT 1 FROM artifact_references r WHERE r.artifact_id = a.artifact_id AND r.revoked_at IS NULL AND (r.session_id = ? OR r.task_id = ?)))");
+      params.push(sourceSessionId, sourceSessionId, taskId);
+    }
+    if (query) {
+      clauses.push("(a.title LIKE ? ESCAPE '\\' OR a.summary LIKE ? ESCAPE '\\' OR a.tags_json LIKE ? ESCAPE '\\')");
+      const pattern = `%${query.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
+      params.push(pattern, pattern, pattern);
+    }
+    if (status === "draft") clauses.push("v.approval_status = 'draft'");
+    if (status === "approved") clauses.push("v.approval_status = 'approved'");
+    if (after) { clauses.push(`(a.${column} < ? OR (a.${column} = ? AND a.artifact_id > ?))`); params.push(after.time, after.time, after.id); }
+    return this.selectAll(`SELECT a.*, w.name AS work_name, s.title AS source_title, s.deleted_at AS source_deleted,
+        v.content_hash AS preview_hash, v.mime_type AS preview_mime, v.approval_status AS preview_state
+      FROM artifacts a LEFT JOIN works w ON w.id = a.work_id
+      LEFT JOIN sessions s ON s.id = a.source_session_id
+      LEFT JOIN artifact_versions v ON v.artifact_id = a.artifact_id AND v.version = a.current_version
+      WHERE ${clauses.join(" AND ")} ORDER BY a.${column} DESC, a.artifact_id LIMIT ? OFFSET ?`, [...params, limit, offset])
+      .map(row => ({ ...artifactFromRow(row), workName: row.work_name, sourceTitle: row.source_title, sourceDeleted: row.source_deleted,
+        previewHash: row.preview_hash, previewMime: row.preview_mime, previewState: row.preview_state }));
+  }
+
   listArtifactsByWork(workId, { includeRevoked = false, limit = null, offset = 0, query = null } = {}) {
     const pagination = limit == null ? "" : "LIMIT ? OFFSET ?";
     const patterns = typeof query === "string"
@@ -244,10 +271,10 @@ export class ArtifactRepository {
     return row ? artifactVersionFromRow(row) : null;
   }
 
-  listArtifactVersions(artifactId) {
+  listArtifactVersions(artifactId, { limit = null } = {}) {
     return this.selectAll(
-      `SELECT * FROM artifact_versions WHERE artifact_id = ? ORDER BY version DESC`,
-      [artifactId]
+      `SELECT * FROM artifact_versions WHERE artifact_id = ? ORDER BY version DESC ${limit == null ? "" : "LIMIT ?"}`,
+      limit == null ? [artifactId] : [artifactId, limit]
     ).map(artifactVersionFromRow);
   }
 
@@ -316,17 +343,18 @@ export class ArtifactRepository {
     return row ? artifactReferenceFromRow(row) : null;
   }
 
-  listArtifactReferences({ artifactId = null, taskId = null, sessionId = null, includeRevoked = false } = {}) {
+  listArtifactReferences({ artifactId = null, taskId = null, sessionId = null, includeRevoked = false, limit = null, targetedOnly = false } = {}) {
     const clauses = [];
     const params = [];
     if (artifactId) { clauses.push("artifact_id = ?"); params.push(artifactId); }
     if (taskId) { clauses.push("task_id = ?"); params.push(taskId); }
     if (sessionId) { clauses.push("session_id = ?"); params.push(sessionId); }
     if (!includeRevoked) clauses.push("revoked_at IS NULL");
+    if (targetedOnly) clauses.push("(task_id IS NOT NULL OR session_id IS NOT NULL)");
     return this.selectAll(
       `SELECT * FROM artifact_references ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
-       ORDER BY required DESC, authorized_at DESC`,
-      params
+       ORDER BY required DESC, authorized_at DESC ${limit == null ? "" : "LIMIT ?"}`,
+      limit == null ? params : [...params, limit]
     ).map(artifactReferenceFromRow);
   }
 

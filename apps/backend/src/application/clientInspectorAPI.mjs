@@ -58,7 +58,7 @@ export class ClientInspectorAPI {
     };
     await Promise.all([
       read("references", () => this.references.list(sessionId)),
-      read("artifacts", () => workId ? this.artifactPage(scope, 0) : { items: [], hasMore: false }),
+      read("artifacts", () => this.artifactPage(scope, 0)),
       read("memories", () => this.memoryPage(scope)),
       read("recalls", () => this.store.listMemoryRecallAudit({ sessionId, limit: 8 })
         .map((audit) => presentMemoryRecallAudit(this.store, audit))),
@@ -95,8 +95,10 @@ export class ClientInspectorAPI {
   artifactPage(scope, offset) {
     const { task, workId, context } = scope;
     const options = { limit: 20, offset, currentWorkOnly: true };
-    const items = task ? this.artifacts.listForTask(context, task.id, options) : this.artifacts.list(context, options);
-    const total = task ? this.store.countArtifactsReferencedByTask(task.id) : this.store.countArtifactsByWork(workId);
+    const sourceAware = (task || !workId) && this.artifacts.listForSession;
+    const rows = sourceAware ? this.artifacts.listForSession(context, scope.sessionId, task?.id ?? null, { ...options, limit: 21 }) : null;
+    const items = rows ? rows.slice(0, 20) : task ? this.artifacts.listForTask(context, task.id, options) : this.artifacts.list(context, options);
+    const total = rows ? offset + items.length + Number(rows.length > 20) : task ? this.store.countArtifactsReferencedByTask(task.id) : this.store.countArtifactsByWork(workId);
     const projected = items.map(item => ({ ...item,
       versions: (item.versions ?? []).map(({ storageKey, ...version }) => version),
       audit: (item.audit ?? []).slice(0, 30)
@@ -129,7 +131,7 @@ export class ClientInspectorAPI {
       };
     }
     if (resource === "artifacts") {
-      if (!Number.isSafeInteger(input.offset) || input.offset < 0 || !scope.workId) throw deviceError("INVALID_OFFSET", 400);
+      if (!Number.isSafeInteger(input.offset) || input.offset < 0) throw deviceError("INVALID_OFFSET", 400);
       return this.artifactPage(scope, input.offset);
     }
     if (resource === "memories") return this.memoryPage(scope, input.cursor);

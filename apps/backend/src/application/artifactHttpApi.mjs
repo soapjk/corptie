@@ -1,6 +1,8 @@
-export function handleArtifactHttpRequest({ request, response, url, service, requestTimeoutMs = 5_000 }) {
+import { ClientResourceAPI } from "./clientResourceAPI.mjs";
+
+export function handleArtifactHttpRequest({ request, response, url, service, requestTimeoutMs = 5_000, writesAllowed = true }) {
   const path = url.pathname;
-  const isArtifactApi = path === "/artifacts" || path.startsWith("/artifacts/")
+  const isArtifactApi = path === "/resources" || path.startsWith("/resources/") || path === "/artifacts" || path.startsWith("/artifacts/")
     || /^\/works\/[^/]+\/artifacts(?:\/(?:backup|restore))?$/.test(path)
     || /^\/tasks\/[^/]+\/artifacts(?:\/[^/]+\/publish)?$/.test(path);
   if (!isArtifactApi) return false;
@@ -12,6 +14,20 @@ export function handleArtifactHttpRequest({ request, response, url, service, req
     });
   }, requestTimeoutMs);
   Promise.resolve().then(async () => {
+    if (path === "/resources" || path.startsWith("/resources/")) {
+      const api = new ClientResourceAPI({ store: service.store, artifacts: service, writesAllowed });
+      const identity = { deviceId: "local-macos" };
+      if (path === "/resources" && request.method === "GET") return sendJson(response, 200, api.list(url.searchParams));
+      if (path === "/resources" && request.method === "POST") return sendJson(response, 201, await api.create(identity, await readJson(request)));
+      if (path === "/resources/works" && request.method === "GET") return sendJson(response, 200, api.works(url.searchParams));
+      const match = path.match(/^\/resources\/([^/]+)(?:\/(read|commands))?$/);
+      if (!match) throw httpError("RESOURCE_ROUTE_NOT_FOUND", "Not found", 404);
+      const id = decodeURIComponent(match[1]);
+      if (!match[2] && request.method === "GET") return sendJson(response, 200, api.detail(identity, id, numberParam(url, "version")));
+      if (match[2] === "read" && request.method === "GET") return sendJson(response, 200, await api.read(identity, id, url.searchParams));
+      if (match[2] === "commands" && request.method === "POST") return sendJson(response, 200, await api.command(identity, id, await readJson(request)));
+      throw httpError("RESOURCE_METHOD_INVALID", "Method not allowed", 405);
+    }
     const workBackup = path.match(/^\/works\/([^/]+)\/artifacts\/backup$/);
     if (request.method === "POST" && workBackup) {
       const workId = decodeURIComponent(workBackup[1]);
@@ -36,7 +52,7 @@ export function handleArtifactHttpRequest({ request, response, url, service, req
         const includeRevoked = url.searchParams.get("includeRevoked") === "true";
         const limit = boundedQueryInteger(url, "limit", 1, 200, 100);
         const offset = boundedQueryInteger(url, "offset", 0, Number.MAX_SAFE_INTEGER, 0);
-        const artifacts = service.list(context, { includeRevoked, limit, offset });
+        const artifacts = service.list(context, { includeRevoked, limit, offset, currentWorkOnly: true });
         const totalCount = service.store.countArtifactsByWork(workId, { includeRevoked });
         const nextOffset = offset + artifacts.length < totalCount ? offset + artifacts.length : null;
         return sendJson(response, 200, { artifacts, totalCount, nextOffset });
@@ -175,7 +191,7 @@ export function handleArtifactHttpRequest({ request, response, url, service, req
     }
 
     throw httpError("ARTIFACT_ROUTE_NOT_FOUND", "Artifact route not found.", 404);
-  }).catch((error) => sendJson(response, error.statusCode ?? 500, { code: error.code ?? "INTERNAL", error: error.message }))
+  }).catch((error) => sendJson(response, error.statusCode ?? error.status ?? 500, { code: error.code ?? "INTERNAL", error: error.message }))
     .finally(() => clearTimeout(timeout));
   return true;
 }

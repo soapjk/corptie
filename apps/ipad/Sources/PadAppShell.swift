@@ -11,6 +11,7 @@ struct PadAppShell: View {
     @State private var workspace = PadWorkspace()
     @State private var controls = PadControlStore()
     @State private var tab = PadTab.workspace
+    @State private var resourceFocus: ClientResourceFocus?
     @State private var sheet: Sheet?
     @State private var keyboardViewport = PadKeyboardViewport()
     @State private var compactWorkspaceIsRoot = true
@@ -69,6 +70,14 @@ struct PadAppShell: View {
                     .allowsHitTesting(tab == page)
                     .accessibilityHidden(tab != page)
                 }
+                ResourceBrowser(focus: $resourceFocus, active: tab == .resources,
+                    connected: connection.connected, works: workspace.works.map { ($0.id, $0.name) },
+                    currentWorkId: workspace.selection.flatMap { workspace.detailSession($0)?.workId },
+                    api: { ClientResourceAPI(transport: try await connection.transport(), route: .pairedDevice) },
+                    openSession: { id in workspace.selection = id; compactOpenSessionRequest &+= 1; tab = .workspace })
+                    .id(connection.connectedCloudMacID?.uuidString ?? connection.serverID)
+                    .opacity(tab == .resources ? 1 : 0).allowsHitTesting(tab == .resources)
+                    .accessibilityHidden(tab != .resources)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -105,6 +114,10 @@ struct PadAppShell: View {
             }
         }
         .environment(\.padKeyboardViewport, keyboardViewport)
+        .onReceive(NotificationCenter.default.publisher(for: .corptieOpenResource)) { notification in
+            guard let focus = notification.object as? ClientResourceFocus else { return }
+            resourceFocus = focus; tab = .resources
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
             updateKeyboardViewport(notification, changing: true)
         }
@@ -169,6 +182,9 @@ struct PadAppShell: View {
         .onChange(of: workspace.controlRevision) {
             if let snapshot = workspace.directControlSnapshot { controls.apply(snapshot) }
             else { controls.invalidate(connection) }
+        }
+        .onChange(of: workspace.directControlSnapshot?.resourceRevision) { _, _ in
+            NotificationCenter.default.post(name: .corptieResourceCatalogChanged, object: nil)
         }
         .onChange(of: workspace.sessions) { _, sessions in
             notificationManager.syncSessions(sessions, works: workspace.works, tasks: workspace.tasks)
