@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import SwiftMath
 @testable import CorptieConversation
 #if canImport(AppKit)
 import AppKit
@@ -57,6 +58,118 @@ r_i=\ln\left(\frac{P_i}{P_{i-1}}\right),\qquad i=1,\ldots,30
         #expect(!rendered.string.contains(#"\sqrt"#))
     }
 
+    @Test func chineseSharpeFormulaNeverBecomesAnImageWithItsLabelsRemoved() {
+        let source = #"\[夏普比率=\frac{平均超额收益}{收益波动率}\]"#
+        let value = MessageMarkdown.make(text: source, style: .agent)
+        // An image narrower than even one four-character label demonstrates
+        // the old parser's silent dropping, rather than valid Chinese typesetting.
+        if let attachment = attachments(value).first {
+            #expect((attachment.image?.size.width ?? 0) > 80)
+        } else {
+            #expect(value.string == source)
+        }
+    }
+
+    @Test func sharpeTreeRetainsEveryLabelAndANativeFraction() throws {
+        let prepared = try #require(MessageMathTextAdapter.prepare(#"夏普比率=\frac{平均超额收益}{收益波动率}"#))
+        #expect(prepared.textRuns == ["夏普比率", "平均超额收益", "收益波动率"])
+        #expect(prepared.list.atoms.first?.nucleus == "夏普比率")
+        let fraction = try #require(prepared.list.atoms.compactMap { $0 as? MTFraction }.first)
+        #expect(fraction.numerator?.atoms.first?.nucleus == "平均超额收益")
+        #expect(fraction.denominator?.atoms.first?.nucleus == "收益波动率")
+        #expect(MessageMathRenderer.hasCompleteGlyphCoverage(prepared, fontSize: 15))
+        #expect(MessageMathRenderer.hasCompleteGlyphCoverage(prepared, fontSize: 8))
+        #if canImport(AppKit)
+        let label = MTMathUILabel()
+        label.fontSize = 15; label.mathList = prepared.copyList()
+        label.frame = CGRect(origin: .zero, size: label.fittingSize)
+        label.layoutSubtreeIfNeeded()
+        #expect(label.displayList?.subDisplays.contains(where: { $0 is MTFractionDisplay }) == true)
+        let text = label.displayList?.subDisplays.compactMap { $0 as? MTCTLineDisplay }
+            .flatMap(\.atoms).map(\.nucleus).joined() ?? ""
+        #expect(text.contains("夏普比率"))
+        #endif
+    }
+
+    @Test func chineseNestedTextAndScriptsAreRestoredWithoutGlobalSymbols() throws {
+        for latex in [
+            #"\text{夏普比率}=\frac{\text{平均超额收益}}{\mathrm{收益波动率}}"#,
+            #"收益_{净值}^{小时}=\sqrt{\frac{平均收益}{波动率}}"#,
+            #"r_{收益}=\frac{收益}{风险}+收益"#,
+            #"\left(收益\right)+\overline{平均收益}"#,
+            #"\begin{matrix}收益&风险\\净值&回撤\end{matrix}"#
+        ] {
+            let prepared = try #require(MessageMathTextAdapter.prepare(latex))
+            #expect(MessageMathRenderer.hasCompleteGlyphCoverage(prepared, fontSize: 15))
+            let restored = treeText(prepared.list)
+            for text in prepared.textRuns { #expect(restored.contains(text)) }
+            #expect(!restored.contains("CORPTIEMATHTEXT"))
+            let source = "\\[" + latex + "\\]"
+            let value = MessageMarkdown.make(text: source, style: .agent)
+            #expect(attachments(value).count == 1)
+            #expect(MessageMarkdown.mathCopyText(from: value) == source)
+        }
+        let script = try #require(MessageMathTextAdapter.prepare(#"收益_{净值}^{小时}"#))
+        #expect(script.list.atoms.first?.subScript?.atoms.first?.nucleus == "净值")
+        #expect(script.list.atoms.first?.superScript?.atoms.first?.nucleus == "小时")
+        let a = try #require(MessageMathTextAdapter.prepare("甲=乙"))
+        _ = MessageMathTextAdapter.prepare("丙=丁")
+        #expect(treeText(a.list) == "甲=乙")
+    }
+
+    @Test func unsupportedLiteralsAndCommandsFallbackAsExactSourceWithoutDamagingOtherFormulas() {
+        for latex in [#"风险=🙂+1"#, #"x=\unknowncommand{收益}"#, #"\bar{收益}"#, "x=λ+1", "x#y", "x%y", "x~y"] {
+            let source = "\\[" + latex + "\\]"
+            let value = MessageMarkdown.make(text: source, style: .agent)
+            #expect(attachments(value).isEmpty)
+            #expect(value.string == source)
+        }
+        let source = "\\[\n收益=🙂\n\\]\n\n\\[\n风险=\\frac{收益}{本金}\n\\]"
+        let mixed = MessageMarkdown.make(text: source, style: .agent)
+        #expect(attachments(mixed).count == 1)
+        #expect(mixed.string.contains("收益=🙂"))
+        let textOnly = MessageMarkdown.make(text: source, style: .agent, rendersMath: false)
+        #expect(attachments(textOnly).isEmpty)
+        #expect(textOnly.string == source)
+    }
+
+    @Test func markersCannotCollideAndTextLimitsFailClosed() throws {
+        let prepared = try #require(MessageMathTextAdapter.prepare("CORPTIEMATHTEXTAAEND+收益"))
+        #expect(treeText(prepared.list).contains("收益"))
+        #expect(treeText(prepared.list).contains("CORPTIEMATHTEXTAAEND"))
+        #expect(MessageMathTextAdapter.prepare(String(repeating: "收益+", count: 129)) == nil)
+        #expect(MessageMathTextAdapter.prepare(String(repeating: "{", count: 65) + "收益" + String(repeating: "}", count: 65)) == nil)
+    }
+
+    @Test func chineseColdAndWarmRenderingRemainCachedAndBounded() throws {
+        let clock = ContinuousClock()
+        let chinese = (0..<12).map { "\\[绩效基准=\\frac{平均超额收益}{收益波动率}+\($0)\\]" }
+        let latin = (0..<12).map { "\\[S=\\frac{r_i}{s_i}+\($0)\\]" }
+        let latinTime = clock.measure { for source in latin { _ = MessageMarkdown.make(text: source, style: .agent) } }
+        var firstImage: NSAttributedString?
+        let coldTime = clock.measure {
+            for source in chinese {
+                let value = MessageMarkdown.make(text: source, style: .agent)
+                #expect(attachments(value).count == 1)
+                #expect(MessageMarkdown.mathImageCost(in: value) <= 131072 * 32 + 1024)
+                if firstImage == nil { firstImage = value }
+            }
+        }
+        let warmTime = clock.measure {
+            for _ in 0..<10 { for source in chinese { _ = MessageMarkdown.make(text: source, style: .agent) } }
+        }
+        let first = try #require(firstImage.flatMap { attachments($0).first })
+        let repeated = try #require(attachments(MessageMarkdown.make(text: chinese[0], style: .agent)).first)
+        #expect(first.image === repeated.image)
+        print("math benchmark: latin cold 12=\(latinTime), CJK cold 12=\(coldTime), CJK warm 120=\(warmTime)")
+    }
+
+    private func treeText(_ list: MTMathList) -> String {
+        list.atoms.map { atom in
+            atom.nucleus + MessageMathTextAdapter.children(of: atom).map(treeText).joined()
+        }.joined()
+    }
+
     @Test func standardDelimitersAndInlineMathAreSupported() {
         for source in ["\\[\nx^2+1\n\\]", "$$\nx^2+1\n$$", #"\[x^2+1\]"#, "$$x^2+1$$", #"收益为 \(r_i^2\)，还有 $P_i$。"#] {
             let rendered = MessageMarkdown.make(text: source, style: .agent)
@@ -97,8 +210,43 @@ r_i=\ln\left(\frac{P_i}{P_{i-1}}\right),\qquad i=1,\ldots,30
     }
 
     #if canImport(AppKit)
+    @Test func chineseSnapshotContainsActualInkInBothAppearances() throws {
+        let source = #"\[夏普比率=\frac{平均超额收益}{收益波动率}\]"#
+        let attachment = try #require(attachments(MessageMarkdown.make(text: source, style: .agent)).first)
+        let image = try #require(attachment.image)
+        var brightness: [CGFloat] = []
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            let appearance = try #require(NSAppearance(named: name))
+            let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil,
+                pixelsWide: Int(ceil(image.size.width * 2)), pixelsHigh: Int(ceil(image.size.height * 2)),
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+            let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
+            appearance.performAsCurrentDrawingAppearance {
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = context
+                context.cgContext.scaleBy(x: 2, y: 2)
+                image.draw(in: CGRect(origin: .zero, size: image.size))
+                NSGraphicsContext.restoreGraphicsState()
+            }
+            var ink = 0
+            var total: CGFloat = 0
+            for y in 0..<bitmap.pixelsHigh {
+                for x in 0..<bitmap.pixelsWide {
+                    if let color = bitmap.colorAt(x: x, y: y), color.alphaComponent > 0.5 {
+                        ink += 1; total += color.redComponent
+                    }
+                }
+            }
+            #expect(ink > 300)
+            brightness.append(total / CGFloat(max(1, ink)))
+        }
+        #expect(brightness[1] > brightness[0] + 0.5)
+    }
+
     @Test func attachmentsFitNarrowTextKitContainersAndEveryGlyphIsLaidOut() {
-        let value = MessageMarkdown.make(text: volatilityExample, style: .agent)
+      for source in [volatilityExample, #"\[夏普比率=\frac{平均超额收益}{收益波动率}\]"#] {
+        let value = MessageMarkdown.make(text: source, style: .agent)
         for width: CGFloat in [120, 260, 460] {
             let storage = NSTextStorage(attributedString: value)
             let manager = NSLayoutManager()
@@ -115,6 +263,7 @@ r_i=\ln\left(\frac{P_i}{P_{i-1}}\right),\qquad i=1,\ldots,30
                 #expect(bounds.height > 0)
             }
         }
+      }
     }
     #endif
 

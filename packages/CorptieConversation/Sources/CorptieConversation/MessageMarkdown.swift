@@ -47,16 +47,19 @@ public enum MessageMarkdown {
         style: Style,
         rendersMath: Bool = true
     ) -> NSAttributedString {
-        guard style != .process, rendersMath else { return makeMarkdown(text: text, style: style, rendersMath: false) }
+        guard style != .process else { return makeMarkdown(text: text, style: style, rendersMath: false) }
         let result = NSMutableAttributedString(string: "")
         for block in MessageMath.blocks(text) {
             switch block {
-            case .text(let text): result.append(makeMarkdown(text: text, style: style))
+            case .text(let text): result.append(makeMarkdown(text: text, style: style, rendersMath: rendersMath))
             case .formula(let formula):
-                result.append(MessageMathRenderer.attributed(formula, user: style == .user)
-                    ?? NSAttributedString(string: formula.source, attributes: [
+                let rendered = rendersMath ? MessageMathRenderer.attributed(formula, user: style == .user) : nil
+                let paragraph = NSMutableParagraphStyle()
+                paragraph.lineBreakMode = .byCharWrapping
+                result.append(rendered ?? NSAttributedString(string: formula.source, attributes: [
                         .font: MessageFont.monospacedSystemFont(ofSize: 12, weight: .regular),
-                        .foregroundColor: style == .user ? MessageTextCardPalette.userNativeForeground : secondaryText]))
+                        .foregroundColor: style == .user ? MessageTextCardPalette.userNativeForeground : secondaryText,
+                        .paragraphStyle: paragraph]))
             }
         }
         return result
@@ -156,14 +159,14 @@ public enum MessageMarkdown {
         let attributed: NSMutableAttributedString
         // Protect math from Markdown's backslash/underscore interpretation. Use
         // source-unique placeholders, replacing them only after inline parsing.
-        let formulas = font == nil && rendersMath ? MessageMath.inline(text) : []
+        let formulas = font == nil ? MessageMath.inline(text) : []
         var prepared = text
         var replacements: [(String, NSAttributedString)] = []
         for (index, item) in formulas.enumerated().reversed() {
             let token = "CORPTIEMATH\(index)PLACEHOLDER"
             guard !text.contains(token) else { continue }
-            let value = MessageMathRenderer.attributed(item.formula, user: color == MessageTextCardPalette.userNativeForeground)
-                ?? NSAttributedString(string: item.formula.source)
+            let rendered = rendersMath ? MessageMathRenderer.attributed(item.formula, user: color == MessageTextCardPalette.userNativeForeground) : nil
+            let value = rendered ?? NSAttributedString(string: item.formula.source)
             prepared.replaceSubrange(item.range, with: token)
             replacements.append((token, value))
         }
