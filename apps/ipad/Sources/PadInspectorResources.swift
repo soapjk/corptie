@@ -263,8 +263,9 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
             ForEach(allArtifacts ? values : Array(values.prefix(2)), id: \.inspectorID) { artifact in
                 let references = artifact["references"].items.filter { $0["revokedAt"] == .null }
                 Button {
-                    document = .init(title: artifact["title"].text ?? "Artifact", resource: "artifact", value: artifact,
-                        parameters: artifactReadParameters(artifact, taskID: store.snapshot?.taskId))
+                    let parameters = artifactReadParameters(artifact, taskID: store.snapshot?.taskId)
+                    NotificationCenter.default.post(name: .corptieOpenResource, object: ClientResourceFocus(id: artifact["artifactId"].text ?? "",
+                        version: parameters["version"]?.number.map(Int.init), hash: parameters["contentHash"]?.text, workId: artifact["workId"].text ?? ""))
                 } label: {
                     ConversationArtifactRow(title: artifact["title"].text ?? "Artifact",
                         summary: artifact["summary"].text ?? "", visibility: artifact["visibility"].text ?? "",

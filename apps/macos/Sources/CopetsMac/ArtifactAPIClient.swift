@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import CorptieConversation
 
 enum ArtifactExportOutcome: Equatable {
     case success
@@ -37,6 +38,7 @@ final class ArtifactAPIClient: ObservableObject {
     /// this process has actually loaded; this is event-driven cache repair,
     /// not a polling loop.
     func refreshLoadedCollectionsAfterExternalChange() {
+        NotificationCenter.default.post(name: .corptieResourceCatalogChanged, object: nil)
         externalRefreshTask?.cancel()
         externalRefreshTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(80))

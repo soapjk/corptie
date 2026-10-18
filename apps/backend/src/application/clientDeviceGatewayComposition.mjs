@@ -27,9 +27,10 @@ export function startClientDeviceGateway({
 }) {
   const startDeviceAccess = process.env.CORPTIE_REMOTE_ACCESS === "1" ? startConfiguredDeviceGateway : createDeviceSetup;
   void startDeviceAccess({ directory: join(store.dataRoot, "client-devices"), preview: developmentPreview,
+    resourceWritesAllowed: !developmentPreview,
     detailActionService, detailWritesAllowed: detailWritesAllowed === true && !developmentPreview,
     readAPI: new ClientReadAPI(store, { environmentName }),
-    controlAPI: new ClientControlReadAPI({ lists: {
+    controlAPI: new ClientControlReadAPI({ resourceRevision: () => store.selectOne("SELECT revision FROM state_change_log WHERE entity_type = 'artifact' ORDER BY revision DESC LIMIT 1")?.revision ?? null, lists: {
       automations: () => store.listScheduledSessionTasks({ environment: environmentName }),
       agents: () => store.listAgents(), skills: () => store.listRegistrySkills(),
       repositories: () => worktreeIntegrationJobService.repositories()

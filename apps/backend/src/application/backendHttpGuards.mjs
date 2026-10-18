@@ -4,7 +4,7 @@ export function rejectDevelopmentPreviewWrite({ request, response, url, developm
     // Fail closed: GET alone is insufficient (some inventory APIs probe tools).
     const readable = ["/health", "/settings", "/settings/task-creation", "/first-run", "/events", "/sessions", "/search",
       "/state/snapshot", "/state/changes", "/state/events", "/session-timelines/revisions",
-      "/works", "/tasks", "/agents", "/workspaces", "/repositories", "/artifacts", "/memories",
+      "/works", "/tasks", "/agents", "/workspaces", "/repositories", "/artifacts", "/resources", "/memories",
       "/automations", "/scheduled-tasks", "/scheduled-session-tasks"].includes(url.pathname)
       || /^\/sessions\/[^/]+\/(stored-snapshot|history|timeline\/window|timeline\/changes|events|usage|quick-messages|context-references|images|resources|fork|worktree-detail)$/.test(url.pathname)
       || /^\/sessions\/[^/]+\/detail(?:\/(events|capabilities))?$/.test(url.pathname)
@@ -12,6 +12,7 @@ export function rejectDevelopmentPreviewWrite({ request, response, url, developm
       || /^\/works\/[^/]+(?:\/(tasks|artifacts))?$/.test(url.pathname)
       || /^\/tasks\/[^/]+(?:\/(sessions|snapshots|artifacts))?$/.test(url.pathname)
       || /^\/artifacts\/[^/]+$/.test(url.pathname)
+      || /^\/resources\/[^/]+(?:\/read)?$/.test(url.pathname)
       || url.pathname === "/scene-templates"
       || url.pathname === "/scenes"
       || /^\/scenes\/[^/]+(?:\/(views\/[^/]+|changes))?$/.test(url.pathname);

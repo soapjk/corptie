@@ -134,7 +134,11 @@ struct ArtifactSectionView: View {
     private func artifactRows(_ artifacts: [WorkArtifact]) -> some View {
         LazyVStack(spacing: 6) {
             ForEach(showsAllReferences ? artifacts : Array(artifacts.prefix(2))) { artifact in
-                Button { selection = artifact } label: {
+                Button {
+                    let version = ArtifactVersionSelectionPolicy.preferredVersion(for: artifact, taskId: taskId)
+                    let hash = artifact.versions.first { $0.version == version }?.contentHash
+                    AppTabRouter.shared.openResource(.init(id: artifact.artifactId, version: version, hash: hash, workId: artifact.workId))
+                } label: {
                     ConversationArtifactRow(title: artifact.title, summary: artifact.summary,
                         visibility: artifact.visibility.rawValue,
                         version: ArtifactVersionSelectionPolicy.preferredVersion(for: artifact, taskId: taskId),

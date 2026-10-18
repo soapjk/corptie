@@ -25,13 +25,14 @@ function safeReference(row) {
     snapshotAt: date(row.snapshotAt), contentHash: string(row.contentHash, 64) };
 }
 function artifact(row, scope) {
-  const references = (row.references ?? []).filter(value => !value.revokedAt && (!scope.task || value.taskId === scope.task.id));
+  const references = (row.references ?? []).filter(value => !value.revokedAt && ((scope.task && value.taskId === scope.task.id) || value.sessionId === scope.session.id));
   const pinned = references.find(value => value.versionPolicy === "fixed" && value.pinnedVersion);
   const version = integer(pinned?.pinnedVersion ?? row.approvedVersion ?? row.currentVersion);
   const hash = string(pinned?.pinnedHash ?? row.versions?.find(value => value.version === version)?.contentHash, 64);
   return { resource: ref("artifact", row.artifactId), title: string(row.title, 512), summary: string(row.summary),
     status: string(row.status, 64), visibility: string(row.visibility, 64), version, contentHash: hash,
     readAvailable: version !== null && /^[a-f0-9]{64}$/.test(hash),
+    sourceCreated: row.sourceSessionId === scope.session.id, referenced: references.length > 0,
     references: references.slice(0, 20).map(value => ({ resource: ref("artifactReference", value.referenceId),
       required: value.required === true, versionPolicy: string(value.versionPolicy, 64),
       pinnedVersion: integer(value.pinnedVersion), pinnedHash: string(value.pinnedHash, 64),
@@ -77,9 +78,10 @@ export function createDetailBusinessReadPorts({ store, references, artifacts, sc
       return page(rows.slice(0, 20).map(safeReference), rows.length > 20);
     } },
     artifacts: { dependencies: ["artifact", "task", "work"], read: (scope, identity) => {
-      if (!scope.work) return page([]);
+      if (!scope.work && !artifacts.listForSession) return page([]);
       const options = { limit: 21, offset: 0, currentWorkOnly: true };
-      const rows = scope.task ? artifacts.listForTask(context(scope, identity), scope.task.id, options) : artifacts.list(context(scope, identity), options);
+      const rows = (scope.task || !scope.work) && artifacts.listForSession ? artifacts.listForSession(context(scope, identity), scope.session.id, scope.task?.id ?? null, options)
+        : scope.task ? artifacts.listForTask(context(scope, identity), scope.task.id, options) : artifacts.list(context(scope, identity), options);
       return page(rows.slice(0, 20).map(row => artifact(row, scope)), rows.length > 20);
     } },
     // These authorities have mutation paths outside the state log. Until all
@@ -159,9 +161,10 @@ export function createDetailBusinessReadPorts({ store, references, artifacts, sc
   };
   ports.artifacts.readPage = (scope, identity, cursor = null, limit = 20) => {
     bounds(cursor, limit); const start = offset(cursor);
-    if (!scope.work) return { items: [], hasMore: false, sourceCursor: null };
+    if (!scope.work && !artifacts.listForSession) return { items: [], hasMore: false, sourceCursor: null };
     const options = { limit: limit + 1, offset: start, currentWorkOnly: true };
-    const rows = scope.task ? artifacts.listForTask(context(scope, identity), scope.task.id, options) : artifacts.list(context(scope, identity), options);
+    const rows = (scope.task || !scope.work) && artifacts.listForSession ? artifacts.listForSession(context(scope, identity), scope.session.id, scope.task?.id ?? null, options)
+      : scope.task ? artifacts.listForTask(context(scope, identity), scope.task.id, options) : artifacts.list(context(scope, identity), options);
     return { items: rows.slice(0, limit).map(row => artifact(row, scope)), hasMore: rows.length > limit,
       sourceCursor: rows.length > limit ? String(start + limit) : null };
   };

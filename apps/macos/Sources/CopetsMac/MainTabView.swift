@@ -1,5 +1,6 @@
 import AppKit
 import CorptieConversation
+import CorptieClientCore
 import SwiftUI
 
 // Sessions 与控制台共用的栏位几何，确保 sidebar 与详情卡片宽度稳定。
@@ -97,6 +98,7 @@ enum AppTab: String, CaseIterable, Identifiable {
     case automations
     case scenes
     case worktrees
+    case resources
     case agents
     case memory
     case settings
@@ -114,9 +116,10 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .automations: 1
         case .scenes: 2
         case .worktrees: 3
-        case .agents: 4
-        case .memory: 5
-        case .settings: 6
+        case .resources: 4
+        case .agents: 5
+        case .memory: 6
+        case .settings: 7
         }
     }
 
@@ -126,6 +129,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .automations: L10n("Automations")
         case .scenes: L10n("Scenes")
         case .worktrees: L10n("Worktrees")
+        case .resources: L10n("资源管理")
         case .agents: L10n("Agents")
         case .memory: L10n("Memory")
         case .settings: L10n("Settings")
@@ -138,6 +142,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .automations: "bolt.badge.clock"
         case .scenes: "camera.macro"
         case .worktrees: "arrow.triangle.branch"
+        case .resources: "tray.full"
         case .agents: "person.2"
         case .memory: "brain.head.profile"
         case .settings: "gearshape"
@@ -430,6 +435,8 @@ private struct MainTabPageHost: NSViewRepresentable {
                 root = AnyView(ScenesView())
             case .worktrees:
                 root = AnyView(WorktreeManagementView())
+            case .resources:
+                root = AnyView(MacResourcePage(router: router))
             case .agents:
                 root = AnyView(AgentManagementView())
             case .memory:
@@ -751,6 +758,12 @@ final class AppTabRouter: ObservableObject {
     @Published var pendingAutomationId: String?
     @Published private(set) var pendingWorktreeNavigation: WorktreeNavigationRequest?
     @Published var navigationError: String?
+    @Published var resourceFocus: ClientResourceFocus?
+
+    func openResource(_ focus: ClientResourceFocus) {
+        resourceFocus = focus
+        selectTab(.resources)
+    }
 
     // Each resident page owns a distinct observable state. Updating one tab's
     // sidebar therefore does not publish into the other five page subtrees.

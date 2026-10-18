@@ -115,7 +115,7 @@ export function routeBackendHttpRequest(request, response, ports) {
 
   if (handleCollaborationRoutes({ request, response, url })) return;
 
-  if (handleArtifactHttpRequest({ request, response, url, service: artifactService })) {
+  if (handleArtifactHttpRequest({ request, response, url, service: artifactService, writesAllowed: !developmentPreview })) {
     return;
   }
   if (handleBenchmarkHttpRequest({ request, response, url, controlPlane: benchmarkControlPlane })) {

@@ -61,6 +61,8 @@ export const artifactSchemaSql = `      CREATE TABLE IF NOT EXISTS artifact_patc
       ON artifacts(work_id, status, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_artifacts_work_page
       ON artifacts(work_id, updated_at DESC, artifact_id);
+      CREATE INDEX IF NOT EXISTS idx_artifacts_global_page ON artifacts(updated_at DESC, artifact_id);
+      CREATE INDEX IF NOT EXISTS idx_artifacts_source_page ON artifacts(source_session_id, updated_at DESC, artifact_id);
 
       CREATE TABLE IF NOT EXISTS artifact_versions (
         artifact_id TEXT NOT NULL,

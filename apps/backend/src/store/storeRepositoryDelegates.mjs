@@ -154,7 +154,7 @@ const domainDelegates = Object.freeze({
     "removeTaskDependency", "listTaskDependencies", "listTaskDependents"
   ],
   artifactRepository: [
-    "createArtifactMetadata", "getArtifact", "listArtifacts",
+    "createArtifactMetadata", "getArtifact", "listArtifacts", "resourceArtifactPage",
     "listArtifactsByWork", "countArtifactsByWork", "listArtifactsReferencedByTask",
     "countArtifactsReferencedByTask", "listArtifactVersionsByArtifactIds", "listArtifactReferencesByArtifactIds",
     "listArtifactAuditByArtifactIds", "updateArtifact", "upsertArtifactSearchDocument",

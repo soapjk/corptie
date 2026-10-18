@@ -76,7 +76,10 @@ struct WorkDetailView: View {
 
                     Divider()
 
-                    ArtifactSectionView(workId: work.id, taskId: nil)
+                    Button(L10n("在资源管理中查看")) {
+                        AppTabRouter.shared.openResource(.init(id: "", workId: work.id))
+                        dismiss()
+                    }
 
                     DisclosureGroup(L10n("高级选项"), isExpanded: $showAdvanced) {
                         VStack(alignment: .leading, spacing: 12) {
