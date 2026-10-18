@@ -115,7 +115,7 @@ struct DetachedChatWindowTests {
         #expect(window.contains(".padding(.top, 3)"))
         #expect(window.contains(".font(.system(size: 11, weight: .semibold))"))
         #expect(conversation.contains("compact: compactComposer"))
-        #expect(composer.contains("if !compact {\n                ConversationQuickMessages"))
+        #expect(composer.contains("if !compact {\n                MacComposerQuickMessages"))
         #expect(composer.contains("ConversationComposerChrome {\n                    HStack(spacing: 0)"))
         #expect(composer.contains("if compact {\n                compactEditorRow"))
         #expect(composer.contains("compactEditorRow\n                    .frame(maxWidth: CompactComposerLayout.maximumWidth)"))
@@ -126,7 +126,11 @@ struct DetachedChatWindowTests {
         #expect(composer.contains("SessionComposerStopButton(session: session, compact: true)"))
         #expect(composer.contains("moreMenu\n                    .padding(.trailing, 4)"))
         #expect(composer.contains("CompactComposerLayout.maximumWidth"))
-        #expect(composer.contains("guard !compact else { return }"))
+        // The refresh task now belongs to the non-compact child, so compact
+        // floating inputs never create its lifecycle observers or network work.
+        #expect(!composer.contains("recommendationRefreshKey"))
+        let recommendations = try contents(of: "Conversation/Composer/MacComposerQuickMessages.swift")
+        #expect(recommendations.contains(".task(id: refreshKey)"))
         #expect(composer.contains("let submittedImages = attachedImages"))
     }
 
