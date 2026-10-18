@@ -442,12 +442,48 @@ test("resumeThread restores collaboration MCP config and Agent identity", async 
         mcp_servers: { collaboration: { command: "node" } }
       },
       developerInstructions: "Stable Agent identity: agent-a",
-      excludeTurns: undefined,
-      initialTurnsPage: undefined
+      excludeTurns: true
     },
     timeoutMs: 60000
   }]);
   assert.equal(client.dynamicToolAgentsByThread.get("thread-a"), "agent-a");
+});
+
+test("ordinary resume never sends local history or asks for native history hydration", async () => {
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  client.request = async (method, params) => {
+    assert.equal(method, "thread/resume");
+    assert.equal(params.excludeTurns, true);
+    assert.equal(Object.hasOwn(params, "initialTurnsPage"), false);
+    assert.equal(Object.hasOwn(params, "history"), false);
+    assert.equal(Object.hasOwn(params, "input"), false);
+    return { thread: { id: params.threadId, turns: [] }, cwd: params.cwd };
+  };
+  const result = await client.resumeThread("long-thread", {
+    cwd: "/workspace", excludeTurns: false, initialTurnsPage: { limit: 1000 },
+    history: [{ role: "user", content: "local display history must never be replayed" }]
+  });
+  assert.deepEqual(result.thread.turns, []);
+  assert.equal(result.cwd, "/workspace", "workspace validation metadata survives the cheap resume");
+});
+
+test("concurrent resume configurations serialize and identical waiters reuse one proof", async () => {
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  const requests = [];
+  client.request = (method, params) => new Promise(resolve => requests.push({ params, resolve }));
+  const operations = ["a", "b", "b", "c"].map(model => client.ensureThreadResumed("thread", { model }));
+  const tick = () => new Promise(resolve => setImmediate(resolve));
+  for (const [index, model] of ["a", "b", "c"].entries()) {
+    await tick();
+    assert.equal(requests.length, index + 1);
+    assert.equal(requests[index].params.model, model);
+    requests[index].resolve({ thread: { id: "thread" } });
+  }
+  await Promise.all(operations);
+  assert.equal((await client.ensureThreadResumed("thread", { model: "c" })).alreadyLoaded, true);
+  assert.equal(requests.length, 3);
 });
 
 test("bindThreadToolContext finalizes a fresh thread without an invalid resume", () => {

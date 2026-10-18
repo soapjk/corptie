@@ -42,6 +42,33 @@ test("runtime validates the exact command before spawn and after handshake", asy
   await assert.rejects(changed.initialize(), /binary changed/);
 });
 
+test("initialize acknowledgement enables notifications before commands and repeats only on reconnect", async () => {
+  const child = fakeChild();
+  const received = [];
+  child.stdin.on("data", data => {
+    for (const line of String(data).trim().split("\n")) {
+      if (JSON.parse(line).method === "initialized") {
+        child.stdout.write(JSON.stringify({ method: "error", params: {
+          threadId: "thread", turnId: "turn", willRetry: true,
+          error: { message: "high demand" }
+        } }) + "\n");
+      }
+    }
+  });
+  const transport = new CodexStdioTransport({ spawnProcess: () => child, onNotification: value => received.push(value) });
+  try {
+    await Promise.all([transport.initialize(), transport.initialize()]);
+    assert.deepEqual(child.requests.map(value => value.method), ["initialize", "initialized"]);
+    assert.equal(Object.hasOwn(child.requests[1], "id"), false, "initialized is a notification, not an RPC");
+    assert.equal(received[0].params.error.message, "high demand");
+    await transport.initialize();
+    assert.equal(child.requests.length, 2);
+    await transport.close();
+    await transport.initialize();
+    assert.deepEqual(child.requests.map(value => value.method), ["initialize", "initialized", "initialize", "initialized"]);
+  } finally { await transport.close(); }
+});
+
 test("RPC responses correlate independently from native requests and notifications", async () => {
   const child = fakeChild();
   const notifications = [], requests = [], diagnostics = [];
@@ -194,7 +221,8 @@ test("cold resume has its own budget and preserves explicit caller overrides", a
 
 test("late same-generation resume proof reconciles without resurrecting Promise or repeating RPC", async () => {
   const child = fakeChild();
-  const client = new CodexAppServerClient({ spawnProcess: () => child });
+  const metrics = [];
+  const client = new CodexAppServerClient({ spawnProcess: () => child, onResumeMetrics: value => metrics.push(value) });
   client.requireThreadToolPlanConfirmation = () => {};
   try {
     await assert.rejects(client.resumeThread("thread", { requestTimeoutMs: 5 }), { code: "PROVIDER_RPC_TIMEOUT" });
@@ -203,6 +231,9 @@ test("late same-generation resume proof reconciles without resurrecting Promise 
     await assert.rejects(client.ensureThreadResumed("thread"), { code: "PROVIDER_RESUME_OUTCOME_UNKNOWN" });
     assert.equal(child.requests.filter(value => value.method === "thread/resume").length, 1);
     client.transport.handleLine(JSON.stringify({ id: request.id, result: { privateHistory: "must-not-emit" } }));
+    assert.equal(metrics[0].late, true);
+    assert.ok(metrics[0].responseBytes > 0 && metrics[0].parseMs >= 0 && metrics[0].totalMs >= 5);
+    assert.equal(JSON.stringify(metrics).includes("must-not-emit"), false);
     assert.equal(client.inspectThreadResume("thread").ready, true);
     assert.equal((await client.ensureThreadResumed("thread")).alreadyLoaded, true);
     assert.equal(child.requests.filter(value => value.method === "thread/resume").length, 1);
@@ -212,6 +243,25 @@ test("late same-generation resume proof reconciles without resurrecting Promise 
   } finally {
     await client.close();
   }
+});
+
+test("resume response metrics are bounded and diagnostics cannot reject a successful RPC", async () => {
+  const child = fakeChild();
+  const metrics = [];
+  const transport = new CodexStdioTransport({ spawnProcess: () => child,
+    onResumeMetrics: value => { metrics.push(value); throw Error("diagnostics unavailable"); } });
+  try {
+    await transport.initialize();
+    const pending = transport.request("thread/resume", { threadId: "thread", excludeTurns: true });
+    const result = { thread: { id: "thread", turns: [] } };
+    const line = JSON.stringify({ id: child.requests.at(-1).id, result });
+    transport.handleLine(line);
+    assert.deepEqual(await pending, result);
+    assert.equal(metrics[0].responseBytes, Buffer.byteLength(line));
+    assert.equal(metrics[0].threadId, "thread");
+    assert.equal(metrics[0].late, false);
+    assert.equal(Object.hasOwn(metrics[0], "result"), false);
+  } finally { await transport.close(); }
 });
 
 test("expired resume tombstones do not publish proof or clear unknown outcomes", async () => {

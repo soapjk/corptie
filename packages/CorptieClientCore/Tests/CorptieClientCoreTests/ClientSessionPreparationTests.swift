@@ -3,6 +3,19 @@ import Testing
 @testable import CorptieClientCore
 
 struct ClientSessionPreparationTests {
+    @Test func pollingContinuesForUnknownOutcomeButStopsForCancellationOrDefinitiveFailure() throws {
+        for (state, disposition, expected) in [
+            ("queued", "not_sent", true), ("verifying", "unknown", true),
+            ("failed", "unknown", true), ("failed", "settled", false),
+            ("cancelled", "unknown", false), ("superseded", "unknown", false),
+            ("ready", "settled", false)
+        ] {
+            let data = Self.state.replacingOccurrences(of: "\"state\":\"failed\"", with: "\"state\":\"\(state)\"")
+                .replacingOccurrences(of: "\"remoteDisposition\":\"unknown\"", with: "\"remoteDisposition\":\"\(disposition)\"")
+            let value = try JSONDecoder().decode(ClientSessionPreparation.self, from: Data(data.utf8))
+            #expect(value.isAwaitingConfirmation == expected)
+        }
+    }
     @Test func failedPreparationShowsReasonAndNetworkErrorsRemainDistinct() throws {
         let value = try JSONDecoder().decode(ClientSessionPreparation.self, from: Data(Self.state.utf8))
         #expect(value.failureDetail?.contains("Provider 会话核验超时") == true)

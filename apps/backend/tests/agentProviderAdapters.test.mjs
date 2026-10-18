@@ -64,6 +64,24 @@ test("bootstrap does not advertise command execution without an implementation",
   assert.equal(registry.supports("codex-app-server", AGENT_PROVIDER_CAPABILITIES.CONVERSATION_COMMAND), false);
 });
 
+test("production bootstrap advertises and routes the implemented turn status probe", async () => {
+  for (const supported of [false, true]) {
+    const calls = [];
+    const registry = createAgentProviderRuntimeRegistry({
+      claudeProvider: createClaudeAgentSdkProvider(recordingManager()),
+      codexOperations: { ...recordingCodexOperations(), ...(supported ? {
+        probeTurnExecution: async (...args) => { calls.push(args); return { state: "running" }; }
+      } : {}) }
+    });
+    assert.equal(registry.supports("codex-app-server", AGENT_PROVIDER_CAPABILITIES.TURN_EXECUTION_PROBE), supported);
+    if (supported) {
+      const reference = { providerSessionId: "thread" };
+      assert.deepEqual(await registry.invoke("codex-app-server", AGENT_PROVIDER_CAPABILITIES.TURN_EXECUTION_PROBE, reference, "turn"), { state: "running" });
+      assert.deepEqual(calls, [[reference, "turn"]]);
+    }
+  }
+});
+
 test("Codex production bootstrap exposes conversation branching only with a fork operation", async () => {
   const calls = [];
   const claudeManager = recordingManager();

@@ -145,7 +145,7 @@ export function createCodexSessionCommands({
       // validates the live app-server identity without creating a Turn.
       await codexRuntime.ensureThreadResumed(reference.providerSessionId, runtimeOptions);
     } else {
-      await codexRuntime.resumeThread(reference.providerSessionId, runtimeOptions);
+      await codexRuntime.ensureThreadResumed(reference.providerSessionId, runtimeOptions);
     }
     // Resume is a transport command. It must not project a Provider snapshot
     // back into Corptie's product Session or repair list state as a side effect.

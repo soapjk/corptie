@@ -356,8 +356,9 @@ export class CodexAppServerClient {
       modelProvider: options.modelProvider ?? undefined,
       config: options.config ?? undefined,
       developerInstructions: options.developerInstructions ?? undefined,
-      excludeTurns: options.excludeTurns ?? undefined,
-      initialTurnsPage: options.initialTurnsPage ?? undefined
+      // Resume restores native state, not Corptie's Timeline. History repair
+      // has its own read API; never hydrate history on the execution path.
+      excludeTurns: true
       }, options.requestTimeoutMs ?? this.threadResumeTimeoutMs);
     } catch (error) {
       if (error.code === "PROVIDER_RPC_TIMEOUT" && error.remoteDisposition === "unknown") {
@@ -412,8 +413,8 @@ export class CodexAppServerClient {
     if (threadResumeProofMatches(this.threadResumeFingerprints.get(threadId), options)) {
       return { alreadyLoaded: true, thread: { id: threadId } };
     }
-    const pending = this.threadResumePromises.get(threadId);
-    if (pending) {
+    while (this.threadResumePromises.has(threadId)) {
+      const pending = this.threadResumePromises.get(threadId);
       try {
         await pending.promise;
       } catch {
@@ -423,6 +424,8 @@ export class CodexAppServerClient {
       if (threadResumeProofMatches(this.threadResumeFingerprints.get(threadId), options)) {
         return { alreadyLoaded: true, coalesced: true, thread: { id: threadId } };
       }
+      // Another waiter may have acquired the next configuration. Serialize
+      // behind it rather than issuing competing resumes for the same Thread.
     }
     const promise = this.resumeThread(threadId, options);
     const entry = { fingerprint, promise };

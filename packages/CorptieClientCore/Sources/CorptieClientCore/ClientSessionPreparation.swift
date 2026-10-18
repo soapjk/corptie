@@ -10,6 +10,9 @@ public struct ClientSessionPreparation: Codable, Equatable, Sendable, Identifiab
     public let deadlineAt: String
 
     public var isActive: Bool { state == "queued" || state == "verifying" }
+    public var isAwaitingConfirmation: Bool {
+        isActive || (state == "failed" && remoteDisposition == "unknown")
+    }
     public var isReady: Bool { state == "ready" }
     public var failureDetail: String? {
         guard !isActive, !isReady, state != "cancelled", let reasonCode else { return nil }

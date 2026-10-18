@@ -229,8 +229,9 @@ export class SessionPreparationCoordinator {
     if (!record || record.id !== attemptId) throw Object.assign(new Error("Preparation attempt changed."), {
       code: "SESSION_PREPARATION_CHANGED", statusCode: 409
     });
-    if (!TERMINAL.has(record.state)) {
-      this.#finish(record, "cancelled", "SESSION_PREPARATION_CANCELLED", record.running ? "unknown" : "not_sent");
+    if (!TERMINAL.has(record.state) || record.state === "failed" && record.remoteDisposition === "unknown") {
+      this.#finish(record, "cancelled", "SESSION_PREPARATION_CANCELLED",
+        record.running || record.remoteDisposition === "unknown" ? "unknown" : "not_sent");
       this.queue = this.queue.filter(value => value !== record);
       if (record.running) this.invalidate(reference);
     }

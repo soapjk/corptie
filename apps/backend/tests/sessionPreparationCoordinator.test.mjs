@@ -149,6 +149,19 @@ test("RPC timeout remains unknown while explicit Provider invalidation permits a
   await tick(); f.gates.get("one").resolve({}); await tick();
 });
 
+test("stopping confirmation after an RPC timeout cancels waiting without another native resume", async () => {
+  const f = fixture();
+  const first = await f.preparations.start("one");
+  await tick();
+  f.gates.get("one").reject(Object.assign(new Error("timeout"), { code: "PROVIDER_RPC_TIMEOUT" }));
+  await tick();
+  const cancelled = await f.preparations.cancel("one", first.id);
+  assert.equal(cancelled.state, "cancelled");
+  assert.equal(cancelled.remoteDisposition, "unknown");
+  assert.equal((await f.preparations.current("one")).state, "cancelled");
+  assert.equal(f.calls(), 1);
+});
+
 test("route change during a running preparation never makes its replacement ready", async () => {
   const f = fixture();
   await f.preparations.start("one"); await tick();

@@ -25,6 +25,7 @@ export class CodexStdioTransport {
     this.pending = new Map();
     this.resumeTombstones = new Map();
     this.onLateResumeResponse = options.onLateResumeResponse ?? (() => {});
+    this.onResumeMetrics = options.onResumeMetrics ?? (metrics => console.info(`[codex-resume-performance] ${JSON.stringify(metrics)}`));
     this.initialized = false;
     this.initializePromise = null;
     this.processGeneration = 0;
@@ -115,6 +116,8 @@ export class CodexStdioTransport {
       if (this.activeProcessGeneration !== generation || this.process !== child) {
         throw new Error("Codex app-server initialization was superseded by a newer process generation.");
       }
+      // Complete the documented protocol handshake before exposing readiness.
+      child.stdin.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);
       this.initialized = true;
     } catch (error) {
       if (this.activeProcessGeneration === generation && this.process === child) {
@@ -183,7 +186,7 @@ export class CodexStdioTransport {
             if (value.expiresAt <= now) this.resumeTombstones.delete(key);
           }
           if (this.resumeTombstones.size < 128) this.resumeTombstones.set(id,
-            { generation, expiresAt: now + 120000 });
+            { generation, startedAt, threadId: params?.threadId, expiresAt: now + 120000 });
         }
         // A local deadline is not a remote rejection. Never classify a sent
         // Turn or resume as safe to replay solely because its response is late.
@@ -197,7 +200,7 @@ export class CodexStdioTransport {
       }, timeoutMs);
 
       this.pending.set(id, {
-        generation,
+        generation, method, startedAt, threadId: method === "thread/resume" ? params?.threadId : undefined,
         resolve: (value) => {
           clearTimeout(timer);
           resolve(value);
@@ -228,6 +231,7 @@ export class CodexStdioTransport {
     }
 
     let message;
+    const parseStartedAt = performance.now();
     try {
       message = JSON.parse(line);
     } catch (error) {
@@ -249,6 +253,15 @@ export class CodexStdioTransport {
 
     if ("id" in message) {
       const pending = this.pending.get(message.id);
+      const resume = pending?.method === "thread/resume" ? pending : this.resumeTombstones.get(message.id);
+      if (resume) {
+        // Measure the received line, never reserialize or log native history.
+        try { this.onResumeMetrics({ threadId: resume.threadId, requestId: message.id,
+          responseBytes: Buffer.byteLength(line), parseMs: +(performance.now() - parseStartedAt).toFixed(3),
+          waitMs: +(parseStartedAt - resume.startedAt).toFixed(3),
+          totalMs: +(performance.now() - resume.startedAt).toFixed(3), late: !pending,
+          outcome: "error" in message ? "failed" : "ready" }); } catch { /* Diagnostics cannot break RPC. */ }
+      }
       if (!pending) {
         const tombstone = this.resumeTombstones.get(message.id);
         this.resumeTombstones.delete(message.id);

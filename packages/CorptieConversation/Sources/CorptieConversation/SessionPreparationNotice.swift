@@ -30,7 +30,7 @@ public struct SessionPreparationNotice: View {
             .fixedSize(horizontal: false, vertical: true)
             .textSelection(.enabled)
             Spacer(minLength: 4)
-            if let preparation, preparation.isActive, issue == nil {
+            if let preparation, preparation.isAwaitingConfirmation, issue == nil {
                 Button("停止等待") { cancelAttemptID = preparation.id; revision += 1 }
                     .accessibilityHint("只停止核验等待，不声称远端操作已取消")
             } else if preparation?.isReady != true {
@@ -54,16 +54,21 @@ public struct SessionPreparationNotice: View {
             }
             guard !Task.isCancelled else { return }
             preparation = initial
-            let deadline = ContinuousClock.now.advanced(by: .seconds(120))
-            while preparation?.isActive == true && ContinuousClock.now < deadline {
-                try await Task.sleep(for: .seconds(2))
-                let next = try await client.current(sessionID: sessionID)
+            while preparation?.isAwaitingConfirmation == true {
+                let awaitingRemoteResult = preparation?.isActive != true
+                try await Task.sleep(for: .seconds(awaitingRemoteResult ? 10 : 2))
+                // For an unknown sent operation, start only schedules the
+                // server's read-only reconciliation of the same attempt.
+                let next = if awaitingRemoteResult {
+                    try await client.start(sessionID: sessionID)
+                } else {
+                    try await client.current(sessionID: sessionID)
+                }
                 guard !Task.isCancelled else { return }
                 if preparation != next { preparation = next }
             }
             guard !Task.isCancelled else { return }
             if preparation?.isReady == true { await didPrepare() }
-            else if preparation?.isActive == true { issue = "核验仍在后台进行，可稍后重试；草稿已保留" }
         } catch is CancellationError {
             return
         } catch {

@@ -123,7 +123,7 @@ test("resume finalization binds fresh-thread context without attempting a native
   }), session);
   await commands.resumeCodexProviderSession(reference, { purpose: "session-recovery-validation" });
   await commands.resumeCodexProviderSession(reference, { purpose: "session-unarchive" });
-  assert.deepEqual(calls.map(([kind]) => kind), ["bind", "ensure", "unarchive", "resume"]);
+  assert.deepEqual(calls.map(([kind]) => kind), ["bind", "ensure", "unarchive", "ensure"]);
 });
 
 test("binding probe rejects stale identity before touching the Provider", async () => {
