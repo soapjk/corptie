@@ -44,22 +44,71 @@ public struct PlatformNavigationGlassContainer<Content: View>: View {
     }
 }
 
-/// One native glass shape exists for the selected tab, shared by all layouts.
-/// Its stable effect identity allows the system to move/morph the capsule.
+/// Owns presentation-only selection state. Routing remains with the host.
+/// Completions from interrupted animations cannot settle a newer selection.
+public struct PlatformAnimatedTabSelection<Content: View>: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @State private var displayedID: String
+    @State private var moving = false
+    @State private var motionID = UUID()
+    private let selectedID: String
+    private let content: (String, Bool) -> Content
+
+    public init(selectedID: String, @ViewBuilder content: @escaping (String, Bool) -> Content) {
+        self.selectedID = selectedID; self.content = content
+        _displayedID = State(initialValue: selectedID)
+    }
+
+    public var body: some View {
+        content(displayedID, moving)
+            .onAppear { settleImmediately() }
+            .onChange(of: selectedID) { _, next in move(to: next) }
+            .onChange(of: reduceMotion) { _, _ in settleImmediately() }
+            .onChange(of: reduceTransparency) { _, _ in settleImmediately() }
+            .onDisappear { settleImmediately() }
+    }
+
+    private func settleImmediately() {
+        motionID = UUID()
+        var transaction = Transaction(animation: nil); transaction.disablesAnimations = true
+        withTransaction(transaction) { moving = false; displayedID = selectedID }
+    }
+
+    private func move(to next: String) {
+        guard next != displayedID else { return }
+        guard !reduceMotion else { settleImmediately(); return }
+        let id = UUID(); motionID = id
+        withTransaction(Transaction(animation: nil)) { moving = !reduceTransparency }
+        withAnimation(.spring(duration: 0.34, bounce: 0.16), completionCriteria: .removed) {
+            displayedID = next
+        } completion: {
+            guard motionID == id else { return }
+            withAnimation(.easeOut(duration: 0.12)) { moving = false }
+        }
+    }
+}
+
+/// Only the travelling selection uses native glass; rest is a flat soft tint.
+/// Explicit frame matching drives travel between buttons; native glass owns
+/// the material, not the insertion/removal of disconnected glass surfaces.
 public struct PlatformTabSelectionIndicator: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     private let namespace: Namespace.ID
+    private let moving: Bool
 
-    public init(namespace: Namespace.ID) { self.namespace = namespace }
+    public init(namespace: Namespace.ID, moving: Bool = false) {
+        self.namespace = namespace; self.moving = moving
+    }
 
     public var body: some View {
         Group {
             if #available(iOS 26.0, macOS 26.0, *), !reduceTransparency {
-                Color.clear
-                    .glassEffect(.regular.interactive(), in: .capsule)
+                Capsule().fill(Color.primary.opacity(moving ? 0 : 0.08))
+                    .glassEffect(moving ? .regular.interactive() : .identity, in: .capsule)
                     .glassEffectID("navigation-selection", in: namespace)
-                    .glassEffectTransition(reduceMotion ? .identity : .matchedGeometry)
+                    .glassEffectTransition(.identity)
             } else if reduceTransparency {
                 Capsule().fill(.background)
                     .overlay { Capsule().strokeBorder(Color.primary.opacity(0.22), lineWidth: 1) }
@@ -67,6 +116,10 @@ public struct PlatformTabSelectionIndicator: View {
                 Capsule().fill(Color.accentColor.opacity(0.14))
             }
         }
+        // Match the whole rendered surface, not just its clear input view.
+        .matchedGeometryEffect(id: "navigation-selection-frame", in: namespace,
+                               properties: reduceMotion ? [] : .frame)
+        .transition(.identity)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
@@ -76,7 +129,6 @@ public struct PlatformTabSelectionIndicator: View {
 /// navigation state, window insets and edge-drag resizing.
 public struct PlatformNavigationRail: View {
     @Namespace private var selectionGlass
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     public let items: [PlatformNavigationItem]
     public let selectedID: String
     public let expanded: Bool
@@ -104,15 +156,16 @@ public struct PlatformNavigationRail: View {
     }
 
     public var body: some View {
-        PlatformNavigationGlassContainer { railContents.padding(5) }
-            .animation(reduceMotion ? nil : .smooth(duration: 0.22), value: selectedID)
-            .platformGlassSurface(in: Capsule(), variant: .clear)
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("navigation-tab-capsule")
-            .frame(maxHeight: .infinity, alignment: verticalAlignment)
+        PlatformAnimatedTabSelection(selectedID: selectedID) { displayedID, moving in
+            PlatformNavigationGlassContainer { railContents(selectedID: displayedID, moving: moving).padding(5) }
+                .platformGlassSurface(in: Capsule(), variant: .clear)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("navigation-tab-capsule")
+        }
+        .frame(maxHeight: .infinity, alignment: verticalAlignment)
     }
 
-    private var railContents: some View {
+    private func railContents(selectedID: String, moving: Bool) -> some View {
         VStack(spacing: 2) {
             ForEach(items) { item in
                 let selected = item.id == selectedID
@@ -133,7 +186,7 @@ public struct PlatformNavigationRail: View {
                     .foregroundStyle(selected ? Color.accentColor : .secondary)
                     .background {
                         if selected {
-                            PlatformTabSelectionIndicator(namespace: selectionGlass)
+                            PlatformTabSelectionIndicator(namespace: selectionGlass, moving: moving)
                         }
                     }
                     .contentShape(Rectangle())
