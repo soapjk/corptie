@@ -198,10 +198,18 @@ private struct ConversationDetailNodeView: View {
             }
         }
     }
-    private func disclosure(_ node: ClientDetailNode) -> some View {
+    @ViewBuilder private func disclosure(_ node: ClientDetailNode) -> some View {
         let config = state.card.v2Presentation?.disclosures[node.id]
         let initiallyExpanded = config?.initiallyExpanded ?? false
-        return VStack(alignment: .leading, spacing: 5) {
+        if state.card.id == "task-information", config?.previewBinding != nil,
+           let child = node.children.first.flatMap({ state.nodes[$0] }),
+           child.kind == "detail.markdown", let field = child.binding,
+           let body = state.card.data[field]?.text {
+            ConversationStampedParagraph(title: node.props.label?.fallback ?? "", text: body,
+                expansion: Binding(get: { state.isNodeExpanded(node.id, initiallyExpanded: initiallyExpanded) },
+                    set: { state.setNodeExpanded(node.id, $0) }))
+        } else {
+          VStack(alignment: .leading, spacing: 5) {
             DisclosureGroup(isExpanded: Binding(get: { state.isNodeExpanded(node.id, initiallyExpanded: initiallyExpanded) },
                 set: { state.setNodeExpanded(node.id, $0) })) {
                 if state.isNodeExpanded(node.id, initiallyExpanded: initiallyExpanded) {
@@ -221,6 +229,7 @@ private struct ConversationDetailNodeView: View {
                 Text(preview).font(.caption).foregroundStyle(.secondary).lineLimit(5)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+        }
         }
     }
     // Type erasure is confined to the recursive extension boundary; validated depth <= 6.

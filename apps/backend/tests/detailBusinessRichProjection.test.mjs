@@ -7,10 +7,28 @@ import { createDetailBusinessReadPorts } from "../src/application/detailBusiness
 import { DetailBusinessReadCache } from "../src/application/detailBusinessReadCache.mjs";
 import { detailBusinessDate } from "../src/application/detailBusinessDate.mjs";
 import { AGENT_PROVIDER_CAPABILITIES } from "../src/agent-provider/contracts.mjs";
+import { presentationProfile } from "./helpers/detailPresentationFixture.mjs";
 const profile = { catalog: DETAIL_COMPONENTS_CATALOG, clientCapabilities: [...DETAIL_COMPONENT_CAPABILITIES] };
 const scope = { session: { id: "legacy", sessionKind: "worker" }, logicalSessionId: "logical:sample",
   task: { id: "task", title: "Task", description: "Definition", acceptance_criteria: "Acceptance", verification_criteria: "Verification" } };
 const options = { profile, generation: "generation" };
+test("memory hit presentation keeps full body and category without redundant snapshot captions", () => {
+  const content = "完整命中正文\n".repeat(200);
+  const reads = { memoryHits: { state: "ready", data: { items: [
+    { resource: { resourceType: "memory", id: "hit" }, kind: "preference", content, snapshotAtRecall: true },
+    { resource: { resourceType: "memory", id: "gone" }, kind: "fact", unavailable: true }
+  ] } } };
+  const state = projectDetailBusinessRich(scope, reads, { ...options, profile: presentationProfile });
+  validateDetailV2(state, presentationProfile);
+  const items = state.instances["business-memoryHits"].collections.resources.items;
+  assert.equal(items.hit.title, "偏好");
+  assert.equal(items.hit.body, content);
+  assert.equal(items.hit.metadata, "");
+  assert.equal(items.gone.body, "内容已不可用，仅保留命中记录");
+  assert.equal(items.gone.metadata, "");
+  assert.equal(items.hit.actionId, undefined);
+  assert.doesNotMatch(JSON.stringify(state), /命中时的内容快照|已实际命中/);
+});
 test("registered native management uses exact normalized Provider and Worktree targets without inventing commands", () => {
   const reads = {
     provider: { state: "ready", data: { currentProviderId: "provider-a", providers: [{ resource: { resourceType: "provider", id: "provider-a" }, name: "Provider", capabilities: [], available: true }] } },

@@ -157,7 +157,21 @@ struct ConversationDetailComponentView: View {
             }
         }
     }
-    private func resourceDisclosure(name: String, id: String, item: [String: ClientInspectorValue]) -> some View {
+    @ViewBuilder private func resourceDisclosure(name: String, id: String, item: [String: ClientInspectorValue]) -> some View {
+        if ["business-memories", "business-memoryHits"].contains(state.card.id),
+           let field = component.itemBindings?["body"], let body = item[field]?.text {
+            VStack(alignment: .leading, spacing: 5) {
+                ConversationStampedParagraph(title: item["title"]?.text ?? "记忆", text: body,
+                    expansion: Binding(get: { state.isResourceExpanded(collection: name, id: id) },
+                        set: { state.setResourceExpanded(collection: name, id: id, $0) }))
+                if state.card.id != "business-memoryHits" {
+                    if let field = component.itemBindings?["metadata"], let metadata = item[field]?.text, !metadata.isEmpty {
+                        Text(metadata).font(.caption).foregroundStyle(.secondary)
+                    }
+                    actionButton(item["actionId"]?.text, navigationSource: item)
+                }
+            }
+        } else {
         VStack(alignment: .leading, spacing: 5) {
             DisclosureGroup(isExpanded: Binding(get: { state.isResourceExpanded(collection: name, id: id) },
                 set: { state.setResourceExpanded(collection: name, id: id, $0) })) {
@@ -176,6 +190,7 @@ struct ConversationDetailComponentView: View {
                let preview = item[field]?.text, !preview.isEmpty {
                 Text(preview).font(.caption).foregroundStyle(.secondary).lineLimit(5)
             }
+        }
         }
     }
 }
