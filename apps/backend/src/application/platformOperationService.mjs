@@ -43,17 +43,29 @@ export class PlatformOperationService {
       listSessions: options.listSessions ?? ((input) => options.sessionService.listSessions(input)),
       createSession: options.createSession, onEntityChanged: options.onEntityChanged ?? null,
       createTask: options.createTask,
+      initializeWork: options.initializeWork,
+      verifyCreatedWork: options.verifyCreatedWork,
       idFactory: options.idFactory ?? randomUUID, clock: options.clock ?? (() => new Date().toISOString())
     });
     if (!this.store || !this.workService || !this.sessionService) throw new TypeError("PlatformOperationService requires store, workService, and sessionService.");
     if (typeof this.createSession !== "function") throw new TypeError("PlatformOperationService requires createSession().");
     if (typeof this.createTask !== "function") throw new TypeError("PlatformOperationService requires createTask().");
+    this.workCreationTail = Promise.resolve();
   }
 
   emitEntityChanged(type, entity, action) { this.onEntityChanged?.(type, { action, entity }); return entity; }
   capabilities() { return { operations: Object.entries(PLATFORM_OPERATIONS).map(([tool, actions]) => ({ tool, actions: [...actions] })), domains: PLATFORM_DOMAIN_COVERAGE }; }
 
   async execute(input = {}) {
+    if (input.tool === "corptie_platform_works_manage" && input.arguments?.action === "create") {
+      const operation = this.workCreationTail.then(() => this.executeOperation(input));
+      this.workCreationTail = operation.catch(() => {});
+      return operation;
+    }
+    return this.executeOperation(input);
+  }
+
+  async executeOperation(input = {}) {
     const binding = resolvePlatformAdminSession(this.store, { actorId: input.actorId, sessionId: input.sessionId });
     const args = plainObject(input.arguments ?? {}, "arguments");
     if (input.tool === "corptie_platform_capabilities") assertKnown(args, []);
@@ -68,10 +80,23 @@ export class PlatformOperationService {
       const prior = this.store.selectOne("SELECT * FROM platform_admin_operations WHERE actor_session_id=? AND idempotency_key=?", [binding.actorSessionId, idempotencyKey]);
       if (prior) {
         if (prior.request_digest !== requestDigest) throw coded("IDEMPOTENCY_CONFLICT", "idempotency_key is already bound to different platform input.");
-        return { ...JSON.parse(prior.result_json), idempotentReplay: true };
+        const receipt = JSON.parse(prior.result_json);
+        if (input.tool === "corptie_platform_works_manage" && action === "create") {
+          if (typeof this.verifyCreatedWork !== "function") throw coded("WORK_INITIALIZATION_UNAVAILABLE", "Work creation receipt verification is unavailable.");
+          await this.verifyCreatedWork(receipt.result);
+        }
+        return { ...receipt, idempotentReplay: true };
       }
     }
     let result;
+    if (input.tool === "corptie_platform_works_manage" && action === "create") {
+      return this.#works(args, value => {
+        // Initialization can await filesystem/Provider work. Recheck the exact
+        // Session grant before committing its receipt, including revocation.
+        resolvePlatformAdminSession(this.store, { actorId: input.actorId, sessionId: input.sessionId });
+        return this.recordOperation(input, binding, args, requestDigest, idempotencyKey, value);
+      });
+    }
     switch (input.tool) {
       case "corptie_platform_capabilities": result = this.capabilities(); break;
       case "corptie_platform_agents_manage": result = await this.#agents(args); break;
@@ -82,6 +107,11 @@ export class PlatformOperationService {
       case "corptie_platform_collaboration_manage": result = await this.#collaboration(args, binding); break;
       default: throw coded("HOST_TOOL_UNSUPPORTED", `Unsupported Corptie platform tool: ${input.tool}`);
     }
+    return this.recordOperation(input, binding, args, requestDigest, idempotencyKey, result);
+  }
+
+  recordOperation(input, binding, args, requestDigest, idempotencyKey, result) {
+    const action = input.tool === "corptie_platform_capabilities" ? "list" : args.action;
     const target = receiptTarget(input.tool, args, result);
     const receipt = { ok: true, operation: `${input.tool}.${action}`, actorSessionId: binding.actorSessionId, target, auditId: `platform_operation:${this.idFactory()}`, idempotencyKey, idempotentReplay: false, result };
     this.store.db.run(
@@ -109,12 +139,19 @@ export class PlatformOperationService {
     }
   }
 
-  #works(args) {
-    assertKnown(args, ["action", "work_id", "name", "patch", "idempotency_key"]);
+  #works(args, commit) {
+    assertKnown(args, ["action", "work_id", "name", "patch", "directory", "git", "agent_id", "provider_id", "idempotency_key"]);
     switch (required(args.action, "action")) {
       case "list": return this.workService.listWorks();
       case "get": return this.workService.getWork(required(args.work_id, "work_id"));
-      case "create": return this.workService.createWork({ ...(args.patch ?? {}), name: validateEntityName(args.name, "name", "Work") });
+      case "create": {
+        if (typeof this.initializeWork !== "function") throw coded("WORK_INITIALIZATION_UNAVAILABLE", "Complete Work initialization is unavailable; metadata-only creation is forbidden.");
+        if (!optional(args.idempotency_key)) throw coded("IDEMPOTENCY_KEY_REQUIRED", "idempotency_key is required for Work creation.");
+        return this.initializeWork({
+          work: { ...plainObject(args.patch ?? {}, "patch"), name: validateEntityName(args.name, "name", "Work") },
+          directory: args.directory, git: args.git, agentId: args.agent_id, providerId: args.provider_id
+        }, { commit });
+      }
       case "update": {
         if (args.patch?.name !== undefined) validateEntityName(args.patch.name, "name", "Work");
         return this.workService.updateWork(required(args.work_id, "work_id"), args.patch ?? {});

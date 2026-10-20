@@ -30,7 +30,8 @@ const workPatch = {
     status: { type: "string", enum: ["active", "archived"] },
     profile: { type: "string", enum: ["general", "software", "office", "data", "design"] },
     tags: stringArray,
-    contributorAgentIds: stringArray
+    contributorAgentIds: stringArray,
+    primaryAgentId: nullableString
   },
   additionalProperties: false
 };
@@ -58,14 +59,31 @@ export const platformDynamicTools = Object.freeze([
   ),
   tool(
     "corptie_platform_works_manage",
-    "List, inspect, create, edit, or delete Works using Corptie's product rules.",
+    "Manage Works. Create requires contributorAgentIds, directory strategy and idempotency_key; atomically initializes a real local Workspace and Work Chat or compensates on failure. profile defaults to general. Work Chat Agent defaults to primaryAgentId or first contributor; Provider defaults to the registry default (create/delete capability required). Git defaults to detect; never assumes software requires Git. Success includes directory, workspace and workChat.logicalSessionId.",
     {
       action: { type: "string", enum: ["list", "get", "create", "update", "delete"] },
       work_id: id("Work id for get, update, or delete."),
       name: { type: "string", minLength: 1 },
-      patch: workPatch
+      patch: workPatch,
+      directory: {
+        type: "object", additionalProperties: false,
+        properties: { mode: { type: "string", enum: ["create", "bind"] }, path: { type: "string", minLength: 1, description: "Absolute local directory. create: new leaf under an existing parent; bind: existing directory. Never a Task Git worktree." } },
+        required: ["mode", "path"]
+      },
+      git: {
+        type: "object", additionalProperties: false,
+        properties: { mode: { type: "string", enum: ["detect", "none", "init", "clone"] },
+          url: { type: "string", minLength: 1, description: "clone only: Git URL or local repository path." },
+          branch: { type: "string", minLength: 1, description: "clone only." }, commit: { type: "string", minLength: 1, description: "clone only: optional detached commit." } },
+        required: ["mode"]
+      },
+      agent_id: id("Work Chat Agent, must be a contributor. Defaults to primary or first contributor."),
+      provider_id: id("Work Chat Provider; defaults to registry default."),
+      idempotency_key: { type: "string", minLength: 1, maxLength: 200 }
     },
-    ["action"]
+    ["action"],
+    { allOf: [{ if: { properties: { action: { const: "create" } }, required: ["action"] },
+      then: { required: ["name", "patch", "directory", "idempotency_key"], properties: { patch: { required: ["contributorAgentIds"], properties: { contributorAgentIds: { minItems: 1 } } } } } }] }
   ),
   tool(
     "corptie_platform_tasks_manage",

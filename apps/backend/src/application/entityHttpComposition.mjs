@@ -4,7 +4,7 @@ import { handleEntityHttpRequest } from "./entityHttpApi.mjs";
 export function createEntityHttpRoutes({
   workService, hubService, collaborationRouter, memoryExtractor, memoryRecallService,
   memoryLifecycleService, assistantService, workSessionStartApplicationService,
-  agentProviderRegistry, launchAgentSession, workDiscussionService, ensureWorkChatSession,
+  agentProviderRegistry, launchAgentSession, workDiscussionService, ensureWorkChatSession, workInitializationService,
   requestedProviderId, createSessionThroughApplication, backgroundAgentService,
   skillRegistryService, inspectTaskWorktree, reclaimTaskWorktree, taskDeletionService,
   restartTaskForEntityRoutes, setTaskArchivedForEntityRoutes, taskExecutionOrchestrator,
@@ -16,6 +16,7 @@ export function createEntityHttpRoutes({
     response,
     url,
     workService,
+    createWork: (input, options) => workInitializationService.createForClient(input, options),
     hubService,
     router: collaborationRouter,
     memoryExtractor,

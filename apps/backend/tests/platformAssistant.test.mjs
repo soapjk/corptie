@@ -164,14 +164,16 @@ test("platform operations are denied to user Agents and use product services for
     assert.equal(created.result.name, "研究员");
     assert.equal(created.result.agentKind, "user");
 
-    const work = await service.execute({
+    await assert.rejects(() => service.execute({
       actorId: "assistant", sessionId: "session:assistant",
       tool: "corptie_platform_works_manage",
       arguments: {
         action: "create", name: "平台事件目标",
         patch: { contributorAgentIds: [created.result.agentId] }
       }
-    });
+    }), { code: "WORK_INITIALIZATION_UNAVAILABLE" });
+    assert.equal(store.listWorks().length, 0, "metadata-only fallback must be forbidden");
+    const work = { result: workService.createWork({ name: "平台事件目标", contributorAgentIds: [created.result.agentId] }) };
     await assert.rejects(
       service.execute({
         actorId: "assistant", sessionId: "session:assistant",

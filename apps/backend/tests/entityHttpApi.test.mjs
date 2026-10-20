@@ -18,6 +18,8 @@ import { AssistantService } from "../src/application/assistantService.mjs";
 import { handleEntityHttpRequest } from "../src/application/entityHttpApi.mjs";
 import { SkillRegistryService } from "../src/application/skillRegistryService.mjs";
 import { TaskCompletionService } from "../src/application/taskCompletionService.mjs";
+import { WorkInitializationService } from "../src/application/workInitializationService.mjs";
+import { createGitWorkspaceSnapshot } from "../src/utils/gitWorktreeInventory.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -69,6 +71,7 @@ function workSessionStartRequest(task, assigneeAgentId, providerId, suffix, titl
 async function createServices() {
   const directory = await mkdtemp(join(tmpdir(), "corptie-http-"));
   const store = new CorptieStore({
+    dataRoot: directory,
     dbPath: join(directory, "corptie.sqlite"),
     configPath: join(directory, "config.json")
   });
@@ -175,11 +178,34 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
         });
         return { status: "ready", session: bound, receipt: { status: "ready" } };
       });
+  const ensureWorkChatSession = services.ensureWorkChatSession ?? (async work => {
+    const existing = services.store.getWorkChatSession(work.id);
+    if (existing) return existing;
+    const agent = services.store.getAgent(work.contributorAgentIds[0]);
+    const sessionId = `work-chat:${work.id}`;
+    services.store.createSession({ id: sessionId, title: `${work.name}_Chat`, agentId: agent.agentId,
+      sessionKind: "workChat", workId: work.id });
+    return services.store.bindSessionToWork(sessionId, work.id);
+  });
+  const initializer = new WorkInitializationService({
+    store: services.store, workService: services.workService, resolveProviderId: () => "test-provider",
+    discussionService: { open: async ({ workId }) => {
+      const session = await ensureWorkChatSession(services.workService.getWork(workId));
+      if (!services.store.getLogicalSessionByLegacySessionId(session.id)) {
+        services.store.createLogicalSessionRoute({ logicalSessionId: `logical:${session.id}`, legacySessionId: session.id,
+          providerThreadId: session.id, providerSessionId: session.id, providerId: "test-provider",
+          boundCwd: services.store.resolveWorkspaceRoot(services.workService.getWork(workId).workspaceId), sessionName: session.title });
+      }
+      return { session };
+    } },
+    deleteSession: async id => { services.store.deleteLogicalSessionByLegacySessionId(id); services.store.deleteSession(id); }
+  });
   const handled = handleEntityHttpRequest({
     request,
     response,
     url,
     workService: services.workService,
+    createWork: Object.hasOwn(services, "createWork") ? services.createWork : (input, options) => initializer.createForClient(input, options),
     hubService: services.hubService,
     router: services.router,
     memoryExtractor: services.memoryExtractor,
@@ -196,26 +222,7 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     getSessionStartupBinding: services.getSessionStartupBinding,
     launchAgentSession: services.launchAgentSession,
     workDiscussionService: services.workDiscussionService,
-    ensureWorkChatSession: services.ensureWorkChatSession ?? (async (work) => {
-      const existing = services.store.getWorkChatSession(work.id);
-      if (existing) return existing;
-      const agent = services.store.getAgent(work.contributorAgentIds[0]);
-      const sessionId = `work-chat:${work.id}`;
-      services.store.upsertSession({
-        id: sessionId,
-        title: `${work.name}_Chat`,
-        agent: agent.name,
-        agentId: agent.agentId,
-        sessionKind: "workChat",
-        workId: work.id,
-        status: "complete",
-        progress: 1,
-        summary: "",
-        updatedAt: new Date().toISOString(),
-        accent: "cyan"
-      });
-      return services.store.bindSessionToWork(sessionId, work.id);
-    }),
+    ensureWorkChatSession,
     inspectTaskWorktree: services.inspectTaskWorktree,
     reclaimTaskWorktree: services.reclaimTaskWorktree,
     inspectTaskDeletion: services.inspectTaskDeletion,
@@ -992,12 +999,37 @@ test("POST /sessions delegates Provider-only creation when no Task binding is re
   }
 });
 
+test("POST /works rejects metadata-only fallback when complete creation is unavailable", async () => {
+  const services = await createServices();
+  try {
+    const response = await callApi({ method: "POST", pathname: "/works", body: { name: "Work" }, ...services, createWork: null });
+    assert.equal(response.statusCode, 503);
+    assert.equal(response.body.code, "CAPABILITY_UNAVAILABLE");
+    assert.equal(services.store.listWorks().length, 0);
+    assert.equal(services.store.listWorkspaces().length, 0);
+  } finally { await services.store.close(); await rm(services.directory, { recursive: true, force: true }); }
+});
+
+test("POST /works rejects a Workspace without an actual directory", async () => {
+  const services = await createServices();
+  try {
+    const workspace = services.store.createWorkspace();
+    const response = await callApi({ method: "POST", pathname: "/works", body: { name: "Work", workspaceId: workspace.workspaceId }, ...services });
+    assert.equal(response.statusCode, 409);
+    assert.equal(response.body.code, "WORK_DIRECTORY_REQUIRED");
+    assert.equal(services.store.listWorks().length, 0);
+    assert.equal(services.store.listWorkspaces().length, 1);
+  } finally { await services.store.close(); await rm(services.directory, { recursive: true, force: true }); }
+});
+
 test("POST /works → 创建，GET /works → 列表", async () => {
   const services = await createServices();
   try {
     const created = await callApi({ method: "POST", pathname: "/works", body: { name: "重构Corptie" }, ...services });
     assert.equal(created.statusCode, 201);
     assert.ok(created.body.id);
+    assert.ok((await stat(created.body.directory)).isDirectory());
+    assert.ok(created.body.workChat.logicalSessionId);
     const chat = services.store.getWorkChatSession(created.body.id);
     assert.ok(chat);
     assert.equal(chat.title, "重构Corptie · 讨论");
@@ -1428,7 +1460,12 @@ test("Skill deletion HTTP failure returns audit operation and never reports succ
 test("Work uniquely owns one Workspace and normalized contributors", async () => {
   const services = await createServices();
   try {
-    const repositoryId = registerRepository(services.store);
+    const repositoryRoot = join(services.directory, "repository");
+    await mkdir(repositoryRoot);
+    await execFileAsync("git", ["-C", repositoryRoot, "init"]);
+    const snapshot = await createGitWorkspaceSnapshot(repositoryRoot);
+    services.store.upsertGitWorkspaceSnapshot(snapshot);
+    const repositoryId = snapshot.repository.id;
     const agent = await callApi({ method: "POST", pathname: "/agents", body: { name: "后端开发" }, ...services });
     const agentId = agent.body.agent.agentId;
 
@@ -1457,7 +1494,7 @@ test("Work uniquely owns one Workspace and normalized contributors", async () =>
       },
       ...services
     });
-    assert.equal(duplicate.statusCode, 400);
+    assert.equal(duplicate.statusCode, 409);
     assert.equal(duplicate.body.code, "WORKSPACE_ALREADY_BOUND");
 
     // 列出 Git 仓库（测试环境无仓库，返回空数组）
