@@ -50,17 +50,26 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
     @State private var inspectingWorktree = false
     @State private var acknowledgingUnknown = false
     @State private var recallsExpanded = false
-    @State private var turnExpanded = true
     @State private var resourceManagementPresented = false
     private var locked: Bool { store.busy || store.pending != nil }
     private func section(_ key: String) -> ClientInspectorValue { store.sections[key] ?? .null }
+    private var resourceItems: [ConversationDetailResourceMenu.Item] {
+        var items: [ConversationDetailResourceMenu.Item] = [.init(.addReference, available: !locked && store.connected) {
+            editor = referenceEditor(type: "webURL", title: "网页链接")
+        }]
+        if store.snapshot?.workId != nil || store.snapshot?.taskId != nil {
+            items.append(.init(.manageMemory, available: store.connected) { resourceManagementPresented = true })
+        }
+        items.append(.init(.resources, available: store.connected) { resourceManagementPresented = true })
+        return items
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let standaloneCard {
                 if store.connected, store.snapshot?.sessionId == sessionID {
                     if standaloneCard == "provider" { environment }
-                    else if standaloneCard == "turnMetrics" { turnAnalysis.modifier(ConversationDetailModuleSurface()) }
+                    else if standaloneCard == "turnMetrics" { turnAnalysis }
                     else if standaloneCard == "resources" {
                         if store.snapshot?.workId != nil { artifacts; memories }
                         references
@@ -79,9 +88,7 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
             } else {
             primary
             if richPresentation {
-                Button { resourceManagementPresented = true } label: {
-                    Label("资源管理与审计", systemImage: "slider.horizontal.3").font(.caption)
-                }.buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                ConversationDetailResourceMenu(items: resourceItems)
             } else { nativeManagementContent }
             }
             }
@@ -119,7 +126,7 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
         }
         .onChange(of: section("artifacts")) { _, _ in moreArtifacts = []; nextArtifactOffset = nil }
         .onChange(of: section("memories")) { _, _ in moreMemories = []; nextMemoryCursor = nil }
-        .onChange(of: sessionID) { _, _ in recallsExpanded = false; turnExpanded = standaloneCard == "turnMetrics" }
+        .onChange(of: sessionID) { _, _ in recallsExpanded = false }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.data]) { result in
             switch result {
             case .success(let url): Task { await importDocument(url) }
@@ -144,7 +151,7 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
             if let scheduleError = store.snapshot?.errors["schedules"] { scheduleFailure(scheduleError) }
             else if !section("schedules").items.isEmpty { schedules }
             if !section("recalls").items.isEmpty { recalls.modifier(ConversationDetailModuleSurface()) }
-            if section("turn")["identity"]["turnExecutionId"] != .null { turnAnalysis.modifier(ConversationDetailModuleSurface()) }
+            if section("turn")["identity"]["turnExecutionId"] != .null || store.snapshot?.errors["turn"] != nil { turnAnalysis }
             environment
         }
     }
@@ -169,7 +176,7 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
         let items = section("references").items
         return ConversationDetailModuleCard(title: "引用内容", systemImage: "link", headerActions: {
             Menu {
-                Button("从 iPad 导入文件…") { importAsArtifact = false; importing = true }
+                Button("导入本机文件…") { importAsArtifact = false; importing = true }
                 ForEach([("localFile", "Mac 本地文件"), ("webURL", "网页链接"), ("work", "Work"),
                          ("task", "Task"), ("agent", "Agent"), ("session", "其他会话")], id: \.0) { type, title in
                     Button(title) { editor = referenceEditor(type: type, title: title) }
@@ -477,103 +484,24 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
             if section("recalls").items.isEmpty { Text("尚无召回记录").font(.caption).foregroundStyle(.secondary) }
         })
     }
-    private var turnAnalysis: some View {
-        ConversationDetailDisclosure(isExpanded: $turnExpanded, header: {
-            Label("Turn 时间分析", systemImage: "point.3.connected.trianglepath.dotted")
-                .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-        }, content: {
-            let turn = section("turn")
-            if let id = turn["identity"]["turnExecutionId"].text {
-                let duration = turn["wall"]["wallClockMs"].number ?? turn["wall"]["observedWatermarkMs"].number ?? 0
-                LabeledContent("总耗时", value: String(format: "%.2f s", duration / 1000)).monospacedDigit()
-                LabeledContent("已归因", value: String(format: "%.2f s", (turn["wallPartition"]["attributedUnionMs"].number ?? 0) / 1000)).monospacedDigit()
-                LabeledContent("未归因", value: String(format: "%.2f s", (turn["wallPartition"]["unattributedMs"].number ?? 0) / 1000)).monospacedDigit()
-                if turn["inclusive"]["provider.opaque"] != .null && turn["inclusive"]["provider.model_sampling"] == .null {
-                    Text("仅有 Provider 边界观测；内部耗时未细分").font(.caption).foregroundStyle(.orange)
-                }
-                Text(turn["completeness"]["state"].text == "complete" ? "观测完整" : "观测不完整")
-                    .font(.caption).foregroundStyle(.secondary)
-                if let breakdown = ConversationTurnTimeBreakdown(inspectorValue: turn["timeBreakdown"]) {
-                    ConversationTurnTimeBreakdownView(breakdown)
-                } else {
-                    Text("旧版摘要不含分类占比").font(.caption).foregroundStyle(.secondary)
-                }
-                Button("详细 Trace（按需加载）") { document = .init(title: "Turn Trace", resource: "trace", value: turn, parameters: ["id": .string(id)]) }
-            } else { Text("暂无已完成 Turn 的时间摘要").font(.caption).foregroundStyle(.secondary) }
-        })
+    @ViewBuilder private var turnAnalysis: some View {
+        let adapter = PadDetailTurnAdapter(store: store, workspace: workspace, connection: connection, sessionID: sessionID)
+        if let summary = adapter.snapshot {
+            let session = workspace.sessionsByID[sessionID]
+            let owner = connection.businessDisplayScope(sessionID: sessionID, taskID: session?.taskId, workID: session?.workId)
+            let handle = connection.detailBusinessRepository.entry(for: owner)
+            ConversationDetailTurnCard(state: handle.turn, executionID: summary.turnExecutionId,
+                expectedSessionIDs: adapter.expectedSessionIDs,
+                readSummary: { try await adapter.summary(summary.turnExecutionId) }, readTrace: adapter.trace, liveSnapshot: summary)
+        } else if store.snapshot?.errors["turn"] != nil {
+            ConversationDetailModuleCard(title: "Turn 分析", systemImage: "point.3.connected.trianglepath.dotted") {
+                Text("Turn 摘要暂不可用，请刷新详情重试").font(.caption).foregroundStyle(.secondary)
+            }
+        }
     }
     private var environment: some View {
-        let agentID = store.snapshot?.environment["agentId"].text
-        let agentName = workspace.directControlSnapshot?.agents.first { $0.id == agentID }?.name ?? agentID
-        let currentProviderID = store.snapshot?.environment["provider"].text
-        let providers = section("providers").items
-        let currentProviderName = providers.first { $0["id"].text == currentProviderID }?["name"].text
-            ?? currentProviderID ?? "未知"
-        return ConversationProviderConfigurationCard(provider: {
-            Menu {
-                ForEach(providers, id: \.inspectorID) { provider in
-                    let isCurrent = provider["id"].text == currentProviderID
-                    Button {
-                        confirmation = .init(title: "切换 Provider？", action: "provider.switch", fields: [
-                            "providerId": provider["id"],
-                            "expectedRoutingVersion": store.snapshot?.environment["routingVersion"] ?? .null,
-                            "confirmed": .bool(true)])
-                    } label: {
-                        if isCurrent {
-                            Label(provider["name"].text ?? currentProviderName, systemImage: "checkmark")
-                        } else {
-                            Text(provider["name"].text ?? provider["id"].text ?? "Provider")
-                        }
-                    }
-                    .disabled(isCurrent || !provider["available"].flag)
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Text(currentProviderName).lineLimit(1)
-                    Image(systemName: "chevron.up.chevron.down").font(.caption2).foregroundStyle(.secondary)
-                }
-                .font(.caption)
-                .padding(.horizontal, 8)
-                .frame(minHeight: 28)
-                .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 7))
-            }
-            .disabled(locked || providers.isEmpty)
-            .accessibilityLabel("切换 Provider")
-        }, model: {
-            Menu {
-                ForEach(workspace.composerConfiguration?.models ?? []) { model in
-                    Button(model.name) { Task {
-                        guard workspace.selection == sessionID, store.connected, store.snapshot?.sessionId == sessionID else { return }
-                        await workspace.configureComposer(connection, update: ["model": model.id])
-                    } }
-                }
-                Button("重新加载模型") { Task { await workspace.configureComposer(connection) } }
-            } label: {
-                selectorLabel(workspace.composerConfiguration?.models.first { $0.id == workspace.composerConfiguration?.currentModel }?.name
-                    ?? workspace.composerConfiguration?.currentModel ?? "未设置")
-            }
-            .disabled(workspace.selection != sessionID || locked || workspace.configuringComposer || workspace.composerConfiguration?.switchModel.available != true)
-            .accessibilityLabel("切换模型")
-        }, reasoning: {
-            let config = workspace.composerConfiguration
-            let model = config?.models.first { $0.id == config?.currentModel }
-            Menu {
-                ForEach(model?.reasoningLevels ?? [], id: \.self) { level in
-                    Button(ComposerModelLabel.reasoningTitle(level)) { Task {
-                        guard workspace.selection == sessionID, store.connected, store.snapshot?.sessionId == sessionID else { return }
-                        await workspace.configureComposer(connection, update: ["reasoningLevel": level])
-                    } }
-                }
-            } label: { selectorLabel(ComposerModelLabel.reasoningTitle(config?.currentReasoningLevel ?? model?.defaultReasoningLevel ?? "")) }
-                .disabled(workspace.selection != sessionID || locked || workspace.configuringComposer || config?.switchReasoning.available != true || model?.reasoningLevels.isEmpty != false)
-                .accessibilityLabel("切换处理强度")
-        }, status: {
-            if let agentName { LabeledContent("Agent", value: agentName) }
-        })
-    }
-    private func selectorLabel(_ value: String) -> some View {
-        HStack(spacing: 6) { Text(value.isEmpty ? "未设置" : value).lineLimit(1); Image(systemName: "chevron.up.chevron.down").font(.caption2) }
-            .foregroundStyle(Color.accentColor).frame(minHeight: 32).contentShape(Rectangle())
+        let adapter = PadDetailConfigurationAdapter(store: store, workspace: workspace, connection: connection, sessionID: sessionID)
+        return ConversationDetailProviderCard(configuration: adapter.configuration, scope: "\(connection.serverID):\(sessionID)", select: adapter.select, reload: adapter.reload)
     }
     private func perform(_ action: String, id: ClientInspectorValue) {
         Task { await store.command(action, fields: ["id": id], sessionID: sessionID, connection: connection) }

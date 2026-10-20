@@ -16,6 +16,21 @@ final class ProviderCatalogStore: ObservableObject {
     private let api: ProviderCatalogAPI
     private let publishError: (String?) -> Void
 
+    /// Historic storage names are kept for existing callers. Detail never
+    /// presents another Provider's catalog while a new catalog is loading.
+    func models(for provider: String?) -> [CodexModel] {
+        matchesLoadedProvider(provider) ? codexModels : []
+    }
+    func defaultReasoning(for provider: String?) -> String? {
+        matchesLoadedProvider(provider) ? codexDefaultReasoningLevel : nil
+    }
+    private func matchesLoadedProvider(_ provider: String?) -> Bool {
+        guard let provider, let loadedModelProvider else { return false }
+        if provider == loadedModelProvider { return true }
+        guard let canonical = agentProviders.canonicalProviderId(for: provider) else { return false }
+        return canonical == agentProviders.canonicalProviderId(for: loadedModelProvider)
+    }
+
     init(baseURL: URL, urlSession: URLSession = .shared, publishError: @escaping (String?) -> Void) {
         self.api = ProviderCatalogAPI(baseURL: baseURL, urlSession: urlSession)
         self.publishError = publishError

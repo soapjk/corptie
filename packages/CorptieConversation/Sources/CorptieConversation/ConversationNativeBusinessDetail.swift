@@ -1,23 +1,47 @@
 import SwiftUI
 import CorptieClientCore
 
-struct ConversationNativeBusinessDetail<PlatformCard: View>: View {
+struct ConversationNativeBusinessDetail: View {
     let store: ClientDetailBusinessStore
     let api: ClientDetailAPI?
     let actions: ConversationDetailActions?
-    let platformCardKinds: Set<String>
-    let platformCard: (String) -> PlatformCard
+    let context: ClientDetailContext
+    let adapters: ConversationDetailAdapters
+    let handle: ClientDetailBusinessHandle
+    let refresh: @MainActor () async -> Void
     let canCommand: (String, ClientDetailAction) -> Bool
     let perform: (String, ClientDetailAction, [String: ClientInspectorValue]) -> Void
     var body: some View {
-        ForEach(store.orderedCards) { state in
-            if platformCardKinds.contains(state.card.kind), state.card.loadState != "error" {
-                platformCard(state.card.kind)
-            } else {
+        ForEach(ClientDetailCardPolicy.orderedCards(in: store, context: context)) { state in
+            if state.card.loadState == "error" {
                 NativeBusinessCard(state: state, api: api, store: store, actions: actions,
-                    canCommand: { canCommand(state.id, $0) }, perform: { perform(state.id, $0, $1) })
+                    canCommand: { canCommand(state.id, $0) }, perform: { perform(state.id, $0, $1) }, retry: { Task { await refresh() } })
                     .environment(\.detailSectionPrefix, state.id)
+            } else {
+                sharedCard(state).environment(\.detailSectionPrefix, state.id)
             }
+        }
+    }
+    @ViewBuilder private func sharedCard(_ state: ClientDetailBusinessCardState) -> some View {
+        switch state.card.payload {
+        case .provider:
+            ConversationDetailProviderCard(configuration: adapters.configuration, scope: handle.scope.sessionID,
+                select: adapters.selectConfiguration, reload: adapters.reloadConfiguration).disabled(!store.isCurrent)
+        case .turn(let value):
+            if let id = value.turnId {
+                ConversationDetailTurnCard(state: handle.turn, executionID: id,
+                    expectedSessionIDs: [handle.scope.sessionID, store.sessionID ?? ""],
+                    readSummary: { try await adapters.readTurnSummary(id) }, readTrace: adapters.readTurnTrace, liveSnapshot: adapters.turnSnapshot)
+                    .disabled(!store.isCurrent)
+            }
+        case .worktree(let value):
+            ConversationWorktreeCard(sessionID: handle.scope.sessionID, refreshID: "\(value.worktreeId ?? ""):\(state.card.revision)",
+                api: { try await adapters.worktreeAPI(value.worktreeId) }, onJob: adapters.onWorktreeJob,
+                state: handle.worktree, expectedWorktreeID: value.worktreeId)
+                .disabled(!store.isCurrent)
+        default:
+            NativeBusinessCard(state: state, api: api, store: store, actions: actions,
+                canCommand: { canCommand(state.id, $0) }, perform: { perform(state.id, $0, $1) }, retry: { Task { await refresh() } })
         }
     }
 }
@@ -29,6 +53,7 @@ private struct NativeBusinessCard: View {
     let actions: ConversationDetailActions?
     let canCommand: (ClientDetailAction) -> Bool
     let perform: (ClientDetailAction, [String: ClientInspectorValue]) -> Void
+    let retry: () -> Void
     @State private var addingReference = false
     @State private var locator = ""
     @State private var displayName = ""
@@ -36,16 +61,21 @@ private struct NativeBusinessCard: View {
     private var card: ClientDetailBusinessCard { state.card }
     var body: some View {
         ConversationDetailModuleCard(title: title, systemImage: symbol) {
-            ForEach(card.actions.filter { $0.kind == "navigation" && $0.operation == "editor.open" && $0.target?.resourceType == "task" }) { action in
+            ForEach(card.actions.filter { card.loadState != "error" && $0.kind == "navigation" && $0.operation == "editor.open" && $0.target?.resourceType == "task" }) { action in
                 NativeBusinessNavigation(action: action, symbol: "square.and.pencil", actions: actions)
             }
-            if card.actions.contains(where: { $0.operation == "reference.add" }) {
+            if card.loadState != "error", card.actions.contains(where: { $0.operation == "reference.add" }) {
                 Button { addingReference.toggle() } label: { Image(systemName: "plus").frame(minWidth: 24, minHeight: 24) }
                     .buttonStyle(.plain).foregroundStyle(Color.accentColor).help("添加引用").accessibilityLabel("添加引用")
             }
         } content: {
             if card.loadState == "error" {
-                Label("暂时无法读取，请刷新重试", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary)
+                HStack(alignment: .top) {
+                    Label("暂时无法读取", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    Button(action: retry) { ConversationDetailHeaderIcon(systemName: "arrow.clockwise") }
+                        .buttonStyle(.plain).disabled(api == nil).help("重试读取").accessibilityLabel("重试读取")
+                }
             } else { content }
             if addingReference, let action = card.actions.first(where: { $0.operation == "reference.add" }) {
                 VStack(alignment: .leading, spacing: 8) {

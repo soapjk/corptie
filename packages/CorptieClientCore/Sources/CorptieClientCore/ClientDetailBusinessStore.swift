@@ -60,6 +60,8 @@ import Observation
 }
 
 @MainActor @Observable public final class ClientDetailBusinessStore {
+    public enum LoadPhase { case idle, loading, ready, failed }
+    public private(set) var loadPhase: LoadPhase = .idle
     public private(set) var sessionID: String?
     public private(set) var documentID: String?
     public private(set) var generation: String?
@@ -75,12 +77,13 @@ import Observation
     public init() {}
     public var orderedCards: [ClientDetailBusinessCardState] { order.compactMap { cards[$0] } }
     public var estimatedRetainedBytes: Int { cards.values.reduce(0) { $0 + $1.card.estimatedRetainedBytes } }
-    public func markRefreshing() { isCurrent = false }
+    public func markRefreshing() { isCurrent = false; loadPhase = .loading; error = nil }
     public func begin() {
         token = UUID(); sessionID = nil; documentID = nil; generation = nil; order = []; cards = [:]; error = nil; selected = false; isCurrent = false
+        loadPhase = .idle
     }
     public func fail(_ message: String, disposition: FailureDisposition) {
-        error = message; isCurrent = false
+        error = message; isCurrent = false; loadPhase = .failed
         switch disposition {
         case .temporary: break
         case .accessRevoked, .bindingRetired: token = UUID(); cards = [:]; order = []; selected = false
@@ -90,6 +93,7 @@ import Observation
         if let sessionID, sessionID != document.sessionId { throw ClientDetailFailure.invalidGraph }
         if generation != document.generation { token = UUID(); cards = [:] }
         sessionID = document.sessionId; documentID = document.documentId; generation = document.generation; selected = true; isCurrent = true; error = nil
+        loadPhase = .ready
         let incoming = Set(document.order)
         cards = cards.filter { incoming.contains($0.key) }
         for card in document.cards {

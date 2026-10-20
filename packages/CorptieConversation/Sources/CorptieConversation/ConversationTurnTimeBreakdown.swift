@@ -3,41 +3,7 @@ import SwiftUI
 import CorptieClientCore
 
 /// Mutually exclusive wall-clock slices supplied by the observability service.
-public struct ConversationTurnTimeBreakdown: Decodable, Equatable, Sendable {
-    public struct Entry: Decodable, Equatable, Sendable, Identifiable {
-        public let id: String
-        public let durationMs: Double
-    }
-
-    public let schemaVersion: Int
-    public let policyVersion: String
-    public let totalMs: Double
-    public let categories: [Entry]
-    public let toolOperations: [Entry]
-
-    public init?(inspectorValue: ClientInspectorValue) {
-        guard let version = inspectorValue["schemaVersion"].number,
-              version == 1,
-              let policy = inspectorValue["policyVersion"].text,
-              let total = inspectorValue["totalMs"].number,
-              total.isFinite, total >= 0 else { return nil }
-        func entries(_ value: ClientInspectorValue) -> [Entry]? {
-            guard case .array = value else { return nil }
-            return value.items.compactMap { item in
-                guard let id = item["id"].text, let duration = item["durationMs"].number,
-                      duration.isFinite, duration >= 0 else { return nil }
-                return Entry(id: id, durationMs: duration)
-            }
-        }
-        guard let categories = entries(inspectorValue["categories"]),
-              let operations = entries(inspectorValue["toolOperations"]) else { return nil }
-        self.schemaVersion = Int(version)
-        self.policyVersion = policy
-        self.totalMs = total
-        self.categories = categories
-        self.toolOperations = operations
-    }
-}
+public typealias ConversationTurnTimeBreakdown = ClientTurnTimeBreakdown
 
 public struct ConversationTurnTimeBreakdownView: View {
     public let breakdown: ConversationTurnTimeBreakdown
@@ -54,7 +20,7 @@ public struct ConversationTurnTimeBreakdownView: View {
             GeometryReader { geometry in
                 HStack(spacing: 0) {
                     ForEach(categories) { entry in
-                        color(entry.id).frame(width: max(0, geometry.size.width * entry.durationMs / max(1, breakdown.totalMs)))
+                        color(entry.id).frame(width: geometry.size.width * min(1, max(0, entry.durationMs / max(1, breakdown.totalMs))))
                     }
                 }
                 .frame(height: 8)
@@ -104,7 +70,7 @@ public struct ConversationTurnTimeBreakdownView: View {
         ["setup": "准备与排队", "model": "模型响应", "provider": "Provider 未细分", "tool": "工具与本地操作",
          "wait": "等待", "overlap": "跨类并行", "unattributed": "未归因", "code.edit": "代码修改",
          "code.search": "代码搜索", "code.read": "代码读取", "test": "测试", "build": "构建", "git": "版本控制",
-         "mcp": "MCP", "artifact": "产物操作", "parallel": "工具内并行", "other": "其他工具时间"][id] ?? id
+         "mcp": "MCP", "artifact": "产物操作", "parallel": "工具内并行", "other": "其他工具时间"][id] ?? "未识别分类"
     }
 
     private func color(_ id: String) -> Color {

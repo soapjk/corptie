@@ -986,6 +986,13 @@ final class BackendClient: ObservableObject {
         sessionConfigurationController.switchSelectedCodexReasoning(to: reasoningLevel)
     }
 
+    func configureDetailModel(session: TaskSession, id: String) async throws {
+        try await sessionConfigurationController.configureModel(session: session, id: id)
+    }
+    func configureDetailReasoning(session: TaskSession, level: String) async throws {
+        try await sessionConfigurationController.configureReasoning(session: session, level: level)
+    }
+
     func updateSessionPermissions(
         session: TaskSession, sandbox: String, approvalPolicy: String
     ) async -> Bool {

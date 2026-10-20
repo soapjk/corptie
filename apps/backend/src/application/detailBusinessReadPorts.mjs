@@ -4,6 +4,7 @@ import { presentTaskSummary } from "./taskSummaryContract.mjs";
 import { pairedDeviceActor } from "./clientDeviceAuthority.mjs";
 import { AGENT_PROVIDER_CAPABILITIES } from "../agent-provider/contracts.mjs";
 import { detailBusinessDate as date } from "./detailBusinessDate.mjs";
+import { encodeMemoryContinuation, decodeMemoryContinuation } from "./detailBusinessMemoryCursor.mjs";
 
 const string = (value, limit = 2000) => typeof value === "string" ? value.slice(0, limit) : "";
 const id = value => string(value, 512);
@@ -168,8 +169,11 @@ export function createDetailBusinessReadPorts({ store, references, artifacts, sc
   ports.memories.readPage = (scope, _identity, cursor = undefined, limit = 20, options = {}) => {
     bounds(cursor, limit); const ownerType = scope.task ? "task" : "work", ownerId = scope.task?.id ?? scope.work?.id;
     if (!ownerId) return { items: [], hasMore: false, sourceCursor: null };
-    const result = store.listMemoryPage({ ownerType, ownerId, includeRevoked: true, limit, ...(cursor != null ? { cursor } : {}) });
-    return { items: result.items.map(row => memory(row, options)), hasMore: result.hasMore, sourceCursor: result.hasMore ? result.nextCursor : null };
+    const continuation = decodeMemoryContinuation(cursor);
+    const result = store.listMemoryPage({ ownerType, ownerId, includeRevoked: true, limit, ...(continuation !== null ? { cursor: continuation } : {}) });
+    const sourceCursor = result.hasMore ? encodeMemoryContinuation(result.nextCursor) : null;
+    if (result.hasMore && sourceCursor === null) throw Object.assign(new Error("Missing memory continuation"), { code: "DETAIL_SOURCE_CURSOR_INVALID", status: 500 });
+    return { items: result.items.map(row => memory(row, options)), hasMore: result.hasMore, sourceCursor };
   };
   ports.memoryHits.readPage = (scope, _identity, cursor = null, limit = 1) => {
     bounds(cursor, limit);
