@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { access, mkdir, readFile, realpath, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { createGitWorkspaceSnapshot } from "../utils/gitWorktreeInventory.mjs";
+import { createGitWorkspaceSnapshot, inspectGitWorkspace } from "../utils/gitWorktreeInventory.mjs";
 import {
   DEFAULT_SHARED_AGENT_CONFIGURATION_PATHS,
   linkSharedAgentConfiguration
@@ -901,6 +901,58 @@ export class GitWorkspaceManager {
     throw error;
   }
 
+  async inspectSyncWorktree({ repositoryId, item, targetHead, allowResume = true }) {
+    const identity = await inspectGitWorkspace(item.path, { execFile: this.execFile });
+    if (identity.repositoryId !== repositoryId || identity.worktreeId !== item.worktreeId) {
+      throw integrationGitError("WORKTREE_RECHECK_UNSAFE", "The synchronization workspace identity changed.");
+    }
+    const [operationState, branch, statusSummary, headOid, locked] = await Promise.all([
+      this.integrationOperationState(item.path),
+      this.gitOutput(item.path, ["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(() => null),
+      this.gitOutput(item.path, ["status", "--porcelain=v1"]),
+      this.gitOutput(item.path, ["rev-parse", "--verify", "HEAD"]),
+      access(resolve(identity.gitDirCanonicalPath, "locked")).then(() => true, () => false)
+    ]);
+    let branchName = branch?.trim() ?? null;
+    if (operationState === "rebase") {
+      if (!allowResume) {
+        throw integrationGitError("SYNC_RECOVERY_REQUIRED", "Synchronization was interrupted by a backend restart. Verify this Worktree's rebase before explicitly retrying.");
+      }
+      if (!["running", "conflict"].includes(item.mergeStatus) && item.rebaseStarted !== true) {
+        throw integrationGitError("GIT_OPERATION_IN_PROGRESS", "This Worktree contains an unrelated rebase.");
+      }
+      let metadata = null;
+      for (const name of ["rebase-merge", "rebase-apply"]) {
+        try {
+          const root = resolve(identity.gitDirCanonicalPath, name);
+          const [original, onto, branchRef] = await Promise.all([
+            readFile(resolve(root, "orig-head"), "utf8"),
+            readFile(resolve(root, "onto"), "utf8"),
+            readFile(resolve(root, "head-name"), "utf8")
+          ]);
+          metadata = { original: original.trim(), onto: onto.trim(), branchRef: branchRef.trim() };
+          break;
+        } catch {}
+      }
+      if (!metadata || metadata.original !== (item.commitHead ?? item.sourceHeadBefore)
+        || metadata.onto !== targetHead || metadata.branchRef !== `refs/heads/${item.branchName}`) {
+        throw integrationGitError("GIT_OPERATION_IN_PROGRESS", "The active rebase does not match this synchronization step.");
+      }
+      branchName = item.branchName;
+    } else if (operationState) {
+      throw integrationGitError("GIT_OPERATION_IN_PROGRESS", "The source Worktree already has another Git operation.");
+    }
+    return {
+      ...identity, path: item.path, availability: "available", branchName,
+      isDetached: branch == null, isLocked: locked, operationState,
+      headOid: headOid.trim(), statusSummary, dirty: statusSummary.trim().length > 0,
+      sessions: (this.store.listLogicalSessionsByWorkspaceId?.(identity.worktreeId) ?? [])
+        .filter(session => Boolean(this.store.getSession(session.legacySessionId)))
+        .map(session => ({ logicalSessionId: session.logicalSessionId, sessionId: session.legacySessionId,
+          title: session.sessionName, active: true }))
+    };
+  }
+
   async rebaseIntegrationSource(input) {
     const operationState = await this.integrationOperationState(input.path);
     if (operationState) {
@@ -936,6 +988,11 @@ export class GitWorkspaceManager {
     }
     const head = (await this.gitOutput(input.path, ["rev-parse", "--verify", "HEAD"])).trim();
     if (head !== input.expectedSourceHead) {
+      if (input.allowResolvedRebase === true
+        && !(await this.gitOutput(input.path, ["status", "--porcelain=v1"])).trim()
+        && await this.gitSucceeds(input.path, ["merge-base", "--is-ancestor", input.targetHead, "HEAD"])) {
+        return { rebased: false, recovered: true, alreadySynchronized: true, headOid: head };
+      }
       throw integrationGitError("WORKTREE_HEAD_CHANGED", "The source branch changed while synchronization was running.");
     }
     const status = (await this.gitOutput(input.path, ["status", "--porcelain=v1"])).trim();

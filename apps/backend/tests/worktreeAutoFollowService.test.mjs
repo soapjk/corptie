@@ -69,6 +69,21 @@ test("all Providers share a dispatch barrier only for the affected automatic Git
   assert.doesNotThrow(() => assertNoAutomaticWorktreeMutation(store, { logicalSessionId: "logical" }));
 });
 
+test("manual batch sync blocks queued Session work only in unfinished source Worktrees", () => {
+  const job = { status: "running", details: { plan: { operationType: "sync", items: [
+    { worktreeId: "source", mergeStatus: "running", isMain: false },
+    { worktreeId: "finished", mergeStatus: "completed", isMain: false },
+    { worktreeId: "target", isMain: true }
+  ] } } };
+  const logical = { repositoryId: "repo", activeWorkspaceId: "source" };
+  const store = { getLogicalSession: () => logical, getLatestWorktreeIntegrationJob: () => job };
+  assert.throws(() => assertNoAutomaticWorktreeMutation(store, { logicalSessionId: "logical" }), { code: "SESSION_BUSY" });
+  for (const id of ["target", "finished", "unrelated"]) {
+    logical.activeWorkspaceId = id;
+    assert.doesNotThrow(() => assertNoAutomaticWorktreeMutation(store, { logicalSessionId: "logical" }));
+  }
+});
+
 test("SQLite persists opt-in through Store close and reopen", async () => {
   const { mkdtemp, rm } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");

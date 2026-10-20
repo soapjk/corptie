@@ -1034,7 +1034,9 @@ struct WorktreeManagementView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            if let current = job.currentWorktreeId,
+            if job.plan.operationType == "sync" {
+                syncExecutionProgress(job)
+            } else if let current = job.currentWorktreeId,
                let item = job.plan.items.first(where: { $0.worktreeId == current }) {
                 Text(item.branchName ?? item.path).font(.caption).foregroundStyle(.secondary)
             }
@@ -1122,6 +1124,30 @@ struct WorktreeManagementView: View {
         .padding(10)
         .background((job.status == "paused" ? Color.orange : Color.accentColor).opacity(0.08))
         .accessibilityIdentifier("worktree.integration.progress")
+    }
+
+    private func syncExecutionProgress(_ job: WorktreeIntegrationJob) -> some View {
+        let active = job.plan.items.filter { !$0.isMain && ["running", "conflict", "failed"].contains($0.mergeStatus) }
+        let runningCount = active.filter { $0.mergeStatus == "running" }.count
+        return VStack(alignment: .leading, spacing: 4) {
+            Text(L10nFormat("Synchronizing %d Worktree(s)", runningCount))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ForEach(active, id: \.worktreeId) { item in
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: item.mergeStatus == "running" ? "arrow.triangle.2.circlepath" : "exclamationmark.circle")
+                    Text(item.branchName ?? item.path)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let error = item.error {
+                        Text(error).lineLimit(2).textSelection(.enabled)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(item.mergeStatus == "running" ? Color.secondary : Color.orange)
+            }
+        }
+        .accessibilityIdentifier("worktree.sync.execution-progress")
     }
 
     @ViewBuilder

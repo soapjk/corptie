@@ -2036,6 +2036,76 @@ test("multi-branch convergence uses an isolated Worktree then fast-forwards ever
   }
 });
 
+test("sync rebase recovery checks original head, target and branch and never resumes automatically after restart", async () => {
+  const fixture = await createFixture("sync-recovery", { activeFeatureWorktree: true });
+  try {
+    await writeFile(join(fixture.repository, "shared.txt"), "main\n");
+    await git(["add", "."], fixture.repository);
+    await git(["commit", "-m", "main"], fixture.repository);
+    await writeFile(join(fixture.activeWorktree, "shared.txt"), "feature\n");
+    await git(["add", "."], fixture.activeWorktree);
+    await git(["commit", "-m", "feature"], fixture.activeWorktree);
+    const identity = await inspectGitWorkspace(fixture.activeWorktree);
+    const targetHead = (await gitOutput(["rev-parse", "HEAD"], fixture.repository)).trim();
+    const item = { ...identity, path: fixture.activeWorktree, branchName: "feature/session-worktree", mergeStatus: "running",
+      sourceHeadBefore: (await gitOutput(["rev-parse", "HEAD"], fixture.activeWorktree)).trim() };
+    const manager = new GitWorkspaceManager({ store: fixture.store });
+    await assert.rejects(manager.rebaseIntegrationSource({ path: item.path, targetHead, expectedSourceHead: item.sourceHeadBefore }), { code: "REBASE_CONFLICT" });
+    await assert.rejects(manager.inspectSyncWorktree({ repositoryId: fixture.repositoryId, item, targetHead, allowResume: false }), { code: "SYNC_RECOVERY_REQUIRED" });
+    await assert.rejects(manager.inspectSyncWorktree({ repositoryId: fixture.repositoryId, item: { ...item, sourceHeadBefore: targetHead }, targetHead }), { code: "GIT_OPERATION_IN_PROGRESS" });
+    const inspected = await manager.inspectSyncWorktree({ repositoryId: fixture.repositoryId, item, targetHead });
+    assert.equal(inspected.operationState, "rebase");
+    assert.equal(inspected.branchName, item.branchName);
+    await writeFile(join(item.path, "shared.txt"), "main and feature\n");
+    await git(["add", "shared.txt"], item.path);
+    await git(["-c", "core.editor=true", "rebase", "--continue"], item.path);
+    await assert.rejects(manager.rebaseIntegrationSource({ path: item.path, targetHead, expectedSourceHead: item.sourceHeadBefore }), { code: "WORKTREE_HEAD_CHANGED" });
+    const recovered = await manager.rebaseIntegrationSource({ path: item.path, targetHead, expectedSourceHead: item.sourceHeadBefore, allowResolvedRebase: true });
+    assert.equal(recovered.recovered, true);
+    assert.equal(await readFile(join(item.path, "shared.txt"), "utf8"), "main and feature\n");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("parallel sync inspects only each source and rebases independent branches onto a frozen target", async () => {
+  const fixture = await createFixture("parallel-sync");
+  try {
+    const sources = [];
+    for (let index = 0; index < 4; index++) {
+      const path = join(fixture.directory, `parallel-${index}`);
+      await git(["worktree", "add", "-b", `parallel/${index}`, path, "HEAD"], fixture.repository);
+      await writeFile(join(path, `feature-${index}.txt`), `feature ${index}\n`);
+      await git(["add", "."], path);
+      await git(["commit", "-m", `feature ${index}`], path);
+      const identity = await inspectGitWorkspace(path);
+      sources.push({ ...identity, path, branchName: `parallel/${index}`, sourceHeadBefore: (await gitOutput(["rev-parse", "HEAD"], path)).trim(), mergeStatus: "pending" });
+    }
+    await writeFile(join(fixture.repository, "target.txt"), "target\n");
+    await git(["add", "."], fixture.repository);
+    await git(["commit", "-m", "target"], fixture.repository);
+    const targetHead = (await gitOutput(["rev-parse", "HEAD"], fixture.repository)).trim();
+    fixture.store.upsertGitWorkspaceSnapshot(await createGitWorkspaceSnapshot(fixture.repository));
+    const commands = [];
+    const manager = new GitWorkspaceManager({ store: fixture.store, execFile: async (binary, args, options) => {
+      commands.push(args);
+      return execFileAsync(binary, args, options);
+    } });
+    await Promise.all(sources.map(async item => {
+      const inspected = await manager.inspectSyncWorktree({ repositoryId: fixture.repositoryId, item, targetHead });
+      assert.equal(inspected.branchName, item.branchName);
+      assert.equal(inspected.dirty, false);
+      await manager.rebaseIntegrationSource({ path: item.path, targetHead, expectedSourceHead: item.sourceHeadBefore });
+      await git(["merge-base", "--is-ancestor", targetHead, "HEAD"], item.path);
+      assert.equal(await readFile(join(item.path, `feature-${sources.indexOf(item)}.txt`), "utf8"), `feature ${sources.indexOf(item)}\n`);
+    }));
+    assert.equal(commands.some(args => args.includes("worktree") && args.includes("list")), false);
+    assert.equal((await gitOutput(["rev-parse", "HEAD"], fixture.repository)).trim(), targetHead);
+  } finally {
+    await fixture.close();
+  }
+});
+
 async function createFixture(label, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), `corptie-git-workspace-${label}-`));
   const repository = join(directory, options.repositoryName ?? "main repo");
