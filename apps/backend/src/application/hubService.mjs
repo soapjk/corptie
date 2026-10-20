@@ -9,6 +9,11 @@
 import { randomUUID } from "node:crypto";
 import { isTrustedMemory } from "./memoryRecallService.mjs";
 
+function safeArray(value) {
+  try { const result = typeof value === "string" ? JSON.parse(value) : value; return Array.isArray(result) ? result : []; }
+  catch { return []; }
+}
+
 function defaultHashIntent(text) {
   let hash = 0;
   const value = String(text ?? "");
@@ -48,7 +53,7 @@ function chineseMatchScore(content, intent) {
   if (query.size === 0) return 0;
   const target = grams(content);
   const hits = [...query].filter((gram) => target.has(gram)).length;
-  return hits >= 2 ? hits / Math.min(query.size, Math.max(target.size, 1)) : 0;
+  return hits >= 1 ? Math.max(0.2, hits / Math.min(query.size, Math.max(target.size, 1))) : 0;
 }
 
 // 字符 n-gram 词袋向量（零依赖离线回退，非真语义，但保证 embedding 路径可用、可离线排序）。
@@ -138,7 +143,7 @@ export class HubService {
     });
     const limit = Math.max(1, Math.min(100, Number(options.limit) || 20));
     const selected = scored
-      .filter((x) => normalizedIntent === "" || x.score > 0)
+      .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, limit)
       .map((x) => x.memory);
@@ -165,8 +170,9 @@ export class HubService {
     if (memories.length === 0) return [];
 
     const terms = tokenize(intent);
+    const profileTopics = new Set(options.profile?.topics ?? []);
     let intentVec = null;
-    if (options.allowEmbedding !== false && this.embedder) {
+    if (terms.length && options.allowEmbedding !== false && this.embedder) {
       try {
         intentVec = await this.embedder(intent);
       } catch {
@@ -211,16 +217,18 @@ export class HubService {
       }
       const lexical = Math.max(matchScore(m.content, terms), chineseMatchScore(m.content, intent));
       // 语义优先；无语义时纯关键词；两者取高者再乘置信度。
-      // 空 intent 是显式的启动召回策略：按置信度与既有使用/新近度排序，
-      // 而不是让零关键词分数把所有 active 记忆过滤掉。
-      const emptyIntentScore = terms.length === 0
-        ? 1 + Math.min(Number(m.usage_count ?? 0), 10) * 0.01 + Math.min(Number(m.recency_score ?? 0), 10) * 0.001
-        : 0;
-      const raw = Math.max(semantic, lexical, emptyIntentScore);
-      results.push({ memory: m, score: raw * Number(m.confidence ?? 0.5) });
+      const raw = Math.max(semantic, lexical);
+      const topics = [m.primary_topic, ...safeArray(m.secondary_topics_json)];
+      const sameTopic = topics.some((topic) => profileTopics.has(topic));
+      const topicFactor = profileTopics.size && topics.some(Boolean) ? (sameTopic ? 1.1 : 0.9) : 1;
+      const keywords = safeArray(m.keywords_json);
+      const keywordFactor = keywords.some((word) => String(intent).toLocaleLowerCase()
+        .includes(String(word).toLocaleLowerCase())) ? 1.1 : 1;
+      results.push({ memory: m, score: raw * topicFactor * keywordFactor * Number(m.confidence ?? 0.5) });
     }
     return results;
   }
+
 
   // 工具/技能发现 + 去抖缓存
   search(intent, scope = {}, _options = {}) {

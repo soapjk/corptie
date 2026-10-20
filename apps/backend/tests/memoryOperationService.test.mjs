@@ -23,13 +23,13 @@ async function fixture(options = {}) {
   const other = store.createAgent({ name: "Other Agent", provider: "claude-sdk" });
   store.createWork({
     id: "work:bound",
-    name: "Bound Work",
+    name: "Bound_Work",
     contributorAgentIds: [agent.agentId]
   });
   store.createTask({
     id: "task:bound",
     workId: "work:bound",
-    title: "Bound Task",
+    title: "Bound_Task",
     mainAgentId: agent.agentId
   });
   store.upsertSession({
@@ -92,7 +92,7 @@ test("manual remember defaults to the most-specific current Task and preserves p
       store: f.store,
       hubService: f.hubService
     }).buildAgentContext(f.agent.agentId, {
-      intent: "",
+      intent: "summarize changes",
       scope: { workId: "work:bound", taskId: "task:bound" }
     });
     assert.match(startupContext.instructions, /Always summarize changes concisely/);
@@ -125,10 +125,10 @@ test("review confirms a candidate for startup recall and rejects stale or unwant
     assert.equal(confirmed.promotion_status, "active");
     assert.equal(confirmed.trust_level, "trusted");
     assert.equal(confirmed.confidence, 1);
-    assert.equal((await recall.startup(scope)).memories[0].id, candidate.id);
+    assert.equal((await recall.startup(scope, { intent: "Verified durable fact" })).memories[0].id, candidate.id);
     const startupContext = await new AgentContextService({
       store: f.store, hubService: f.hubService, recallService: recall
-    }).buildAgentContext(f.agent.agentId, { scope });
+    }).buildAgentContext(f.agent.agentId, { scope, intent: "Verified durable fact" });
     assert.match(startupContext.instructions, /Verified durable fact/);
     const startupAudit = f.store.listMemoryRecallAudit({ sessionId: scope.sessionId })
       .find((entry) => entry.id === startupContext.recall.id);
@@ -211,7 +211,7 @@ test("five Work Chat Sessions sharing one Agent route independently and deduplic
       const sessionId = `session:batch-${index}`;
       f.store.createWork({
         id: workId,
-        name: `Batch Work ${index}`,
+        name: `Batch_Work_${index}`,
         contributorAgentIds: [f.agent.agentId]
       });
       f.store.upsertSession({
@@ -371,7 +371,7 @@ test("update/revoke preserve ownership and source; revoke remains auditable but 
   }
 });
 
-test("search and empty-intent recall update usage_count/last_accessed_at only for returned active memories", async () => {
+test("explicit search returns relevant memories and empty intent returns none", async () => {
   const f = await fixture();
   try {
     const first = f.store.createMemory({
@@ -386,9 +386,9 @@ test("search and empty-intent recall update usage_count/last_accessed_at only fo
     assert.equal(f.store.getMemory(second.id).usage_count, 0);
 
     const startup = await call(f.service, f.agent.agentId, "corptie_memory_search", { intent: "" });
-    assert.equal(startup.count, 2);
-    assert.equal(f.store.getMemory(first.id).usage_count, 2);
-    assert.equal(f.store.getMemory(second.id).usage_count, 1);
+    assert.equal(startup.count, 0);
+    assert.equal(f.store.getMemory(first.id).usage_count, 1);
+    assert.equal(f.store.getMemory(second.id).usage_count, 0);
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });
@@ -424,7 +424,7 @@ test("automatic extraction and manual memory use distinct source_type with exact
     const extracted = await new MemoryExtractor({ store: f.store, classifyMany: async (events) => [{
       eventSequence: events[0].sequence, evidence: events[0].text, content: events[0].text,
       kind: "fact", scope: "task", scopeRationale: "Task context", rationale: "Stable fact",
-      confidence: 0.8, conflict: false
+      confidence: 0.8, conflict: false, primaryTopic: "work_project"
     }] }).extractFromSession("session:current", {
       agentId: f.agent.agentId,
       workId: "work:bound",

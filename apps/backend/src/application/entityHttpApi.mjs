@@ -14,6 +14,7 @@ import {
 import { assertPlatformAssistantPatch, isPlatformAssistant } from "../utils/platformAssistantIdentity.mjs";
 import { presentTaskAcceptance } from "./taskAcceptance.mjs";
 import { presentMemory, createUserMemory, reviewExtractedMemory } from "./memoryOperationService.mjs";
+import { validateMemoryClassification, parseMemoryClassification } from "./memoryTaxonomy.mjs";
 import { presentMemoryRecallAudit, presentSessionMemoryHits } from "./memoryRecallService.mjs";
 import { validateEntityName, validateWorkInput } from "../domain/workTaskValidation.mjs";
 import { createHash, randomUUID } from "node:crypto";
@@ -1147,6 +1148,9 @@ export function handleEntityHttpRequest({
           ...(global ? {} : { ownerType, ownerId }),
           includeRevoked,
           query,
+          primaryTopic: url.searchParams.get("primaryTopic"),
+          deliveryMode: url.searchParams.get("deliveryMode"),
+          appliesTo: url.searchParams.get("appliesTo"),
           ...filters,
           limit: url.searchParams.get("limit"),
           cursor: decodeMemoryCursor(url.searchParams.get("cursor"))
@@ -1179,14 +1183,20 @@ export function handleEntityHttpRequest({
         if (!memory) throw apiError("MEMORY_NOT_FOUND", "Memory not found.", 404);
         if (memory.revoked_at) throw apiError("MEMORY_REVOKED", "A revoked Memory is immutable.", 409);
         const input = await readJson(request);
-        rejectUnknownFields(input, new Set(["content", "tags", "expiresAt"]));
+        rejectUnknownFields(input, new Set(["content", "tags", "expiresAt", "primaryTopic",
+          "secondaryTopics", "keywords", "appliesTo", "deliveryMode"]));
         if (input.tags != null && (!Array.isArray(input.tags) || input.tags.some((tag) => typeof tag !== "string" || !tag.trim()))) {
           throw apiError("INVALID_INPUT", "tags must be an array of non-empty strings.", 400);
         }
         if (input.content != null && !String(input.content).trim()) throw apiError("INVALID_INPUT", "content cannot be empty.", 400);
+        const classificationFields = ["primaryTopic", "secondaryTopics", "keywords", "appliesTo", "deliveryMode"];
+        const classification = classificationFields.some((key) => Object.hasOwn(input, key))
+          ? validateMemoryClassification({ ...parseMemoryClassification(memory), ...input,
+            ownerType: memory.owner_type, kind: memory.kind }) : {};
         const updated = hubService.store.updateMemory(memory.id, {
           ...(input.content != null ? { content: String(input.content).trim() } : {}),
           ...(input.tags != null ? { tags: input.tags.map((tag) => tag.trim()) } : {}),
+          ...classification,
           ...(Object.hasOwn(input, "expiresAt") ? { expiresAt: input.expiresAt || null } : {}),
           version: Number(memory.version ?? 1) + 1
         });
@@ -1283,7 +1293,7 @@ export function handleEntityHttpRequest({
         validateMemoryRecallScope(hubService.store, scope);
         const phase = url.searchParams.get("phase") === "startup" ? "startup" : "explicit";
         const recall = phase === "startup"
-          ? await memoryRecallService.startup(scope)
+          ? await memoryRecallService.startup(scope, { intent: url.searchParams.get("intent") ?? "" })
           : await memoryRecallService.explicitSearch(url.searchParams.get("intent") ?? "", scope, {
             deepRecall: url.searchParams.get("deep") === "true"
           });
@@ -1403,7 +1413,8 @@ function statusForCode(code) {
 
 // 记忆字段校验：ownerType/ownerId/kind/content 必填，缺失即 400（防 owner_id=null 撞 NOT NULL）。
 export function validateMemoryInput(input = {}, store) {
-  rejectUnknownFields(input, new Set(["ownerType", "ownerId", "kind", "content", "tags", "sourceSessionId"]));
+  rejectUnknownFields(input, new Set(["ownerType", "ownerId", "kind", "content", "tags", "sourceSessionId",
+    "primaryTopic", "secondaryTopics", "keywords", "appliesTo", "deliveryMode"]));
   const required = [
     ["ownerType", input.ownerType],
     ["ownerId", input.ownerId],
@@ -1425,6 +1436,7 @@ export function validateMemoryInput(input = {}, store) {
     || input.tags.some((tag) => typeof tag !== "string" || !tag.trim()))) {
     throw apiError("INVALID_INPUT", "tags must be an array of non-empty strings.", 400);
   }
+  validateMemoryClassification(input);
   validateMemoryOwnerReference(store, input.ownerType, input.ownerId);
   if (input.ownerType === "task" && (typeof input.sourceSessionId !== "string" || !input.sourceSessionId.trim())) {
     throw apiError(

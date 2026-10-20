@@ -46,7 +46,9 @@ function memory(row, { fullContent = false } = {}) {
   return { resource: ref("memory", value.id), kind: string(value.kind, 64), content: fullContent ? value.content ?? "" : string(value.content),
     sourceType: string(value.sourceType, 64), trustLevel: string(value.trustLevel, 64),
     promotionStatus: string(value.promotionStatus, 64), version: integer(value.version),
-    revokedAt: date(value.revokedAt), updatedAt: date(value.updatedAt), tags: value.tags.slice(0, 16).map(value => string(value, 128)) };
+    revokedAt: date(value.revokedAt), updatedAt: date(value.updatedAt),
+    primaryTopic: string(value.primaryTopic, 64), deliveryMode: string(value.deliveryMode, 64),
+    tags: value.tags.slice(0, 16).map(value => string(value, 128)) };
 }
 const durations = value => Object.fromEntries(Object.entries(value ?? {}).filter(([key, duration]) =>
   /^[A-Za-z0-9_.]{1,64}$/.test(key) && typeof duration === "number" && Number.isFinite(duration) && duration >= 0)
@@ -109,7 +111,8 @@ export function createDetailBusinessReadPorts({ store, references, artifacts, sc
       const result = presentSessionMemoryHitsPage(store, scope.session.id, { limit: 1 });
       return { items: result.items.map(entry => ({ resource: ref("memory", entry.id), kind: string(entry.kind, 64),
         content: entry.content ?? "", snapshotAtRecall: entry.snapshotAtRecall, unavailable: entry.unavailable,
-        lastHitAt: date(entry.lastHitAt) })), hasMore: result.hasMore, sourceCursor: result.nextCursor };
+        lastHitAt: date(entry.lastHitAt), primaryTopic: string(entry.primaryTopic, 64),
+        hitReason: string(entry.hitReason, 128) })), hasMore: result.hasMore, sourceCursor: result.nextCursor };
     } },
     provider: { cacheable: false, dependencies: ["provider", "sessionMetadata", "agent"], read: scope => {
       const descriptors = providerRegistry.descriptors();
@@ -183,7 +186,8 @@ export function createDetailBusinessReadPorts({ store, references, artifacts, sc
     const result = presentSessionMemoryHitsPage(store, scope.session.id, { limit, cursor });
     return { items: result.items.map(entry => ({ resource: ref("memory", entry.id), kind: string(entry.kind, 64),
       content: entry.content ?? "", snapshotAtRecall: entry.snapshotAtRecall, unavailable: entry.unavailable,
-      lastHitAt: date(entry.lastHitAt) })), hasMore: result.hasMore, sourceCursor: result.nextCursor };
+      lastHitAt: date(entry.lastHitAt), primaryTopic: string(entry.primaryTopic, 64),
+      hitReason: string(entry.hitReason, 128) })), hasMore: result.hasMore, sourceCursor: result.nextCursor };
   };
   ports.schedules.readPage = (scope, identity, cursor = null, limit = 20) => {
     bounds(cursor, limit); const start = offset(cursor);
