@@ -74,6 +74,7 @@ export function handleEntityHttpRequest({
   response,
   url,
   workService,
+  createWork,
   hubService,
   router,
   memoryExtractor,
@@ -654,32 +655,34 @@ export function handleEntityHttpRequest({
             400
           );
         }
-        if (typeof ensureWorkChatSession !== "function") {
-          throw apiError("CAPABILITY_UNAVAILABLE", "Work Chat creation is unavailable.", 503);
+        if (typeof createWork !== "function") {
+          throw apiError("CAPABILITY_UNAVAILABLE", "Complete Work creation is unavailable; metadata-only creation is forbidden.", 503);
         }
         const hasAvatar = Object.prototype.hasOwnProperty.call(normalized, "avatarPath");
         const sourceAvatarPath = normalized.avatarPath;
         delete normalized.avatarPath;
         const previous = normalized.id ? workService.store.getWork(normalized.id) : null;
-        let work = workService.createWork(normalized);
+        let createdWorkId = null;
         try {
-          if (hasAvatar && sourceAvatarPath) {
-            const managedPath = await saveWorkAvatarFile(work.id, sourceAvatarPath, {
-              environmentName: normalizeEnvironment(process.env.CORPTIE_ENV)
-            });
-            work = workService.updateWork(work.id, { avatarPath: managedPath });
-          }
-          await ensureWorkChatSession(work);
+          const work = await createWork(normalized, { commit: async created => {
+            createdWorkId = created.id;
+            if (hasAvatar && sourceAvatarPath) {
+              const managedPath = await saveWorkAvatarFile(created.id, sourceAvatarPath, {
+                environmentName: normalizeEnvironment(process.env.CORPTIE_ENV)
+              });
+              return { ...created, ...workService.updateWork(created.id, { avatarPath: managedPath }) };
+            }
+            return created;
+          } });
+          return sendJson(response, 201, work);
         } catch (error) {
-          if (!previous && !workService.store.getWorkChatSession(work.id)) {
-            await clearWorkAvatarFile(work.id, {
+          if (!previous && createdWorkId) {
+            await clearWorkAvatarFile(createdWorkId, {
               environmentName: normalizeEnvironment(process.env.CORPTIE_ENV)
             });
-            workService.deleteWork(work.id);
           }
           throw error;
         }
-        return sendJson(response, 201, work);
       }
 
       const workSessionsMatch = path.match(/^\/works\/([^/]+)\/sessions$/);

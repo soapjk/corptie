@@ -70,6 +70,8 @@ export class WorkApplicationService {
 
   // ---- Work ----
 
+  // Internal metadata primitive for legacy fixtures/domain setup. Transports
+  // must use WorkInitializationService; this is not a product create command.
   createWork(input = {}) {
     const normalized = validateWorkInput(input, "create");
     const workspace = normalized.workspaceId ? this.store.getWorkspace(normalized.workspaceId) : null;
@@ -313,7 +315,7 @@ export class WorkApplicationService {
   }
 }
 
-function workCreationMatches(existing, input) {
+export function workCreationMatches(existing, input) {
   const expected = {
     name: input.name,
     description: input.description ?? "",

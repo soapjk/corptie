@@ -69,7 +69,7 @@ import {
   ProviderSessionLifecycle,
   codexLifecycleAdapter
 } from "./application/providerSessionLifecycle.mjs";
-import { createPlatformOperationComposition } from "./application/platformOperationComposition.mjs";
+import { createPlatformOperationComposition, createWorkInitializationComposition } from "./application/platformOperationComposition.mjs";
 import { createTaskWorktreeOperations } from "./application/taskWorktreeOperations.mjs";
 import { createProjectWorktreeOperations } from "./application/projectWorktreeOperations.mjs";
 import { PlatformConfirmationService } from "./application/platformConfirmationService.mjs";
@@ -1331,8 +1331,13 @@ sessionBindingReadinessProbe = new SessionBindingReadinessProbe({
   onChanged: (sessionId) => store.touchSessionProjectionDependency(sessionId)
 });
 
+const workInitializationService = createWorkInitializationComposition({
+  store, workService, sessionApplicationService, workDiscussionService, agentProviderRegistry,
+  getDefaultProviderId: () => agentProviderRegistry.defaultProviderId
+});
 platformOperationService = createPlatformOperationComposition({
   store, workService, sessionApplicationService, artifactService,
+  workDiscussionService, agentProviderRegistry, workInitializationService,
   collaborationCore, platformConfirmationService, sessionRuntimeReleaseService,
   listSessions: (input) => listGatewaySessions(input),
   startWorkSession: (command) => workSessionStartApplicationService.start(command),
@@ -2081,6 +2086,7 @@ const handleCollaborationRoutes = createCollaborationHttpRoutes({
 });
 
 const handleEntityRoutes = createEntityHttpRoutes({
+  workInitializationService,
   workService, hubService, collaborationRouter, memoryExtractor, memoryRecallService,
   memoryLifecycleService, assistantService, workSessionStartApplicationService,
   agentProviderRegistry, launchAgentSession, workDiscussionService, ensureWorkChatSession,
@@ -2362,6 +2368,7 @@ function startBackendRuntime() {
   taskSummaryService.start();
   worktreeAutoFollowService.start();
   startClientDeviceGateway({
+    workInitializationService,
     detailActionService, detailWritesAllowed: detailMigration.detailWritesAllowed,
     sessionPreparations: sessionBindingReadinessProbe.preparations,
     store, environmentName, developmentPreview, worktreeIntegrationJobService, projectApplicationService,

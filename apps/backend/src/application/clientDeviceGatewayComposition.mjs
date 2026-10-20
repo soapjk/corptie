@@ -15,7 +15,7 @@ export function startClientDeviceGateway({
   store, environmentName, developmentPreview, worktreeIntegrationJobService, projectApplicationService, emitEvent,
   readSessionTimelineWindow, getTimelineReadPool, requireSessionReference, sessionContextReferenceService,
   artifactService, scheduledSessionTaskService, turnObservability, agentProviderRegistry,
-  switchSessionProvider, workService, inspectTaskWorktree, reclaimTaskWorktree, readSessionWorktree, setWorktreeAutoFollow,
+  switchSessionProvider, workService, workInitializationService, inspectTaskWorktree, reclaimTaskWorktree, readSessionWorktree, setWorktreeAutoFollow,
   sendUnifiedSessionMessage, admitReliableMessage, interruptUnifiedSession, cancelQueuedUserMessage, deleteUserMessage, respondUnifiedSessionApproval,
   respondUnifiedSessionUserInput, resolveCollaborationConfirmation, resolveSessionChannelRequest,
   publishStateChangesIfNeeded, workDiscussionService,
@@ -172,7 +172,7 @@ export function startClientDeviceGateway({
         readSessionUsage(sessionId, undefined, { requireFreshAccount }),
       // Same services the desktop entity routes call; the device layer adds permission, DTO and receipt boundaries.
       entityCommands: {
-        createWork: input => workService.createWork(input),
+        createWork: input => workInitializationService.createForClient(input),
         updateTask: (taskId, patch) => workService.updateTask(taskId, patch),
         setTaskArchived: async (taskId, archived) => {
           const task = await setTaskArchivedForEntityRoutes(taskId, archived);
