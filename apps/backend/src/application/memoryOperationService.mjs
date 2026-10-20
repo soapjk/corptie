@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { validateMemoryClassification, parseMemoryClassification } from "./memoryTaxonomy.mjs";
 
 const MEMORY_KINDS = new Set([
   "skill", "procedure", "dev_experience", "fact", "lesson", "preference", "feedback", "episodic"
@@ -101,6 +102,10 @@ export class MemoryOperationService {
     const memoryScope = optionalScope(args.scope) ?? mostSpecificScope(context);
     const owner = this.#owner(context, memoryScope);
     const tags = stringList(args.tags);
+    const classification = validateMemoryClassification({ ...args,
+      primaryTopic: args.primary_topic, secondaryTopics: args.secondary_topics,
+      keywords: args.keywords, appliesTo: args.applies_to, deliveryMode: args.delivery_mode,
+      ownerType: owner.ownerType, kind });
     const idempotencyKey = optionalText(args.idempotency_key);
     if (idempotencyKey && idempotencyKey.length > 200) {
       throw operationError("INVALID_INPUT", "idempotency_key must not exceed 200 characters.");
@@ -111,7 +116,7 @@ export class MemoryOperationService {
       ownerId: owner.ownerId,
       kind,
       content,
-      tags
+      tags, classification
     });
     if (idempotencyKey) {
       const prior = this.store.getMemoryRememberOperation(context.session.id, idempotencyKey);
@@ -153,6 +158,7 @@ export class MemoryOperationService {
           kind,
           content,
           tags,
+          ...classification,
           sourceType: "user",
           sourceSessionId: context.session.id,
           sourceEventSeqs: event ? [event.sequence] : [],
@@ -229,15 +235,27 @@ export class MemoryOperationService {
     if (memory.revoked_at) throw operationError("MEMORY_REVOKED", "A revoked memory is immutable.");
     const hasContent = Object.prototype.hasOwnProperty.call(args, "content");
     const hasTags = Object.prototype.hasOwnProperty.call(args, "tags");
-    if (!hasContent && !hasTags) {
+    const hasClassification = ["primary_topic", "secondary_topics", "keywords", "applies_to", "delivery_mode"]
+      .some((field) => Object.hasOwn(args, field));
+    if (!hasContent && !hasTags && !hasClassification) {
       throw operationError("INVALID_INPUT", "content or tags is required.");
     }
     const patch = { version: Number(memory.version ?? 1) + 1 };
     if (hasContent) patch.content = requiredText(args.content, "content");
     if (hasTags) patch.tags = stringList(args.tags);
+    if (hasClassification) Object.assign(patch, validateMemoryClassification({
+      ...parseMemoryClassification(memory),
+      ...(Object.hasOwn(args, "primary_topic") ? { primaryTopic: args.primary_topic } : {}),
+      ...(Object.hasOwn(args, "secondary_topics") ? { secondaryTopics: args.secondary_topics } : {}),
+      ...(Object.hasOwn(args, "keywords") ? { keywords: args.keywords } : {}),
+      ...(Object.hasOwn(args, "applies_to") ? { appliesTo: args.applies_to } : {}),
+      ...(Object.hasOwn(args, "delivery_mode") ? { deliveryMode: args.delivery_mode } : {}),
+      ownerType: memory.owner_type, kind: memory.kind
+    }));
     this.#appendEvent(context, "memory/update", {
       memoryId: memory.id,
-      changedFields: [hasContent ? "content" : null, hasTags ? "tags" : null].filter(Boolean)
+      changedFields: [hasContent ? "content" : null, hasTags ? "tags" : null,
+        hasClassification ? "classification" : null].filter(Boolean)
     });
     const updated = this.store.updateMemory(memory.id, patch);
     this.store.createMemoryAudit({
@@ -367,7 +385,8 @@ function mostSpecificScope(context) {
 }
 
 export function createUserMemory(store, input, actorId) {
-  const memory = store.createMemory({ ...input, taskId: input.ownerType === "task" ? input.ownerId : null,
+  const classification = validateMemoryClassification(input);
+  const memory = store.createMemory({ ...input, ...classification, taskId: input.ownerType === "task" ? input.ownerId : null,
     sourceType: "user", sourceSessionId: input.sourceSessionId ?? null, trustLevel: "trusted" });
   store.createMemoryAudit({ memoryId: memory.id, action: "remember", actorType: "user", actorId, after: memory });
   return memory;
@@ -415,6 +434,7 @@ export function presentMemory(memory) {
     content: memory.content,
     structured: safeJson(memory.structured_json, {}),
     tags: safeJson(memory.tags_json, []),
+    ...parseMemoryClassification(memory),
     confidence: Number(memory.confidence ?? 0),
     usageCount: Number(memory.usage_count ?? 0),
     lastAccessedAt: memory.last_accessed_at ?? null,

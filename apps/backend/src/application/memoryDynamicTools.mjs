@@ -18,15 +18,24 @@ const scope = {
   enum: ["global", "agent", "work", "task"],
   description: "Memory scope. Global applies to the local user across all Works and Tasks. Owner identity is derived from the authenticated current Session. When omitted for remember, the narrowest bound scope is used: Task, then Work, then Agent."
 };
+const classification = {
+  primary_topic: { type: "string", enum: ["personal", "life", "fitness_health", "work_project",
+    "programming", "communication", "product", "finance", "learning_creative", "other"] },
+  secondary_topics: { type: "array", maxItems: 2, items: { type: "string" } },
+  keywords: { type: "array", maxItems: 8, items: { type: "string" } },
+  applies_to: { type: "array", maxItems: 4, items: { type: "string",
+    enum: ["all", "development", "fitness", "personal", "work", "finance", "creative"] } },
+  delivery_mode: { type: "string", enum: ["on_demand", "applicable_preference"] }
+};
 
 export const memoryDynamicTools = Object.freeze([
   tool(
     "corptie_memory_search",
-    "Search active, non-revoked memories visible to the current Session's Agent, Work, and Task. Empty intent returns a bounded high-confidence recall set.",
+    "Search active, non-revoked memories visible to the current Session's Agent, Work, and Task. Provide a concrete intent; an empty intent returns no ordinary memories.",
     {
       intent: {
         type: "string",
-        description: "What to recall. May be empty to retrieve the current Session's highest-confidence active memories."
+        description: "What to recall. Empty intent returns no ordinary memories."
       },
       deep_recall: {
         type: "boolean",
@@ -59,6 +68,7 @@ export const memoryDynamicTools = Object.freeze([
       },
       scope,
       tags: { type: "array", items: { type: "string", minLength: 1 } },
+      ...classification,
       idempotency_key: {
         type: "string",
         minLength: 1,
@@ -74,7 +84,8 @@ export const memoryDynamicTools = Object.freeze([
     {
       memory_id: { type: "string", minLength: 1 },
       content: { type: "string", minLength: 1 },
-      tags: { type: "array", items: { type: "string", minLength: 1 } }
+      tags: { type: "array", items: { type: "string", minLength: 1 } },
+      ...classification
     },
     ["memory_id"]
   ),

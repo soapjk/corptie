@@ -1,6 +1,58 @@
 import SwiftUI
 import CorptieConversation
 
+private enum MemoryTopicChoices {
+    struct Choice: Identifiable { let id: String; let title: String }
+    static let values: [Choice] = [
+        .init(id: "personal", title: "个人信息"), .init(id: "life", title: "生活"),
+        .init(id: "fitness_health", title: "健身健康"),
+        .init(id: "work_project", title: "工作项目"), .init(id: "programming", title: "编程开发"),
+        .init(id: "communication", title: "交互沟通"), .init(id: "product", title: "产品体验"),
+        .init(id: "finance", title: "财务投资"), .init(id: "learning_creative", title: "学习创作"),
+        .init(id: "other", title: "其他")
+    ]
+    static let contexts: [Choice] = [
+        .init(id: "all", title: "所有会话"), .init(id: "development", title: "开发任务"),
+        .init(id: "fitness", title: "健身讨论"), .init(id: "personal", title: "个人生活"),
+        .init(id: "work", title: "工作讨论"), .init(id: "finance", title: "财务投资"),
+        .init(id: "creative", title: "创作学习")
+    ]
+    static func title(_ id: String) -> String { values.first { $0.id == id }?.title ?? id }
+}
+
+private struct MemoryMultiChoiceMenu: View {
+    let title: String
+    let choices: [MemoryTopicChoices.Choice]
+    let excluded: String?
+    let limit: Int
+    @Binding var selection: Set<String>
+
+    private var selectedTitles: String {
+        guard !selection.isEmpty else { return "无" }
+        return selection.sorted().map { id in choices.first { $0.id == id }?.title ?? id }
+            .joined(separator: "、")
+    }
+
+    var body: some View {
+        Menu {
+            ForEach(choices.filter { $0.id != excluded }) { choice in
+                Button {
+                    if selection.contains(choice.id) { selection.remove(choice.id) }
+                    else if selection.count < limit { selection.insert(choice.id) }
+                } label: {
+                    Text("\(selection.contains(choice.id) ? "✓ " : "")\(choice.title)")
+                }
+                .disabled(!selection.contains(choice.id) && selection.count >= limit)
+            }
+        } label: {
+            Text("\(title)：\(selectedTitles)")
+        }
+        .onChange(of: excluded) { _, newValue in
+            if let newValue { selection.remove(newValue) }
+        }
+    }
+}
+
 @MainActor
 enum MemoryScopeLayer: String, CaseIterable {
     case task = "task"
@@ -81,6 +133,7 @@ struct MemoryManagementView: View {
     @State private var query = ""
     @State private var selectedLayer = "all"
     @State private var kind = "all"
+    @State private var selectedTopic = "all"
     @State private var status = "current"
     @State private var includeRevoked = true
     @State private var isLoading = false
@@ -134,8 +187,11 @@ struct MemoryManagementView: View {
             if scope == .global { extractionJobs = await client.memoryExtractionJobs() ?? [] }
         }
         .sheet(item: $editingMemory) { memory in
-            MemoryTagEditor(memory: memory) { content, tags in
-                if let updated = await client.updateMemory(memoryId: memory.id, content: content, tags: tags) {
+            MemoryTagEditor(memory: memory) { content, keywords, topic, secondaryTopics, appliesTo, deliveryMode in
+                if let updated = await client.updateMemory(memoryId: memory.id, content: content,
+                    tags: memory.tags ?? [], keywords: keywords, primaryTopic: topic,
+                    secondaryTopics: secondaryTopics,
+                    appliesTo: appliesTo, deliveryMode: deliveryMode) {
                     replace(updated)
                 }
             }
@@ -183,7 +239,8 @@ struct MemoryManagementView: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 7) {
+          HStack(spacing: 8) {
             TextField(L10n("Search memories"), text: $query)
                 .textFieldStyle(.roundedBorder)
             if scope == .global {
@@ -227,6 +284,14 @@ struct MemoryManagementView: View {
                 if scope == .global { extractionJobs = await client.memoryExtractionJobs() ?? extractionJobs }
             } } label: { Image(systemName: "arrow.clockwise") }
                 .buttonStyle(.borderless)
+          }
+          Picker("主题", selection: $selectedTopic) {
+              Text("所有主题").tag("all")
+              ForEach(MemoryTopicChoices.values) { topic in
+                  Text(topic.title).tag(topic.id)
+              }
+          }
+          .frame(width: 170, alignment: .leading)
         }
     }
 
@@ -351,8 +416,24 @@ struct MemoryManagementView: View {
             if let rationale = memory.structured?.extraction?.rationale {
                 Text(rationale).font(.caption2).foregroundStyle(.tertiary).lineLimit(2)
             }
-            if let tags = memory.tags, !tags.isEmpty {
+            if (memory.keywords ?? []).isEmpty, let tags = memory.tags, !tags.isEmpty {
                 Text(tags.map { "#\($0)" }.joined(separator: "  "))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let topic = memory.primaryTopic {
+                Text(MemoryTopicChoices.title(topic))
+                    .font(.caption.bold()).foregroundStyle(.secondary)
+            }
+            if let secondary = memory.secondaryTopics, !secondary.isEmpty {
+                Text(secondary.map(MemoryTopicChoices.title).joined(separator: " · "))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let keywords = memory.keywords, !keywords.isEmpty {
+                Text(keywords.map { "#\($0)" }.joined(separator: "  "))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if memory.deliveryMode == "applicable_preference" {
+                Text("主动适用：\((memory.appliesTo ?? []).joined(separator: "、"))")
                     .font(.caption).foregroundStyle(.secondary)
             }
             HStack(spacing: 12) {
@@ -417,6 +498,7 @@ struct MemoryManagementView: View {
             (selectedLayer == "all" || memory.ownerType == selectedLayer)
                 && (includeRevoked || memory.revokedAt == nil)
                 && (kind == "all" || memory.kind == kind)
+                && (selectedTopic == "all" || memory.primaryTopic == selectedTopic)
                 && (status == "all" || status == "current" && ["active", "candidate"].contains(memory.promotionStatus ?? "")
                     || memory.promotionStatus == status)
                 && (query.isEmpty || "\(memory.content) \(memory.tags?.joined(separator: " ") ?? "") \(memory.ownerId)"
@@ -453,8 +535,8 @@ struct MemoryManagementView: View {
 
     private var reloadKey: String {
         switch scope {
-        case .global: return "global:\(includeRevoked):\(status)"
-        case let .owner(type, id): return "\(type):\(id):\(includeRevoked):\(status)"
+        case .global: return "global:\(includeRevoked):\(status):\(selectedTopic)"
+        case let .owner(type, id): return "\(type):\(id):\(includeRevoked):\(status):\(selectedTopic)"
         }
     }
 
@@ -464,10 +546,12 @@ struct MemoryManagementView: View {
         switch scope {
         case .global:
             memories = await client.allMemories(includeRevoked: includeRevoked,
-                                                status: status == "all" ? nil : status) ?? memories
+                                                status: status == "all" ? nil : status,
+                                                primaryTopic: selectedTopic == "all" ? nil : selectedTopic) ?? memories
         case let .owner(type, id):
             memories = await client.memories(ownerType: type, ownerId: id, includeRevoked: includeRevoked,
-                                             status: status == "all" ? nil : status) ?? memories
+                                             status: status == "all" ? nil : status,
+                                             primaryTopic: selectedTopic == "all" ? nil : selectedTopic) ?? memories
         }
     }
 
@@ -536,6 +620,10 @@ private struct MemoryCreationSheet: View {
     @State private var kind = "fact"
     @State private var content = ""
     @State private var tags = ""
+    @State private var primaryTopic = "other"
+    @State private var secondaryTopics = Set<String>()
+    @State private var applicability = Set<String>()
+    @State private var activePreference = false
     @State private var isSaving = false
 
     init(scope: MemoryManagementView.Scope, onCreate: @escaping (MemoryItem) -> Void) {
@@ -577,7 +665,20 @@ private struct MemoryCreationSheet: View {
                     }
                 }
                 TextEditor(text: $content).frame(minHeight: 110)
-                TextField(L10n("Comma-separated tags"), text: $tags)
+                Picker("主题", selection: $primaryTopic) {
+                    ForEach(MemoryTopicChoices.values) { topic in
+                        Text(topic.title).tag(topic.id)
+                    }
+                }
+                MemoryMultiChoiceMenu(title: "辅助主题", choices: MemoryTopicChoices.values,
+                    excluded: primaryTopic, limit: 2, selection: $secondaryTopics)
+                TextField("项目或技术关键词，逗号分隔", text: $tags)
+                if ownerType == "global" && kind == "preference" {
+                    MemoryMultiChoiceMenu(title: "适用场景", choices: MemoryTopicChoices.contexts,
+                        excluded: nil, limit: 4, selection: $applicability)
+                    Toggle("在适用场景主动提供", isOn: $activePreference)
+                        .disabled(applicability.isEmpty)
+                }
             }
 
             HStack {
@@ -648,7 +749,9 @@ private struct MemoryCreationSheet: View {
             ownerId: ownerId,
             kind: kind,
             content: content.trimmingCharacters(in: .whitespacesAndNewlines),
-            tags: parsedTags,
+            tags: [], keywords: parsedTags, primaryTopic: primaryTopic,
+            secondaryTopics: secondaryTopics.sorted(), appliesTo: applicability.sorted(),
+            deliveryMode: activePreference && !applicability.isEmpty ? "applicable_preference" : "on_demand",
             sourceSessionId: sourceSessionId
         ) {
             onCreate(created)
@@ -769,29 +872,51 @@ private struct MemoryAuditSheet: View {
 
 private struct MemoryTagEditor: View {
     let memory: MemoryItem
-    let save: (String, [String]) async -> Void
+    let save: (String, [String], String?, [String], [String], String) async -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var text: String
     @State private var content: String
+    @State private var primaryTopic: String
+    @State private var secondaryTopics: Set<String>
+    @State private var applicability: Set<String>
+    @State private var activePreference: Bool
 
-    init(memory: MemoryItem, save: @escaping (String, [String]) async -> Void) {
+    init(memory: MemoryItem, save: @escaping (String, [String], String?, [String], [String], String) async -> Void) {
         self.memory = memory
         self.save = save
-        _text = State(initialValue: memory.tags?.joined(separator: ", ") ?? "")
+        _text = State(initialValue: memory.keywords?.joined(separator: ", ") ?? "")
         _content = State(initialValue: memory.content)
+        _primaryTopic = State(initialValue: memory.primaryTopic ?? "other")
+        _secondaryTopics = State(initialValue: Set(memory.secondaryTopics ?? []))
+        _applicability = State(initialValue: Set(memory.appliesTo ?? []))
+        _activePreference = State(initialValue: memory.deliveryMode == "applicable_preference")
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(L10n("Edit Memory")).font(.headline)
             TextEditor(text: $content).frame(minHeight: 100)
-            TextField(L10n("Comma-separated tags"), text: $text)
+            Picker("主题", selection: $primaryTopic) {
+                ForEach(MemoryTopicChoices.values) { topic in Text(topic.title).tag(topic.id) }
+            }
+            MemoryMultiChoiceMenu(title: "辅助主题", choices: MemoryTopicChoices.values,
+                excluded: primaryTopic, limit: 2, selection: $secondaryTopics)
+            TextField("项目或技术关键词，逗号分隔", text: $text)
+            if memory.ownerType == "global" && memory.kind == "preference" {
+                MemoryMultiChoiceMenu(title: "适用场景", choices: MemoryTopicChoices.contexts,
+                    excluded: nil, limit: 4, selection: $applicability)
+                Toggle("在适用场景主动提供", isOn: $activePreference)
+                    .disabled(applicability.isEmpty)
+            }
             HStack {
                 Spacer()
                 Button(L10n("Cancel")) { dismiss() }
                 Button(L10n("Save")) {
                     let tags = text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-                    Task { await save(content.trimmingCharacters(in: .whitespacesAndNewlines), tags); dismiss() }
+                    let contexts = applicability.sorted()
+                    let mode = activePreference && !contexts.isEmpty ? "applicable_preference" : "on_demand"
+                    Task { await save(content.trimmingCharacters(in: .whitespacesAndNewlines),
+                        tags, primaryTopic, secondaryTopics.sorted(), contexts, mode); dismiss() }
                 }.keyboardShortcut(.defaultAction)
                     .disabled(content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
@@ -838,7 +963,10 @@ struct SessionMemoryDiagnosticsView: View {
                                     .font(.caption).lineLimit(4).textSelection(.enabled)
                                 HStack(spacing: 4) {
                                     Text(entry.kind ?? L10n("Memory unavailable"))
+                                    if let topic = entry.primaryTopic { Text("· \(MemoryTopicChoices.title(topic))") }
                                     if let ownerType = entry.ownerType { Text("· \(ownerType)") }
+                                    if let lastHit = entry.lastHitAt { Text("· \(lastHit)") }
+                                    if let reason = entry.hitReason { Text("· \(reason)") }
                                     if !entry.snapshotAtRecall {
                                         Text("· \(L10n("Current content; historical snapshot unavailable"))")
                                     }

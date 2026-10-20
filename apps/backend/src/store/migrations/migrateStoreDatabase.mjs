@@ -4,7 +4,7 @@ import { migrateStartupOperations } from "./startupOperationMigrations.mjs";
 import { migrateCollaborationProtocol } from "./collaborationProtocolMigrations.mjs";
 import { migrateSessionEventStorage } from "./sessionEventEvolutionMigrations.mjs";
 import { ensureMemoryFoundationTables, quarantineLegacyExtractionNoise,
-  quarantinePreModelExtractionCandidates } from "./memoryFoundationMigrations.mjs";
+  quarantinePreModelExtractionCandidates, migrateLegacyMemoryTopics } from "./memoryFoundationMigrations.mjs";
 import { ensureCollaborationDirectoryTables } from "./collaborationDirectoryMigrations.mjs";
 import { ensureHubFoundationTables } from "./hubFoundationMigrations.mjs";
 import { migrateSessionAssociationGuards } from "./sessionAssociationMigrations.mjs";
@@ -73,6 +73,12 @@ export function migrateStoreDatabase({ db, selectAll, selectOne, ensureColumn, r
       WHERE status IN ('queued', 'running', 'paused', 'cancellation_requested', 'replanning')`);
 
     ensureMemoryFoundationTables({ db: db });
+    ensureColumn("memories", "primary_topic", "TEXT");
+    ensureColumn("memories", "secondary_topics_json", "TEXT NOT NULL DEFAULT '[]'");
+    ensureColumn("memories", "keywords_json", "TEXT NOT NULL DEFAULT '[]'");
+    ensureColumn("memories", "applies_to_json", "TEXT NOT NULL DEFAULT '[]'");
+    ensureColumn("memories", "delivery_mode", "TEXT NOT NULL DEFAULT 'on_demand'");
+    migrateLegacyMemoryTopics({ db, selectAll, runDataMigrationOnce });
     quarantineLegacyExtractionNoise({ db, selectAll, runDataMigrationOnce });
     quarantinePreModelExtractionCandidates({ db, selectAll, runDataMigrationOnce });
 

@@ -27,11 +27,18 @@ export class AgentContextService {
     if (!agent) return null;
 
     const recallScope = { ...scope, agentId };
+    const profile = scope.sessionId ? this.store.getSessionMemoryTopics?.(scope.sessionId)?.profile : null;
+    const pinned = includeMemories && profile
+      ? this.recallService?.applicablePreferences?.(recallScope, profile) : null;
     const recall = includeMemories && this.recallService
-      ? await this.recallService.startup(recallScope)
+      ? await this.recallService.startup(recallScope, {
+        intent, profile, excludeIds: new Set(pinned?.selectedIds ?? []) })
       : null;
-    const memories = !includeMemories ? [] : (recall?.memories
-      ?? await this.hubService.retrieveMemory(intent, recallScope, { limit: 8, allowEmbedding: false }));
+    const memories = !includeMemories ? [] : [
+      ...(pinned?.memories ?? []),
+      ...(recall?.memories ?? await this.hubService.retrieveMemory(intent, recallScope,
+        { limit: 8, allowEmbedding: false }))
+    ];
 
     let skills = [];
     if (typeof this.resolveAgentSkills === "function") {
@@ -47,8 +54,9 @@ export class AgentContextService {
 
     const instructions = this.#renderInstructions({ agent, systemPrompt, description, memories, skills });
     if (recall && scope.sessionId) {
-      this.recallService.markInjection?.(recall, memories.length > 0 ? "context_included" : "not_selected");
+      this.recallService.markInjection?.(recall, recall.memories.length > 0 ? "context_included" : "not_selected");
     }
+    if (pinned) this.recallService.markInjection?.(pinned, "context_included");
 
     return { agent, systemPrompt, description, memories, skills, instructions, recall };
   }

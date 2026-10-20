@@ -800,25 +800,29 @@ final class EntityAPIClient: ObservableObject {
     }
 
     // 查某 owner（如 task）的记忆：GET /memories?ownerType=&ownerId= → { memories }
-    func memories(ownerType: String, ownerId: String, includeRevoked: Bool = false, status: String? = nil) async -> [MemoryItem]? {
+    func memories(ownerType: String, ownerId: String, includeRevoked: Bool = false,
+                  status: String? = nil, primaryTopic: String? = nil) async -> [MemoryItem]? {
         var components = URLComponents(url: baseURL.appending(path: "memories"), resolvingAgainstBaseURL: false)
         components?.queryItems = [
             URLQueryItem(name: "ownerType", value: ownerType),
             URLQueryItem(name: "ownerId", value: ownerId),
             URLQueryItem(name: "includeRevoked", value: includeRevoked ? "true" : "false"),
             URLQueryItem(name: "status", value: status),
+            URLQueryItem(name: "primaryTopic", value: primaryTopic),
             URLQueryItem(name: "limit", value: "50")
         ]
         guard let url = components?.url else { return nil }
         return await loadMemories(url: url, reset: true)
     }
 
-    func allMemories(includeRevoked: Bool = true, status: String? = nil) async -> [MemoryItem]? {
+    func allMemories(includeRevoked: Bool = true, status: String? = nil,
+                     primaryTopic: String? = nil) async -> [MemoryItem]? {
         var components = URLComponents(url: baseURL.appending(path: "memories"), resolvingAgainstBaseURL: false)
         components?.queryItems = [
             URLQueryItem(name: "global", value: "true"),
             URLQueryItem(name: "includeRevoked", value: includeRevoked ? "true" : "false"),
             URLQueryItem(name: "status", value: status),
+            URLQueryItem(name: "primaryTopic", value: primaryTopic),
             URLQueryItem(name: "limit", value: "50")
         ]
         guard let url = components?.url else { return nil }
@@ -845,11 +849,16 @@ final class EntityAPIClient: ObservableObject {
         return await loadMemories(url: components.url!, reset: false)
     }
 
-    func updateMemory(memoryId: String, content: String, tags: [String]) async -> MemoryItem? {
+    func updateMemory(memoryId: String, content: String, tags: [String], keywords: [String],
+                      primaryTopic: String?, secondaryTopics: [String],
+                      appliesTo: [String], deliveryMode: String) async -> MemoryItem? {
         var request = URLRequest(url: baseURL.appending(path: "memories/\(memoryId)"))
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["content": content, "tags": tags])
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["content": content, "tags": tags,
+            "primaryTopic": primaryTopic.map { $0 as Any } ?? NSNull(),
+            "keywords": keywords, "secondaryTopics": secondaryTopics,
+            "appliesTo": appliesTo, "deliveryMode": deliveryMode])
         return await mutateMemory(request)
     }
 
@@ -859,6 +868,11 @@ final class EntityAPIClient: ObservableObject {
         kind: String,
         content: String,
         tags: [String],
+        keywords: [String] = [],
+        primaryTopic: String? = nil,
+        secondaryTopics: [String] = [],
+        appliesTo: [String] = [],
+        deliveryMode: String = "on_demand",
         sourceSessionId: String? = nil
     ) async -> MemoryItem? {
         var request = URLRequest(url: baseURL.appending(path: "memories"))
@@ -871,6 +885,11 @@ final class EntityAPIClient: ObservableObject {
             "content": content,
             "tags": tags
         ]
+        body["primaryTopic"] = primaryTopic.map { $0 as Any } ?? NSNull()
+        body["keywords"] = keywords
+        body["secondaryTopics"] = secondaryTopics
+        body["appliesTo"] = appliesTo
+        body["deliveryMode"] = deliveryMode
         if let sourceSessionId { body["sourceSessionId"] = sourceSessionId }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         do {

@@ -69,6 +69,8 @@ export class MemoryExtractionScheduler {
   async #drain() {
     if (this.closed || this.running) return;
     this.running = true;
+    let legacyRetryDelay = null;
+    let legacyPageProcessed = false;
     try {
       while (!this.closed) {
         const now = new Date(this.clock()).toISOString();
@@ -98,11 +100,21 @@ export class MemoryExtractionScheduler {
           });
         }
       }
+      if (!this.closed && typeof this.extractor.classifyLegacyMany === "function") {
+        try {
+          legacyPageProcessed = await this.extractor.classifyLegacyPage();
+        } catch (error) {
+          console.warn(`[memory-classification] legacy page postponed: ${error?.code ?? error?.message ?? error}`);
+          legacyRetryDelay = 60 * 60 * 1000;
+        }
+      }
     } finally {
       this.running = false;
       if (!this.closed) {
         const next = this.store.nextMemoryExtractionWakeAt();
         if (next) this.#wake(Math.max(0, Date.parse(next) - this.clock()));
+        if (legacyRetryDelay !== null) this.#wake(legacyRetryDelay);
+        else if (legacyPageProcessed) this.#wake(0);
       }
     }
   }

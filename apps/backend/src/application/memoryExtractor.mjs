@@ -1,4 +1,5 @@
 // A model decides which conversational statements deserve durable memory.
+import { validateMemoryClassification } from "./memoryTaxonomy.mjs";
 // The application only validates provenance, scope, lifecycle and budgets.
 const MEMORY_KINDS = new Set([
   "skill", "procedure", "dev_experience", "fact", "lesson", "preference", "feedback", "episodic"
@@ -35,6 +36,45 @@ export class MemoryExtractor {
     this.store = store;
     this.classifyMany = classifyMany;
     this.clock = clock;
+  }
+
+  async classifyLegacyPage() {
+    if (typeof this.classifyLegacyMany !== "function") return false;
+    const rows = this.store.listUnclassifiedMemories(20);
+    if (!rows.length) return false;
+    const proposals = await this.classifyLegacyMany(rows);
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    const validated = proposals.map((proposal) => {
+      const row = byId.get(proposal.id);
+      if (!row) throw failure("MEMORY_MODEL_INVALID_OUTPUT", "Unknown legacy Memory id.");
+      const confidence = Number(proposal.confidence);
+      if (!proposal.primaryTopic) throw failure("MEMORY_MODEL_INVALID_OUTPUT", "Legacy Memory topic is required.");
+      if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+        throw failure("MEMORY_MODEL_INVALID_OUTPUT", "Invalid legacy topic confidence.");
+      }
+      const extracted = row.source_type === "extracted";
+      const metadata = parse(row.structured_json).extraction;
+      const classification = validateMemoryClassification({ ...proposal, kind: row.kind,
+        ownerType: row.owner_type,
+        userEvidence: row.source_type === "user" || (extracted && metadata?.role === "user") },
+      { extracted: true });
+      if (classification.deliveryMode === "applicable_preference" && confidence < 0.95) {
+        classification.deliveryMode = "on_demand";
+      }
+      return { row, classification };
+    });
+    this.store.runInTransaction(() => {
+      for (const { row, classification } of validated) {
+        const current = this.store.getMemory(row.id);
+        if (!current || current.primary_topic != null || current.revoked_at) continue;
+        const updated = this.store.updateMemory(row.id, { ...classification,
+          version: Number(row.version ?? 1) + 1 });
+        this.store.createMemoryAudit({ memoryId: row.id, action: "classify_legacy",
+          actorType: "system", reason: "Model classified existing Memory without changing content.",
+          before: row, after: updated });
+      }
+    });
+    return true;
   }
 
   async extractFromSession(sessionId, claimedScope = {}, { reprocess = false } = {}) {
@@ -118,6 +158,7 @@ export class MemoryExtractor {
           ownerType: candidate.owner.ownerType, ownerId: candidate.owner.ownerId,
           taskId: candidate.owner.ownerType === "task" ? scope.taskId : null,
           kind: candidate.kind, content: candidate.content,
+          ...candidate.classification,
           sourceType: "extracted", sourceSessionId: sessionId,
           sourceEventSequence,
           sourceEventSeqs: [candidate.event.sequence],
@@ -210,8 +251,17 @@ function validateCandidate(item, bySequence, scope) {
     || typeof item.conflict !== "boolean") {
     throw failure("MEMORY_MODEL_INVALID_OUTPUT", "Memory proposal lacks valid scope, evidence or confidence.");
   }
+  let classification;
+  try {
+    if (!item.primaryTopic) throw new Error("Missing Memory topic.");
+    classification = validateMemoryClassification({ ...item,
+      ownerType: owner.ownerType, kind: item.kind, userEvidence: event.role === "user" },
+    { extracted: true });
+  } catch {
+    throw failure("MEMORY_MODEL_INVALID_OUTPUT", "Memory proposal has invalid classification.");
+  }
   return { event, owner, content, evidence, rationale, scopeRationale,
-    kind: item.kind, confidence, conflict: item.conflict };
+    kind: item.kind, confidence, conflict: item.conflict, classification };
 }
 
 function memoryKey(ownerType, ownerId, content) {

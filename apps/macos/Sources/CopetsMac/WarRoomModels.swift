@@ -796,6 +796,11 @@ struct MemoryItem: Identifiable, Codable, Hashable {
     let sourceEventSequence: Int?
     let sourceEventSeqs: [Int]?
     let tags: [String]?
+    let primaryTopic: String?
+    let secondaryTopics: [String]?
+    let keywords: [String]?
+    let appliesTo: [String]?
+    let deliveryMode: String?
     let confidence: Double?
     let usageCount: Int?
     let lastAccessedAt: String?
@@ -883,6 +888,9 @@ struct MemoryRecallEntry: Identifiable, Codable, Hashable {
     let ownerType: String?
     let ownerId: String?
     let snapshotAtRecall: Bool
+    let primaryTopic: String?
+    let lastHitAt: String?
+    let hitReason: String?
 }
 
 struct MemoryRecallListEnvelope: Codable {

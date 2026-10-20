@@ -55,6 +55,9 @@ export class MemoryLifecycleService {
       taskId: first.owner_type === "task" ? first.owner_id : null,
       kind: first.kind,
       content: requiredText(content, "content"),
+      primaryTopic: memories.every((memory) => memory.primary_topic === first.primary_topic)
+        ? first.primary_topic : "other",
+      deliveryMode: "on_demand",
       sourceType: "consolidated",
       sourceSessionId: first.source_session_id,
       sourceEventSeqs: memories.flatMap((memory) => safeArray(memory.source_event_seqs_json)),

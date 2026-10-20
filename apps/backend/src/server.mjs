@@ -159,7 +159,8 @@ import { SceneApplicationService } from "./scenes/sceneApplicationService.mjs";
 import { handleSceneHttpRequest } from "./scenes/sceneHttpApi.mjs";
 import { MemoryExtractor } from "./application/memoryExtractor.mjs";
 import { MemoryExtractionScheduler } from "./application/memoryExtractionScheduler.mjs";
-import { createMemoryModelClassifier } from "./application/memoryModelClassifier.mjs";
+import { createMemoryModelClassifier, createLegacyMemoryClassifier } from "./application/memoryModelClassifier.mjs";
+import { MemoryTopicService, createMemoryTopicClassifier } from "./application/memoryTopicService.mjs";
 import { AssistantService, createAssistantIntentResolver } from "./application/assistantService.mjs";
 import { createEntityHttpRoutes } from "./application/entityHttpComposition.mjs";
 import { handleSshWorkspaceHttpRequest } from "./application/sshWorkspaceHttpApi.mjs";
@@ -515,6 +516,7 @@ const hubService = new HubService({
   embedder: createOpenAiEmbedder(store.choiceParserSettings())
 });
 const memoryRecallService = new MemoryRecallService({ store, hubService });
+const memoryTopicService = new MemoryTopicService({ store });
 const memoryLifecycleService = new MemoryLifecycleService({ store });
 const agentContextService = new AgentContextService({ store, hubService, recallService: memoryRecallService });
 const memoryOperationService = new MemoryOperationService({
@@ -1259,7 +1261,7 @@ const sessionApplicationService = createSessionApplicationComposition({
   recoverSession: (input) => sessionRecoveryCoordinator.recover(input),
   requireSessionReference, workChatContextService,
   resolveContextReferences: (sessionId, options) => sessionContextReferenceService.resolve(sessionId, options),
-  artifactService, memoryRecallService, mcpAssignmentRevisionForAgent,
+  artifactService, memoryRecallService, memoryTopicService, mcpAssignmentRevisionForAgent,
   resolveAssignedCapabilities: (agentId) => assignedCapabilitySummary(store, agentId),
   ensureCollaborationAgentForSession, ensureLogicalRouteForProviderSession,
   sessionWithLogicalWorkspace, collaborationCore, emitEvent
@@ -1370,6 +1372,10 @@ const backgroundAgentService = new BackgroundAgentService({
 memoryExtractor.classifyMany = createMemoryModelClassifier({ backgroundAgent: backgroundAgentService,
   claimBudget: (day) => store.claimMemoryExtractionDailyCall(day, 24),
   refundBudget: (day) => store.refundMemoryExtractionDailyCall(day) });
+memoryExtractor.classifyLegacyMany = createLegacyMemoryClassifier({ backgroundAgent: backgroundAgentService,
+  claimBudget: (day) => store.claimMemoryExtractionDailyCall(day, 24),
+  refundBudget: (day) => store.refundMemoryExtractionDailyCall(day) });
+memoryTopicService.classify = createMemoryTopicClassifier({ backgroundAgent: backgroundAgentService });
 const taskSummaryService = new TaskSummaryService({ store, backgroundAgent: backgroundAgentService,
   isEnabled: () => !developmentPreview });
 skillRegistryService.setDiscoveryAssistant(createSkillPackageDiscoveryAssistant({

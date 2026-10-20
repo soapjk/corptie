@@ -15,7 +15,7 @@ const options = { profile, generation: "generation" };
 test("memory hit presentation keeps full body and category without redundant snapshot captions", () => {
   const content = "完整命中正文\n".repeat(200);
   const reads = { memoryHits: { state: "ready", data: { items: [
-    { resource: { resourceType: "memory", id: "hit" }, kind: "preference", content, snapshotAtRecall: true },
+    { resource: { resourceType: "memory", id: "hit" }, kind: "preference", content, snapshotAtRecall: true, primaryTopic: "偏好主题", lastHitAt: "2026-10-20T12:00:00Z" },
     { resource: { resourceType: "memory", id: "gone" }, kind: "fact", unavailable: true }
   ] } } };
   const state = projectDetailBusinessRich(scope, reads, { ...options, profile: presentationProfile });

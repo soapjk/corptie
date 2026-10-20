@@ -17,7 +17,7 @@ export function createSessionApplicationComposition({
   store, agentProviderRegistry, sessionBindingRepository, toolHostService, toolMaterializationPort,
   requiredToolDomainsForSession, assertForkDispatchAllowed, assertSessionRecoveryMessageBoundary,
   recoverSession, requireSessionReference, workChatContextService, resolveContextReferences,
-  artifactService, memoryRecallService, mcpAssignmentRevisionForAgent,
+  artifactService, memoryRecallService, memoryTopicService, mcpAssignmentRevisionForAgent,
   resolveAssignedCapabilities = () => [],
   ensureCollaborationAgentForSession, ensureLogicalRouteForProviderSession,
   sessionWithLogicalWorkspace, collaborationCore, emitEvent
@@ -133,8 +133,11 @@ export function createSessionApplicationComposition({
         workId: session.workId ?? null,
         taskId: session.taskId ?? null
       } : null;
+      const currentMessage = conversationMessageText(messageContext.message);
+      const topicProfile = session && memoryTopicService
+        ? await memoryTopicService.update(session, currentMessage) : { topics: [], contexts: [], keywords: [] };
       const globalPreferences = recallScope
-        ? memoryRecallService?.globalPreferences?.(recallScope) : null;
+        ? memoryRecallService?.applicablePreferences?.(recallScope, topicProfile) : null;
       if (globalPreferences?.memories.length) {
         const lines = globalPreferences.memories.map((memory) => `- ${memory.content}`);
         globalPreferenceContext = {
@@ -145,9 +148,10 @@ export function createSessionApplicationComposition({
       if (session?.agentId) {
         const excludeIds = new Set(globalPreferences?.memories.map((memory) => memory.id) ?? []);
         const recall = memoryRecallService.hasStartupRecall?.(session.id) === false
-          ? await memoryRecallService.startup(recallScope, { excludeIds })
-          : await memoryRecallService.turn(conversationMessageText(messageContext.message), recallScope,
-            { deepRecall: messageContext.deepRecall === true, excludeIds });
+          ? await memoryRecallService.startup(recallScope, { excludeIds, intent: currentMessage,
+            profile: topicProfile, deepRecall: messageContext.deepRecall === true })
+          : await memoryRecallService.turn(currentMessage, recallScope,
+            { deepRecall: messageContext.deepRecall === true, excludeIds, profile: topicProfile });
         recallDecision = recall;
         if (recall.memories.length > 0) {
           const lines = recall.memories.map((memory) => `- [${memory.kind}] ${memory.content}`);
