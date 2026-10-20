@@ -30,9 +30,53 @@ public struct PlatformNavigationItem: Identifiable {
     }
 }
 
+/// Groups only the navigation chrome, never the resident page hierarchy.
+public struct PlatformNavigationGlassContainer<Content: View>: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    private let content: Content
+
+    public init(@ViewBuilder content: () -> Content) { self.content = content() }
+
+    @ViewBuilder public var body: some View {
+        if #available(iOS 26.0, macOS 26.0, *), !reduceTransparency {
+            GlassEffectContainer(spacing: 8) { content }
+        } else { content }
+    }
+}
+
+/// One native glass shape exists for the selected tab, shared by all layouts.
+/// Its stable effect identity allows the system to move/morph the capsule.
+public struct PlatformTabSelectionIndicator: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    private let namespace: Namespace.ID
+
+    public init(namespace: Namespace.ID) { self.namespace = namespace }
+
+    public var body: some View {
+        Group {
+            if #available(iOS 26.0, macOS 26.0, *), !reduceTransparency {
+                Color.clear
+                    .glassEffect(.regular.interactive(), in: .capsule)
+                    .glassEffectID("navigation-selection", in: namespace)
+                    .glassEffectTransition(reduceMotion ? .identity : .matchedGeometry)
+            } else if reduceTransparency {
+                Capsule().fill(.background)
+                    .overlay { Capsule().strokeBorder(Color.primary.opacity(0.22), lineWidth: 1) }
+            } else {
+                Capsule().fill(Color.accentColor.opacity(0.14))
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
 /// The same element-sized vertical glass capsule on iPad and macOS. Hosts own
 /// navigation state, window insets and edge-drag resizing.
 public struct PlatformNavigationRail: View {
+    @Namespace private var selectionGlass
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     public let items: [PlatformNavigationItem]
     public let selectedID: String
     public let expanded: Bool
@@ -60,6 +104,15 @@ public struct PlatformNavigationRail: View {
     }
 
     public var body: some View {
+        PlatformNavigationGlassContainer { railContents.padding(5) }
+            .animation(reduceMotion ? nil : .smooth(duration: 0.22), value: selectedID)
+            .platformGlassSurface(in: Capsule(), variant: .clear)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("navigation-tab-capsule")
+            .frame(maxHeight: .infinity, alignment: verticalAlignment)
+    }
+
+    private var railContents: some View {
         VStack(spacing: 2) {
             ForEach(items) { item in
                 let selected = item.id == selectedID
@@ -80,7 +133,7 @@ public struct PlatformNavigationRail: View {
                     .foregroundStyle(selected ? Color.accentColor : .secondary)
                     .background {
                         if selected {
-                            Capsule().fill(Color.accentColor.opacity(0.12))
+                            PlatformTabSelectionIndicator(namespace: selectionGlass)
                         }
                     }
                     .contentShape(Rectangle())
@@ -124,10 +177,5 @@ public struct PlatformNavigationRail: View {
             .accessibilityAddTraits(settingsSelected ? .isSelected : [])
             .accessibilityValue(settingsSelected ? "selected" : "not-selected")
         }
-        .padding(5)
-        .platformGlassSurface(in: Capsule(), variant: .clear)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("navigation-tab-capsule")
-        .frame(maxHeight: .infinity, alignment: verticalAlignment)
     }
 }

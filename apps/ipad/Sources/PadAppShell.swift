@@ -377,29 +377,37 @@ private struct PadNavigationRail: View {
 }
 
 private struct PadBottomTabBar: View {
+    @Namespace private var selectionGlass
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var selection: PadTab
     let settings: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
-            HStack(spacing: 0) {
-                ForEach(PadTab.allCases) { item in
-                    let isSelected = selection == item
-                    Button {
-                        selection = item
-                    } label: {
-                        compactLabel(symbol: item.symbol, title: item.title, selected: isSelected)
+            PlatformNavigationGlassContainer {
+                HStack(spacing: 0) {
+                    ForEach(PadTab.allCases) { item in
+                        let isSelected = selection == item
+                        Button {
+                            selection = item
+                        } label: {
+                            compactLabel(symbol: item.symbol, title: item.title, selected: isSelected)
+                                .background {
+                                    if isSelected { PlatformTabSelectionIndicator(namespace: selectionGlass) }
+                                }
+                        }
+                        .buttonStyle(PlatformTabButtonStyle())
+                        .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                        .accessibilityLabel(item.title)
+                        .accessibilityAddTraits(isSelected ? .isSelected : [])
+                        .accessibilityIdentifier("tab-\(item.rawValue)")
                     }
-                    .buttonStyle(PlatformTabButtonStyle())
-                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                    .accessibilityLabel(item.title)
-                    .accessibilityAddTraits(isSelected ? .isSelected : [])
-                    .accessibilityIdentifier("tab-\(item.rawValue)")
                 }
+                .padding(.horizontal, 4)
+                .padding(.vertical, 4)
+                .frame(maxWidth: 360)
             }
-            .padding(.horizontal, 4)
-            .padding(.vertical, 4)
-            .frame(maxWidth: 360)
+            .animation(reduceMotion ? nil : .smooth(duration: 0.22), value: selection)
             .padGlassSurface(in: Capsule(), interactive: true, variant: .clear)
 
             Button(action: settings) {
