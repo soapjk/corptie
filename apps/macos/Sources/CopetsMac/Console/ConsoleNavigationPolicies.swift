@@ -205,7 +205,7 @@ struct ConsoleWorkOutlineHeader: View {
     @FocusState private var isCreateTaskFocused: Bool
 
     var body: some View {
-        HStack(spacing: 0) {
+        WorkOutlineHeaderRow(toggleExpanded: toggleExpanded) {
             Button(action: toggleExpanded) {
                 HStack(spacing: 7) {
                     ObjectiveAvatarView(
@@ -226,7 +226,7 @@ struct ConsoleWorkOutlineHeader: View {
             .accessibilityLabel(work.name)
             .accessibilityValue(accessibilityValue)
             .help(isExpanded ? L10n("Collapse Work") : L10n("Expand Work"))
-
+        } discussion: {
             WorkDiscussionButton(isSelected: isChatSelected, isRunning: isChatRunning,
                 hasUnread: hasUnreadChat, title: L10n("讨论"),
                 accessibilityTitle: L10n("Open Work Chat"),
@@ -234,23 +234,11 @@ struct ConsoleWorkOutlineHeader: View {
                 action: openChat)
                 .padding(.leading, 6)
 
-            Button(action: toggleExpanded) {
-                HStack(spacing: 0) {
-                    Spacer(minLength: 4)
-                    if hasUnread && !isExpanded {
-                        Circle()
-                            .fill(Color.red)
-                            .frame(width: 8, height: 8)
-                            .accessibilityLabel(L10n("Unread Session"))
-                    }
-                }
-                .frame(minHeight: WorkOutlineMetrics.headerIconSize)
-                .padding(.vertical, WorkOutlineMetrics.headerPadding)
-                .contentShape(Rectangle())
+        } actions: {
+            if hasUnread && !isExpanded {
+                UnreadSessionDot(label: L10n("Unread Session"))
+                    .padding(.trailing, 4)
             }
-            .buttonStyle(.plain)
-            .accessibilityHidden(true)
-            .accessibilityIdentifier("work-header-empty-\(work.id)")
 
             Button(action: createTask) {
                 Image(systemName: "plus")
@@ -260,7 +248,7 @@ struct ConsoleWorkOutlineHeader: View {
             }
             .buttonStyle(.plain)
             .focused($isCreateTaskFocused)
-            .opacity(isHovering || isCreateTaskFocused ? 1 : 0)
+            .opacity(isHovering || isCreateTaskFocused ? 1 : 0.45)
             .accessibilityLabel(L10nFormat("Create Task in %@", work.name))
             .help(L10nFormat("Create Task in %@", work.name))
         }

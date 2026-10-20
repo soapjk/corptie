@@ -41,7 +41,7 @@ struct UnifiedConsoleControlSurfaceTests {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 28),
             styleMask: [.borderless], backing: .buffered, defer: false)
         window.contentView = host
-        window.makeKeyAndOrderFront(nil)
+        window.orderBack(nil)
         defer { window.orderOut(nil) }
         host.layoutSubtreeIfNeeded()
 
@@ -65,14 +65,15 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func workHeaderEmptyAreaUsesFullHeightDisclosureButtonsOnBothClients() throws {
+    func workHeaderUsesSharedPriorityAndNonLayoutBlankHitAreaOnBothClients() throws {
         let desktop = try source(named: "Console/ConsoleNavigationPolicies.swift")
         let headerStart = try #require(desktop.range(of: "struct ConsoleWorkOutlineHeader: View"))
         let headerEnd = try #require(desktop.range(of: "enum ConsoleTaskSelectionPolicy", range: headerStart.upperBound..<desktop.endIndex))
         let header = String(desktop[headerStart.lowerBound..<headerEnd.lowerBound])
-        #expect(header.components(separatedBy: "Button(action: toggleExpanded)").count == 3)
-        #expect(header.contains(".frame(minHeight: WorkOutlineMetrics.headerIconSize)"))
-        #expect(header.contains(".accessibilityIdentifier(\"work-header-empty-\\(work.id)\")"))
+        #expect(header.components(separatedBy: "Button(action: toggleExpanded)").count == 2)
+        #expect(header.contains("WorkOutlineHeaderRow(toggleExpanded: toggleExpanded)"))
+        #expect(!header.contains("work-header-empty-"))
+        #expect(header.contains(".opacity(isHovering || isCreateTaskFocused ? 1 : 0.45)"))
         #expect(header.contains(".contentShape(Rectangle())"))
         #expect(header.contains("action: openChat"))
         #expect(header.contains("Button(action: createTask)"))
@@ -84,8 +85,18 @@ struct UnifiedConsoleControlSurfaceTests {
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("ipad/Sources/PadWorkOutline.swift")
         let mobile = try String(contentsOf: mobileURL, encoding: .utf8)
-        #expect(mobile.contains(".frame(minHeight: isPhone ? 28 : WorkOutlineMetrics.headerIconSize)"))
-        #expect(mobile.contains(".accessibilityIdentifier(\"work-header-empty-\\(work.id)\")"))
+        #expect(mobile.contains("WorkOutlineHeaderRow(minimumHeight: 44, toggleExpanded: toggle)"))
+        #expect(!mobile.contains("work-header-empty-"))
+        #expect(mobile.contains("ViewThatFits(in: .horizontal)"))
+        #expect(mobile.contains("minimumHitHeight: 44"))
+        #expect(mobile.contains(".lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)"))
+        let shared = try sharedSource(named: "WorkOutlineHeaderRow.swift")
+        #expect(shared.contains("title.layoutPriority(1)"))
+        #expect(shared.contains("Spacer(minLength: 4).layoutPriority(-1)"))
+        #expect(shared.contains(".background {"))
+        #expect(shared.contains(".accessibilityHidden(true)"))
+        #expect(!shared.contains("GeometryReader"))
+        #expect(!shared.contains(".onTapGesture"))
     }
 
     @Test
