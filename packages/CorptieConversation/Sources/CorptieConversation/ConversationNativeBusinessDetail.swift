@@ -297,8 +297,10 @@ private struct NativeBusinessMemoryRow: View {
     private var conflicted: Bool { editing && draftRevision != save?.expectedResourceRevision }
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(kindTitle).font(.caption.weight(.semibold)).foregroundStyle(Color.accentColor)
+            NativeBusinessTextSection(title: kindTitle,
+                text: row.unavailable ? "内容已不可用，仅保留命中记录" : row.content)
+            if (!isHit && save != nil) || actions.contains(where: { $0.operation == "memory.delete" }) {
+              HStack {
                 Spacer(minLength: 0)
                 if !isHit, let save {
                     Button { draft = row.content; draftRevision = save.expectedResourceRevision; editing.toggle() } label: { Image(systemName: "square.and.pencil").frame(minWidth: 24, minHeight: 24) }
@@ -308,10 +310,8 @@ private struct NativeBusinessMemoryRow: View {
                     Button { perform(remove, [:]) } label: { Image(systemName: "trash").frame(minWidth: 24, minHeight: 24) }
                         .buttonStyle(.plain).foregroundStyle(Color.red).disabled(!canCommand(remove)).help("撤销记忆").accessibilityLabel("撤销记忆")
                 }
+              }
             }
-            if row.unavailable { Text("内容已不可用，仅保留命中记录").font(.caption).foregroundStyle(.secondary) }
-            else { NativeBusinessTextSection(title: "内容", text: row.content) }
-            if isHit && row.snapshotAtRecall { Text("命中时的内容快照").font(.caption2).foregroundStyle(.secondary) }
             if editing, let save {
                 TextEditor(text: Binding(get: { draft }, set: { draft = $0 })).font(.system(size: 12)).frame(height: 140)
                 if retainedDraft == nil { Text("其他草稿已占满保留窗口；此草稿仅在本次打开期间保留").font(.caption).foregroundStyle(.secondary) }
@@ -342,18 +342,12 @@ private struct NativeBusinessTextSection: View {
     private var expanded: Bool { expansion?.expanded ?? localExpanded }
     var body: some View {
         if !text.isEmpty {
-            VStack(alignment: .leading, spacing: 5) {
-                Button {
-                    if let expansion { expansion.expanded.toggle() } else { localExpanded.toggle() }
-                } label: {
-                    Label(title, systemImage: expanded ? "chevron.down" : "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(Color.accentColor)
-                }.buttonStyle(.plain).accessibilityValue(expanded ? "已展开" : "已收起")
-                if expanded && text.count > 2000 { ScrollView(.vertical) { bodyText }.frame(height: 240) }
-                else { bodyText.lineLimit(expanded ? nil : 3) }
-            }
+            ConversationStampedParagraph(title: title, text: text, expansion: Binding(
+                get: { expanded }, set: { value in
+                    if let expansion { expansion.expanded = value } else { localExpanded = value }
+                }))
         }
     }
-    private var bodyText: some View { Text(text).font(.system(size: 12)).foregroundStyle(.secondary).lineSpacing(2).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
 }
 private struct NativeBusinessNavigation: View {
     let action: ClientDetailAction

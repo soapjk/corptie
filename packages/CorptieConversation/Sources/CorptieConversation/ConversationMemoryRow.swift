@@ -17,8 +17,8 @@ public struct ConversationMemoryRow<Actions: View>: View {
     }
 
     public var body: some View {
-        DisclosureGroup(kind) {
-            ConversationDetailText(text: content)
+        VStack(alignment: .leading, spacing: 6) {
+            ConversationStampedParagraph(title: kind, text: content)
             if !sourceType.isEmpty || !trustLevel.isEmpty {
                 Text([sourceType, trustLevel].filter { !$0.isEmpty }.joined(separator: " · "))
                     .font(.caption).foregroundStyle(.secondary)

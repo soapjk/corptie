@@ -77,7 +77,7 @@ export function refineBusinessPresentation(card, scope, results) {
       item.title = ({ preference: "偏好", fact: "事实", workflow: "工作方式", lesson: "经验" })[row.kind] ?? row.kind ?? "记忆";
       item.preview = row.unavailable ? "内容已不可用" : preview(body);
       item.body = row.unavailable ? "内容已不可用，仅保留命中记录" : body;
-      item.metadata = name === "memoryHits" ? row.snapshotAtRecall ? "命中时的内容快照" : "已实际命中"
+      item.metadata = name === "memoryHits" ? ""
         : [row.sourceType === "direct_user" ? "用户提供" : "记忆资源", row.revokedAt ? "已撤销" : ""].filter(Boolean).join(" · ");
       // A historical hit is a read-only fact, not authority to edit another owner's memory.
       if (name === "memoryHits") delete item.actionId;

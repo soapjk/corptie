@@ -238,13 +238,11 @@ public struct ConversationTaskDefinition: View {
         self.expandLabel = expandLabel; self.collapseLabel = collapseLabel
     }
     public var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 8) {
             ForEach(values.indices, id: \.self) { index in
                 if !values[index].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    ConversationInspectorSection(title: titles[index],
-                        systemImage: ["text.alignleft", "checklist"][index]) {
-                        ConversationDetailText(text: values[index], expandLabel: expandLabel, collapseLabel: collapseLabel)
-                    }
+                    ConversationStampedParagraph(title: titles[index], text: values[index],
+                        expandLabel: expandLabel, collapseLabel: collapseLabel)
                 }
             }
         }
