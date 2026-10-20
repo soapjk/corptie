@@ -62,12 +62,12 @@ test("duplicate session titles fail with a conflict response", () => {
 test("the next available title starts at one and skips occupied suffixes", () => {
   const sessions = [
     { id: "one", title: "Dashboard" },
-    { id: "two", title: "dashboard 1" },
-    { id: "three", title: "Dashboard 2" },
-    { id: "four", title: "Dashboard 4" }
+    { id: "two", title: "dashboard_1" },
+    { id: "three", title: "Dashboard_2" },
+    { id: "four", title: "Dashboard_4" }
   ];
 
-  assert.equal(suggestAvailableSessionTitle(sessions, "Dashboard"), "Dashboard 3");
+  assert.equal(suggestAvailableSessionTitle(sessions, "Dashboard"), "Dashboard_3");
 });
 
 test("an automatically generated title keeps its base when available and increments on conflicts", () => {
@@ -77,11 +77,11 @@ test("an automatically generated title keeps its base when available and increme
       [{ id: "one", title: "workspace_agent" }],
       "workspace_agent"
     ),
-    "workspace_agent 1"
+    "workspace_agent_1"
   );
   assert.equal(
     resolveAvailableSessionTitle([], "workspace_agent", null, new Set(["workspace_agent"])),
-    "workspace_agent 1"
+    "workspace_agent_1"
   );
 });
 

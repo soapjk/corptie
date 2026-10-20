@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { validateEntityName } from "../domain/workTaskValidation.mjs";
 
 export const TASK_SUMMARY_SCHEMA_VERSION = 1;
-export const TASK_SUMMARY_PROMPT_VERSION = "task-summary:4-unfinished-stopped";
+export const TASK_SUMMARY_PROMPT_VERSION = "task-summary:5-title-whitelist";
 export const TASK_SUMMARY_OUTPUT_SCHEMA = Object.freeze({
   type: "object", additionalProperties: false,
   required: ["focus", "progress", "intervention", "reason", "nextAction", "sourceRefs", "suggestedTitle", "messageSummary", "targetMessageId"],
@@ -59,7 +59,7 @@ export function validateTaskSummaryOutput(text, { allowedSources, incomplete = f
   if (value.suggestedTitle !== undefined && value.suggestedTitle !== "") {
     if (typeof value.suggestedTitle !== "string" || value.suggestedTitle.length > 64) throw invalid("Invalid suggestedTitle.");
     try { validateEntityName(value.suggestedTitle, "title", "Task"); }
-    catch { throw invalid("Suggested title may only contain English letters, Chinese characters or digits."); }
+    catch { throw invalid("Suggested title allows Chinese, English letters, digits, hyphens and underscores only, with no leading digit or spaces."); }
   }
   // Partial context may explain uncertainty, but must not rename a Task.
   if (incomplete) value.suggestedTitle = "";

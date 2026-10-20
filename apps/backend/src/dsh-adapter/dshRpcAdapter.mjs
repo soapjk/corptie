@@ -467,7 +467,7 @@ async function sessionCancel(payload, { sessionApplicationService }) {
 
 async function sessionRename(payload, { sessionApplicationService }) {
   const sessionId = String(payload?.sessionId ?? "");
-  const title = typeof payload?.title === "string" ? payload.title.trim() : "";
+  const title = typeof payload?.title === "string" ? payload.title : "";
   if (!sessionId) throw notFound(sessionId);
   if (!title) throw new Error("session.rename requires title");
   const renamed = await sessionApplicationService.renameSession(sessionId, title, { source: "dsh" });

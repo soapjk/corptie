@@ -1,3 +1,5 @@
+import { ENTITY_TITLE_RULE, isValidEntityTitle } from "./entityTitlePolicy.mjs";
+
 const WORK_CREATE_FIELDS = [
   "id", "name", "description", "avatarPath", "status", "profile", "tags",
   "workspaceId", "contributorAgentIds", "primaryAgentId"
@@ -43,7 +45,7 @@ export function validateWorkInput(input, operation = "create") {
 
   const normalized = { ...input };
   if (has(input, "id")) normalized.id = string(input.id, "id", { nonEmpty: true });
-  if (has(input, "name")) normalized.name = string(input.name, "name", { nonEmpty: true, trim: true });
+  if (has(input, "name")) normalized.name = validateEntityName(input.name, "name", "Work");
   if (has(input, "description")) normalized.description = string(input.description, "description");
   if (has(input, "avatarPath")) normalized.avatarPath = optionalString(input.avatarPath, "avatarPath");
   if (has(input, "status")) normalized.status = string(input.status, "status", { nonEmpty: true, trim: true });
@@ -96,7 +98,7 @@ export function validateTaskInput(input, operation = "create") {
   const normalized = { ...input };
   if (has(input, "id")) normalized.id = string(input.id, "id", { nonEmpty: true });
   if (has(input, "workId")) normalized.workId = string(input.workId, "workId", { nonEmpty: true, trim: true });
-  if (has(input, "title")) normalized.title = string(input.title, "title", { nonEmpty: true, trim: true });
+  if (has(input, "title")) normalized.title = validateEntityName(input.title, "title", "Task");
   if (has(input, "description")) normalized.description = string(input.description, "description");
   if (has(input, "acceptanceCriteria")) normalized.acceptanceCriteria = string(input.acceptanceCriteria, "acceptanceCriteria");
   if (has(input, "verificationCriteria")) normalized.verificationCriteria = string(input.verificationCriteria, "verificationCriteria");
@@ -131,13 +133,13 @@ export function associationError(code, field, expected, received, message) {
 
 export function validateEntityName(value, field = "name", entity = "Entity") {
   string(value, field, { nonEmpty: true });
-  if (!/^[A-Za-z0-9\p{Script=Han}]+$/u.test(value)) {
+  if (!isValidEntityTitle(value)) {
     throw new EntityValidationError(
       "INVALID_ENTITY_NAME",
       field,
-      "uppercase or lowercase English letters, Chinese characters, or digits only",
+      ENTITY_TITLE_RULE,
       value,
-      `${entity} ${field} may only contain English letters, Chinese characters, or digits.`
+      `${entity} ${field}: ${ENTITY_TITLE_RULE}.`
     );
   }
   return value;

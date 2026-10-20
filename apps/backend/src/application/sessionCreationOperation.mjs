@@ -1,5 +1,7 @@
 import { sessionWorkspacePath } from "../utils/workspacePaths.mjs";
 import { defaultSessionTitleForWorkspace } from "../utils/sessionTitles.mjs";
+import { validateEntityName } from "../domain/workTaskValidation.mjs";
+import { generatedEntityTitle } from "../domain/entityTitlePolicy.mjs";
 
 export function createSessionCreationOperation({
   store, sessionApplicationService, sessionForkService, sessionTitleReservations,
@@ -12,11 +14,12 @@ export function createSessionCreationOperation({
       const materialization = store.getSessionToolCatalogMaterialization(reference.logicalSessionId, reference.bindingId);
       context = { ...context, desiredToolDomains: desiredToolDomainIds(materialization) };
     }
+    if (input.title != null && input.title !== "") validateEntityName(input.title, "title", "Chat");
     const cwd = sessionWorkspacePath(input.cwd);
     await assertDirectory(cwd);
     const requestedTitle = typeof input.title === "string" ? input.title.trim() : "";
     const defaultTitle = typeof input.defaultTitle === "string" ? input.defaultTitle.trim() : "";
-    const baseTitle = requestedTitle || defaultTitle || defaultSessionTitleForWorkspace(cwd);
+    const baseTitle = requestedTitle || generatedEntityTitle(defaultTitle || defaultSessionTitleForWorkspace(cwd));
     const title = requestedTitle && input.autoUniqueTitle !== true
       ? baseTitle
       : sessionTitleReservations.availableTitle(baseTitle);

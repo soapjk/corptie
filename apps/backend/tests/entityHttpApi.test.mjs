@@ -473,11 +473,11 @@ test("Task restore endpoint delegates the atomic execution recovery flow", async
     const agent = services.store.createAgent({ name: "Recovery agent", role: "independentContributor" });
     const task = services.workService.createTask({
       workId: services.workService.createWork({
-        name: "Recovery work",
+        name: "Recovery_work",
         description: "Recovered",
         contributorAgentIds: [agent.agentId]
       }).id,
-      title: "Recover me",
+      title: "Recover_me",
       lifecycleState: "in_progress"
     });
     const restoreReceipt = services.taskCompletionService.issueMacOSIntent(
@@ -774,8 +774,9 @@ test("POST /assist/form-draft shares one structured contract across Agent and Wo
     assert.equal(workResult.body.fields.profile, "software");
     assert.equal(calls[0].agentId, "agent:test-drafter");
     assert.equal(calls[0].purpose, calls[1].purpose);
-    assert.match(calls[0].developerInstructions, /Never use spaces/);
-    assert.match(calls[1].prompt, /Replace any current name or title that contains spaces or punctuation/);
+    assert.match(calls[0].developerInstructions, /Never start with a digit/);
+    assert.match(calls[0].developerInstructions, /hyphens.*underscores/);
+    assert.match(calls[1].prompt, /cannot start with a digit/);
     assert.equal(services.store.listAgents().length, 1);
     assert.equal(services.store.listWorks().length, 0);
   } finally {
@@ -937,13 +938,13 @@ test("POST /assist/form-draft rejects generated Work, Task, and Agent names with
       {
         formType: "work",
         fields: {
-          name: "Console-UI", description: "持续改进控制台", profile: "software", tags: "macos"
+          name: "1Console-UI", description: "持续改进控制台", profile: "software", tags: "macos"
         }
       },
       {
         formType: "task",
         fields: {
-          title: "Fix_UI", description: "修复界面", acceptanceCriteria: "- 验证通过", priority: "medium"
+          title: "Fix%UI", description: "修复界面", acceptanceCriteria: "- 验证通过", priority: "medium"
         }
       }
     ];
@@ -960,7 +961,7 @@ test("POST /assist/form-draft rejects generated Work, Task, and Agent names with
       });
       assert.equal(result.statusCode, 502);
       assert.equal(result.body.code, "INVALID_GENERATED_DRAFT");
-      assert.match(result.body.error, /only contain English letters, Chinese characters, or digits/);
+      assert.match(result.body.error, /must not start with a digit/);
     }
   } finally {
     await services.store.close();
@@ -1205,7 +1206,7 @@ test("Work, Task, and Agent HTTP writes reject names containing spaces or punctu
     assert.equal(invalidAgent.body.code, "INVALID_ENTITY_NAME");
 
     const invalidWork = await callApi({
-      method: "POST", pathname: "/works", body: { name: "Work-One" }, ...services
+      method: "POST", pathname: "/works", body: { name: "1Work-One" }, ...services
     });
     assert.equal(invalidWork.statusCode, 400);
     assert.equal(invalidWork.body.code, "INVALID_ENTITY_NAME");
@@ -1218,7 +1219,7 @@ test("Work, Task, and Agent HTTP writes reject names containing spaces or punctu
     const invalidTask = await callApi({
       method: "POST",
       pathname: "/tasks",
-      body: { workId: work.id, title: "Task_One", mainAgentId: contributor.agentId },
+      body: { workId: work.id, title: "Task。One", mainAgentId: contributor.agentId },
       ...services
     });
     assert.equal(invalidTask.statusCode, 400);
@@ -1247,7 +1248,7 @@ test("POST /works/:id/sessions creates at most one Work Chat and rejects invalid
     const builder = services.store.createAgent({ name: "Builder", role: "independentContributor" });
     const outsider = services.store.createAgent({ name: "Outsider", role: "independentContributor" });
     const work = services.workService.createWork({
-      name: "Work Chat",
+      name: "Work_Chat",
       contributorAgentIds: [planner.agentId, builder.agentId]
     });
     const calls = [];
@@ -1526,11 +1527,11 @@ test("Task revision HTTP atomically snapshots the previous problem definition", 
   try {
     const contributor = services.store.createAgent({ name: "Evolving agent", role: "independentContributor" });
     const work = services.workService.createWork({
-      name: "Evolving work", contributorAgentIds: [contributor.agentId]
+      name: "Evolving_work", contributorAgentIds: [contributor.agentId]
     });
     const task = services.workService.createTask({
       workId: work.id,
-      title: "First problem",
+      title: "First_problem",
       description: "Initial description",
       acceptanceCriteria: "Initial acceptance",
       verificationCriteria: "Initial verification"
@@ -1550,7 +1551,7 @@ test("Task revision HTTP atomically snapshots the previous problem definition", 
         expectedRevision: 1,
         createdBySessionId: "session:task-revision-http",
         next: {
-          title: "Second problem",
+          title: "Second_problem",
           description: "Second description",
           acceptanceCriteria: "Second acceptance",
           verificationCriteria: "Second verification"
@@ -1560,10 +1561,10 @@ test("Task revision HTTP atomically snapshots the previous problem definition", 
       ...services
     });
     assert.equal(revised.statusCode, 201);
-    assert.equal(revised.body.task.title, "Second problem");
+    assert.equal(revised.body.task.title, "Second_problem");
     assert.equal(revised.body.task.lifecycleState, "in_progress");
     assert.equal(revised.body.task.revision, 2);
-    assert.equal(revised.body.snapshot.title, "First problem");
+    assert.equal(revised.body.snapshot.title, "First_problem");
     assert.equal(revised.body.snapshot.version, 1);
 
     const snapshots = await callApi({
@@ -1580,7 +1581,7 @@ test("Task revision HTTP atomically snapshots the previous problem definition", 
       body: {
         expectedRevision: 1,
         createdBySessionId: "session:task-revision-http",
-        next: { title: "Stale overwrite" }
+        next: { title: "Stale_overwrite" }
       },
       ...services
     });
@@ -1600,13 +1601,13 @@ test("binding a valid Workspace is persisted and immediately visible to Task sta
       name: "Immediate starter", role: "independentContributor", status: "available"
     });
     const work = services.workService.createWork({
-      name: "Immediate binding",
+      name: "Immediate_binding",
       workspaceId: services.store.getGitRepository(repositoryId).workspaceId,
       contributorAgentIds: [agent.agentId]
     });
     const item = services.workService.createTask({
       workId: work.id,
-      title: "Bind then start",
+      title: "Bind_then_start",
       mainAgentId: agent.agentId
     });
 
@@ -2134,10 +2135,10 @@ test("Task memory HTTP lifecycle validates start, source binding, unknown fields
   try {
     const agent = services.store.createAgent({ id: "agent:http", name: "HTTP memory agent", role: "independentContributor" });
     services.store.createWork({
-      id: "work:memory-http", name: "Memory HTTP", contributorAgentIds: [agent.agentId]
+      id: "work:memory-http", name: "Memory_HTTP", contributorAgentIds: [agent.agentId]
     });
     for (const id of ["task:http-one", "task:http-two"]) {
-      services.store.createTask({ id, workId: "work:memory-http", title: id });
+      services.store.createTask({ id, workId: "work:memory-http", title: id.replace(":", "_") });
     }
 
     const unscoped = await callApi({ method: "GET", pathname: "/memories", ...services });
@@ -2709,7 +2710,7 @@ test("Task creation atomically persists the selected Agent and launches its Sess
       status: "available"
     });
     const work = services.workService.createWork({
-      name: "Explicit execution mode",
+      name: "Explicit_execution_mode",
       contributorAgentIds: [agent.agentId]
     });
     let launchCount = 0;
@@ -2769,7 +2770,7 @@ test("execution failure is explicit and retrying the existing Task does not crea
     const performance = [];
     const agent = services.store.createAgent({ name: "Retry contributor" });
     const work = services.workService.createWork({
-      name: "Retry without duplicate",
+      name: "Retry_without_duplicate",
       contributorAgentIds: [agent.agentId]
     });
     const taskBody = {

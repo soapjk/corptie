@@ -322,7 +322,7 @@ final class PadConnection {
             case "INVALID_MESSAGE": return "消息未发送：内容不符合后端要求；当前后端可能尚未支持此斜杠命令。"
             case "INVALID_COMMAND": return "请求格式不正确，未执行。"
             case "INVALID_COMMAND_ARGUMENTS": return "命令参数不正确，未执行。请查看该命令的用法。"
-            case "INVALID_ENTITY_NAME": return "名称只能包含中文、英文字母和数字，草稿已保留。"
+            case "INVALID_ENTITY_NAME": return EntityTitlePolicy.guidance + "草稿已保留。"
             case "TASK_OUTSIDE_WORK", "SOURCE_SESSION_CHANGED": return "来源会话与 Work 不匹配，请关闭表单后重新打开。草稿已保留。"
             case "AGENT_OUTSIDE_WORK", "AGENT_NOT_FOUND": return "所选 Agent 已不可用于此 Work，请重新加载执行选项。"
             case "SOURCE_SESSION_NOT_FOUND": return "来源会话尚未就绪，请先在 Mac 上恢复该会话。草稿已保留。"

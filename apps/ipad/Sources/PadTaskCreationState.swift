@@ -72,9 +72,9 @@ final class PadTaskCreationState {
               options.agents.contains(where: { $0.id == draft.agentID }),
               options.providers.contains(where: { $0.id == draft.providerID && $0.available }),
               options.priorities.contains(draft.priority) else { return false }
-        let title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = draft.title
         guard !title.isEmpty, title.utf16.count <= 512,
-              title.range(of: "^[A-Za-z0-9\\p{Han}]+$", options: .regularExpression) != nil,
+              EntityTitlePolicy.isValid(title),
               [draft.description, draft.acceptanceCriteria, draft.verificationCriteria].allSatisfy({ $0.utf16.count <= 16000 }) else { return false }
         if !draft.model.isEmpty {
             guard let model = options.models.first(where: { $0.id == draft.model }),

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { AGENT_PROVIDER_CAPABILITIES } from "../agent-provider/contracts.mjs";
 import { validateEntityName } from "../domain/workTaskValidation.mjs";
+import { generatedEntityTitle } from "../domain/entityTitlePolicy.mjs";
 
 const terminal = new Set(["completed", "complete", "interrupted", "cancelled", "canceled", "failed"]);
 const priorities = new Set(["low", "medium", "high"]);
@@ -59,7 +60,7 @@ export class SessionForkService {
     )?.count ?? 0);
     return { schemaVersion: 1, sourceSessionId: session.id, sourceItemId: itemId,
       sourceBindingId: reference.bindingId, turnId: point.turnId, kind: session.sessionKind,
-      suggestedTitle: `${String(session.title ?? "").replace(/[^\p{Script=Han}a-zA-Z0-9]/gu, "").slice(0, 60)}分支`,
+      suggestedTitle: `${Array.from(generatedEntityTitle(session.title)).slice(0, 60).join("")}分支`,
       workName: work?.name ?? null, agentName: agent?.name ?? null,
       providerName: this.registry.get(reference.providerId).descriptor.displayName,
       model: session.external?.currentModel ?? null,

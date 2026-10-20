@@ -1,16 +1,14 @@
 import SwiftUI
+import CorptieClientCore
 
 enum EntityNamePolicy {
-    private static let allowedPattern = #"^[A-Za-z0-9\p{Script=Han}]+$"#
-
     static func isValid(_ value: String) -> Bool {
-        guard !value.isEmpty else { return false }
-        return value.range(of: allowedPattern, options: .regularExpression) != nil
+        EntityTitlePolicy.isValid(value)
     }
 
     @MainActor
     static var validationMessage: String {
-        L10n("名称只能包含大小写英文字母、中文或数字，不能包含空格和标点符号。")
+        L10n(EntityTitlePolicy.guidance)
     }
 }
 

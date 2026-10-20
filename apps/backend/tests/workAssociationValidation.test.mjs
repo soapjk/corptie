@@ -57,17 +57,17 @@ test("Git repository is an optional capability of a Workspace", async () => {
     assert.ok(repository.workspaceId);
     assert.equal(f.store.getWorkspace(repository.workspaceId).kind, "linkedLocal");
     const work = f.service.createWork({
-      name: "Software Work", profile: "software", workspaceId: repository.workspaceId,
+      name: "Software_Work", profile: "software", workspaceId: repository.workspaceId,
       contributorAgentIds: [f.contributor.agentId]
     });
     const task = f.service.createTask({
-      workId: work.id, title: "Valid task",
+      workId: work.id, title: "Valid_task",
       mainAgentId: f.contributor.agentId
     });
     assert.equal("main_workspace_id" in task, false);
     assert.equal(f.store.getTaskWorkspaceContext(task).repository.id, repository.id);
     assert.throws(
-      () => f.service.createTask({ workId: work.id, title: "Foreign repository", mainWorkspaceId: "repository:other" }),
+      () => f.service.createTask({ workId: work.id, title: "Foreign_repository", mainWorkspaceId: "repository:other" }),
       { code: "UNKNOWN_FIELD", field: "mainWorkspaceId" }
     );
   } finally {
@@ -81,11 +81,11 @@ test("Work contributor associations remain available and in scope", async () => 
   try {
     const assistant = f.store.createAgent({ name: "Assistant", role: "assistant" });
     const legacyRoleWork = f.service.createWork({
-      name: "Legacy role contributor", contributorAgentIds: [assistant.agentId]
+      name: "Legacy_role_contributor", contributorAgentIds: [assistant.agentId]
     });
     assert.deepEqual(legacyRoleWork.contributorAgentIds, [assistant.agentId]);
     const work = f.service.createWork({ name: "Scoped", contributorAgentIds: [f.contributor.agentId] });
-    f.service.createTask({ workId: work.id, title: "Owned task", mainAgentId: f.contributor.agentId });
+    f.service.createTask({ workId: work.id, title: "Owned_task", mainAgentId: f.contributor.agentId });
     assert.throws(
       () => f.service.updateWork(work.id, { contributorAgentIds: [] }),
       { code: "WORK_SCOPE_CONFLICT", field: "contributorAgentIds" }

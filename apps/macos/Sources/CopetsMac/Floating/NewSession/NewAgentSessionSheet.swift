@@ -69,6 +69,7 @@ struct NewPtyAgentTaskSheet: View {
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
                             .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
                     )
+                EntityNameValidationMessage(value: title)
             }
 
             VStack(alignment: .leading, spacing: 7) {
@@ -579,6 +580,7 @@ struct NewPtyAgentTaskSheet: View {
     }
 
     private func startSelectedAgent(titleOverride: String? = nil) {
+        guard title.isEmpty || EntityNamePolicy.isValid(title) else { return }
         let workspace = cwd.isEmpty ? backendClient.defaultWorkspacePath : cwd
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let finalTitle = titleOverride ?? (trimmedTitle.isEmpty ? defaultSessionTitle(for: workspace) : trimmedTitle)
@@ -620,7 +622,7 @@ struct NewPtyAgentTaskSheet: View {
 
     private func defaultSessionTitle(for path: String) -> String {
         let folderName = URL(fileURLWithPath: path).standardizedFileURL.lastPathComponent
-        return folderName.isEmpty ? "Agent" : "\(folderName)_agent"
+        return folderName.isEmpty ? "Agent" : EntityTitlePolicy.generatedDefault("\(folderName)_agent")
     }
 
     private func chooseWorkspace() {
@@ -641,6 +643,7 @@ struct NewPtyAgentTaskSheet: View {
     }
 
     private var isCreateDisabled: Bool {
+        if !title.isEmpty && !EntityNamePolicy.isValid(title) { return true }
         if backendClient.isCreatingTask {
             return true
         }
