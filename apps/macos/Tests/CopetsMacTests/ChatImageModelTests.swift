@@ -5,6 +5,20 @@ import CorptieConversation
 @testable import CorptieMac
 
 final class ChatImageModelTests: XCTestCase {
+    @MainActor func testImageViewUsesSharedMediaRuleWithoutHeaderOrHostPath() throws {
+        let data = Data(#"{"id":"qr","turnId":"turn","turnStatus":"complete","type":"imageView","title":"imageView","text":"/tmp/qr.png","images":[{"managedPath":"chat-resources/qr.png"}]}"#.utf8)
+        let item = try JSONDecoder().decode(CodexThreadItem.self, from: data)
+        XCTAssertTrue(item.isStandaloneImage)
+        let entries = makeChatDisplayEntries(from: [item])
+        XCTAssertEqual(entries.count, 1)
+        let builder = ConversationNativeRowBuilder(sessionTitle: nil, workingDirectory: nil,
+            allowsFork: false, forkUnavailableReason: nil, imageURL: { _ in URL(fileURLWithPath: "/tmp/qr.png") })
+        let row = builder.nativeAppKitRow(try XCTUnwrap(entries.first), expandedTurnIds: [])
+        XCTAssertEqual(row.images.count, 1)
+        XCTAssertEqual(row.nativeText, "")
+        XCTAssertFalse(row.showsHeader)
+    }
+
     @MainActor func testImageCardUsesSharedGalleryHeightAndSuppressesProviderPlaceholder() throws {
         let data = Data(#"{"id":"image","turnId":"turn","turnStatus":"complete","type":"userMessage","title":"User","text":"[localImage]","status":"accepted","images":[{"managedPath":"chat-resources/image.png"}]}"#.utf8)
         let item = try JSONDecoder().decode(CodexThreadItem.self, from: data)

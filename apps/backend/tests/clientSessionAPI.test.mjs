@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { ClientSessionAPI, approvalRequestIsCurrent } from "../src/application/clientSessionAPI.mjs";
+import { ChatResourceService } from "../src/application/chatResourceService.mjs";
 
 const identity = { deviceId: "device:one" };
 
@@ -546,7 +547,7 @@ async function fixture() {
   const store = new CorptieStore({ dbPath: join(directory, "db.sqlite"), configPath: join(directory, "config.json") });
   await store.initialize();
   store.createSession({ id: "session:test", title: "Test", sessionKind: "assistantChat", status: "complete" });
-  return { store, close: async () => { await store.close(); await rm(directory, { recursive: true, force: true }); } };
+  return { store, directory, close: async () => { await store.close(); await rm(directory, { recursive: true, force: true }); } };
 }
 const callbacks = { actions: () => ({ send: { available: true }, interrupt: { available: true } }),
   readWindow: async () => ({ revision: 4, hasEarlier: false, items: [{ id: "item:1", type: "agentMessage", text: "hello", secret: "private", userMessageStatus: "processing", queuePosition: 2 }] }),
@@ -815,6 +816,41 @@ test("read receipts acknowledge an exact rendered cursor and publish through the
       assert.throws(() => api.readReceipt(identity, "session:test", input), { code: "INVALID_READ_SEQUENCE", status: 400 });
     }
     assert.throws(() => api.readReceipt(identity, "session:missing", { throughSequence: 0 }), { code: "SESSION_NOT_AVAILABLE" });
+  } finally { await f.close(); }
+});
+
+test("imageView attachments survive history and realtime projection and use Session-owned image reads", async () => {
+  const f = await fixture();
+  try {
+    const resources = new ChatResourceService({ environmentRoot: f.directory });
+    await resources.initialize();
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64");
+    const attachment = await resources.importImageData({ sessionId: "session:test" }, png, "qr.png");
+    const item = { id: "qr", type: "imageView", turnId: "turn", text: "/host/qr.png",
+      images: [{ ...attachment, originalPath: "/host/qr.png" }] };
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks,
+      readWindow: async () => ({ revision: 2, hasEarlier: false, items: [item] }),
+      images: { available: () => true, read: (sessionId, path) => resources.readImage({ sessionId }, path) } });
+    api.store.sessionTimelineChangesAfter = () => ({ snapshotRequired: false, baseRevision: 1,
+      revision: 2, currentRevision: 2, hasMore: false,
+      changes: [{ revision: 2, itemId: item.id, operation: "upsert", item }] });
+    const history = await api.messages(identity, "session:test", new URLSearchParams());
+    const delta = await api.realtimeTimeline(identity, "session:test", 1, { includeDetail: false });
+    const snapshot = await api.realtimeTimeline(identity, "session:test", null, { includeDetail: false });
+    assert.deepEqual(delta.changes[0].item, history.items[0]);
+    assert.deepEqual(snapshot.messages.items[0], history.items[0]);
+    assert.equal(history.items[0].type, "imageView");
+    assert.equal(history.items[0].images.length, 1);
+    assert.equal(Object.hasOwn(history.items[0].images[0], "originalPath"), false);
+    const downloaded = await api.image(identity, "session:test", new URLSearchParams({ path: attachment.managedPath }));
+    assert.deepEqual(downloaded.data, png);
+    assert.equal(downloaded.contentType, "image/png");
+    const foreign = await resources.importImageData({ sessionId: "session:other" }, png, "qr.png");
+    await assert.rejects(api.image(identity, "session:test", new URLSearchParams({ path: foreign.managedPath })),
+      { code: "IMAGE_NOT_AVAILABLE", status: 404 });
+    await resources.removeUnsentImage({ sessionId: "session:test" }, attachment.managedPath);
+    await assert.rejects(api.image(identity, "session:test", new URLSearchParams({ path: attachment.managedPath })),
+      { code: "IMAGE_NOT_AVAILABLE", status: 404 });
   } finally { await f.close(); }
 });
 

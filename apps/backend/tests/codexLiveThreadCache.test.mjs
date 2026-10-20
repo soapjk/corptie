@@ -24,11 +24,12 @@ test("item completion does not terminate a turn; turn completion settles only ma
   assert.equal(cache.latestAgentMessageText("thread", "turn-a"), "turn-a");
 });
 
-test("managed images update both the item and metadata; release removes all thread projections", () => {
+for (const type of ["agentMessage", "imageView"]) {
+test(`${type} managed images update both the item and metadata; release removes all thread projections`, () => {
   const cache = new CodexLiveThreadCache({ expireTurnRequests() {} });
   cache.captureLiveItem({
     method: "item/started",
-    params: { threadId: "thread", turnId: "turn", item: { id: "item", type: "agentMessage", text: "hello" } }
+    params: { threadId: "thread", turnId: "turn", item: { id: "item", type, text: "hello", path: "/tmp/qr.png" } }
   });
   const images = [{ managedPath: "images/one.png" }];
   assert.equal(cache.attachManagedImagesToLiveItem("thread", "item", images), true);
@@ -49,6 +50,7 @@ test("managed images update both the item and metadata; release removes all thre
   assert.equal(cache.tokenUsageForThread("thread"), null);
   assert.equal(cache.turnDiffsByThread.has("thread"), false);
 });
+}
 
 test("retryable errors retain in-progress state and terminal failures retain their error text", () => {
   const cache = new CodexLiveThreadCache({ expireTurnRequests() {} });
