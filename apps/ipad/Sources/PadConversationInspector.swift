@@ -51,24 +51,13 @@ struct PadConversationInspector: View {
                 PadInspectorResources(store: inspector, connection: connection, sessionID: sessionID, workspace: workspace,
                     kind: kind, onOpenAutomation: onOpenAutomation, richPresentation: richDetailReady != false) {
                     ConversationServerDetail(scope: resourceScope,
-                        sessionID: sessionID, actions: nativeDetailNavigation,
+                        sessionID: sessionID, context: ClientDetailContext(sessionKind: session.sessionKind, taskID: session.taskId, workID: session.workId), actions: nativeDetailNavigation,
                         coordinator: { selected, canonical in try await detailCoordinator(selected: selected, canonicalSessionID: canonical) },
                         onPresentationChanged: { richDetailReady = $0 },
                         repository: connection.detailBusinessRepository,
                         displayScope: connection.businessDisplayScope(sessionID: sessionID, taskID: session.taskId, workID: session.workId),
                         presentationRepository: detailPresentation,
-                        platformCardKinds: ["provider", "worktree", "turnMetrics"], platformCard: { cardKind in
-                            if cardKind == "resident" {
-                                residentDetailPreview(session)
-                            } else if cardKind == "worktree" {
-                                nativeWorktreeCard
-                            } else {
-                                PadInspectorResources(store: inspector, connection: connection, sessionID: sessionID, workspace: workspace,
-                                    kind: kind, onOpenAutomation: onOpenAutomation, standaloneCard: cardKind) {
-                                    EmptyView()
-                                } secondary: { EmptyView() }
-                            }
-                        }, api: {
+                        adapters: detailAdapters(session), api: {
                             ClientDetailAPI(transport: try await connection.transport(), route: .pairedDevice)
                         })
                         .id(resourceScope)
@@ -139,15 +128,20 @@ struct PadConversationInspector: View {
         .onChange(of: inspector.snapshot?.workId) { _, _ in retireNativeManagement() }
         .onDisappear { retireNativeManagement() }
     }
-    private var nativeWorktreeCard: some View {
+    private func detailAdapters(_ session: ClientSession) -> ConversationDetailAdapters {
+        let config = PadDetailConfigurationAdapter(store: inspector, workspace: workspace, connection: connection, sessionID: sessionID)
         let authority = try? connection.detailActionScope(sessionID: sessionID, negotiation: .legacy)
-        return ConversationWorktreeCard(sessionID: sessionID, refreshID: session?.updatedAt ?? "",
-            api: { try await pinnedWorktreeAPI(authority: authority) }, onJob: { job in
+        let task = workspace.tasks.first { $0.id == session.taskId }
+        let work = workspace.works.first { $0.id == session.workId }
+        let turn = PadDetailTurnAdapter(store: inspector, workspace: workspace, connection: connection, sessionID: sessionID)
+        return ConversationDetailAdapters(configuration: config.configuration, selectConfiguration: config.select, reloadConfiguration: config.reload,
+            readTurnSummary: turn.summary, readTurnTrace: turn.trace,
+            worktreeAPI: { try await pinnedWorktreeAPI(expectedWorktreeID: $0, authority: authority) }, onWorktreeJob: { job in
                 if job.status != "awaiting_confirmation" {
                     PadOperationNotifications.shared.track(job.id, resourceName: "Worktree")
                     if let notification = job.notification { PadOperationNotifications.shared.observe(notification) }
                 }
-            }).id(resourceScope)
+            }, resident: .init(taskTitle: task?.title ?? "", workName: work?.name ?? "", workDescription: work?.description ?? ""), turnSnapshot: turn.snapshot)
     }
     private var nativeDetailNavigation: ConversationDetailActions {
         ConversationDetailActions(canPerform: { action in
@@ -274,16 +268,6 @@ struct PadConversationInspector: View {
         })
         return ClientDetailActionCoordinator(scope: scope, transport: transport, journal: journal,
             navigation: .init(registrations: ["resource.open": ["session", "task", "schedule"]]))
-    }
-    private func residentDetailPreview(_ session: ClientSession) -> some View {
-        ConversationDetailModuleCard(title: "当前会话", systemImage: "bubble.left") {
-            if let task = workspace.tasks.first(where: { $0.id == session.taskId }) {
-                Text(task.title).font(.system(size: 12, weight: .medium)).textSelection(.enabled)
-            }
-            if let work = workspace.works.first(where: { $0.id == session.workId }) {
-                Text(work.description ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(4)
-            }
-        }
     }
     @ViewBuilder private func primaryDetail(for session: ClientSession) -> some View {
         if kind == .work, let work = workspace.works.first(where: { $0.id == session.workId }) {

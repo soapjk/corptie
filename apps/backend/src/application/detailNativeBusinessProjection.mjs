@@ -1,6 +1,7 @@
 import { nativeBusinessHash, validateNativeBusinessDocument, DETAIL_NATIVE_BUSINESS_PROFILE } from "./detailNativeBusinessContract.mjs";
 import { presentTaskSummary } from "./taskSummaryContract.mjs";
-export const NATIVE_BUSINESS_MODULES = Object.freeze(["focusTasks", "references", "artifacts", "memories", "memoryHits", "schedules", "provider", "turn", "worktree"]);
+import { eligibleNativeBusinessModules } from "./detailNativeBusinessEligibility.mjs";
+export { NATIVE_BUSINESS_MODULES } from "./detailNativeBusinessEligibility.mjs";
 export const nativeModuleKind = Object.freeze({ focusTasks: "focusTasks", references: "contextReferences", artifacts: "artifacts", memories: "memoryResources", memoryHits: "memoryHits", schedules: "schedules", provider: "provider", turn: "turnMetrics", worktree: "worktree" });
 const card = (id, kind, data, actions = [], loadState = "ready", nextCursor = null) => ({ id, kind, version: 1, revision: nativeBusinessHash({ data, actions, loadState }), loadState, data, actions, nextCursor });
 const nav = (operation, resourceType, id, title, extra = {}) => ({ id: `nav-${nativeBusinessHash({ operation, resourceType, id }).slice(0, 24)}`, kind: "navigation", operation, label: { fallback: title }, available: true, target: { resourceType, id }, ...extra });
@@ -10,6 +11,8 @@ const summary = task => {
 };
 
 export function nativeBusinessModuleCard(name, result, { editors = false, page = null, operations = [] } = {}) {
+  // Failed modules never inspect untrusted partial data or retain commands.
+  if (result?.state === "error") { result = { state: "error" }; page = null; operations = []; editors = false; }
   const source = result?.data, actions = [...operations]; let data;
   switch (name) {
   case "artifacts":
@@ -42,7 +45,7 @@ export function nativeBusinessModuleCard(name, result, { editors = false, page =
 }
 
 /** Business data only. No nodes, templates, layout options or renderer hints. */
-export function projectNativeBusinessDocument(scope, results, generation, { editors = false, pages = {}, operations = {} } = {}) {
+export function projectNativeBusinessDocument(scope, results, generation, { editors = false, pages = {}, operations = {}, moduleCards = {} } = {}) {
   const cards = [card("session-info", "sessionInfo", { sessionId: scope.logicalSessionId, workName: scope.work?.name ?? "" })];
   if (scope.session.sessionKind === "assistantChat" && scope.session.summary?.trim()) cards.push(card("session-summary", "chatSummary", { text: scope.session.summary }));
   if (scope.session.sessionKind === "workChat" && scope.work) cards.push(card("work-overview", "workOverview", { workId: scope.work.id, name: scope.work.name ?? "", description: scope.work.description ?? "" }));
@@ -50,7 +53,10 @@ export function projectNativeBusinessDocument(scope, results, generation, { edit
     const task = scope.task, data = { taskId: task.id, title: task.title ?? "", status: task.lifecycle_state ?? "", description: task.description ?? "", acceptanceCriteria: task.acceptance_criteria ?? "", verificationCriteria: task.verification_criteria ?? "", resourceRevision: String(task.revision), summary: summary(task) };
     cards.push(card("task-information", "taskInfo", data, editors ? [nav("editor.open", "task", task.id, "编辑 Task", { expectedResourceRevision: data.resourceRevision })] : []));
   }
-  for (const name of NATIVE_BUSINESS_MODULES) cards.push(nativeBusinessModuleCard(name, results[name], { editors, page: pages[name], operations: operations[name] ?? [] }));
+  for (const name of eligibleNativeBusinessModules(scope)) {
+    if (name === "worktree" && results[name]?.state !== "error" && results[name]?.data?.attached === false) continue;
+    cards.push(moduleCards[name] ?? nativeBusinessModuleCard(name, results[name], { editors, page: pages[name], operations: operations[name] ?? [] }));
+  }
   return nativeBusinessEnvelope(scope.logicalSessionId, generation, cards);
 }
 export function nativeBusinessEnvelope(sessionId, generation, cards) {

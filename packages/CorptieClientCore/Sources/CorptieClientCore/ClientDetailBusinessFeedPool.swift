@@ -6,6 +6,12 @@ enum ClientDetailBusinessFeedEvent: Sendable {
     case unsupported
 }
 
+enum ClientDetailBusinessFailurePolicy {
+    static func requiresManualRetry(_ code: String) -> Bool {
+        ["DETAIL_CURSOR_INVALID", "DETAIL_SOURCE_CURSOR_INVALID", "DETAIL_BUSINESS_INVALID"].contains(code)
+    }
+}
+
 /// Connection ownership is separate from retained display data. No idle entry
 /// keeps an authenticated API factory or transport alive.
 actor ClientDetailBusinessFeedPool {
@@ -20,6 +26,7 @@ actor ClientDetailBusinessFeedPool {
 
     func subscribe(scope: ClientDetailBusinessScope, api: @escaping @Sendable () async throws -> ClientDetailAPI) -> AsyncStream<ClientDetailBusinessFeedEvent> {
         let pair = AsyncStream<ClientDetailBusinessFeedEvent>.makeStream(bufferingPolicy: .bufferingOldest(8))
+        guard !Task.isCancelled else { pair.continuation.finish(); return pair.stream }
         let consumer = UUID()
         pair.continuation.onTermination = { @Sendable _ in Task { await self.remove(scope, consumer) } }
         // The Repository shares this one subscription across its window
@@ -57,7 +64,12 @@ actor ClientDetailBusinessFeedPool {
                         publish(.unsupported, entry); finish(entry); return
                     }
                     publish(.failure(status: error.statusCode, code: error.code), entry)
-                    if [401, 403, 404].contains(error.statusCode) { finish(entry); return }
+                    if [401, 403, 404].contains(error.statusCode) || ClientDetailBusinessFailurePolicy.requiresManualRetry(error.code) {
+                        finish(entry); return
+                    }
+                } else if error is DecodingError || error is ClientDetailFailure || error is ClientDetailV2Canonical.Failure {
+                    publish(.failure(status: 500, code: "DETAIL_BUSINESS_INVALID"), entry)
+                    finish(entry); return
                 } else { publish(.failure(status: 503, code: "DETAIL_CONNECTION_FAILED"), entry) }
             }
             failures = min(failures + 1, 4)

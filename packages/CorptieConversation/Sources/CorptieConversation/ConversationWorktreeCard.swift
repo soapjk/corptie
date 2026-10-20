@@ -9,14 +9,21 @@ public struct ConversationWorktreeCard: View {
     private let api: @MainActor () async throws -> ClientSessionWorktreeAPI
     private let onJob: @MainActor (ClientWorktreeJob) -> Void
     private let localize: (String) -> String
-    @State private var detail: ClientSessionWorktreeDetail?
-    @State private var job: ClientWorktreeJob?
+    private let data: ClientDetailWorktreeState
+    private var detail: ClientSessionWorktreeDetail? { get { data.detail } nonmutating set { data.detail = newValue } }
+    private var job: ClientWorktreeJob? { get { data.job } nonmutating set { data.job = newValue } }
     @State private var review: ClientWorktreeJob?
-    @State private var expanded = false
-    @State private var loading = false
-    @State private var mutating = false
-    @State private var error: String?
-    @State private var lastRead: Date?
+    @Environment(\.detailPresentation) private var presentation
+    @Environment(\.detailSectionPrefix) private var prefix
+    @State private var localExpanded = false
+    private var expanded: Bool {
+        get { presentation?.section("\(prefix):worktree").expanded ?? localExpanded }
+        nonmutating set { if let section = presentation?.section("\(prefix):worktree") { section.expanded = newValue } else { localExpanded = newValue } }
+    }
+    private var loading: Bool { get { data.loading } nonmutating set { data.loading = newValue } }
+    private var mutating: Bool { get { data.mutating } nonmutating set { data.mutating = newValue } }
+    private var error: String? { get { data.error } nonmutating set { data.error = newValue } }
+    private var lastRead: Date? { get { data.lastRead } nonmutating set { data.lastRead = newValue } }
     @State private var pollRevision = 0
     private struct CommitReview: Identifiable {
         let id: String
@@ -30,13 +37,19 @@ public struct ConversationWorktreeCard: View {
                 api: @escaping @MainActor () async throws -> ClientSessionWorktreeAPI,
                 onJob: @escaping @MainActor (ClientWorktreeJob) -> Void = { _ in },
                 localize: @escaping (String) -> String = { $0 },
-                initialDetail: ClientSessionWorktreeDetail? = nil) {
+                initialDetail: ClientSessionWorktreeDetail? = nil,
+                state: ClientDetailWorktreeState? = nil, expectedWorktreeID: String? = nil) {
         self.sessionID = sessionID; self.refreshID = refreshID
         self.api = api; self.onJob = onJob; self.localize = localize
-        _detail = State(initialValue: initialDetail)
+        let retained = state ?? ClientDetailWorktreeState()
+        if let expectedWorktreeID { retained.bind(expectedWorktreeID) }
+        if retained.detail == nil { retained.detail = initialDetail }
+        self.data = retained
     }
 
     public var body: some View {
+        Group {
+        if detail?.attached != false {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 4) {
                 Button { expanded.toggle() } label: {
@@ -89,8 +102,6 @@ public struct ConversationWorktreeCard: View {
                     }
                     if (tree.changedFileCount ?? tree.changedFiles.count) > 20 { Text(localize("仅显示前 20 个文件")).font(.caption2) }
                 }
-            } else if detail?.attached == false {
-                Text(localize("当前会话未绑定受管理的 Worktree")).font(.caption).foregroundStyle(.secondary)
             }
             if let job, ["awaiting_confirmation", "queued", "running", "paused", "failed", "cancellation_requested", "replanning"].contains(job.status) {
                 jobContent(job)
@@ -99,13 +110,17 @@ public struct ConversationWorktreeCard: View {
         }
         .modifier(ConversationDetailModuleSurface())
         .accessibilityIdentifier("conversation-worktree-card")
+        }
+        }
         .task(id: refreshID) {
+            guard data.refreshID != refreshID || data.detail == nil else { return }
             // Coalesce streaming Session updates. No Git read in body and no
             // perpetual idle poll. A task completion and manual refresh still read.
             if lastRead != nil { try? await Task.sleep(for: .milliseconds(750)) }
             guard !Task.isCancelled else { return }
             await reload()
         }
+        .onChange(of: data.generation) { _, _ in review = nil; commitReview = nil; commitMessage = ""; privateFilesDecision = "" }
         .task(id: "\(job?.id ?? ""):\(pollRevision)") { await poll() }
         .task(id: detail?.autoFollow?.enabled == true) {
             // Only keep the visible opted-in card's status fresh. Automation
@@ -149,21 +164,26 @@ public struct ConversationWorktreeCard: View {
     }
     @MainActor private func prepareCommit() async {
         guard !mutating, let id = detail?.worktree?.worktreeId else { return }
+        let generation = data.generation
         mutating = true; error = nil
-        defer { mutating = false }
+        defer { if data.generation == generation { mutating = false } }
         do {
             let protection = try await api().prepareCommit(sessionID: sessionID, worktreeID: id)
             try Task.checkCancellation()
+            guard data.generation == generation else { return }
             commitMessage = ""; privateFilesDecision = ""; commitReview = CommitReview(id: id, protection: protection)
-        } catch { if !Task.isCancelled { self.error = describe(error) } }
+        } catch { if !Task.isCancelled, data.generation == generation { self.error = describe(error) } }
     }
     @MainActor private func commit(_ draft: CommitReview) async {
         guard !mutating else { return }; mutating = true; error = nil
+        let generation = data.generation
         do {
             try await api().commit(sessionID: sessionID, worktreeID: draft.id, message: commitMessage,
                 privateFilesDecision: privateFilesDecision.isEmpty ? nil : privateFilesDecision)
+            guard data.generation == generation else { return }
             commitReview = nil
         } catch {
+            guard data.generation == generation else { return }
             // A transport failure does not prove the commit failed. Do not
             // automatically retry or leave a submit button ready to resend.
             commitReview = nil
@@ -194,8 +214,10 @@ public struct ConversationWorktreeCard: View {
     }
     @MainActor private func setAutoFollow(_ enabled: Bool, worktreeID: String) async {
         guard !mutating else { return }; mutating = true; error = nil
+        let generation = data.generation
         do { try await api().setAutoFollow(sessionID: sessionID, worktreeID: worktreeID, enabled: enabled) }
-        catch { self.error = describe(error); mutating = false; return }
+        catch { if data.generation == generation { self.error = describe(error); mutating = false }; return }
+        guard data.generation == generation else { return }
         mutating = false
         await reload()
     }
@@ -244,27 +266,37 @@ public struct ConversationWorktreeCard: View {
     }
     @MainActor private func reload() async {
         guard !loading, !mutating else { return }
+        let generation = data.generation
         loading = true
-        defer { loading = false }
+        defer { if generation == data.generation { loading = false } }
         do {
             let next = try await api().detail(sessionID: sessionID)
             try Task.checkCancellation()
+            guard data.generation == generation else { return }
             detail = next; lastRead = Date(); error = nil
+            data.refreshID = refreshID
             if review == nil { job = next.job }
-        } catch { if !Task.isCancelled { self.error = describe(error) } }
+        } catch { if !Task.isCancelled, data.generation == generation { self.error = describe(error) } }
     }
     @MainActor private func prepare(_ action: ClientWorktreePlanOperation) async {
         guard !mutating else { return }; mutating = true; error = nil
-        defer { mutating = false }
-        do { let value = try await api().prepare(sessionID: sessionID, action: action, expectedWorktreeID: detail?.worktree?.worktreeId); job = value; review = value }
-        catch { self.error = describe(error) }
+        let generation = data.generation
+        defer { if data.generation == generation { mutating = false } }
+        do {
+            let value = try await api().prepare(sessionID: sessionID, action: action, expectedWorktreeID: detail?.worktree?.worktreeId)
+            guard data.generation == generation else { return }
+            job = value; review = value
+        } catch { if data.generation == generation { self.error = describe(error) } }
     }
     @MainActor private func confirm(_ value: ClientWorktreeJob) async {
         guard !mutating else { return }; mutating = true; error = nil
-        defer { mutating = false }
+        let generation = data.generation
+        defer { if data.generation == generation { mutating = false } }
         do {
-            let next = try await api().confirm(value, sessionID: sessionID); job = next; onJob(next); review = nil; pollRevision += 1
-        } catch { self.error = describe(error) }
+            let next = try await api().confirm(value, sessionID: sessionID)
+            guard data.generation == generation else { return }
+            job = next; onJob(next); review = nil; pollRevision += 1
+        } catch { if data.generation == generation { self.error = describe(error) } }
     }
     private func cancelDraftIfNeeded() {
         guard let value = job, value.status == "awaiting_confirmation" else { return }
@@ -272,17 +304,24 @@ public struct ConversationWorktreeCard: View {
     }
     @MainActor private func jobAction(_ value: ClientWorktreeJob, action: String) async {
         guard !mutating else { return }; mutating = true; error = nil
-        do { let next = try await api().jobAction(value.id, action: action, sessionID: sessionID); job = next; onJob(next); pollRevision += 1 }
-        catch { self.error = describe(error) }
+        let generation = data.generation
+        do {
+            let next = try await api().jobAction(value.id, action: action, sessionID: sessionID)
+            guard data.generation == generation else { return }
+            job = next; onJob(next); pollRevision += 1
+        } catch { if data.generation == generation { self.error = describe(error) } }
+        guard data.generation == generation else { return }
         mutating = false
         await reload()
     }
     @MainActor private func poll() async {
         guard let id = job?.id else { return }
+        let generation = data.generation
         while job?.id == id && job?.shouldPoll == true && !Task.isCancelled {
             do {
                 try await Task.sleep(for: .seconds(2))
                 let next = try await api().job(id); try Task.checkCancellation()
+                guard data.generation == generation else { return }
                 job = next; onJob(next)
             } catch { if !Task.isCancelled { self.error = describe(error) }; return }
         }

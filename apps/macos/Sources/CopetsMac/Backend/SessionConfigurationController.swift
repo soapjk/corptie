@@ -1,4 +1,5 @@
 import Foundation
+import CorptieClientCore
 
 /// Model, reasoning, and permission commands commit authoritative Session projections.
 @MainActor
@@ -83,6 +84,49 @@ final class SessionConfigurationController {
                 lastError = error.localizedDescription
                 sendStatusMessage = L10nFormat("Model switch failed: %@", error.localizedDescription)
             }
+        }
+    }
+
+    /// Provider-neutral entry used by the shared Detail controls. The existing
+    /// session configuration route owns Provider dispatch and authorization.
+    func configureModel(session: TaskSession, id: String) async throws {
+        guard selectedSession?.id == session.id, selectedSession?.external?.provider == session.external?.provider,
+              selectedSession?.canSwitchModelNow == true, !isSwitchingModel,
+              let model = modelCatalog.models(for: session.external?.provider).first(where: { $0.id == id }) else {
+            throw ClientDetailConfigurationFailure.unavailable
+        }
+        isSwitchingModel = true
+        defer { isSwitchingModel = false }
+        try await configure(session: session, path: "model", fields: ["model": model.id])
+        sendStatusMessage = L10nFormat("Switching model to %@", model.name)
+    }
+
+    func configureReasoning(session: TaskSession, level: String) async throws {
+        guard selectedSession?.id == session.id, selectedSession?.external?.provider == session.external?.provider,
+              selectedSession?.canSwitchReasoningNow == true, !isSwitchingReasoning,
+              !level.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ClientDetailConfigurationFailure.unavailable
+        }
+        let models = modelCatalog.models(for: session.external?.provider)
+        let levels = SessionReasoningSelection.availableLevels(modelID: session.external?.currentModel ?? "", models: models, supportsSwitch: true)
+        guard levels.contains(level) else { throw ClientDetailConfigurationFailure.unavailable }
+        isSwitchingReasoning = true
+        defer { isSwitchingReasoning = false }
+        try await configure(session: session, path: "reasoning", fields: ["reasoningLevel": level])
+        sendStatusMessage = L10nFormat("Switching reasoning to %@", reasoningLabel(level))
+    }
+
+    private func configure(session: TaskSession, path: String, fields: [String: String]) async throws {
+        var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/\(path)"))
+        request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: fields)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        guard (200..<300).contains(http.statusCode) else { throw BackendError.message(errorMessage(data) ?? L10n("配置更新被拒绝")) }
+        let command = try JSONDecoder().decode(SessionConfigurationCommandResponse.self, from: data)
+        guard selectedSession?.id == session.id, selectedSession?.external?.provider == session.external?.provider,
+              appState.acceptSessionConfiguration(command.session, requestedSessionID: session.id) else {
+            throw ClientDetailConfigurationFailure.unconfirmed("会话绑定已变化，请核对当前配置；未重发操作")
         }
     }
 

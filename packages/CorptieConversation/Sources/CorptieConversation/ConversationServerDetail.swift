@@ -3,15 +3,15 @@ import CorptieClientCore
 
 /// Default delivery is typed business data and native business views. The old
 /// node interpreter is reachable only on explicit unsupported-profile hosts.
-public struct ConversationServerDetail<PlatformCard: View>: View {
+public struct ConversationServerDetail: View {
     private let scope: String
     private let sessionID: String
+    private let context: ClientDetailContext
     private let api: @Sendable () async throws -> ClientDetailAPI
     private let actions: ConversationDetailActions?
     private let coordinatorFactory: (@MainActor @Sendable (ClientDetailAPI, String) async throws -> ClientDetailActionCoordinator)?
     private let onPresentationChanged: (Bool?) -> Void
-    private let platformCardKinds: Set<String>
-    private let platformCard: (String) -> PlatformCard
+    private let adapters: ConversationDetailAdapters
     private let repository: ClientDetailBusinessRepository
     private let handle: ClientDetailBusinessHandle
     private let presentation: ConversationDetailPresentation
@@ -19,16 +19,16 @@ public struct ConversationServerDetail<PlatformCard: View>: View {
     @State private var runtime = ConversationNativeBusinessActionRuntime()
     @State private var selected: ClientDetailAPI?
     @State private var refreshing = false
-    public init(scope: String, sessionID: String, actions: ConversationDetailActions? = nil,
+    public init(scope: String, sessionID: String, context: ClientDetailContext, actions: ConversationDetailActions? = nil,
                 coordinator: (@MainActor @Sendable (ClientDetailAPI, String) async throws -> ClientDetailActionCoordinator)? = nil,
                 onPresentationChanged: @escaping (Bool?) -> Void = { _ in },
                 repository: ClientDetailBusinessRepository, displayScope: ClientDetailBusinessScope,
                 presentationRepository: ConversationDetailPresentationRepository,
-                platformCardKinds: Set<String>, @ViewBuilder platformCard: @escaping (String) -> PlatformCard,
+                adapters: ConversationDetailAdapters,
                 api: @escaping @Sendable () async throws -> ClientDetailAPI) {
-        self.scope = scope; self.sessionID = sessionID; self.actions = actions
+        self.scope = scope; self.sessionID = sessionID; self.context = context; self.actions = actions
         coordinatorFactory = coordinator; self.onPresentationChanged = onPresentationChanged; self.api = api
-        self.platformCardKinds = platformCardKinds; self.platformCard = platformCard
+        self.adapters = adapters
         self.repository = repository; self.handle = repository.entry(for: displayScope)
         self.presentation = presentationRepository.entry(for: displayScope)
     }
@@ -40,19 +40,21 @@ public struct ConversationServerDetail<PlatformCard: View>: View {
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     if !store.order.isEmpty {
-                        if !store.isCurrent {
+                        if !store.isCurrent && store.loadPhase != .failed {
                             Text("正在校验上次详情，操作暂不可用").font(.caption).foregroundStyle(.secondary)
                         }
-                        ConversationNativeBusinessDetail(store: store, api: selected, actions: store.isCurrent ? actions : nil,
-                            platformCardKinds: platformCardKinds, platformCard: platformCard,
+                        ConversationNativeBusinessDetail(store: store, api: selected, actions: store.isCurrent ? actions : nil, context: context,
+                            adapters: adapters, handle: handle, refresh: refresh,
                             canCommand: { cardID, action in store.isCurrent && runtime.canPerform(cardID: cardID, action: action) },
                             perform: { cardID, action, fields in
                                 guard let selected else { return }
                                 runtime.perform(cardID: cardID, action: action, fields: fields, store: store, selected: selected, api: api)
                             })
                     } else if !handle.retired {
-                        platformCard("resident")
-                        ProgressView("正在同步其余详情…").font(.caption)
+                        ConversationDetailResidentPreview(value: adapters.resident)
+                        if store.loadPhase == .loading || store.loadPhase == .idle {
+                            ProgressView("正在同步其余详情…").font(.caption)
+                        }
                     }
                     if let message = store.error { Label(message, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary) }
                     if let message = runtime.error { Text(message).font(.caption).foregroundStyle(.secondary) }
@@ -94,10 +96,12 @@ public struct ConversationServerDetail<PlatformCard: View>: View {
     }
     private func refresh() async {
         guard !refreshing, let selected else { return }; refreshing = true
+        store.markRefreshing()
         defer { refreshing = false }
         do {
             let next = try await api().businessSnapshot(sessionID: store.sessionID ?? sessionID)
             try Task.checkCancellation(); try store.receive(next, resetPages: true)
+            repository.resumeIfNeeded(handle, api: api)
         } catch {
             guard !Task.isCancelled else { return }
             if let failure = error as? ClientServiceFailure, [401, 403, 404].contains(failure.statusCode) {
