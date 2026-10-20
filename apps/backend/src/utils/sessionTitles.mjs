@@ -1,18 +1,19 @@
 import { basename, resolve } from "node:path";
+import { generatedEntityTitle } from "../domain/entityTitlePolicy.mjs";
 
 export function defaultSessionTitleForWorkspace(cwd) {
   const folderName = basename(resolve(String(cwd ?? "").trim() || "."));
-  return folderName ? `${folderName}_agent` : "Agent";
+  return folderName ? generatedEntityTitle(`${folderName}_agent`) : "Agent";
 }
 
 export function defaultSessionTitleForAgent(agentName) {
   const normalizedName = String(agentName ?? "").trim() || "Agent";
-  return `${normalizedName}_Session`;
+  return generatedEntityTitle(`${normalizedName}_Session`);
 }
 
 export function defaultSessionTitleForTask(taskTitle, agentName = null) {
   const normalizedTitle = String(taskTitle ?? "").trim();
-  return normalizedTitle || defaultSessionTitleForAgent(agentName);
+  return normalizedTitle ? generatedEntityTitle(normalizedTitle) : defaultSessionTitleForAgent(agentName);
 }
 
 export function resolveAvailableAgentSessionTitle(
@@ -62,19 +63,19 @@ export function assertSessionTitleAvailable(sessions, title, excludingSessionId 
 }
 
 export function suggestAvailableSessionTitle(sessions, title, excludingSessionId = null, additionalKeys = new Set()) {
-  const base = String(title ?? "").trim() || "Agent";
+  const base = generatedEntityTitle(title, "Agent");
   let suffix = 1;
   while (
-    findSessionTitleConflict(sessions, `${base} ${suffix}`, excludingSessionId)
-    || additionalKeys.has(normalizeSessionTitle(`${base} ${suffix}`))
+    findSessionTitleConflict(sessions, `${base}_${suffix}`, excludingSessionId)
+    || additionalKeys.has(normalizeSessionTitle(`${base}_${suffix}`))
   ) {
     suffix += 1;
   }
-  return `${base} ${suffix}`;
+  return `${base}_${suffix}`;
 }
 
 export function resolveAvailableSessionTitle(sessions, title, excludingSessionId = null, additionalKeys = new Set()) {
-  const base = String(title ?? "").trim() || "Agent";
+  const base = generatedEntityTitle(title, "Agent");
   if (
     !findSessionTitleConflict(sessions, base, excludingSessionId)
     && !additionalKeys.has(normalizeSessionTitle(base))

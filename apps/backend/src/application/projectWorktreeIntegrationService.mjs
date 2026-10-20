@@ -246,7 +246,7 @@ export class ProjectWorktreeIntegrationService {
       const files = item.conflictFiles.length > 0 ? `；冲突文件：${item.conflictFiles.join(", ")}` : "";
       return `- ${item.branchName ?? item.worktreeId} — ${task?.title ?? item.taskId}${files}`;
     });
-    const title = input.title?.trim() || `处理 ${conflicts.length} 个 Worktree 的集成冲突`;
+    const title = input.title || `处理${conflicts.length}个Worktree集成冲突`;
     const description = [
       `处理 Integration Run ${run.id} 中遗留的 Worktree 合并冲突。`,
       "",

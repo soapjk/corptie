@@ -1,5 +1,6 @@
 import { AGENT_PROVIDER_CAPABILITIES, AgentProviderNotFoundError } from "./contracts.mjs";
 import { SingleFlight } from "../utils/singleFlight.mjs";
+import { validateEntityName } from "../domain/workTaskValidation.mjs";
 import { SESSION_COMMAND_CATALOG, validateSessionCommand, sessionCommandAvailability,
   sessionCommandPermissions, sessionCommandError } from "../commands/sessionCommandCatalog.mjs";
 
@@ -71,6 +72,10 @@ export class SessionApplicationService {
   }
 
   async createSession(providerId, input = {}, context = {}) {
+    // Rebinding/recovery reuses an existing product title; it is not a rename.
+    if (context.deferSessionBinding !== true && input.title !== undefined) {
+      validateEntityName(input.title, "title", "Chat");
+    }
     if (Object.prototype.hasOwnProperty.call(input, "avatarPath")) {
       const error = new TypeError("Session avatars are not supported; sessions inherit their Agent avatar.");
       error.code = "SESSION_AVATAR_UNSUPPORTED";
@@ -576,7 +581,7 @@ export class SessionApplicationService {
       error.statusCode = 409;
       throw error;
     }
-    const normalizedTitle = requiredText(title, "title");
+    const normalizedTitle = validateEntityName(title, "title", "Chat");
     const providerSession = await this.registry.invoke(
       reference.providerId,
       AGENT_PROVIDER_CAPABILITIES.SESSION_RENAME,

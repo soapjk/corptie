@@ -7,7 +7,7 @@ test("Task origin and revision writes retain shared transaction rollback and not
   try {
     await store.initialize({ resolveDataPath: false });
     const agent = store.createAgent({ name: "Task worker", role: "independentContributor" });
-    const work = store.createWork({ name: "Task repository", contributorAgentIds: [agent.agentId] });
+    const work = store.createWork({ name: "Task_repository", contributorAgentIds: [agent.agentId] });
     let notifications = 0;
     store.setStateDirtyListener(() => { notifications += 1; });
     const failure = new Error("injected Task persistence failure");

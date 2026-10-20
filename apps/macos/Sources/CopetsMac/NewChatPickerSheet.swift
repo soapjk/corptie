@@ -1,4 +1,5 @@
 import SwiftUI
+import CorptieClientCore
 
 enum NewSessionKind: String, CaseIterable, Identifiable {
     case assistantChat
@@ -23,11 +24,11 @@ enum SessionCreationTitlePolicy {
         agentName: String?
     ) -> String {
         let taskTitle = taskTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !taskTitle.isEmpty { return taskTitle }
+        if !taskTitle.isEmpty { return EntityTitlePolicy.generatedDefault(taskTitle) }
         let suggestedAgentTitle = suggestedAgentTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !suggestedAgentTitle.isEmpty { return suggestedAgentTitle }
+        if !suggestedAgentTitle.isEmpty { return EntityTitlePolicy.generatedDefault(suggestedAgentTitle) }
         let agentName = agentName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return "\(agentName.isEmpty ? "Agent" : agentName)_Session"
+        return EntityTitlePolicy.generatedDefault("\(agentName.isEmpty ? "Agent" : agentName)_Session")
     }
 }
 
@@ -202,14 +203,17 @@ struct NewSessionCreationSheet: View {
     }
 
     private var sessionIdentitySection: some View {
-        TextField(L10n("会话名称"), text: Binding(
-            get: { sessionTitle },
-            set: {
-                sessionTitle = $0
-                titleWasEdited = true
-            }
-        ))
-            .textFieldStyle(.roundedBorder)
+        VStack(alignment: .leading, spacing: 4) {
+            TextField(L10n("会话名称"), text: Binding(
+                get: { sessionTitle },
+                set: {
+                    sessionTitle = $0
+                    titleWasEdited = true
+                }
+            ))
+                .textFieldStyle(.roundedBorder)
+            if titleWasEdited { EntityNameValidationMessage(value: sessionTitle) }
+        }
     }
 
     private var providerSection: some View {
@@ -383,6 +387,7 @@ struct NewSessionCreationSheet: View {
     }
 
     private var canCreate: Bool {
+        guard !titleWasEdited || sessionTitle.isEmpty || EntityNamePolicy.isValid(sessionTitle) else { return false }
         guard selectedAgentId != nil, !selectedProviderId.isEmpty else { return false }
         switch kind {
         case .assistantChat: return true
@@ -513,7 +518,7 @@ struct NewSessionCreationSheet: View {
     }
 
     private func createSession() {
-        guard let agentId = selectedAgentId, !isCreating else { return }
+        guard canCreate, let agentId = selectedAgentId, !isCreating else { return }
         let trimmedTitle = sessionTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestedTitle = titleWasEdited && !trimmedTitle.isEmpty ? trimmedTitle : nil
         if submitsInBackground, kind == .worker, let task = selectedCorptieTask {

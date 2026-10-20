@@ -24,7 +24,7 @@ async function fixture() {
     close: async () => { await store.close(); await rm(directory, { recursive: true, force: true }); } };
 }
 const identity = { deviceId: "device:test" };
-const input = { requestId: "chat-create-001", title: "New Chat", agentId: "agent:test", providerId: "provider:a" };
+const input = { requestId: "chat-create-001", title: "New_Chat-v2", agentId: "agent:test", providerId: "provider:a" };
 
 test("Chat creation exposes resources and is Provider-neutral, receipt-backed and replay-safe", async () => {
   const f = await fixture();
@@ -37,7 +37,7 @@ test("Chat creation exposes resources and is Provider-neutral, receipt-backed an
       const receipt = await f.api.createChat(identity, body);
       assert.equal(receipt.kind, "chat_create");
       assert.equal(receipt.status, "completed");
-      assert.deepEqual(receipt.entityResult, { sessionId: `session:${f.calls.length}`, title: "New Chat" });
+      assert.deepEqual(receipt.entityResult, { sessionId: `session:${f.calls.length}`, title: input.title });
       assert.equal(f.calls.at(-1).providerId, providerId);
       // Replaying an accepted intent must not depend on current Provider availability.
       const originalOptions = f.chatCreation.options;
@@ -56,6 +56,9 @@ test("Chat creation validates input, rejects revoked credentials and unsupported
   try {
     for (const patch of [{ title: " " }, { title: "x".repeat(513) }, { cwd: "/private" }, { requestId: "short" }]) {
       await assert.rejects(() => f.api.createChat(identity, { ...input, ...patch }), { code: "INVALID_CHAT_CREATION" });
+    }
+    for (const title of ["1Chat", "收益%", "Chat,One", "Chat。", "Chat\n", " Chat"]) {
+      await assert.rejects(() => f.api.createChat(identity, { ...input, title }), { code: "INVALID_ENTITY_NAME" });
     }
     await assert.rejects(() => f.api.createChat(identity, input, () => { throw Object.assign(new Error(), { code: "INVALID_CREDENTIAL" }); }), { code: "INVALID_CREDENTIAL" });
     const disabled = await f.api.createChat(identity, { ...input, providerId: "provider:disabled" });

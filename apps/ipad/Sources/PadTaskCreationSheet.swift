@@ -25,7 +25,7 @@ struct PadTaskCreationSheet: View {
                 Section(route.workName) {
                     TextField("Task 名称", text: $state.draft.title)
                         .accessibilityIdentifier("task-create-title")
-                    Text("名称支持中文、英文字母和数字，与 Mac 保持一致。")
+                    Text(EntityTitlePolicy.guidance)
                         .font(.caption).foregroundStyle(.secondary)
                     TextField("任务描述", text: $state.draft.description, axis: .vertical).lineLimit(3...8)
                     TextField("验收标准", text: $state.draft.acceptanceCriteria, axis: .vertical).lineLimit(2...6)

@@ -86,6 +86,66 @@ struct ConsoleOverlayScrollerTests {
                 > ConsoleThinScroller.scrollerWidth(for: .regular, scrollerStyle: .overlay))
         #expect(!scroll.drawsBackground)
         #expect(!scroll.contentView.drawsBackground)
+        #expect(scroll.autohidesScrollers)
+        #expect(scroll.verticalScroller?.isOpaque == false)
+    }
+
+    @Test func sessionListUsesTransparentAutoHidingOverlayWithoutAContentGutter() throws {
+        let scroll = AppKitSessionListView.makeScrollView(tableView: NSTableView())
+        scroll.setFrameSize(NSSize(width: 320, height: 240))
+        scroll.tile()
+        #expect(scroll.scrollerStyle == .overlay)
+        #expect(scroll.autohidesScrollers)
+        #expect(scroll.verticalScroller is ConsoleThinScroller)
+        #expect(!scroll.drawsBackground)
+        #expect(!scroll.contentView.drawsBackground)
+        #expect(scroll.borderType == .noBorder)
+        #expect(scroll.contentView.frame.width == 320)
+        #expect(scroll.scrollerInsets.right == 0)
+    }
+
+    @Test func scrollerPaintsOnlyThreePointKnobAndNoTrackInBothAppearances() throws {
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            let scroller = ConsoleThinScroller(frame: NSRect(x: 0, y: 0, width: 16, height: 240))
+            // Exercise the drawing independently of AppKit's overlay fade state.
+            scroller.scrollerStyle = .legacy
+            scroller.isEnabled = true
+            scroller.knobProportion = 0.2
+            scroller.doubleValue = 0.5
+            let bounds = scroller.bounds
+            let knob = scroller.rect(for: .knob)
+            #expect(!knob.isEmpty)
+            let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil,
+                pixelsWide: Int(bounds.width), pixelsHigh: Int(bounds.height), bitsPerSample: 8,
+                samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+            let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = context
+            NSColor.clear.setFill()
+            bounds.fill(using: .copy)
+            NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance {
+                scroller.draw(bounds)
+                scroller.drawKnobSlot(in: bounds, highlight: true)
+            }
+            context.flushGraphics()
+            NSGraphicsContext.restoreGraphicsState()
+            var paintedColumns = Set<Int>()
+            var paintedRows = Set<Int>()
+            for y in 0..<bitmap.pixelsHigh {
+                for x in 0..<bitmap.pixelsWide {
+                    if (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.01 {
+                        paintedColumns.insert(x)
+                        paintedRows.insert(y)
+                    }
+                }
+            }
+            #expect(!paintedColumns.isEmpty)
+            // At most one anti-aliased edge pixel per side at 1x.
+            #expect(paintedColumns.count <= Int(ConsoleThinScroller.knobWidth) + 2)
+            #expect(paintedRows.count <= Int(ceil(knob.height)) + 2)
+            #expect(paintedRows.count < bitmap.pixelsHigh / 2)
+        }
     }
 
     @Test func contentProbeConfiguresOnlyItsEnclosingScrollView() {

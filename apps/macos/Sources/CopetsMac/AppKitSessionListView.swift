@@ -38,19 +38,26 @@ struct AppKitSessionListView: NSViewRepresentable {
         column.resizingMask = []
         tableView.addTableColumn(column)
 
-        let scrollView = SessionListScrollView()
-        scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = false
-        scrollView.autohidesScrollers = false
-        scrollView.scrollerStyle = .legacy
-        scrollView.verticalScroller?.controlSize = .small
-        scrollView.scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: -2)
-        scrollView.borderType = .noBorder
-        scrollView.documentView = tableView
+        let scrollView = Self.makeScrollView(tableView: tableView)
 
         context.coordinator.attach(tableView: tableView, scrollView: scrollView)
         context.coordinator.apply(rows: rows, rowSpacing: rowSpacing)
+        return scrollView
+    }
+
+    static func makeScrollView(tableView: NSTableView) -> NSScrollView {
+        let scrollView = SessionListScrollView()
+        scrollView.drawsBackground = false
+        scrollView.contentView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.verticalScroller = ConsoleThinScroller()
+        scrollView.autohidesScrollers = true
+        scrollView.scrollerStyle = .overlay
+        scrollView.verticalScroller?.controlSize = .small
+        scrollView.scrollerInsets = NSEdgeInsetsZero
+        scrollView.borderType = .noBorder
+        scrollView.documentView = tableView
         return scrollView
     }
 

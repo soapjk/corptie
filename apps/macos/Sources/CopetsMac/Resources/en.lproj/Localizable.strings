@@ -1453,3 +1453,4 @@
 "等待主分支更新" = "Waiting for main to update";
 "已有 Worktree 操作，请先处理" = "Resolve the existing Worktree operation first.";
 "Worktree 状态已变化，等待重新检查" = "Worktree state changed; waiting to recheck.";
+"名称仅支持中文、大小写英文字母、数字、横杠（-）和下划线（_），不能以数字开头，也不能包含空格或其他符号。" = "Use Chinese characters, English letters, digits, hyphens (-) or underscores (_). Do not start with a digit or use spaces or other symbols.";

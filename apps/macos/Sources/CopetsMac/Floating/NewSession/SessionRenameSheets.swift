@@ -48,6 +48,8 @@ struct RenameSessionSheet: View {
                     save()
                 }
 
+            EntityNameValidationMessage(value: title)
+
             HStack {
                 Spacer()
                 Button {
@@ -58,7 +60,7 @@ struct RenameSessionSheet: View {
                         .frame(width: 30, height: 30)
                 }
                 .buttonStyle(IconButtonStyle())
-                .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(!EntityNamePolicy.isValid(title))
                 .help(L10n("Save name"))
             }
         }
@@ -70,6 +72,7 @@ struct RenameSessionSheet: View {
     }
 
     private func save() {
+        guard EntityNamePolicy.isValid(title) else { return }
         backendClient.rename(session: session, title: title) {
             close()
         }
@@ -138,7 +141,7 @@ struct RenameCorptieTaskSheet: View {
                         .frame(width: 30, height: 30)
                 }
                 .buttonStyle(IconButtonStyle())
-                .disabled(!EntityNamePolicy.isValid(title) || isSaving)
+                .disabled((title != task.title && !EntityNamePolicy.isValid(title)) || isSaving)
                 .help(L10n("Save name"))
             }
         }
@@ -154,11 +157,11 @@ struct RenameCorptieTaskSheet: View {
     }
 
     private func save() {
-        guard EntityNamePolicy.isValid(title), !isSaving else { return }
+        guard (title == task.title || EntityNamePolicy.isValid(title)), !isSaving else { return }
         isSaving = true
         saveError = nil
         Task {
-            if await entityClient.updateCorptieTask(taskId: task.id, title: trimmedTitle,
+            if await entityClient.updateCorptieTask(taskId: task.id, title: title == task.title ? nil : trimmedTitle,
                 autoTitleEnabled: autoTitleEnabled) != nil {
                 close()
             } else {

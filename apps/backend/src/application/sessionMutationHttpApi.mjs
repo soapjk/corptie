@@ -23,7 +23,7 @@ export function handleSessionMutationHttpRequest({
           });
           return;
         }
-        const title = typeof input.title === "string" ? input.title.trim() : "";
+        const title = typeof input.title === "string" ? input.title : "";
         if (!title) {
           sendJson(response, 400, { error: "Title is required" });
           return;

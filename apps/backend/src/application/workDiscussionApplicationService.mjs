@@ -3,6 +3,9 @@
  * One service instance per backend serializes creation per Work, including startup repair.
  * This is not a durable command receipt; device transports still need their own journal.
  */
+import { generatedEntityTitle } from "../domain/entityTitlePolicy.mjs";
+import { validateEntityName } from "../domain/workTaskValidation.mjs";
+
 export class WorkDiscussionApplicationService {
   constructor({ workService, launch }) {
     this.workService = workService;
@@ -23,6 +26,7 @@ export class WorkDiscussionApplicationService {
   }
 
   async open(input) {
+    if (input.title != null && input.title !== "") validateEntityName(input.title, "title", "Chat");
     this.validate(input);
     const pending = this.pending.get(input.workId);
     if (pending) {
@@ -55,7 +59,7 @@ export class WorkDiscussionApplicationService {
     if (existing) return existing;
     const agent = (work.contributorAgentIds ?? []).map(id => this.workService.store.getAgent(id)).find(Boolean);
     if (!agent) throw coded("WORK_CONTRIBUTOR_REQUIRED", "创建 Work Chat 需要至少一个有效的 Contributor Agent。", 400);
-    return (await this.open({ workId, agentId: agent.agentId, providerId, title: `${work.name}_Chat` })).session;
+    return (await this.open({ workId, agentId: agent.agentId, providerId, title: generatedEntityTitle(`${work.name}_Chat`) })).session;
   }
 }
 

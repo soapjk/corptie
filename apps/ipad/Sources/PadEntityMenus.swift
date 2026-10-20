@@ -39,7 +39,7 @@ struct PadCreateChatSheet: View {
     private var canCreate: Bool {
         guard let options else { return false }
         let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        return connection.connected && !commands.isBusy && !loading && !name.isEmpty && name.utf16.count <= 512
+        return connection.connected && !commands.isBusy && !loading && EntityTitlePolicy.isValid(title) && name.utf16.count <= 512
             && options.agents.contains(where: { $0.id == agentID })
             && options.providers.contains(where: { $0.id == providerID && $0.available })
     }
@@ -50,6 +50,7 @@ struct PadCreateChatSheet: View {
                 Section("Chat") {
                     TextField("标题", text: $title)
                         .accessibilityIdentifier("create-chat-title")
+                    Text(EntityTitlePolicy.guidance).font(.caption).foregroundStyle(.secondary)
                 }
                 if let options {
                     Section("执行配置") {
@@ -146,7 +147,7 @@ struct PadCreateWorkSheet: View {
             Form {
                 Section("Work") {
                     TextField("名称", text: $name)
-                    Text("名称仅支持中文、英文字母和数字。")
+                    Text(EntityTitlePolicy.guidance)
                         .font(.caption).foregroundStyle(.secondary)
                     TextField("描述（可选）", text: $description, axis: .vertical)
                 }
@@ -175,7 +176,7 @@ struct PadCreateWorkSheet: View {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("创建") { Task { await create() } }
-                        .disabled(options == nil || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        .disabled(options == nil || !EntityTitlePolicy.isValid(name)
                             || selectedAgents.isEmpty || commands.isBusy)
                 }
             }
@@ -265,7 +266,7 @@ struct PadEditWorkSheet: View {
                             }
                         }
                     }
-                    .disabled(submitting || commands.isBusy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(submitting || commands.isBusy || !EntityTitlePolicy.isValid(name))
                 }
             }
         }
@@ -297,6 +298,7 @@ struct PadRenameTaskSheet: View {
             Form {
                 Section("Task 标题") {
                     TextField("标题", text: $title)
+                    Text(EntityTitlePolicy.guidance).font(.caption).foregroundStyle(.secondary)
                     Toggle("自动更新 Task 标题", isOn: $autoTitleEnabled)
                 }
                 if let commandNotice {
@@ -319,7 +321,7 @@ struct PadRenameTaskSheet: View {
                             let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
                             let receipt = await commands.run(connection, target: .task(task.id), kind: "task_update", label: "重命名 Task") { api, requestID in
                                 var req = ClientTaskUpdate(requestId: requestID)
-                                req.title = trimmed
+                                if title != task.title { req.title = trimmed }
                                 req.autoTitleEnabled = autoTitleEnabled
                                 return try await api.taskCommand(taskId: task.id, command: .update, body: req)
                             }
@@ -332,7 +334,7 @@ struct PadRenameTaskSheet: View {
                             }
                         }
                     }
-                    .disabled(submitting || commands.isBusy || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(submitting || commands.isBusy || (title != task.title && !EntityTitlePolicy.isValid(title)))
                 }
             }
         }
@@ -442,7 +444,7 @@ struct PadEditTaskSheet: View {
                                     }
                                 }
                                 var req = ClientTaskUpdate(requestId: requestID)
-                                if detailDefinition == nil || trimmed != detailDefinition?["title"].text { req.title = trimmed }
+                                if title != (detailDefinition?["title"].text ?? task.title) { req.title = trimmed }
                                 if let definition = detailDefinition {
                                     if description != (definition["description"].text ?? task.description ?? "") { req.description = description }
                                     if acceptance != (definition["acceptanceCriteria"].text ?? task.acceptanceCriteria ?? "") { req.acceptanceCriteria = acceptance }
@@ -461,7 +463,7 @@ struct PadEditTaskSheet: View {
                             }
                         }
                     }
-                    .disabled(submitting || commands.isBusy || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    .disabled(submitting || commands.isBusy || (title != (detailDefinition?["title"].text ?? task.title) && !EntityTitlePolicy.isValid(title))
                         || !detailHasChanges || detailDefinition != nil && management?.actions.edit.available != true)
                 }
             }

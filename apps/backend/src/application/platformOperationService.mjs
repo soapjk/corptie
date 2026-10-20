@@ -114,7 +114,7 @@ export class PlatformOperationService {
     switch (required(args.action, "action")) {
       case "list": return this.workService.listWorks();
       case "get": return this.workService.getWork(required(args.work_id, "work_id"));
-      case "create": return this.workService.createWork({ ...(args.patch ?? {}), name: validateEntityName(required(args.name, "name"), "name", "Work") });
+      case "create": return this.workService.createWork({ ...(args.patch ?? {}), name: validateEntityName(args.name, "name", "Work") });
       case "update": {
         if (args.patch?.name !== undefined) validateEntityName(args.patch.name, "name", "Work");
         return this.workService.updateWork(required(args.work_id, "work_id"), args.patch ?? {});
@@ -131,7 +131,7 @@ export class PlatformOperationService {
       case "list": return args.work_id ? this.workService.listTasksByWork(args.work_id) : this.workService.listTasks();
       case "get": return this.workService.getTask(required(args.task_id, "task_id"));
       case "create": {
-        const title = validateEntityName(required(args.title, "title"), "title", "Task");
+        const title = validateEntityName(args.title, "title", "Task");
         const authorization = this.#authorizeTaskCreation(args, binding);
         const created = await this.createTask({
           taskInput: {
@@ -175,7 +175,7 @@ export class PlatformOperationService {
         providerId: required(args.provider_id, "provider_id"),
         taskId: optional(args.task_id),
         expectedTaskVersion: args.task_id ? positiveInteger(args.resource_version, "resource_version") : undefined,
-        title: optional(args.title),
+        title: args.title ?? undefined,
         prompt: optional(args.prompt),
         sourceSessionId: binding.logicalSessionId ?? binding.actorSessionId,
         idempotencyKey: optional(args.idempotency_key)
@@ -184,7 +184,7 @@ export class PlatformOperationService {
       case "interrupt": return this.sessionService.interrupt(required(args.session_id, "session_id"), context);
       case "resume": return this.sessionService.resumeSession(required(args.session_id, "session_id"), context);
       case "disconnect": return this.sessionService.disconnectSession(required(args.session_id, "session_id"), context);
-      case "rename": return this.sessionService.renameSession(required(args.session_id, "session_id"), required(args.title, "title"), context);
+      case "rename": return this.sessionService.renameSession(required(args.session_id, "session_id"), args.title, context);
       case "archive": {
         const sessionId = required(args.session_id, "session_id");
         const archived = args.archived !== false;

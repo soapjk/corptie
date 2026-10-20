@@ -1530,6 +1530,7 @@ function agentCreationRequestHash(agentInput, skillIds) {
 // 辅助填写：限制 Agent 只输出文本、只读、不写文件、不产生会话。
 function draftInstructions(fieldLabel) {
   return [
+    ...(/title|name|名称|标题/i.test(fieldLabel) ? ["For a name or title use Chinese characters, English letters, ASCII digits, hyphens (-) and underscores (_) only. No leading digit, spaces or other punctuation."] : []),
     "You are Corptie's one-time form drafting helper, not the user's ordinary development Agent.",
     `You are helping fill a form field labelled "${fieldLabel}".`,
     "Return ONLY the text that should go into that field — no headings, no commentary, no markdown fences.",
@@ -1551,19 +1552,19 @@ function draftPrompt(fieldLabel, prompt) {
 
 const FORM_DRAFT_SCHEMAS = Object.freeze({
   agent: Object.freeze({
-    name: "Short Agent name containing only uppercase or lowercase English letters, Chinese characters, or digits; no spaces or punctuation",
+    name: "Short Agent name: Chinese, English letters, digits, hyphens and underscores only; no leading digit or spaces",
     description: "Concise responsibility description",
     systemPrompt: "Detailed operating instructions for the Agent",
     capabilities: "Comma-separated capability tags"
   }),
   work: Object.freeze({
-    name: "Short Work name containing only uppercase or lowercase English letters, Chinese characters, or digits; no spaces or punctuation",
+    name: "Short Work name: Chinese, English letters, digits, hyphens and underscores only; no leading digit or spaces",
     description: "Work scope and desired outcome",
     profile: 'Exactly one of "general", "software", "office", "data", or "design"',
     tags: "Comma-separated tags"
   }),
   task: Object.freeze({
-    title: "Short Task title containing only uppercase or lowercase English letters, Chinese characters, or digits; no spaces or punctuation",
+    title: "Short Task title: Chinese, English letters, digits, hyphens and underscores only; no leading digit or spaces",
     description: "Concrete implementation requirements and scope",
     acceptanceCriteria: "Markdown bullet list of verifiable acceptance criteria",
     priority: 'Exactly one of "low", "medium", "high"'
@@ -1595,7 +1596,7 @@ function formDraftInstructions(formType, schema) {
     "You are Corptie's one-time structured form drafting helper, not the user's ordinary development Agent.",
     `You are filling a ${formType} creation form with exactly these JSON string fields: ${Object.keys(schema).join(", ")}.`,
     "Return ONLY one valid JSON object. Include every listed field exactly once, even when its value is an empty string.",
-    "For Agent and Work names and Task titles, use only uppercase or lowercase English letters, Chinese characters, or digits. Never use spaces, line breaks, underscores, hyphens, or other punctuation.",
+    "For names and titles, use only Chinese characters, uppercase or lowercase English letters, ASCII digits, hyphens (-) or underscores (_). Never start with a digit. No spaces, line breaks or other punctuation.",
     "Do not add fields, markdown fences, headings, commentary, or trailing text.",
     "Do not write files, modify Git, start services, or use collaboration, subagents, skills, or external uploads.",
     "You may read files in the working directory for context, but do not modify anything."
@@ -1607,7 +1608,7 @@ function formDraftPrompt(formType, intent, currentValues, schema) {
   return [
     `Draft all fields for the Corptie ${formType} creation form.`,
     "Preserve useful non-empty current values unless the user's request clearly replaces or improves them.",
-    "Names and titles must contain only uppercase or lowercase English letters, Chinese characters, or digits. Replace any current name or title that contains spaces or punctuation instead of preserving it.",
+    "Names and titles may contain Chinese characters, English letters, ASCII digits, hyphens (-) and underscores (_) only, and cannot start with a digit. Replace a current name only if it violates this rule or the user's intent.",
     formType === "work"
       ? "Use the language of the user's request. Keep names concise and describe the ideal state as an evolving direction, not a completion checklist."
       : "Use the language of the user's request. Keep names concise and acceptance criteria workly verifiable.",
@@ -1672,7 +1673,7 @@ function parseGeneratedFormDraft(text, schema) {
     } catch {
       throw apiError(
         "INVALID_GENERATED_DRAFT",
-        `Generated ${entityNameField} may only contain English letters, Chinese characters, or digits.`,
+        `Generated ${entityNameField} may only contain Chinese characters, English letters, digits, hyphens and underscores, and must not start with a digit.`,
         502
       );
     }

@@ -1,5 +1,6 @@
 import { deviceError } from "./clientDeviceAuthority.mjs";
 import { executeClientCommand } from "./clientEntityCommands.mjs";
+import { validateEntityName } from "../domain/workTaskValidation.mjs";
 
 export async function clientChatCreationOptions(api) {
   if (!api.chatCreation) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
@@ -16,7 +17,8 @@ export async function createClientChat(api, identity, input, revalidateIdentity)
       || typeof input.requestId !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(input.requestId)
       || ["title", "agentId", "providerId"].some(key => typeof input[key] !== "string"
         || !input[key].trim() || input[key].length > 512)) throw deviceError("INVALID_CHAT_CREATION", 400);
-  const fields = { title: input.title.trim(), agentId: input.agentId, providerId: input.providerId };
+  validateEntityName(input.title, "title", "Chat");
+  const fields = { title: input.title, agentId: input.agentId, providerId: input.providerId };
   // Validate inside the receipt operation: a replay remains readable even if
   // its Agent or Provider was subsequently removed or disabled.
   return executeClientCommand(api, identity, revalidateIdentity, { kind: "chat_create", entityId: "chats",

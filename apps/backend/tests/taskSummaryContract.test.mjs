@@ -23,10 +23,10 @@ test("without an agent reply the result remains unknown", () => {
 });
 
 test("automatic title uses valid bounded names and empty means keep current", () => {
-  for (const suggestedTitle of ["", "优化工作台UI2"]) {
+  for (const suggestedTitle of ["", "优化工作台UI2", "MarketCow-SDK_v2"]) {
     assert.equal(validateTaskSummaryOutput(JSON.stringify({ ...example, suggestedTitle }), context).suggestedTitle, suggestedTitle);
   }
-  for (const suggestedTitle of ["有 空格", "标题！", "a".repeat(65), 42, null]) {
+  for (const suggestedTitle of ["有 空格", "标题！", "2号策略", "收益%", "Task\n", "a".repeat(65), 42, null]) {
     assert.throws(() => validateTaskSummaryOutput(JSON.stringify({ ...example, suggestedTitle }), context), { code: "TASK_SUMMARY_INVALID_OUTPUT" });
   }
 });
