@@ -32,10 +32,13 @@ struct PadWorkOutline: View {
     @State private var selectedArchivedTask: ClientTask?
     @State private var fullyExpandedWorkIDs = Set<String>()
     @FocusState private var searchFocused: Bool
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .headline) private var phoneHeaderFontSize: CGFloat = 16
+    @ScaledMetric(relativeTo: .caption) private var tabletHeaderFontSize: CGFloat = 11
     private var sort: PadOutlineSort { PadOutlineSort(rawValue: sortRaw) ?? .standard }
     private var hasSearch: Bool { !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var isPhone: Bool { UIDevice.current.userInterfaceIdiom == .phone }
-    private var headerFont: Font { isPhone ? .system(size: 16, weight: .semibold) : WorkOutlineMetrics.headerTitleFont }
+    private var headerFont: Font { .system(size: isPhone ? phoneHeaderFontSize : tabletHeaderFontSize, weight: .semibold) }
     private var rowFont: Font { isPhone ? .system(size: 15, weight: .semibold) : WorkOutlineMetrics.rowTitleFont }
     private var rowPadding: CGFloat { isPhone ? 8 : WorkOutlineMetrics.rowPadding }
     private var headerPadding: CGFloat { isPhone ? 8 : WorkOutlineMetrics.headerPadding }
@@ -359,7 +362,7 @@ struct PadWorkOutline: View {
         let toggle = { toggleWork(work.id) }
         let isSelected = selectedWorkID == work.id
         let discussions = workspace.discussionsByWork[work.id] ?? []
-        return HStack(spacing: 0) {
+        return WorkOutlineHeaderRow(minimumHeight: 44, toggleExpanded: toggle) {
             Button(action: toggle) {
                 HStack(spacing: 0) {
                     WorkOutlineDisclosureChevron(isExpanded: isExpanded)
@@ -371,16 +374,11 @@ struct PadWorkOutline: View {
                             isActive: isActive)
                             .font(headerFont)
                             .foregroundStyle(isSelected ? Color.primary : Color.secondary)
-                            .lineLimit(1)
-                    }
-                    if discussions.isEmpty {
-                        Spacer(minLength: 4)
-                        if !isExpanded, workspace.unreadWorkIDs.contains(work.id) {
-                            UnreadSessionDot()
-                        }
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
                     }
                 }
                 .padding(.vertical, headerPadding)
+                .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -388,35 +386,45 @@ struct PadWorkOutline: View {
             .accessibilityValue(isExpanded ? "已展开" : "已折叠")
             .accessibilityIdentifier("work-header-\(work.id)")
 
-            if !discussions.isEmpty {
-                ForEach(discussions) { discussion in
-                    WorkDiscussionButton(isSelected: showsPersistentSelection && workspace.selection == discussion.id,
-                        isRunning: SessionExecutionState(executionStatus: discussion.executionStatus) == .running,
-                        isActive: isActive,
-                        hasUnread: workspace.unreadSessionIDs.contains(discussion.id),
-                        accessibilityState: showsPersistentSelection && workspace.selection == discussion.id ? "已选中"
-                            : workspace.unreadSessionIDs.contains(discussion.id) ? "未读会话" : "",
-                        minimumHitHeight: WorkOutlineMetrics.headerIconSize + WorkOutlineMetrics.headerPadding * 2) {
-                            onOpenSession(discussion.id)
-                        }
-                        .padding(.leading, 6)
-                        .accessibilityIdentifier("work-discussion-\(discussion.id)")
+        } discussion: {
+            if discussions.count == 1, let discussion = discussions.first {
+                workDiscussionButton(discussion).padding(.leading, 6)
+            } else if !discussions.isEmpty {
+              ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) {
+                  ForEach(discussions) { discussion in
+                    workDiscussionButton(discussion)
+                  }
                 }
-
-                Button(action: toggle) {
-                    HStack(spacing: 0) {
-                        Spacer(minLength: 4)
-                        if !isExpanded, workspace.unreadWorkIDs.contains(work.id) {
-                            UnreadSessionDot()
+                .fixedSize(horizontal: true, vertical: false)
+                Menu {
+                    ForEach(discussions) { discussion in
+                        let states = [showsPersistentSelection && workspace.selection == discussion.id ? "已选中" : "",
+                            workspace.unreadSessionIDs.contains(discussion.id) ? "未读" : "",
+                            SessionExecutionState(executionStatus: discussion.executionStatus) == .running ? "运行中" : ""]
+                            .filter { !$0.isEmpty }.joined(separator: " · ")
+                        Button { onOpenSession(discussion.id) } label: {
+                            Label(states.isEmpty ? discussion.title : "\(discussion.title) · \(states)", systemImage: "bubble.left")
                         }
                     }
-                    .frame(minHeight: isPhone ? 28 : WorkOutlineMetrics.headerIconSize)
-                    .padding(.vertical, headerPadding)
-                    .contentShape(Rectangle())
+                } label: {
+                    WorkDiscussionLabel(isSelected: showsPersistentSelection && discussions.contains { workspace.selection == $0.id },
+                        isRunning: discussions.contains { SessionExecutionState(executionStatus: $0.executionStatus) == .running },
+                        isActive: isActive, hasUnread: discussions.contains { workspace.unreadSessionIDs.contains($0.id) },
+                        title: discussions.count > 1 ? "讨论 \(discussions.count)" : "讨论", minimumHitHeight: 44)
                 }
                 .buttonStyle(.plain)
-                .accessibilityHidden(true)
-                .accessibilityIdentifier("work-header-empty-\(work.id)")
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+                .fixedSize()
+                .accessibilityLabel("选择 Work 讨论")
+                .accessibilityIdentifier("work-discussions-menu-\(work.id)")
+              }
+              .padding(.leading, 6)
+            }
+        } actions: {
+            if !isExpanded, workspace.unreadWorkIDs.contains(work.id) {
+                UnreadSessionDot()
             }
         }
         .contextMenu {
@@ -441,6 +449,16 @@ struct PadWorkOutline: View {
             }
             .disabled(entityCommands.isBusy)
         }
+    }
+
+    private func workDiscussionButton(_ discussion: ClientSession) -> some View {
+        WorkDiscussionButton(isSelected: showsPersistentSelection && workspace.selection == discussion.id,
+            isRunning: SessionExecutionState(executionStatus: discussion.executionStatus) == .running,
+            isActive: isActive, hasUnread: workspace.unreadSessionIDs.contains(discussion.id),
+            accessibilityState: showsPersistentSelection && workspace.selection == discussion.id ? "已选中"
+                : workspace.unreadSessionIDs.contains(discussion.id) ? "未读会话" : "",
+            minimumHitHeight: 44) { onOpenSession(discussion.id) }
+            .accessibilityIdentifier("work-discussion-\(discussion.id)")
     }
 
     private func toggleWork(_ id: String) {
