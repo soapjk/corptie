@@ -193,7 +193,7 @@ const domainDelegates = Object.freeze({
     "finalizeTaskDeletion"
   ],
   memorySkillRepository: [
-    "createMemory", "getMemory", "listMemoriesByOwner",
+    "createMemory", "getMemory", "listMemoriesByOwner", "getSessionMemoryTopics", "upsertSessionMemoryTopics",
     "listMemoriesForExtraction", "findMemoryByContent",
     "getMemoryBySourceEvent", "getMemoryExtractionProgress", "setMemoryExtractionProgress",
     "memoryExtractionWindowStats",
@@ -203,7 +203,7 @@ const domainDelegates = Object.freeze({
     "finishMemoryExtractionJob", "listMemoryExtractionJobs",
     "claimMemoryExtractionDailyCall", "refundMemoryExtractionDailyCall",
     "getMemoryRememberOperation", "createMemoryRememberOperation",
-    "validateMemoryAssociation", "listMemoriesByKind", "listAllMemories",
+    "validateMemoryAssociation", "listMemoriesByKind", "listAllMemories", "listUnclassifiedMemories",
     "listMemoryPage", "updateMemory", "deleteMemory",
     "createMemoryAudit", "getMemoryAudit", "listMemoryAudit",
     "rollbackMemoryAudit", "createMemoryRecallAudit", "listMemoryRecallAudit", "listSessionMemoryHits", "listSessionMemoryHitsPage", "hasMemoryStartupRecall", "updateMemoryRecallAuditInjection",

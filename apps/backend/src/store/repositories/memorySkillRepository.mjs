@@ -24,11 +24,12 @@ export class MemorySkillRepository {
     this.db.run(
       `INSERT INTO memories (
         id, owner_type, owner_id, task_id, kind, content, structured_json, tags_json,
+        primary_topic, secondary_topics_json, keywords_json, applies_to_json, delivery_mode,
         base_confidence, confidence, recency_score, usage_count, last_accessed_at,
         source_type, source_session_id, source_event_sequence, source_event_seqs_json,
         promotion_status, promoted_skill_id, access_policy, trust_level, expires_at, replaces_memory_id, version,
         auto_applied, applied_at, revoked_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.ownerType,
@@ -38,6 +39,11 @@ export class MemorySkillRepository {
         input.content,
         JSON.stringify(input.structuredJson ?? {}),
         JSON.stringify(input.tags ?? []),
+        input.primaryTopic ?? null,
+        JSON.stringify(input.secondaryTopics ?? []),
+        JSON.stringify(input.keywords ?? []),
+        JSON.stringify(input.appliesTo ?? []),
+        input.deliveryMode ?? "on_demand",
         input.baseConfidence ?? 0.5,
         input.confidence ?? input.baseConfidence ?? 0.5,
         input.recencyScore ?? 0,
@@ -74,6 +80,19 @@ export class MemorySkillRepository {
       `SELECT * FROM memories WHERE owner_type = ? AND owner_id = ? ORDER BY confidence DESC`,
       [ownerType, ownerId]
     );
+  }
+
+  getSessionMemoryTopics(sessionId) {
+    const row = this.selectOne("SELECT * FROM session_memory_topics WHERE session_id = ?", [sessionId]);
+    return row ? { profile: safeJsonValue(row.profile_json, {}), messageSequence: row.message_sequence } : null;
+  }
+
+  upsertSessionMemoryTopics(sessionId, profile, messageSequence = 0) {
+    this.db.run(`INSERT INTO session_memory_topics (session_id, profile_json, message_sequence, updated_at)
+      VALUES (?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET profile_json = excluded.profile_json,
+      message_sequence = excluded.message_sequence, updated_at = excluded.updated_at`,
+    [sessionId, JSON.stringify(profile), messageSequence, createdAtFromOrNow()]);
+    this.scheduleSave();
   }
 
   listMemoriesForExtraction(ownerType, ownerId, limit = 100) {
@@ -301,6 +320,12 @@ export class MemorySkillRepository {
     return this.selectAll(`SELECT * FROM memories ORDER BY updated_at DESC`);
   }
 
+  listUnclassifiedMemories(limit = 20) {
+    return this.selectAll(`SELECT * FROM memories WHERE primary_topic IS NULL
+      AND revoked_at IS NULL AND promotion_status IN ('active', 'candidate')
+      ORDER BY created_at, id LIMIT ?`, [limit]);
+  }
+
   listMemoryPage(options = {}) {
     const ownerType = typeof options.ownerType === "string" && options.ownerType ? options.ownerType : null;
     const ownerId = typeof options.ownerId === "string" && options.ownerId ? options.ownerId : null;
@@ -327,8 +352,14 @@ export class MemorySkillRepository {
       }
     }
     if (typeof options.query === "string" && options.query) {
-      clauses.push("(LOWER(content) LIKE ? OR LOWER(tags_json) LIKE ?)");
-      params.push(`%${options.query.toLocaleLowerCase()}%`, `%${options.query.toLocaleLowerCase()}%`);
+      clauses.push("(LOWER(content) LIKE ? OR LOWER(tags_json) LIKE ? OR LOWER(keywords_json) LIKE ?)");
+      params.push(...Array(3).fill(`%${options.query.toLocaleLowerCase()}%`));
+    }
+    if (options.primaryTopic) { clauses.push("primary_topic = ?"); params.push(options.primaryTopic); }
+    if (options.deliveryMode) { clauses.push("delivery_mode = ?"); params.push(options.deliveryMode); }
+    if (options.appliesTo) {
+      clauses.push("EXISTS (SELECT 1 FROM json_each(memories.applies_to_json) WHERE value = ?)");
+      params.push(options.appliesTo);
     }
     if (hasCursor) {
       clauses.push("(updated_at < ? OR (updated_at = ? AND id < ?))");
@@ -354,7 +385,8 @@ export class MemorySkillRepository {
     if (!current) return null;
     this.db.run(
       `UPDATE memories SET
-        content=?, structured_json=?, tags_json=?, base_confidence=?, confidence=?, recency_score=?,
+        content=?, structured_json=?, tags_json=?, primary_topic=?, secondary_topics_json=?,
+        keywords_json=?, applies_to_json=?, delivery_mode=?, base_confidence=?, confidence=?, recency_score=?,
         usage_count=?, last_accessed_at=?, promotion_status=?, promoted_skill_id=?,
         access_policy=?, trust_level=?, expires_at=?, replaces_memory_id=?, version=?, auto_applied=?, applied_at=?, revoked_at=?, updated_at=?
        WHERE id=?`,
@@ -362,6 +394,11 @@ export class MemorySkillRepository {
         patch.content ?? current.content,
         JSON.stringify(patch.structuredJson ?? JSON.parse(current.structured_json || "{}")),
         JSON.stringify(patch.tags ?? JSON.parse(current.tags_json || "[]")),
+        patch.primaryTopic !== undefined ? patch.primaryTopic : current.primary_topic,
+        JSON.stringify(patch.secondaryTopics ?? JSON.parse(current.secondary_topics_json || "[]")),
+        JSON.stringify(patch.keywords ?? JSON.parse(current.keywords_json || "[]")),
+        JSON.stringify(patch.appliesTo ?? JSON.parse(current.applies_to_json || "[]")),
+        patch.deliveryMode ?? current.delivery_mode,
         patch.baseConfidence ?? current.base_confidence,
         patch.confidence ?? current.confidence,
         patch.recencyScore ?? current.recency_score,
@@ -429,6 +466,11 @@ export class MemorySkillRepository {
       content: before.content,
       structuredJson: safeJsonValue(before.structured_json, before.structured ?? {}),
       tags: safeJsonValue(before.tags_json, before.tags ?? []),
+      primaryTopic: before.primary_topic ?? before.primaryTopic ?? null,
+      secondaryTopics: safeJsonValue(before.secondary_topics_json, before.secondaryTopics ?? []),
+      keywords: safeJsonValue(before.keywords_json, before.keywords ?? []),
+      appliesTo: safeJsonValue(before.applies_to_json, before.appliesTo ?? []),
+      deliveryMode: before.delivery_mode ?? before.deliveryMode ?? "on_demand",
       confidence: before.confidence,
       promotionStatus: before.promotion_status ?? before.promotionStatus,
       promotedSkillId: before.promoted_skill_id ?? before.promotedSkillId,
@@ -490,20 +532,21 @@ export class MemorySkillRepository {
     // grow the Detail payload or hide older distinct memories behind a limit.
     const rows = this.selectAll(`WITH hits AS (
       SELECT CAST(selected.value AS TEXT) AS memory_id,
-        audit.diagnostics_json, audit.created_at,
+        audit.diagnostics_json, audit.reason, audit.created_at,
         ROW_NUMBER() OVER (PARTITION BY selected.value
           ORDER BY audit.created_at DESC, audit.rowid DESC) AS rank
       FROM memory_recall_audit AS audit
       JOIN json_each(audit.selected_ids_json) AS selected
       WHERE audit.session_id = ?
         AND json_extract(audit.diagnostics_json, '$.injection.status')
-          IN ('provider_accepted', 'context_included')
+          = 'provider_accepted'
     )
-    SELECT memory_id, diagnostics_json, created_at FROM hits
+    SELECT memory_id, diagnostics_json, reason, created_at FROM hits
     WHERE rank = 1 ORDER BY created_at DESC, memory_id`, [sessionId]);
     return rows.map((row) => ({
       memoryId: row.memory_id,
       diagnostics: safeJsonValue(row.diagnostics_json, {}),
+      reason: row.reason,
       lastHitAt: row.created_at
     }));
   }
@@ -519,17 +562,18 @@ export class MemorySkillRepository {
         || position[0].length > 64 || position[1].length > 256) throw invalid();
     }
     const rows = this.selectAll(`WITH hits AS (
-      SELECT CAST(selected.value AS TEXT) AS memory_id, audit.diagnostics_json, audit.created_at,
+      SELECT CAST(selected.value AS TEXT) AS memory_id, audit.diagnostics_json, audit.reason, audit.created_at,
         ROW_NUMBER() OVER (PARTITION BY selected.value ORDER BY audit.created_at DESC, audit.rowid DESC) AS rank
       FROM memory_recall_audit AS audit JOIN json_each(audit.selected_ids_json) AS selected
       WHERE audit.session_id = ? AND json_extract(audit.diagnostics_json, '$.injection.status')
-        IN ('provider_accepted', 'context_included')
-    ) SELECT memory_id, diagnostics_json, created_at FROM hits WHERE rank = 1
+        = 'provider_accepted'
+    ) SELECT memory_id, diagnostics_json, reason, created_at FROM hits WHERE rank = 1
       ${position ? "AND (created_at < ? OR (created_at = ? AND memory_id > ?))" : ""}
       ORDER BY created_at DESC, memory_id LIMIT ?`,
       [sessionId, ...(position ? [position[0], position[0], position[1]] : []), limit + 1]);
     const selected = rows.slice(0, limit), last = selected.at(-1), hasMore = rows.length > limit;
-    return { items: selected.map(row => ({ memoryId: row.memory_id, diagnostics: safeJsonValue(row.diagnostics_json, {}), lastHitAt: row.created_at })),
+    return { items: selected.map(row => ({ memoryId: row.memory_id,
+      diagnostics: safeJsonValue(row.diagnostics_json, {}), reason: row.reason, lastHitAt: row.created_at })),
       hasMore, nextCursor: hasMore && last ? Buffer.from(JSON.stringify([last.created_at, last.memory_id])).toString("base64url") : null };
   }
 
@@ -546,6 +590,7 @@ export class MemorySkillRepository {
     const row = this.selectOne("SELECT diagnostics_json FROM memory_recall_audit WHERE id = ?", [id]);
     if (!row) return false;
     const diagnostics = safeJsonValue(row.diagnostics_json, {});
+    if (diagnostics.injection?.status === status) return false;
     this.db.run("UPDATE memory_recall_audit SET diagnostics_json = ? WHERE id = ?", [
       JSON.stringify({ ...diagnostics, injection: { status } }), id
     ]);

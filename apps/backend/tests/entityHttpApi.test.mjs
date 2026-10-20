@@ -2122,7 +2122,7 @@ test("POST /memories/extract 从 Session 提炼记忆（主路径）", async () 
     services.memoryExtractor.classifyMany = async (events) => events.map((event) => ({
       eventSequence: event.sequence, evidence: event.text, content: event.text,
       kind: "preference", scope: "task", scopeRationale: "Task preference",
-      rationale: "User preference", confidence: 0.8, conflict: false
+      rationale: "User preference", confidence: 0.8, conflict: false, primaryTopic: "programming"
     }));
 
     const extract = await callApi({
@@ -2395,14 +2395,14 @@ test("Memory candidate review API publishes confirmed content to startup recall"
       content: "Unreviewed fact", sourceType: "extracted", promotionStatus: "candidate", trustLevel: "untrusted" });
     const encoded = encodeURIComponent(candidate.id);
     const before = await callApi({ method: "GET", pathname: "/memory-recall",
-      search: "?phase=startup&agentId=assistant", ...services });
+      search: "?phase=startup&agentId=assistant&intent=Verified%20fact", ...services });
     assert.equal(before.body.memories.length, 0);
     const confirmed = await callApi({ method: "POST", pathname: `/memories/${encoded}/confirm`,
       body: { content: "Verified fact", expectedVersion: 1 }, ...services });
     assert.equal(confirmed.statusCode, 200);
     assert.equal(confirmed.body.memory.content, "Verified fact");
     const after = await callApi({ method: "GET", pathname: "/memory-recall",
-      search: "?phase=startup&agentId=assistant", ...services });
+      search: "?phase=startup&agentId=assistant&intent=Verified%20fact", ...services });
     assert.deepEqual(after.body.memories.map((item) => item.id), [candidate.id]);
     const stale = await callApi({ method: "POST", pathname: `/memories/${encoded}/confirm`,
       body: { expectedVersion: 1 }, ...services });

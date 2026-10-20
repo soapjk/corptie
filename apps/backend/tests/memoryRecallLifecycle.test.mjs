@@ -50,7 +50,7 @@ function memory(store, input) {
   });
 }
 
-test("startup recall is bounded, trusted, high-confidence and respects Task→Work→Agent ties", async () => {
+test("startup needs an intent and ranks relevant trusted memories by scope", async () => {
   const f = await fixture();
   try {
     memory(f.store, { ownerType: "agent", ownerId: "agent:recall", content: "same agent" });
@@ -67,10 +67,10 @@ test("startup recall is bounded, trusted, high-confidence and respects Task→Wo
     const recall = await new MemoryRecallService({
       store: f.store, hubService: new HubService({ store: f.store }),
       clock: () => "2026-08-23T00:00:00.000Z"
-    }).startup(f.scope);
-    assert.equal(recall.memories.length, 8);
+    }).startup(f.scope, { intent: "same" });
+    assert.equal(recall.memories.length, 3);
     assert.deepEqual(recall.memories.slice(0, 3).map((item) => item.owner_type), ["task", "work", "agent"]);
-    assert.ok(recall.memories.every((item) => item.trust_level === "trusted" && item.confidence >= 0.7));
+    assert.ok(recall.memories.every((item) => item.trust_level === "trusted"));
     assert.equal(recall.mode, "bounded_trusted");
     const presented = presentMemoryRecallAudit(f.store, recall);
     assert.equal(presented.candidateEntries.length, recall.candidateIds.length);
@@ -89,7 +89,7 @@ test("per-turn trigger is model-free, diagnostic, and Deep Recall degrades expli
     let embeddingCalls = 0;
     const hub = new HubService({ store: f.store, embedder: async () => { embeddingCalls += 1; return [1, 0]; } });
     const recall = new MemoryRecallService({ store: f.store, hubService: hub });
-    const skipped = await recall.turn("hi", f.scope);
+    const skipped = await recall.turn("", f.scope);
     assert.equal(skipped.mode, "skipped");
     assert.equal(embeddingCalls, 0);
     const light = await recall.turn("How should I implement Memory tools again?", f.scope);
@@ -104,9 +104,7 @@ test("per-turn trigger is model-free, diagnostic, and Deep Recall degrades expli
     }).explicitSearch("Memory Provider", f.scope, { deepRecall: true });
     assert.equal(degraded.reason, "deep_recall_unavailable_fell_back_to_lexical");
     assert.equal(degraded.diagnostics.degraded, true);
-    assert.deepEqual(lightweightTrigger("hi"), {
-      triggered: false, reason: "no_recall_cue", score: 0, termCount: 1
-    });
+    assert.equal(lightweightTrigger("hi").triggered, true);
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });
@@ -145,12 +143,33 @@ test("Session Memory hits deduplicate accepted Turns and keep older distinct hit
   }
 });
 
+test("development discussion excludes a personal fact until the conversation turns to pets", async () => {
+  const f = await fixture();
+  try {
+    const cat = memory(f.store, { ownerType: "global", ownerId: "user:local",
+      content: "用户养有一只公猫。", primaryTopic: "personal", confidence: 0.99 });
+    const rule = memory(f.store, { ownerType: "global", ownerId: "user:local",
+      kind: "preference", content: "开发任务完成后集中测试。", primaryTopic: "programming",
+      appliesTo: ["development"], deliveryMode: "applicable_preference", confidence: 0.99 });
+    const service = new MemoryRecallService({ store: f.store, hubService: new HubService({ store: f.store }) });
+    const profile = { topics: ["programming"], contexts: ["development"] };
+    assert.deepEqual(service.applicablePreferences(f.scope, profile).selectedIds, [rule.id]);
+    const sdk = await service.startup(f.scope, { intent: "讨论 MarketCow SDK", profile });
+    assert.ok(!sdk.selectedIds.includes(cat.id));
+    const pet = await service.turn("我养的公猫怎么样", f.scope,
+      { profile: { topics: ["personal"], contexts: ["personal"] } });
+    assert.ok(pet.selectedIds.includes(cat.id));
+    const back = await service.turn("继续讨论 MarketCow SDK", f.scope, { profile });
+    assert.ok(!back.selectedIds.includes(cat.id));
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
 test("low-confidence trusted Memory starts up and Chinese paraphrases recall without a cue", async () => {
   const f = await fixture();
   try {
     const retained = memory(f.store, { content: "提交代码之前先运行本地测试", confidence: 0.5 });
     const service = new MemoryRecallService({ store: f.store, hubService: new HubService({ store: f.store }) });
-    assert.equal((await service.startup(f.scope)).memories[0].id, retained.id);
+    assert.equal((await service.startup(f.scope, { intent: "代码提交前需要运行测试吗" })).memories[0].id, retained.id);
     const recall = await service.turn("代码提交前需要运行测试吗", f.scope);
     assert.deepEqual(recall.selectedIds, [retained.id]);
     service.markInjection(recall, "context_included");
@@ -175,7 +194,7 @@ test("startup is complete only after Provider acceptance or an empty selection",
     f.store.createSession({ id: sessionId, title: "Status", provider: "test-provider",
       status: "running", sessionKind: "assistantChat", agentId: f.scope.agentId });
     memory(f.store, { content: "Preferred durable rule" });
-    const selected = await service.startup({ sessionId, agentId: f.scope.agentId });
+    const selected = await service.startup({ sessionId, agentId: f.scope.agentId }, { intent: "Preferred durable rule" });
     service.markInjection(selected, "context_included");
     assert.equal(service.hasStartupRecall(sessionId), false);
     service.markInjection(selected, "provider_rejected");
@@ -229,7 +248,7 @@ test("extraction creates untrusted candidates and never relearns injected recall
     const extracted = await new MemoryExtractor({ store: f.store, classifyMany: async (events) => [{
       eventSequence: events[0].sequence, evidence: events[0].text, content: events[0].text,
       kind: "preference", scope: "task", scopeRationale: "Task-specific",
-      rationale: "User preference", confidence: 0.8, conflict: false
+      rationale: "User preference", confidence: 0.8, conflict: false, primaryTopic: "programming"
     }] }).extractFromSession("session:recall");
     assert.equal(extracted.length, 1);
     assert.equal(extracted[0].content, "以后先运行本地测试");
@@ -263,7 +282,7 @@ test("confirmed Memory reaches a Provider turn and its Session Detail audit", as
     const [candidate] = await new MemoryExtractor({ store: f.store, classifyMany: async (events) => [{
       eventSequence: events[0].sequence, evidence: events[0].text, content: events[0].text,
       kind: "preference", scope: "global", scopeRationale: "Across sessions",
-      rationale: "User preference", confidence: 0.8, conflict: false
+      rationale: "User preference", confidence: 0.8, conflict: false, primaryTopic: "programming"
     }] }).extractFromSession(sourceSessionId);
     assert.equal(candidate.promotion_status, "candidate");
     reviewExtractedMemory(f.store, candidate.id, {
@@ -339,7 +358,8 @@ test("user-saved Global preferences reach existing Sessions across Works on unre
     recallService.markInjection(earlierStartup, "not_selected");
     const preference = memory(f.store, { ownerType: "global", ownerId: "user:local",
       kind: "preference", content: "Do all development before running one combined test pass.",
-      confidence: 0.5, autoApplied: false, appliedAt: "2026-10-08T07:11:54.053Z" });
+      confidence: 0.5, autoApplied: false, appliedAt: "2026-10-08T07:11:54.053Z",
+      primaryTopic: "programming", appliesTo: ["development"], deliveryMode: "applicable_preference" });
     const irrelevant = memory(f.store, { ownerType: "global", ownerId: "user:local",
       kind: "fact", content: "An unrelated project fact." });
     f.store.createWork({ id: "work:other", name: "Other", contributorAgentIds: [f.scope.agentId] });
@@ -368,6 +388,7 @@ test("user-saved Global preferences reach existing Sessions across Works on unre
         sessionBindingRepository: { resolve: () => reference },
         assertForkDispatchAllowed: () => {}, assertSessionRecoveryMessageBoundary: () => {},
         memoryRecallService: recallService,
+        memoryTopicService: { update: async () => ({ topics: ["programming"], contexts: ["development"] }) },
         workChatContextService: { build: () => ({ prompt: "Work context" }) },
         resolveContextReferences: async () => null,
         mcpAssignmentRevisionForAgent: () => null, emitEvent: () => {} });

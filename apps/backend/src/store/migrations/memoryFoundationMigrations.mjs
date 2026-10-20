@@ -12,6 +12,11 @@ export function ensureMemoryFoundationTables({ db }) {
         content TEXT NOT NULL,
         structured_json TEXT NOT NULL DEFAULT '{}',
         tags_json TEXT NOT NULL DEFAULT '[]',
+        primary_topic TEXT,
+        secondary_topics_json TEXT NOT NULL DEFAULT '[]',
+        keywords_json TEXT NOT NULL DEFAULT '[]',
+        applies_to_json TEXT NOT NULL DEFAULT '[]',
+        delivery_mode TEXT NOT NULL DEFAULT 'on_demand',
         base_confidence REAL NOT NULL DEFAULT 0.5,
         confidence REAL NOT NULL DEFAULT 0.5,
         recency_score REAL NOT NULL DEFAULT 0,
@@ -45,6 +50,13 @@ export function ensureMemoryFoundationTables({ db }) {
       CREATE INDEX IF NOT EXISTS idx_memories_updated_page ON memories(updated_at DESC, id DESC);
       CREATE INDEX IF NOT EXISTS idx_memories_owner_updated_page
         ON memories(owner_type, owner_id, updated_at DESC, id DESC);
+
+      CREATE TABLE IF NOT EXISTS session_memory_topics (
+        session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+        profile_json TEXT NOT NULL DEFAULT '{}',
+        message_sequence INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL
+      );
 
       CREATE TABLE IF NOT EXISTS memory_extraction_progress (
         session_id TEXT PRIMARY KEY,
@@ -234,6 +246,41 @@ export function quarantinePreModelExtractionCandidates({ db, selectAll, runDataM
       [`memory-audit:${randomUUID()}`, before.id,
         "Pre-model automatic candidate retained for audit but excluded from review and recall.",
         JSON.stringify(before), JSON.stringify(after), updatedAt]);
+    }
+  });
+}
+
+export function migrateLegacyMemoryTopics({ db, selectAll, runDataMigrationOnce }) {
+  runDataMigrationOnce("memory-topics-v1", () => {
+    const developmentTags = new Set(["代码开发", "技术方案", "开发规范", "development-policy",
+      "batch-development", "code-policy", "testing", "ios", "ipados"]);
+    const projectTags = new Set(["marketcow", "tradude", "nautilus"]);
+    const now = new Date().toISOString();
+    for (const before of selectAll("SELECT * FROM memories WHERE primary_topic IS NULL")) {
+      let tags;
+      try { tags = JSON.parse(before.tags_json || "[]"); } catch { tags = []; }
+      if (!Array.isArray(tags)) tags = [];
+      const normalized = [...new Set(tags.filter((tag) => typeof tag === "string")
+        .map((tag) => tag.trim().toLocaleLowerCase()).filter(Boolean))];
+      const development = normalized.some((tag) => developmentTags.has(tag));
+      const project = normalized.some((tag) => projectTags.has(tag));
+      if (!development && !project) continue;
+      const topic = development ? "programming" : "work_project";
+      const activelyApplicable = development && before.owner_type === "global"
+        && before.kind === "preference" && before.source_type === "user";
+      const appliesTo = activelyApplicable ? ["development"] : [];
+      const deliveryMode = activelyApplicable ? "applicable_preference" : "on_demand";
+      db.run(`UPDATE memories SET primary_topic = ?, keywords_json = ?, applies_to_json = ?,
+        delivery_mode = ?, tags_json = ?, version = version + 1, updated_at = ? WHERE id = ?`,
+      [topic, JSON.stringify(normalized.slice(0, 8)), JSON.stringify(appliesTo), deliveryMode,
+        JSON.stringify(normalized), now, before.id]);
+      db.run(`INSERT INTO memory_audit
+        (id, memory_id, action, actor_type, reason, before_json, after_json, created_at)
+        VALUES (?, ?, 'classify_legacy', 'system', ?, ?, ?, ?)`,
+      [`memory-audit:${randomUUID()}`, before.id, "Mapped explicit legacy tags to controlled Memory topics.",
+        JSON.stringify(before), JSON.stringify({ ...before, primary_topic: topic,
+          keywords_json: JSON.stringify(normalized.slice(0, 8)), applies_to_json: JSON.stringify(appliesTo),
+          delivery_mode: deliveryMode }), now]);
     }
   });
 }

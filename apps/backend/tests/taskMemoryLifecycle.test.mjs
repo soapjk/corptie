@@ -15,13 +15,13 @@ async function fixture() {
   await store.initialize();
   const agent = store.createAgent({ id: "agent:memory", name: "Memory", role: "independentContributor" });
   store.createWork({
-    id: "work:memory", name: "Memory lifecycle", contributorAgentIds: [agent.agentId]
+    id: "work:memory", name: "Memory_lifecycle", contributorAgentIds: [agent.agentId]
   });
   for (const taskId of ["task:one", "task:two"]) {
     store.createTask({
       id: taskId,
       workId: "work:memory",
-      title: taskId
+      title: taskId.replace(":", "_")
     });
   }
   return { directory, dbPath, configPath, store };
@@ -69,7 +69,7 @@ test("Task memory lifecycle starts empty, upserts from execution context, reload
       classifyMany: async (events) => [{ eventSequence: events[0].sequence,
         evidence: events[0].text, content: "Initial implementation context", kind: "fact",
         scope: "task", scopeRationale: "Task context", rationale: "Durable context",
-        confidence: 0.8, conflict: false }]
+        confidence: 0.8, conflict: false, primaryTopic: "programming" }]
     });
     const created = await extractor.extractFromSession("session:one");
     assert.equal(created.length, 1);

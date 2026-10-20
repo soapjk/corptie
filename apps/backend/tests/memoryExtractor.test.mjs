@@ -33,7 +33,8 @@ function userEvent(store, eventId, text) {
 function proposal(event, overrides = {}) {
   return { eventSequence: event.sequence, evidence: event.text, content: event.text,
     kind: "preference", scope: "global", scopeRationale: "Across all projects",
-    rationale: "Durable user preference", confidence: 0.99, conflict: false, ...overrides };
+    rationale: "Durable user preference", confidence: 0.99, conflict: false,
+    primaryTopic: "communication", ...overrides };
 }
 
 test("model extraction ignores tool records and can auto-activate a grounded Global preference", async () => {
@@ -118,6 +119,23 @@ test("explicit scope is independent of kind and Global is available without a Wo
 test("model output must be bounded JSON", () => {
   assert.deepEqual(parseMemoryModelOutput('{"memories":[]}'), []);
   assert.throws(() => parseMemoryModelOutput("not JSON"), { code: "MEMORY_MODEL_INVALID_OUTPUT" });
+});
+
+test("legacy batch classifies personal facts without making them always-on", async () => {
+  const f = await fixture();
+  try {
+    const cat = f.store.createMemory({ ownerType: "global", ownerId: "user:local", kind: "fact",
+      content: "用户养有一只公猫。", sourceType: "extracted", promotionStatus: "active",
+      trustLevel: "trusted", structuredJson: { extraction: { role: "user", evidence: "我养有一只公猫" } } });
+    const extractor = new MemoryExtractor({ store: f.store });
+    extractor.classifyLegacyMany = async (rows) => rows.map((row) => ({ id: row.id,
+      primaryTopic: "personal", secondaryTopics: ["life"], keywords: [],
+      appliesTo: [], deliveryMode: "on_demand", confidence: 0.99 }));
+    assert.equal(await extractor.classifyLegacyPage(), true);
+    assert.equal(f.store.getMemory(cat.id).primary_topic, "personal");
+    assert.equal(f.store.getMemory(cat.id).delivery_mode, "on_demand");
+    assert.equal(await extractor.classifyLegacyPage(), false);
+  } finally { await f.close(); }
 });
 
 test("model extraction uses the selected background Provider instead of the source Session Provider", async () => {
@@ -239,7 +257,7 @@ test("auto-activated Global Memory is recalled in a different Work Session", asy
     const recall = await new MemoryRecallService({ store: f.store,
       hubService: new HubService({ store: f.store }) }).startup({
       sessionId: "session:b", workId: "work:b", agentId: "agent:a"
-    });
+    }, { intent: "I prefer short answers" });
     assert.equal(recall.memories.length, 1);
     assert.equal(recall.memories[0].owner_type, "global");
     assert.equal(recall.diagnostics.selectedEntries[0].content, "I prefer short answers across all projects.");

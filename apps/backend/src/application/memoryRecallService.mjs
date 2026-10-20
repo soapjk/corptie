@@ -14,19 +14,22 @@ export class MemoryRecallService {
 
   async startup(scope = {}, options = {}) {
     const limit = boundedLimit(options.limit, DEFAULT_STARTUP_LIMIT, 12);
+    const intent = String(options.intent ?? "").trim();
     const visible = this.#visible(scope).filter((memory) => !options.excludeIds?.has(memory.id));
     const candidates = visible.filter(isRecallableMemory);
-    const ranked = await this.hubService.rankMemory("", candidates, { allowEmbedding: false });
+    const ranked = intent ? await this.hubService.rankMemory(intent, candidates,
+      { allowEmbedding: options.deepRecall === true, profile: options.profile }) : [];
+    const selected = ranked.filter((entry) => entry.score >= 0.18).slice(0, limit).map((entry) => entry.memory);
     return this.#record({
       sessionId: scope.sessionId,
       phase: "startup",
       mode: "bounded_trusted",
-      reason: ranked.length ? "trusted_active_memory" : "no_trusted_active_memory",
+      reason: selected.length ? "relevant_startup_memory" : "no_relevant_startup_memory",
       candidates,
-      selected: ranked.slice(0, limit).map((entry) => entry.memory),
+      selected,
       scope,
-      diagnostics: { pendingReviewCount: pendingReviewCount(visible) },
-      touch: true
+      diagnostics: { pendingReviewCount: pendingReviewCount(visible), profile: options.profile ?? null },
+      touch: false
     });
   }
 
@@ -53,8 +56,9 @@ export class MemoryRecallService {
     const allowEmbedding = deepRequested && typeof this.hubService.embedder === "function";
     const visible = this.#visible(scope).filter((memory) => !options.excludeIds?.has(memory.id));
     const candidates = visible.filter(isRecallableMemory);
-    const ranked = await this.hubService.rankMemory(intent, candidates, { allowEmbedding });
-    const selected = ranked.filter((entry) => entry.score > 0)
+    const ranked = await this.hubService.rankMemory(intent, candidates,
+      { allowEmbedding, profile: options.profile });
+    const selected = ranked.filter((entry) => entry.score >= 0.18)
       .slice(0, boundedLimit(options.limit, DEFAULT_TURN_LIMIT, 12))
       .map((entry) => entry.memory);
     const degraded = deepRequested && !allowEmbedding;
@@ -67,8 +71,9 @@ export class MemoryRecallService {
       candidates,
       selected,
       scope,
-      diagnostics: { ...trigger, deepRequested, degraded, pendingReviewCount: pendingReviewCount(visible) },
-      touch: true
+      diagnostics: { ...trigger, deepRequested, degraded, pendingReviewCount: pendingReviewCount(visible),
+        profile: options.profile ?? null },
+      touch: false
     });
   }
 
@@ -76,14 +81,17 @@ export class MemoryRecallService {
     return this.turn(intent, scope, {
       limit: options.limit ?? 20,
       deepRecall: options.deepRecall === true,
+      profile: null,
       explicit: true
     });
   }
 
-  globalPreferences(scope = {}) {
+  applicablePreferences(scope = {}, profile = {}) {
+    const contexts = new Set(profile.contexts ?? []);
     const selected = this.#visible(scope).filter((memory) =>
       memory.owner_type === "global" && memory.kind === "preference"
-      && memory.source_type === "user" && isRecallableMemory(memory));
+      && memory.delivery_mode === "applicable_preference" && isRecallableMemory(memory)
+      && safeArray(memory.applies_to_json).some((context) => context === "all" || contexts.has(context)));
     if (!selected.length) return null;
     selected.sort((left, right) => String(left.created_at).localeCompare(String(right.created_at))
       || left.id.localeCompare(right.id));
@@ -91,17 +99,25 @@ export class MemoryRecallService {
       sessionId: scope.sessionId,
       phase: "global_preference",
       mode: "always_on",
-      reason: "user_saved_global_preference",
+      reason: "applicable_global_preference",
       candidates: selected,
       selected,
       scope,
-      touch: true
+      touch: false
     });
+  }
+
+  globalPreferences(scope = {}, profile = {}) {
+    return this.applicablePreferences(scope, profile);
   }
 
   markInjection(recall, status) {
     if (!recall?.id) return false;
-    return this.store.updateMemoryRecallAuditInjection(recall.id, status);
+    const updated = this.store.updateMemoryRecallAuditInjection(recall.id, status);
+    if (updated && status === "provider_accepted") {
+      for (const id of recall.selectedIds ?? []) this.store.touchMemory(id);
+    }
+    return updated;
   }
 
   hasStartupRecall(sessionId) {
@@ -121,9 +137,7 @@ export class MemoryRecallService {
   }
 
   #record({ sessionId, phase, mode, reason, candidates, selected, scope, diagnostics = {}, touch }) {
-    if (touch) {
-      for (const memory of selected) this.store.touchMemory(memory.id);
-    }
+    void touch;
     const selectedEntries = selected.map((memory) => memoryRecallEntry(memory, true));
     const candidateEntries = candidates.slice(0, AUDIT_CANDIDATE_PREVIEW_LIMIT)
       .map((memory) => memoryRecallEntry(memory, true));
@@ -167,7 +181,8 @@ export function presentMemoryRecallAudit(store, audit) {
 }
 
 export function presentSessionMemoryHits(store, sessionId) {
-  return store.listSessionMemoryHits(sessionId).map(hit => presentSessionMemoryHit(store, hit));
+  return store.listSessionMemoryHits(sessionId).map(hit => ({ ...presentSessionMemoryHit(store, hit),
+    lastHitAt: hit.lastHitAt, hitReason: hit.reason ?? null }));
 }
 
 export function presentSessionMemoryHit(store, hit) {
@@ -186,7 +201,8 @@ export function presentSessionMemoryHitsPage(store, sessionId, options) {
   return { ...page, items: page.items.map(hit => {
     const entry = presentSessionMemoryHit(store, hit), current = store.getMemory(hit.memoryId);
     const unavailable = !current || Boolean(current.revoked_at);
-    return { ...entry, content: unavailable ? null : entry.content, unavailable, lastHitAt: hit.lastHitAt };
+    return { ...entry, content: unavailable ? null : entry.content, unavailable,
+      lastHitAt: hit.lastHitAt, hitReason: hit.reason ?? null };
   }) };
 }
 
@@ -206,6 +222,7 @@ function memoryRecallEntry(memory, snapshotAtRecall) {
     content: memory.content,
     ownerType: memory.owner_type,
     ownerId: memory.owner_id,
+    primaryTopic: memory.primary_topic ?? null,
     snapshotAtRecall
   };
 }
@@ -222,7 +239,7 @@ export function lightweightTrigger(message) {
   const terms = text.toLocaleLowerCase().match(/[\p{L}\p{N}_-]{2,}/gu) ?? [];
   const recallCue = /\b(remember|recall|again|previous|preference|convention|before)\b|记得|回忆|之前|上次|偏好|惯例|约定/u.test(text);
   const taskCue = /\b(how|why|fix|implement|build|test|debug|continue|resume)\b|如何|为什么|修复|实现|测试|调试|继续|恢复/u.test(text);
-  const routine = text.length >= 4;
+  const routine = true;
   const score = Math.min(1, (recallCue ? 0.65 : 0) + (taskCue ? 0.25 : 0) + (routine ? 0.15 : 0));
   return {
     triggered: routine || recallCue,
@@ -235,4 +252,9 @@ export function lightweightTrigger(message) {
 function boundedLimit(value, fallback, ceiling) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(1, Math.min(ceiling, Math.floor(parsed))) : fallback;
+}
+
+function safeArray(value) {
+  try { const parsed = typeof value === "string" ? JSON.parse(value) : value; return Array.isArray(parsed) ? parsed : []; }
+  catch { return []; }
 }

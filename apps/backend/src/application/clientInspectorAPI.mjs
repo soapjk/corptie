@@ -1,6 +1,7 @@
 import { deviceError, pairedDeviceActor } from "./clientDeviceAuthority.mjs";
 import { executeClientCommand } from "./clientEntityCommands.mjs";
 import { presentMemory, createUserMemory, reviewExtractedMemory } from "./memoryOperationService.mjs";
+import { validateMemoryClassification, parseMemoryClassification } from "./memoryTaxonomy.mjs";
 import { presentMemoryRecallAudit } from "./memoryRecallService.mjs";
 import { validateMemoryInput } from "./entityHttpApi.mjs";
 
@@ -16,8 +17,8 @@ const ACTION_FIELDS = {
   "artifact.revoke": ["id", "reason", "confirmed"],
   "artifact.supersede": ["id", "confirmed"],
   "provider.switch": ["providerId", "expectedRoutingVersion", "confirmed"],
-  "memory.create": ["kind", "content", "tags"],
-  "memory.update": ["id", "content", "tags", "expectedVersion"],
+  "memory.create": ["kind", "content", "tags", "primaryTopic", "secondaryTopics", "keywords", "appliesTo", "deliveryMode"],
+  "memory.update": ["id", "content", "tags", "primaryTopic", "secondaryTopics", "keywords", "appliesTo", "deliveryMode", "expectedVersion"],
   "memory.revoke": ["id", "reason", "confirmed", "expectedVersion"],
   "memory.restore": ["id", "reason", "confirmed", "expectedVersion"],
   "memory.rollback": ["id", "auditId", "confirmed", "expectedVersion"],
@@ -256,7 +257,8 @@ export class ClientInspectorAPI {
       }
       case "memory.create": {
         const input = { ownerType: task ? "task" : "work", ownerId: task?.id ?? scope.workId,
-          kind: fields.kind, content: fields.content, tags: tags(fields.tags), sourceSessionId: sessionId };
+          kind: fields.kind, content: fields.content, tags: tags(fields.tags), sourceSessionId: sessionId,
+          ...validateMemoryClassification({ ...fields, ownerType: task ? "task" : "work" }) };
         validateMemoryInput(input, this.store);
         return presentMemory(createUserMemory(this.store, input, scope.actor.id));
       }
@@ -287,6 +289,8 @@ export class ClientInspectorAPI {
           if (memory.revoked_at) throw deviceError("MEMORY_REVOKED", 409);
           if (typeof fields.content !== "string" || !fields.content.trim()) throw deviceError("INVALID_MEMORY_CONTENT", 400);
           patch.content = fields.content.trim(); patch.tags = tags(fields.tags);
+          Object.assign(patch, validateMemoryClassification({ ...parseMemoryClassification(memory),
+            ...fields, ownerType: memory.owner_type, kind: memory.kind }));
         } else {
           if (fields.confirmed !== true) throw deviceError("CONFIRMATION_REQUIRED", 409);
           patch.revokedAt = action === "memory.revoke" ? new Date().toISOString() : null;
