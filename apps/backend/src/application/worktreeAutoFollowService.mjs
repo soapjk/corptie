@@ -8,12 +8,14 @@ export function automaticWorktreeMutationActive(store, reference) {
     ?? store.getLogicalSessionByLegacySessionId?.(reference.sessionId);
   if (!logical?.repositoryId || !logical.activeWorkspaceId) return false;
   const job = store.getLatestWorktreeIntegrationJob?.(logical.repositoryId);
-  return Boolean(job?.details?.automaticFollow && ["queued", "running", "cancellation_requested"].includes(job.status)
-      && job.details.plan?.items?.some(item => item.worktreeId === logical.activeWorkspaceId));
+  return Boolean(job && ["queued", "running", "cancellation_requested"].includes(job.status)
+      && (job.details?.automaticFollow || job.details?.plan?.operationType === "sync")
+      && job.details.plan?.items?.some(item => item.worktreeId === logical.activeWorkspaceId
+        && !item.isMain && !["completed", "already_integrated", "recovered"].includes(item.mergeStatus)));
 }
 export function assertNoAutomaticWorktreeMutation(store, reference) {
   if (automaticWorktreeMutationActive(store, reference)) {
-    throw Object.assign(new Error("Automatic Worktree synchronization is in progress. This message will wait."),
+    throw Object.assign(new Error("Worktree synchronization is in progress. This message will wait."),
       { code: "SESSION_BUSY", reason: "WORKTREE_AUTO_FOLLOW_IN_PROGRESS", statusCode: 409 });
   }
 }

@@ -40,6 +40,8 @@ export class WorktreeIntegrationJobService {
     this.mergeSource = options.mergeSource;
     this.abortMerge = options.abortMerge;
     this.rebaseSource = options.rebaseSource ?? null;
+    this.inspectSyncWorktree = options.inspectSyncWorktree ?? null;
+    this.syncConcurrency = Math.max(1, Math.min(4, Math.floor(Number(options.syncConcurrency) || 3)));
     this.fastForwardSource = options.fastForwardSource ?? null;
     this.prepareConvergence = options.prepareConvergence ?? null;
     this.cleanupConvergence = options.cleanupConvergence ?? null;
@@ -871,8 +873,10 @@ export class WorktreeIntegrationJobService {
   async #finishCancellation(job, { replan = false, conflictPreserved = false } = {}) {
     const conflictItem = job.details.plan.items.find((candidate) =>
       candidate.worktreeId === job.details.currentWorktreeId);
-    const shouldRestoreTaskOwnedConflict = conflictItem?.mergeStatus === "conflict";
-    if (replan || shouldRestoreTaskOwnedConflict) {
+    const isSync = job.details.plan.operationType === "sync";
+    if (isSync) conflictPreserved = job.details.plan.items.some(item => item.mergeStatus === "conflict");
+    const shouldRestoreTaskOwnedConflict = !isSync && conflictItem?.mergeStatus === "conflict";
+    if (!isSync && (replan || shouldRestoreTaskOwnedConflict)) {
       try {
         const cleanup = await this.#abortConflictMergeForReplan(job);
         if (cleanup) {
@@ -1676,42 +1680,9 @@ export class WorktreeIntegrationJobService {
       }
 
       if (job.details.plan.operationType === "sync") {
-        if (typeof this.rebaseSource !== "function") {
-          throw new WorktreeIntegrationJobError("SYNC_UNSUPPORTED", "This backend cannot synchronize Worktrees yet.", 501);
-        }
-        const targetHead = job.details.plan.mainHeadBefore;
-        for (let item of items) {
-          if (item.isMain || ["completed", "already_integrated", "recovered"].includes(item.mergeStatus)) continue;
-          if (await this.#stopIfRequested(jobId)) return;
-          const refreshed = await this.#refreshWorktreeItem(job, item.worktreeId, { requireClean: true });
-          job = refreshed.job;
-          item = refreshed.item;
-          await this.#assertAutomaticFollowSafe(job);
-          job = this.#item(job, item.worktreeId, { mergeStatus: "running", error: null }, "rebasing", "rebase_started");
-          try {
-            const result = await this.rebaseSource({
-              path: item.path,
-              targetHead,
-              expectedSourceHead: item.commitHead ?? item.sourceHeadBefore,
-              jobId
-            });
-            job = this.#item(job, item.worktreeId, {
-              mergeStatus: result.alreadySynchronized ? "already_integrated" : "completed",
-              mergeMainHead: result.headOid,
-              conflictFiles: [],
-              error: null
-            }, "rebasing", "rebase_completed");
-          } catch (error) {
-            job = this.#item(job, item.worktreeId, {
-              mergeStatus: error.code === "REBASE_CONFLICT" ? "conflict" : "failed",
-              conflictFiles: error.conflictFiles ?? [],
-              error: error.message
-            }, "paused", "rebase_paused");
-            this.#pause(job, error);
-            return;
-          }
-          items = job.details.plan.items;
-        }
+        if (!await this.#runSync(jobId)) return;
+        job = this.#requireJob(jobId);
+        items = job.details.plan.items;
       }
 
       if (job.details.plan.operationType === "converge") {
@@ -1960,6 +1931,94 @@ export class WorktreeIntegrationJobService {
     return true;
   }
 
+  async #runSync(jobId) {
+    if (typeof this.rebaseSource !== "function") {
+      throw new WorktreeIntegrationJobError("SYNC_UNSUPPORTED", "This backend cannot synchronize Worktrees yet.", 501);
+    }
+    const initial = this.#requireJob(jobId);
+    const recoveryIndex = (initial.details.audit ?? []).findLastIndex(entry => entry.event === "backend_recovered");
+    const retryIndex = (initial.details.audit ?? []).findLastIndex(entry => entry.event === "retry_requested");
+    const allowResume = recoveryIndex <= retryIndex;
+    const targetHead = initial.details.plan.mainHeadBefore;
+    const pending = initial.details.plan.items.filter(item => !item.isMain
+      && !["completed", "already_integrated", "recovered"].includes(item.mergeStatus));
+    const failures = [];
+    let cursor = 0;
+    const startedAt = performance.now();
+    const worker = async () => {
+      while (cursor < pending.length && failures.length === 0) {
+        let latest = this.#requireJob(jobId);
+        if (latest.status === "cancellation_requested") return;
+        const recorded = pending[cursor++];
+        const itemStartedAt = performance.now();
+        try {
+          if (latest.details.automaticFollow) {
+            // Automatic follow currently owns exactly one source. Retain its
+            // persisted grant and comprehensive safety checks.
+            await this.#assertAutomaticFollowSafe(latest);
+          }
+          const current = this.inspectSyncWorktree
+            ? await this.inspectSyncWorktree({ repositoryId: latest.repositoryId, item: recorded, targetHead, allowResume, jobId })
+            : (await this.inspectRepository(latest.repositoryId)).worktrees.find(item => item.worktreeId === recorded.worktreeId);
+          if (!current || current.path !== recorded.path || current.branchName !== recorded.branchName
+            || current.isLocked || current.isDetached && current.operationState !== "rebase"
+            || current.availability !== "available") {
+            throw new WorktreeIntegrationJobError("WORKTREE_RECHECK_UNSAFE", "The source Worktree identity changed before synchronization.", 409);
+          }
+          const associated = this.#associate({ worktrees: [current] }).worktrees[0];
+          if ((associated.associations ?? []).some(binding => binding.active
+            || this.store.hasUnsettledSessionRuntimeWork?.(binding.sessionId))) {
+            throw new WorktreeIntegrationJobError("ACTIVE_SESSION_IN_PROGRESS", "Stop the active Session before synchronizing this Worktree.", 409);
+          }
+          latest = this.#requireJob(jobId);
+          if (failures.length || latest.status === "cancellation_requested") return;
+          this.#item(latest, recorded.worktreeId, {
+            mergeStatus: "running", rebaseStarted: true, error: null, startedAt: new Date().toISOString(), completedAt: null
+          }, "rebasing", "rebase_started", { auditData: {
+            inspectionMs: Math.round(performance.now() - itemStartedAt),
+            queueMs: Math.round(itemStartedAt - startedAt)
+          } });
+          const rebaseStartedAt = performance.now();
+          const result = await this.rebaseSource({
+            path: recorded.path, targetHead,
+            expectedSourceHead: recorded.commitHead ?? recorded.sourceHeadBefore,
+            allowResolvedRebase: allowResume && recorded.rebaseStarted === true,
+            jobId
+          });
+          this.#item(this.#requireJob(jobId), recorded.worktreeId, {
+            mergeStatus: result.recovered ? "recovered" : result.alreadySynchronized ? "already_integrated" : "completed",
+            mergeMainHead: result.headOid, conflictFiles: [], error: null,
+            completedAt: new Date().toISOString(), durationMs: Math.round(performance.now() - itemStartedAt)
+          }, "rebasing", "rebase_completed", { auditData: { rebaseMs: Math.round(performance.now() - rebaseStartedAt) } });
+        } catch (error) {
+          failures.push({ worktreeId: recorded.worktreeId, error });
+          this.#item(this.#requireJob(jobId), recorded.worktreeId, {
+            mergeStatus: error.code === "REBASE_CONFLICT" ? "conflict" : "failed",
+            conflictFiles: error.conflictFiles ?? [], error: error.message,
+            completedAt: new Date().toISOString(), durationMs: Math.round(performance.now() - itemStartedAt)
+          }, "rebasing", "rebase_paused");
+        }
+      }
+    };
+    // Drain every started worker before cancellation or a terminal Job write.
+    const settled = await Promise.allSettled(Array.from({ length: Math.min(this.syncConcurrency, pending.length) }, worker));
+    const unexpectedFailure = settled.find(result => result.status === "rejected");
+    if (unexpectedFailure) throw unexpectedFailure.reason;
+    let latest = this.#requireJob(jobId);
+    latest = this.#update(latest, {
+      auditEvent: "sync_batch_settled",
+      auditData: { concurrency: this.syncConcurrency, durationMs: Math.round(performance.now() - startedAt), failedCount: failures.length }
+    });
+    if (await this.#stopIfRequested(jobId)) return false;
+    if (failures.length) {
+      const first = failures[0];
+      latest = this.#update(latest, { currentWorktreeId: first.worktreeId });
+      this.#pause(latest, first.error);
+      return false;
+    }
+    return true;
+  }
+
   async #assertCommitProtectionBinding(job, item) {
     const decision = job.details.commitProtectionDecisions?.[item.worktreeId];
     if (!decision?.protectedPathsDigest) return;
@@ -2150,7 +2209,7 @@ export class WorktreeIntegrationJobService {
       ? withoutConflictResolution(latest.details)
       : latest.details;
     return this.#update(latest, {
-      phase,
+      phase: latest.status === "cancellation_requested" ? "stopping" : phase,
       details: { ...details, plan: { ...details.plan, items }, progress: progressFor(items) },
       currentWorktreeId: worktreeId,
       auditEvent: event,
@@ -2975,7 +3034,7 @@ function legacyCommitPolicyPaths(errorMessage) {
 
 function integrationExecutionProgressed(job) {
   return (job?.details?.audit ?? job?.audit ?? []).some((entry) => [
-    "commit_started", "merge_started", "commit_policy_decisions_applied"
+    "commit_started", "merge_started", "rebase_started", "commit_policy_decisions_applied"
   ].includes(entry.event));
 }
 
@@ -3019,6 +3078,12 @@ export function presentJob(job) {
   const availableActions = integrationJobAvailableActions({ ...presented, commitPolicyResidue });
   return {
     ...presented,
+    ...(presented.plan?.operationType === "sync" ? {
+      syncExecution: {
+        runningWorktreeIds: presented.plan.items.filter(item => item.mergeStatus === "running").map(item => item.worktreeId),
+        blockedWorktreeIds: presented.plan.items.filter(item => ["failed", "conflict"].includes(item.mergeStatus)).map(item => item.worktreeId)
+      }
+    } : {}),
     commitPolicyResidue,
     availableActions,
     notification: projectOperationNotification(presented),

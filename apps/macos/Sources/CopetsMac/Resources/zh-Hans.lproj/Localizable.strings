@@ -1271,6 +1271,7 @@
 "Let Agent Resolve Conflicts" = "让 Agent 一键解决冲突";
 "View Agent Session" = "查看 Agent 会话";
 "Revalidate and Continue" = "重新验证并继续";
+"Synchronizing %d Worktree(s)" = "正在同步 %d 个 Worktree";
 "Agent is resolving conflicts…" = "Agent 正在解决冲突…";
 "Agent finished; automatic validation needs attention" = "Agent 已完成，但自动验证需要处理";
 "Agent resolved the conflicts; validating and continuing automatically…" = "Agent 已解决冲突，正在验证并自动继续…";

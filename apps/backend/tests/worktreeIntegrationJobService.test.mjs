@@ -565,6 +565,114 @@ test("one-way synchronization rebases every source independently and leaves the 
   ]);
 });
 
+function concurrentSyncFixture(count = 7) {
+  const fixture = memoryFixture({ featureDirty: false });
+  const template = fixture.worktrees.find(item => !item.isMain);
+  fixture.worktrees.splice(1, fixture.worktrees.length - 1, ...Array.from({ length: count }, (_, index) => ({
+    ...structuredClone(template), worktreeId: `wt:sync-${index}`, path: `/sync-${index}`,
+    branchName: `feature/sync-${index}`, headOid: `source-${index}`, associations: []
+  })));
+  fixture.service.inspectSyncWorktree = async ({ item }) => structuredClone(fixture.worktrees.find(row => row.worktreeId === item.worktreeId));
+  fixture.start = async () => {
+    const plan = await fixture.service.preflight("repository:1", {
+      operationType: "one_way_sync", sourceWorktreeIds: fixture.worktrees.slice(1).map(item => item.worktreeId),
+      targetWorktreeId: "wt:main"
+    });
+    await fixture.service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+    return plan;
+  };
+  return fixture;
+}
+
+test("sync runs at most three sources concurrently, persists independent results, and avoids execution inventory scans", async () => {
+  const fixture = concurrentSyncFixture();
+  let running = 0, maximum = 0, scans = 0;
+  const gates = [];
+  const inspect = fixture.service.inspectRepository;
+  fixture.service.inspectRepository = async (...args) => { scans++; return inspect(...args); };
+  fixture.service.rebaseSource = async input => {
+    running++; maximum = Math.max(maximum, running);
+    await new Promise(resolve => gates.push(resolve));
+    running--;
+    return { headOid: `${input.path}-rebased` };
+  };
+  const plan = await fixture.start();
+  await waitForJobWhere(fixture.service, plan.id, job => job.syncExecution.runningWorktreeIds.length === 3);
+  assert.equal(maximum, 3);
+  const scansBeforeRebases = scans;
+  for (let attempt = 0; attempt < 100 && fixture.service.get(plan.id).status !== "completed"; attempt++) {
+    gates.splice(0).forEach(resolve => resolve());
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  const completed = await waitForJob(fixture.service, plan.id, "completed");
+  assert.equal(maximum, 3);
+  assert.equal(scans, scansBeforeRebases);
+  assert.equal(completed.plan.items.filter(item => item.mergeStatus === "completed").length, 7);
+  assert.equal(completed.progress.fraction, 1);
+  assert.deepEqual(completed.syncExecution.runningWorktreeIds, []);
+});
+
+test("sync conflict stops dispatch, drains in-flight sources, preserves successes and retries remaining items", async () => {
+  const fixture = concurrentSyncFixture();
+  const gates = [];
+  const started = [];
+  fixture.service.rebaseSource = async input => {
+    started.push(input.path);
+    await new Promise(resolve => gates.push({ path: input.path, resolve }));
+    if (input.path === "/sync-0") throw Object.assign(new Error("conflict"), { code: "REBASE_CONFLICT", conflictFiles: ["shared.txt"] });
+    return { headOid: "resolved" };
+  };
+  const plan = await fixture.start();
+  await waitForJobWhere(fixture.service, plan.id, job => job.syncExecution.runningWorktreeIds.length === 3);
+  gates.find(gate => gate.path === "/sync-0").resolve();
+  await waitForJobWhere(fixture.service, plan.id, job => job.syncExecution.blockedWorktreeIds.length === 1);
+  assert.equal(fixture.service.get(plan.id).status, "running");
+  gates.forEach(gate => gate.resolve());
+  const paused = await waitForJob(fixture.service, plan.id, "paused");
+  assert.equal(started.length, 3);
+  assert.equal(paused.plan.items.filter(item => item.mergeStatus === "completed").length, 2);
+  fixture.service.rebaseSource = async input => { started.push(input.path); return { headOid: "resolved" }; };
+  await fixture.service.retry(plan.id);
+  await waitForJob(fixture.service, plan.id, "completed");
+  assert.equal(started.filter(path => path === "/sync-1").length, 1);
+  assert.equal(started.filter(path => path === "/sync-2").length, 1);
+});
+
+test("sync cancellation waits for all started operations and never dispatches remaining sources", async () => {
+  const fixture = concurrentSyncFixture();
+  const gates = [];
+  fixture.service.rebaseSource = async () => {
+    await new Promise(resolve => gates.push(resolve));
+    return { headOid: "resolved" };
+  };
+  const plan = await fixture.start();
+  await waitForJobWhere(fixture.service, plan.id, job => job.syncExecution.runningWorktreeIds.length === 3);
+  await fixture.service.cancel(plan.id);
+  assert.equal(fixture.service.get(plan.id).status, "cancellation_requested");
+  gates[0]();
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(fixture.service.get(plan.id).phase, "stopping");
+  gates.forEach(resolve => resolve());
+  const canceled = await waitForJob(fixture.service, plan.id, "canceled");
+  assert.equal(gates.length, 3);
+  assert.equal(canceled.plan.items.filter(item => item.mergeStatus === "completed").length, 3);
+  assert.deepEqual(canceled.syncExecution.runningWorktreeIds, []);
+});
+
+test("canceling a conflicted synchronization preserves source rebases and never invokes main merge abort", async () => {
+  const fixture = concurrentSyncFixture(3);
+  fixture.service.rebaseSource = async () => {
+    throw Object.assign(new Error("source rebase conflict"), { code: "REBASE_CONFLICT", conflictFiles: ["shared.txt"] });
+  };
+  const plan = await fixture.start();
+  await waitForJob(fixture.service, plan.id, "paused");
+  const canceled = await fixture.service.cancel(plan.id);
+  assert.equal(canceled.status, "canceled");
+  assert.equal(canceled.phase, "canceled_conflict_preserved");
+  assert.equal(canceled.plan.items.some(item => item.mergeStatus === "conflict"), true);
+  assert.equal(fixture.calls.some(call => call.startsWith("abort:")), false);
+});
+
 test("automatic sync requires a persisted grant and checks it again at execution", async () => {
   const { service, calls } = memoryFixture({ featureDirty: false });
   const plan = await service.preflight("repository:1", {
