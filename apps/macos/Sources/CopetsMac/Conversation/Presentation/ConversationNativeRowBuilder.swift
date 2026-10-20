@@ -88,14 +88,14 @@ struct ConversationNativeRowBuilder {
                 )
             })
             text = ClickableMessageText.markdown(
-                from: item.type == "imageView" && !images.isEmpty ? "" :
+                from: item.isStandaloneImage ? "" :
                     MessageImageGalleryLayout.bodyText(ConversationMessageImageReference.removing(
                         parsedImages.filter { markdownImageSources.contains($0.source) },
                         from: presentedText), hasImages: !images.isEmpty),
                 baseDirectory: workingDirectory
             )
             let isOrdinaryMessage = collaboration == nil && specialEvent == nil
-                && (item.type == "userMessage" || item.type == "agentMessage" || (item.type == "imageView" && !images.isEmpty))
+                && (item.type == "userMessage" || item.type == "agentMessage" || item.isStandaloneImage)
             let scheduledSource = item.messageOrigin == "scheduled_task"
                 ? ConversationEventText(languageCode: AppLanguageController.shared.languageCode).messageSource(name: item.automationName) : nil
             title = scheduledSource ?? collaboration?.title ?? specialEvent?.title ?? (isOrdinaryMessage ? "" : item.title)

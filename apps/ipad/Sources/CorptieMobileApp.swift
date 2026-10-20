@@ -866,7 +866,7 @@ struct ConversationView: View {
                                     })
                             } else if message.presentationKind == .automationEvent
                                         || message.presentationKind == .systemEvent
-                                        || message.presentationKind == .unknown {
+                                        || (message.presentationKind == .unknown && !message.isStandaloneImage) {
                                 PadSpecialEventCard(message: message)
                             } else if message.type == "userInput" {
                                 PadUserInputCard(message: message, connection: connection, sessionID: sessionID,
@@ -2356,7 +2356,7 @@ private struct MobileMessageBubble: View {
             .filter { ConversationLocalResource(url: $0.url) != nil || ["http", "https"].contains($0.url.scheme?.lowercased() ?? "") }
     }
     private var displayText: String {
-        if message.type == "imageView", !message.images.isEmpty { return "" }
+        if message.isStandaloneImage { return "" }
         return MessageImageGalleryLayout.bodyText(ConversationMessageImageReference.removing(imageReferences, from: rawDisplayText),
             hasImages: !message.images.isEmpty)
     }

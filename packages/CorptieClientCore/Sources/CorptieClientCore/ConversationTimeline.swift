@@ -19,6 +19,13 @@ public protocol ConversationTimelineItem: Sendable {
 public extension ConversationTimelineItem {
     var collaborationDirection: String? { nil }
     var timelineHasImages: Bool { false }
+
+    /// Media presentation is independent of authored/formal reply semantics.
+    /// Explicit event roles always win, even when an execution item has images.
+    var isStandaloneImage: Bool {
+        type == "imageView" && timelineHasImages
+            && ConversationPresentationKind.resolve(type: type, presentationRole: presentationRole) == .unknown
+    }
 }
 
 public struct ConversationEntry<Item: ConversationTimelineItem>: Identifiable, Sendable {
@@ -392,9 +399,10 @@ private static func isTerminalTurnStatus(_ status: String) -> Bool {
 private static func isDetailProcessItem<Item: ConversationTimelineItem>(_ item: Item) -> Bool {
     // Materialized image output must be directly visible, not hidden inside
     // an execution disclosure. The same shared rule governs every client.
-    if item.type == "imageView", item.timelineHasImages { return false }
+    if item.isStandaloneImage { return false }
     let kind = ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole)
-    if kind == .collaborationMessage || kind == .collaborationConfirmation { return false }
+    if kind == .collaborationMessage || kind == .collaborationConfirmation
+        || kind == .systemEvent || kind == .automationEvent { return false }
     switch item.type {
     // These are provider execution events, not authored conversation replies.
     // Keep the mapping explicit: an unfamiliar event (or an interaction/error)
