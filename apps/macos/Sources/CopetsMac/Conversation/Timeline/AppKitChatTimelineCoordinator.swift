@@ -31,6 +31,8 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     private var activeProcessClockRowIndex: Int?
     private var revisionsByID: [String: Int] = [:]
     private var heightCache: [HeightCacheKey: CGFloat] = [:]
+    private var pendingImageGeometryRows = Set<String>()
+    private var imageGeometryCommitScheduled = false
     private var cellsByKey: [CellCacheKey: NSTableCellView & AppKitChatRowRendering] = [:]
     private var cellRecency: [CellCacheKey] = []
     private var lastMeasuredWidth: CGFloat = 0
@@ -97,6 +99,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         let revision: Int
         let widthBucket: Int
         let isLiveResizeApproximation: Bool
+        let imageGeometries: [MessageImageGeometry?]
     }
 
     private struct CellCacheKey: Hashable {
@@ -168,6 +171,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
             searchHighlightActive = false
         }
         rows.removeAll(keepingCapacity: true)
+        pendingImageGeometryRows.removeAll(keepingCapacity: true)
         hasExpandedProcessRows = false
         visibleProcessCollapseRowID = nil
         pendingProcessCollapseRowID = nil
@@ -358,7 +362,8 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
             id: item.id,
             revision: item.contentRevision,
             widthBucket: Int((measurementWidth * 2).rounded()),
-            isLiveResizeApproximation: isLiveResize
+            isLiveResizeApproximation: isLiveResize,
+            imageGeometries: item.imageGeometries
         )
         if let cached = heightCache[key] { return cached }
 
@@ -391,6 +396,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         let usesSharedText = usesSharedCard(rowModel)
         if let cachedCell = cellsByKey[cacheKey],
            (cachedCell is AppKitSharedMessageTextCell) == usesSharedText {
+            configureImageGeometryCallback(cachedCell, row: rowModel)
             touchCell(cacheKey)
             cachedCell.updateCallbacks(
                 onToggleExpansion: onToggleExpansion,
@@ -417,6 +423,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                 return AppKitChatNativeTextCell(identifier: identifier)
             }()
         ChatPerformanceRecorder.shared.increment(.appKitRowsConfigured)
+        configureImageGeometryCallback(cell, row: rowModel)
         cell.setContent(
             rowModel,
             availableWidth: availableWidth,
@@ -426,6 +433,48 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         )
         cacheCell(cell, for: rowModel)
         return cell
+    }
+
+    private func configureImageGeometryCallback(_ cell: NSTableCellView, row: AppKitChatTimelineRow) {
+        let sessionID = representedSessionID
+        let changed = { [weak self] in
+            guard let self, self.representedSessionID == sessionID else { return }
+            self.pendingImageGeometryRows.insert(row.id)
+            self.scheduleImageGeometryCommit()
+        }
+        (cell as? AppKitChatNativeTextCell)?.onImageGeometryChanged = changed
+        (cell as? AppKitSharedMessageTextCell)?.onImageGeometryChanged = changed
+    }
+
+    private func scheduleImageGeometryCommit() {
+        guard !imageGeometryCommitScheduled, !pendingImageGeometryRows.isEmpty else { return }
+        imageGeometryCommitScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.imageGeometryCommitScheduled = false
+            self.commitImageGeometry()
+        }
+    }
+
+    private func commitImageGeometry() {
+        guard !isProcessingUserScrollEvent, let tableView, !pendingImageGeometryRows.isEmpty else { return }
+        let ids = pendingImageGeometryRows
+        pendingImageGeometryRows.removeAll(keepingCapacity: true)
+        let changed = IndexSet(rows.indices.filter { ids.contains(rows[$0].id) })
+        guard !changed.isEmpty else { return }
+        let anchor = followsLatest ? nil : visibleAnchor(in: tableView)
+        heightCache = heightCache.filter { !ids.contains($0.key.id) }
+        let width = tableView.tableColumns.first?.width ?? tableView.bounds.width
+        for index in changed {
+            if let cell = tableView.view(atColumn: 0, row: index, makeIfNecessary: false) as? (NSTableCellView & AppKitChatRowRendering) {
+                cell.setContent(rows[index], availableWidth: width, baseDirectory: baseDirectory,
+                    onToggleExpansion: onToggleExpansion, onAction: onAction)
+            }
+        }
+        tableView.noteHeightOfRows(withIndexesChanged: changed)
+        synchronizeDocumentHeight(in: tableView)
+        if followsLatest { enqueueCorrection(.bottom) }
+        else if let anchor { restore(anchor: anchor, in: tableView) }
     }
 
     /// A mutable cell may only be indexed by the revision it currently renders.
@@ -995,6 +1044,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         // Reconcile once from final geometry after every user gesture.
         viewportDidScroll(userInitiated: true)
         isProcessingUserScrollEvent = false
+        scheduleImageGeometryCommit()
         updateFollowStateFromViewport()
     }
 

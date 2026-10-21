@@ -1454,3 +1454,9 @@
 "已有 Worktree 操作，请先处理" = "Resolve the existing Worktree operation first.";
 "Worktree 状态已变化，等待重新检查" = "Worktree state changed; waiting to recheck.";
 "名称仅支持中文、大小写英文字母、数字、横杠（-）和下划线（_），不能以数字开头，也不能包含空格或其他符号。" = "Use Chinese characters, English letters, digits, hyphens (-) or underscores (_). Do not start with a digit or use spaces or other symbols.";
+"无法读取剪贴板图片，请重新复制图片后重试。" = "Could not read the clipboard image. Copy the image again and retry.";
+"当前模型不支持图片。" = "The current model does not support images.";
+"最多只能添加 8 张图片。" = "You can attach up to 8 images.";
+"有 %d 张图片未能导入，请检查图片格式或大小。" = "Could not import %d image(s). Check their format or size.";
+"部分图片未添加：最多只能添加 8 张图片。" = "Some images were not attached. You can attach up to 8 images.";
+"图片正在导入，请稍后再试。" = "Images are being imported. Please try again shortly.";

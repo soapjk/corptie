@@ -341,7 +341,8 @@ async function resolvedConversationMessage(reference, input) {
       ...image,
       absolutePath: stored.path,
       mimeType: stored.mimeType,
-      byteLength: stored.byteLength
+      byteLength: stored.byteLength,
+      ...(stored.pixelWidth && stored.pixelHeight ? { pixelWidth: stored.pixelWidth, pixelHeight: stored.pixelHeight } : {})
     });
   }
   return { text: message.text, images, ...(message.mentions ? { mentions: message.mentions } : {}) };

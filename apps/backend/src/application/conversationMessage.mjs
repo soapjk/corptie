@@ -1,4 +1,5 @@
 import { isAbsolute } from "node:path";
+import { normalizedImageGeometry } from "./messageImageGeometry.mjs";
 
 export const MAX_CONVERSATION_IMAGES = 8;
 
@@ -85,7 +86,7 @@ function normalizeConversationImage(value) {
   if (originalPath && !isAbsolute(originalPath)) {
     throw invalidMessage("Message image originalPath must be absolute when present.");
   }
-  return Object.freeze({ managedPath, originalPath });
+  return Object.freeze({ managedPath, originalPath, ...normalizedImageGeometry(value.pixelWidth, value.pixelHeight) });
 }
 
 function contentImages(content) {

@@ -2,6 +2,7 @@ import { unifiedSearch } from "../store/unifiedSearch.mjs";
 import { projectTaskDeletionNotification } from "./worktreeIntegrationJobService.mjs";
 import { boundedUnicodeText } from "../utils/unicodeText.mjs";
 import { createHash } from "node:crypto";
+import { normalizedImageGeometry } from "./messageImageGeometry.mjs";
 import { ensureReliableMessageSchema, acceptReliableMessage, reliableReceipt } from "./clientReliableMessages.mjs";
 import { ClientImageUploads, imageUploadPolicy } from "./clientImageUploads.mjs";
 import { deviceError } from "./clientDeviceAuthority.mjs";
@@ -109,7 +110,8 @@ function publicClientMessage(item) {
       .map(image => ({ managedPath: image.managedPath,
         fileName: typeof image.fileName === "string" ? image.fileName : null,
         mimeType: typeof image.mimeType === "string" ? image.mimeType : null,
-        byteLength: Number.isSafeInteger(image.byteLength) ? image.byteLength : null })) : [],
+        byteLength: Number.isSafeInteger(image.byteLength) ? image.byteLength : null,
+        ...normalizedImageGeometry(image.pixelWidth, image.pixelHeight) })) : [],
     executionPlan: item.type === "executionPlan" ? publicExecutionPlan(item.executionPlan) : null,
     toolExecution: publicToolExecution(item.toolExecution),
     changeSet: publicChangeSet(item.changeSet),

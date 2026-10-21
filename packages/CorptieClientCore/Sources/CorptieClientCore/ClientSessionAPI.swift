@@ -246,6 +246,9 @@ public struct ClientMessageImage: Codable, Sendable, Equatable, Identifiable {
     public let fileName: String?
     public let mimeType: String?
     public let byteLength: Int?
+    public var pixelWidth: Int? = nil
+    public var pixelHeight: Int? = nil
+    public var geometry: MessageImageGeometry? { .init(pixelWidth: pixelWidth, pixelHeight: pixelHeight) }
 }
 extension ClientMessage: ConversationExecutionItem {
     public var timelineHasImages: Bool { !images.isEmpty }

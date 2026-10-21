@@ -172,7 +172,42 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let plainLayout = NativeTimelineLayoutCache.shared.layout(for: plain, columnWidth: 500)
         let imageLayout = NativeTimelineLayoutCache.shared.layout(for: image, columnWidth: 500)
         XCTAssertEqual(imageLayout.rowHeight - plainLayout.rowHeight, 96)
-        XCTAssertGreaterThanOrEqual(imageLayout.cardWidth, 220)
+        XCTAssertGreaterThanOrEqual(imageLayout.cardWidth, 108)
+    }
+
+    func testAsyncImageGeometryPreservesHistoryAnchorIncludingDuringScroll() async throws {
+        for duringScroll in [false, true] {
+            let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 600, pixelsHigh: 1000,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("anchor-image-\(UUID()).png")
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: url)
+            defer { try? FileManager.default.removeItem(at: url) }
+            let harness = makeHarness(followsLatest: false, height: 180)
+            var rows = (0..<60).map { row(id: "image-anchor-\($0)", text: "Row \($0)") }
+            rows[20] = AppKitChatTimelineRow(id: "image-anchor-20", contentRevision: 0, nativeText: "",
+                copyText: "", nativeStyle: .agent, title: "", metadata: "", expandableTurnId: nil,
+                isExpanded: false, showsHeader: false, images: [ChatTimelineImage(
+                    managedPath: url.path, displayURL: url, originalPath: nil)])
+            harness.coordinator.apply(rows: rows)
+            await settleMainQueue()
+            harness.scrollView.contentView.scroll(to: NSPoint(x: 0, y: harness.tableView.rect(ofRow: 35).minY + 5))
+            harness.scrollView.reflectScrolledClipView(harness.scrollView.contentView)
+            harness.coordinator.userScrollEventWillBegin()
+            harness.coordinator.userScrollEventDidEnd()
+            let before = visibleAnchor(in: harness.tableView, rows: rows)
+            if duringScroll { harness.coordinator.userScrollEventWillBegin() }
+            _ = harness.tableView.view(atColumn: 0, row: 20, makeIfNecessary: true)
+            let _: NSImage? = await withCheckedContinuation { continuation in
+                ChatTimelineImageLoader.shared.load(url) { continuation.resume(returning: $0) }
+            }
+            await settleMainQueue()
+            if duringScroll { harness.coordinator.userScrollEventDidEnd(); await settleMainQueue() }
+            let after = visibleAnchor(in: harness.tableView, rows: rows)
+            XCTAssertEqual(after.id, before.id)
+            XCTAssertEqual(after.offset, before.offset, accuracy: 2)
+            XCTAssertFalse(harness.coordinator.followsLatest)
+        }
     }
 
     func testLiveResizeReflowsOnlyVisibleRowsThenExactReflowCoversAllRows() {

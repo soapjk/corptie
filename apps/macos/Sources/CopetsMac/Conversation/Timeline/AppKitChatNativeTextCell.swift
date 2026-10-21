@@ -5,6 +5,9 @@ import CorptieClientCore
 
 @MainActor
 final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
+    var onImageGeometryChanged: (() -> Void)?
+    private var representedImageGeometries: [MessageImageGeometry?] = []
+    private var representedImageLayout = MessageImageGalleryLayout.layout(geometries: [], width: 0)
     private let cardView = NativeContentCardSurface(frame: .zero)
     private var messageGlow: NativeMessageStatusGlow?
     private let timeSeparatorLabel = NSTextField(labelWithString: "")
@@ -300,6 +303,16 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in }
     ) {
         let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth)
+        // Retire the old topology before resizing a reused image canvas. Leaving
+        // its fixed width/height attached while shrinking the bubble generates
+        // intermediate Auto Layout conflicts before the new topology is installed.
+        NSLayoutConstraint.deactivate([
+            labelTopToTitleConstraint, labelTopToCardConstraint, imageTopToTitleConstraint,
+            imageTopToCardConstraint, labelTopToImagesConstraint, labelTopToProcessButtonConstraint,
+            labelBottomToCardConstraint, rawStatusTopConstraint, rawStatusBottomConstraint,
+            processButtonTopConstraint, processButtonBottomConstraint
+        ])
+        imageStack.arrangedSubviews.forEach { imageStack.removeArrangedSubview($0); $0.removeFromSuperview() }
         label.endTextSelection()
         representedRowID = row.id
         representedContentRevision = row.contentRevision
@@ -329,7 +342,8 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         self.onAction = onAction
         configureActions(row.actions)
         configureCollaborationSentStatus(row.showsCollaborationSentStatus)
-        configureImages(row.images, rowID: row.id, width: layout.cardWidth - MessageBubbleWidthPolicy.horizontalPadding)
+        configureImages(row.images, rowID: row.id, galleryLayout: layout.imageLayout)
+        labelTopToImagesConstraint.constant = row.nativeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 7
         copiedText = row.copyText
         contextTimestamp = row.contextTimestamp
         forkItemID = row.forkItemID
@@ -523,9 +537,12 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         availableWidth: CGFloat
     ) -> Bool {
         guard representedRowID == row.id,
-              representedContentRevision == row.contentRevision else { return false }
+              representedContentRevision == row.contentRevision,
+              representedImageGeometries == row.imageGeometries else { return false }
         let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth)
+        if layout.imageLayout.size.width < representedImageLayout.size.width { resizeImages(layout.imageLayout) }
         apply(layout: layout)
+        if representedImageLayout != layout.imageLayout { resizeImages(layout.imageLayout) }
         widthLayoutUpdateCount += 1
         ChatPerformanceRecorder.shared.increment(.appKitRowWidthUpdates)
         return true
@@ -576,7 +593,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         }
     }
 
-    private func configureImages(_ images: [ChatTimelineImage], rowID: String, width: CGFloat) {
+    private func configureImages(_ images: [ChatTimelineImage], rowID: String, galleryLayout: MessageImageGalleryLayout.Layout) {
         representedImages = images
         failedImageIndices = []
         imageStack.arrangedSubviews.forEach {
@@ -584,7 +601,9 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             $0.removeFromSuperview()
         }
         let visible = Array(images.prefix(4))
-        let frames = MessageImageGalleryLayout.frames(count: images.count, width: width)
+        representedImageGeometries = images.map(\.resolvedGeometry)
+        representedImageLayout = galleryLayout
+        let frames = galleryLayout.frames
         imageStack.isHidden = visible.isEmpty
         imageStackHeightConstraint.constant = frames.map(\.maxY).max() ?? 0
         let gallery = NativeImageGalleryCanvas(frame: CGRect(x: 0, y: 0,
@@ -622,13 +641,29 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             }
             guard let url = attachment.displayURL else { continue }
             ChatTimelineImageLoader.shared.load(url) { [weak self, weak button] image in
-                guard self?.representedRowID == rowID else { return }
-                if image == nil { self?.failedImageIndices.insert(index) }
+                guard let self, self.representedRowID == rowID,
+                      self.representedImages == images else { return }
+                if image == nil { self.failedImageIndices.insert(index) }
                 button?.image = image ?? NSImage(
                     systemSymbolName: "exclamationmark.triangle",
                     accessibilityDescription: "Image is missing"
                 )
+                if self.representedImageGeometries != images.map(\.resolvedGeometry) { self.onImageGeometryChanged?() }
             }
+        }
+    }
+
+    private func resizeImages(_ layout: MessageImageGalleryLayout.Layout) {
+        representedImageLayout = layout
+        imageStackHeightConstraint.constant = layout.size.height
+        guard let canvas = imageStack.arrangedSubviews.first else { return }
+        for constraint in canvas.constraints {
+            if constraint.firstAttribute == .width { constraint.constant = layout.size.width }
+            if constraint.firstAttribute == .height { constraint.constant = layout.size.height }
+        }
+        for case let button as NSButton in canvas.subviews where layout.frames.indices.contains(button.tag) {
+            button.frame = layout.frames[button.tag]
+            for badge in button.subviews { badge.setFrameSize(CGSize(width: button.frame.width, height: badge.frame.height)) }
         }
     }
 

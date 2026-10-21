@@ -14,6 +14,7 @@ struct MacSharedMessageTextCard: View {
     var performAction: (AppKitChatTimelineRow.Action) -> Void = { _ in }
     var selectText: () -> Void = {}
     var contextMenu: NSMenu? = nil
+    var onImageGeometryChanged: () -> Void = {}
 
     var presentedMessageStatus: UserMessageStatusPresentation? {
         row.nativeStyle == .user ? row.messageStatus : nil
@@ -207,13 +208,14 @@ struct MacSharedMessageTextCard: View {
     }
 
     private var attachmentStrip: some View {
-        let frames = MessageImageGalleryLayout.frames(count: row.images.count, width: layout.cardWidth - 20)
+        let frames = layout.imageLayout.frames
         return ZStack(alignment: .topLeading) {
             ForEach(Array(frames.enumerated()), id: \.offset) { index, frame in
                 MacMessageImageThumbnail(attachment: row.images[index], index: index,
-                    size: frame.size, fits: row.images.count == 1,
+                    size: frame.size, fits: true,
                     extraCount: index == 3 ? max(0, row.images.count - 4) : 0,
-                    open: { ChatImageGalleryViewer.shared.show(row.images, selected: index) })
+                    open: { ChatImageGalleryViewer.shared.show(row.images, selected: index) },
+                    geometryChanged: onImageGeometryChanged)
                     .offset(x: frame.minX, y: frame.minY)
             }
         }
@@ -228,9 +230,11 @@ private struct MacMessageImageThumbnail: View {
     let fits: Bool
     let extraCount: Int
     let open: () -> Void
+    let geometryChanged: () -> Void
     @State private var loadedImage: NSImage?
     @State private var loadFailed = false
     @State private var retry = 0
+    @State private var requestID = UUID()
 
     var body: some View {
         Button { if loadFailed { retry += 1 } else { open() } } label: {
@@ -241,6 +245,9 @@ private struct MacMessageImageThumbnail: View {
         .help("打开图片")
         .accessibilityLabel("附加图片 \(index + 1)")
         .task(id: "\(attachment.displayURL?.absoluteString ?? ""):\(retry)") {
+            let request = UUID()
+            requestID = request
+            let oldGeometry = attachment.resolvedGeometry
             loadedImage = nil
             loadFailed = false
             guard let url = attachment.displayURL else {
@@ -248,11 +255,13 @@ private struct MacMessageImageThumbnail: View {
                 return
             }
             ChatTimelineImageLoader.shared.load(url) { image in
-                guard !Task.isCancelled else { return }
+                guard requestID == request else { return }
                 loadedImage = image
                 loadFailed = image == nil
+                if oldGeometry != attachment.resolvedGeometry { geometryChanged() }
             }
         }
+        .onDisappear { requestID = UUID() }
     }
 
 }
@@ -340,6 +349,8 @@ protocol AppKitChatRowRendering: AnyObject {
 
 /// One hosting tree per reusable native row; no duplicate legacy view tree.
 final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering {
+    var onImageGeometryChanged: (() -> Void)?
+    private var representedImageGeometries: [MessageImageGeometry?] = []
     private var messageGlow: NativeMessageStatusGlow?
     private var host: NSHostingView<MacSharedMessageTextCard>?
     private var row: AppKitChatTimelineRow?
@@ -378,6 +389,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
                     onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in }) {
         precondition(MacSharedMessageTextCard.supports(row))
         self.row = row; self.baseDirectory = baseDirectory
+        representedImageGeometries = row.imageGeometries
         elapsedSummary.text = nil
         self.onToggleExpansion = onToggleExpansion
         self.onAction = onAction
@@ -390,7 +402,8 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
 
     @discardableResult
     func updateLayoutIfContentUnchanged(_ row: AppKitChatTimelineRow, availableWidth: CGFloat) -> Bool {
-        guard self.row?.id == row.id, self.row?.contentRevision == row.contentRevision else { return false }
+        guard self.row?.id == row.id, self.row?.contentRevision == row.contentRevision,
+              representedImageGeometries == row.imageGeometries else { return false }
         guard measuredWidth != availableWidth else { return true }
         measuredWidth = availableWidth
         measuredLayout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth)
@@ -408,7 +421,8 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
             copy: { [weak self] in self?.copyRepresentedMessage() },
             toggle: { [weak self] in self?.toggleRepresentedProcess() },
             performAction: { [weak self] action in self?.onAction(action) },
-            selectText: { [weak self] in self?.beginTextSelection() }, contextMenu: menu)
+            selectText: { [weak self] in self?.beginTextSelection() }, contextMenu: menu,
+            onImageGeometryChanged: { [weak self] in self?.onImageGeometryChanged?() })
         if let host { host.rootView = root }
         else {
             let host = NSHostingView(rootView: root)

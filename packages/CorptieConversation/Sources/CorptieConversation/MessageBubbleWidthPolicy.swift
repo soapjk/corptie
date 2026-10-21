@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import CorptieClientCore
 
 /// Card width rules of an ordinary message, identical on macOS (AppKit timeline)
 /// and iPad (SwiftUI timeline). Hosts measure text with their own text engine and
@@ -90,11 +91,58 @@ public enum MessageImageStripMetrics {
     public static let bottomSpacing: CGFloat = 7
 }
 
-/// Deterministic gallery geometry shared by UIKit/SwiftUI and AppKit. Loading
-/// never changes these slots, so image completion cannot move message rows.
+/// Deterministic ratio-aware gallery shared by UIKit/SwiftUI and AppKit. Hosts
+/// commit missing metadata through their reading-position transaction; decoding
+/// or evicting the bitmap alone never changes known geometry.
 public enum MessageImageGalleryLayout {
     public static let preferredBodyWidth: CGFloat = 340
     public static let spacing: CGFloat = 4
+    public struct Layout: Equatable {
+        public let frames: [CGRect]
+        public var size: CGSize { CGSize(width: frames.map(\.maxX).max() ?? 0, height: frames.map(\.maxY).max() ?? 0) }
+    }
+    /// One deterministic result drives drawing, bubble width and row height.
+    /// Unknown resources use a compact slot until a single metadata commit.
+    public static func layout(geometries: [MessageImageGeometry?], width: CGFloat) -> Layout {
+        let limit = max(1, min(preferredBodyWidth, width.isFinite ? width : preferredBodyWidth))
+        let sizes = geometries.prefix(4).map { value -> CGSize in
+            guard let value else { return CGSize(width: min(88, limit), height: min(88, limit)) }
+            let w = CGFloat(value.pixelWidth), h = CGFloat(value.pixelHeight)
+            let scale = min(1, limit / w, 260 / h)
+            return CGSize(width: w * scale, height: h * scale)
+        }
+        var frames: [CGRect] = [], y: CGFloat = 0, index = 0
+        while index < sizes.count {
+            let a = sizes[index]
+            if index + 1 < sizes.count {
+                let b = sizes[index + 1]
+                let ra = a.width / a.height, rb = b.width / b.height
+                let h = min(a.height, b.height, max(1, limit - spacing) / (ra + rb))
+                if min(h, h * ra, h * rb) >= MessageImageStripMetrics.thumbnailEdge {
+                    frames.append(CGRect(x: 0, y: y, width: ra * h, height: h))
+                    frames.append(CGRect(x: ra * h + spacing, y: y, width: rb * h, height: h))
+                    y += h + spacing; index += 2; continue
+                }
+            }
+            frames.append(CGRect(origin: CGPoint(x: 0, y: y), size: a))
+            y += a.height + spacing; index += 1
+        }
+        let height = frames.map(\.maxY).max() ?? 0
+        if sizes.count > 1 && height > 300 {
+            let scale = 300 / height
+            frames = frames.map { CGRect(x: $0.minX * scale, y: $0.minY * scale, width: $0.width * scale, height: $0.height * scale) }
+        }
+        return Layout(frames: frames)
+    }
+
+    public static func cardWidth(bodyWidth: CGFloat, headerWidth: CGFloat = 0,
+                                 geometries: [MessageImageGeometry?], laneWidth: CGFloat) -> CGFloat {
+        let available = MessageBubbleWidthPolicy.fullAvailableWidth(laneWidth: laneWidth)
+        let imageWidth = layout(geometries: geometries, width: available - MessageBubbleWidthPolicy.horizontalPadding).size.width
+        return MessageBubbleWidthPolicy.preferredWidth(bodyWidth: max(bodyWidth, imageWidth),
+            headerWidth: headerWidth, availableWidth: available)
+    }
+    /// Compatibility for count-only callers. Message hosts use `layout` above.
     public static func frames(count: Int, width: CGFloat) -> [CGRect] {
         let width = max(1, min(preferredBodyWidth, width.isFinite ? width : preferredBodyWidth))
         let count = min(4, max(0, count))

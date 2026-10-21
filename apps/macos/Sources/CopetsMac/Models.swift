@@ -618,6 +618,8 @@ struct SessionCapabilities: Codable, Equatable, Sendable {
 struct ChatImageReference: Codable, Equatable, Hashable, Identifiable, Sendable {
     let managedPath: String
     let originalPath: String?
+    var pixelWidth: Int? = nil
+    var pixelHeight: Int? = nil
 
     var id: String { managedPath }
 }

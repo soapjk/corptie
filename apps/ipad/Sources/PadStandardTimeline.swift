@@ -7,6 +7,7 @@ import Observation
 struct PadStandardTimeline<Row: View, Composer: View>: View {
     let input: PadNativeTimeline<Row, Composer>
     let contentRevision: UInt64
+    private var imageStore: PadMessageImageStore? { input.imageStore }
     @State private var position = ScrollPosition(idType: String.self)
     @State private var policy = PadStandardTimelinePolicy()
     @State private var metrics = StandardTimelineMetrics()
@@ -94,6 +95,7 @@ struct PadStandardTimeline<Row: View, Composer: View>: View {
                         visibleBottom: context.geometry.visibleRect.maxY,
                         contentHeight: context.geometry.contentSize.height),
                         keyboardChanging: input.keyboard.isChanging)
+                    flushImageGeometryChanges()
                     save()
                     bindFollowingTail()
                 }
@@ -163,9 +165,15 @@ struct PadStandardTimeline<Row: View, Composer: View>: View {
     }
     private func attach() {
         input.handle.owner = owner
+        imageStore?.geometryOwner = owner
+        imageStore?.commitGeometry = { commit in
+            reader.imageGeometryCommits.append(commit)
+            flushImageGeometryChanges()
+        }
         input.handle.jump = {
             diagnose("jump-before")
             pendingRestore = nil; policy.jump()
+            flushImageGeometryChanges()
             // An explicit jump owns the viewport immediately, even during a
             // finger drag or inertia. Stop native motion before ScrollPosition
             // takes over; otherwise the ongoing gesture can discard the request.
@@ -191,11 +199,26 @@ struct PadStandardTimeline<Row: View, Composer: View>: View {
         input.handle.currentPosition = { readingPosition() }
         input.handle.scrollbarInteraction = { active in
             if active { pendingRestore = nil; policy.beginInteraction(); input.onUserInteraction() }
-            else { policy.endInteraction(); save() }
+            else { policy.endInteraction(); flushImageGeometryChanges(); save() }
         }
+    }
+    private func flushImageGeometryChanges() {
+        guard !policy.interacting, !reader.imageGeometryCommits.isEmpty else { return }
+        let commits = reader.imageGeometryCommits
+        reader.imageGeometryCommits.removeAll(keepingCapacity: true)
+        if pendingRestore == nil, let bookmark = readingPosition(), !bookmark.followsLatest {
+            pendingRestore = bookmark
+        }
+        withoutAnimation { commits.forEach { $0() } }
     }
     private func detach() {
         guard input.handle.owner == owner else { return }
+        if imageStore?.geometryOwner == owner {
+            imageStore?.commitGeometry = nil; imageStore?.geometryOwner = nil
+        }
+        let commits = reader.imageGeometryCommits
+        reader.imageGeometryCommits.removeAll()
+        commits.forEach { $0() }
         input.handle.owner = nil; input.handle.jump = nil; input.handle.scrollToEntry = nil
         input.handle.scrollToOffset = nil
         input.handle.currentPosition = nil; input.handle.scrollbarInteraction = nil
@@ -299,6 +322,7 @@ private struct StandardTimelineMetrics: Equatable {
     }
 }
 @MainActor @Observable private final class StandardTimelineReader {
+    @ObservationIgnored var imageGeometryCommits: [@MainActor () -> Void] = []
     @ObservationIgnored var lastDiagnosticSample: TimeInterval = 0
     @ObservationIgnored var awaitingKeyboardLayout = false
     @ObservationIgnored var frames: [String: CGRect] = [:]

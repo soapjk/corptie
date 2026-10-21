@@ -10,10 +10,12 @@ import UIKit
     private var scroll: UIScrollView?
     private var handle = PadNativeTimelineHandle()
     private var frames: [String: CGRect] = [:]
+    private let imageStore = PadMessageImageStore()
     private func input(count: Int = 180, height: CGFloat = 120,
                        saved: PadTimelineReadingPosition? = nil) -> PadNativeTimeline<AnyView, AnyView> {
         .init(ids: (0..<count).map { "row:\($0)" }, versions: [:], ready: true,
             savedPosition: saved, jumpRevision: 0, keyboard: .init(), handle: handle,
+            imageStore: imageStore,
             row: { id, width in
                 let index = Int(id.split(separator: ":").last!)!
                 return AnyView(Text(id).frame(width: width,
@@ -58,6 +60,17 @@ import UIKit
         await settle()
         XCTAssertTrue(handle.showsJump)
         handle.jump?(); await settle(); try assertBottom()
+    }
+    func testImageGeometryPublicationWaitsForScrollbarInteractionToEnd() async throws {
+        try await start()
+        var commits = 0
+        XCTAssertNotNil(imageStore.commitGeometry)
+        handle.scrollbarInteraction?(true)
+        imageStore.commitGeometry? { commits += 1 }
+        XCTAssertEqual(commits, 0)
+        handle.scrollbarInteraction?(false)
+        await settle()
+        XCTAssertEqual(commits, 1)
     }
     func testTailGrowthAndViewportResizeRemainAtBottom() async throws {
         try await start()

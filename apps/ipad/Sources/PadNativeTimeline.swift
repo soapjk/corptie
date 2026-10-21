@@ -43,6 +43,7 @@ struct PadNativeTimeline<Row: View, Composer: View>: UIViewControllerRepresentab
     let keyboard: PadKeyboardViewport
     let handle: PadNativeTimelineHandle
     var topOverlayHeight: CGFloat = 0
+    var imageStore: PadMessageImageStore? = nil
     var tracksVisibleFrames = true
     let row: (String, CGFloat) -> Row
     let composer: Composer
@@ -83,6 +84,7 @@ final class PadNativeTimelineController<Row: View, Composer: View>: UIViewContro
     private var rowsScheduled = false
     private var following = true
     private var userScrolling = false
+    private var imageGeometryCommits: [@MainActor () -> Void] = []
     private var placed = false
     private var pendingRestore: PadTimelineReadingPosition?
     private var settledRestore: PadTimelineReadingPosition?
@@ -250,6 +252,12 @@ final class PadNativeTimelineController<Row: View, Composer: View>: UIViewContro
 
     private func attachHandle() {
         input.handle.owner = owner
+        input.imageStore?.geometryOwner = owner
+        input.imageStore?.commitGeometry = { [weak self] commit in
+            guard let self, !self.detached else { commit(); return }
+            self.imageGeometryCommits.append(commit)
+            self.flushImageGeometryChanges()
+        }
         input.handle.jump = { [weak self] in self?.jumpToLatest() }
         input.handle.scrollToEntry = { [weak self] id in
             guard let self, self.dataSource.indexPath(for: id) != nil else { return }
@@ -269,9 +277,18 @@ final class PadNativeTimelineController<Row: View, Composer: View>: UIViewContro
                 self.pendingRestore = nil
                 self.settledRestore = nil
             }
-            else { self.following = self.geometry.isAtBottom; self.save() }
+            else { self.following = self.geometry.isAtBottom; self.flushImageGeometryChanges(); self.save() }
             self.chatLayout.keepContentOffsetAtBottomOnBatchUpdates = self.following
         }
+    }
+
+    private func flushImageGeometryChanges() {
+        guard !userScrolling, !imageGeometryCommits.isEmpty else { return }
+        let commits = imageGeometryCommits
+        imageGeometryCommits.removeAll(keepingCapacity: true)
+        if placed && !following && pendingRestore == nil { pendingRestore = position() }
+        UIView.performWithoutAnimation { commits.forEach { $0() } }
+        collection.setNeedsLayout()
     }
 
     private func applyRows() {
@@ -337,6 +354,7 @@ final class PadNativeTimelineController<Row: View, Composer: View>: UIViewContro
         settledRestore = nil
         resizeAnchor = nil
         chatLayout.keepContentOffsetAtBottomOnBatchUpdates = true
+        flushImageGeometryChanges()
         if !applying, let id = input.ids.last, let path = dataSource.indexPath(for: id) {
             // Realize the actual final cell; the layout's snapshot restoration
             // handles self-sizing, unlike an unrelated transparent SwiftUI anchor.
@@ -537,6 +555,7 @@ final class PadNativeTimelineController<Row: View, Composer: View>: UIViewContro
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { endInteraction() }
     private func endInteraction() {
         userScrolling = false
+        flushImageGeometryChanges()
         reconcileLayout()
         save()
     }
@@ -548,6 +567,12 @@ final class PadNativeTimelineController<Row: View, Composer: View>: UIViewContro
         collection.afterLayout = nil
         collection.allowsAnimatedLayout = nil
         collection.delegate = nil
+        if input.imageStore?.geometryOwner == owner {
+            input.imageStore?.commitGeometry = nil; input.imageStore?.geometryOwner = nil
+        }
+        let commits = imageGeometryCommits
+        imageGeometryCommits.removeAll()
+        commits.forEach { $0() }
         if input.handle.owner == owner {
             input.handle.owner = nil
             input.handle.jump = nil

@@ -13,6 +13,9 @@ final class ChatTimelineImageLoader {
     private var waiting: [URL: [(NSImage?) -> Void]] = [:]
     private var pending: [URL] = []
     private var active = 0
+    private var geometries: [URL: MessageImageGeometry] = [:]
+    private var geometryOrder: [URL] = []
+    func geometry(for url: URL) -> MessageImageGeometry? { geometries[url] }
 
     private init() {
         cache.totalCostLimit = 64 * 1_024 * 1_024
@@ -35,9 +38,14 @@ final class ChatTimelineImageLoader {
             let url = pending.removeFirst()
             active += 1
             Task { [weak self] in
-                let bitmap = await Task.detached(priority: .utility) { await Self.decode(url) }.value
+                let decoded = await Task.detached(priority: .utility) { await Self.decode(url) }.value
                 guard let self else { return }
-                let image = bitmap.map { NSImage(cgImage: $0, size: .zero) }
+                if let geometry = decoded?.1, self.geometries[url] != geometry {
+                    if self.geometries[url] == nil { self.geometryOrder.append(url) }
+                    self.geometries[url] = geometry
+                    if self.geometryOrder.count > 2048 { self.geometries.removeValue(forKey: self.geometryOrder.removeFirst()) }
+                }
+                let image = decoded.map { NSImage(cgImage: $0.0, size: .zero) }
                 self.store(image, for: url)
                 self.active -= 1
                 let callbacks = self.waiting.removeValue(forKey: url) ?? []
@@ -47,7 +55,7 @@ final class ChatTimelineImageLoader {
         }
     }
 
-    nonisolated private static func decode(_ url: URL) async -> CGImage? {
+    nonisolated private static func decode(_ url: URL) async -> (CGImage, MessageImageGeometry?)? {
         let maximum = 20 * 1024 * 1024
         let data: Data
         do {
@@ -60,12 +68,14 @@ final class ChatTimelineImageLoader {
             }
             guard !data.isEmpty, data.count <= maximum,
                   let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-            return CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            let geometry = MessageImageGeometry.read(source)
+            guard let bitmap = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
                 kCGImageSourceCreateThumbnailWithTransform: true,
                 kCGImageSourceThumbnailMaxPixelSize: 1024,
                 kCGImageSourceShouldCacheImmediately: true
-            ] as CFDictionary)
+            ] as CFDictionary) else { return nil }
+            return (bitmap, geometry)
         } catch { return nil }
     }
 
