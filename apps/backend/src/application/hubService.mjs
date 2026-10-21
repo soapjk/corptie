@@ -8,6 +8,7 @@
 
 import { randomUUID } from "node:crypto";
 import { isTrustedMemory } from "./memoryRecallService.mjs";
+import { normalizeMemoryLexicalText } from "./memoryLexicalNormalization.mjs";
 
 function safeArray(value) {
   try { const result = typeof value === "string" ? JSON.parse(value) : value; return Array.isArray(result) ? result : []; }
@@ -24,21 +25,20 @@ function defaultHashIntent(text) {
 }
 
 function tokenize(text) {
-  return String(text ?? "")
-    .toLowerCase()
+  return normalizeMemoryLexicalText(text)
     .split(/[^\w\u4e00-\u9fff]+/)
     .filter(Boolean);
 }
 
 function matchScore(content, terms) {
   if (!terms.length) return 0;
-  const lower = String(content ?? "").toLowerCase();
+  const lower = normalizeMemoryLexicalText(content);
   const hit = terms.filter((t) => lower.includes(t)).length;
   return hit / terms.length;
 }
 
 function chineseMatchScore(content, intent) {
-  const normalize = (value) => String(value ?? "")
+  const normalize = (value) => normalizeMemoryLexicalText(value)
     .replace(/验证|校验|检验|检查/g, "测试")
     .replace(/事先|提前|之前/g, "预先")
     .replace(/怎样|怎么/g, "如何");
@@ -53,7 +53,13 @@ function chineseMatchScore(content, intent) {
   if (query.size === 0) return 0;
   const target = grams(content);
   const hits = [...query].filter((gram) => target.has(gram)).length;
-  return hits >= 1 ? Math.max(0.2, hits / Math.min(query.size, Math.max(target.size, 1))) : 0;
+  if (!hits) return 0;
+  // A long Turn almost always shares a generic bigram with a short Memory.
+  // Discount that accidental overlap, while allowing a long Turn that actually
+  // contains most of the Memory's wording to remain retrievable.
+  const coverage = hits / Math.min(query.size, Math.max(target.size, 1));
+  const lengthBalance = Math.min(1, Math.sqrt(4 * Math.max(target.size, 1) / query.size));
+  return coverage * lengthBalance;
 }
 
 // 字符 n-gram 词袋向量（零依赖离线回退，非真语义，但保证 embedding 路径可用、可离线排序）。
@@ -170,6 +176,7 @@ export class HubService {
     if (memories.length === 0) return [];
 
     const terms = tokenize(intent);
+    const lexicalIntent = normalizeMemoryLexicalText(intent);
     const profileTopics = new Set(options.profile?.topics ?? []);
     let intentVec = null;
     if (terms.length && options.allowEmbedding !== false && this.embedder) {
@@ -220,10 +227,12 @@ export class HubService {
       const raw = Math.max(semantic, lexical);
       const topics = [m.primary_topic, ...safeArray(m.secondary_topics_json)];
       const sameTopic = topics.some((topic) => profileTopics.has(topic));
-      const topicFactor = profileTopics.size && topics.some(Boolean) ? (sameTopic ? 1.1 : 0.9) : 1;
+      const topicFactor = profileTopics.size && topics.some(Boolean) ? (sameTopic ? 1.1 : 0.4) : 1;
       const keywords = safeArray(m.keywords_json);
-      const keywordFactor = keywords.some((word) => String(intent).toLocaleLowerCase()
-        .includes(String(word).toLocaleLowerCase())) ? 1.1 : 1;
+      const keywordFactor = keywords.some((word) => {
+        const keyword = normalizeMemoryLexicalText(word);
+        return keyword.length > 0 && lexicalIntent.includes(keyword);
+      }) ? 1.1 : 1;
       results.push({ memory: m, score: raw * topicFactor * keywordFactor * Number(m.confidence ?? 0.5) });
     }
     return results;

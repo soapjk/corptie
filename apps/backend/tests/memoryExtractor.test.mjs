@@ -192,6 +192,27 @@ test("durable scheduler coalesces Session requests and processes them with one w
   } finally { await f.close(); }
 });
 
+test("legacy classification gets scheduled before a long extraction backlog finishes", async () => {
+  const f = await fixture();
+  try {
+    const order = [];
+    let pages = 0;
+    const scheduler = new MemoryExtractionScheduler({ store: f.store, extractor: {
+      async extractPageFromSession() {
+        order.push("extract");
+        pages += 1;
+        return { memories: [], hasMore: pages < 5 };
+      },
+      classifyLegacyMany: async () => [],
+      async classifyLegacyPage() { order.push("classify"); return false; }
+    } });
+    scheduler.request("session:a");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual(order.slice(0, 3), ["extract", "extract", "classify"]);
+    await scheduler.close();
+  } finally { await f.close(); }
+});
+
 test("ordinary Turn completion waits for the low-frequency idle window", async () => {
   const f = await fixture();
   try {

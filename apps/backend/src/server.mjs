@@ -1370,7 +1370,8 @@ const backgroundAgentService = new BackgroundAgentService({
   }
 });
 memoryExtractor.classifyMany = createMemoryModelClassifier({ backgroundAgent: backgroundAgentService,
-  claimBudget: (day) => store.claimMemoryExtractionDailyCall(day, 24),
+  // Reserve the final four calls for classifying existing active Memories.
+  claimBudget: (day) => store.claimMemoryExtractionDailyCall(day, 20),
   refundBudget: (day) => store.refundMemoryExtractionDailyCall(day) });
 memoryExtractor.classifyLegacyMany = createLegacyMemoryClassifier({ backgroundAgent: backgroundAgentService,
   claimBudget: (day) => store.claimMemoryExtractionDailyCall(day, 24),
