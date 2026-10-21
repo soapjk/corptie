@@ -368,7 +368,7 @@ cleanup() {
     if (( status == 0 )); then
       echo "Production build log: ${BUILD_LOG}"
     else
-      echo "Production build failed; combined stdout/stderr log retained at: ${BUILD_LOG}" >&2
+      echo "Production upgrade failed (exit ${status}); combined stdout/stderr log retained at: ${BUILD_LOG}" >&2
     fi
   fi
   if [[ "${FINISHED}" != true && -n "${OLD_APP}" && -d "${OLD_APP}" ]]; then
@@ -421,6 +421,10 @@ BUILD_LOG="${PRODUCTION_BUILD_LOG_DIR}/production-build-$(date '+%Y%m%d-%H%M%S')
 install -m 600 /dev/null "${BUILD_LOG}"
 echo "Production build log: ${BUILD_LOG}"
 "${ROOT}/scripts/package-macos-installer.sh" 2>&1 | tee -a "${BUILD_LOG}"
+# Keep the installation, backend startup and rollback diagnostics in the same
+# log as compilation. Finish the packaging pipeline first so its manifest lines
+# have been flushed before parsing them below.
+exec > >(tee -a "${BUILD_LOG}") 2>&1
 PKG_PATH="$(sed -n 's/^Built production installer package: //p' "${BUILD_LOG}" | tail -1)"
 DMG_PATH="$(sed -n 's/^Built production dmg: //p' "${BUILD_LOG}" | tail -1)"
 if [[ ! -f "${PKG_PATH}" || ! -f "${DMG_PATH}" ]]; then
