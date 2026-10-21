@@ -6,7 +6,7 @@ import { resolvePlatformAdminSession } from "../utils/platformAssistantIdentity.
 import { ArtifactReferenceAuthorizer, SessionAuthorizationResolver, artifactError as pinnedReadError, safeHashEqual } from "./artifactAuthorization.mjs";
 import { buildArtifactContextIndex } from "./artifactContextIndex.mjs";
 import { ArtifactReadCoordinator, ARTIFACT_READ_DEFAULT_LIMITS } from "./artifactReadCoordinator.mjs";
-import { materializeArtifactBytes, publishArtifactRepositoryFile } from "./artifactMaterialization.mjs";
+import { assertArtifactExportOutsideProjects, materializeArtifactBytes, publishArtifactRepositoryFile } from "./artifactMaterialization.mjs";
 import { authorizeArtifactPromotion } from "./artifactPromotionAuthorization.mjs";
 import { ensureArtifactCommitHook } from "../runtime/artifactCommitHook.mjs";
 
@@ -1320,6 +1320,12 @@ export class ArtifactService {
     } finally { this.userDownloads -= 1; }
   }
 
+  async #assertExportOutsideProject(context, destinationPath) {
+    const session = context.sessionId ? this.store.getSession(context.sessionId) : null;
+    const projectRoots = [...this.store.listWorkspaces().filter(workspace => workspace.location?.transport !== "ssh").map(workspace => workspace.canonicalRootPath ?? workspace.rootPath), session?.external?.cwd];
+    await assertArtifactExportOutsideProjects({ destinationPath, projectRoots });
+  }
+
   async exportArtifact(contextInput, artifactId, input = {}) {
     const context = this.#pinnedReadContext(contextInput);
     this.#assertManager(context);
@@ -1333,18 +1339,13 @@ export class ArtifactService {
     const { artifact, version } = authorized;
     if (!version?.storageKey) throw artifactError("ARTIFACT_EXPORT_UNAVAILABLE", "This Artifact has no private content to export.", 400);
     const destination = resolve(requiredText(input.destinationPath, "destinationPath"));
-    const repository = this.store.listGitRepositories().find((entry) => {
-      const root = resolve(entry.path);
-      return destination === root || destination.startsWith(`${root}/`);
-    });
-    if (repository && input.confirmedRepositoryWrite !== true) {
-      throw artifactError("ARTIFACT_REPOSITORY_WRITE_CONFIRMATION_REQUIRED", "Export destination is inside a Git Repository and requires separate confirmation.", 409);
-    }
+    await this.#assertExportOutsideProject(context, destination);
     const buffer = await readFile(this.#safeStoragePath(version.storageKey));
     if (buffer.byteLength !== version.byteLength || sha256(buffer) !== version.contentHash) {
       throw artifactError("ARTIFACT_INTEGRITY_FAILED", "Artifact export failed integrity verification.", 409);
     }
     await mkdir(dirname(destination), { recursive: true });
+    await this.#assertExportOutsideProject(context, destination);
     try {
       await access(destination, constants.F_OK);
       if (input.confirmedOverwrite !== true) throw artifactError("ARTIFACT_EXPORT_EXISTS", "Export destination exists; overwrite requires explicit confirmation.", 409);
@@ -1357,9 +1358,9 @@ export class ArtifactService {
     try { await handle.sync(); } finally { await handle.close(); }
     await rename(temp, destination);
     this.#audit(context, artifact.artifactId, "artifact.exported", {
-      destinationPath: destination, repositoryId: repository?.id ?? null, contentHash: version.contentHash
+      destinationPath: destination, repositoryId: null, contentHash: version.contentHash
     }, version.version, version.version);
-    return { artifactId: artifact.artifactId, version: version.version, contentHash: version.contentHash, destinationPath: destination, repositoryWrite: Boolean(repository) };
+    return { artifactId: artifact.artifactId, version: version.version, contentHash: version.contentHash, destinationPath: destination, repositoryWrite: false };
   }
 
   async promoteToRepository(contextInput, artifactId, input = {}) {
@@ -1572,6 +1573,7 @@ export class ArtifactService {
     this.#assertManager(context);
     if (input.confirmed !== true) throw artifactError("ARTIFACT_CONFIRMATION_REQUIRED", "Backup requires explicit confirmation.", 409);
     const destination = resolve(requiredText(input.destinationPath, "destinationPath"));
+    await this.#assertExportOutsideProject(context, destination);
     await mkdir(destination, { recursive: false, mode: 0o700 });
     const artifacts = this.store.listArtifactsByWork(context.workId, { includeRevoked: true });
     const manifest = {

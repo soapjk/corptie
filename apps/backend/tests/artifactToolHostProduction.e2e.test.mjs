@@ -37,9 +37,9 @@ async function fixture() {
   });
   await store.initialize();
   const agent = store.createAgent({ name: "Artifact E2E", provider: "receipt-provider" });
-  store.createWork({ id: "work:e2e", name: "Artifact E2E", contributorAgentIds: [agent.agentId] });
+  store.createWork({ id: "work:e2e", name: "ArtifactE2E", contributorAgentIds: [agent.agentId] });
   store.createTask({
-    id: "task:e2e", workId: "work:e2e", title: "Worker E2E", mainAgentId: agent.agentId
+    id: "task:e2e", workId: "work:e2e", title: "WorkerE2E", mainAgentId: agent.agentId
   });
   const sessions = [
     { id: "session:worker-e2e", kind: "worker", taskId: "task:e2e" },

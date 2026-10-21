@@ -36,9 +36,9 @@ struct ConversationInspectorTests {
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Sources/CorptieConversation/ConversationWorktreeCard.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
-        #expect(source.contains("Toggle(localize(\"自动跟随主分支\")"))
+        #expect(source.contains("Toggle(localize(tree.hierarchy == nil ? \"自动同步主分支\" : \"自动跟随父分支\")"))
         #expect(source.contains("detail?.autoFollow?.enabled == true"))
-        #expect(source.contains("if !tree.isMain, detail?.autoFollow != nil"))
+        #expect(source.contains("if !tree.isMain, tree.hierarchy?.role != \"parent\", detail?.autoFollow != nil"))
         #expect(source.contains("setAutoFollow(sessionID: sessionID, worktreeID: worktreeID, enabled: enabled)"))
         #expect(!source.contains("automaticFollow: "))
     }

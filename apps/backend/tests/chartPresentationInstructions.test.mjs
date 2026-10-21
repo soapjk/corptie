@@ -24,6 +24,8 @@ test("chart syntax is included once for Worker, Work Chat, and Chat sessions", (
     assert.match(instructions, /Your stable Corptie identity is agent:test/);
     assert.match(instructions, /do not.*invent data/i);
     assert.match(instructions, /Use \$corptie-collaboration/);
+    assert.match(instructions, /Generated documents in every format/);
+    assert.match(instructions, /Git-ignored \.corptie\/artifacts\//);
     if (sessionKind === "worker") {
       // Worker binding is injected by buildWorkSessionContext per Turn, not
       // duplicated in this provider-neutral presentation contract.

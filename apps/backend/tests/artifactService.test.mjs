@@ -149,6 +149,45 @@ test("a Worktree decision can approve the exact existing Markdown version withou
   } finally { f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
+test("binary documents export outside projects, materialize inside managed storage, and require exact tracking promotion", async () => {
+  const f = await fixture();
+  const outside = await mkdtemp(join(tmpdir(), "artifact-document-export-"));
+  try {
+    const root = join(f.directory, "pdf-project");
+    await mkdir(root);
+    const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    git("init", "--quiet");
+    f.store.upsertSession({ ...f.store.getSession("session:worker"), cwd: root });
+    f.store.createWorkspace({ kind: "linkedLocal", ownership: "userManaged", rootPath: root });
+    const content = Buffer.from([0x25, 0x50, 0x44, 0x46, 0, 0xff, 0xfe]);
+    const artifact = await f.service.create(managerContext(f), { title: "Report.pdf", content, mimeType: "application/pdf" });
+    const reference = f.service.createReference(managerContext(f), artifact.artifactId, { taskId: "task:one", relation: "acceptance_evidence", versionPolicy: "fixed", version: 1 });
+    const fixed = { version: 1, contentHash: artifact.versions[0].contentHash, referenceId: reference.referenceId };
+    for (const confirmedRepositoryWrite of [false, true]) {
+      await assert.rejects(f.service.exportArtifact(localUserContext, artifact.artifactId, { ...fixed, destinationPath: join(root, "outputs", "Report.pdf"), confirmed: true, confirmedRepositoryWrite }), { code: "ARTIFACT_PROJECT_EXPORT_FORBIDDEN" });
+    }
+    await assert.rejects(f.service.backupWork(localUserContext, { destinationPath: join(root, "outputs", "backup"), confirmed: true }), { code: "ARTIFACT_PROJECT_EXPORT_FORBIDDEN" });
+    assert.deepEqual((await readdir(root)).filter(name => name !== ".git"), []);
+    const exported = await f.service.exportArtifact(localUserContext, artifact.artifactId, { ...fixed, destinationPath: join(outside, "Report.pdf"), confirmed: true });
+    assert.deepEqual(await readFile(exported.destinationPath), content);
+    assert.equal(exported.repositoryWrite, false);
+    const local = await f.service.materialize(workerContext(f), artifact.artifactId, { ...fixed, path: "artifacts/Report.pdf" });
+    assert.deepEqual(await readFile(local.path), content);
+    assert.equal(local.gitIgnored, true);
+    assert.equal(git("status", "--porcelain"), "");
+    f.store.createUserMessageDelivery({ deliveryId: "delivery:pdf-promotion", messageId: "message:pdf-promotion", sessionId: "session:worker",
+      binding: { bindingId: "binding:pdf-promotion", routingVersion: 1, providerId: "claude-sdk", providerSessionId: "thread:worker" },
+      agentId: f.worker.agentId, source: { type: "desktop" }, text: "请将 docs/Report.pdf 纳入版本控制。" });
+    const event = f.store.getSessionEvent("user-message:message:pdf-promotion");
+    await assert.rejects(f.service.promoteToRepository(workerContext(f), artifact.artifactId, { ...fixed, path: "docs/Report.pdf", eventId: event.eventId, sequence: event.sequence }), { code: "ARTIFACT_PROMOTION_AUTHORIZATION_REQUIRED" });
+    const promoted = await f.service.promoteToRepository({ ...workerContext(f), turnExecutionId: "delivery:pdf-promotion" }, artifact.artifactId,
+      { ...fixed, path: "docs/Report.pdf", eventId: event.eventId, sequence: event.sequence });
+    assert.deepEqual(await readFile(join(root, promoted.path)), content);
+    assert.equal(promoted.staged, false);
+    assert.equal(git("ls-files"), "");
+  } finally { f.store.close(); await rm(f.directory, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
+});
+
 test("materialization binds the Session workspace, verifies fixed content and leaves Git untouched", async () => {
   const f = await fixture();
   try {
@@ -160,7 +199,7 @@ test("materialization binds the Session workspace, verifies fixed content and le
     const artifact = await f.service.create(managerContext(f), { title: "Materialize", content: "fixed body" });
     const input = { version: 1, contentHash: artifact.versions[0].contentHash, path: "artifacts/report.md" };
     await assert.rejects(() => f.service.materialize(workerContext(f), artifact.artifactId, { ...input, contentHash: "0".repeat(64) }), { code: "ARTIFACT_VERSION_HASH_MISMATCH" });
-    for (const path of ["../escape.md", "/tmp/escape.md", "a/../../escape.md", ".git/config", ".gitignore"]) {
+    for (const path of ["../escape.md", "/tmp/escape.md", "a/../../escape.md", ".git/config", ".gitignore", "report.pdf", "outputs/report.pdf", "runtime/report.pdf", "artifacts", "artifacts/"]) {
       await assert.rejects(() => f.service.materialize(workerContext(f), artifact.artifactId, { ...input, path }), { code: "ARTIFACT_PATH_INVALID" });
     }
     const result = await callArtifactDynamicTool(f.service, { tool: "corptie_artifact_materialize", actorId: f.worker.agentId,
@@ -172,7 +211,7 @@ test("materialization binds the Session workspace, verifies fixed content and le
     await assert.rejects(() => f.service.materialize(workerContext(f), artifact.artifactId, input), /ARTIFACT_DESTINATION_EXISTS/);
     assert.equal(f.store.listArtifactAudit("work:one", artifact.artifactId).filter(event => event.action === "artifact.materialized").length, 1);
     git("add", "--force", ".corptie/artifacts/report.md");
-    await assert.rejects(() => f.service.materialize(workerContext(f), artifact.artifactId, { ...input, path: "another.md" }), { code: "ARTIFACT_CORPTIE_TRACKED" });
+    await assert.rejects(() => f.service.materialize(workerContext(f), artifact.artifactId, { ...input, path: "artifacts/another.md" }), { code: "ARTIFACT_CORPTIE_TRACKED" });
   } finally { f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
