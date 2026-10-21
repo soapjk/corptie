@@ -503,7 +503,9 @@ struct WorkspaceView: View {
             entityCommands: commands, isActive: scenePhase == .active, expandedWorkIDs: $expandedWorkIDs,
             isChatExpanded: $isChatExpanded, showsPersistentSelection: showsPersistentSelection,
             onOpenSession: onOpenSession,
-            createTask: openTaskCreation, onEntityRoute: { route in
+            createTask: {openTaskCreation($0)}, createChild:{task in
+                if let work=workspace.works.first(where:{$0.id == task.workId}) {openTaskCreation(work,parent:task)}
+            }, onEntityRoute: { route in
                 entityRoute = route
         })
         .disabled(connection.busy)
@@ -552,10 +554,11 @@ struct WorkspaceView: View {
             lastAgentMessageSequence: session?.lastAgentMessageSequence ?? 0, isActive: scenePhase == .active)
     }
 
-    private func openTaskCreation(_ work: ClientWork) {
+    private func openTaskCreation(_ work: ClientWork, parent: ClientTask? = nil) {
         let candidates = workspace.sessions.filter { $0.workId == work.id }
         if let existing = taskCreationStates[work.id], existing.matches(connection),
            existing.pending != nil || candidates.contains(where: { $0.id == existing.sourceSessionID }) {
+            if existing.pending == nil {existing.selectParent(parent)}
             taskCreationRoute = PadTaskCreationRoute(workName: work.name, state: existing)
             return
         }
@@ -566,6 +569,7 @@ struct WorkspaceView: View {
             return
         }
         let state = PadTaskCreationState(workID: work.id, sourceSessionID: source.id, connection: connection)
+        if state.pending == nil {state.selectParent(parent)}
         taskCreationStates[work.id] = state
         taskCreationRoute = PadTaskCreationRoute(workName: work.name, state: state)
     }

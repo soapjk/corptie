@@ -1,10 +1,9 @@
 import { presentTaskAcceptance } from "./taskAcceptance.mjs";
 import { taskHierarchyError } from "../store/repositories/taskHierarchyRepository.mjs";
 
-// Capabilities advertise implemented operations only. Git orchestration and
-// integration acceptance stay unavailable until their end-to-end path ships.
+// Shared by all Providers; adapters never own Git or integration acceptance.
 export const taskHierarchyCapabilities = Object.freeze({
-  version:1, maxDepth:1, createChild:true, worktreeOperations:false, integrationAcceptance:false
+  version:1, maxDepth:1, createChild:true, worktreeOperations:true, integrationAcceptance:true
 });
 
 export function readTaskHierarchyPage(store, workId, query) {

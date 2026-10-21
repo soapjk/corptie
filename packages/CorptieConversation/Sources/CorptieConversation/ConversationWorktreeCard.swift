@@ -63,15 +63,15 @@ public struct ConversationWorktreeCard: View {
                         .help(localize("提交修改")).accessibilityLabel(localize("提交修改"))
                 }
                 if detail?.worktree?.isMain == false {
-                    actionButton(.synchronize, icon: "arrow.triangle.2.circlepath", label: "同步主分支")
-                    actionButton(.merge, icon: "arrow.triangle.merge", label: "合并到主分支")
+                    actionButton(.synchronize, icon: "arrow.triangle.2.circlepath", label: detail?.worktree?.hierarchy?.role == "child" ? "同步父分支" : "同步主分支")
+                    if detail?.worktree?.hierarchy?.role != "parent" { actionButton(.merge, icon: "arrow.triangle.merge", label: detail?.worktree?.hierarchy == nil ? "合并到主分支" : "合并到父分支") }
                 }
                 Button { Task { await reload() } } label: { ConversationDetailHeaderIcon(systemName: "arrow.clockwise") }
                     .buttonStyle(.plain).disabled(loading || mutating).accessibilityLabel(localize("刷新 Worktree 状态"))
             }
             if loading && detail == nil { ProgressView() }
             if let tree = detail?.worktree {
-                Text("\(tree.branchName ?? localize("游离 HEAD")) → \(detail?.mainBranch ?? "—")")
+                Text("\(tree.branchName ?? localize("游离 HEAD")) → \(tree.hierarchy?.comparison.branchName ?? detail?.mainBranch ?? "—")")
                     .font(.caption.monospaced()).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 Text(relation(tree)).font(.caption).foregroundStyle(.secondary)
                 if tree.dirty == true {
@@ -80,20 +80,28 @@ public struct ConversationWorktreeCard: View {
                 if let blocker = detail?.blockedReason, blocker != "MAIN_WORKTREE" {
                     Text(blockerText(blocker)).font(.caption).foregroundStyle(.orange)
                 }
-                if !tree.isMain, detail?.autoFollow != nil {
-                    Toggle(localize("自动同步主分支"), isOn: Binding(
+                if !tree.isMain, tree.hierarchy?.role != "parent", detail?.autoFollow != nil {
+                    Toggle(localize(tree.hierarchy == nil ? "自动同步主分支" : "自动跟随父分支"), isOn: Binding(
                         get: { detail?.autoFollow?.enabled == true },
                         set: { enabled in Task { await setAutoFollow(enabled, worktreeID: tree.worktreeId) } }
                     ))
                     .toggleStyle(.switch)
                     .font(.caption).disabled(loading || mutating)
-                    .help(localize("工作区干净且会话空闲时自动 Rebase；不会自动提交、stash 或 push。"))
+                    .help(localize(tree.hierarchy == nil ? "工作区干净且会话空闲时自动 Rebase；不会自动提交、stash 或 push。"
+                        : "工作区干净且会话空闲时同步父分支；已发布分支使用 merge，不会自动提交、stash 或 push。"))
                     if let follow = detail?.autoFollow, follow.enabled {
                         Text(autoFollowText(follow)).font(.caption2)
                             .foregroundStyle(follow.status == "paused" ? Color.orange : Color.secondary)
                     }
                 }
                 if expanded {
+                    if let hierarchy=tree.hierarchy {
+                        ConversationHierarchyActions(hierarchy:hierarchy,api:{ try await api().hierarchyAPI },prepare:{ action,receipt in
+                            do { let next=try await api().prepareHierarchy(sessionID:sessionID,action:action,receiptId:receipt)
+                                job=next;review=next;onJob(next)
+                            } catch { self.error=error.localizedDescription }
+                        },localize:localize)
+                    }
                     Text(tree.path).font(.caption2.monospaced()).textSelection(.enabled)
                     Text(localize("比较本地主分支；不会自动 fetch 或 push。"))
                         .font(.caption2).foregroundStyle(.secondary)
@@ -194,8 +202,9 @@ public struct ConversationWorktreeCard: View {
     }
     private func relation(_ tree: ClientSessionWorktreeDetail.Worktree) -> String {
         if tree.isMain { return localize("当前为主 Worktree") }
-        guard let ahead = tree.aheadOfMain, let behind = tree.behindMain else { return localize("分支关系暂不可用") }
-        if ahead == 0 && behind == 0 { return localize("与主分支一致") }
+        guard let ahead = tree.hierarchy?.comparison.ahead ?? tree.aheadOfMain,
+              let behind = tree.hierarchy?.comparison.behind ?? tree.behindMain else { return localize("分支关系暂不可用") }
+        if ahead == 0 && behind == 0 { return localize(tree.hierarchy?.role == "child" ? "与父分支一致" : "与主分支一致") }
         return "↑ \(ahead) · ↓ \(behind) · " + localize(behind > 0 ? (ahead > 0 ? "先同步，再合并" : "待同步") : "可合并")
     }
     private func blockerText(_ code: String) -> String {
@@ -206,11 +215,12 @@ public struct ConversationWorktreeCard: View {
             "WORKTREE_STATE_CHANGED": "Worktree 状态已变化，等待重新检查"][code] ?? code)
     }
     private func autoFollowText(_ value: ClientSessionWorktreeDetail.AutoFollow) -> String {
+        let followsParent=detail?.worktree?.hierarchy?.role == "child"
         if value.status == "paused" { return localize("自动跟随已暂停，请处理冲突或检查绑定") }
-        if value.status == "running" { return localize("正在自动同步主分支") }
-        if value.status == "aligned" { return localize("已跟随主分支") }
+        if value.status == "running" { return localize(followsParent ? "正在自动同步父分支" : "正在自动同步主分支") }
+        if value.status == "aligned" { return localize(followsParent ? "已跟随父分支" : "已跟随主分支") }
         if let reason = value.reason { return localize("等待安全同步时机") + " · " + blockerText(reason) }
-        return localize("等待主分支更新")
+        return localize(followsParent ? "等待父分支更新" : "等待主分支更新")
     }
     @MainActor private func setAutoFollow(_ enabled: Bool, worktreeID: String) async {
         guard !mutating else { return }; mutating = true; error = nil
@@ -243,12 +253,24 @@ public struct ConversationWorktreeCard: View {
         if value.status == "paused" { Text(localize("请处理列出的冲突后重试；取消任务不会丢弃冲突现场。" )).font(.caption2).foregroundStyle(.secondary) }
     }
     private func reviewSheet(_ value: ClientWorktreeJob) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(localize(value.plan.operationType == "sync" ? "同步主分支（Rebase）" : "合并到主分支")).font(.headline)
-            Text("\(value.plan.items.filter { !$0.isMain }.compactMap(\.branchName).joined(separator: ", ")) → \(value.plan.targetBranchName ?? detail?.mainBranch ?? "—")")
-            Text(localize(value.plan.operationType == "sync"
+        let scoped=value.plan.taskScope != nil
+        let sync=value.plan.operationType == "sync"
+        let sources=value.plan.items.filter { value.plan.sourceWorktreeIds?.contains($0.worktreeId) ?? !$0.isMain }
+            .compactMap(\.branchName).joined(separator:", ")
+        let target=value.plan.targetBranchName ?? detail?.mainBranch ?? "—"
+        return VStack(alignment: .leading, spacing: 12) {
+            Text(localize(scoped ? (sync ? "同步分支" : value.plan.taskScope?.action == "promote_parent" ? "验收后合入主分支" : "合并到父分支")
+                : sync ? "同步主分支（Rebase）" : "合并到主分支")).font(.headline)
+            Text(sync ? "\(target) → \(sources)" : "\(sources) → \(target)")
+            if scoped {
+                Text(localize(sync
+                    ? (value.plan.syncStrategy == "merge" ? "将基线合并到来源分支，基线分支保持不变。" : "仅更新来源分支，基线分支保持不变；实际同步策略以审查计划为准。")
+                    : value.plan.taskScope?.action == "promote_parent" ? "仅将已验收提交快进至本地主分支。" : "仅将已提交的子分支修改合并到父分支。"))
+            } else {
+            Text(localize(sync
                 ? "仅将当前分支 Rebase 到主分支，不会合并到主分支。"
                 : "将当前分支的已提交修改合并到本地主分支。"))
+            }
             Text(localize("不会自动提交、stash 或 push。" )).font(.caption).foregroundStyle(.secondary)
             ForEach(Array(value.plan.blockingRisks.enumerated()), id: \.offset) { _, risk in
                 Text(risk.message).font(.caption).foregroundStyle(.orange)

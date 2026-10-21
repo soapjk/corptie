@@ -26,6 +26,7 @@ const projectors = {
       title: row.title,
       workId: row.work_id,
       parentTaskId: row.parent_task_id ?? null,
+      resourceVersion: row.resource_version,
       hierarchy: context.hierarchySummaries?.get(row.id) ?? null,
       lifecycleState: row.lifecycle_state,
       executionStatus,

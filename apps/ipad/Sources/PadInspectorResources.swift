@@ -369,7 +369,13 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
                 onAutoTitleChange: { enabled in
                     Task { await store.command("task.update", fields: ["autoTitleEnabled": .bool(enabled)],
                         sessionID: sessionID, connection: connection) }
-                }) {
+                }, hierarchy: taskHierarchy(definition) ?? task?.hierarchy) {
+                if let parentID=definition?["parentTaskId"].text ?? task?.parentTaskId,
+                   let parentSession=workspace.sessionIDByTaskID[parentID] {
+                    Button { workspace.selection=parentSession } label: {
+                        ConversationDetailHeaderIcon(systemName:"arrow.up.backward")
+                    }.accessibilityLabel("打开父任务").disabled(locked)
+                }
                 if let definition {
                     Button {
                         editor = .init(title: "编辑 Task", action: "task.update", fields: definition.fields,
@@ -383,12 +389,19 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
                         editor?.fields.removeValue(forKey: "lifecycleState")
                         editor?.fields.removeValue(forKey: "verificationCriteria")
                         editor?.fields.removeValue(forKey: "autoTitleEnabled")
+                        editor?.fields.removeValue(forKey: "parentTaskId")
+                        editor?.fields.removeValue(forKey: "hierarchy")
                     } label: { ConversationDetailHeaderIcon(systemName: "pencil") }
                         .accessibilityLabel("编辑 Task")
                         .disabled(locked)
                 }
             }
         }
+    }
+    private func taskHierarchy(_ definition: ClientInspectorValue?) -> TaskHierarchySummary? {
+        guard let value = definition?["hierarchy"], value != .null,
+              let data = try? JSONEncoder().encode(value) else { return nil }
+        return try? JSONDecoder().decode(TaskHierarchySummary.self, from:data)
     }
     private var schedules: some View {
         ConversationDetailModuleCard(title: "计划任务", systemImage: "clock.badge") {

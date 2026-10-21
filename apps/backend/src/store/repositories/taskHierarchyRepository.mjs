@@ -37,10 +37,26 @@ export class TaskHierarchyRepository {
     return Boolean(this.selectOne(`SELECT 1 FROM tasks WHERE parent_task_id=? AND ${active} LIMIT 1`, [taskId]));
   }
 
-  assertStandaloneWorktreeMutation({ worktreeIds = [], paths = [] }) {
-    if (!worktreeIds.length && !paths.length) return;
+  taskHierarchyAncestors(tasks) {
+    const present=new Set(tasks.map(task=>task.id));
+    const ids=[...new Set(tasks.map(task=>task.parent_task_id).filter(id=>id && !present.has(id)))];
+    const childScopes=new Set(tasks.filter(task=>task.parent_task_id).map(task=>JSON.stringify([task.parent_task_id,task.work_id])));
+    const byId=new Map(tasks.map(task=>[task.id,task]));
+    const ancestors=[];
+    for(let offset=0;offset<ids.length;offset+=400) {
+      const batch=ids.slice(offset,offset+400);
+      const rows=this.selectAll(`SELECT * FROM tasks WHERE id IN (${batch.map(()=>"?").join(",")}) AND ${active} AND parent_task_id IS NULL`,batch);
+      for(const parent of rows) if(childScopes.has(JSON.stringify([parent.id,parent.work_id]))) {
+        if(!byId.has(parent.id)) {ancestors.push(parent);byId.set(parent.id,parent);}
+      }
+    }
+    return ancestors;
+  }
+
+  assertStandaloneWorktreeMutation({ worktreeIds = [], paths = [], readPaths = [], jobId = null }) {
+    if (!worktreeIds.length && !paths.length && !readPaths.length) return;
     const ids = [...new Set(worktreeIds.filter(Boolean))];
-    const locations = [...new Set(paths.filter(Boolean))];
+    const locations = [...new Set([...paths,...readPaths].filter(Boolean))];
     if (!ids.length && !locations.length) return;
     const predicates = [
       ...(ids.length ? [`w.worktree_id IN (${ids.map(()=>"?").join(",")})`] : []),
@@ -51,7 +67,24 @@ export class TaskHierarchyRepository {
       WHERE (${predicates.join(" OR ")}) AND (t.parent_task_id IS NOT NULL
         OR EXISTS (SELECT 1 FROM tasks c WHERE c.parent_task_id=t.id AND COALESCE(c.deletion_status,'')<>'deleted')) LIMIT 1`,
     [...ids,...locations,...locations]);
-    if (member) throw taskHierarchyError("TASK_HIERARCHY_SCOPE_REQUIRED", "Use the parent-scoped integration workflow; legacy main-branch operations cannot mutate this delivery.");
+    if (member) {
+      const job=jobId && this.selectOne("SELECT * FROM worktree_integration_jobs WHERE id=?",[jobId]);
+      const plan=job?.details_json ? JSON.parse(job.details_json).plan : null;
+      const scope=plan?.taskScope;
+      const root=scope && this.getTask(scope.rootTaskId);
+      const binding=scope && this.getTaskDeliveryBinding(scope.rootTaskId);
+      const actual=this.selectAll(`SELECT worktree_id FROM git_worktrees w WHERE ${predicates.join(" OR ")}`,[...ids,...locations,...locations]);
+      const writePaths=[...new Set(paths.filter(Boolean))];
+      const writable=new Set(plan?.writeWorktreeIds ?? []);
+      const writes=this.selectAll(`SELECT worktree_id,path,canonical_path FROM git_worktrees WHERE worktree_id IN (${ids.map(()=>"?").join(",") || "NULL"})
+        OR path IN (${writePaths.map(()=>"?").join(",") || "NULL"}) OR canonical_path IN (${writePaths.map(()=>"?").join(",") || "NULL"})`,[...ids,...writePaths,...writePaths]);
+      if(scope?.version===1 && ["queued","running","paused","cancellation_requested"].includes(job?.status)
+        && root?.hierarchy_revision===scope.expectedHierarchyRevision && binding?.binding_revision===scope.expectedBindingRevision
+        && actual.length && actual.every(w=>plan.reservedWorktreeIds?.includes(w.worktree_id))
+        && writes.every(w=>writable.has(w.worktree_id)) && ids.every(id=>writes.some(w=>w.worktree_id===id))
+        && writePaths.every(path=>writes.some(w=>w.path===path || w.canonical_path===path))) return;
+      throw taskHierarchyError("TASK_HIERARCHY_SCOPE_REQUIRED", "Use the parent-scoped integration workflow; legacy main-branch operations cannot mutate this delivery.");
+    }
   }
 
   hierarchySummaries(taskIds) {
@@ -60,6 +93,18 @@ export class TaskHierarchyRepository {
     for (let offset = 0; offset < ids.length; offset += 400) {
       const batch = ids.slice(offset, offset + 400);
       const placeholders = batch.map(() => "?").join(",");
+      const receipts=new Map(this.selectAll(`SELECT a.*,s.payload_json,w.head_oid AS cached_head_oid,d.binding_revision AS current_binding_revision
+        FROM task_integration_acceptances a JOIN task_integration_snapshots s ON s.snapshot_id=a.snapshot_id
+        JOIN tasks t ON t.id=a.task_id LEFT JOIN task_delivery_worktrees d ON d.task_id=t.id
+        LEFT JOIN git_worktrees w ON w.worktree_id=d.worktree_id
+        WHERE t.id IN (${placeholders}) AND a.receipt_id=json_extract(CASE WHEN json_valid(t.acceptance_assessment_json) THEN t.acceptance_assessment_json ELSE '{}' END,'$.integrationReceiptId')`,batch).map(row=>[row.task_id,row]));
+      const childrenByParent=new Map();
+      for(const child of this.selectAll(`SELECT t.id,t.parent_task_id,t.revision,d.worktree_id,d.binding_revision,w.head_oid
+        FROM tasks t LEFT JOIN task_delivery_worktrees d ON d.task_id=t.id LEFT JOIN git_worktrees w ON w.worktree_id=d.worktree_id
+        WHERE t.parent_task_id IN (${placeholders}) AND COALESCE(t.deletion_status,'')<>'deleted' ORDER BY t.id`,batch)) {
+        const children=childrenByParent.get(child.parent_task_id) ?? [];
+        children.push(child);childrenByParent.set(child.parent_task_id,children);
+      }
       const rows = this.selectAll(`SELECT t.*, p.hierarchy_revision AS root_revision,
         p.work_id AS parent_work_id, p.parent_task_id AS grandparent_task_id,
         d.worktree_id AS delivery_worktree_id, d.binding_revision,
@@ -68,9 +113,27 @@ export class TaskHierarchyRepository {
         LEFT JOIN task_delivery_worktrees d ON d.task_id=t.id
         LEFT JOIN (SELECT parent_task_id,COUNT(*) AS child_count,
           SUM(CASE WHEN lifecycle_state='done' THEN 1 ELSE 0 END) AS completed_count
-          FROM tasks WHERE parent_task_id IS NOT NULL AND ${active} GROUP BY parent_task_id) c ON c.parent_task_id=t.id
-        WHERE t.id IN (${placeholders})`, batch);
+          FROM tasks WHERE parent_task_id IN (${placeholders}) AND ${active} GROUP BY parent_task_id) c ON c.parent_task_id=t.id
+        WHERE t.id IN (${placeholders})`, [...batch,...batch]);
       for (const row of rows) {
+        let acceptance={state:row.child_count ? "not_recorded" : "not_applicable",receiptId:null,testedHeadOid:null,reason:null};
+        const receipt=receipts.get(row.id);
+        if(receipt && row.child_count) {
+          let snapshot,assessment;
+          try {snapshot=JSON.parse(receipt.payload_json);assessment=JSON.parse(row.acceptance_assessment_json);} catch { /* corrupt records cannot authorize */ }
+          const children=childrenByParent.get(row.id) ?? [];
+          const stale=!snapshot || !Array.isArray(snapshot.children) || assessment?.status!=="passed" || snapshot.hierarchyRevision!==row.hierarchy_revision
+            || snapshot.bindingRevision!==receipt.current_binding_revision || snapshot.taskRevision!==row.revision
+            || receipt.cached_head_oid && receipt.cached_head_oid!==snapshot.parentHeadOid
+            || children.length!==snapshot.children.length || children.some((child,index)=>{
+              const frozen=snapshot.children[index];
+              return !frozen || child.id!==frozen.taskId || child.revision!==frozen.taskRevision
+                || child.worktree_id!==frozen.worktreeId || child.binding_revision!==frozen.bindingRevision
+                || child.head_oid && child.head_oid!==frozen.sourceHeadOid;
+            });
+          acceptance={state:stale ? "stale" : "not_proven",receiptId:receipt.receipt_id,testedHeadOid:snapshot?.parentHeadOid ?? null,
+            reason:stale ? "INTEGRATION_ACCEPTANCE_STALE" : "INTEGRATION_ACCEPTANCE_RECHECK_REQUIRED"};
+        }
         const valid = !row.parent_task_id || (row.root_revision && row.parent_work_id === row.work_id && !row.grandparent_task_id);
         const unavailable = !valid ? "TASK_PARENT_INVALID"
           : row.parent_task_id ? "TASK_MAX_DEPTH_EXCEEDED"
@@ -82,7 +145,7 @@ export class TaskHierarchyRepository {
           activeChildCount: row.child_count - row.completed_count,
           deliveryWorktreeId: row.delivery_worktree_id ?? null, bindingRevision: row.binding_revision ?? null,
           actions: { createChild: { available: !unavailable, reason: unavailable } },
-          acceptance: { state: row.child_count ? "not_recorded" : "not_applicable", receiptId: null, testedHeadOid: null, reason: null }
+          acceptance
         });
       }
     }

@@ -18,6 +18,7 @@ public struct ClientManagedRepositoryDetail: Decodable, Equatable, Sendable {
 }
 
 public struct ClientManagedGitProject: Decodable, Equatable, Sendable {
+    public var taskHierarchyCapabilities: TaskHierarchyCapabilities? = nil
     public let repositoryId: String
     public let inventoryVersion: String
     public let mainWorktreeId: String
@@ -29,6 +30,7 @@ public struct ClientManagedGitProject: Decodable, Equatable, Sendable {
 }
 
 public struct ClientManagedWorktree: Identifiable, Decodable, Equatable, Sendable {
+    public var hierarchy: WorktreeHierarchy? = nil
     public var id: String { worktreeId }
     public let worktreeId: String
     public let path: String
@@ -179,6 +181,8 @@ public struct ClientWorktreeJob: Identifiable, Decodable, Equatable, Sendable {
 }
 
 public struct ClientWorktreePlan: Decodable, Equatable, Sendable {
+    public var taskScope: TaskHierarchyScope? = nil
+    public var syncStrategy: String? = nil
     public let repositoryId: String
     public let operationType: String?
     public let syncMode: String?
@@ -277,10 +281,13 @@ public enum ClientWorktreePlanOperation: String, CaseIterable, Sendable {
 }
 
 public struct ClientWorktreePlanRequest: Encodable, Sendable {
+    public let taskScope: TaskHierarchyScope?
+    public let syncStrategy: String?
     public let operationType: ClientWorktreePlanOperation
     public let sourceWorktreeIds: [String]
     public let targetWorktreeId: String
-    public init(operation: ClientWorktreePlanOperation, sources: [String], target: String) throws {
+    public init(operation: ClientWorktreePlanOperation, sources: [String], target: String, taskScope: TaskHierarchyScope? = nil, syncStrategy: String? = nil) throws {
+        self.taskScope=taskScope; self.syncStrategy=syncStrategy
         guard !target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ClientServiceFailure(statusCode: 400, code: "TARGET_WORKTREE_REQUIRED")
         }
@@ -329,8 +336,8 @@ public struct ClientWorktreeAPI: Sendable {
     }
 
     public func preparePlan(repositoryId: String, operationType: ClientWorktreePlanOperation? = nil,
-                            sources: [String]? = nil, target: String? = nil) async throws -> ClientWorktreeJob {
-        let body = try operationType.map { try ClientWorktreePlanRequest(operation: $0, sources: sources ?? [], target: target ?? "") }
+                            sources: [String]? = nil, target: String? = nil, taskScope: TaskHierarchyScope? = nil, syncStrategy: String? = nil) async throws -> ClientWorktreeJob {
+        let body = try operationType.map { try ClientWorktreePlanRequest(operation: $0, sources: sources ?? [], target: target ?? "", taskScope:taskScope,syncStrategy:syncStrategy) }
         let envelope: JobEnvelope = try await post(["client", "v1", "worktrees", "repositories", repositoryId,
                                                     "integration-plans"],
                                                    body.map(PlanBody.explicit) ?? .automatic)

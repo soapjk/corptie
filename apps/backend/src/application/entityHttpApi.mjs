@@ -768,7 +768,7 @@ export function handleEntityHttpRequest({
           cursor: decodeTaskCursor(url.searchParams.get("cursor"))
         });
         return sendJson(response, 200, {
-          tasks: page.items.map((item) => presentTaskWithOrigin(workService, item)),
+          tasks: (()=>{const hierarchy=workService.store.hierarchySummaries(page.items.map(t=>t.id));return page.items.map(item=>presentTaskWithOrigin(workService,item,hierarchy));})(),
           hasMore: page.hasMore,
           nextCursor: encodeTaskCursor(page.nextCursor)
         });
@@ -782,7 +782,7 @@ export function handleEntityHttpRequest({
           cursor: decodeTaskCursor(url.searchParams.get("cursor"))
         });
         return sendJson(response, 200, {
-          tasks: page.items.map((item) => presentTaskWithOrigin(workService, item)),
+          tasks: (()=>{const hierarchy=workService.store.hierarchySummaries(page.items.map(t=>t.id));return page.items.map(item=>presentTaskWithOrigin(workService,item,hierarchy));})(),
           hasMore: page.hasMore,
           nextCursor: encodeTaskCursor(page.nextCursor)
         });
@@ -1734,15 +1734,16 @@ function validateGeneratedFormEnums(fields, schema) {
   }
 }
 
-function presentTaskWithOrigin(workService, task) {
+function presentTaskWithOrigin(workService, task, hierarchy = null) {
   return {
-    ...presentTaskWithScheduledWake(workService, task),
+    ...presentTaskWithScheduledWake(workService, task, hierarchy),
     creationOrigin: workService.store.getTaskCreationOrigin(task.id)
   };
 }
 
-function presentTaskWithScheduledWake(workService, task) {
+function presentTaskWithScheduledWake(workService, task, hierarchy = null) {
   return presentTaskAcceptance(task, {
+    hierarchy: (hierarchy ?? workService.store.hierarchySummaries?.([task.id]))?.get(task.id),
     hasPendingScheduledWake: workService.store.hasPendingScheduledWakeForTask(task.id)
   });
 }

@@ -138,6 +138,7 @@ export function createDetailBusinessReadPorts({ store, references, artifacts, sc
     worktree: { cacheable: false, dependencies: ["worktree", "workspace", "repository", "sessionMetadata"], read: async scope => {
       const value = await readWorktree(scope.logicalSessionId), tree = value.worktree;
       return { attached: value.attached === true, repository: ref("repository", value.repositoryId),
+        hierarchy: tree?.hierarchy ?? null,
         blockedReason: string(value.blockedReason, 128), mainBranch: string(value.mainBranch, 512),
         workspace: tree ? ref("worktree", tree.worktreeId) : null,
         tree: tree ? { branchName: string(tree.branchName, 512), isMain: tree.isMain === true, dirty: typeof tree.dirty === "boolean" ? tree.dirty : null,

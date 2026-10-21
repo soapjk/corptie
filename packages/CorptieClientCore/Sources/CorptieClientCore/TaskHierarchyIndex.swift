@@ -3,6 +3,17 @@ import Foundation
 /// A single O(n) projection per inventory change. Never scans a whole Work in
 /// each row body and never treats unloaded children as a server-side count.
 public struct TaskHierarchyIndex: Sendable {
+    public static func visibleOrder(nodes: [Node], expanded: Set<String>) -> [String] {
+        let index=TaskHierarchyIndex(nodes:nodes)
+        var result:[String]=[]
+        var seen = Set<String>()
+        for node in nodes where node.parentTaskId == nil && !index.invalidNodeIDs.contains(node.id) {
+            guard seen.insert(node.id).inserted else { continue }
+            result.append(node.id)
+            if expanded.contains(node.id) { result.append(contentsOf:index.childrenByParentID[node.id] ?? []) }
+        }
+        return result
+    }
     public struct Node: Sendable, Equatable {
         public let id: String
         public let workId: String

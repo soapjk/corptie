@@ -35,6 +35,9 @@ public struct ClientDetailBusinessTask: Decodable, Equatable, Sendable {
     public let verificationCriteria: String
     public let resourceRevision: String
     public let summary: ClientDetailBusinessTaskSummary
+    public var parentTaskId: String? = nil
+    public var parentSessionId: String? = nil
+    public var hierarchy: TaskHierarchySummary? = nil
 }
 public struct ClientDetailBusinessArtifact: Decodable, Equatable, Identifiable, Sendable {
     public var id: String { artifactId }
@@ -114,8 +117,12 @@ public struct ClientDetailBusinessCard: Decodable, Equatable, Identifiable, Send
         case .task(let task):
             guard !task.taskId.isEmpty, [task.title, task.status, task.description, task.acceptanceCriteria,
                 task.verificationCriteria, task.resourceRevision].allSatisfy({ validText($0) }),
-                actions.filter({ $0.kind == "navigation" }).allSatisfy({ $0.operation == "editor.open"
-                    && $0.target?.resourceType == "task" && $0.target?.id == task.taskId }) else { throw ClientDetailFailure.invalidGraph }
+                actions.filter({ $0.kind == "navigation" }).allSatisfy({ action in
+                    (action.operation == "editor.open" && action.target?.resourceType == "task" && action.target?.id == task.taskId)
+                    || (action.operation == "resource.open" && action.target?.resourceType == "session"
+                        && task.parentTaskId != nil && task.parentSessionId?.isEmpty == false
+                        && action.target?.id == task.parentSessionId)
+                }) else { throw ClientDetailFailure.invalidGraph }
         case .artifacts(let list):
             guard list.items.count <= 20, Set(list.items.map(\.id)).count == list.items.count else { throw ClientDetailFailure.limit }
             for row in list.items {

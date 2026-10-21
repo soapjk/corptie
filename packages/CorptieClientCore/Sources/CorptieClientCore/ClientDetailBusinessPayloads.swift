@@ -44,6 +44,7 @@ public struct ClientDetailBusinessWorktree: Decodable, Equatable, Sendable {
     public struct Job: Decodable, Equatable, Sendable { public let jobId: String; public let status: String; public let phase: String }
     public let attached: Bool; public let worktreeId: String?; public let mainBranch: String; public let blockedReason: String
     public let tree: Tree?; public let autoFollow: AutoFollow; public let job: Job?
+    public var hierarchy: WorktreeHierarchy? = nil
 }
 public struct ClientDetailBusinessTurn: Decodable, Equatable, Sendable {
     public let turnId: String?; public let completeness: String

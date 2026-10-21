@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import CorptieClientCore
+import CorptieConversation
 
 private struct WorktreeLocalStateTarget: Identifiable {
     let repositoryID: String
@@ -536,6 +537,11 @@ struct WorktreeManagementView: View {
         .accessibilityIdentifier("worktree.repository.column")
     }
 
+    @State private var expandedHierarchyWorktrees: Set<String> = []
+    private func hierarchyWorktrees(_ project: ManagedGitProject) -> [ManagedWorktree] {
+        let byID=Dictionary(uniqueKeysWithValues:project.worktrees.map{($0.worktreeId,$0)})
+        return TaskHierarchyIndex.visibleOrder(nodes:project.worktrees.map{.init(id:$0.worktreeId,workId:project.repositoryId,parentTaskId:$0.hierarchy?.parentWorktreeId)},expanded:expandedHierarchyWorktrees).compactMap{byID[$0]}
+    }
     private var worktreeColumn: some View {
         VStack(spacing: 0) {
             columnHeader(L10n("Git Worktrees"), systemImage: "arrow.triangle.branch", showsSelection: true) {
@@ -559,7 +565,7 @@ struct WorktreeManagementView: View {
                             get: { client.selection.worktreeId },
                             set: { client.selectWorktree($0) }
                         )) {
-                            ForEach(project.worktrees) { worktree in
+                            ForEach(hierarchyWorktrees(project)) { worktree in
                                 HStack(spacing: 8) {
                                     if isBatchSelecting {
                                         Button {
@@ -714,7 +720,7 @@ struct WorktreeManagementView: View {
     }
 
     private func isBatchEligible(_ worktree: ManagedWorktree) -> Bool {
-        worktree.availability == "available"
+        worktree.hierarchy == nil && worktree.availability == "available"
             && worktree.branchName != nil
             && !worktree.isDetached
             && worktree.operationState == nil
@@ -765,7 +771,8 @@ struct WorktreeManagementView: View {
                             .accessibilityIdentifier("worktree.local-state.inspect")
                         detailPair("HEAD", worktree.headOid ?? "—", monospaced: true)
                         detailPair(L10n("Availability"), localizedIntegrationStatus(worktree.availability))
-                        detailPair(L10n("Branch relation"), "↑ \(worktree.aheadOfMain ?? 0)  ↓ \(worktree.behindMain ?? 0)")
+                        detailPair(worktree.hierarchy?.role == "child" ? L10n("与父分支") : L10n("Branch relation"),
+                                   "↑ \(worktree.hierarchy?.comparison.ahead ?? worktree.aheadOfMain ?? 0)  ↓ \(worktree.hierarchy?.comparison.behind ?? worktree.behindMain ?? 0)")
                         detailPair(L10n("Operation"), worktree.operationState.map(localizedGitOperation) ?? L10n("None"))
                         if let summary = worktree.statusSummary, !summary.isEmpty {
                             Text(summary).font(.caption.monospaced()).textSelection(.enabled)
@@ -799,7 +806,7 @@ struct WorktreeManagementView: View {
                             )
                             .help(worktreePushExplanation(worktree))
                             .accessibilityIdentifier("worktree.push-github.\(worktree.worktreeId)")
-                            if worktree.operationState != nil {
+                            if worktree.hierarchy == nil, worktree.operationState != nil {
                                 Button {
                                     pendingGitOperationAction = PendingGitOperationAction(
                                         worktree: worktree,
@@ -824,7 +831,7 @@ struct WorktreeManagementView: View {
                                 .disabled(client.isMutating)
                                 .accessibilityIdentifier("worktree.git-operation.abort.\(worktree.worktreeId)")
                             }
-                            if !worktree.isMain, (worktree.behindMain ?? 0) > 0 {
+                            if worktree.hierarchy == nil, !worktree.isMain, (worktree.behindMain ?? 0) > 0 {
                                 Button {
                                     showingSynchronizationConfirmation = true
                                 } label: {
@@ -844,7 +851,7 @@ struct WorktreeManagementView: View {
                                         || worktree.operationState != nil
                                 )
                                 .accessibilityIdentifier("worktree.commit-main.\(worktree.worktreeId)")
-                            } else if !worktree.isMain {
+                            } else if worktree.hierarchy == nil, !worktree.isMain {
                                 Button {
                                     pendingOperation = worktree
                                 } label: {
@@ -932,6 +939,14 @@ struct WorktreeManagementView: View {
     private func worktreeActions(_ project: ManagedGitProject) -> some View {
         let eligible = ManagedWorktreeDeletionPolicy.eligibleWorktrees(from: project.worktrees)
         return VStack(alignment: .leading, spacing: 8) {
+            if let tree=client.selectedWorktree, let hierarchy=tree.hierarchy {
+                ConversationHierarchyActions(hierarchy:hierarchy,api:{
+                    ClientTaskHierarchyAPI(transport:try BackendTransport(endpoint:BackendEndpoint(CorptieAppEnvironment.backendBaseURL)),surface:.local)
+                },prepare:{action,receipt in
+                    showingPlan=true
+                    await client.prepareHierarchyOperation(tree,action:action,receiptID:receipt)
+                },localize:L10n)
+            }
             HStack(spacing: 8) {
                 Button {
                     showingPlan = true
@@ -941,7 +956,7 @@ struct WorktreeManagementView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(client.isMutating || client.isPreparingPlan || client.job?.isActive == true || client.job?.status == "paused")
+                .disabled(project.worktrees.contains{$0.hierarchy != nil} || client.isMutating || client.isPreparingPlan || client.job?.isActive == true || client.job?.status == "paused")
                 .accessibilityIdentifier("worktree.integrate.preflight")
 
                 Button {
@@ -1336,6 +1351,12 @@ struct WorktreeManagementView: View {
     private func worktreeRow(_ worktree: ManagedWorktree) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
+                if worktree.hierarchy?.role == "parent" {
+                    Button {
+                        if !expandedHierarchyWorktrees.insert(worktree.worktreeId).inserted { expandedHierarchyWorktrees.remove(worktree.worktreeId) }
+                    } label: { Image(systemName:expandedHierarchyWorktrees.contains(worktree.worktreeId) ? "chevron.down" : "chevron.right") }
+                    .buttonStyle(.plain).accessibilityLabel(L10n("展开子分支"))
+                }
                 Image(systemName: worktree.isMain ? "house.fill" : "arrow.triangle.branch")
                 Text(worktree.branchName ?? L10n("Detached HEAD")).fontWeight(.medium).lineLimit(1)
                 Spacer()
@@ -1346,7 +1367,9 @@ struct WorktreeManagementView: View {
                 Text(String((worktree.headOid ?? "—").prefix(8))).font(.caption2.monospaced())
                 if worktree.isMain { statusBadge("main", color: .blue) }
                 worktreeStateControl(worktree)
-                if !worktree.isMain {
+                if let h=worktree.hierarchy {
+                    Text("↑\(h.comparison.ahead.map(String.init) ?? "—") ↓\(h.comparison.behind.map(String.init) ?? "—") · \(h.comparison.branchName ?? "—")").font(.caption2)
+                } else if !worktree.isMain {
                     let synchronized = worktree.synchronizedWithMain == true
                     if synchronized {
                         statusBadge(L10n("Synchronized"), color: .green)
@@ -1365,6 +1388,7 @@ struct WorktreeManagementView: View {
             }
         }
         .padding(.vertical, 5)
+        .padding(.leading,worktree.hierarchy?.role == "child" ? 14 : 0)
     }
 
     private func repositoryRow(_ repository: ManagedRepository) -> some View {
@@ -1432,7 +1456,7 @@ struct WorktreeManagementView: View {
     @ViewBuilder
     private func worktreeStateControl(_ worktree: ManagedWorktree) -> some View {
         let state = worktreeState(worktree)
-        if worktree.isMain, worktree.dirty != true {
+        if worktree.hierarchy != nil || (worktree.isMain && worktree.dirty != true) {
             statusBadge(state.label, color: state.color)
         } else {
             Button { pendingOperation = worktree } label: {
@@ -2658,7 +2682,7 @@ private struct WorktreeIntegrationPlanReview: View {
             Label(localizedMessage, systemImage: "exclamationmark.triangle.fill")
                 .fontWeight(.semibold)
             if let item {
-                Text(L10nFormat("Affected Worktree: %@", item.isMain ? "main" : (item.branchName ?? item.path)))
+                Text(L10nFormat("Affected Worktree: %@", item.branchName ?? item.path))
                     .font(.caption.weight(.semibold))
                 Text(item.path)
                     .font(.caption2.monospaced())

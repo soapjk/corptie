@@ -232,14 +232,20 @@ export class WorkApplicationService {
     }
 
     const snapshot = await this.integrationAcceptance.validateSnapshotForAssessment(task, input);
-    const assessment = this.integrationAcceptance.bindAssessment(snapshot, buildAcceptanceAssessment(task, input));
-    const patch = {
-      acceptanceAssessment: assessment,
-      lifecycleState: task.lifecycle_state
-    };
+    let assessment;
+    const updated = this.store.runInTransaction(() => {
+      const current = this.getTask(id);
+      const currentSession = this.store.getSession(sourceSessionId);
+      if (current.resource_version !== task.resource_version || current.revision !== task.revision
+        || current.hierarchy_revision !== task.hierarchy_revision || currentSession?.taskId !== id) {
+        throw new TaskAcceptanceError("ACCEPTANCE_SOURCE_STALE", "Task or source Session changed while validating acceptance. Reload and retry.");
+      }
+      assessment = this.integrationAcceptance.bindAssessment(snapshot, buildAcceptanceAssessment(current, input));
+      return this.store.updateTask(id, {acceptanceAssessment:assessment,lifecycleState:current.lifecycle_state});
+    });
     return this.emit(
       "TaskChanged",
-      this.store.updateTask(id, patch),
+      updated,
       assessment.status === "passed" ? "acceptance-passed" : "acceptance-not-proven"
     );
   }

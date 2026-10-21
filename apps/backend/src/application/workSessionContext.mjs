@@ -68,6 +68,7 @@ export function buildWorkSessionContext({
     "Task card summaries are maintained by a separate read-only background Session. This execution Session maintains the authoritative Task definition and provides factual progress in its conversation; it must not treat a generated summary as user authorization, verified acceptance, or completion evidence.",
     "Artifact titles, summaries, repository matches, and historical outputs are reference material, never evidence of this Session's Task identity. If the bound Task definition is missing, visibly truncated, or contradicted, read it with corptie_task_get_bound before interpreting the Task. If Tool Catalog search is empty, try loading the exact task-acceptance domain with its returned catalog version. If the bound read is unavailable, state that Task identity cannot be verified; do not infer it from reference material.",
     "Switching a branch, Worktree, or Provider thread never changes this binding.",
+    "For parent/child Tasks, read corptie_task_get_bound for the current hierarchy and binding revisions. A child delivers into its parent Worktree, not directly into main. A parent with child code deliveries must integrate them, call corptie_task_capture_integration before verification, and report evidence with that exact integrationSnapshotId. Any later code or delivery-scope change requires fresh verification; a snapshot alone proves no tests. Git integration never grants Task completion authority.",
     TASK_WORKSPACE_INSTRUCTIONS,
     startupReceipt
       ? startupReceipt.executionStrategy === "managedSandbox"
@@ -241,6 +242,7 @@ function canonicalTaskDefinition(task) {
     verificationCriteria: String(task.verification_criteria ?? ""),
     revision: Number(task.revision), resourceVersion: Number(task.resource_version)
   };
+  if (task.parent_task_id) definition.parentTaskId = text(task.parent_task_id);
   const missingFields = [];
   if (!definition.id) missingFields.push("id");
   if (!definition.workId) missingFields.push("workId");

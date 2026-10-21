@@ -146,7 +146,7 @@ test("reads validate ownership and keep one immutable per-document paging identi
 test("header read exposes only authorized presentation metadata", async () => {
   const f = await fixture();
   try {
-    const task = f.store.createTask({ workId: "work:test", title: "Header task", mainAgentId: "agent:test" });
+    const task = f.store.createTask({ workId: "work:test", title: "Header_task", mainAgentId: "agent:test" });
     f.store.createSession({ id: "s:header", workId: "work:test", taskId: task.id, title: "Header",
       provider: "claude-sdk", cwd: "/project/fallback",
       raw: { secret: "private", workspace: { path: "/project/active", branchName: "feature/ui",

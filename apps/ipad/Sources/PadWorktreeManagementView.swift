@@ -1,5 +1,6 @@
 import SwiftUI
 import CorptieClientCore
+import CorptieConversation
 
 private struct PadWorktreeLocalStateTarget: Identifiable {
     let repositoryID: String
@@ -71,6 +72,7 @@ struct PadWorktreeManagementView: View {
     @State private var showingJobReview = false
     @State private var planSheetDismissed = true
     @State private var reviewAfterPlanDismissal = false
+    @State private var expandedParentWorktrees = Set<String>()
 
     var body: some View {
         Group {
@@ -211,7 +213,7 @@ struct PadWorktreeManagementView: View {
             Task { await manager.select(id, connection: connection) }
         })) {
             Section {
-                ForEach(detail.project.worktrees) { worktree in
+                ForEach(hierarchyWorktrees(detail.project)) { worktree in
                     worktreeRow(worktree).tag(worktree.worktreeId)
                 }
             } header: {
@@ -224,6 +226,16 @@ struct PadWorktreeManagementView: View {
     private func worktreeRow(_ worktree: ClientManagedWorktree) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
+                if worktree.hierarchy?.role == "parent" {
+                    Button {
+                        if !expandedParentWorktrees.insert(worktree.worktreeId).inserted {
+                            expandedParentWorktrees.remove(worktree.worktreeId)
+                        }
+                    } label: {
+                        Image(systemName: expandedParentWorktrees.contains(worktree.worktreeId) ? "chevron.down" : "chevron.right")
+                    }.buttonStyle(.plain).accessibilityLabel("展开子 Worktree")
+                }
+                if worktree.hierarchy?.role == "child" { Image(systemName:"arrow.turn.down.right").font(.caption) }
                 Image(systemName: worktree.isMain ? "house.fill" : "arrow.triangle.branch")
                     .foregroundStyle(worktree.isMain ? Color.accentColor : Color.secondary)
                 Text(worktree.branchName ?? "游离 HEAD").lineLimit(1)
@@ -234,6 +246,14 @@ struct PadWorktreeManagementView: View {
             Text(worktree.path).font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(1)
         }
         .padding(.vertical, 3)
+        .padding(.leading, worktree.hierarchy?.role == "child" ? 16 : 0)
+    }
+
+    private func hierarchyWorktrees(_ project: ClientManagedGitProject) -> [ClientManagedWorktree] {
+        let byID=Dictionary(project.worktrees.map { ($0.worktreeId,$0) }, uniquingKeysWith: { $1 })
+        return TaskHierarchyIndex.visibleOrder(nodes:project.worktrees.map {
+            .init(id:$0.worktreeId, workId:project.repositoryId, parentTaskId:$0.hierarchy?.parentWorktreeId)
+        }, expanded:expandedParentWorktrees).compactMap { byID[$0] }
     }
 
     private func detailPane(_ detail: ClientManagedRepositoryDetail) -> some View {
@@ -244,7 +264,7 @@ struct PadWorktreeManagementView: View {
                         Task { await manager.select(id, connection: connection) }
                     })) {
                         ForEach(detail.project.worktrees) { worktree in
-                            Text(worktree.branchName ?? worktree.path).tag(worktree.worktreeId)
+                            Text((worktree.hierarchy?.role == "child" ? "↳ " : "") + (worktree.branchName ?? worktree.path)).tag(worktree.worktreeId)
                         }
                     }
                     .pickerStyle(.menu)
@@ -274,7 +294,7 @@ struct PadWorktreeManagementView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(project.pendingWorktreeCount == 0 || manager.planning || manager.jobBusy
+            .disabled(project.worktrees.contains{$0.hierarchy != nil} || project.pendingWorktreeCount == 0 || manager.planning || manager.jobBusy
                 || ["queued", "running", "paused", "cancellation_requested", "replanning"].contains(manager.job?.status ?? ""))
             .accessibilityIdentifier("worktree.integrate.preflight")
 
@@ -310,7 +330,8 @@ struct PadWorktreeManagementView: View {
             infoRow("分支", worktree.branchName ?? "游离 HEAD", monospaced: true)
             infoRow("路径", worktree.path, monospaced: true)
             if let oid = worktree.headOid { infoRow("HEAD", String(oid.prefix(12)), monospaced: true) }
-            infoRow("与主分支", "领先 \(worktree.aheadOfMain ?? 0) · 落后 \(worktree.behindMain ?? 0)")
+            infoRow(worktree.hierarchy?.role == "child" ? "与父分支" : "与主分支",
+                    "领先 \(worktree.hierarchy?.comparison.ahead ?? worktree.aheadOfMain ?? 0) · 落后 \(worktree.hierarchy?.comparison.behind ?? worktree.behindMain ?? 0)")
             if let summary = worktree.statusSummary, !summary.isEmpty { Text(summary).font(.footnote).foregroundStyle(.secondary) }
             if let operation = worktree.operationState { Label("正在进行 Git 操作：\(operation)", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) }
             if worktree.isLocked { Label(worktree.lockReason ?? "Worktree 已锁定", systemImage: "lock.fill").foregroundStyle(.orange) }
@@ -366,7 +387,14 @@ struct PadWorktreeManagementView: View {
                 .disabled(worktree.availability != "available")
                 .accessibilityIdentifier("worktree.local-state.inspect")
             let busy = manager.busyWorktreeIDs.contains(worktree.worktreeId)
-            if worktree.isMain {
+            if let hierarchy=worktree.hierarchy {
+                ConversationHierarchyActions(hierarchy:hierarchy,api:{
+                    ClientTaskHierarchyAPI(transport:try await connection.transport(),surface:.pairedDevice)
+                },prepare:{action,receipt in
+                    await manager.prepareHierarchy(worktree,action:action,receiptID:receipt,connection:connection)
+                    if manager.job?.status == "awaiting_confirmation" { showingJobReview=true }
+                })
+            } else if worktree.isMain {
                 Button("提交主 Worktree 修改", systemImage: "checkmark.circle") { prepare(worktree) }
                     .disabled(busy || worktree.dirty != true)
             } else {
@@ -484,6 +512,10 @@ struct PadWorktreeManagementView: View {
     }
 
     private func prepare(_ worktree: ClientManagedWorktree) {
+        guard worktree.hierarchy == nil else {
+            manager.errorMessage = "请使用父子 Worktree 的专属集成操作。"
+            return
+        }
         Task {
             if let draft = await manager.prepareOperation(worktree, connection: connection) { operationDraft = draft }
         }
@@ -494,6 +526,7 @@ struct PadWorktreeManagementView: View {
     }
 
     private func deletionBlocker(_ worktree: ClientManagedWorktree) -> String? {
+        if worktree.hierarchy != nil { return "父子 Worktree 仍有集成依赖，暂不能通过独立清理入口删除。" }
         if let blocker = worktree.deletionBlocker { return blocker.reason }
         if worktree.isMain { return "主 Worktree 不能删除。" }
         if worktree.availability != "available" { return "Worktree 当前不可用。" }
@@ -526,6 +559,12 @@ struct PadWorktreeManagementView: View {
 
     private func worktreeStatusControls(_ worktree: ClientManagedWorktree) -> some View {
         HStack(spacing: 6) {
+            if let hierarchy=worktree.hierarchy {
+                statusPill(hierarchy.role == "child" ? "子分支" : "集成分支", color:.blue)
+                if let ahead=hierarchy.comparison.ahead, let behind=hierarchy.comparison.behind {
+                    Text("↑ \(ahead) · ↓ \(behind)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                }
+            } else {
             if worktree.isMain { statusPill("main", color: .blue) }
             if worktree.isMain && worktree.dirty != true {
                 statusPill(worktreeLabel(worktree), color: worktreeColor(worktree))
@@ -540,6 +579,7 @@ struct PadWorktreeManagementView: View {
                     operationStatus("未同步", color: .orange, worktree: worktree)
                         .accessibilityIdentifier("worktree.synchronize.\(worktree.worktreeId)")
                 }
+            }
             }
         }
     }
@@ -642,7 +682,7 @@ private struct PadWorktreeOperationSheet: View {
 
 enum PadWorktreePlanDefaults {
     static func eligible(_ tree: ClientManagedWorktree) -> Bool {
-        !tree.isMain && tree.availability == "available" && tree.branchName != nil
+        tree.hierarchy == nil && !tree.isMain && tree.availability == "available" && tree.branchName != nil
             && !tree.isDetached && tree.operationState == nil && tree.conflictFiles.isEmpty
     }
     static func sources(in project: ClientManagedGitProject) -> [String] {
@@ -700,7 +740,7 @@ private struct PadWorktreePlanSheet: View {
                 }
                 Section("目标") {
                     Picker("目标分支", selection: $target) {
-                        ForEach(project.worktrees.filter { $0.availability == "available" && $0.branchName != nil && !$0.isDetached && $0.operationState == nil && $0.conflictFiles.isEmpty }) { tree in
+                        ForEach(project.worktrees.filter { $0.hierarchy == nil && $0.availability == "available" && $0.branchName != nil && !$0.isDetached && $0.operationState == nil && $0.conflictFiles.isEmpty }) { tree in
                             Text(tree.branchName ?? tree.path).tag(tree.worktreeId)
                         }
                     }
@@ -733,6 +773,16 @@ private struct PadWorktreeJobReview: View {
                 Section("计划") {
                     LabeledContent("操作", value: job.plan.operationType ?? "merge")
                     LabeledContent("目标", value: job.plan.targetBranchName ?? "main")
+                    if job.plan.taskScope != nil {
+                        let sources=job.plan.items.filter { job.plan.sourceWorktreeIds?.contains($0.worktreeId) == true }
+                            .compactMap(\.branchName).joined(separator:", ")
+                        let target=job.plan.targetBranchName ?? "—"
+                        Text(job.plan.operationType == "sync" ? "\(target) → \(sources)" : "\(sources) → \(target)")
+                        if job.plan.operationType == "sync" {
+                            Text("仅更新来源分支，基线分支保持不变。同步方式：\(job.plan.syncStrategy ?? "auto")")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                     LabeledContent("Worktree", value: "\(job.plan.items.count)")
                     Text("仅执行本地操作，不会推送到远程。请检查来源、顺序及受保护文件，再确认。")
                         .font(.footnote).foregroundStyle(.secondary)

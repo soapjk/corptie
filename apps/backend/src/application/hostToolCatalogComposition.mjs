@@ -20,7 +20,7 @@ export function createHostToolCatalog({
   validateProjectCodeHostRoute, getProjectCodeApplicationService,
   sessionCollaborationV2Enabled, port, skillRegistryService,
   scheduledSessionTaskService, getBoundTaskForAgent,
-  reportTaskAcceptanceForAgent, completeTaskForSession,
+  reportTaskAcceptanceForAgent, completeTaskForSession, captureTaskIntegrationForAgent,
   reviseTaskForSession, sceneService,
   getToolMaterializationPort, getPlatformOperationService,
   getWorkChatOperationService, contextReadService, mcpRegistryService, onIntegrationChanged
@@ -103,6 +103,7 @@ export function createHostToolCatalog({
       execute: (input) => callTaskAcceptanceDynamicTool({
         getBoundTask: getBoundTaskForAgent,
         reportAcceptance: reportTaskAcceptanceForAgent,
+        captureIntegration: captureTaskIntegrationForAgent,
         completeTask: completeTaskForSession,
         reviseTask: reviseTaskForSession
       }, input)

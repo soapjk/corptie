@@ -1,6 +1,7 @@
 import SwiftUI
 import Flow
 import CorptieConversation
+import CorptieClientCore
 
 private struct WorkCanvasEntryRequest: Equatable {
     let active: Bool
@@ -31,6 +32,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     let createTask: (Work) -> Void
     let taskMenu: (CorptieTask) -> TaskMenu
     @State private var members: [String: [String]] = [:]
+    @State private var expandedChildGroups: Set<String> = []
     @ObservedObject private var displayPreferences = TaskCardDisplayPreferences.shared
     @State private var clickHistory = TaskCardClickHistory()
     @State private var canvasPositions: [String: CGPoint] = Self.loadCanvasPositions()
@@ -332,13 +334,29 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
 
     private func group(_ work: Work, availableWidth: CGFloat) -> some View {
         let visibleTasks = displayedTasks(for: work)
+        let children=Dictionary(grouping:visibleTasks.filter{$0.parentTaskId != nil},by:{$0.parentTaskId!})
+        var roots=visibleTasks.filter{$0.parentTaskId == nil}
+        let rootIDs=Set(roots.map(\.id))
+        let missing=Set(children.keys).subtracting(rootIDs)
+        roots.append(contentsOf:tasks.filter{missing.contains($0.id)})
         return
         CompactWorkCard(work: work, isChatRunning: runningDiscussionWorkIDs.contains(work.id),
                         isChatSelected: discussionSessionIDByWork[work.id].map { selectedSessionID == $0 } ?? false,
                         isActive: isActive, discuss: { discuss(work) }, createTask: { createTask(work) }) {
-            WorkTaskCardGrid(itemCount: visibleTasks.count, availableWidth: availableWidth) {
-                ForEach(visibleTasks) { task in
-                    card(task).frame(maxWidth: .infinity, alignment: .topLeading)
+            WorkTaskCardGrid(itemCount: roots.count, availableWidth: availableWidth) {
+                ForEach(roots) { task in
+                    VStack(alignment:.leading,spacing:6) {
+                        card(task).frame(maxWidth: .infinity, alignment: .topLeading)
+                        if (task.hierarchy?.childCount ?? children[task.id]?.count ?? 0)>0 {
+                            Button {
+                                if !expandedChildGroups.insert(task.id).inserted {expandedChildGroups.remove(task.id)}
+                            } label:{Label("\(task.hierarchy?.childCount ?? children[task.id]?.count ?? 0) \(L10n("子任务"))",systemImage:expandedChildGroups.contains(task.id) ? "chevron.down" : "chevron.right")}
+                            .font(.caption).buttonStyle(.plain)
+                            if expandedChildGroups.contains(task.id) || !query.isEmpty {
+                                ForEach(children[task.id] ?? []) {child in card(child).padding(.leading,14)}
+                            }
+                        }
+                    }
                 }
             }
         }
