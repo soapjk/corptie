@@ -22,9 +22,9 @@ export function createProjectToolsetStatusReader({
     if (toolset.requiresUpdate && toolset.manifestConfigured) {
       const legacySource = await projectToolsets.sourceIdentity(toolset.mainPath, toolset.runtimePath);
       const [status, health, version] = await Promise.all([
-        projectToolsets.run(cwd, "status", { timeoutMs: 5_000, allowIncompatible: true, sourceIdentity: legacySource }),
-        projectToolsets.run(cwd, "health", { timeoutMs: 5_000, allowIncompatible: true, sourceIdentity: legacySource }),
-        projectToolsets.run(cwd, "version", { timeoutMs: 5_000, allowIncompatible: true, sourceIdentity: legacySource })
+        projectToolsets.run(cwd, "status", { prepareSnapshot: false, timeoutMs: 5_000, allowIncompatible: true, sourceIdentity: legacySource }),
+        projectToolsets.run(cwd, "health", { prepareSnapshot: false, timeoutMs: 5_000, allowIncompatible: true, sourceIdentity: legacySource }),
+        projectToolsets.run(cwd, "version", { prepareSnapshot: false, timeoutMs: 5_000, allowIncompatible: true, sourceIdentity: legacySource })
       ]);
       const running = status.payload?.running === true;
       return {
@@ -71,9 +71,9 @@ export function createProjectToolsetStatusReader({
       ? runtimeSourceIdentity((await getProduction().runtimeAuthority(options.logicalSessionId)).snapshot)
       : await projectToolsets.sourceIdentity(toolset.mainPath, toolset.runtimePath);
     const [status, health, version] = await Promise.all([
-      projectToolsets.run(cwd, "status", { timeoutMs: 5_000, sourceIdentity: desiredSource }),
-      projectToolsets.run(cwd, "health", { timeoutMs: 5_000, sourceIdentity: desiredSource }),
-      projectToolsets.run(cwd, "version", { timeoutMs: 5_000, sourceIdentity: desiredSource })
+      projectToolsets.run(cwd, "status", { prepareSnapshot: false, timeoutMs: 5_000, sourceIdentity: desiredSource }),
+      projectToolsets.run(cwd, "health", { prepareSnapshot: false, timeoutMs: 5_000, sourceIdentity: desiredSource }),
+      projectToolsets.run(cwd, "version", { prepareSnapshot: false, timeoutMs: 5_000, sourceIdentity: desiredSource })
     ]);
     const verify = { ok: false, action: "verify", payload: null, code: "DEPENDENCY_CONTRACT_UNRESOLVED", detail: "Verification requires an explicit authenticated RunIsolation action." };
     const running = status.payload?.running === true;

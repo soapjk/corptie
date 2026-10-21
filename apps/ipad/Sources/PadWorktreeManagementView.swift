@@ -1,6 +1,62 @@
 import SwiftUI
 import CorptieClientCore
 
+private struct PadWorktreeLocalStateTarget: Identifiable {
+    let repositoryID: String
+    let worktree: ClientManagedWorktree
+    var id: String { "\(repositoryID):\(worktree.worktreeId)" }
+}
+
+private struct PadWorktreeLocalStateSheet: View {
+    let repositoryID: String
+    let worktree: ClientManagedWorktree
+    let connection: PadConnection
+    @Environment(\.dismiss) private var dismiss
+    @State private var state: ClientWorkLocalState?
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text(worktree.path).font(.caption).textSelection(.enabled)
+                    Text(state?.titleKey ?? (error == nil ? "正在检查本地目录…" : "本地目录需要检查"))
+                    if let error { Text(error).font(.caption).foregroundStyle(.secondary) }
+                }
+                Section {
+                    Button("修复本地目录") {
+                        let expectedScope = "\(connection.serverID)|\(connection.address)"
+                        dismiss()
+                        Task {
+                            do {
+                                let api = ClientWorktreeAPI(transport: try await connection.transport())
+                                _ = try await api.localState(repositoryId: repositoryID, worktreeId: worktree.worktreeId, repair: true)
+                                PadOperationNotifications.shared.complete(.init(category: .environment, outcome: .succeeded,
+                                    name: "修复本地目录", repositoryID: repositoryID, worktreeID: worktree.worktreeId), expectedScope: expectedScope)
+                            } catch {
+                                PadOperationNotifications.shared.complete(.init(category: .environment, outcome: .unconfirmed,
+                                    name: "修复本地目录", summary: error.localizedDescription,
+                                    repositoryID: repositoryID, worktreeID: worktree.worktreeId), expectedScope: expectedScope)
+                            }
+                        }
+                    }
+                    .disabled(state?.isReady == true || (state == nil && error == nil))
+                    .accessibilityIdentifier("worktree.local-state.repair")
+                }
+            }
+            .navigationTitle("检查本地目录")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
+            .task {
+                do {
+                    let api = ClientWorktreeAPI(transport: try await connection.transport())
+                    state = try await api.localState(repositoryId: repositoryID, worktreeId: worktree.worktreeId)
+                } catch is CancellationError { }
+                catch { self.error = error.localizedDescription }
+            }
+        }
+    }
+}
+
 struct PadWorktreeManagementView: View {
     let repository: ClientControlItem
     let connection: PadConnection
@@ -8,6 +64,7 @@ struct PadWorktreeManagementView: View {
     let openSession: (String) -> Void
     @State private var operationDraft: PadWorktreeOperationDraft?
     @State private var pendingDelete: ClientManagedWorktree?
+    @State private var localStateWorktree: PadWorktreeLocalStateTarget?
     @State private var pendingSync: ClientManagedWorktree?
     @State private var pendingCleanup: [ClientManagedWorktree] = []
     @State private var showingPlan = false
@@ -53,6 +110,9 @@ struct PadWorktreeManagementView: View {
             PadWorktreeOperationSheet(draft: draft) { confirmed in
                 Task { await manager.execute(confirmed, connection: connection) }
             }
+        }
+        .sheet(item: $localStateWorktree) { target in
+            PadWorktreeLocalStateSheet(repositoryID: target.repositoryID, worktree: target.worktree, connection: connection)
         }
         .sheet(isPresented: $showingPlan, onDismiss: {
             planSheetDismissed = true
@@ -298,6 +358,13 @@ struct PadWorktreeManagementView: View {
 
     private func worktreeActions(_ worktree: ClientManagedWorktree) -> some View {
         card("操作", systemImage: "wrench.and.screwdriver") {
+            Button("检查本地目录", systemImage: "folder.badge.gearshape") {
+                if let repositoryID = manager.detail?.repository.id {
+                    localStateWorktree = PadWorktreeLocalStateTarget(repositoryID: repositoryID, worktree: worktree)
+                }
+            }
+                .disabled(worktree.availability != "available")
+                .accessibilityIdentifier("worktree.local-state.inspect")
             let busy = manager.busyWorktreeIDs.contains(worktree.worktreeId)
             if worktree.isMain {
                 Button("提交主 Worktree 修改", systemImage: "checkmark.circle") { prepare(worktree) }

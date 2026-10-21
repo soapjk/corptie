@@ -663,6 +663,8 @@ export class WorkSessionStartupCoordinator {
           operation.expected_task_version]
       );
       requireSingleRowChange(this.store, "Task version or lifecycle changed before ready commit.");
+      this.store.bindTaskDeliveryWorktree?.({ taskId:operation.task_id,repositoryId:allocation.repositoryId,
+        worktreeId:allocation.worktreeId,startupOperationId:operation.startup_operation_id,baseContext:allocation.baseContext ?? null });
       this.store.db.run("UPDATE agents SET current_session_id=?, updated_at=? WHERE agent_id=?", [
         session.id, now, operation.assignee_agent_id
       ]);
@@ -1102,6 +1104,7 @@ function normalizeAllocation(input, operation) {
     sourceCommitOid,
     sourceTreeOid: fullOid(input.sourceTreeOid, "sourceTreeOid"),
     baseRef: optionalText(input.baseRef),
+    ...(input.baseContext ? { baseContext:input.baseContext } : {}),
     repositoryInventoryVersion: requiredText(input.repositoryInventoryVersion ?? input.inventoryVersion, "repositoryInventoryVersion"),
     workspaceResourceVersion: positiveInteger(input.workspaceResourceVersion ?? 1, "workspaceResourceVersion"),
     createdByStartupOperationId: requiredText(input.createdByStartupOperationId ?? operation.startup_operation_id, "createdByStartupOperationId"),

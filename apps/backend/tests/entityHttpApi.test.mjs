@@ -487,7 +487,7 @@ test("Task restore endpoint delegates the atomic execution recovery flow", async
       title: "Recover_me",
       lifecycleState: "in_progress"
     });
-    const restoreReceipt = services.taskCompletionService.issueMacOSIntent(
+    const restoreReceipt = await services.taskCompletionService.issueMacOSIntent(
       task.id,
       {
         requestId: "restore-setup-intent", interactionId: "restore-setup-click",
@@ -496,7 +496,7 @@ test("Task restore endpoint delegates the atomic execution recovery flow", async
       },
       { type: "user", id: "user:local-macos" }
     );
-    services.taskCompletionService.completeFromMacOS(task.id, {
+    await services.taskCompletionService.completeFromMacOS(task.id, {
       intentToken: restoreReceipt.intentToken,
       requestId: "restore-setup-intent",
       idempotencyKey: "restore-setup-completion"

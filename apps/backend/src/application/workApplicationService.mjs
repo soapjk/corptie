@@ -13,6 +13,7 @@ import {
   parseAcceptanceAssessment,
   TaskAcceptanceError
 } from "./taskAcceptance.mjs";
+import { TaskIntegrationAcceptanceService } from "./taskIntegrationAcceptanceService.mjs";
 
 export class WorkNotFoundError extends Error {
   constructor(workId) {
@@ -60,6 +61,7 @@ export class DependencyCycleError extends Error {
 export class WorkApplicationService {
   constructor({ store, onEntityChanged = null }) {
     this.store = store;
+    this.integrationAcceptance = new TaskIntegrationAcceptanceService({store});
     this.onEntityChanged = onEntityChanged;
   }
 
@@ -133,7 +135,7 @@ export class WorkApplicationService {
     }
     return this.emit(
       "TaskChanged",
-      this.store.createTask(normalized, options.creationOrigin ?? {}),
+      this.store.createTask(normalized, options.creationOrigin ?? {}, { expectedParentResourceVersion: options.expectedParentResourceVersion }),
       "created"
     );
   }
@@ -217,7 +219,7 @@ export class WorkApplicationService {
     );
   }
 
-  recordAcceptanceAssessment(id, input = {}) {
+  async recordAcceptanceAssessment(id, input = {}) {
     const task = this.getTask(id);
     const sourceSessionId = String(input.sourceSessionId ?? "").trim();
     const session = sourceSessionId ? this.store.getSession(sourceSessionId) : null;
@@ -229,7 +231,8 @@ export class WorkApplicationService {
       );
     }
 
-    const assessment = buildAcceptanceAssessment(task, input);
+    const snapshot = await this.integrationAcceptance.validateSnapshotForAssessment(task, input);
+    const assessment = this.integrationAcceptance.bindAssessment(snapshot, buildAcceptanceAssessment(task, input));
     const patch = {
       acceptanceAssessment: assessment,
       lifecycleState: task.lifecycle_state
@@ -242,7 +245,10 @@ export class WorkApplicationService {
   }
 
   deleteTask(id) {
-    this.getTask(id);
+    const task = this.getTask(id);
+    if (task.parent_task_id || this.store.hasTaskChildren?.(id)) {
+      throw Object.assign(new Error("Task delivery has parent/child dependencies."), {code:"TASK_HIERARCHY_DEPENDENCY",statusCode:409});
+    }
     const deleted = this.store.deleteTask(id);
     this.emit("TaskChanged", { id }, "deleted");
     return deleted;
@@ -348,7 +354,8 @@ function taskCreationMatches(existing, input) {
     priority: input.priority ?? "medium",
     verificationCriteria: input.verificationCriteria ?? "",
     lifecycleState: input.lifecycleState ?? "todo",
-    mainAgentId: input.mainAgentId ?? null
+    mainAgentId: input.mainAgentId ?? null,
+    parentTaskId: input.parentTaskId ?? null
   };
   const actual = {
     workId: existing.work_id,
@@ -358,7 +365,8 @@ function taskCreationMatches(existing, input) {
     priority: existing.priority ?? "medium",
     verificationCriteria: existing.verification_criteria ?? "",
     lifecycleState: existing.lifecycle_state ?? "todo",
-    mainAgentId: existing.main_agent_id ?? null
+    mainAgentId: existing.main_agent_id ?? null,
+    parentTaskId: existing.parent_task_id ?? null
   };
   return JSON.stringify(actual) === JSON.stringify(expected);
 }

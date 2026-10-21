@@ -2056,8 +2056,8 @@ async function projectWorktreeStatus(sessionId, options) {
   return projectWorktreeStatusReader.projectWorktreeStatus(sessionId, options);
 }
 
-async function ensureTaskWorkspace({ task, session = null }) {
-  return taskWorkspaceService.ensure({ task, session });
+async function ensureTaskWorkspace({ task, session = null, baseContext = null }) {
+  return taskWorkspaceService.ensure({ task, session, baseContext });
 }
 
 

@@ -1133,6 +1133,43 @@ test("ensures one deterministic Task Worktree and reuses it on retry", async () 
   }
 });
 
+test("child Worktree uses its frozen parent commit, never current main; legacy writes are blocked", async () => {
+  const f=await createFixture("frozen-parent");
+  const store=f.store;
+  const manager=new GitWorkspaceManager({store,transitions:{switchWorkspace:async()=>assert.fail("must not switch")}});
+  try {
+    const agent=store.createAgent({name:"Worker",role:"independentContributor"});
+    const work=store.createWork({name:"Parent_tree",workspaceId:store.getGitRepository(f.repositoryId).workspaceId,contributorAgentIds:[agent.agentId]});
+    const parent=store.createTask({id:"task:parent",workId:work.id,title:"Parent",mainAgentId:agent.agentId});
+    const workspace=await manager.ensureTaskWorktreeForProject({repositoryId:f.repositoryId,taskId:parent.id,workingDirectory:f.repository});
+    await writeFile(join(workspace.path,"parent.txt"),"parent\n");
+    await git(["add","parent.txt"],workspace.path); await git(["commit","-m","parent feature"],workspace.path);
+    const oid=(await gitOutput(["rev-parse","HEAD"],workspace.path)).trim();
+    const tree=(await gitOutput(["rev-parse","HEAD^{tree}"],workspace.path)).trim();
+    const now=new Date().toISOString();
+    // Test seed for the output of the separately tested ready-receipt binding.
+    store.db.run(`INSERT INTO task_delivery_worktrees (task_id,repository_id,worktree_id,startup_operation_id,created_at,updated_at) VALUES (?,?,?,'startup:parent',?,?)`,[parent.id,f.repositoryId,workspace.worktreeId,now,now]);
+    const child=store.createTask({id:"task:child",workId:work.id,title:"Child",parentTaskId:parent.id},{},{expectedParentResourceVersion:parent.resource_version});
+    const base={version:1,kind:"parent",rootTaskId:parent.id,parentTaskId:parent.id,parentWorktreeId:workspace.worktreeId,parentBindingRevision:1,hierarchyRevision:2,baseCommitOid:oid,baseTreeOid:tree};
+    store.db.run(`INSERT INTO work_session_startup_operations
+      (startup_operation_id,work_id,task_id,assignee_agent_id,expected_task_version,provider_id,repository_id,source_session_id,idempotency_key,request_fingerprint,state,correlation_id,allocated_at,updated_at,worktree_base_context_json)
+      VALUES ('startup:child',?,?,?,1,'test',?,'session:test','child','child','allocated','test',?,?,?)`,[work.id,child.id,agent.agentId,f.repositoryId,now,now,JSON.stringify(base)]);
+    await git(["commit","--allow-empty","-m","main advanced"],f.repository);
+    await git(["commit","--allow-empty","-m","parent advanced"],workspace.path);
+    const mainHead=(await gitOutput(["rev-parse","HEAD"],f.repository)).trim();
+    const created=await manager.ensureTaskWorktreeForProject({repositoryId:f.repositoryId,taskId:child.id,workingDirectory:f.repository,baseContext:base});
+    assert.equal(created.headOid,oid);
+    assert.equal(await readFile(join(created.path,"parent.txt"),"utf8"),"parent\n");
+    assert.notEqual(created.path,workspace.path);
+    assert.equal((await gitOutput(["rev-parse","HEAD"],f.repository)).trim(),mainHead);
+    await assert.rejects(manager.ensureTaskWorktreeForProject({repositoryId:f.repositoryId,taskId:child.id,workingDirectory:f.repository}),{code:"PARENT_WORKTREE_REQUIRED"});
+    await assert.rejects(manager.mergeWorktreeIntoMainForProject({repositoryId:f.repositoryId,sourceWorktreeId:workspace.worktreeId,workingDirectory:f.repository}),{code:"TASK_HIERARCHY_SCOPE_REQUIRED"});
+    await assert.rejects(manager.synchronizeWorktreeWithMainForProject({repositoryId:f.repositoryId,sourceWorktreeId:workspace.worktreeId,workingDirectory:f.repository}),{code:"TASK_HIERARCHY_SCOPE_REQUIRED"});
+    await assert.rejects(manager.removeWorktreeForProject({repositoryId:f.repositoryId,sourceWorktreeId:workspace.worktreeId,workingDirectory:f.repository}),{code:"TASK_HIERARCHY_SCOPE_REQUIRED"});
+    assert.equal((await gitOutput(["rev-parse","HEAD"],f.repository)).trim(),mainHead);
+  } finally { await f.close(); }
+});
+
 test("uses the shortest available UUID prefix for Task Worktrees and preserves ownership on retry", async () => {
   const fixture = await createFixture("task-worktree-short-uuid");
   const manager = new GitWorkspaceManager({

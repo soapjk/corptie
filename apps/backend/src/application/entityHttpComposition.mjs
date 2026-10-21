@@ -17,6 +17,7 @@ export function createEntityHttpRoutes({
     url,
     workService,
     createWork: (input, options) => workInitializationService.createForClient(input, options),
+    workLocalState: (workId, options) => workInitializationService.localState(workId, options),
     hubService,
     router: collaborationRouter,
     memoryExtractor,

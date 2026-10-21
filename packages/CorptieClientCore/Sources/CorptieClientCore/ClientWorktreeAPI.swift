@@ -310,6 +310,12 @@ public struct ClientWorktreeAPI: Sendable {
                       query: forceFresh ? [URLQueryItem(name: "forceFresh", value: "true")] : [])
     }
 
+    public func localState(repositoryId: String, worktreeId: String, repair: Bool = false) async throws -> ClientWorkLocalState {
+        let path = ["client", "v1", "worktrees", "repositories", repositoryId, "worktrees", worktreeId, "local-state"]
+        if repair { return try await post(path, [String: String]()) }
+        return try await get(path)
+    }
+
     public func pushStatus(repositoryId: String, worktreeId: String) async throws -> ClientGitHubPushStatus {
         let envelope: PushStatusEnvelope = try await get(["client", "v1", "worktrees", "repositories", repositoryId,
                                                           "worktrees", worktreeId, "github-push-status"])

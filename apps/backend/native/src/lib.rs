@@ -70,6 +70,91 @@ struct NativeSafeTreeResult {
     error_message: [c_char; 256],
 }
 
+#[repr(C)]
+struct NativeLocalStateResult {
+    root_device: u64, root_inode: u64, directory_device: u64, directory_inode: u64,
+    ignore_device: u64, ignore_inode: u64,
+    exists: i32, ignore_exists: i32, created_directory: i32, created_ignore: i32, retained: i32,
+    ignore_text: [c_char; 65537], error_code: [c_char; 64], error_message: [c_char; 256],
+}
+
+impl Default for NativeLocalStateResult {
+    fn default() -> Self { unsafe { std::mem::zeroed() } }
+}
+
+#[napi(object)]
+pub struct LocalStateDirectory {
+    pub root_device: String, pub root_inode: String, pub directory_device: String, pub directory_inode: String,
+    pub ignore_device: String, pub ignore_inode: String,
+    pub exists: bool, pub ignore_exists: bool, pub created_directory: bool, pub created_ignore: bool, pub retained: bool,
+    pub ignore_text: String, pub error_code: String,
+}
+
+fn local_state_result(value: &NativeLocalStateResult) -> LocalStateDirectory {
+    LocalStateDirectory {
+        root_device:value.root_device.to_string(), root_inode:value.root_inode.to_string(),
+        directory_device:value.directory_device.to_string(), directory_inode:value.directory_inode.to_string(),
+        ignore_device:value.ignore_device.to_string(), ignore_inode:value.ignore_inode.to_string(),
+        exists:value.exists!=0, ignore_exists:value.ignore_exists!=0, created_directory:value.created_directory!=0,
+        created_ignore:value.created_ignore!=0, retained:value.retained!=0,
+        ignore_text:unsafe { CStr::from_ptr(value.ignore_text.as_ptr()) }.to_string_lossy().into_owned(),
+        error_code:unsafe { CStr::from_ptr(value.error_code.as_ptr()) }.to_string_lossy().into_owned(),
+    }
+}
+
+fn parse_u64(value: String) -> Result<u64> { parse_identity(&value, "local-state identity") }
+
+fn local_state_native(receipt:LocalStateDirectory) -> Result<NativeLocalStateResult> {
+    let mut value=NativeLocalStateResult::default();
+    value.root_device=parse_u64(receipt.root_device)?; value.root_inode=parse_u64(receipt.root_inode)?;
+    value.directory_device=parse_u64(receipt.directory_device)?; value.directory_inode=parse_u64(receipt.directory_inode)?;
+    value.ignore_device=parse_u64(receipt.ignore_device)?; value.ignore_inode=parse_u64(receipt.ignore_inode)?;
+    value.created_directory=if receipt.created_directory {1} else {0}; value.created_ignore=if receipt.created_ignore {1} else {0};
+    let text=receipt.ignore_text.as_bytes();
+    if text.len()>65536 || text.contains(&0) { return Err(Error::new(Status::InvalidArg,"Invalid ignore rules")); }
+    for (index,byte) in text.iter().enumerate() { value.ignore_text[index]=*byte as c_char; }
+    Ok(value)
+}
+
+#[napi]
+pub fn local_state_directory(root_path:String, create:bool, expected_device:Option<String>, expected_inode:Option<String>,
+    expected_directory_device:Option<String>, expected_directory_inode:Option<String>) -> Result<LocalStateDirectory> {
+    let root=c_string(root_path)?;
+    let mut value=NativeLocalStateResult::default();
+    unsafe { corptie_local_state(root.as_ptr(), if create {1} else {0},
+        parse_u64(expected_device.unwrap_or("0".into()))?, parse_u64(expected_inode.unwrap_or("0".into()))?,
+        parse_u64(expected_directory_device.unwrap_or("0".into()))?, parse_u64(expected_directory_inode.unwrap_or("0".into()))?, &mut value); }
+    Ok(local_state_result(&value))
+}
+
+#[napi]
+pub fn rollback_local_state_directory(root_path:String, receipt:LocalStateDirectory) -> Result<LocalStateDirectory> {
+    let root=c_string(root_path)?;
+    let mut value=local_state_native(receipt)?;
+    unsafe { corptie_local_state_rollback(root.as_ptr(), &mut value); }
+    Ok(local_state_result(&value))
+}
+
+#[napi]
+pub fn write_local_state_file(root_path:String, relative_path:String, content:napi::bindgen_prelude::Buffer,
+    receipt:LocalStateDirectory) -> Result<SafeTreeInspection> {
+    let root=c_string(root_path)?; let relative=c_string(relative_path)?;
+    let mut local=local_state_native(receipt)?;
+    let mut out=NativeSafeTreeResult::default();
+    let status=unsafe { corptie_write_local_file(root.as_ptr(),relative.as_ptr(),content.as_ptr(),content.len(),&mut local,&mut out) };
+    convert_result(status,out,"bound openat(O_NOFOLLOW)+fsync+linkat(no-replace)")
+}
+
+#[napi]
+pub fn open_local_state_file(root_path:String, relative_path:String, receipt:LocalStateDirectory) -> Result<i32> {
+    let root=c_string(root_path)?; let relative=c_string(relative_path)?;
+    let mut local=local_state_native(receipt)?;
+    let mut out=NativeSafeTreeResult::default();
+    let fd=unsafe { corptie_open_local_file(root.as_ptr(),relative.as_ptr(),&mut local,&mut out) };
+    if fd < 0 { convert_result(-1,out,"bound openat(O_NOFOLLOW)")?; }
+    Ok(fd)
+}
+
 impl Default for NativeSafeTreeResult {
     fn default() -> Self {
         Self {
@@ -80,6 +165,13 @@ impl Default for NativeSafeTreeResult {
 }
 
 unsafe extern "C" {
+    fn corptie_open_local_file(root:*const c_char, relative:*const c_char,
+        receipt:*mut NativeLocalStateResult, out:*mut NativeSafeTreeResult) -> i32;
+    fn corptie_local_state(root:*const c_char, create:i32, expected_device:u64, expected_inode:u64,
+        expected_directory_device:u64, expected_directory_inode:u64, out:*mut NativeLocalStateResult) -> i32;
+    fn corptie_local_state_rollback(root:*const c_char, receipt:*mut NativeLocalStateResult) -> i32;
+    fn corptie_write_local_file(root:*const c_char, relative:*const c_char, bytes:*const u8, length:usize,
+        receipt:*mut NativeLocalStateResult, out:*mut NativeSafeTreeResult) -> i32;
     fn corptie_mcp_keychain_put(service: *const c_char, account: *const c_char, bytes: *const u8, length: usize) -> i32;
     fn corptie_mcp_keychain_get(service: *const c_char, account: *const c_char, bytes: *mut *mut u8, length: *mut usize) -> i32;
     fn corptie_mcp_keychain_delete(service: *const c_char, account: *const c_char) -> i32;

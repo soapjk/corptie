@@ -1,5 +1,57 @@
 import AppKit
 import SwiftUI
+import CorptieClientCore
+
+private struct WorktreeLocalStateTarget: Identifiable {
+    let repositoryID: String
+    let worktree: ManagedWorktree
+    var id: String { "\(repositoryID):\(worktree.worktreeId)" }
+}
+
+private struct WorktreeLocalStateSheet: View {
+    let repositoryID: String
+    let worktree: ManagedWorktree
+    @ObservedObject var client: WorktreeManagementClient
+    @Environment(\.dismiss) private var dismiss
+    @State private var state: ClientWorkLocalState?
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(L10n("检查本地目录")).font(.headline)
+            Text(worktree.path).font(.caption).textSelection(.enabled)
+            Text(L10n(state?.titleKey ?? (error == nil ? "正在检查本地目录…" : "本地目录需要检查")))
+            if let error { Text(error).font(.caption).foregroundStyle(.secondary) }
+            HStack {
+                Button(L10n("关闭")) { dismiss() }
+                Spacer()
+                Button(L10n("修复本地目录")) {
+                    let name = L10n("修复本地目录")
+                    if BackgroundTaskCenter.shared.start(id: "worktree-local-state:\(repositoryID):\(worktree.worktreeId)", title: name, operation: {
+                        do {
+                            _ = try await client.localState(repositoryId: repositoryID, worktreeId: worktree.worktreeId, repair: true)
+                            OperationNotificationManager.shared.complete(.init(category: .environment, outcome: .succeeded, name: name,
+                                repositoryID: repositoryID, worktreeID: worktree.worktreeId))
+                            return .success(L10n("本地目录已就绪"))
+                        } catch {
+                            OperationNotificationManager.shared.complete(.init(category: .environment, outcome: .errorOutcome(error), name: name,
+                                repositoryID: repositoryID, worktreeID: worktree.worktreeId))
+                            return .failure(error.localizedDescription)
+                        }
+                    }) { dismiss() }
+                }
+                .disabled(state?.isReady == true || (state == nil && error == nil))
+                .accessibilityIdentifier("worktree.local-state.repair")
+            }
+        }
+        .padding(20).frame(width: 420)
+        .task {
+            do { state = try await client.localState(repositoryId: repositoryID, worktreeId: worktree.worktreeId) }
+            catch is CancellationError { }
+            catch { self.error = error.localizedDescription }
+        }
+    }
+}
 
 enum WorktreeAutomaticLoadPolicy {
     static func shouldLoad(
@@ -238,6 +290,7 @@ struct WorktreeManagementView: View {
     @State private var showingPlan = false
     @State private var showingSynchronizationConfirmation = false
     @State private var pendingOperation: ManagedWorktree?
+    @State private var localStateWorktree: WorktreeLocalStateTarget?
     @State private var pendingDeletion: ManagedWorktree?
     @State private var deletionBlocker: WorktreeDeletionBlockerPresentation?
     @State private var pendingCleanup: WorktreeCleanupRequest?
@@ -322,6 +375,9 @@ struct WorktreeManagementView: View {
                 client: client,
                 onClose: { batchOperationDraft = nil }
             )
+        }
+        .sheet(item: $localStateWorktree) { target in
+            WorktreeLocalStateSheet(repositoryID: target.repositoryID, worktree: target.worktree, client: client)
         }
         .sheet(item: $pendingOperation) { worktree in
             IndividualWorktreeOperationView(
@@ -700,6 +756,13 @@ struct WorktreeManagementView: View {
                         worktreeStateControl(worktree)
                     }
                     detailSection(L10n("Git Status")) {
+                        Button(L10n("检查本地目录")) {
+                            if let repositoryID = client.detail?.repository.id {
+                                localStateWorktree = WorktreeLocalStateTarget(repositoryID: repositoryID, worktree: worktree)
+                            }
+                        }
+                            .disabled(worktree.availability != "available")
+                            .accessibilityIdentifier("worktree.local-state.inspect")
                         detailPair("HEAD", worktree.headOid ?? "—", monospaced: true)
                         detailPair(L10n("Availability"), localizedIntegrationStatus(worktree.availability))
                         detailPair(L10n("Branch relation"), "↑ \(worktree.aheadOfMain ?? 0)  ↓ \(worktree.behindMain ?? 0)")

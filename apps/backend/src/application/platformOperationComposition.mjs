@@ -67,7 +67,8 @@ export function createPlatformOperationComposition({
       }
       return launchAgentSession({ agent, providerId, title, prompt });
     },
-    createTask: ({ taskInput, providerId, sourceSessionId, creationContextMessageId, idempotencyKey }) => createTaskAndSession({
+    createTask: ({ taskInput, providerId, sourceSessionId, creationContextMessageId, idempotencyKey, expectedParentResourceVersion }) => createTaskAndSession({
+      expectedParentResourceVersion,
       workService,
       startWorkSession,
       taskInput,

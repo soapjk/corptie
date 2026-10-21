@@ -11,11 +11,11 @@ const WORK_UPDATE_FIELDS = WORK_CREATE_FIELDS.filter(
 
 const TASK_CREATE_FIELDS = [
   "id", "workId", "title", "description", "acceptanceCriteria",
-  "verificationCriteria", "priority", "lifecycleState", "mainAgentId", "autoTitleEnabled"
+  "verificationCriteria", "priority", "lifecycleState", "mainAgentId", "autoTitleEnabled", "parentTaskId"
 ];
 
 const TASK_UPDATE_FIELDS = TASK_CREATE_FIELDS.filter(
-  (field) => field !== "id" && field !== "workId"
+  (field) => field !== "id" && field !== "workId" && field !== "parentTaskId"
 );
 
 export const ENTITY_FIELD_ALLOWLISTS = Object.freeze({
@@ -89,6 +89,9 @@ export function validateWorkInput(input, operation = "create") {
 }
 
 export function validateTaskInput(input, operation = "create") {
+  if (operation === "update" && input && has(input, "parentTaskId")) {
+    throw new EntityValidationError("TASK_REPARENT_UNSUPPORTED", "parentTaskId", "immutable parent", input.parentTaskId);
+  }
   const allowed = operation === "update"
     ? ENTITY_FIELD_ALLOWLISTS.taskUpdate
     : ENTITY_FIELD_ALLOWLISTS.taskCreate;
@@ -98,6 +101,12 @@ export function validateTaskInput(input, operation = "create") {
   const normalized = { ...input };
   if (has(input, "id")) normalized.id = string(input.id, "id", { nonEmpty: true });
   if (has(input, "workId")) normalized.workId = string(input.workId, "workId", { nonEmpty: true, trim: true });
+  if (has(input, "parentTaskId")) {
+    normalized.parentTaskId = optionalString(input.parentTaskId, "parentTaskId", { trim: true });
+    if (normalized.parentTaskId && !/^task:[^\s]+$/u.test(normalized.parentTaskId)) {
+      throw new EntityValidationError("TASK_PARENT_INVALID", "parentTaskId", "Task ID", input.parentTaskId);
+    }
+  }
   if (has(input, "title")) normalized.title = validateEntityName(input.title, "title", "Task");
   if (has(input, "description")) normalized.description = string(input.description, "description");
   if (has(input, "acceptanceCriteria")) normalized.acceptanceCriteria = string(input.acceptanceCriteria, "acceptanceCriteria");

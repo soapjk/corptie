@@ -8,6 +8,7 @@ import { ProjectCodeReceiptRepository } from "./repositories/projectCodeReceiptR
 import { StateSyncRepository } from "./repositories/stateSyncRepository.mjs";
 import { AgentRepository } from "./repositories/agentRepository.mjs";
 import { TaskRepository } from "./repositories/taskRepository.mjs";
+import { TaskHierarchyRepository } from "./repositories/taskHierarchyRepository.mjs";
 import { TaskCompletionRepository } from "./repositories/taskCompletionRepository.mjs";
 import { TaskDeletionRepository } from "./repositories/taskDeletionRepository.mjs";
 import { WorkRepository } from "./repositories/workRepository.mjs";
@@ -111,7 +112,13 @@ export function createStoreRepositories({ getDatabase, getSshWorkspaces, environ
       listRegistrySkillIdsForAgent: (...args) => ports.listRegistrySkillIdsForAgent(...args),
       recordSkillRuntimeEvent: (...args) => ports.recordSkillRuntimeEvent(...args),
     });
+    const taskHierarchyRepository = new TaskHierarchyRepository({
+      getDatabase, selectOne: (...args) => ports.selectOne(...args), selectAll: (...args) => ports.selectAll(...args),
+      getTask: (...args) => ports.getTask(...args), getWork: (...args) => ports.getWork(...args),
+      getTaskWorkspaceContext: (...args) => taskRepository.getTaskWorkspaceContext(...args), scheduleSave: (...args) => ports.scheduleSave(...args)
+    });
     const taskRepository = new TaskRepository({
+      hierarchy: taskHierarchyRepository,
       getDatabase: () => getDatabase(),
       selectOne: (...args) => ports.selectOne(...args),
       selectAll: (...args) => ports.selectAll(...args),
@@ -330,6 +337,7 @@ export function createStoreRepositories({ getDatabase, getSshWorkspaces, environ
     stateSyncRepository,
     agentRepository,
     taskRepository,
+    taskHierarchyRepository,
     taskCompletionRepository,
     taskDeletionRepository,
     workRepository,

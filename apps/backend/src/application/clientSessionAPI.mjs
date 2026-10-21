@@ -13,6 +13,7 @@ import { createClientTask, clientTaskCreationCatalog } from "./clientTaskCreatio
 import { clientDiscussionOptions, openClientDiscussion } from "./clientWorkDiscussion.mjs";
 import { clientChatCreationOptions, createClientChat } from "./clientChatCreation.mjs";
 import { clientTaskManagement, clientTaskDeletionPlan, clientWorkManagement, clientTaskCommand, clientWorkCommand, clientWorkCreationOptions, createClientWork } from "./clientEntityCommands.mjs";
+import { clientWorkLocalState } from "./clientEntityCommands.mjs";
 import { publicToolExecution } from "../utils/toolExecutionProjection.mjs";
 import { publicChangeSet } from "../utils/changeSetProjection.mjs";
 import { publicUserInput, validateInteractionAnswers, withSubmittedUserInputAnswers } from "./interactionInput.mjs";
@@ -217,6 +218,7 @@ export class ClientSessionAPI {
   }
   taskDeletionPlan(identity, taskId) { return clientTaskDeletionPlan(this, identity, taskId); }
   workManagement(identity, workId) { return clientWorkManagement(this, identity, workId); }
+  workLocalState(identity, workId) { return clientWorkLocalState(this, identity, workId); }
   chatCreationOptions() { return clientChatCreationOptions(this); }
   createChat(identity, input, revalidateIdentity = null) {
     return createClientChat(this, identity, input, revalidateIdentity);

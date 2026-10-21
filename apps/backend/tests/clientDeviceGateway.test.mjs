@@ -200,6 +200,8 @@ test("real TLS route boundary and authenticated local approval", async () => {
     list: async kind => ({ schemaVersion: 1, items: [{ id: `${kind}:one` }] }),
     repository: async id => ({ schemaVersion: 1, repository: { id } })
   }, worktreeAPI: {
+    localState: async (repositoryId, worktreeId, input) => ({ schemaVersion: 1, repositoryId, worktreeId,
+      state: input === null ? "missing" : "ready", scope: "worktreeLocal" }),
     repository: async (id, options) => ({ repository: { id }, project: { worktrees: [] }, options }),
     gitHubPushStatus: async (repositoryId, worktreeId) => ({ repositoryId, worktreeId, gitHubPush: { available: true } }),
     developmentService: async repositoryId => ({ projectId: repositoryId, service: { state: "stopped" } }),
@@ -440,6 +442,13 @@ test("real TLS route boundary and authenticated local approval", async () => {
     assert.equal((await call("/client/v1/capabilities", { token: creds.accessToken })).body.controlRead, true);
     assert.equal((await call("/client/v1/capabilities", { token: creds.accessToken })).body.controlWrite, true);
     assert.equal((await call("/client/v1/worktrees/repositories/repo%3Aone", { token: creds.accessToken })).status, 200);
+    const localPath = "/client/v1/worktrees/repositories/repo%3Aone/worktrees/tree%3Aone/local-state";
+    assert.equal((await call(localPath)).status, 401);
+    assert.equal((await call(localPath, { token: creds.accessToken })).body.state, "missing");
+    const repairedLocal = await call(localPath, { token: creds.accessToken, method: "POST", value: {} });
+    assert.equal(repairedLocal.body.state, "ready");
+    assert.equal(repairedLocal.body.worktreeId, "tree:one");
+    assert.equal((await call(localPath, { token: creds.accessToken, method: "DELETE" })).status, 404);
     const candidatePath = "/client/v1/worktrees/repositories/repo%3Aone/integration-candidates";
     const candidate = await call(candidatePath, { token: creds.accessToken, method: "POST", value: {} });
     assert.equal(candidate.body.candidate.id, "candidate:one");

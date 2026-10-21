@@ -121,11 +121,11 @@ export function startClientDeviceGateway({
             throw Object.assign(new Error("Provider does not support Work Sessions"), { code: "PROVIDER_CAPABILITY_UNAVAILABLE", status: 409 });
           }
         },
-        create: (id, { taskInput, providerId, model, reasoningLevel, operationID }) => {
+        create: (id, { taskInput, providerId, model, reasoningLevel, expectedParentResourceVersion, operationID }) => {
           const sourceSessionId = requireSessionReference(id).logicalSessionId;
           return createTaskAndSession({ workService,
             startWorkSession: input => workSessionStartApplicationService.start(input),
-            taskInput, sourceSessionId, providerId, model, reasoningLevel, idempotencyKey: operationID,
+            taskInput, sourceSessionId, providerId, model, reasoningLevel, expectedParentResourceVersion, idempotencyKey: operationID,
             creationOrigin: { originType: "session", creatorSessionId: sourceSessionId, operationId: operationID } });
         }
       },
@@ -174,6 +174,8 @@ export function startClientDeviceGateway({
       // Same services the desktop entity routes call; the device layer adds permission, DTO and receipt boundaries.
       entityCommands: {
         createWork: input => workInitializationService.createForClient(input),
+        inspectWorkLocalState: workId => workInitializationService.localState(workId),
+        repairWorkLocalState: workId => workInitializationService.localState(workId, { repair: true }),
         updateTask: (taskId, patch) => workService.updateTask(taskId, patch),
         setTaskArchived: async (taskId, archived) => {
           const task = await setTaskArchivedForEntityRoutes(taskId, archived);

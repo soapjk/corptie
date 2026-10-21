@@ -1,12 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { lstat, mkdir, realpath, rm, stat } from "node:fs/promises";
+import { lstat, mkdir, realpath, rmdir, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import { validateEntityName, validateWorkInput } from "../domain/workTaskValidation.mjs";
 import { createGitWorkspaceSnapshot, inspectGitWorkspace } from "../utils/gitWorktreeInventory.mjs";
 import { ensureArtifactCommitHook } from "../runtime/artifactCommitHook.mjs";
 import { EntityCreationConflictError, workCreationMatches } from "./workApplicationService.mjs";
+import { ensureProjectLocalState, inspectProjectLocalState, verifyProjectLocalState, rollbackProjectLocalState } from "../runtime/projectLocalStateDirectory.mjs";
 
 const execFileAsync = promisify(execFile);
 const fail = (code, message) => Object.assign(new Error(message), { code, statusCode: 409 });
@@ -80,7 +81,31 @@ export class WorkInitializationService {
     const repository = this.store.getGitRepositoryForWorkspace(work.workspaceId);
     if ((repository?.id ?? null) !== (result.repository?.id ?? null)) throw fail("WORK_CREATION_RECEIPT_INCOMPLETE", "Stored repository binding changed.");
     if (repository && (await inspectGitWorkspace(result.directory)).repositoryId !== repository.id) throw fail("WORK_REPOSITORY_CHANGED", "Actual Git repository no longer matches its binding.");
+    const localState = this.store.getRuntimeState(`work-local-state:${work.id}`);
+    // Legacy successful receipts are not an implicit filesystem migration.
+    if (localState) await verifyProjectLocalState(localState);
     return result;
+  }
+
+  async localState(workId, { repair = false } = {}) {
+    const work = this.store.getWork(workId);
+    const workspace = work && this.store.getWorkspace(work.workspaceId);
+    if (!workspace?.canonicalRootPath || workspace.status !== "ready" || workspace.location?.transport === "ssh") {
+      throw fail("WORK_DIRECTORY_REQUIRED", "Work requires an available local Workspace.");
+    }
+    const root = workspace.canonicalRootPath;
+    const repository = this.store.getGitRepositoryForWorkspace(work.workspaceId);
+    if (repository && (await inspectGitWorkspace(root)).repositoryId !== repository.id) throw fail("WORK_REPOSITORY_CHANGED", "Repository binding changed.");
+    if (!repair) return inspectProjectLocalState(root, { scope: "projectShared" });
+    const prepared = await ensureProjectLocalState(root, { scope: "projectShared" });
+    if (this.store.getWork(workId)?.workspaceId !== work.workspaceId
+        || this.store.getWorkspace(work.workspaceId)?.canonicalRootPath !== root) {
+      rollbackProjectLocalState(prepared);
+      throw fail("WORK_DIRECTORY_CHANGED", "Work binding changed during repair.");
+    }
+    this.store.setRuntimeState(`work-local-state:${workId}`, prepared);
+    this.store.scheduleSave();
+    return { state: prepared.state, scope: prepared.scope, gitStatus: prepared.gitStatus };
   }
 
   async initialize(input, commit) {
@@ -110,14 +135,14 @@ export class WorkInitializationService {
     const registeredWorkspace = this.store.listWorkspaces().find(ws => ws.canonicalRootPath === root);
     if (registeredWorkspace && (directory.mode !== "bind" || this.store.selectOne("SELECT id FROM works WHERE workspace_id=?", [registeredWorkspace.workspaceId]))) throw fail("WORKSPACE_ALREADY_BOUND", "Directory's Workspace is already bound, or create would adopt existing resources.");
     let ownedDirectory = null, workspaceId = registeredWorkspace?.workspaceId ?? null, repositoryId = null, work = null;
-    let workspaceOwned = false, repositoryOwned = false;
+    let workspaceOwned = false, repositoryOwned = false, localState = null;
     const workId = input.creationId ?? `work:${randomUUID()}`;
     const gitRun = args => this.run("git", args, { encoding: "utf8", maxBuffer: 4 * 1024 * 1024,
       timeout: 120_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
     try {
       if (directory.mode === "create") {
         await mkdir(root); // Exclusive leaf creation; never adopts an existing directory.
-        ownedDirectory = await lstat(root);
+        ownedDirectory = await lstat(root, { bigint: true });
       } else if (!(await stat(root)).isDirectory()) throw fail("INVALID_DIRECTORY", "Binding requires an existing directory.");
       if (git.mode === "init") {
         await gitRun(["-C", root, "init"]);
@@ -164,6 +189,7 @@ export class WorkInitializationService {
             ownership: ownedDirectory ? "corptieManaged" : "userManaged", status: "ready" });
         }
       }
+      localState = await ensureProjectLocalState(root, { scope: "projectShared" });
       // Keep product notifications until the complete resource set is verified.
       work = this.store.runInTransaction(() => this.store.createWork({ ...normalized, id: workId, workspaceId }));
       const opened = await this.discussionService.open({ workId, agentId, providerId });
@@ -177,6 +203,7 @@ export class WorkInitializationService {
       const result = { ...work, workspace: this.store.getWorkspace(workspaceId), directory: root,
         repository: repositoryId ? this.store.getGitRepository(repositoryId) : null,
         workChat: { sessionId: session.id, logicalSessionId: logical.logicalSessionId, agentId, providerId } };
+      this.store.setRuntimeState(`work-local-state:${workId}`, localState);
       await this.verify(result);
       const committed = await commit(result);
       // Notification failure cannot roll back an already audited success.
@@ -201,8 +228,13 @@ export class WorkInitializationService {
       }
       if (!cleanupErrors.length) {
         try {
+          if (localState) {
+            const cleanup = rollbackProjectLocalState(localState);
+            if (cleanup.retained) this.store.setRuntimeState(`work-local-state-recovery:${workId}`, { directory: root, code: "LOCAL_STATE_ADOPTED" });
+          }
           this.store.runInTransaction(() => {
             this.store.db.run("DELETE FROM works WHERE id=?", [workId]);
+            this.store.setRuntimeState(`work-local-state:${workId}`, null);
             if (repositoryId && repositoryOwned) {
               const repo = this.store.getGitRepository(repositoryId);
               workspaceId ??= repo?.workspaceId ?? this.store.listWorkspaces().find(ws => ws.canonicalRootPath === root)?.workspaceId;
@@ -212,9 +244,17 @@ export class WorkInitializationService {
           });
           this.store.scheduleSave();
           if (ownedDirectory) {
-            const current = await lstat(root);
+            const current = await lstat(root, { bigint: true });
             if (current.isSymbolicLink() || current.ino !== ownedDirectory.ino || current.dev !== ownedDirectory.dev) throw fail("ROLLBACK_DIRECTORY_CHANGED", "Refusing to remove a replaced directory.");
-            await rm(root, { recursive: true });
+            // An opened Work Chat or another process can have added user data.
+            // Never recursively erase a newly allocated directory on that basis.
+            try { await rmdir(root); }
+            catch (cleanupError) {
+              if (cleanupError.code !== "ENOTEMPTY") throw cleanupError;
+              this.store.setRuntimeState(`work-local-state-recovery:${workId}`, { directory: root, code: "WORK_DIRECTORY_RETAINED" });
+              error.retainedDirectory = root;
+              error.message += " The allocated directory was retained for inspection.";
+            }
           }
         } catch (cleanupError) { cleanupErrors.push({ code: cleanupError.code ?? "RESOURCE_CLEANUP_FAILED" }); }
       }
@@ -226,6 +266,7 @@ export class WorkInitializationService {
       if (providerCleanup.length) this.store.setRuntimeState(`work-initialization-recovery:${workId}`, {
         workId, directory: root, localRollbackComplete: true, providerCleanup, causeCode: error.code ?? "INITIALIZATION_FAILED"
       });
+      if (error.localStateRecovery) this.store.setRuntimeState(`work-local-state-recovery:${workId}`, error.localStateRecovery);
       throw error;
     }
   }

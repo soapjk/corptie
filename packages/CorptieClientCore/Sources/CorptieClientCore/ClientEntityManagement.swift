@@ -77,10 +77,27 @@ public struct ClientWorkManagement: Decodable, Sendable {
     public struct Actions: Decodable, Sendable, Equatable {
         public let edit: ClientEntityAction
         public let delete: ClientEntityAction
+        public let repairLocalState: ClientEntityAction?
     }
     public let schemaVersion: Int
     public let work: WorkDetail
     public let actions: Actions
+}
+
+public struct ClientWorkLocalState: Decodable, Sendable, Equatable {
+    public let schemaVersion: Int?
+    public let state: String
+    public let scope: String
+    public let gitStatus: String?
+    public let code: String?
+    public var isReady: Bool { state == "ready" }
+    public var titleKey: String {
+        switch state {
+        case "ready": "本地目录已就绪"
+        case "missing": "尚未初始化本地目录"
+        default: "本地目录需要检查"
+        }
+    }
 }
 
 /// Closed command bodies; the host rejects unknown keys, so each command only
@@ -175,5 +192,6 @@ public enum ClientTaskCommand: String, Sendable {
 }
 public enum ClientWorkCommand: String, Sendable {
     case update, delete
+    case repairLocalState = "repair-local-state"
     public var kind: String { "work_\(rawValue)" }
 }

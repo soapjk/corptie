@@ -216,6 +216,8 @@ struct PadEditWorkSheet: View {
     @State private var name: String
     @State private var submitting = false
     @State private var commandNotice: String?
+    @State private var localState: ClientWorkLocalState?
+    @State private var supportsLocalState = false
     @Environment(\.dismiss) private var dismiss
 
     init(connection: PadConnection, commands: PadEntityCommandState, work: ClientWork, onFinished: @escaping () -> Void) {
@@ -232,6 +234,31 @@ struct PadEditWorkSheet: View {
                 Section("Work 名称") {
                     TextField("名称", text: $name)
                 }
+                if supportsLocalState {
+                    Section("本地目录") {
+                        Text(LocalizedStringKey(localState?.titleKey ?? "正在检查本地目录…"))
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Button("修复本地目录") {
+                            submitting = true
+                            let expectedScope = "\(connection.serverID)|\(connection.address)"
+                            dismiss()
+                            Task { @MainActor in
+                                let receipt = await commands.run(connection, target: .work(work.id),
+                                    kind: ClientWorkCommand.repairLocalState.kind, label: "修复本地目录") { api, requestID in
+                                    try await api.workCommand(workId: work.id, command: .repairLocalState,
+                                        body: ClientEntityRequest(requestId: requestID))
+                                }
+                                let outcome: OperationNotificationOutcome = receipt?.status == "completed" ? .succeeded
+                                    : receipt?.status == "rejected" ? .failed : .unconfirmed
+                                PadOperationNotifications.shared.complete(.init(category: .environment,
+                                    outcome: outcome, name: "修复本地目录"), expectedScope: expectedScope)
+                                if receipt?.status == "completed" { onFinished() }
+                            }
+                        }
+                        .disabled(localState?.isReady == true || submitting || commands.isBusy)
+                        .accessibilityIdentifier("work.local-state.repair")
+                    }
+                }
                 if let commandNotice {
                     Section {
                         Text(commandNotice).font(.footnote).foregroundStyle(.red)
@@ -239,6 +266,15 @@ struct PadEditWorkSheet: View {
                 }
             }
             .navigationTitle("编辑 Work")
+            .task(id: work.id) {
+                do {
+                    let api = ClientSessionAPI(transport: try await connection.transport())
+                    let management = try await api.workManagement(workId: work.id)
+                    guard !Task.isCancelled else { return }
+                    supportsLocalState = management.actions.repairLocalState?.available == true
+                    if supportsLocalState { localState = try await api.workLocalState(workId: work.id) }
+                } catch { /* Unsupported hosts keep the existing editing UI. */ }
+            }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

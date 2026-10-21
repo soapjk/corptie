@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import CorptieClientCore
 
 // Work 详情/编辑页。Workspace 是创建后不可换绑的唯一资源。
 
@@ -16,6 +17,8 @@ struct WorkDetailView: View {
     @State private var contributorAgentIds = Set<String>()
     @State private var showDeleteConfirm = false
     @State private var assistAgentId: String?
+    @State private var localState: ClientWorkLocalState?
+    @State private var localStateUnavailable = false
 
     init(work: Work) {
         self.work = work
@@ -68,6 +71,29 @@ struct WorkDetailView: View {
                         workspaceEditable: false
                     )
 
+                    HStack {
+                        Text(L10n(localState?.titleKey ?? (localStateUnavailable ? "本地目录需要检查" : "正在检查本地目录…")))
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button(L10n("修复本地目录")) {
+                            let id = work.id
+                            if BackgroundTaskCenter.shared.start(id: "work-local-state:\(id)", title: L10n("修复本地目录"), operation: {
+                                do {
+                                    _ = try await client.workLocalState(workId: id, repair: true)
+                                    OperationNotificationManager.shared.complete(.init(category: .environment,
+                                        outcome: .succeeded, name: L10n("修复本地目录")))
+                                    return .success(L10n("本地目录已就绪"))
+                                } catch {
+                                    OperationNotificationManager.shared.complete(.init(category: .environment,
+                                        outcome: .errorOutcome(error), name: L10n("修复本地目录")))
+                                    return .failure(error.localizedDescription)
+                                }
+                            }) { dismiss() }
+                        }
+                        .disabled(localState?.isReady == true || (localState == nil && !localStateUnavailable))
+                        .accessibilityIdentifier("work.local-state.repair")
+                    }
+
                     DisclosureGroup(L10n("Work Memories")) {
                         MemoryManagementView(scope: .owner(type: "work", id: work.id))
                             .frame(height: 300)
@@ -113,6 +139,11 @@ struct WorkDetailView: View {
             .padding(16)
         }
         .frame(width: 620, height: 680)
+        .task(id: work.id) {
+            do { localState = try await client.workLocalState(workId: work.id) }
+            catch is CancellationError { return }
+            catch { localStateUnavailable = true }
+        }
         .alert(L10n("删除 Work"), isPresented: $showDeleteConfirm) {
             Button(L10n("删除"), role: .destructive) {
                 Task { await client.deleteWork(workId: work.id) }

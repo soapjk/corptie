@@ -36,6 +36,15 @@ export class ClientWorktreeManagementAPI {
     );
   }
 
+  async localState(repositoryId, worktreeId, input = null) {
+    if (input !== null && (!input || Array.isArray(input) || Object.keys(input).length)) {
+      throw deviceError("INVALID_WORK_COMMAND", 400);
+    }
+    const result = await this.worktrees.worktreeLocalState(validId(repositoryId, "INVALID_REPOSITORY_ID"),
+      validId(worktreeId, "INVALID_WORKTREE_ID"), { repair: input !== null });
+    return { schemaVersion: 1, state: result.state, scope: result.scope, gitStatus: result.gitStatus ?? null, code: result.code ?? null };
+  }
+
   async developmentService(repositoryId) {
     return this.projects.readDevelopmentService(validId(repositoryId, "INVALID_REPOSITORY_ID"));
   }

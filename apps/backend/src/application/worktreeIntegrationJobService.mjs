@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import { inspectGitWorkspace } from "../utils/gitWorktreeInventory.mjs";
+import { ensureProjectLocalState, inspectProjectLocalState, rollbackProjectLocalState, verifyProjectLocalState } from "../runtime/projectLocalStateDirectory.mjs";
 
 const ACTIVE_JOB_STATUSES = Object.freeze([
   "queued", "running", "paused", "cancellation_requested", "replanning"
@@ -121,6 +123,45 @@ export class WorktreeIntegrationJobService {
         return latest ? presentJob(this.#reconcileConflictResolution(latest)) : null;
       })()
     };
+  }
+
+  async worktreeLocalState(repositoryId, worktreeId, { repair = false } = {}) {
+    const repository = this.#requireRepository(repositoryId);
+    const inventory = await this.inspectRepository(repository.id, { forceFresh: true });
+    const tree = inventory.worktrees.find(item => item.worktreeId === worktreeId);
+    if (!tree || tree.availability !== "available") {
+      throw new WorktreeIntegrationJobError("WORKTREE_UNAVAILABLE", "The selected Worktree is unavailable.", 409);
+    }
+    const identity = await inspectGitWorkspace(tree.path);
+    if (identity.repositoryId !== repository.id || identity.worktreeId !== worktreeId) {
+      throw new WorktreeIntegrationJobError("WORKTREE_IDENTITY_CHANGED", "Worktree binding changed. Refresh before retrying.", 409);
+    }
+    const scope = tree.isMain ? "projectShared" : "worktreeLocal";
+    if (!repair) return inspectProjectLocalState(identity.canonicalPath, { scope });
+    let prepared;
+    try {
+      prepared = await ensureProjectLocalState(identity.canonicalPath, { scope });
+      const current = await inspectGitWorkspace(identity.canonicalPath);
+      this.#requireRepository(repositoryId);
+      if (current.repositoryId !== repository.id || current.worktreeId !== worktreeId) {
+        throw new WorktreeIntegrationJobError("WORKTREE_IDENTITY_CHANGED", "Worktree identity changed during repair.", 409);
+      }
+      return await verifyProjectLocalState(prepared);
+    } catch (error) {
+      let recovery = error.localStateRecovery;
+      if (prepared) {
+        try {
+          if (rollbackProjectLocalState(prepared).retained) recovery = { code: "LOCAL_STATE_ADOPTED" };
+        } catch (cleanup) { recovery = { code: cleanup.code }; }
+      }
+      if (recovery) {
+        error.recoveryCode = recovery.code;
+        this.store.setRuntimeState?.(`worktree-local-state-recovery:${repositoryId}:${worktreeId}`,
+          { root: identity.canonicalPath, code: recovery.code });
+        this.store.scheduleSave?.();
+      }
+      throw error;
+    }
   }
 
   async worktreeGitHubPushStatus(repositoryId, worktreeId) {
@@ -316,6 +357,7 @@ export class WorktreeIntegrationJobService {
       return { plan, planFingerprint: fingerprint(plan), noWorkRequired: false };
     }
     const inspection = this.#associate(await this.inspectRepository(repository.id, inspectionOptions));
+    this.store.assertStandaloneWorktreeMutation?.({worktreeIds:inspection.worktrees.map(w=>w.worktreeId)});
     const ordered = [...inspection.worktrees].sort((left, right) => {
       if (left.isMain !== right.isMain) return left.isMain ? -1 : 1;
       return `${left.branchName ?? ""}\0${left.path}`.localeCompare(`${right.branchName ?? ""}\0${right.path}`);
@@ -404,6 +446,7 @@ export class WorktreeIntegrationJobService {
     const selectedIds = operation.type === "converge"
       ? operation.sourceWorktreeIds
       : [...operation.sourceWorktreeIds, operation.targetWorktreeId];
+    this.store.assertStandaloneWorktreeMutation?.({worktreeIds:selectedIds});
     const uniqueIds = [...new Set(selectedIds)];
     const missingId = uniqueIds.find((id) => !byId.has(id));
     if (missingId) {

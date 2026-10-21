@@ -23,7 +23,7 @@ async function fixture() {
   });
   const task = entities.createTask({
     id: "task:completion", workId: work.id,
-    title: "Ship completion authorization", lifecycleState: "in_progress"
+    title: "Ship_completion_authorization", lifecycleState: "in_progress"
   });
   return { directory, dbPath, configPath, store, entities, work, task };
 }
@@ -103,7 +103,7 @@ test("stale UI snapshots, cross-target receipts, expiration, and nonce replay fa
   const f = await fixture();
   try {
     const other = f.entities.createTask({
-      id: "task:other", workId: f.work.id, title: "Other target", lifecycleState: "in_progress"
+      id: "task:other", workId: f.work.id, title: "Other_target", lifecycleState: "in_progress"
     });
     const service = new TaskCompletionService({ store: f.store });
     assert.throws(
@@ -220,7 +220,7 @@ test("completion audit is queryable and completion metadata is omitted without a
     assert.equal(service.getAuditOperation(result.operation.operationId).taskId, f.task.id);
 
     const legacy = f.entities.createTask({
-      id: "task:legacy", workId: f.work.id, title: "Historical completion", lifecycleState: "in_progress"
+      id: "task:legacy", workId: f.work.id, title: "Historical_completion", lifecycleState: "in_progress"
     });
     f.store.db.run(
       `INSERT INTO task_completion_authorizations
