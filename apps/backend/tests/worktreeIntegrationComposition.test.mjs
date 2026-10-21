@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { validateEntityName } from "../src/domain/workTaskValidation.mjs";
 import { createWorktreeIntegrationServices } from "../src/application/worktreeIntegrationComposition.mjs";
 
 function fixture(overrides = {}) {
@@ -28,7 +29,7 @@ function fixture(overrides = {}) {
     },
     gitHubPushes: {}, gitCommitProtection: {},
     workService: {
-      createTask: (input) => { calls.push(["create", input]); return { ...input, id: input.id ?? "created" }; },
+      createTask: (input) => { validateEntityName(input.title, "title", "Task"); calls.push(["create", input]); return { ...input, id: input.id ?? "created" }; },
       deleteTask: (id) => calls.push(["delete", id]),
       updateTask: (...args) => calls.push(["update", ...args])
     },
@@ -139,6 +140,9 @@ test("a new plan Session atomically starts with exactly one conflict prompt", as
 
   assert.equal(result.reused, false);
   assert.deepEqual(calls.map(([kind]) => kind), ["create", "start"]);
+  assert.equal(calls[0][1].title, "合并冲突处理-new-plan");
+  assert.equal(calls[0][1].autoTitleEnabled, false);
+  assert.equal(calls[1][1].title, calls[0][1].title);
   assert.equal(calls[1][1].dispatchInitialTurn, true);
   assert.equal(calls[1][1].providerId, "configured-provider");
   assert.ok(calls[1][1].initialPrompt.includes("source-head"));

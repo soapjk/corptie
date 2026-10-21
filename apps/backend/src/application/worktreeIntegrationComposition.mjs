@@ -3,6 +3,7 @@ import { basename, resolve } from "node:path";
 import { ProjectWorktreeIntegrationService } from "./projectWorktreeIntegrationService.mjs";
 import { WorktreeIntegrationJobService } from "./worktreeIntegrationJobService.mjs";
 import { resolveConflictResolutionAgentContext } from "./conflictResolutionAgentContext.mjs";
+import { generatedEntityTitle } from "../domain/entityTitlePolicy.mjs";
 import { sessionHasActiveRun } from "../utils/sessionPresentation.mjs";
 
 function commitPolicyArtifactBinding(store, item) {
@@ -308,7 +309,7 @@ export function createWorktreeIntegrationServices({
       const planTaskId = `${basePlanTaskId}${replacementSuffix}`;
       const startupIdempotencyKey = `integration-plan:${job.id}:start${replacementSuffix}`;
       const branchLabel = item.branchName ?? item.worktreeId;
-      const title = `解决 Worktree 合并计划 ${planLabel} 的全部冲突`;
+      const title = generatedEntityTitle(`合并冲突处理-${planLabel}`);
       const conflictFiles = item.conflictFiles.length > 0 ? item.conflictFiles.join(", ") : "请通过 Git 状态确认";
       const description = [
         `持续处理 Worktree Integration Job ${job.id} 计划内的全部合并冲突。`,
@@ -414,6 +415,7 @@ export function createWorktreeIntegrationServices({
         id: planTaskId,
         workId: work.id,
         title,
+        autoTitleEnabled: false,
         description,
         acceptanceCriteria,
         priority: "high",
