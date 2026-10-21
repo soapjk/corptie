@@ -71,11 +71,15 @@ export class MemoryExtractionScheduler {
     this.running = true;
     let legacyRetryDelay = null;
     let legacyPageProcessed = false;
+    let processedJobs = 0;
     try {
-      while (!this.closed) {
+      // Give legacy classification a turn even when many Sessions have pending
+      // extraction jobs. Both kinds of model work share this one scheduler.
+      while (!this.closed && processedJobs < 2) {
         const now = new Date(this.clock()).toISOString();
         const job = this.store.nextMemoryExtractionJob(now);
         if (!job) break;
+        processedJobs += 1;
         try {
           const result = await this.extractor.extractPageFromSession(job.session_id);
           this.store.finishMemoryExtractionJob(job.session_id, {

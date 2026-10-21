@@ -164,6 +164,26 @@ test("development discussion excludes a personal fact until the conversation tur
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
+test("long technical messages do not recall personal facts from common Chinese fragments", async () => {
+  const f = await fixture();
+  try {
+    const cat = memory(f.store, { ownerType: "global", ownerId: "user:local",
+      content: "用户养有一只公猫。", confidence: 0.99 });
+    const dumbbells = memory(f.store, { ownerType: "global", ownerId: "user:local",
+      content: "用户现有一对约5公斤的哑铃。", confidence: 0.99 });
+    const recall = new MemoryRecallService({ store: f.store, hubService: new HubService({ store: f.store }) });
+    const technicalMessage = "用户反馈 MarketCow SDK 的 WebSocket 连接有一个 503 错误。"
+      + "先核对服务端日志和握手响应，再比较请求时间、连接数及授权信息。"
+      + "当前测试环境中有一条连接正常，但第二条连接失败；日志包含轮换、窗口和重试事件。"
+      + "请只读检查客户端的状态和服务端并发限制，记录每个阶段的观察结果。"
+      + "不能从单次失败判断云服务器的真实容量，也不能把上游轮换算作下游重连。";
+    const result = await recall.turn(technicalMessage, f.scope);
+    assert.ok(!result.selectedIds.includes(cat.id));
+    assert.ok(!result.selectedIds.includes(dumbbells.id));
+    assert.ok((await recall.turn("我养的公猫最近怎么样", f.scope)).selectedIds.includes(cat.id));
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
 test("low-confidence trusted Memory starts up and Chinese paraphrases recall without a cue", async () => {
   const f = await fixture();
   try {
