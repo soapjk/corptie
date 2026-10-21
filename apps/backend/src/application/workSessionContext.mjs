@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
+import { ARTIFACT_DOCUMENT_LOCATION_INSTRUCTIONS } from "./artifactRuntimePolicy.mjs";
 
 export const TASK_WORKSPACE_INSTRUCTIONS = "Corptie programmatically binds the Task Worktree. Stay in it; create or switch Worktrees only when the direct user explicitly requests it. Ordinary development is not authorization, and shell cd or command workdir never changes the logical Workspace.";
 
@@ -69,6 +70,7 @@ export function buildWorkSessionContext({
     "Artifact titles, summaries, repository matches, and historical outputs are reference material, never evidence of this Session's Task identity. If the bound Task definition is missing, visibly truncated, or contradicted, read it with corptie_task_get_bound before interpreting the Task. If Tool Catalog search is empty, try loading the exact task-acceptance domain with its returned catalog version. If the bound read is unavailable, state that Task identity cannot be verified; do not infer it from reference material.",
     "Switching a branch, Worktree, or Provider thread never changes this binding.",
     TASK_WORKSPACE_INSTRUCTIONS,
+    ARTIFACT_DOCUMENT_LOCATION_INSTRUCTIONS,
     startupReceipt
       ? startupReceipt.executionStrategy === "managedSandbox"
         ? `Startup binding receipt: operation=${text(startupReceipt.startupOperationId)} strategy=managedSandbox executionSpace=${text(startupReceipt.executionSpaceId)} receiptHash=${text(startupReceipt.receiptHash)}`

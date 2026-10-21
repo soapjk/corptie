@@ -22,7 +22,7 @@ export function authorizeArtifactPromotion({ store, sessionId, currentTurnId, ev
 }
 
 export function containsExplicitArtifactPromotion(text, path) {
-  if (typeof path !== "string" || !/\.md$/i.test(path) || path.startsWith("/") || path.includes("\\")
+  if (typeof path !== "string" || path.startsWith("/") || path.includes("\\")
     || path.split("/").some(part => !part || part === "." || part === ".." || [".git", ".corptie"].includes(part.toLowerCase()))
     || /[\s`"'<>]/u.test(path)) return false;
   const message = String(text ?? "");

@@ -174,7 +174,7 @@ export const platformDynamicTools = Object.freeze([
   ),
   tool(
     "corptie_platform_artifacts_manage",
-    "Manage the complete lifecycle of Artifacts in an explicitly selected Work. Every mutation is attributed to the authenticated platform Assistant Session.",
+    "Manage Artifacts in an explicitly selected Work. Every mutation is attributed to the authenticated platform Assistant Session. Document exports must stay outside all projects; local program inputs belong under .corptie/artifacts/ via fixed-version materialization. Project output/ or outputs/ copies are forbidden. Git-tracked document publication requires exact direct-user authorization and the Artifact promotion tool, not ordinary export confirmation.",
     {
       action: { type: "string", enum: ["list", "get", "search", "create", "update_metadata", "import", "publish", "reference", "revoke_reference", "acknowledge_reference", "change_visibility", "supersede", "revoke", "restore_artifact", "verify_integrity", "export", "backup", "restore"] },
       work_id: id("Explicit target Work id."),
@@ -193,7 +193,7 @@ export const platformDynamicTools = Object.freeze([
       relation: artifactRelation, required: { type: "boolean" }, version_policy: { type: "string", enum: ["fixed", "latest_approved"] },
       reason: { type: "string", minLength: 1 }, source_path: { type: "string", minLength: 1 },
       destination_path: { type: "string", minLength: 1 }, confirmation_id: id("Server-issued confirmation record id."),
-      confirmed_repository_write: { type: "boolean" }, confirmed_overwrite: { type: "boolean" },
+      confirmed_repository_write: { type: "boolean", description: "Legacy compatibility field; does not permit project document exports or grant Git-tracking authority. Use controlled Artifact promotion." }, confirmed_overwrite: { type: "boolean" },
       include_revoked: { type: "boolean" }, idempotency_key: { type: "string", minLength: 1, maxLength: 200 }
     },
     ["action", "work_id"]

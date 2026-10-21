@@ -27,3 +27,14 @@ test("promotion intent rejects general requests, negation, quoted examples and u
     assert.equal(containsExplicitArtifactPromotion(`Please add ${path} to the repository`, path), false);
   }
 });
+
+test("non-Markdown deliverables require explicit exact-path Git tracking, not export permission", () => {
+  for (const path of ["docs/report.pdf", "docs/report.docx", "docs/slides.pptx", "docs/data.xlsx", "docs/report.html"]) {
+    assert.equal(containsExplicitArtifactPromotion(`Please add ${path} to the Git repository`, path), true);
+    assert.equal(containsExplicitArtifactPromotion(`请将 ${path} 纳入版本控制`, path), true);
+    assert.equal(containsExplicitArtifactPromotion(`Please export ${path}`, path), false);
+    assert.equal(containsExplicitArtifactPromotion(`Please create ${path} and save it as an Artifact`, path), false);
+    assert.equal(containsExplicitArtifactPromotion(`Please do not add ${path} to Git`, path), false);
+    assert.equal(containsExplicitArtifactPromotion(`Please add ${path} to Git`, "docs/other.pdf"), false);
+  }
+});

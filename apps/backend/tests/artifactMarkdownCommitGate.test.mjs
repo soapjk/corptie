@@ -39,3 +39,34 @@ test("real Git index gate permits existing Markdown but requires exact evidence 
     assert.ok((await inspectArtifactMarkdownCommit(root, { verifyPromotion: async () => true })).violations.some(v => v.code === "GIT_MARKDOWN_NOT_REGULAR"));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("new PDF and Office files require exact staged-byte tracking evidence", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "binary-document-gate-")));
+  const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  try {
+    git("init", "--quiet");
+    const content = Buffer.from([0x25, 0x50, 0x44, 0x46, 0, 255]);
+    for (const path of ["report.PDF", "report.docx", "report.pptx", "report.xlsx"]) {
+      await writeFile(join(root, path), content);
+      git("add", "--", path);
+    }
+    const blocked = await inspectArtifactMarkdownCommit(root);
+    assert.equal(blocked.ok, false);
+    assert.equal(blocked.violations.length, 4);
+    assert.ok(blocked.violations.every(v => v.code === "GIT_DOCUMENT_PROMOTION_REQUIRED"));
+    const contentHash = createHash("sha256").update(content).digest("hex");
+    const approvedPaths = new Set(["report.PDF", "report.docx", "report.pptx", "report.xlsx"]);
+    const verifyPromotion = async item => item.repositoryPath === root && approvedPaths.has(item.path) && item.contentHash === contentHash;
+    assert.equal((await inspectArtifactMarkdownCommit(root, { verifyPromotion })).ok, true);
+    await writeFile(join(root, "report.PDF"), "unstaged edit");
+    assert.equal((await inspectArtifactMarkdownCommit(root, { verifyPromotion })).ok, true);
+    git("add", "report.PDF");
+    assert.equal((await inspectArtifactMarkdownCommit(root, { verifyPromotion })).ok, false);
+    await writeFile(join(root, "report.PDF"), content);
+    git("add", "report.PDF");
+    git("-c", "user.name=Test", "-c", "user.email=test@localhost", "commit", "--no-gpg-sign", "-m", "fixture");
+    await writeFile(join(root, "report.PDF"), "edit existing tracked document");
+    git("add", "report.PDF");
+    assert.equal((await inspectArtifactMarkdownCommit(root)).ok, true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
