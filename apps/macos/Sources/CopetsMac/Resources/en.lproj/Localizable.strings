@@ -1460,3 +1460,9 @@
 "有 %d 张图片未能导入，请检查图片格式或大小。" = "Could not import %d image(s). Check their format or size.";
 "部分图片未添加：最多只能添加 8 张图片。" = "Some images were not attached. You can attach up to 8 images.";
 "图片正在导入，请稍后再试。" = "Images are being imported. Please try again shortly.";
+"本地目录已就绪" = "Local directory is ready";
+"尚未初始化本地目录" = "Local directory has not been initialized";
+"本地目录需要检查" = "Local directory needs attention";
+"正在检查本地目录…" = "Checking local directory…";
+"修复本地目录" = "Repair local directory";
+"检查本地目录" = "Check local directory";

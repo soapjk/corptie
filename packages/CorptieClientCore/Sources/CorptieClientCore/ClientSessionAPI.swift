@@ -752,6 +752,9 @@ public struct ClientSessionAPI: Sendable {
     public func workManagement(workId: String) async throws -> ClientWorkManagement {
         try await read(transport.endpoint.request(path: ["client", "v1", "works", workId, "management"]))
     }
+    public func workLocalState(workId: String) async throws -> ClientWorkLocalState {
+        try await read(transport.endpoint.request(path: ["client", "v1", "works", workId, "local-state"]))
+    }
     public func workCreationOptions() async throws -> ClientWorkCreationOptions {
         try await read(transport.endpoint.request(path: ["client", "v1", "works", "create"]))
     }

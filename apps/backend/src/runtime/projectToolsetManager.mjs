@@ -4,6 +4,8 @@ import { chmod, lstat, mkdir, readFile, rm, stat, writeFile } from "node:fs/prom
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { createGitWorkspaceSnapshot, inspectGitWorkspace } from "../utils/gitWorktreeInventory.mjs";
+import { ensureProjectLocalState } from "./projectLocalStateDirectory.mjs";
+import { pinToolsetExecution, verifyToolsetExecution } from "./projectToolsetExecutionSnapshot.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -61,6 +63,7 @@ export class ProjectToolsetManager {
 
   async scaffold(workingDirectory, options = {}) {
     const layout = await this.layout(workingDirectory);
+    await ensureProjectLocalState(layout.mainPath, { scope: "projectShared" });
     await this.assertToolsetDirectoryIsPrivate(layout.mainPath);
     await mkdir(layout.scriptsPath, { recursive: true, mode: 0o700 });
     await mkdir(layout.runtimePath, { recursive: true, mode: 0o700 });
@@ -131,19 +134,19 @@ export class ProjectToolsetManager {
     if (!PROJECT_TOOLSET_ACTIONS.includes(action)) {
       throw new Error(`Unsupported Corptie project toolset action: ${action}`);
     }
-    const state = await this.inspect(workingDirectory);
+    let state = await this.inspect(workingDirectory);
     const readOnlyProbe = PROJECT_TOOLSET_READ_ONLY_PROBES.includes(action);
     const canRunLegacyProbe = options.allowIncompatible === true
       && state.manifestConfigured
       && readOnlyProbe;
-    if (!state.installed || (!state.configured && !canRunLegacyProbe)) {
+    if (!options.toolsetSnapshot && (!state.installed || (!state.configured && !canRunLegacyProbe))) {
       throw new Error("The Corptie Scripts Tools Set is not configured for this project.");
     }
-    const script = state.scripts[action];
-    if (!script?.executable) {
+    let script = state.scripts[action];
+    if (!options.toolsetSnapshot && !script?.executable) {
       throw new Error(`The Corptie project script is not executable: ${action}`);
     }
-    const requestedExecutionRoot = options.executionRoot ?? state.mainPath;
+    const requestedExecutionRoot = options.executionRoot ?? workingDirectory;
     const executionIdentity = await inspectGitWorkspace(requestedExecutionRoot);
     if (executionIdentity.repositoryId !== state.repositoryId) {
       throw new Error("The requested service worktree belongs to a different Git repository.");
@@ -155,6 +158,15 @@ export class ProjectToolsetManager {
     const source = options.sourceIdentity ?? await this.sourceIdentity(executionRoot, state.runtimePath);
     if (!readOnlyProbe && !options.runIsolation) {
       throw Object.assign(new Error(`RunIsolation authority is required for the ${action} Toolset action.`), { code: "DEPENDENCY_CONTRACT_UNRESOLVED" });
+    }
+    // Ordinary inventory probes retain their existing read-only legacy contract.
+    // They are not a bound Run and must not materialize new execution files.
+    let toolsetSnapshot = options.toolsetSnapshot ?? null;
+    if (toolsetSnapshot || !readOnlyProbe || options.prepareSnapshot !== false) {
+      toolsetSnapshot ??= await pinToolsetExecution(state, executionIdentity, source, options.runIsolation?.session?.taskId);
+      const fixed = await verifyToolsetExecution(toolsetSnapshot, executionIdentity, source, options.runIsolation?.session?.taskId);
+      state = { ...state, manifest: fixed.manifest, selectedProfile: selectedProfile(fixed.manifest), toolsetPath: fixed.root };
+      script = { path: join(fixed.root, "scripts", action) };
     }
     if (options.runIsolation) {
       if (!this.runIsolationCoordinator) throw Object.assign(new Error("RunIsolation production coordinator is not enabled."), { code: "DEPENDENCY_CONTRACT_UNRESOLVED" });
@@ -182,7 +194,7 @@ export class ProjectToolsetManager {
         }
       });
       const parsed = parseActionOutput(action, isolated.commandOutput ?? "", isolated.runReceipt.error?.message ?? "", isolated.runReceipt.outcome === "passed" ? 0 : 1);
-      return { ...parsed, runIsolation: isolated };
+      return { ...parsed, runIsolation: isolated, toolsetSnapshot };
     }
     try {
       const result = await this.execFile(script.path, [], {
@@ -202,10 +214,10 @@ export class ProjectToolsetManager {
           CORPTIE_SOURCE_DIRTY: String(source.dirty)
         }
       });
-      return parseActionOutput(action, result?.stdout, result?.stderr, 0);
+      return { ...parseActionOutput(action, result?.stdout, result?.stderr, 0), toolsetSnapshot };
     } catch (error) {
       if (error?.stdout || error?.stderr || Number.isInteger(error?.code)) {
-        return parseActionOutput(action, error.stdout, error.stderr, Number(error.code) || 1);
+        return { ...parseActionOutput(action, error.stdout, error.stderr, Number(error.code) || 1), toolsetSnapshot };
       }
       throw error;
     }
@@ -218,9 +230,13 @@ export class ProjectToolsetManager {
         ? "Update the Corptie Scripts Tools Set before rebuilding and restarting this service."
         : "The Corptie Scripts Tools Set is not configured for this project.");
     }
-    const executionRoot = options.executionRoot ?? state.mainPath;
+    const executionRoot = options.executionRoot ?? workingDirectory;
     const source = await this.sourceIdentity(executionRoot, state.runtimePath);
+    const identity = await inspectGitWorkspace(executionRoot);
+    if (identity.repositoryId !== state.repositoryId) throw new Error("The requested service worktree belongs to a different Git repository.");
+    const toolsetSnapshot = await pinToolsetExecution(state, identity, source, options.runIsolation?.session?.taskId);
     const build = await this.run(workingDirectory, "build", {
+      toolsetSnapshot,
       executionRoot,
       sourceIdentity: source,
       runIsolation: options.runIsolation,
@@ -228,6 +244,7 @@ export class ProjectToolsetManager {
     });
     if (!build.ok) return { ok: false, stage: "build", source, build };
     const restart = await this.run(workingDirectory, "restart", {
+      toolsetSnapshot,
       executionRoot,
       sourceIdentity: source,
       runIsolation: options.runIsolation,
@@ -235,10 +252,10 @@ export class ProjectToolsetManager {
     });
     if (!restart.ok) return { ok: false, stage: "restart", source, build, restart };
     const [status, health, verify, version] = await Promise.all([
-      this.run(workingDirectory, "status", { executionRoot, sourceIdentity: source, timeoutMs: 5_000 }),
-      this.run(workingDirectory, "health", { executionRoot, sourceIdentity: source, timeoutMs: 15_000 }),
-      this.run(workingDirectory, "verify", { executionRoot, sourceIdentity: source, runIsolation: options.runIsolation, timeoutMs: 15_000 }),
-      this.run(workingDirectory, "version", { executionRoot, sourceIdentity: source, timeoutMs: 5_000 })
+      this.run(workingDirectory, "status", { toolsetSnapshot, executionRoot, sourceIdentity: source, timeoutMs: 5_000 }),
+      this.run(workingDirectory, "health", { toolsetSnapshot, executionRoot, sourceIdentity: source, timeoutMs: 15_000 }),
+      this.run(workingDirectory, "verify", { toolsetSnapshot, executionRoot, sourceIdentity: source, runIsolation: options.runIsolation, timeoutMs: 15_000 }),
+      this.run(workingDirectory, "version", { toolsetSnapshot, executionRoot, sourceIdentity: source, timeoutMs: 5_000 })
     ]);
     const validation = validateActivation({
       source,

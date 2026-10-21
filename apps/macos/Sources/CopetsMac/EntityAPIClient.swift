@@ -641,6 +641,8 @@ final class EntityAPIClient: ObservableObject {
                         providerId: String,
                         model: String? = nil,
                         reasoningLevel: String? = nil,
+                        parentTaskId: String? = nil,
+                        expectedParentResourceVersion: Int? = nil,
                         sourceSession explicitSourceSession: TaskSession? = nil) async -> CorptieTask? {
         let backendClient = BackendClient.shared
         guard let sourceSession = CorptieTaskSessionSourcePolicy.resolve(
@@ -667,6 +669,10 @@ final class EntityAPIClient: ObservableObject {
             "idempotencyKey": operationId
         ]
         if let id, !id.isEmpty { body["id"] = id }
+        if let parentTaskId {
+            body["parentTaskId"] = parentTaskId
+            body["expectedParentResourceVersion"] = expectedParentResourceVersion
+        }
         if let description, !description.isEmpty { body["description"] = description }
         if let acceptanceCriteria, !acceptanceCriteria.isEmpty { body["acceptanceCriteria"] = acceptanceCriteria }
         if let verificationCriteria, !verificationCriteria.isEmpty { body["verificationCriteria"] = verificationCriteria }
@@ -1221,6 +1227,21 @@ final class EntityAPIClient: ObservableObject {
     }
 
     // 删除 Work：DELETE /works/:id → { ok }
+    func workLocalState(workId: String, repair: Bool = false) async throws -> ClientWorkLocalState {
+        var request = URLRequest(url: baseURL.appending(path: "works/\(workId)/local-state"))
+        if repair {
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = Data("{}".utf8)
+        }
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+            throw BackendError.message(envelope?.displayMessage ?? L10n("本地目录需要检查"))
+        }
+        return try decoder.decode(ClientWorkLocalState.self, from: data)
+    }
+
     func deleteWork(workId: String) async -> Bool {
         var request = URLRequest(url: baseURL.appending(path: "works/\(workId)"))
         request.httpMethod = "DELETE"

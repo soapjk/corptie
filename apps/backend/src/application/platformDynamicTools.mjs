@@ -99,6 +99,7 @@ export const platformDynamicTools = Object.freeze([
       title: { type: "string", minLength: 1 },
       agent_id: id("Assigned Independent Contributor for create."),
       provider_id: id("Optional Provider for the companion Worker Session."),
+      expected_parent_resource_version: { type: "integer", minimum: 1, description: "Required when patch.parentTaskId is set." },
       logical_session_id: id("Authoritative logical Session from the current direct-user evidence block."),
       user_message_event_id: id("Authoritative direct-user message event id from the current turn."),
       user_message_sequence: { type: "integer", minimum: 1 },

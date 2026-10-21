@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { resolveTaskCreationDefaults } from "../utils/newSessionDefaults.mjs";
+import { TaskWorktreeHierarchyService } from "./taskWorktreeHierarchyService.mjs";
 
 export async function createTaskAndSession({
   workService,
@@ -11,6 +12,7 @@ export async function createTaskAndSession({
   model,
   reasoningLevel,
   idempotencyKey,
+  expectedParentResourceVersion,
   persistTask = null
 }) {
   if (!workService || typeof startWorkSession !== "function") {
@@ -26,6 +28,9 @@ export async function createTaskAndSession({
     id: taskInput?.id ?? stableTaskId(source, operationKey)
   };
   let persisted;
+  if (normalizedTaskInput.parentTaskId && !workService.store.getTask(normalizedTaskInput.id)) {
+    await new TaskWorktreeHierarchyService({ store: workService.store }).validateCreate(normalizedTaskInput, { expectedParentResourceVersion });
+  }
   if (persistTask) {
     persisted = await persistTask();
   } else {
@@ -35,7 +40,7 @@ export async function createTaskAndSession({
       persisted = { task: existing, idempotentReplay: true };
     } else {
       persisted = {
-        task: workService.createTask(normalizedTaskInput, { creationOrigin }),
+        task: workService.createTask(normalizedTaskInput, { creationOrigin, expectedParentResourceVersion }),
         idempotentReplay: false
       };
     }
@@ -108,6 +113,9 @@ function required(value, field) {
 }
 
 function assertTaskCreationReplay(existing, input) {
+  if ((existing?.parent_task_id ?? existing?.parentTaskId ?? null) !== (input.parentTaskId ?? null)) {
+    throw coded("ENTITY_CREATION_CONFLICT", "Task creation parent differs from the original request.", 409);
+  }
   const comparisons = [
     ["workId", existing.work_id, input.workId],
     ["title", existing.title, input.title],

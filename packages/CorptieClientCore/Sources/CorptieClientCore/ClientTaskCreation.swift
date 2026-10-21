@@ -12,6 +12,8 @@ public struct ClientTaskCreation: Codable, Sendable {
     public var priority: String?
     public var model: String?
     public var reasoningLevel: String?
+    public var parentTaskId: String?
+    public var expectedParentResourceVersion: Int?
 
     public init(requestId: String, workId: String, title: String, mainAgentId: String, providerId: String) {
         self.requestId = requestId
@@ -51,4 +53,5 @@ public struct ClientTaskCreationOptions: Decodable, Sendable {
     public let currentModel: String?
     public let currentReasoningLevel: String?
     public let priorities: [String]
+    public let taskHierarchyCapabilities: TaskHierarchyCapabilities?
 }

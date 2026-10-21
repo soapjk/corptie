@@ -11,6 +11,7 @@ import { detailV2GetNegotiation, detailV2PinnedAuthenticate } from "./detailV2Ne
 import { createDetailBusinessActionService } from "./detailBusinessActionComposition.mjs";
 import { handleDetailActionHttp } from "./detailActionHttpAdapter.mjs";
 import { ClientResourceAPI } from "./clientResourceAPI.mjs";
+import { readTaskHierarchyPage } from "./taskHierarchyService.mjs";
 
 export const reply = (response, status, body) => {
   response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store",
@@ -127,14 +128,16 @@ export class ClientDeviceGateway {
       const resource = /^\/client\/v1\/resources(?:\/([^/]+)(?:\/(read|commands))?)?$/.exec(path);
       const eventV2 = path === "/client/v2/events";
       const inventory = /^\/client\/v1\/(works|tasks|sessions)$/.exec(path);
+      const taskHierarchy = /^\/client\/v1\/works\/([^/]+)\/task-hierarchy$/.exec(path);
       const discussion = /^\/client\/v1\/works\/([^/]+)\/discussion$/.exec(path);
       const deletionOperation = /^\/client\/v1\/task-deletion-operations\/([^/]+)$/.exec(path);
       const taskEntity = /^\/client\/v1\/tasks\/([^/]+)\/(management|deletion|update|archive|restart|delete)$/.exec(path);
-      const workEntity = /^\/client\/v1\/works\/([^/]+)\/(management|update|delete)$/.exec(path);
+      const workEntity = /^\/client\/v1\/works\/([^/]+)\/(management|update|delete|local-state|repair-local-state)$/.exec(path);
       const workAvatar = /^\/client\/v1\/works\/([^/]+)\/avatar$/.exec(path);
       const control = /^\/client\/v1\/control\/(automations|agents|skills|repositories)$/.exec(path);
       const repository = /^\/client\/v1\/control\/repositories\/([^/]+)$/.exec(path);
       const worktreeRepository = /^\/client\/v1\/worktrees\/repositories\/([^/]+)$/.exec(path);
+      const worktreeLocalState = /^\/client\/v1\/worktrees\/repositories\/([^/]+)\/worktrees\/([^/]+)\/local-state$/.exec(path);
       const worktreePushStatus = /^\/client\/v1\/worktrees\/repositories\/([^/]+)\/worktrees\/([^/]+)\/github-push-status$/.exec(path);
       const worktreeDelete = /^\/client\/v1\/worktrees\/repositories\/([^/]+)\/worktrees\/([^/]+)\/delete$/.exec(path);
       const worktreeWorkspaceAction = /^\/client\/v1\/worktrees\/repositories\/([^/]+)\/workspaces\/([^/]+)\/actions\/([^/]+)$/.exec(path);
@@ -147,7 +150,7 @@ export class ClientDeviceGateway {
       const worktreeJobAction = /^\/client\/v1\/worktrees\/jobs\/([^/]+)\/actions\/([^/]+)$/.exec(path);
       const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|message-deliveries|quick-messages|stop|capabilities|composer|conversation-commands|tasks|read-receipt|images|resources|usage|approval|user-input|collaboration-confirmation)$/.exec(path);
       const commandReceipt = /^\/client\/v1\/commands\/([A-Za-z0-9_-]{8,128})$/.exec(path);
-      if (url.search && !resource && !search && !inventory && !control && !eventV2 && !worktreeRepository
+      if (url.search && !resource && !search && !inventory && !taskHierarchy && !control && !eventV2 && !worktreeRepository
           && !(path === "/client/v1/provider-settings/task-creation" && request.method === "GET")
           && !(["messages", "tasks", "images", "resources", "usage"].includes(conversation?.[2]) && request.method === "GET")) {
         throw deviceError("REQUEST_NOT_ALLOWED", 403);
@@ -162,6 +165,10 @@ export class ClientDeviceGateway {
         return reply(response, 200, await this.authority.refresh(await body(request)));
       }
       const identity = this.authenticateRequest(request);
+      if (taskHierarchy && this.readAPI) {
+        if (request.method !== "GET") throw deviceError("REQUEST_NOT_ALLOWED", 405);
+        return reply(response, 200, readTaskHierarchyPage(this.readAPI.store, decode(taskHierarchy[1], "INVALID_WORK_ID"), url.searchParams));
+      }
       if (resource && this.resourceAPI) {
         const resourceIdentity = { ...identity, revalidate: () => {
           const current = this.authenticateRequest(request);
@@ -370,9 +377,10 @@ export class ClientDeviceGateway {
         let entityId;
         try { entityId = decodeURIComponent((taskEntity ?? workEntity)[1]); } catch { throw deviceError(taskEntity ? "INVALID_TASK_ID" : "INVALID_WORK_ID", 400); }
         const route = (taskEntity ?? workEntity)[2];
-        const isRead = route === "management" || route === "deletion";
+        const isRead = route === "management" || route === "deletion" || route === "local-state";
         if (request.method === "GET" && isRead) {
-          const result = route === "deletion" ? await this.sessionAPI.taskDeletionPlan(identity, entityId)
+          const result = route === "local-state" ? await this.sessionAPI.workLocalState(identity, entityId)
+            : route === "deletion" ? await this.sessionAPI.taskDeletionPlan(identity, entityId)
             : taskEntity ? this.sessionAPI.taskManagement(identity, entityId) : this.sessionAPI.workManagement(identity, entityId);
           this.authenticateRequest(request);
           return reply(response, 200, result);
@@ -398,11 +406,16 @@ export class ClientDeviceGateway {
         this.authenticateRequest(request);
         return reply(response, 200, result);
       }
-      if (this.worktreeAPI && (worktreeRepository || worktreePushStatus || worktreeDelete
+      if (this.worktreeAPI && (worktreeLocalState || worktreeRepository || worktreePushStatus || worktreeDelete
           || worktreeWorkspaceAction || worktreeService || worktreeServiceAction || worktreePlan
           || worktreeCandidate || worktreeRepositoryJobs || worktreeJob || worktreeJobAction)) {
         let result;
-        if (request.method === "GET" && worktreeRepository) {
+        if (worktreeLocalState && ["GET", "POST"].includes(request.method)) {
+          const input = request.method === "POST" ? await body(request, 1024) : null;
+          this.authenticateRequest(request);
+          result = await this.worktreeAPI.localState(decode(worktreeLocalState[1], "INVALID_REPOSITORY_ID"),
+            decode(worktreeLocalState[2], "INVALID_WORKTREE_ID"), input);
+        } else if (request.method === "GET" && worktreeRepository) {
           const forceFreshValues = url.searchParams.getAll("forceFresh");
           if ([...url.searchParams.keys()].some(key => key !== "forceFresh") || forceFreshValues.length > 1
               || forceFreshValues.some(value => !["true", "false"].includes(value))) {

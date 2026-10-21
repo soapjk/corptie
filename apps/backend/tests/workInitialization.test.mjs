@@ -30,9 +30,11 @@ async function fixture(t, options = {}) {
   store.grantSessionCapability("provider:admin", "platform.manage");
   const launches = [], deletions = [];
   const discussion = new WorkDiscussionApplicationService({ workService, launch: async ({ work, agent, providerId }) => {
+    if (options.expectBase) assert.equal(await readFile(join(store.resolveWorkspaceRoot(work.workspaceId), ".corptie/.gitignore"), "utf8"), "*\n");
     if (options.failBeforeSession) throw new Error("injected launch failure");
     const id = `${providerId}:work:${launches.length}`;
     launches.push({ work, agent, providerId });
+    if (options.addUserFileDuringLaunch) await writeFile(join(store.resolveWorkspaceRoot(work.workspaceId), "user-added.txt"), "preserve concurrent data");
     store.createSession({ id, title: `${work.name}_Chat`, agentId: agent.agentId,
       sessionKind: "workChat", workId: work.id, cwd: store.resolveWorkspaceRoot(work.workspaceId) });
     store.createLogicalSessionRoute({ logicalSessionId: `logical:${id}`, legacySessionId: id,
@@ -91,6 +93,35 @@ test("desktop/device creation failure rolls back metadata and the managed Work d
   assert.deepEqual(await readdir(join(f.directory, "workspaces")), []);
 });
 
+test("new Work base exists before Provider launch", async t => {
+  const f = await fixture(t, { expectBase: true });
+  // Inspect through the actual creation result, not a metadata-only primitive.
+  const created = await f.initialization.createForClient({ name: "LocalBase", contributorAgentIds: [f.agent.agentId] });
+  assert.equal(await readFile(join(created.directory, ".corptie/.gitignore"), "utf8"), "*\n");
+  assert.equal((await f.initialization.localState(created.id)).state, "ready");
+});
+
+test("legacy Work diagnosis is read-only and explicit repair uses its exact bound root", async t => {
+  const f = await fixture(t);
+  const input = { id: "work:legacy:repair", name: "LegacyRepair", contributorAgentIds: [f.agent.agentId] };
+  const created = await f.initialization.createForClient(input);
+  await rm(join(created.directory, ".corptie"), { recursive: true });
+  f.store.setRuntimeState(`work-local-state:${created.id}`, null);
+  assert.equal((await f.initialization.localState(created.id)).state, "missing");
+  await assert.rejects(stat(join(created.directory, ".corptie")), { code: "ENOENT" });
+  assert.equal((await f.initialization.localState(created.id, { repair: true })).state, "ready");
+  await f.initialization.createForClient(input);
+  assert.equal(f.launches.length, 1);
+});
+
+test("failed managed Work creation preserves files concurrently added during launch", async t => {
+  const f = await fixture(t, { failAfterSession: true, addUserFileDuringLaunch: true });
+  const error = await f.initialization.createForClient({ name: "Preserve", contributorAgentIds: [f.agent.agentId] }).catch(error => error);
+  assert.match(error.message, /retained for inspection/);
+  assert.equal(await readFile(join(error.retainedDirectory, "user-added.txt"), "utf8"), "preserve concurrent data");
+  assert.equal(f.store.listWorks().length, 0);
+});
+
 test("external creation adapters never call the metadata-only Work primitive", async () => {
   for (const name of ["platformOperationService", "entityHttpApi", "entityHttpComposition", "clientDeviceGatewayComposition"]) {
     const source = await readFile(new URL(`../src/application/${name}.mjs`, import.meta.url), "utf8");
@@ -104,7 +135,15 @@ async function assertRolledBack(f) {
   assert.equal(f.store.listGitRepositories().length, 0);
   assert.equal(f.store.listSessions().filter(session => session.sessionKind === "workChat").length, 0);
   assert.equal(f.store.selectAll("SELECT * FROM platform_admin_operations").length, 0);
-  await assert.rejects(stat(f.root), { code: "ENOENT" });
+  const retained = await stat(f.root).catch(error => { if (error.code !== "ENOENT") throw error; return null; });
+  if (retained) {
+    // Git control data is retained rather than recursively deleting a directory
+    // another process could have adopted after allocation.
+    assert.deepEqual(await readdir(f.root), [".git"]);
+    const recovery = f.store.selectAll("SELECT value_json FROM runtime_state WHERE key LIKE 'work-local-state-recovery:%'")
+      .map(row => JSON.parse(row.value_json));
+    assert.ok(recovery.some(value => value.directory === f.root && value.code === "WORK_DIRECTORY_RETAINED"));
+  }
   assert.equal(f.events.length, 0);
 }
 
@@ -171,7 +210,7 @@ test("a new Git Work binds its own unborn repository without generating or commi
   assert.ok(receipt.result.repository.id);
   assert.equal(receipt.result.repository.workspaceId, receipt.result.workspace.workspaceId);
   assert.equal(receipt.result.workspace.ownership, "corptieManaged");
-  assert.deepEqual((await readdir(f.root)).filter(name => name !== ".git"), []);
+  assert.deepEqual((await readdir(f.root)).filter(name => name !== ".git"), [".corptie"]);
   assert.equal(f.store.listGitRepositories().length, 1);
 });
 
@@ -189,14 +228,16 @@ test("bind detects an existing Git repository and preserves existing files on a 
   assert.equal(f.deletions.length, 1);
 });
 
-test("bind existing non-Git directory completes without changing its contents", async t => {
+test("bind existing non-Git directory preserves user contents and adds only the local base", async t => {
   const f = await fixture(t);
   await mkdir(f.root);
   await writeFile(join(f.root, "keep.txt"), "user data");
   const receipt = await f.execute({ directory: { mode: "bind", path: f.root } });
   assert.equal(receipt.result.workspace.ownership, "userManaged");
   assert.equal(receipt.result.repository, null);
-  assert.deepEqual(await readdir(f.root), ["keep.txt"]);
+  assert.deepEqual((await readdir(f.root)).sort(), [".corptie", "keep.txt"]);
+  assert.equal(await readFile(join(f.root, "keep.txt"), "utf8"), "user data");
+  assert.deepEqual(await readdir(join(f.root, ".corptie")), [".gitignore"]);
 });
 
 test("local Git clone checks out an explicit commit and returns the bound repository", async t => {

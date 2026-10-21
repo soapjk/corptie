@@ -79,7 +79,7 @@ export function parseAcceptanceAssessment(value) {
 }
 
 export function buildAcceptanceAssessment(task, input, { now = new Date().toISOString() } = {}) {
-  assertKnownKeys(input, new Set(["sourceSessionId", "results"]), "assessment");
+  assertKnownKeys(input, new Set(["sourceSessionId", "results", "integrationSnapshotId"]), "assessment");
   const criteriaSnapshot = String(task?.acceptance_criteria ?? "").trim();
   const criteria = acceptanceCriteriaList(criteriaSnapshot);
   if (criteria.length === 0) {
@@ -199,6 +199,8 @@ export function presentTaskAcceptance(task, options = {}) {
   return {
     id: task.id,
     workId: task.work_id,
+    parentTaskId: task.parent_task_id ?? null,
+    ...(options.hierarchy ? { hierarchy: options.hierarchy } : {}),
     title: task.title,
     description: task.description,
     acceptanceCriteria: task.acceptance_criteria,

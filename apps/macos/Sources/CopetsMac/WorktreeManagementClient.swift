@@ -1045,6 +1045,12 @@ final class WorktreeManagementClient: ObservableObject {
         }
     }
 
+    func localState(repositoryId: String, worktreeId: String, repair: Bool = false) async throws -> ClientWorkLocalState {
+        let path = "worktree-management/repositories/\(repositoryId)/worktrees/\(worktreeId)/local-state"
+        if repair { return try await post(path, body: [:]) }
+        return try await get(path)
+    }
+
     private func get<Response: Decodable>(
         _ path: String,
         queryItems: [URLQueryItem] = []

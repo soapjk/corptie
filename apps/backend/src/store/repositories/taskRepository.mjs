@@ -6,7 +6,8 @@ import { requiredText, optionalStoredText, storeDomainError } from "../validatio
 
 // Uses the Store-owned connection and transaction coordinator; owns no connection lifecycle.
 export class TaskRepository {
-  constructor({ getDatabase, selectOne, selectAll, runInTransaction, scheduleSave, getWork, getWorkspace, getGitRepositoryForWorkspace, listSessionsByTask, hasPendingScheduledWakeForTask, recordRejectedTaskCompletionBypass, getSession, getSessionEvent, assertAssignableAgent }) {
+  constructor({ hierarchy, getDatabase, selectOne, selectAll, runInTransaction, scheduleSave, getWork, getWorkspace, getGitRepositoryForWorkspace, listSessionsByTask, hasPendingScheduledWakeForTask, recordRejectedTaskCompletionBypass, getSession, getSessionEvent, assertAssignableAgent }) {
+    this.hierarchy = hierarchy;
     this.getDatabase = getDatabase;
     this.selectOne = selectOne;
     this.selectAll = selectAll;
@@ -25,7 +26,7 @@ export class TaskRepository {
 
   get db() { return this.getDatabase(); }
 
-  createTask(input = {}, creationOrigin = {}) {
+  createTask(input = {}, creationOrigin = {}, constraints = {}) {
     const normalized = validateTaskInput(input, "create");
     if (normalized.lifecycleState === "done") {
       const error = new Error("A completed Task cannot be created without direct-user-intent authorization.");
@@ -45,10 +46,11 @@ export class TaskRepository {
     const now = createdAtFromOrNow();
     const origin = normalizeTaskCreationOrigin(creationOrigin);
     this.runInTransaction(() => {
+      this.hierarchy.assertParentForCreate({ ...normalized, ...constraints });
       this.db.run(
         `INSERT INTO tasks (id, work_id, title, description, acceptance_criteria,
-          verification_criteria, priority, lifecycle_state, main_agent_id, auto_title_enabled, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          verification_criteria, priority, lifecycle_state, main_agent_id, auto_title_enabled, created_at, updated_at, parent_task_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           normalized.workId,
@@ -62,6 +64,7 @@ export class TaskRepository {
           normalized.autoTitleEnabled === false ? 0 : 1,
           now,
           now,
+          normalized.parentTaskId ?? null,
         ]
       );
       this.db.run(
@@ -72,6 +75,7 @@ export class TaskRepository {
         [id, origin.originType, origin.creatorSessionId, origin.creationContextTaskId,
           origin.creationContextMessageId, origin.operationId, now]
       );
+      if (normalized.parentTaskId) this.hierarchy.bumpHierarchyRevision(normalized.parentTaskId);
     });
     this.scheduleSave();
     return this.getTask(id);
@@ -204,6 +208,7 @@ export class TaskRepository {
     if (Boolean(task.archived) === archived) return task;
     if (task.deletion_status === "deleting") reject("TASK_DELETING", "Task deletion is in progress.");
     if (archived) {
+      if (this.hierarchy.hasTaskChildren(id)) reject("TASK_HAS_CHILDREN", "Handle child Tasks before archiving the parent.");
       if (task.lifecycle_state === "done") reject("TASK_COMPLETED", "Completed Tasks are already archived.");
       if (["running", "blocked", "queued", "starting"].includes(task.execution_status)
         || this.listSessionsByTask(id).some((session) => ["running", "processing", "blocked", "queued", "starting"].includes(session.executionStatus ?? session.status))) {

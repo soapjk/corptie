@@ -3,11 +3,12 @@
 export function createSessionTaskCommands({
   store, collaborationCore, workService, taskCompletionService, presentTaskForClient
 }) {
-  function reportTaskAcceptanceForAgent(agentId, input = {}, metadata = {}) {
+  async function reportTaskAcceptanceForAgent(agentId, input = {}, metadata = {}) {
     const { sessionId, task } = resolveBoundTaskForAgent(agentId, metadata, "Task acceptance");
-    return presentTaskForClient(workService.recordAcceptanceAssessment(task.id, {
+    return presentTaskForClient(await workService.recordAcceptanceAssessment(task.id, {
       sourceSessionId: sessionId,
-      results: input.results
+      results: input.results,
+      ...(input.integrationSnapshotId ? {integrationSnapshotId:input.integrationSnapshotId} : {})
     }));
   }
 
@@ -89,7 +90,7 @@ export function createSessionTaskCommands({
     };
   }
 
-  function completeTaskForSession(agentId, input = {}, metadata = {}) {
+  async function completeTaskForSession(agentId, input = {}, metadata = {}) {
     const requestedSessionId = String(metadata.sessionId ?? "").trim();
     const logicalSessionId = String(metadata.logicalSessionId ?? "").trim();
     if (!requestedSessionId || !logicalSessionId) {
@@ -104,7 +105,7 @@ export function createSessionTaskCommands({
       error.code = "SESSION_ACTOR_MISMATCH";
       throw error;
     }
-    const result = taskCompletionService.completeFromSession(input, {
+    const result = await taskCompletionService.completeFromSession(input, {
       ...metadata,
       sessionId: requestedSessionId,
       logicalSessionId

@@ -9,6 +9,32 @@ import { ClientSessionAPI } from "../src/application/clientSessionAPI.mjs";
 const tasks = { deviceId: "device:test" };
 const works = tasks;
 
+test("local directory diagnosis is path-free and repair is an exact-Work idempotent command", async () => {
+  const f = await fixture();
+  try {
+    const calls = [];
+    const api = f.make({ entityCommands: {
+      inspectWorkLocalState: async id => ({ state: "missing", scope: "projectShared", root: "/private/host/path", message: "private" }),
+      repairWorkLocalState: async id => { calls.push(id); return { state: "ready" }; }
+    } });
+    assert.equal(api.workManagement(works, "work:test").actions.repairLocalState.available, true);
+    assert.deepEqual(await api.workLocalState(works, "work:test"), {
+      schemaVersion: 1, state: "missing", scope: "projectShared", gitStatus: null, code: null
+    });
+    const input = { requestId: "repair_local_0001" };
+    const result = await api.workCommand(works, "work:test", "repair-local-state", input);
+    assert.equal(result.status, "completed");
+    assert.equal(result.entityResult.state, "ready");
+    assert.equal(result.kind, "work_repair-local-state");
+    await api.workCommand(works, "work:test", "repair-local-state", input);
+    assert.deepEqual(calls, ["work:test"]);
+    await assert.rejects(async () => api.workCommand(works, "work:test", "repair-local-state", {
+      requestId: "repair_local_0002", path: "/other/work"
+    }), { code: "INVALID_WORK_COMMAND" });
+    await assert.rejects(api.workLocalState(works, "work:missing"), { code: "WORK_NOT_FOUND" });
+  } finally { await f.close(); }
+});
+
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), "corptie-device-entity-"));
   const store = new CorptieStore({ dbPath: join(dir, "db.sqlite"), configPath: join(dir, "config.json") });

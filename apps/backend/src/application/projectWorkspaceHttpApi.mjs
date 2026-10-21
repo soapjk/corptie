@@ -5,6 +5,20 @@ export function handleProjectWorkspaceHttpRequest({
   readJson, sendJson, emitEvent, errorStatus, unifiedErrorStatus
 }) {
   const projectWorkspacesMatch = url.pathname.match(/^\/projects\/([^/]+)\/workspaces$/);
+  const localStateMatch = url.pathname.match(/^\/worktree-management\/repositories\/([^/]+)\/worktrees\/([^/]+)\/local-state$/);
+  if (localStateMatch && ["GET", "POST"].includes(request.method)) {
+    Promise.resolve().then(async () => {
+      if (request.method === "POST") {
+        const input = await readJson(request);
+        if (!input || Array.isArray(input) || Object.keys(input).length) throw Object.assign(new Error("Repair accepts no path overrides."), { code: "INVALID_WORK_COMMAND", statusCode: 400 });
+      }
+      return worktreeIntegrationJobService.worktreeLocalState(
+        decodeRouteId(localStateMatch[1], "INVALID_REPOSITORY_ID"), decodeRouteId(localStateMatch[2], "INVALID_WORKTREE_ID"),
+        { repair: request.method === "POST" });
+    }).then(result => sendJson(response, 200, result))
+      .catch(error => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), { error: error.message, code: error.code }));
+    return true;
+  }
   const worktreeManagementRepositoryMatch = url.pathname.match(
     /^\/worktree-management\/repositories\/([^/]+)$/
   );

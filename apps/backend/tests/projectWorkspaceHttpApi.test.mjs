@@ -10,7 +10,7 @@ function fixture() {
     (...args) => { calls.push([name, ...args]); return sync.includes(name) ? result : Promise.resolve(result); }
   ]));
   const dependencies = {
-    worktreeIntegrationJobService: service("repositories repository worktreeGitHubPushStatus handleWorktreeGitOperation preflight createCandidate startCandidate cleanupMergedWorktrees deleteWorktree get confirm cancel resolveConflictWithAgent retry prepareCommitPolicyResolution resolveCommitPolicy resolveCommitPolicyResidue", ["repositories", "get"]),
+    worktreeIntegrationJobService: service("worktreeLocalState repositories repository worktreeGitHubPushStatus handleWorktreeGitOperation preflight createCandidate startCandidate cleanupMergedWorktrees deleteWorktree get confirm cancel resolveConflictWithAgent retry prepareCommitPolicyResolution resolveCommitPolicy resolveCommitPolicyResidue", ["repositories", "get"]),
     projectWorktreeIntegrationService: service("status integrateCompleted createConflictTask"),
     projectApplicationService: service("listWorkspaces runWorkspaceAction readDevelopmentService runDevelopmentServiceAction readProject")
   };
@@ -31,6 +31,16 @@ function fixture() {
 }
 
 const input = { marker: true };
+test("Worktree local-state route reads without repair and only accepts empty explicit repair", async () => {
+  const f = fixture();
+  const path = "/worktree-management/repositories/repo/worktrees/tree/local-state";
+  assert.equal((await f.dispatch(path).response).status, 200);
+  assert.deepEqual(f.calls.pop(), ["worktreeLocalState", "repo", "tree", { repair: false }]);
+  assert.equal((await f.dispatch(path, "POST", {}).response).status, 200);
+  assert.deepEqual(f.calls.pop(), ["worktreeLocalState", "repo", "tree", { repair: true }]);
+  assert.equal((await f.dispatch(path, "POST", { path: "/other" }).response).status, 400);
+  assert.equal(f.calls.length, 0);
+});
 const cases = [
   ["/worktree-management/repositories", "GET", ["repositories"], 200, "repositories"],
   ["/worktree-management/repositories/repo%2Fid?forceFresh=true", "GET", ["repository", "repo/id", { forceFresh: true }], 200],

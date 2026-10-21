@@ -10,7 +10,7 @@ import { clientCommandPrincipalKey } from "./clientCommandPrincipal.mjs";
  */
 export const TASK_PRIORITIES = Object.freeze(["low", "medium", "high", "urgent"]);
 export const TASK_COMMANDS = Object.freeze(["update", "archive", "restart", "delete"]);
-export const WORK_COMMANDS = Object.freeze(["update", "delete"]);
+export const WORK_COMMANDS = Object.freeze(["update", "delete", "repair-local-state"]);
 const TASK_TEXT_FIELDS = ["description", "acceptanceCriteria", "verificationCriteria"];
 const REQUEST_ID = /^[A-Za-z0-9_-]{8,128}$/;
 const TEXT_LIMIT = 16_000;
@@ -129,11 +129,20 @@ export async function clientTaskDeletionPlan(api, identity, taskId) {
 }
 
 export function clientWorkManagement(api, identity, workId) {
-  requireSupport(api);
+  const commands = requireSupport(api);
   const work = requireWork(api, workId);
   const deleting = api.store.listTasksByWork(work.id).some(task => task.deletion_status === "deleting");
   return { schemaVersion: 1, work: { id: work.id, name: work.name, description: work.description ?? "", status: work.status },
-    actions: { edit: action(true), delete: action(!deleting, "WORK_TASK_DELETING") } };
+    actions: { edit: action(true), delete: action(!deleting, "WORK_TASK_DELETING"),
+      ...(typeof commands.repairWorkLocalState === "function" ? { repairLocalState: action(true) } : {}) } };
+}
+
+export async function clientWorkLocalState(api, identity, workId) {
+  const commands = requireSupport(api);
+  const work = requireWork(api, workId);
+  if (typeof commands.inspectWorkLocalState !== "function") throw deviceError("CAPABILITY_UNSUPPORTED", 409);
+  const result = await commands.inspectWorkLocalState(work.id);
+  return { schemaVersion: 1, state: result.state, scope: result.scope, gitStatus: result.gitStatus ?? null, code: result.code ?? null };
 }
 
 export function clientWorkCreationOptions(api) {
@@ -202,9 +211,14 @@ export function clientWorkCommand(api, identity, workId, command, input, revalid
   const work = requireWork(api, workId);
   const fields = validateWorkCommand(command, input);
   return execute(api, identity, revalidateIdentity, { kind: `work_${command}`,
-    entityId: work.id, requestId: input.requestId, fields, uncertainCode: `WORK_${command.toUpperCase()}_OUTCOME_UNCERTAIN`,
+    entityId: work.id, requestId: input.requestId, fields, uncertainCode: `WORK_${command.toUpperCase().replaceAll("-", "_")}_OUTCOME_UNCERTAIN`,
     run: async () => {
       const current = requireWork(api, work.id);
+      if (command === "repair-local-state") {
+        if (typeof commands.repairWorkLocalState !== "function") throw deviceError("CAPABILITY_UNSUPPORTED", 409);
+        const localState = await commands.repairWorkLocalState(current.id);
+        return { workId: current.id, state: localState.state };
+      }
       if (command === "update") {
         const updated = await commands.updateWork(current.id, fields);
         return { workId: current.id, name: updated?.name ?? fields.name ?? current.name };
@@ -269,7 +283,7 @@ function validateTaskCommand(api, task, command, input) {
 
 function validateWorkCommand(command, input) {
   const code = "INVALID_WORK_COMMAND";
-  if (command === "delete") {
+  if (command === "delete" || command === "repair-local-state") {
     knownFields(input, ["requestId"], code);
     return {};
   }

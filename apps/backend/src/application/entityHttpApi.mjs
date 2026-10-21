@@ -20,6 +20,7 @@ import { validateEntityName, validateWorkInput } from "../domain/workTaskValidat
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 import { createTaskAndSession } from "./taskCreationApplicationService.mjs";
+import { readTaskHierarchyPage } from "./taskHierarchyService.mjs";
 
 function encodeTaskCursor(cursor) {
   return cursor ? Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url") : null;
@@ -76,6 +77,7 @@ export function handleEntityHttpRequest({
   url,
   workService,
   createWork,
+  workLocalState,
   hubService,
   router,
   memoryExtractor,
@@ -707,6 +709,18 @@ export function handleEntityHttpRequest({
         }
       }
 
+      const localStateMatch = path.match(/^\/works\/([^/]+)\/local-state$/);
+      if (localStateMatch && ["GET", "POST"].includes(request.method)) {
+        const id = decodeURIComponent(localStateMatch[1]);
+        workService.getWork(id);
+        if (typeof workLocalState !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Local directory management is unavailable.", 503);
+        if (request.method === "POST") {
+          const input = await readJson(request);
+          if (!input || Object.keys(input).length) throw apiError("INVALID_WORK_COMMAND", "Repair accepts no directory overrides.", 400);
+        }
+        return sendJson(response, 200, await workLocalState(id, { repair: request.method === "POST" }));
+      }
+
       const workMatch = path.match(/^\/works\/([^/]+)$/);
       if (workMatch) {
         const id = decodeURIComponent(workMatch[1]);
@@ -773,6 +787,16 @@ export function handleEntityHttpRequest({
           nextCursor: encodeTaskCursor(page.nextCursor)
         });
       }
+      const hierarchyMatch = path.match(/^\/works\/([^/]+)\/task-hierarchy$/);
+      const integrationMatch = path.match(/^\/tasks\/([^/]+)\/integration-(snapshots|acceptance)$/);
+      if (integrationMatch) {
+        const id=decodeURIComponent(integrationMatch[1]);
+        if(request.method==="GET" && integrationMatch[2]==="acceptance") return sendJson(response,200,await workService.integrationAcceptance.readStatus(id));
+        if(request.method==="POST" && integrationMatch[2]==="snapshots") return sendJson(response,201,await workService.integrationAcceptance.captureSnapshot(id,await readJson(request)));
+      }
+      if (request.method === "GET" && hierarchyMatch) {
+        return sendJson(response, 200, readTaskHierarchyPage(workService.store, decodeURIComponent(hierarchyMatch[1]), url.searchParams));
+      }
       if (request.method === "POST" && path === "/tasks") {
         const timing = beginTaskTiming("task.create");
         let phaseStartedAt = performance.now();
@@ -790,12 +814,13 @@ export function handleEntityHttpRequest({
           ?? workService.store.settings?.().newSessionDefaults?.taskCreation?.providerId ?? defaultSessionProviderId;
         const idempotencyKey = input.idempotencyKey ?? input.id;
         const { providerId: _providerId, sourceSessionId: _sourceSessionId,
-          model, reasoningLevel,
+          model, reasoningLevel, expectedParentResourceVersion,
           idempotencyKey: _idempotencyKey, ...taskInput } = input;
         const created = await createTaskAndSession({
           workService,
           startWorkSession,
           taskInput,
+          expectedParentResourceVersion,
           creationOrigin: {
             originType: "session",
             creatorSessionId: sourceSessionId,
@@ -928,7 +953,7 @@ export function handleEntityHttpRequest({
         return sendJson(
           response,
           200,
-          presentTaskWithScheduledWake(workService, workService.recordAcceptanceAssessment(id, input))
+          presentTaskWithScheduledWake(workService, await workService.recordAcceptanceAssessment(id, input))
         );
       }
 
@@ -940,7 +965,7 @@ export function handleEntityHttpRequest({
           "requestId", "interactionId", "uiSurface", "displayedTaskId",
           "displayedTaskTitle", "displayedAcceptanceStatus"
         ]));
-        return sendJson(response, 201, taskCompletionService.issueMacOSIntent(
+        return sendJson(response, 201, await taskCompletionService.issueMacOSIntent(
           decodeURIComponent(completionIntentMatch[1]), input, localMacUserActor()
         ));
       }
@@ -951,7 +976,7 @@ export function handleEntityHttpRequest({
         const input = await readJson(request);
         rejectUnknownFields(input, new Set(["intentToken", "requestId", "idempotencyKey"]));
         if (!taskCompletionService) throw apiError("CAPABILITY_UNAVAILABLE", "Task completion is unavailable.", 503);
-        const result = taskCompletionService.completeFromMacOS(id, input);
+        const result = await taskCompletionService.completeFromMacOS(id, input);
         return sendJson(response, 200, {
           task: presentTaskWithScheduledWake(workService, result.task),
           operation: result.operation,

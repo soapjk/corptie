@@ -20,7 +20,7 @@ export class TaskWorkspaceService {
     }
   }
 
-  async ensure({ task, session = null }) {
+  async ensure({ task, session = null, baseContext = null }) {
     const context = this.store.getTaskWorkspaceContext(task);
     if (!context?.workspace) throw workspaceRequiredError();
     const repositoryId = context.repository?.id ?? "";
@@ -48,7 +48,8 @@ export class TaskWorkspaceService {
         ...(await this.ensureWorktree({
           repositoryId,
           workingDirectory: project.mainPath,
-          taskId: task.id
+          taskId: task.id,
+          ...(baseContext ? { baseContext } : {})
         })),
         requiresSessionTransition: false
       };
@@ -90,7 +91,8 @@ export class TaskWorkspaceService {
         ...(await this.ensureWorktree({
           repositoryId,
           workingDirectory: project.mainPath,
-          taskId: task.id
+          taskId: task.id,
+          ...(baseContext ? { baseContext } : {})
         })),
         rebuilt: true,
         requiresSessionTransition: true

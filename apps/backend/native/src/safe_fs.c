@@ -36,9 +36,182 @@ static int safe_component(const char *value) {
   return value && value[0] && strcmp(value, ".") != 0 && strcmp(value, "..") != 0 && strchr(value, '/') == NULL;
 }
 
+static int publish_at(int parent, const char *name, const unsigned char *bytes, size_t length, CorptieSafeTreeResult *out) {
+  char temporary[96];
+  snprintf(temporary, sizeof(temporary), ".corptie-write-%ld-%08x-%08x", (long)getpid(), arc4random(), arc4random());
+  int fd = openat(parent, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+  if (fd < 0) return fail_errno(out, "ARTIFACT_WRITE_FAILED", "openat temporary");
+  size_t offset = 0;
+  while (offset < length) {
+    ssize_t written = write(fd, bytes + offset, length - offset);
+    if (written < 0 && errno == EINTR) continue;
+    if (written <= 0) { fail_errno(out, "ARTIFACT_WRITE_FAILED", "write temporary"); goto failed; }
+    offset += (size_t)written;
+  }
+  if (fsync(fd)) { fail_errno(out, "ARTIFACT_WRITE_FAILED", "fsync temporary"); goto failed; }
+  if (linkat(parent, temporary, parent, name, 0)) {
+    fail_errno(out, errno == EEXIST ? "ARTIFACT_DESTINATION_EXISTS" : "ARTIFACT_WRITE_FAILED", "publish new file"); goto failed;
+  }
+  out->files = 1; out->bytes = length;
+  close(fd); unlinkat(parent, temporary, 0);
+  if (fsync(parent)) return fail_errno(out, "ARTIFACT_WRITE_FAILED", "fsync parent");
+  return 0;
+failed:
+  close(fd); unlinkat(parent, temporary, 0); return -1;
+}
+
+// Bounded, descriptor-relative preparation of the reserved local state root.
+// This is deliberately not recursive tree inspection/deletion.
+typedef struct {
+  uint64_t root_device, root_inode, directory_device, directory_inode, ignore_device, ignore_inode;
+  int exists, ignore_exists, created_directory, created_ignore, retained;
+  char ignore_text[65537];
+  char error_code[64], error_message[256];
+} CorptieLocalStateResult;
+
+static int local_fail(CorptieLocalStateResult *out, const char *code) {
+  if (!strcmp(code, "LOCAL_STATE_PATH_UNSAFE") && (errno == EACCES || errno == EPERM || errno == EROFS))
+    code = "LOCAL_STATE_PERMISSION_DENIED";
+  snprintf(out->error_code, sizeof(out->error_code), "%s", code);
+  snprintf(out->error_message, sizeof(out->error_message), "%s", strerror(errno));
+  return -1;
+}
+
+static int local_empty_except_ignore(int fd) {
+  int copy = openat(fd, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (copy < 0) return -1;
+  DIR *dir = fdopendir(copy);
+  if (!dir) { close(copy); return -1; }
+  struct dirent *entry;
+  int empty = 1;
+  errno = 0;
+  while ((entry = readdir(dir))) {
+    if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..") || !strcmp(entry->d_name, ".gitignore")) continue;
+    empty = 0; break;
+  }
+  if (!entry && errno) empty = -1;
+  closedir(dir);
+  return empty;
+}
+
+int corptie_local_state(const char *root, int create, uint64_t expected_device, uint64_t expected_inode,
+                       uint64_t expected_directory_device, uint64_t expected_directory_inode,
+                       CorptieLocalStateResult *out) {
+  int root_fd = -1, directory = -1, ignore = -1;
+  struct stat root_stat, dir_stat, file_stat, current;
+  root_fd = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (root_fd < 0 || fstat(root_fd, &root_stat)) goto unsafe;
+  out->root_device = root_stat.st_dev; out->root_inode = root_stat.st_ino;
+  if (expected_inode && (out->root_device != expected_device || out->root_inode != expected_inode)) goto changed;
+  if (fstatat(root_fd, ".corptie", &dir_stat, AT_SYMLINK_NOFOLLOW)) {
+    if (errno != ENOENT) goto unsafe;
+    if (!create) { close(root_fd); return 0; }
+    if (!mkdirat(root_fd, ".corptie", 0700)) out->created_directory = 1;
+    else if (errno != EEXIST) goto unsafe;
+  }
+  directory = openat(root_fd, ".corptie", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (directory < 0 || fstat(directory, &dir_stat)) goto unsafe;
+  out->exists = 1; out->directory_device = dir_stat.st_dev; out->directory_inode = dir_stat.st_ino;
+  if (expected_directory_inode && (out->directory_device != expected_directory_device
+      || out->directory_inode != expected_directory_inode)) goto changed;
+  if (create && faccessat(directory, ".", W_OK | X_OK, 0)) goto unsafe;
+  if (fstatat(directory, ".gitignore", &file_stat, AT_SYMLINK_NOFOLLOW)) {
+    if (errno != ENOENT) goto unsafe;
+    if (!create) goto verified;
+    int empty = local_empty_except_ignore(directory);
+    if (empty != 1) { errno = empty == 0 ? ENOTEMPTY : errno; local_fail(out, "LOCAL_STATE_EXISTING_CONTENT"); goto failed; }
+    CorptieSafeTreeResult publication = {0};
+    if (publish_at(directory, ".gitignore", (const unsigned char *)"*\n", 2, &publication)) {
+      if (strcmp(publication.error_code, "ARTIFACT_DESTINATION_EXISTS")) goto unsafe;
+    } else out->created_ignore = 1;
+  }
+  ignore = openat(directory, ".gitignore", O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  if (ignore < 0 || fstat(ignore, &file_stat) || !S_ISREG(file_stat.st_mode)
+      || file_stat.st_size <= 0 || file_stat.st_size > 65536) goto unsafe;
+  out->ignore_exists = 1; out->ignore_device = file_stat.st_dev; out->ignore_inode = file_stat.st_ino;
+  ssize_t count = pread(ignore, out->ignore_text, (size_t)file_stat.st_size, 0);
+  if (count != file_stat.st_size || memchr(out->ignore_text, 0, count)) goto unsafe;
+  out->ignore_text[count] = 0;
+verified:
+  if (lstat(root, &current) || !S_ISDIR(current.st_mode) || current.st_dev != root_stat.st_dev || current.st_ino != root_stat.st_ino) goto changed;
+  if (fstatat(root_fd, ".corptie", &current, AT_SYMLINK_NOFOLLOW) || !S_ISDIR(current.st_mode)
+      || current.st_dev != dir_stat.st_dev || current.st_ino != dir_stat.st_ino) goto changed;
+  if (out->ignore_exists && (fstatat(directory, ".gitignore", &current, AT_SYMLINK_NOFOLLOW)
+      || !S_ISREG(current.st_mode) || current.st_dev != file_stat.st_dev || current.st_ino != file_stat.st_ino)) goto changed;
+  if (ignore >= 0) close(ignore);
+  close(directory); close(root_fd); return 0;
+unsafe:
+  local_fail(out, "LOCAL_STATE_PATH_UNSAFE"); goto failed;
+changed:
+  errno = ESTALE; local_fail(out, "LOCAL_STATE_PATH_CHANGED");
+failed:
+  if (ignore >= 0) close(ignore);
+  if (directory >= 0) close(directory);
+  // Return ownership evidence even on failure. Cleanup is an explicit operation,
+  // not a racy check-then-unlink hidden in a failed preparation call.
+  if (root_fd >= 0) close(root_fd);
+  return -1;
+}
+
+int corptie_local_state_rollback(const char *root, CorptieLocalStateResult *receipt) {
+  if (!receipt->created_directory && !receipt->created_ignore) return 0;
+  CorptieLocalStateResult current = {0};
+  if (corptie_local_state(root, 0, receipt->root_device, receipt->root_inode,
+      receipt->directory_device, receipt->directory_inode, &current)) return local_fail(receipt, current.error_code);
+  if (!current.exists || current.directory_device != receipt->directory_device || current.directory_inode != receipt->directory_inode) {
+    errno = ESTALE; return local_fail(receipt, "LOCAL_STATE_PATH_CHANGED");
+  }
+  int parent = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  int dir = parent < 0 ? -1 : openat(parent, ".corptie", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  struct stat actual, base;
+  if (dir < 0 || fstat(parent, &base) || fstat(dir, &actual)
+      || (uint64_t)base.st_dev != receipt->root_device || base.st_ino != receipt->root_inode
+      || (uint64_t)actual.st_dev != receipt->directory_device || actual.st_ino != receipt->directory_inode) {
+    if (dir >= 0) close(dir); if (parent >= 0) close(parent);
+    errno = ESTALE; return local_fail(receipt, "LOCAL_STATE_PATH_CHANGED");
+  }
+  // Other content means another operation adopted the base. Keep its ignore rule.
+  if (local_empty_except_ignore(dir) != 1) { receipt->retained = 1; close(dir); close(parent); return 0; }
+  if (receipt->created_ignore) {
+    char bytes[3] = {0};
+    char quarantine[96];
+    snprintf(quarantine, sizeof(quarantine), ".corptie-rollback-%ld-%08x", (long)getpid(), arc4random());
+    if (renameatx_np(dir, ".gitignore", dir, quarantine, RENAME_EXCL)) {
+      close(dir); close(parent); return local_fail(receipt, "LOCAL_STATE_CLEANUP_FAILED");
+    }
+    int fd = openat(dir, quarantine, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0 || fstat(fd, &actual) || (uint64_t)actual.st_dev != receipt->ignore_device || actual.st_ino != receipt->ignore_inode
+        || actual.st_size != 2 || pread(fd, bytes, 3, 0) != 2 || memcmp(bytes, "*\n", 2)) {
+      if (fd >= 0) close(fd);
+      if (renameatx_np(dir, quarantine, dir, ".gitignore", RENAME_EXCL)) receipt->retained = 1;
+      close(dir); close(parent);
+      errno = ESTALE; return local_fail(receipt, "LOCAL_STATE_PATH_CHANGED");
+    }
+    close(fd);
+    if (unlinkat(dir, quarantine, 0)) { close(dir); close(parent); return local_fail(receipt, "LOCAL_STATE_CLEANUP_FAILED"); }
+  }
+  close(dir);
+  // Never unlink a replacement directory; rmdir refuses concurrent content.
+  if (receipt->created_directory) {
+    char quarantine[96];
+    snprintf(quarantine, sizeof(quarantine), ".corptie-rollback-dir-%ld-%08x", (long)getpid(), arc4random());
+    if (renameatx_np(parent, ".corptie", parent, quarantine, RENAME_EXCL)) {
+      close(parent); return local_fail(receipt, "LOCAL_STATE_CLEANUP_FAILED");
+    }
+    if (fstatat(parent, quarantine, &actual, AT_SYMLINK_NOFOLLOW) || (uint64_t)actual.st_dev != receipt->directory_device
+        || actual.st_ino != receipt->directory_inode || !S_ISDIR(actual.st_mode)
+        || unlinkat(parent, quarantine, AT_REMOVEDIR)) {
+      receipt->retained = 1;
+      renameatx_np(parent, quarantine, parent, ".corptie", RENAME_EXCL);
+      close(parent); return local_fail(receipt, "LOCAL_STATE_CLEANUP_FAILED");
+    }
+  }
+  close(parent); return 0;
+}
+
 // Atomically publish a new file relative to a trusted project directory.
 // Every descendant is descriptor-relative and symlinks are never followed.
-int corptie_write_new_file(const char *root, const char *relative,
+static int write_relative_at(int trusted_root, const char *relative,
                           const unsigned char *bytes, size_t length,
                           CorptieSafeTreeResult *out) {
   if (!relative || !relative[0] || relative[0] == '/' || strchr(relative, '\\'))
@@ -51,7 +224,7 @@ int corptie_write_new_file(const char *root, const char *relative,
     if (!safe_component(part)) { free(copy); return fail(out, "ARTIFACT_PATH_INVALID", "Unsafe path component."); }
   }
   strcpy(copy, relative);
-  int parent = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  int parent = openat(trusted_root, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
   if (parent < 0) { free(copy); return fail_errno(out, "ARTIFACT_PATH_UNSAFE", "open project root"); }
   cursor = copy;
   while ((part = strsep(&cursor, "/")) != NULL && cursor != NULL) {
@@ -62,29 +235,38 @@ int corptie_write_new_file(const char *root, const char *relative,
     if (next < 0) { fail_errno(out, "ARTIFACT_PATH_UNSAFE", "openat parent"); goto failed_write; }
     close(parent); parent = next;
   }
-  char temporary[96];
-  snprintf(temporary, sizeof(temporary), ".corptie-write-%ld-%08x-%08x", (long)getpid(), arc4random(), arc4random());
-  int fd = openat(parent, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
-  if (fd < 0) { fail_errno(out, "ARTIFACT_WRITE_FAILED", "openat temporary"); goto failed_write; }
-  size_t offset = 0;
-  while (offset < length) {
-    ssize_t written = write(fd, bytes + offset, length - offset);
-    if (written < 0 && errno == EINTR) continue;
-    if (written <= 0) { fail_errno(out, "ARTIFACT_WRITE_FAILED", "write temporary"); goto failed_temporary; }
-    offset += (size_t)written;
-  }
-  if (fsync(fd) != 0) { fail_errno(out, "ARTIFACT_WRITE_FAILED", "fsync temporary"); goto failed_temporary; }
-  // linkat is atomic and refuses any existing leaf, including a symlink.
-  if (linkat(parent, temporary, parent, part, 0) != 0) {
-    fail_errno(out, errno == EEXIST ? "ARTIFACT_DESTINATION_EXISTS" : "ARTIFACT_WRITE_FAILED", "publish new file");
-    goto failed_temporary;
-  }
-  out->files = 1; out->bytes = length;
-  close(fd); unlinkat(parent, temporary, 0); close(parent); free(copy); return 0;
-failed_temporary:
-  close(fd); unlinkat(parent, temporary, 0);
+  int published = publish_at(parent, part, bytes, length, out);
+  close(parent); free(copy); return published;
 failed_write:
   close(parent); free(copy); return -1;
+}
+
+int corptie_write_new_file(const char *root, const char *relative,
+                         const unsigned char *bytes, size_t length, CorptieSafeTreeResult *out) {
+  int fd = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0) return fail_errno(out, "ARTIFACT_PATH_UNSAFE", "open project root");
+  int status = write_relative_at(fd, relative, bytes, length, out);
+  close(fd); return status;
+}
+
+int corptie_write_local_file(const char *root, const char *relative, const unsigned char *bytes, size_t length,
+                            CorptieLocalStateResult *receipt, CorptieSafeTreeResult *out) {
+  int parent = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  int dir = parent < 0 ? -1 : openat(parent, ".corptie", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  struct stat base, local, ignore_stat;
+  int ignore = dir < 0 ? -1 : openat(dir, ".gitignore", O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  char rules[65537] = {0};
+  if (parent < 0 || dir < 0 || ignore < 0 || fstat(parent, &base) || fstat(dir, &local) || fstat(ignore, &ignore_stat)
+      || (uint64_t)base.st_dev != receipt->root_device || base.st_ino != receipt->root_inode
+      || (uint64_t)local.st_dev != receipt->directory_device || local.st_ino != receipt->directory_inode
+      || !S_ISREG(ignore_stat.st_mode) || (uint64_t)ignore_stat.st_dev != receipt->ignore_device || ignore_stat.st_ino != receipt->ignore_inode
+      || ignore_stat.st_size <= 0 || ignore_stat.st_size > 65536
+      || pread(ignore, rules, ignore_stat.st_size, 0) != ignore_stat.st_size || strcmp(rules, receipt->ignore_text)) {
+    if (ignore >= 0) close(ignore); if (dir >= 0) close(dir); if (parent >= 0) close(parent);
+    return fail(out, "ARTIFACT_PATH_UNSAFE", "Bound local state directory or ignore rules changed.");
+  }
+  int status = write_relative_at(dir, relative, bytes, length, out);
+  close(ignore); close(dir); close(parent); return status;
 }
 
 static int duplicate_dir(int fd, CorptieSafeTreeResult *out) {
@@ -146,6 +328,38 @@ static int open_parent(int root_fd, const char *relative, char **leaf, CorptieSa
     return -1;
   }
   return parent;
+}
+
+// Return an owned descriptor, not bytes read through a check-then-open path.
+// Node closes it after a bounded read (and optional permission tightening).
+int corptie_open_local_file(const char *root, const char *relative, CorptieLocalStateResult *receipt,
+                           CorptieSafeTreeResult *out) {
+  CorptieLocalStateResult current = {0};
+  if (corptie_local_state(root, 0, receipt->root_device, receipt->root_inode,
+      receipt->directory_device, receipt->directory_inode, &current)
+      || current.ignore_inode != receipt->ignore_inode || current.ignore_device != receipt->ignore_device
+      || strcmp(current.ignore_text, receipt->ignore_text)) {
+    fail(out, "LOCAL_STATE_PATH_CHANGED", "Bound directory changed."); return -1;
+  }
+  int parent = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  int dir = parent < 0 ? -1 : openat(parent, ".corptie", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  struct stat base, local, info;
+  if (dir < 0 || fstat(parent, &base) || fstat(dir, &local)
+      || (uint64_t)base.st_dev != receipt->root_device || base.st_ino != receipt->root_inode
+      || (uint64_t)local.st_dev != receipt->directory_device || local.st_ino != receipt->directory_inode) {
+    if (dir >= 0) close(dir); if (parent >= 0) close(parent);
+    fail(out, "LOCAL_STATE_PATH_CHANGED", "Bound directory changed."); return -1;
+  }
+  char *leaf = NULL;
+  int location = open_parent(dir, relative, &leaf, out);
+  int file = location < 0 ? -1 : openat(location, leaf, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+  if (location >= 0) close(location);
+  free(leaf); close(dir); close(parent);
+  if (file < 0 || fstat(file, &info) || !S_ISREG(info.st_mode) || info.st_nlink != 1) {
+    if (file >= 0) close(file);
+    fail(out, "LOCAL_STATE_FILE_UNSAFE", "Expected a private regular file without links."); return -1;
+  }
+  return file;
 }
 
 static int list_and_inspect(int fd, dev_t root_device, CorptieSafeTreeResult *out) {

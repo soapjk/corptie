@@ -1501,7 +1501,7 @@ export class ArtifactService {
     const current = this.context(contextInput);
     this.#readableArtifact(current, artifactId);
     const session = current.sessionId ? this.store.getSession(current.sessionId) : null;
-    const receipt = materializeArtifactBytes({ cwd: session?.external?.cwd, relativePath: input.path, content: buffer });
+    const receipt = await materializeArtifactBytes({ cwd: session?.external?.cwd, relativePath: input.path, content: buffer });
     this.#audit(current, artifact.artifactId, "artifact.materialized", { ...receipt, contentHash: hash }, versionNumber, versionNumber);
     return { artifactId, version: versionNumber, contentHash: hash, ...receipt, auditAction: "artifact.materialized" };
   }

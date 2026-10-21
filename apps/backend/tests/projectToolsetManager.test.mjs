@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile, lstat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -12,8 +12,65 @@ import {
 import { RunIsolationExecutionCoordinator } from "../src/runIsolation/runIsolationExecutionCoordinator.mjs";
 import { RunIsolationAuthorityResolver } from "../src/runIsolation/runIsolationAuthorityResolver.mjs";
 import { fixture as runIsolationFixture, prepareInput, toolsetFixture } from "./runIsolationTestHelpers.mjs";
+import { pinToolsetExecution, verifyToolsetExecution } from "../src/runtime/projectToolsetExecutionSnapshot.mjs";
+import { inspectGitWorkspace } from "../src/utils/gitWorktreeInventory.mjs";
 
 const execFileAsync = promisify(execFile);
+
+test("fixed Toolset execution retains scripts and helpers when main changes, and rejects tampered copies", async () => {
+  const fixture = await createFixture();
+  const manager = new ProjectToolsetManager();
+  try {
+    const state = await manager.scaffold(fixture.mainPath);
+    await writeFile(join(state.scriptsPath, "helper"), "old");
+    await writeFile(state.scripts.status.path, "#!/bin/sh\nprintf '{\"action\":\"status\",\"ok\":true,\"value\":\"%s\"}\\n' \"$(/bin/cat \"$CORPTIE_TOOLSET_ROOT/scripts/helper\")\"\n");
+    await manager.markConfigured(fixture.mainPath);
+    const source = await manager.sourceIdentity(fixture.featurePath);
+    const identity = await inspectGitWorkspace(fixture.featurePath);
+    const pin = await pinToolsetExecution(await manager.inspect(fixture.mainPath), identity, source);
+    const taskOne = await pinToolsetExecution(await manager.inspect(fixture.mainPath), identity, source, "task:one");
+    const taskTwo = await pinToolsetExecution(await manager.inspect(fixture.mainPath), identity, source, "task:two");
+    assert.notEqual(taskOne.root, taskTwo.root);
+    assert.equal(taskOne.contentHash, taskTwo.contentHash);
+    await assert.rejects(() => verifyToolsetExecution(taskOne, identity, source, "task:two"), { code: "TOOLSET_SNAPSHOT_INVALID" });
+    await writeFile(join(state.scriptsPath, "helper"), "new");
+    const fixed = await manager.run(fixture.featurePath, "status", { sourceIdentity: source, toolsetSnapshot: pin });
+    assert.equal(fixed.payload.value, "old");
+    const latest = await manager.run(fixture.featurePath, "status", { sourceIdentity: source });
+    assert.equal(latest.payload.value, "new");
+    assert.notEqual(latest.toolsetSnapshot.contentHash, pin.contentHash);
+    assert.ok(pin.root.startsWith(join(await realpath(fixture.featurePath), ".corptie")));
+    await writeFile(join(pin.root, "scripts/helper"), "tampered");
+    await assert.rejects(() => manager.run(fixture.featurePath, "status", { sourceIdentity: source, toolsetSnapshot: pin }), { code: "TOOLSET_SNAPSHOT_INVALID" });
+    await assert.rejects(() => manager.run(fixture.mainPath, "status", { sourceIdentity: source, toolsetSnapshot: latest.toolsetSnapshot }), { code: "TOOLSET_SNAPSHOT_INVALID" });
+  } finally { await fixture.close(); }
+});
+
+test("Toolset pinning rejects symlink helpers instead of copying external content", async () => {
+  const fixture = await createFixture();
+  const manager = new ProjectToolsetManager();
+  try {
+    const state = await manager.scaffold(fixture.mainPath);
+    await manager.markConfigured(fixture.mainPath);
+    await symlink("/etc/hosts", join(state.scriptsPath, "helper"));
+    await assert.rejects(() => manager.run(fixture.featurePath, "status"), /symbolic links/);
+  } finally { await fixture.close(); }
+});
+
+test("ordinary read-only inventory probes do not prepare a Task local directory or execution snapshot", async () => {
+  const fixture = await createFixture();
+  const manager = new ProjectToolsetManager();
+  try {
+    const state = await manager.scaffold(fixture.mainPath);
+    await writeFile(state.scripts.status.path, "#!/bin/sh\nprintf '%s\\n' '{\"schemaVersion\":1,\"action\":\"status\",\"ok\":true}'\n");
+    await manager.markConfigured(fixture.mainPath);
+    const result = await manager.run(fixture.featurePath, "status", { prepareSnapshot: false });
+    assert.equal(result.ok, true);
+    assert.equal(result.toolsetSnapshot, null);
+    await assert.rejects(lstat(join(fixture.featurePath, ".corptie")), { code: "ENOENT" });
+    await assert.rejects(lstat(join(state.toolsetPath, "toolset-snapshots")), { code: "ENOENT" });
+  } finally { await fixture.close(); }
+});
 
 test("inspect reports a main Worktree toolset symlink without following a link loop", async () => {
   const fixture = await createFixture();
@@ -158,7 +215,7 @@ test("run can restart the service from a selected worktree", async () => {
     });
 
     assert.equal(result.ok, true);
-    const invocation = (await readFile(join(state.runtimePath, "invocation"), "utf8"))
+    const invocation = (await readFile(join(result.toolsetSnapshot.root, "runtime/invocation"), "utf8"))
       .trim()
       .split("\n");
     assert.deepEqual(invocation, [
@@ -166,6 +223,15 @@ test("run can restart the service from a selected worktree", async () => {
       await realpath(fixture.featurePath),
       await realpath(fixture.mainPath)
     ]);
+    // Shared definitions live in main; invoking from a Task tree must not
+    // implicitly execute against main when no explicit override was supplied.
+    const implicit = await manager.run(fixture.featurePath, "restart", {
+      sourceIdentity: await manager.sourceIdentity(fixture.featurePath),
+      runIsolation: TEST_RUN_AUTHORITY
+    });
+    assert.equal(implicit.ok, true);
+    const implicitInvocation = (await readFile(join(implicit.toolsetSnapshot.root, "runtime/invocation"), "utf8")).trim().split("\n");
+    assert.deepEqual(implicitInvocation, invocation);
   } finally {
     await fixture.close();
   }
@@ -250,7 +316,7 @@ test("activation builds before restart and verifies the exact artifact, source, 
     assert.equal(result.ok, true);
     assert.equal(result.stage, "complete");
     assert.deepEqual(
-      (await readFile(join(state.runtimePath, "order"), "utf8")).trim().split("\n"),
+      (await readFile(join(result.build.toolsetSnapshot.root, "runtime/order"), "utf8")).trim().split("\n"),
       ["build", "restart"]
     );
   } finally {

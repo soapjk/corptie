@@ -2,6 +2,21 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ClientWorktreeManagementAPI } from "../src/application/clientWorktreeManagementAPI.mjs";
 
+test("paired local repair rejects override bodies and never returns host paths", async () => {
+  const calls = [];
+  const api = new ClientWorktreeManagementAPI({ worktrees: { async worktreeLocalState(...args) {
+    calls.push(args);
+    return { state: "conflict", scope: "worktreeLocal", code: "LOCAL_STATE_PATH_UNSAFE", message: "/private/host/path" };
+  } } });
+  assert.equal((await api.localState("repo", "tree")).state, "conflict");
+  assert.equal(JSON.stringify(await api.localState("repo", "tree", {})).includes("/private"), false);
+  assert.deepEqual(calls.map(item => item[2]), [{ repair: false }, { repair: true }]);
+  for (const body of [[], { path: "/untrusted" }, { root: "/untrusted" }, false]) {
+    await assert.rejects(api.localState("repo", "tree", body), { code: "INVALID_WORK_COMMAND" });
+  }
+  assert.equal(calls.length, 2);
+});
+
 test("paired Worktree facade uses project services and a closed action allowlist", async () => {
   const calls = [];
   const api = new ClientWorktreeManagementAPI({
