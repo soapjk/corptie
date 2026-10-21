@@ -69,6 +69,7 @@ test("invalid acceptance objects are rejected without changing the canonical Tas
   assert.deepEqual(presented, {
     id: "task:canonical",
     workId: "work:1",
+    parentTaskId: null,
     title: "Canonical Task",
     description: "Description",
     acceptanceCriteria: "Acceptance",

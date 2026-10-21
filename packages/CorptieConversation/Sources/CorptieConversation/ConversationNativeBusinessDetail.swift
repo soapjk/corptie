@@ -111,7 +111,17 @@ private struct NativeBusinessCard: View {
             NativeBusinessTextSection(title: "Work 概述", text: value.description)
         case .task(let value):
             Text(value.title).font(.system(size: 12, weight: .medium)).textSelection(.enabled)
-            NativeBusinessStatus(status: value.status)
+            HStack {
+                NativeBusinessStatus(status: value.status)
+                Spacer(minLength: 8)
+                ForEach(card.actions.filter { $0.operation == "resource.open" && $0.target?.resourceType == "session" }) { action in
+                    NativeBusinessNavigation(action:action,symbol:"arrow.up.backward",actions:actions)
+                }
+            }
+            if let hierarchy = value.hierarchy, hierarchy.childCount > 0 {
+                Text("\(hierarchy.completedChildCount)/\(hierarchy.childCount) 子任务已完成")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             NativeBusinessSummary(summary: value.summary)
             NativeBusinessTextSection(title: "描述", text: value.description)
             NativeBusinessTextSection(title: "验收标准", text: value.acceptanceCriteria)

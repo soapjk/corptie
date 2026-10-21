@@ -15,6 +15,15 @@ export function createSessionTaskCommands({
   function getBoundTaskForAgent(agentId, _input = {}, metadata = {}) {
     return presentTaskForClient(resolveBoundTaskForAgent(agentId, metadata, "Bound Task read").task);
   }
+  async function captureTaskIntegrationForAgent(agentId,input={},metadata={}) {
+    const {task,sessionId}=resolveBoundTaskForAgent(agentId,metadata,"Integration snapshot");
+    return workService.integrationAcceptance.captureSnapshot(task.id,input,{revalidate:()=>{
+      const current=resolveBoundTaskForAgent(agentId,metadata,"Integration snapshot");
+      if(current.task.id!==task.id || current.sessionId!==sessionId) {
+        throw Object.assign(new Error("Session binding changed during integration snapshot capture."),{code:"TASK_SESSION_MISMATCH",statusCode:403});
+      }
+    }});
+  }
 
   function resolveBoundTaskForAgent(agentId, metadata = {}, operation = "Task operation") {
     const requestedSessionId = String(metadata.sessionId ?? "").trim();
@@ -119,6 +128,7 @@ export function createSessionTaskCommands({
 
   return {
     reportTaskAcceptanceForAgent, getBoundTaskForAgent,
+    captureTaskIntegrationForAgent,
     reviseTaskForSession, completeTaskForSession
   };
 }

@@ -73,12 +73,12 @@ test("Detail stream emits snapshot then patches and no changes after close", asy
   service.events.attach(response, () => ({ deviceId: "test" }), "legacy");
   try {
     await delay(10); assert.match(response.frames[0], /event: detail-snapshot/);
-    session.summary = "Updated"; service.events.invalidate(); await delay(20);
+    session.summary = "Updated"; service.invalidate(); await delay(20);
     assert.match(response.frames[1], /event: detail-patch/);
     assert.match(response.frames[1], /"baseRevision":1/);
-    service.events.invalidate(); await delay(20); assert.equal(response.frames.length, 2);
+    service.invalidate(); await delay(20); assert.equal(response.frames.length, 2);
   } finally { response.destroy(); }
-  service.events.invalidate(); await delay(10); assert.equal(response.frames.length, 2);
+  service.invalidate(); await delay(10); assert.equal(response.frames.length, 2);
 });
 test("patch baseline advances only per queued frame and coalesces under backpressure", async () => {
   const { service, session } = setup(), response = new Response(); service.events.coalesceMs = 5;
@@ -86,7 +86,7 @@ test("patch baseline advances only per queued frame and coalesces under backpres
   service.events.attach(response, () => ({ deviceId: "test" }), "legacy");
   try {
     await delay(10);
-    session.summary = "A"; service.events.invalidate(); session.summary = "B"; service.events.invalidate();
+    session.summary = "A"; service.invalidate(); session.summary = "B"; service.invalidate();
     await delay(20); assert.equal(response.frames.length, 1);
     response.writableNeedDrain = false; response.emit("drain"); await delay(20);
     assert.equal(response.frames.length, 2); assert.match(response.frames[1], /"baseRevision":1/);

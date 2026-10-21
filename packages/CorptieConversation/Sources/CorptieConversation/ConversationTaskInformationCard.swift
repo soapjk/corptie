@@ -148,6 +148,7 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
     public let autoTitleEnabled: Bool?
     public let autoTitleLabel: String
     public let autoTitleUpdating: Bool
+    public let hierarchy: TaskHierarchySummary?
     private let onAutoTitleChange: ((Bool) -> Void)?
     private let actions: Actions
     @State private var isExpanded = false
@@ -159,6 +160,7 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
                 collapseLabel: String = "收起", showsWhenEmpty: Bool = false,
                 autoTitleEnabled: Bool? = nil, autoTitleLabel: String = "自动更新 Task 标题",
                 autoTitleUpdating: Bool = false, onAutoTitleChange: ((Bool) -> Void)? = nil,
+                hierarchy: TaskHierarchySummary? = nil,
                 @ViewBuilder actions: () -> Actions) {
         self.summary = summary
         self.description = description ?? ""
@@ -174,6 +176,7 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
         self.autoTitleLabel = autoTitleLabel
         self.autoTitleUpdating = autoTitleUpdating
         self.onAutoTitleChange = onAutoTitleChange
+        self.hierarchy = hierarchy
         self.actions = actions()
     }
 
@@ -182,6 +185,10 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
             description: description, acceptance: acceptance) {
             ConversationDetailModuleCard(title: title, systemImage: "checklist", headerActions: { actions }) {
                 VStack(alignment: .leading, spacing: 14) {
+                    if let hierarchy, hierarchy.childCount > 0 {
+                        Text("\(hierarchy.completedChildCount)/\(hierarchy.childCount) 子任务已完成")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     ConversationTaskSummaryView(summary: summary, title: summaryTitle)
                     if isExpanded {
                         ConversationTaskDefinition(description: description, acceptance: acceptance,

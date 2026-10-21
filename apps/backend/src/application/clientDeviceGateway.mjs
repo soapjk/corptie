@@ -12,6 +12,7 @@ import { createDetailBusinessActionService } from "./detailBusinessActionComposi
 import { handleDetailActionHttp } from "./detailActionHttpAdapter.mjs";
 import { ClientResourceAPI } from "./clientResourceAPI.mjs";
 import { readTaskHierarchyPage } from "./taskHierarchyService.mjs";
+import { TaskIntegrationAcceptanceService } from "./taskIntegrationAcceptanceService.mjs";
 
 export const reply = (response, status, body) => {
   response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store",
@@ -165,6 +166,19 @@ export class ClientDeviceGateway {
         return reply(response, 200, await this.authority.refresh(await body(request)));
       }
       const identity = this.authenticateRequest(request);
+      const integration = path.match(/^\/client\/v1\/tasks\/([^/]+)\/integration-(snapshots|acceptance)$/);
+      if(integration && this.readAPI?.store) {
+        const service=new TaskIntegrationAcceptanceService({store:this.readAPI.store}),taskId=decode(integration[1],"INVALID_TASK_ID");
+        if(request.method==="GET" && integration[2]==="acceptance") return reply(response,200,await service.readStatus(taskId));
+        if(request.method==="POST" && integration[2]==="snapshots") {
+          const input=await body(request);this.authenticateRequest(request);
+          return reply(response,201,await service.captureSnapshot(taskId,input,{revalidate:()=>{
+            const current=this.authenticateRequest(request);
+            if(current.deviceId!==identity.deviceId) throw deviceError("DEVICE_AUTH_CHANGED",403);
+          }}));
+        }
+        throw deviceError("REQUEST_NOT_ALLOWED",405);
+      }
       if (taskHierarchy && this.readAPI) {
         if (request.method !== "GET") throw deviceError("REQUEST_NOT_ALLOWED", 405);
         return reply(response, 200, readTaskHierarchyPage(this.readAPI.store, decode(taskHierarchy[1], "INVALID_WORK_ID"), url.searchParams));

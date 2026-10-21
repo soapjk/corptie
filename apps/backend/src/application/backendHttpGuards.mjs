@@ -11,7 +11,7 @@ export function rejectDevelopmentPreviewWrite({ request, response, url, developm
       || /^\/sessions\/[^/]+\/detail\/receipts\/[A-Za-z0-9_-]{8,128}$/.test(url.pathname)
       || /^\/works\/[^/]+(?:\/(tasks|artifacts|task-hierarchy|local-state))?$/.test(url.pathname)
       || /^\/worktree-management\/repositories\/[^/]+\/worktrees\/[^/]+\/local-state$/.test(url.pathname)
-      || /^\/tasks\/[^/]+(?:\/(sessions|snapshots|artifacts))?$/.test(url.pathname)
+      || /^\/tasks\/[^/]+(?:\/(sessions|snapshots|artifacts|integration-acceptance))?$/.test(url.pathname)
       || /^\/artifacts\/[^/]+$/.test(url.pathname)
       || /^\/resources\/[^/]+(?:\/read)?$/.test(url.pathname)
       || url.pathname === "/scene-templates"

@@ -29,8 +29,10 @@ struct ClientSessionWorktreeTests {
         #expect(try Self.detail().autoFollow?.enabled != true)
         for route in [ClientSessionWorktreeAPI.Route.desktop, .pairedDevice] {
             let transport = BackendTransport(endpoint: try BackendEndpoint(URL(string: "http://127.0.0.1:1")!), data: { request in
+                if let response = try Self.boundDetailResponse(for: request) { return response }
                 #expect(request.httpMethod == "POST")
-                let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+                let bodyData = try #require(request.httpBody)
+                let body = try #require(try JSONSerialization.jsonObject(with: bodyData) as? [String: Any])
                 let data: Data
                 if request.url!.path.hasSuffix("worktree-auto-follow") {
                     #expect(request.url!.path == "/sessions/session/worktree-auto-follow")
@@ -54,7 +56,9 @@ struct ClientSessionWorktreeTests {
 
     @Test func uncertainPairedPreferenceReceiptDoesNotClaimSuccess() async throws {
         let transport = BackendTransport(endpoint: try BackendEndpoint(URL(string: "http://127.0.0.1:1")!), data: { request in
-            (Data(#"{"schemaVersion":1,"requestId":"request","sessionId":"session","kind":"inspector:worktree.autoFollow","status":"unknown","errorCode":"INSPECTOR_OUTCOME_UNCERTAIN","updatedAt":"now"}"#.utf8),
+            if let response = try Self.boundDetailResponse(for: request) { return response }
+            #expect(request.url?.path == "/client/v1/sessions/session/inspector/commands")
+            return (Data(#"{"schemaVersion":1,"requestId":"request","sessionId":"session","kind":"inspector:worktree.autoFollow","status":"unknown","errorCode":"INSPECTOR_OUTCOME_UNCERTAIN","updatedAt":"now"}"#.utf8),
              HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         }, bytes: { _ in throw ClientConnectionError.invalidResponse })
         do {
@@ -64,6 +68,19 @@ struct ClientSessionWorktreeTests {
         } catch let error as ClientServiceFailure { #expect(error.code == "INSPECTOR_OUTCOME_UNCERTAIN") }
     }
 
+    static func boundDetailResponse(for request: URLRequest) throws -> (Data, HTTPURLResponse)? {
+        guard let url=request.url else { throw ClientConnectionError.invalidResponse }
+        if url.path == "/sessions/session/worktree-detail" {
+            #expect(request.httpMethod == "GET")
+        } else if url.path == "/client/v1/sessions/session/inspector/read" {
+            #expect(request.httpMethod == "POST")
+            let bodyData=try #require(request.httpBody)
+            let body=try #require(try JSONSerialization.jsonObject(with:bodyData) as? [String:Any])
+            #expect(body["resource"] as? String == "session-worktree")
+        } else { return nil }
+        let data=Data(#"{"attached":true,"repositoryId":"repo","mainWorktreeId":"main","worktree":{"worktreeId":"tree","path":"/tree","isMain":false,"availability":"available","dirty":false,"changedFiles":[],"conflictFiles":[],"aheadOfMain":1,"behindMain":0}}"#.utf8)
+        return (data,HTTPURLResponse(url:url,statusCode:200,httpVersion:nil,headerFields:nil)!)
+    }
     static func detail(ahead: Int = 3, behind: Int = 0, dirty: Bool = false, blocker: String? = nil) throws -> ClientSessionWorktreeDetail {
         try JSONDecoder().decode(ClientSessionWorktreeDetail.self, from: Data("""
         {"attached":true,"repositoryId":"repo","mainWorktreeId":"main","mainBranch":"develop",

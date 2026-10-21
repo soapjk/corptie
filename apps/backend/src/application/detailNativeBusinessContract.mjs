@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import Ajv from "ajv";
+import { taskHierarchySummarySchema, worktreeHierarchySchema } from "../domain/taskHierarchyContract.mjs";
 export const DETAIL_NATIVE_BUSINESS_PROFILE = "native-business-v1";
 export const nativeBusinessHash = value => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const string = (maxLength = 65536) => ({ type: "string", maxLength });
 const nullable = schema => ({ anyOf: [schema, { type: "null" }] });
 const boolean = { type: "boolean" }, integer = nullable({ type: "integer", minimum: 0 });
 const object = properties => ({ type: "object", properties, required: Object.keys(properties), additionalProperties: false });
+const extended = (required, optional) => ({ ...object({ ...required, ...optional }), required: Object.keys(required) });
 const array = (items, maxItems = 20) => ({ type: "array", items, maxItems });
 const list = row => object({ items: array(object(row)), hasMore: boolean });
 const metric = { type: "object", maxProperties: 20, patternProperties: { "^[A-Za-z0-9_.]{1,64}$": string(64) }, additionalProperties: false };
@@ -16,16 +18,16 @@ const schemas = {
   sessionInfo: object({ sessionId: string(512), workName: string() }),
   chatSummary: object({ text: string() }),
   workOverview: object({ workId: string(512), name: string(), description: string() }),
-  taskInfo: object({ taskId: string(512), title: string(), status: string(64), description: string(), acceptanceCriteria: string(), verificationCriteria: string(), resourceRevision: string(512), summary }),
+  taskInfo: extended({ taskId: string(512), title: string(), status: string(64), description: string(), acceptanceCriteria: string(), verificationCriteria: string(), resourceRevision: string(512), summary }, { parentTaskId: nullable(string(512)), parentSessionId: nullable(string(512)), hierarchy: nullable(taskHierarchySummarySchema) }),
   artifacts: list({ artifactId: string(512), title: string(512), summary: string(), version: integer, contentHash: string(64), readAvailable: boolean }),
   focusTasks: list({ taskId: string(512), title: string(512), sessionId: nullable(string(512)), summary: focusSummary }),
   contextReferences: list({ referenceId: string(512), title: string(512), targetType: string(64), status: string(64), enabled: boolean }),
   memoryResources: list(memory), memoryHits: list(memory),
   schedules: list({ scheduleId: string(512), name: string(512), scheduleType: string(64), status: string(64), runAt: nullable(string(64)), nextRunAt: nullable(string(64)), timezone: string(128), resourceRevision: string(512) }),
   provider: object({ providerId: string(512), name: string(512), model: string(512), reasoning: string(128), switching: boolean, providers: array(object({ providerId: string(512), name: string(512), available: boolean })) }),
-  worktree: object({ attached: boolean, worktreeId: nullable(string(512)), mainBranch: string(512), blockedReason: string(128),
+  worktree: extended({ attached: boolean, worktreeId: nullable(string(512)), mainBranch: string(512), blockedReason: string(128),
     tree: nullable(object({ branchName: string(512), isMain: boolean, dirty: nullable(boolean), availability: string(64), aheadOfMain: integer, behindMain: integer, changedFileCount: integer, operationState: string(64) })),
-    autoFollow: object({ enabled: boolean, status: string(64), reason: string(128) }), job: nullable(object({ jobId: string(512), status: string(64), phase: string(64) })) }),
+    autoFollow: object({ enabled: boolean, status: string(64), reason: string(128) }), job: nullable(object({ jobId: string(512), status: string(64), phase: string(64) })) }, { hierarchy: nullable(worktreeHierarchySchema) }),
   turnMetrics: object({ turnId: nullable(string(512)), completeness: string(64), wall: metric, wallPartition: metric, inclusive: metric })
 };
 const ajv = new Ajv({ strict: true, allErrors: false });

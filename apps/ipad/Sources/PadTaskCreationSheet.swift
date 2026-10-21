@@ -34,6 +34,22 @@ struct PadTaskCreationSheet: View {
                 .disabled(state.pending != nil || state.submitting || !state.matches(connection))
 
                 if let options = state.options {
+                    if options.taskHierarchyCapabilities?.supportsChildCreation == true {
+                        Section("父任务") {
+                            Picker("父任务",selection:Binding(get:{state.draft.parentTaskId},set:{id in
+                                if let id {
+                                    guard let parent=workspace.tasks.first(where:{$0.id == id}),
+                                          parent.hierarchy?.canCreateChild == true else { return }
+                                    state.selectParent(parent)
+                                } else { state.selectParent(nil) }
+                            })) {
+                                Text("独立 Task").tag(String?.none)
+                                ForEach(workspace.tasks.filter{$0.workId == state.workID && $0.hierarchy?.canCreateChild == true}) {
+                                    Text($0.title).tag(Optional($0.id))
+                                }
+                            }.disabled(state.pending != nil || state.submitting)
+                        }
+                    }
                     Section("执行配置") {
                         Picker("Agent", selection: $state.draft.agentID) {
                             ForEach(options.agents) { Text($0.name).tag($0.id) }

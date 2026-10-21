@@ -59,6 +59,7 @@ struct WorktreeLoadMetrics: Equatable, Sendable {
 }
 
 struct ManagedGitProject: Decodable, Sendable {
+    var taskHierarchyCapabilities: TaskHierarchyCapabilities? = nil
     let repositoryId: String
     let inventoryVersion: String
     let mainWorktreeId: String
@@ -71,6 +72,7 @@ struct ManagedGitProject: Decodable, Sendable {
 }
 
 struct ManagedWorktree: Identifiable, Decodable, Equatable, Sendable {
+    var hierarchy: WorktreeHierarchy? = nil
     var id: String { worktreeId }
     let worktreeId: String
     let path: String
@@ -135,6 +137,9 @@ struct ManagedWorktreeDeletionBlocker: Decodable, Equatable, Sendable {
 
 enum ManagedWorktreeDeletionPolicy {
     static func blocker(for worktree: ManagedWorktree) -> ManagedWorktreeDeletionBlocker? {
+        if worktree.hierarchy != nil {
+            return .init(code:"TASK_HIERARCHY_DEPENDENCY",reason:"This Worktree belongs to a parent-child integration group and cannot be removed through standalone cleanup.")
+        }
         if let deletionBlocker = worktree.deletionBlocker { return deletionBlocker }
         if worktree.isMain { return .init(code: "MAIN_WORKTREE", reason: "The main Worktree cannot be deleted.") }
         if worktree.availability != "available" { return .init(code: "WORKTREE_UNAVAILABLE", reason: "This Worktree is unavailable and cannot be removed safely.") }
@@ -359,6 +364,8 @@ struct WorktreeIntegrationCandidateMergeOrderDiff: Decodable, Equatable, Sendabl
 }
 
 struct WorktreeIntegrationStartRequest: Sendable {
+    var taskScope: TaskHierarchyScope? = nil
+    var syncStrategy: String? = nil
     let candidateId: String
     let candidateFingerprint: String
     let operationType: String?
@@ -389,6 +396,8 @@ struct WorktreeIntegrationStartRequest: Sendable {
         if let operationType { body["operationType"] = operationType }
         if let sourceWorktreeIds { body["sourceWorktreeIds"] = sourceWorktreeIds }
         if let targetWorktreeId { body["targetWorktreeId"] = targetWorktreeId }
+        if let taskScope, let data=try? JSONEncoder().encode(taskScope), let object=try? JSONSerialization.jsonObject(with:data) { body["taskScope"]=object }
+        if let syncStrategy { body["syncStrategy"]=syncStrategy }
         return body
     }
 }
@@ -624,6 +633,8 @@ struct WorktreeConflictResolutionWorkspace: Decodable, Equatable, Sendable {
 }
 
 struct WorktreeIntegrationPlan: Decodable, Equatable, Sendable {
+    var taskScope: TaskHierarchyScope? = nil
+    var syncStrategy: String? = nil
     let repositoryId: String
     let operationType: String?
     let syncMode: String?

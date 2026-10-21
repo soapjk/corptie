@@ -42,10 +42,10 @@ test("bound-task reads and acceptance require the authenticated session and matc
   });
 });
 
-test("acceptance records the resolved session, never a caller-supplied source identity", () => {
+test("acceptance records the resolved session, never a caller-supplied source identity", async () => {
   const f = fixture();
   const results = [{ verdict: "passed" }];
-  f.commands.reportTaskAcceptanceForAgent("agent", { results, sourceSessionId: "other" }, { sessionId: "logical" });
+  await f.commands.reportTaskAcceptanceForAgent("agent", { results, sourceSessionId: "other" }, { sessionId: "logical" });
   assert.deepEqual(f.calls, [["acceptance", "task", { sourceSessionId: "session", results }]]);
 });
 
@@ -62,12 +62,12 @@ test("revision requires direct user provenance and binds its creator to the sess
   assert.deepEqual(result.snapshot, { id: "snapshot" });
 });
 
-test("completion requires logical scope and preserves operation receipts and replay status", () => {
+test("completion requires logical scope and preserves operation receipts and replay status", async () => {
   const f = fixture();
-  assert.throws(() => f.commands.completeTaskForSession("agent", {}, { sessionId: "session" }), {
+  await assert.rejects(() => f.commands.completeTaskForSession("agent", {}, { sessionId: "session" }), {
     code: "SESSION_SCOPE_REQUIRED"
   });
-  const result = f.commands.completeTaskForSession("agent", { evidence: [] }, {
+  const result = await f.commands.completeTaskForSession("agent", { evidence: [] }, {
     sessionId: " session ", logicalSessionId: " logical ", taskId: "task"
   });
   assert.deepEqual(f.calls[0][2], { sessionId: "session", logicalSessionId: "logical", taskId: "task" });

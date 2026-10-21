@@ -21,6 +21,9 @@ export function createControlPlaneProjection({ store, environmentName, decorateS
     const messageCursors = store.listSessionMessageCursors(residentSessionIds);
     const timelineRevisions = store.listSessionTimelineRevisions(residentSessionIds);
     const residentTasks = store.listTasks({ includeCompleted: false });
+    // A completed root is context for its still-active children, not an orphan
+    // row or a reason to warm every completed Task in this Work.
+    residentTasks.push(...(store.taskHierarchyAncestors?.(residentTasks) ?? []));
     const pendingScheduledWakeTaskIds = new Set(store.listTaskIdsWithPendingScheduledWake({
       environment: environmentName
     }));

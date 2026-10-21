@@ -44,6 +44,7 @@ export class TaskCompletionService {
     }
     const issuedAt = this.now();
     await this.integrationAcceptance.assertCompletionAllowed(task);
+    this.#assertUnchanged(task);
     const receiptId = `completion_intent:${randomUUID()}`;
     const nonce = randomBytes(32).toString("base64url");
     const token = `${receiptId}.${nonce}`;
@@ -92,6 +93,7 @@ export class TaskCompletionService {
       if (intent.consumedOperationId) throw completionError("COMPLETION_INTENT_REPLAYED", "Completion intent was already consumed.", 409);
       if (Date.parse(intent.expiresAt) <= this.now().getTime()) throw completionError("COMPLETION_INTENT_EXPIRED", "Completion intent has expired.", 410);
       await this.integrationAcceptance.assertCompletionAllowed(task);
+      this.#assertUnchanged(task);
       const result = this.store.completeTaskWithAuthorization(this.#operationInput({
         task, sourceType, idempotencyKey, requestId, nonce: intent.nonce,
         receiptId: intent.receiptId, interactionId: intent.interactionId,
@@ -151,6 +153,10 @@ export class TaskCompletionService {
       if (!mentionsTarget(message, task)) throw completionError("USER_MESSAGE_TARGET_AMBIGUOUS", "The direct user message does not unambiguously identify this Task.", 403);
       const nonce = `session:${logicalSessionId}:${event.eventId}:${event.sequence}:${turnId}`;
       await this.integrationAcceptance.assertCompletionAllowed(task);
+      this.#assertUnchanged(task);
+      if (!sessionCanOperate(this.store.getSession(logical.legacySessionId), task)) {
+        throw completionError("TASK_SESSION_UNAUTHORIZED", "The Session binding changed during validation.", 403);
+      }
       const result = this.store.completeTaskWithAuthorization(this.#operationInput({
         task, sourceType, idempotencyKey, requestId, nonce, logicalSessionId,
         userMessageEventId: event.eventId, userMessageSequence: event.sequence, turnId,
@@ -188,6 +194,14 @@ export class TaskCompletionService {
     const task = this.store.getTask(id);
     if (!task) throw completionError("TASK_NOT_FOUND", `Task not found: ${id}`, 404);
     return task;
+  }
+
+  #assertUnchanged(task) {
+    const current = this.#task(task.id);
+    if (current.resource_version !== task.resource_version || current.revision !== task.revision
+      || current.hierarchy_revision !== task.hierarchy_revision || current.work_id !== task.work_id) {
+      throw completionError("TASK_COMPLETION_SNAPSHOT_STALE", "Task changed during completion validation; reload and retry.");
+    }
   }
 
   #replay(operation, taskId, requestId) {

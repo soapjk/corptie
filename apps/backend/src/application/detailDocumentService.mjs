@@ -133,7 +133,7 @@ export class DetailDocumentService {
     if (!this.#richReadEnabled) throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
     const identity = trustedIdentity(authenticate(), true), scope = this.scope(id), reader = this.businessReader,
       epoch = this.businessPortsEpoch, retired = this.nativeRetireEpoch,
-      bound = digest({ task: scope.task, work: scope.work, session: scope.logicalSessionId }),
+      bound = digest({ task: scope.task, taskHierarchy: scope.taskHierarchy, parentSessionId: scope.parentSessionId, work: scope.work, session: scope.logicalSessionId }),
       authority = cacheScope(identity, scope.logicalSessionId, DETAIL_NATIVE_BUSINESS_PROFILE, []);
     const names = eligibleNativeBusinessModules(scope);
     if (!names.length || !reader) throw failure("DETAIL_CATALOG_UNSUPPORTED", 409);
@@ -155,7 +155,7 @@ export class DetailDocumentService {
       if (reader !== this.businessReader || epoch !== this.businessPortsEpoch || retired !== this.nativeRetireEpoch || entry.retired || this.nativeEntries.get(key) !== entry) throw failure("DETAIL_SCOPE_RETIRED", 409);
       if (entry.resources.task?.id !== next.task?.id || entry.resources.work?.id !== next.work?.id
         || entry.resources.session.id !== next.session.id || entry.resources.logicalSessionId !== next.logicalSessionId) throw failure("DETAIL_BINDING_CHANGED", 409);
-      if (bound !== digest({ task: next.task, work: next.work, session: next.logicalSessionId })) throw failure("DETAIL_READ_SUPERSEDED", 409);
+      if (bound !== digest({ task: next.task, taskHierarchy: next.taskHierarchy, parentSessionId: next.parentSessionId, work: next.work, session: next.logicalSessionId })) throw failure("DETAIL_READ_SUPERSEDED", 409);
       if (mutationEpoch !== entry.mutationEpoch) throw failure("DETAIL_READ_SUPERSEDED", 409);
       return current;
     };
@@ -796,7 +796,12 @@ export class DetailDocumentService {
     const logicalSessionId = logical?.logicalSessionId ?? this.store.getLogicalSessionByLegacySessionId?.(session.id)?.logicalSessionId ?? session.id;
     const task = session.taskId ? this.store.getTask(session.taskId) : null;
     const workId = task?.work_id ?? session.workId;
-    return { session, logicalSessionId, task, work: workId ? this.store.getWork(workId) : null };
+    const taskHierarchy = task ? this.store.hierarchySummaries?.([task.id]).get(task.id) ?? null : null;
+    const parent = task?.parent_task_id ? this.store.getTask(task.parent_task_id) : null;
+    const parentSession = parent?.work_id === workId && parent.current_session_id ? this.store.getSession(parent.current_session_id) : null;
+    const parentSessionId = parentSession && !parentSession.archived
+      ? this.store.getLogicalSessionByLegacySessionId?.(parentSession.id)?.logicalSessionId ?? parentSession.id : null;
+    return { session, logicalSessionId, task, taskHierarchy, parentSessionId, work: workId ? this.store.getWork(workId) : null };
   }
   snapshot(id, options = {}) {
     const { invalidatedOnly = false, identity } = options, profile = snapshotProfile(options);

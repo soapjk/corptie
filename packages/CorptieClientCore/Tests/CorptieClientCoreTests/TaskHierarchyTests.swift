@@ -63,4 +63,59 @@ struct TaskHierarchyTests {
             #expect(page.taskHierarchyCapabilities == nil)
         }
     }
+
+    @Test func visibleOrderKeepsCollapsedRootsAndDeduplicatesExpandedChildren() {
+        typealias Node = TaskHierarchyIndex.Node
+        let parent = Node(id: "parent", workId: "work", parentTaskId: nil)
+        let child = Node(id: "child", workId: "work", parentTaskId: "parent")
+        let nodes = [child, parent, child, parent, Node(id: "orphan", workId: "work", parentTaskId: "missing")]
+        #expect(TaskHierarchyIndex.visibleOrder(nodes: nodes, expanded: []) == ["parent"])
+        #expect(TaskHierarchyIndex.visibleOrder(nodes: nodes, expanded: ["parent"]) == ["parent", "child"])
+    }
+
+    @Test func scopePreservesTheReviewedDirectionAndReceipt() throws {
+        let scope = TaskHierarchyScope(rootTaskId: "task:parent", action: "sync_children", revision: 8, bindingRevision: 2)
+        let request = try ClientWorktreePlanRequest(operation: .synchronize, sources: ["worktree:child"], target: "worktree:parent", taskScope: scope, syncStrategy: "auto")
+        let body = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
+        #expect(body["sourceWorktreeIds"] as? [String] == ["worktree:child"])
+        #expect(body["targetWorktreeId"] as? String == "worktree:parent")
+        #expect(body["syncStrategy"] as? String == "auto")
+        let nested = try #require(body["taskScope"] as? [String: Any])
+        #expect(nested["action"] as? String == "sync_children")
+        #expect(nested["expectedHierarchyRevision"] as? Int == 8)
+        #expect(nested["expectedBindingRevision"] as? Int == 2)
+        let promotion = TaskHierarchyScope(rootTaskId: "task:parent", action: "promote_parent", revision: 8, bindingRevision: 2, receiptId: "receipt:tested")
+        #expect(try JSONDecoder().decode(TaskHierarchyScope.self, from: JSONEncoder().encode(promotion)).acceptanceReceiptId == "receipt:tested")
+    }
+
+    @Test func snapshotAndAcceptanceUseExplicitLocalOrPairedRoutes() async throws {
+        for surface in [ClientTaskHierarchyAPI.Surface.local, .pairedDevice] {
+            let endpoint = try BackendEndpoint(URL(string: "https://unit-test.invalid")!)
+            let transport = BackendTransport(endpoint: endpoint, data: { request in
+                let url = try #require(request.url)
+                let prefix = surface == .local ? "/tasks/task:parent/" : "/client/v1/tasks/task:parent/"
+                let response: Data
+                if request.httpMethod == "POST" {
+                    #expect(url.path == prefix + "integration-snapshots")
+                    let httpBody = try #require(request.httpBody)
+                    let input = try #require(JSONSerialization.jsonObject(with: httpBody) as? [String: Any])
+                    #expect(input["requestId"] as? String == "snapshot_request")
+                    #expect(input["expectedHierarchyRevision"] as? Int == 8)
+                    #expect(input["expectedBindingRevision"] as? Int == 2)
+                    #expect(input["sourceSessionId"] == nil)
+                    response = Data(#"{"snapshotId":"snapshot:one","parentHeadOid":"abc123","parentTaskId":"task:parent"}"#.utf8)
+                } else {
+                    #expect(url.path == prefix + "integration-acceptance")
+                    response = Data(#"{"state":"passed","receiptId":"receipt:tested","testedHeadOid":"abc123","canPromote":false,"reason":"CHILDREN_NOT_INTEGRATED"}"#.utf8)
+                }
+                return (response, HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            }, bytes: { _ in throw ClientConnectionError.invalidResponse })
+            let api = ClientTaskHierarchyAPI(transport: transport, surface: surface)
+            let snapshot = try await api.captureIntegrationSnapshot(taskID: "task:parent", requestID: "snapshot_request", revision: 8, bindingRevision: 2)
+            #expect(snapshot.parentHeadOid == "abc123")
+            let status = try await api.acceptance(taskID: "task:parent")
+            #expect(status.state == "passed")
+            #expect(!status.canPromote)
+        }
+    }
 }

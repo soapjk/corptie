@@ -39,6 +39,9 @@ const result = {
 };
 
 export const taskAcceptanceDynamicTools = Object.freeze([
+  tool("corptie_task_capture_integration", "Capture the exact committed integration version of the parent Task bound to this Session before running verification. This is not a passed test or completion authorization.", {
+    requestId:{type:"string",minLength:8,maxLength:200},expectedHierarchyRevision:{type:"integer",minimum:1},expectedBindingRevision:{type:"integer",minimum:1}
+  },["requestId","expectedHierarchyRevision","expectedBindingRevision"]),
   tool(
     "corptie_task_get_bound",
     "Read the complete authoritative Task definition bound to the authenticated current Session. This Provider-neutral recovery path never accepts a Task id and cannot cross Session scope.",
@@ -48,6 +51,7 @@ export const taskAcceptanceDynamicTools = Object.freeze([
     "corptie_task_report_acceptance",
     "Report a criterion-by-criterion acceptance assessment for the Task bound to this Session. Call only after verification. A passed criterion requires reproducible evidence; Session completion alone is never evidence.",
     {
+      integrationSnapshotId:{type:"string",minLength:1,description:"Required for a parent code Task; capture before testing and report only the unchanged version."},
       results: {
         type: "array",
         minItems: 1,
@@ -99,7 +103,7 @@ export const taskAcceptanceDynamicTools = Object.freeze([
 ]);
 
 export async function callTaskAcceptanceDynamicTool(handlers, input = {}) {
-  if (!["corptie_task_get_bound", "corptie_task_report_acceptance", "corptie_task_complete", "corptie_task_revise"].includes(input.tool)) {
+  if (!["corptie_task_capture_integration", "corptie_task_get_bound", "corptie_task_report_acceptance", "corptie_task_complete", "corptie_task_revise"].includes(input.tool)) {
     const error = new Error(`Unsupported Task acceptance tool: ${input.tool}`);
     error.code = "HOST_TOOL_UNSUPPORTED";
     throw error;
@@ -114,7 +118,7 @@ export async function callTaskAcceptanceDynamicTool(handlers, input = {}) {
   const getBoundTask = typeof handlers === "object" ? handlers?.getBoundTask : null;
   const completeTask = typeof handlers === "object" ? handlers?.completeTask : null;
   const reviseTask = typeof handlers === "object" ? handlers?.reviseTask : null;
-  const operation = input.tool === "corptie_task_get_bound"
+  const operation = input.tool === "corptie_task_capture_integration" ? handlers?.captureIntegration : input.tool === "corptie_task_get_bound"
     ? getBoundTask
     : input.tool === "corptie_task_complete"
     ? completeTask

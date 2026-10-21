@@ -4,6 +4,8 @@ import Observation
 import CorptieClientCore
 
 struct PadTaskDraft: Codable {
+    var parentTaskId: String?
+    var expectedParentResourceVersion: Int?
     var title = ""
     var description = ""
     var acceptanceCriteria = ""
@@ -72,6 +74,10 @@ final class PadTaskCreationState {
               options.agents.contains(where: { $0.id == draft.agentID }),
               options.providers.contains(where: { $0.id == draft.providerID && $0.available }),
               options.priorities.contains(draft.priority) else { return false }
+        if draft.parentTaskId != nil {
+            guard options.taskHierarchyCapabilities?.supportsChildCreation == true,
+                  let revision = draft.expectedParentResourceVersion, revision > 0 else { return false }
+        }
         let title = draft.title
         guard !title.isEmpty, title.utf16.count <= 512,
               EntityTitlePolicy.isValid(title),
@@ -86,6 +92,10 @@ final class PadTaskCreationState {
     func selectProvider(_ id: String) {
         guard pending == nil else { return }
         draft.providerID = id; draft.model = ""; draft.reasoning = ""; options = nil
+    }
+    func selectParent(_ parent: ClientTask?) {
+        guard pending == nil,!submitting,parent == nil || parent?.workId == workID else {return}
+        draft.parentTaskId=parent?.id; draft.expectedParentResourceVersion=parent?.resourceVersion
     }
 
     func loadOptions(_ connection: PadConnection) async {
@@ -126,6 +136,7 @@ final class PadTaskCreationState {
         input.description = draft.description; input.acceptanceCriteria = draft.acceptanceCriteria
         input.verificationCriteria = draft.verificationCriteria; input.priority = draft.priority
         input.model = draft.model.isEmpty ? nil : draft.model
+        input.parentTaskId=draft.parentTaskId; input.expectedParentResourceVersion=draft.expectedParentResourceVersion
         input.reasoningLevel = draft.reasoning.isEmpty ? nil : draft.reasoning
         do {
             let api = ClientSessionAPI(transport: try await connection.transport())

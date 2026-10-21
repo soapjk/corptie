@@ -72,7 +72,7 @@ test("hierarchy pages preserve root/child/search scope and return hidden ancesto
   assert.deepEqual(search.ancestors.map(t=>t.id),[f.root.id]);
   assert.throws(()=>readTaskHierarchyPage(f.store,f.work.id,query("limit=101")),{code:"INVALID_QUERY"});
   assert.throws(()=>readTaskHierarchyPage(f.store,f.work.id,query("q=x&q=y")),{code:"INVALID_QUERY"});
-  assert.equal(roots.taskHierarchyCapabilities.worktreeOperations,false);
+  assert.equal(roots.taskHierarchyCapabilities.worktreeOperations,true);
 });
 
 test("creation replay compares null parent as well as child parent",async t=>{
@@ -116,8 +116,13 @@ test("Git parent completion requires integration acceptance but audit remains re
   f.store.createTask({workId:work.id,title:"Code_child",parentTaskId:root.id},{},{expectedParentResourceVersion:root.resource_version});
   const completion=new TaskCompletionService({store:f.store});
   assert.deepEqual(completion.listAudit(root.id),[]);
-  assert.throws(()=>completion.issueMacOSIntent(root.id,{requestId:"test"},{type:"user",id:"user:local-macos"}),{code:"INTEGRATION_ACCEPTANCE_REQUIRED"});
-  assert.throws(()=>completion.completeFromMacOS(root.id,{}),{code:"INTEGRATION_ACCEPTANCE_REQUIRED"});
-  assert.throws(()=>completion.completeFromSession({targetTaskId:root.id},{}),{code:"INTEGRATION_ACCEPTANCE_REQUIRED"});
+  const input={requestId:"test:hierarchy",interactionId:"interaction:hierarchy",uiSurface:"task_completion_confirmation",displayedTaskId:root.id,displayedTaskTitle:root.title};
+  await assert.rejects(()=>completion.issueMacOSIntent(root.id,input,{type:"user",id:"user:local-macos"}),{code:"INTEGRATION_ACCEPTANCE_REQUIRED"});
+  const guard=completion.integrationAcceptance.assertCompletionAllowed;
+  completion.integrationAcceptance.assertCompletionAllowed=async()=>{};
+  const receipt=await completion.issueMacOSIntent(root.id,input,{type:"user",id:"user:local-macos"});
+  completion.integrationAcceptance.assertCompletionAllowed=guard;
+  await assert.rejects(()=>completion.completeFromMacOS(root.id,{intentToken:receipt.intentToken,requestId:input.requestId,idempotencyKey:"complete:hierarchy"}),{code:"INTEGRATION_ACCEPTANCE_REQUIRED"});
+  await assert.rejects(()=>completion.completeFromSession({targetTaskId:root.id},{}),{code:"WORK_ID_REQUIRED"});
   assert.notEqual(f.store.getTask(root.id).lifecycle_state,"done");
 });

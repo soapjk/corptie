@@ -9,6 +9,7 @@ public struct ClientSessionWorktreeDetail: Decodable, Equatable, Sendable {
         public let jobId: String?
     }
     public struct Worktree: Decodable, Equatable, Sendable {
+        public var hierarchy: WorktreeHierarchy? = nil
         public let worktreeId: String
         public let path: String
         public let branchName: String?
@@ -23,6 +24,7 @@ public struct ClientSessionWorktreeDetail: Decodable, Equatable, Sendable {
         public let conflictFiles: [String]
     }
     public let attached: Bool
+    public var workId: String? = nil
     public let repositoryId: String?
     public let mainWorktreeId: String?
     public let mainBranch: String?
@@ -32,6 +34,14 @@ public struct ClientSessionWorktreeDetail: Decodable, Equatable, Sendable {
     public let autoFollow: AutoFollow?
 
     public func canPerform(_ action: ClientWorktreePlanOperation) -> Bool {
+        if let h=worktree?.hierarchy {
+            guard attached,blockedReason == nil,worktree?.dirty == false,job?.shouldPoll != true else {return false}
+            switch action {
+            case .merge: return h.role == "child" && h.actions.mergeToParent.available
+            case .synchronize: return h.role == "child" ? h.actions.syncFromParent.available : h.actions.syncFromMain.available
+            case .converge: return false
+            }
+        }
         guard attached, blockedReason == nil, let worktree, !worktree.isMain,
               worktree.availability == "available", worktree.dirty == false,
               worktree.operationState == nil, worktree.conflictFiles.isEmpty,
@@ -59,6 +69,35 @@ public struct ClientSessionWorktreeAPI: Sendable {
     private var root: [String] {
         switch route { case .desktop: ["worktree-management"]; case .pairedDevice: ["client", "v1", "worktrees"] }
     }
+    public var hierarchyAPI: ClientTaskHierarchyAPI {
+        ClientTaskHierarchyAPI(transport:transport,surface:route == .desktop ? .local : .pairedDevice)
+    }
+    public func prepareHierarchy(sessionID: String, action: String, receiptId: String? = nil) async throws -> ClientWorktreeJob {
+        let current=try await detail(sessionID:sessionID)
+        guard let h=current.worktree?.hierarchy,let source=current.worktree?.worktreeId,let repository=current.repositoryId,
+              let main=current.mainWorktreeId, let workID=current.workId, current.blockedReason == nil else {
+            throw ClientServiceFailure(statusCode:409,code:current.blockedReason ?? "WORKTREE_BINDING_CHANGED")
+        }
+        var sources=[source]
+        if h.role == "parent" && ["merge_children","sync_children"].contains(action) {
+            sources=[]
+            var cursor:String?
+            repeat {
+                let page=try await hierarchyAPI.page(workID:workID,parentTaskID:h.rootTaskId,cursor:cursor,includeArchived:true)
+                for task in page.tasks {
+                    guard let id=task.hierarchy?.deliveryWorktreeId else { throw ClientServiceFailure(statusCode:409,code:"PARENT_WORKTREE_REQUIRED") }
+                    sources.append(id)
+                }
+                cursor=page.nextCursor
+                if sources.count>100 { throw ClientServiceFailure(statusCode:409,code:"TASK_SCOPE_TOO_LARGE") }
+            } while cursor != nil
+        }
+        let target=["merge_children","sync_children"].contains(action) ? (h.parentWorktreeId ?? source) : main
+        let operation:ClientWorktreePlanOperation=["sync_children","sync_main"].contains(action) ? .synchronize : .merge
+        let body=try ClientWorktreePlanRequest(operation:operation,sources:sources,target:target,taskScope:h.scope(action,receiptId:receiptId),syncStrategy:action == "sync_main" ? "merge" : nil)
+        let result:Envelope=try await request(root+["repositories",repository,"integration-plans"],body:JSONEncoder().encode(body))
+        return result.job
+    }
     public func detail(sessionID: String) async throws -> ClientSessionWorktreeDetail {
         let detail: ClientSessionWorktreeDetail
         switch route {
@@ -77,6 +116,9 @@ public struct ClientSessionWorktreeAPI: Sendable {
         if let expectedWorktreeID, current.worktree?.worktreeId != expectedWorktreeID {
             throw ClientServiceFailure(statusCode: 409, code: "WORKTREE_BINDING_CHANGED")
         }
+        if let h=current.worktree?.hierarchy {
+            return try await prepareHierarchy(sessionID:sessionID,action:action == .merge ? "merge_children" : h.role == "child" ? "sync_children" : "sync_main")
+        }
         guard current.canPerform(action), let repository = current.repositoryId,
               let source = current.worktree?.worktreeId, let target = current.mainWorktreeId else {
             throw ClientServiceFailure(statusCode: 409, code: current.blockedReason ?? "WORKTREE_STATE_CHANGED")
@@ -91,15 +133,19 @@ public struct ClientSessionWorktreeAPI: Sendable {
         if let expectedWorktreeID, expectedWorktreeID != worktreeID {
             throw ClientServiceFailure(statusCode: 409, code: "WORKTREE_BINDING_CHANGED")
         }
+        let current=try await detail(sessionID:sessionID),h=current.worktree?.hierarchy
         switch route {
         case .desktop:
-            struct Body: Encodable { let enabled: Bool; let expectedWorktreeId: String }
+            struct Body: Encodable { let enabled: Bool; let expectedWorktreeId: String; let expectedTargetWorktreeId: String?; let expectedHierarchyRevision: Int?; let expectedBindingRevision: Int? }
             let _: ClientSessionWorktreeDetail.AutoFollow = try await request(["sessions", sessionID, "worktree-auto-follow"],
-                body: JSONEncoder().encode(Body(enabled: enabled, expectedWorktreeId: worktreeID)))
+                body: JSONEncoder().encode(Body(enabled: enabled, expectedWorktreeId: worktreeID,expectedTargetWorktreeId:h?.comparison.worktreeId,expectedHierarchyRevision:h?.hierarchyRevision,expectedBindingRevision:h?.bindingRevision)))
         case .pairedDevice:
+            var fields:[String:ClientInspectorValue]=["enabled":.bool(enabled),"expectedWorktreeId":.string(worktreeID)]
+            if let h { fields["expectedTargetWorktreeId"] = .string(h.comparison.worktreeId)
+                fields["expectedHierarchyRevision"] = .number(Double(h.hierarchyRevision)); fields["expectedBindingRevision"] = .number(Double(h.bindingRevision)) }
             let receipt = try await ClientInspectorAPI(transport: transport).command(sessionID: sessionID,
                 requestID: UUID().uuidString, action: "worktree.autoFollow",
-                fields: ["enabled": .bool(enabled), "expectedWorktreeId": .string(worktreeID)])
+                fields: fields)
             guard receipt.status == "completed" else {
                 throw ClientServiceFailure(statusCode: receipt.status == "rejected" ? 409 : 503,
                     code: receipt.errorCode ?? "AUTO_FOLLOW_OUTCOME_UNCERTAIN")

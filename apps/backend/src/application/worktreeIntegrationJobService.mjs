@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { inspectGitWorkspace } from "../utils/gitWorktreeInventory.mjs";
 import { ensureProjectLocalState, inspectProjectLocalState, rollbackProjectLocalState, verifyProjectLocalState } from "../runtime/projectLocalStateDirectory.mjs";
+import { TaskWorktreeHierarchyService } from "./taskWorktreeHierarchyService.mjs";
 
 const ACTIVE_JOB_STATUSES = Object.freeze([
   "queued", "running", "paused", "cancellation_requested", "replanning"
@@ -27,6 +28,7 @@ export class WorktreeIntegrationJobError extends Error {
 export class WorktreeIntegrationJobService {
   constructor(options = {}) {
     this.store = options.store;
+    this.hierarchy = new TaskWorktreeHierarchyService({store:this.store});
     this.inspectRepository = options.inspectRepository;
     this.inspectRepositorySummary = options.inspectRepositorySummary ?? options.inspectRepository;
     this.inspectGitHubPushStatus = options.inspectGitHubPushStatus ?? null;
@@ -108,7 +110,8 @@ export class WorktreeIntegrationJobService {
   async repository(repositoryId, options = {}) {
     const repository = this.#requireRepository(repositoryId);
     const inspection = await this.inspectRepositorySummary(repository.id, options);
-    const project = this.#associate(inspection);
+    const project = this.store.getTaskDeliveryBinding
+      ? await this.hierarchy.decorateInspection({...this.#associate(inspection),repositoryId}) : this.#associate(inspection);
     return {
       repository: this.repositories().find((entry) => entry.id === repository.id),
       // GitHub inspection executes many Git commands per Worktree. Keep the
@@ -446,7 +449,7 @@ export class WorktreeIntegrationJobService {
     const selectedIds = operation.type === "converge"
       ? operation.sourceWorktreeIds
       : [...operation.sourceWorktreeIds, operation.targetWorktreeId];
-    this.store.assertStandaloneWorktreeMutation?.({worktreeIds:selectedIds});
+    const hierarchyPlan=await this.hierarchy.resolveOperationScope(repository.id,{...operation,operationType:operation.type},inspection);
     const uniqueIds = [...new Set(selectedIds)];
     const missingId = uniqueIds.find((id) => !byId.has(id));
     if (missingId) {
@@ -466,7 +469,8 @@ export class WorktreeIntegrationJobService {
     for (const [index, worktree] of ordered.entries()) {
       const isTarget = worktree.worktreeId === target.worktreeId;
       const risks = risksForBranchOperation(worktree, { isTarget, operationType: operation.type });
-      const shouldCommit = !isTarget && worktree.dirty === true;
+      const shouldCommit = !hierarchyPlan && !isTarget && worktree.dirty === true;
+      if(hierarchyPlan && worktree.dirty) risks.push({code:"WORKTREE_RECHECK_DIRTY",message:"Commit or handle changes before a parent-scoped operation."});
       const commitProtection = shouldCommit
         ? withProtectedPathsDigest(await this.inspectCommitProtection(worktree.path))
         : null;
@@ -511,6 +515,7 @@ export class WorktreeIntegrationJobService {
     const plan = {
       repositoryId: repository.id,
       operationType: operation.type,
+      ...(hierarchyPlan ?? {}),
       syncMode: operation.type === "sync" ? "one_way" : (operation.type === "converge" ? "converge" : null),
       targetWorktreeId: target.worktreeId,
       targetBranchName: target.branchName,
@@ -827,6 +832,7 @@ export class WorktreeIntegrationJobService {
       job.planFingerprint
     );
     assertCommitProtectionDecisions(job.details.plan, boundCommitProtectionDecisions);
+    await this.hierarchy.assertOperationFresh(job.details.plan,job.id);
     const current = this.#associate(await this.inspectRepository(job.repositoryId));
     const mismatch = planInspectionMismatch(job.details.plan, current);
     if (mismatch) {
@@ -1009,6 +1015,7 @@ export class WorktreeIntegrationJobService {
             ? [priorPlan.targetWorktreeId, ...(priorPlan.sourceWorktreeIds ?? [])]
             : priorPlan.sourceWorktreeIds,
           targetWorktreeId: priorPlan.targetWorktreeId
+          ,...(priorPlan.taskScope ? {taskScope:priorPlan.taskScope,syncStrategy:priorPlan.syncStrategy} : {})
         } : {})
       });
     } catch (error) {
@@ -1639,6 +1646,7 @@ export class WorktreeIntegrationJobService {
         return;
       }
       if (!['queued', 'running'].includes(job.status)) return;
+      await this.hierarchy.assertOperationFresh(job.details.plan,job.id);
       job = this.#update(job, { status: "running", phase: "validating", auditEvent: "execution_started" });
       await this.#assertAutomaticFollowSafe(job);
       let items = job.details.plan.items;
@@ -1818,9 +1826,12 @@ export class WorktreeIntegrationJobService {
           let result;
           for (let attempt = 0; attempt < this.maxConflictFallbackAttempts; attempt += 1) {
             try {
+              await this.hierarchy.assertOperationFresh(job.details.plan,jobId);
               result = await this.mergeSource({
                 mainPath: job.details.plan.executionPath ?? job.details.plan.mainPath,
                 sourceHead,
+                sourcePath:item.path,
+                mergeStrategy:job.details.plan.mergeStrategy,
                 expectedMainHead,
                 jobId
               });
@@ -1835,7 +1846,7 @@ export class WorktreeIntegrationJobService {
                 return;
               }
               if (error.code === "INTEGRATION_POSTCONDITION_DIRTY") throw error;
-              if (!isRecoverableConflictFallbackError(error) || attempt + 1 >= this.maxConflictFallbackAttempts) {
+              if (job.details.plan.taskScope || !isRecoverableConflictFallbackError(error) || attempt + 1 >= this.maxConflictFallbackAttempts) {
                 throw conflictFallbackFailure(error, "merge_source", attempt + 1);
               }
               const inspection = await this.inspectRepository(job.repositoryId);
@@ -2001,12 +2012,16 @@ export class WorktreeIntegrationJobService {
             await this.#assertAutomaticFollowSafe(latest);
           }
           const current = this.inspectSyncWorktree
-            ? await this.inspectSyncWorktree({ repositoryId: latest.repositoryId, item: recorded, targetHead, allowResume, jobId })
+            ? await this.inspectSyncWorktree({ repositoryId: latest.repositoryId, item: recorded, targetHead, allowResume, jobId, syncStrategy:latest.details.plan.syncStrategy })
             : (await this.inspectRepository(latest.repositoryId)).worktrees.find(item => item.worktreeId === recorded.worktreeId);
           if (!current || current.path !== recorded.path || current.branchName !== recorded.branchName
             || current.isLocked || current.isDetached && current.operationState !== "rebase"
             || current.availability !== "available") {
             throw new WorktreeIntegrationJobError("WORKTREE_RECHECK_UNSAFE", "The source Worktree identity changed before synchronization.", 409);
+          }
+          if(latest.details.plan.taskScope && current.headOid!==(recorded.commitHead ?? recorded.sourceHeadBefore)
+            && !(allowResume && recorded.rebaseStarted===true)) {
+            throw new WorktreeIntegrationJobError("WORKTREE_STATE_CHANGED", "The child HEAD changed after synchronization was reviewed.",409);
           }
           const associated = this.#associate({ worktrees: [current] }).worktrees[0];
           if ((associated.associations ?? []).some(binding => binding.active
@@ -2022,10 +2037,12 @@ export class WorktreeIntegrationJobService {
             queueMs: Math.round(itemStartedAt - startedAt)
           } });
           const rebaseStartedAt = performance.now();
+          await this.hierarchy.assertOperationFresh(latest.details.plan,jobId);
           const result = await this.rebaseSource({
             path: recorded.path, targetHead,
             expectedSourceHead: recorded.commitHead ?? recorded.sourceHeadBefore,
             allowResolvedRebase: allowResume && recorded.rebaseStarted === true,
+            syncStrategy:initial.details.plan.syncStrategy,
             jobId
           });
           this.#item(this.#requireJob(jobId), recorded.worktreeId, {
@@ -2044,7 +2061,7 @@ export class WorktreeIntegrationJobService {
       }
     };
     // Drain every started worker before cancellation or a terminal Job write.
-    const settled = await Promise.allSettled(Array.from({ length: Math.min(this.syncConcurrency, pending.length) }, worker));
+    const settled = await Promise.allSettled(Array.from({ length: Math.min(initial.details.plan.taskScope ? 1 : this.syncConcurrency, pending.length) }, worker));
     const unexpectedFailure = settled.find(result => result.status === "rejected");
     if (unexpectedFailure) throw unexpectedFailure.reason;
     let latest = this.#requireJob(jobId);
@@ -2129,6 +2146,9 @@ export class WorktreeIntegrationJobService {
       );
       error.recoverable = false;
       throw error;
+    }
+    if (job.details.plan.taskScope && current.headOid !== (recorded.resolutionHead ?? recorded.commitHead ?? recorded.sourceHeadBefore)) {
+      throw new WorktreeIntegrationJobError("WORKTREE_STATE_CHANGED", "The source HEAD changed after the parent-scoped candidate was reviewed. Generate a fresh candidate.", 409);
     }
     const nextStatusSummary = current.statusSummary ?? "";
     if (current.headOid === recorded.sourceHeadBefore
@@ -2239,6 +2259,7 @@ export class WorktreeIntegrationJobService {
   }
 
   #scheduleAutomaticConflictResolution(jobId) {
+    if(this.store.getWorktreeIntegrationJob(jobId)?.details?.plan?.taskScope) return;
     setImmediate(() => this.resolveConflictWithAgent(jobId).catch(() => {
       // #resolveConflictWithAgent persists a concrete blocked state. The UI
       // obtains it through the existing job endpoint without an unhandled task.
@@ -2758,7 +2779,8 @@ function candidateOptions(value = {}, { canonicalOnly = false } = {}) {
   return {
     operationType: operation.type,
     sourceWorktreeIds: operation.sourceWorktreeIds,
-    targetWorktreeId: operation.targetWorktreeId
+    targetWorktreeId: operation.targetWorktreeId,
+    ...(operation.taskScope ? {taskScope:operation.taskScope,syncStrategy:operation.syncStrategy ?? null} : {})
   };
 }
 
@@ -2854,6 +2876,11 @@ function normalizeBranchOperation(value) {
   if (!type) {
     throw new WorktreeIntegrationJobError("BRANCH_OPERATION_INVALID", "Choose merge, one-way synchronization, or convergence.");
   }
+  if(value.taskScope && (!Array.isArray(value.sourceWorktreeIds)
+    || value.sourceWorktreeIds.some(id=>typeof id!=="string" || !id || id!==id.trim())
+    || new Set(value.sourceWorktreeIds).size!==value.sourceWorktreeIds.length)) {
+    throw new WorktreeIntegrationJobError("TASK_HIERARCHY_CHANGED", "Parent-scoped sources must be unique explicit Worktree identifiers.",409);
+  }
   const sourceWorktreeIds = Array.isArray(value.sourceWorktreeIds)
     ? [...new Set(value.sourceWorktreeIds.map((id) => String(id ?? "").trim()).filter(Boolean))]
     : [];
@@ -2864,7 +2891,8 @@ function normalizeBranchOperation(value) {
   if (sourceWorktreeIds.length === 0) {
     throw new WorktreeIntegrationJobError("SOURCE_WORKTREE_REQUIRED", "Select at least one source Worktree.");
   }
-  return { type, sourceWorktreeIds, targetWorktreeId };
+  return { type, sourceWorktreeIds, targetWorktreeId,
+    ...(value.taskScope ? {taskScope:value.taskScope,syncStrategy:value.syncStrategy ?? undefined} : {}) };
 }
 
 function normalizeCommitProtectionDecisions(value) {

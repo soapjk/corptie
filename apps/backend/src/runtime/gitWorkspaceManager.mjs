@@ -618,7 +618,7 @@ export class GitWorkspaceManager {
   }
 
   async commitIntegrationChanges(input) {
-    this.store.assertStandaloneWorktreeMutation?.({paths:[input.path]});
+    this.store.assertStandaloneWorktreeMutation?.({paths:[input.path],jobId:input.jobId});
     const legacyHookRepair = await this.repairLegacyArtifactHookPollution(input.path);
     const currentHead = (await this.gitOutput(input.path, ["rev-parse", "--verify", "HEAD"])).trim();
     const marker = `Corptie-Integration-Job: ${input.jobId}`;
@@ -838,9 +838,10 @@ export class GitWorkspaceManager {
   }
 
   async mergeIntegrationSource(input) {
-    this.store.assertStandaloneWorktreeMutation?.({paths:[input.mainPath,input.sourcePath]});
+    this.store.assertStandaloneWorktreeMutation?.({paths:[input.mainPath],readPaths:[input.sourcePath],jobId:input.jobId});
     if (await this.gitSucceeds(input.mainPath, ["merge-base", "--is-ancestor", input.sourceHead, "HEAD"])) {
       const mainHead = (await this.gitOutput(input.mainPath, ["rev-parse", "--verify", "HEAD"])).trim();
+      if(input.mergeStrategy==="ff-only" && mainHead!==input.sourceHead) throw integrationGitError("INTEGRATION_ACCEPTANCE_STALE","main is not exactly the accepted parent HEAD.");
       await this.#assertIntegrationPostconditionClean(input.mainPath);
       return { merged: false, alreadyMerged: true, recovered: mainHead !== input.expectedMainHead, mainHead };
     }
@@ -875,8 +876,10 @@ export class GitWorkspaceManager {
     }
     const mainStatus = (await this.gitOutput(input.mainPath, ["status", "--porcelain=v1"])).trim();
     if (mainStatus) throw integrationGitError("MAIN_DIRTY", "main gained uncommitted changes while integrating.");
+    if(input.mergeStrategy==="ff-only") await this.assertIntegrationTreePolicy(input.mainPath,input.sourceHead,input.expectedMainHead);
     try {
-      await this.runGit(input.mainPath, ["merge", "--no-ff", "--no-edit", input.sourceHead]);
+      await this.assertCommitHasNoMainLinkedAgentConfiguration(input.sourcePath ?? input.mainPath,input.mainPath,input.sourceHead);
+      await this.runGit(input.mainPath, input.mergeStrategy==="ff-only" ? ["merge","--ff-only",input.sourceHead] : ["merge", "--no-ff", "--no-edit", input.sourceHead]);
     } catch (error) {
       const conflicts = (await this.gitOutput(input.mainPath, ["diff", "--name-only", "--diff-filter=U"]))
         .split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
@@ -888,8 +891,27 @@ export class GitWorkspaceManager {
       throw integrationGitError("MERGE_FAILED", safeGitError(error, "Could not merge the Worktree into main"));
     }
     const updatedHead = (await this.gitOutput(input.mainPath, ["rev-parse", "--verify", "HEAD"])).trim();
+    if(input.mergeStrategy==="ff-only" && updatedHead!==input.sourceHead) throw integrationGitError("INTEGRATION_ACCEPTANCE_STALE","Final main HEAD differs from the accepted parent.");
     await this.#assertIntegrationPostconditionClean(input.mainPath);
     return { merged: true, alreadyMerged: false, recovered: false, mainHead: updatedHead };
+  }
+
+  async assertIntegrationTreePolicy(path,head,base) {
+    const repositoryPath=await realpath(path);
+    const names=(await this.gitOutput(path,["ls-tree","-r","--name-only","-z",head])).split("\0").filter(Boolean);
+    if(names.some(name=>name.split("/").some(part=>part.toLowerCase()===".corptie"))) throw integrationGitError("GIT_ARTIFACT_POLICY_REJECTED","Managed .corptie content cannot be integrated.");
+    const previous=new Set((await this.gitOutput(path,["ls-tree","-r","--name-only","-z",base])).split("\0"));
+    for(const name of names.filter(name=>/\.md$/i.test(name) && !previous.has(name))) {
+      const bytes=await this.execFile("git",["-C",path,"cat-file","blob",`${head}:${name}`],{encoding:"buffer",maxBuffer:32*1024*1024});
+      const hash=createHash("sha256").update(bytes.stdout).digest("hex");
+      const receipts=this.store.selectAll(`SELECT p.authorization_json FROM artifact_repository_promotions p
+        JOIN artifacts a ON a.artifact_id=p.artifact_id AND a.status='active'
+        JOIN artifact_versions v ON v.artifact_id=p.artifact_id AND v.version=p.version AND v.content_hash=p.content_hash
+        WHERE p.repository_path=? AND p.target_path=? AND p.content_hash=?`,[repositoryPath,name,hash]);
+      if(!receipts.some(row=>{const proof=JSON.parse(row.authorization_json);return proof.eventId && proof.sessionId && proof.turnId && proof.path===name;})) {
+        throw integrationGitError("GIT_ARTIFACT_POLICY_REJECTED",`Markdown ${name} needs exact-version authorized Artifact promotion before integration.`);
+      }
+    }
   }
 
   async #assertIntegrationPostconditionClean(path) {
@@ -905,7 +927,7 @@ export class GitWorkspaceManager {
     throw error;
   }
 
-  async inspectSyncWorktree({ repositoryId, item, targetHead, allowResume = true }) {
+  async inspectSyncWorktree({ repositoryId, item, targetHead, allowResume = true, syncStrategy = null }) {
     const identity = await inspectGitWorkspace(item.path, { execFile: this.execFile });
     if (identity.repositoryId !== repositoryId || identity.worktreeId !== item.worktreeId) {
       throw integrationGitError("WORKTREE_RECHECK_UNSAFE", "The synchronization workspace identity changed.");
@@ -943,6 +965,12 @@ export class GitWorkspaceManager {
         throw integrationGitError("GIT_OPERATION_IN_PROGRESS", "The active rebase does not match this synchronization step.");
       }
       branchName = item.branchName;
+    } else if (operationState === "merge" && syncStrategy === "merge") {
+      const mergeHead=(await this.gitOutput(item.path,["rev-parse","--verify","MERGE_HEAD"])).trim();
+      if(!allowResume || item.rebaseStarted!==true || mergeHead!==targetHead
+        || headOid.trim()!==(item.commitHead ?? item.sourceHeadBefore)) {
+        throw integrationGitError("GIT_OPERATION_IN_PROGRESS", "The active merge does not match this synchronization step.");
+      }
     } else if (operationState) {
       throw integrationGitError("GIT_OPERATION_IN_PROGRESS", "The source Worktree already has another Git operation.");
     }
@@ -958,7 +986,14 @@ export class GitWorkspaceManager {
   }
 
   async rebaseIntegrationSource(input) {
-    this.store.assertStandaloneWorktreeMutation?.({paths:[input.path]});
+    this.store.assertStandaloneWorktreeMutation?.({paths:[input.path],jobId:input.jobId});
+    if(input.syncStrategy==="merge") {
+      try {
+        const result=await this.mergeIntegrationSource({mainPath:input.path,sourceHead:input.targetHead,
+          expectedMainHead:input.expectedSourceHead,jobId:input.jobId});
+        return {rebased:false,alreadySynchronized:result.alreadyMerged,recovered:result.recovered,headOid:result.mainHead};
+      } catch(cause) { if(cause.code==="MERGE_CONFLICT") cause.code="REBASE_CONFLICT";throw cause; }
+    }
     const operationState = await this.integrationOperationState(input.path);
     if (operationState) {
       const conflicts = (await this.gitOutput(input.path, ["diff", "--name-only", "--diff-filter=U"]))
@@ -1022,7 +1057,7 @@ export class GitWorkspaceManager {
   }
 
   async fastForwardIntegrationSource(input) {
-    this.store.assertStandaloneWorktreeMutation?.({paths:[input.path]});
+    this.store.assertStandaloneWorktreeMutation?.({paths:[input.path],jobId:input.jobId});
     const operationState = await this.integrationOperationState(input.path);
     if (operationState) {
       throw integrationGitError("GIT_OPERATION_IN_PROGRESS", `The Worktree has an existing ${operationState} operation.`);
@@ -1046,6 +1081,7 @@ export class GitWorkspaceManager {
   }
 
   async abortIntegrationMerge(input) {
+    this.store.assertStandaloneWorktreeMutation?.({paths:[input.mainPath],jobId:input.jobId});
     const operationState = await this.integrationOperationState(input.mainPath);
     const mainHead = (await this.gitOutput(input.mainPath, ["rev-parse", "--verify", "HEAD"])).trim();
     if (!operationState) {

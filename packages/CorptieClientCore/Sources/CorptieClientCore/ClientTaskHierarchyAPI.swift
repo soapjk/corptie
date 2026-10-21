@@ -8,6 +8,21 @@ public struct ClientTaskHierarchyAPI: Sendable {
     public init(transport: BackendTransport, surface: Surface) {
         self.transport = transport; self.surface = surface
     }
+    public func acceptance(taskID: String) async throws -> TaskIntegrationAcceptanceStatus {
+        let prefix = surface == .pairedDevice ? ["client", "v1"] : []
+        let request = try transport.endpoint.request(path: prefix + ["tasks",taskID,"integration-acceptance"])
+        let (data, _) = try await transport.data(for: request)
+        return try JSONDecoder().decode(TaskIntegrationAcceptanceStatus.self, from: data)
+    }
+    public func captureIntegrationSnapshot(taskID: String, requestID: String, revision: Int, bindingRevision: Int) async throws -> TaskIntegrationSnapshot {
+        struct Body: Encodable { let requestId: String; let expectedHierarchyRevision: Int; let expectedBindingRevision: Int }
+        let prefix = surface == .pairedDevice ? ["client", "v1"] : []
+        var request = try transport.endpoint.request(path: prefix + ["tasks",taskID,"integration-snapshots"])
+        request.httpMethod="POST"; request.setValue("application/json",forHTTPHeaderField:"Content-Type")
+        request.httpBody=try JSONEncoder().encode(Body(requestId:requestID,expectedHierarchyRevision:revision,expectedBindingRevision:bindingRevision))
+        let (data, _) = try await transport.data(for: request)
+        return try JSONDecoder().decode(TaskIntegrationSnapshot.self, from: data)
+    }
 
     public func page(workID: String, parentTaskID: String? = nil, cursor: String? = nil,
                      query: String? = nil, includeCompleted: Bool = true,
