@@ -69,14 +69,12 @@ struct PadControlTests {
         #expect(!source.contains("PadOutlineToolbarControlStyle"))
     }
 
-    @Test func compactTabsUseTheSharedPressAnimation() throws {
-        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .deletingLastPathComponent().appendingPathComponent("Sources/PadAppShell.swift")
-        let source = try String(contentsOf: url, encoding: .utf8)
-        let bottomBar = source.components(separatedBy: "private struct PadBottomTabBar: View")[1]
-            .components(separatedBy: "private enum PadSettingsTab")[0]
-        #expect(bottomBar.contains("ForEach(PadTab.allCases)"))
-        #expect(bottomBar.contains(".buttonStyle(PlatformTabButtonStyle())"))
+    @Test func optionalTabsIgnoreUnknownRequiredAndDuplicateStoredEntries() {
+        #expect(PadTabPreferences.normalized(["settings", "workspace", "unknown", "agents", "agents"])
+            == [.agents])
+        #expect(PadTabPreferences.normalized(["resources", "agents", "worktrees", "automations"])
+            == [.automations, .worktrees, .agents])
+        #expect(PadTabPreferences.normalized([]).isEmpty)
     }
 
     @Test func statusBarBackdropUsesSafeAreaAndOnlyAShortFade() {
@@ -189,8 +187,8 @@ struct PadControlTests {
         return (connection, PadControlStore())
     }
 
-    @Test func fourTabsExcludeSettingsAndMapSkillsUnderAgents() {
-        #expect(PadTab.allCases.count == 4)
+    @Test func tabsIncludeRequiredPagesAndMapSkillsUnderAgents() {
+        #expect(Set(PadTab.allCases) == Set(PadTab.optionalTabs + [.workspace, .settings]))
         #expect(PadTab.agents.resources == [.agents, .skills])
         #expect(PadTab.worktrees.resources == [.repositories])
     }

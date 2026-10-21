@@ -40,33 +40,29 @@ struct PadMessageDeliveryTests {
         #expect(workspace.outgoingStates[record.messageID] == nil)
     }
 
-    @Test func terminalTimelineDeletionSurvivesRefreshAndRestartButNotScopeOrStatusChange() async throws {
+    @Test func terminalTimelineStatusAloneDoesNotAuthorizeLocalDeletion() async throws {
         let name = "delete-message-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let outbox = ReliableMessageOutbox(directory: directory, key: SymmetricKey(size: .bits256))
         let connection = try deletionConnection()
         let data = Data(#"{"id":"cancelled","type":"userMessage","text":"body","userMessageStatus":"cancelled"}"#.utf8)
         let message = try JSONDecoder().decode(ClientMessage.self, from: data)
-        let workspace = PadWorkspace(defaults: defaults, messageOutbox: outbox)
+        let workspace = PadWorkspace(defaults: defaults)
         workspace.selection = "session"; workspace.messages = [message]
-        #expect(workspace.canDeleteUnreceivedMessage(message))
+        #expect(!workspace.canDeleteUnreceivedMessage(message))
         await workspace.deleteUnreceivedMessage(connection, sessionID: "session", messageID: message.id)
-        #expect(workspace.visibleMessages.isEmpty)
-        workspace.messages = [message]
-        #expect(workspace.visibleMessages.isEmpty)
-        let restored = PadWorkspace(defaults: defaults, messageOutbox: outbox)
+        #expect(workspace.visibleMessages.map(\.id) == [message.id])
+        let restored = PadWorkspace(defaults: defaults)
         restored.prepareDeletedMessageScope(connection)
         restored.selection = "session"; restored.messages = [message]
-        #expect(restored.visibleMessages.isEmpty)
-        let acceptedData = Data(#"{"id":"cancelled","type":"userMessage","text":"body","userMessageStatus":"processing"}"#.utf8)
-        restored.messages = [try JSONDecoder().decode(ClientMessage.self, from: acceptedData)]
-        #expect(restored.visibleMessages.count == 1)
-        connection.serverID = "other"
-        restored.prepareDeletedMessageScope(connection); restored.messages = [message]
-        #expect(restored.visibleMessages.count == 1)
+        #expect(restored.visibleMessages.map(\.id) == [message.id])
+        let allowed = try JSONDecoder().decode(ClientMessage.self, from: Data(
+            #"{"id":"cancelled","type":"userMessage","text":"body","userMessageStatus":"cancelled","deletionAvailable":true}"#.utf8))
+        #expect(workspace.canDeleteUnreceivedMessage(allowed))
+        workspace.messages = [allowed]
+        // Even an individually deletable message requires the negotiated backend capability.
+        await workspace.deleteUnreceivedMessage(connection, sessionID: "session", messageID: allowed.id)
+        #expect(workspace.visibleMessages.map(\.id) == [allowed.id])
     }
 
     @Test func activeAndUnconfirmedLocalCardsCannotBeDeleted() {

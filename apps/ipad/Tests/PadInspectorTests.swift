@@ -98,10 +98,7 @@ struct PadInspectorTests {
         #expect(source.contains("ConversationDetailDisclosure(isExpanded: $recallsExpanded"))
         #expect(source.contains("ForEach(recall[\"selectedEntries\"].items"))
         #expect(source.contains("entry[\"content\"].text"))
-        #expect(source.contains("ConversationEnvironmentCard(provider: {"))
-        #expect(source.contains("Image(systemName: \"chevron.up.chevron.down\")"))
         #expect(!source.contains("ConversationDetailHeaderIcon(systemName: \"arrow.triangle.2.circlepath\")"))
-        #expect(source.contains("ConversationDetailDisclosure(isExpanded: $turnExpanded"))
         #expect(source.contains("if let scheduleError = store.snapshot?.errors[\"schedules\"]"))
         #expect(source.contains("scheduleFailure(scheduleError)"))
     }

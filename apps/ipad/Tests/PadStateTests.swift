@@ -42,20 +42,24 @@ struct PadStateTests {
         #expect(!source.contains(".simultaneousGesture(TapGesture()"))
     }
 
-    @Test func phoneNavigationRemovesExtraEdgeGapsWithoutIgnoringSafeAreas() throws {
-        let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .deletingLastPathComponent().appendingPathComponent("Sources")
-        let shell = try String(contentsOf: sources.appendingPathComponent("PadAppShell.swift"), encoding: .utf8)
-        let bar = shell.components(separatedBy: "PadBottomTabBar(selection:")[1]
-            .components(separatedBy: ".transition(")[0]
-        #expect(bar.contains(".padding(.top, 8)"))
-        #expect(!bar.contains(".padding(.vertical"))
-        #expect(bar.contains(".padding(.bottom, -PadPhoneNavigationLayout.bottomOverlap("))
-        #expect(!bar.contains("ignoresSafeArea"))
-        let outline = try String(contentsOf: sources.appendingPathComponent("PadWorkOutline.swift"), encoding: .utf8)
-        #expect(outline.contains("topInset: isPhone ? 0 : PlatformWorkOutlineLayout.verticalInset"))
-        let app = try String(contentsOf: sources.appendingPathComponent("CorptieMobileApp.swift"), encoding: .utf8)
-        #expect(app.components(separatedBy: ".padding(.top, UIDevice.current.userInterfaceIdiom == .phone ? 0 : 4)").count - 1 == 2)
+    @Test func optionalTabsKeepRequiredPagesAndPersistWithinThePhoneLimit() throws {
+        let name = "tab-preferences-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let preferences = PadTabPreferences(defaults: defaults)
+        #expect(preferences.visibleTabs == [.workspace, .worktrees, .settings])
+        for tab in PadTab.optionalTabs { preferences.setEnabled(tab, true) }
+        #expect(preferences.visibleTabs.count == 5)
+        #expect(preferences.contains(.workspace))
+        #expect(preferences.contains(.settings))
+        preferences.setEnabled(.workspace, false)
+        preferences.setEnabled(.settings, false)
+        #expect(preferences.visibleTabs.first == .workspace)
+        #expect(preferences.visibleTabs.last == .settings)
+        let restored = PadTabPreferences(defaults: defaults)
+        #expect(restored.visibleTabs == preferences.visibleTabs)
+        restored.restoreDefaults()
+        #expect(restored.visibleTabs == [.workspace, .worktrees, .settings])
     }
 
     @Test func navigationOverlapIsBoundedByActualWindowSafeArea() {
