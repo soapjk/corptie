@@ -153,6 +153,11 @@ const domainDelegates = Object.freeze({
     "reviseTask", "assertTaskAssociations", "addTaskDependency",
     "removeTaskDependency", "listTaskDependencies", "listTaskDependents"
   ],
+  taskHierarchyRepository: [
+    "assertParentForCreate", "bumpHierarchyRevision", "hasTaskChildren", "hierarchySummaries",
+    "listTaskHierarchyPage", "getTaskDeliveryBinding", "bindTaskDeliveryWorktree",
+    "assertStandaloneWorktreeMutation", "taskHierarchyAncestors"
+  ],
   artifactRepository: [
     "createArtifactMetadata", "getArtifact", "listArtifacts", "resourceArtifactPage",
     "listArtifactsByWork", "countArtifactsByWork", "listArtifactsReferencedByTask",

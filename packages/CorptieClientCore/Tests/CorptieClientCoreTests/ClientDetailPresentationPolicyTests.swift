@@ -62,7 +62,7 @@ struct ClientDetailPresentationPolicyTests {
         let data = Data(body.utf8)
         let transport = BackendTransport(endpoint: try BackendEndpoint(URL(string: "http://127.0.0.1:1234")!), data: { request in
             #expect(request.url?.path == "\(route == .desktop ? "" : "/client/v1")/sessions/s/detail/capabilities")
-            #expect(request.value(forHTTPHeaderField: "Accept") == "application/json")
+            #expect(request.value(forHTTPHeaderField: "Accept") == "application/json; corptie-detail-capabilities=2")
             #expect(request.httpMethod == "GET")
             return (data, HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: [:])!)
         }, bytes: { _ in throw ClientConnectionError.invalidResponse })
@@ -86,7 +86,7 @@ struct ClientDetailPresentationPolicyTests {
     }
     @Test func malformedAdvertisementsAndReducedCapabilitiesFailClosed() async throws {
         for body in [
-            #"{"schemaVersion":2,"catalogs":["native-v2"],"requiredCapabilities":[],"writes":false}"#,
+            #"{"schemaVersion":3,"catalogs":["native-v2"],"requiredCapabilities":[],"writes":false}"#,
             #"{"schemaVersion":1,"catalogs":["native-v2-components-1"],"requiredCapabilities":[],"writes":false}"#,
             #"{"schemaVersion":1,"catalogs":["native-v2"],"requiredCapabilities":["detail.image"],"writes":false}"#,
             #"{"schemaVersion":1,"catalogs":["native-v2","native-v2-components-1"],"requiredCapabilities":["detail.status","detail.markdown"],"writes":false}"#
@@ -94,6 +94,12 @@ struct ClientDetailPresentationPolicyTests {
             await #expect(throws: ClientDetailV2Canonical.Failure.shape) {
                 try await api(body).forPresentation(sessionID: "s", clientCapabilities: actual)
             }
+        }
+        // Version 2 is now supported, but its catalogs must be structured
+        // entries. The obsolete string array is rejected during decoding.
+        await #expect(throws: DecodingError.self) {
+            try await api(#"{"schemaVersion":2,"catalogs":["native-v2"],"requiredCapabilities":[],"writes":false}"#)
+                .forPresentation(sessionID:"s",clientCapabilities:actual)
         }
         let body = #"{"schemaVersion":1,"catalogs":["native-v2","native-v2-components-1"],"requiredCapabilities":["detail.image"],"writes":false}"#
         await #expect(throws: ClientServiceFailure(statusCode: 409, code: "DETAIL_CAPABILITY_UNAVAILABLE")) {

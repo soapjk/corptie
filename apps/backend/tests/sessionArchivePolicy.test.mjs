@@ -55,7 +55,7 @@ test("Worker archive membership follows Task completion and publishes live State
     store.createTask({
       id: "task:one",
       workId: "work:one",
-      title: "Work item",
+      title: "Work_item",
       lifecycleState: "in_progress"
     });
     store.upsertSession({
@@ -138,12 +138,12 @@ test("Worker archive membership follows Task completion and publishes live State
     assert.equal(store.getTask("task:one").archived, 0);
     revision = sync.snapshot().revision;
     const completionService = new TaskCompletionService({ store });
-    const receipt = completionService.issueMacOSIntent("task:one", {
+    const receipt = await completionService.issueMacOSIntent("task:one", {
       requestId: "archive-completion-intent", interactionId: "archive-completion-click",
       uiSurface: "task_completion_confirmation", displayedTaskId: "task:one",
-      displayedTaskTitle: "Work item", displayedAcceptanceStatus: "not_assessed"
+      displayedTaskTitle: "Work_item", displayedAcceptanceStatus: "not_assessed"
     }, { type: "user", id: "user:local-macos" });
-    completionService.completeFromMacOS("task:one", {
+    await completionService.completeFromMacOS("task:one", {
       intentToken: receipt.intentToken, requestId: "archive-completion-intent",
       idempotencyKey: "archive-completion"
     });

@@ -27,6 +27,9 @@ public struct ClientWork: Decodable, Sendable, Identifiable, Equatable {
     }
 }
 public struct ClientTask: Decodable, Sendable, Identifiable, Equatable {
+    public let parentTaskId: String?
+    public let hierarchy: TaskHierarchySummary?
+    public let resourceVersion: Int?
     public let description: String?
     public let acceptanceCriteria: String?
     public let verificationCriteria: String?
@@ -46,10 +49,14 @@ public struct ClientTask: Decodable, Sendable, Identifiable, Equatable {
     public let updatedAt: String
 
     enum CodingKeys: String, CodingKey {
+        case parentTaskId, hierarchy, resourceVersion
         case id, title, autoTitleEnabled, workId, lifecycleState, executionStatus, currentSessionId, hasPendingScheduledWake, deletionStatus, archived, updatedAt, description, acceptanceCriteria, verificationCriteria
     }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        parentTaskId = try container.decodeIfPresent(String.self, forKey: .parentTaskId)
+        hierarchy = try container.decodeIfPresent(TaskHierarchySummary.self, forKey: .hierarchy)
+        resourceVersion = try container.decodeIfPresent(Int.self, forKey: .resourceVersion)
         id = try container.decode(String.self, forKey: .id)
         title = try container.decode(String.self, forKey: .title)
         autoTitleEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoTitleEnabled) ?? true

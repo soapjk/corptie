@@ -52,8 +52,10 @@ struct UnifiedConsoleView: View {
     struct TaskCreationTarget: Identifiable {
         let id = UUID()
         let workID: String?
+        var parentTaskId: String? = nil
     }
     @State var taskCreationTarget: TaskCreationTarget?
+    @State var expandedParentTaskIDs: Set<String> = []
     /// 已收起的子分类分组 key 集合（仅内存态，跟随当前页面生命周期）。
     @State var collapsedGroupKeys: Set<String> = []
     @State var entityGroupingRevision: UInt64 = 0
@@ -173,7 +175,7 @@ struct UnifiedConsoleView: View {
             WorkCreateView()
         }
         .sheet(item: $taskCreationTarget) { target in
-            CorptieTaskCreateView(initialWorkId: target.workID) { task in
+            CorptieTaskCreateView(initialWorkId: target.workID,parentTaskId:target.parentTaskId) { task in
                 selectedWorkId = task.workId
                 selectedTaskId = task.id
             }

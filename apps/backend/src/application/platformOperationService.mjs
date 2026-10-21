@@ -163,7 +163,7 @@ export class PlatformOperationService {
 
   async #tasks(args, binding) {
     assertKnown(args, ["action", "task_id", "target_task_id", "work_id", "title", "agent_id", "provider_id", "dependency_type", "patch",
-      "logical_session_id", "user_message_event_id", "user_message_sequence", "turn_id", "idempotency_key"]);
+      "logical_session_id", "user_message_event_id", "user_message_sequence", "turn_id", "idempotency_key", "expected_parent_resource_version"]);
     switch (required(args.action, "action")) {
       case "list": return args.work_id ? this.workService.listTasksByWork(args.work_id) : this.workService.listTasks();
       case "get": return this.workService.getTask(required(args.task_id, "task_id"));
@@ -171,6 +171,7 @@ export class PlatformOperationService {
         const title = validateEntityName(args.title, "title", "Task");
         const authorization = this.#authorizeTaskCreation(args, binding);
         const created = await this.createTask({
+          expectedParentResourceVersion: args.expected_parent_resource_version,
           taskInput: {
             ...(args.patch ?? {}),
             workId: required(args.work_id, "work_id"),

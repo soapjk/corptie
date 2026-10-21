@@ -49,6 +49,8 @@ final class EntityAPIClient: ObservableObject {
     @Published private(set) var tasksRevision: UInt64 = 0
     let sessionGroupingDidChange = PassthroughSubject<Void, Never>()
     @Published private(set) var tasksLoadError: String?
+    @Published private(set) var taskChildrenCursors: [String:String] = [:]
+    private var taskChildrenLoads = Set<String>()
     @Published private(set) var browsedTasksHasMore = false
     @Published private(set) var browsedMemoriesHasMore = false
     @Published private(set) var worksLoadError: String?
@@ -182,6 +184,45 @@ final class EntityAPIClient: ObservableObject {
 
     func clearCorptieTasksLoadError() {
         tasksLoadError = nil
+    }
+    func loadTaskParentChoices(workID: String) async {
+        struct Page: Decodable { let tasks: [CorptieTask]; let nextCursor: String? }
+        var cursor: String?
+        do {
+            repeat {
+                var url=URLComponents(url:baseURL.appending(path:"works/\(workID)/task-hierarchy"),resolvingAgainstBaseURL:false)!
+                url.queryItems=[.init(name:"parentTaskId",value:"root"),.init(name:"limit",value:"100")]
+                if let cursor { url.queryItems?.append(.init(name:"cursor",value:cursor)) }
+                let (data,response)=try await URLSession.shared.data(from:url.url!)
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+                let page=try decoder.decode(Page.self,from:data)
+                guard !Task.isCancelled else { return }
+                let revisions=Dictionary(tasks.map { ($0.id,$0.resourceVersion) },uniquingKeysWith:max)
+                for task in page.tasks where task.resourceVersion >= (revisions[task.id] ?? 0) { appState.acceptCorptieTask(task) }
+                cursor=page.nextCursor
+            } while cursor != nil
+        } catch { if !Task.isCancelled { tasksLoadError=error.localizedDescription } }
+    }
+    func loadTaskChildren(_ parent: CorptieTask, more: Bool = false) async {
+        struct Page: Decodable { let tasks:[CorptieTask]; let ancestors:[CorptieTask]; let nextCursor:String? }
+        guard taskChildrenLoads.insert(parent.id).inserted else { return }
+        defer { taskChildrenLoads.remove(parent.id) }
+        if more && taskChildrenCursors[parent.id] == nil { return }
+        do {
+            let cursor=more ? taskChildrenCursors[parent.id] : nil
+                var url=URLComponents(url:baseURL.appending(path:"works/\(parent.workId)/task-hierarchy"),resolvingAgainstBaseURL:false)!
+                url.queryItems=[URLQueryItem(name:"parentTaskId",value:parent.id),URLQueryItem(name:"limit",value:"100"),URLQueryItem(name:"includeArchived",value:"true")]
+                if let cursor {url.queryItems?.append(.init(name:"cursor",value:cursor))}
+                let (data,response)=try await URLSession.shared.data(from:url.url!)
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else {throw URLError(.badServerResponse)}
+                let page=try decoder.decode(Page.self,from:data)
+                guard !Task.isCancelled else {return}
+                let revisions=Dictionary(tasks.map { ($0.id,$0.resourceVersion) },uniquingKeysWith:max)
+                for task in page.ancestors+page.tasks where task.resourceVersion >= (revisions[task.id] ?? 0) {appState.acceptCorptieTask(task)}
+                taskChildrenCursors[parent.id]=page.nextCursor
+        } catch is CancellationError {
+            return
+        } catch { if !Task.isCancelled { tasksLoadError=error.localizedDescription } }
     }
 
     private func loadCorptieTasks(from url: URL) async -> [CorptieTask]? {
@@ -641,6 +682,8 @@ final class EntityAPIClient: ObservableObject {
                         providerId: String,
                         model: String? = nil,
                         reasoningLevel: String? = nil,
+                        parentTaskId: String? = nil,
+                        expectedParentResourceVersion: Int? = nil,
                         sourceSession explicitSourceSession: TaskSession? = nil) async -> CorptieTask? {
         let backendClient = BackendClient.shared
         guard let sourceSession = CorptieTaskSessionSourcePolicy.resolve(
@@ -667,6 +710,10 @@ final class EntityAPIClient: ObservableObject {
             "idempotencyKey": operationId
         ]
         if let id, !id.isEmpty { body["id"] = id }
+        if let parentTaskId {
+            body["parentTaskId"] = parentTaskId
+            body["expectedParentResourceVersion"] = expectedParentResourceVersion
+        }
         if let description, !description.isEmpty { body["description"] = description }
         if let acceptanceCriteria, !acceptanceCriteria.isEmpty { body["acceptanceCriteria"] = acceptanceCriteria }
         if let verificationCriteria, !verificationCriteria.isEmpty { body["verificationCriteria"] = verificationCriteria }

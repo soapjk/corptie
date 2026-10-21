@@ -2,6 +2,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { TaskWorktreeHierarchyService } from "./taskWorktreeHierarchyService.mjs";
 
 const execFile = promisify(execFileCallback);
 
@@ -11,6 +12,7 @@ export class WorktreeStartupPreparer {
     this.store = options.store;
     this.ensureWorkspace = options.ensureWorkspace;
     this.execGit = options.execGit ?? runGit;
+    this.hierarchy = new TaskWorktreeHierarchyService({ store:this.store, execGit:this.execGit });
     if (!this.store) throw new TypeError("WorktreeStartupPreparer requires a Store.");
     if (typeof this.ensureWorkspace !== "function") throw new TypeError("WorktreeStartupPreparer requires ensureWorkspace().");
   }
@@ -21,6 +23,7 @@ export class WorktreeStartupPreparer {
       || this.store.getTaskWorkspaceContext(task)?.repository?.id !== input.repositoryId) {
       throw coded("START_REFERENCE_INVALID", "Task Repository binding changed before Worktree preparation.", false);
     }
+    const baseContext = await this.hierarchy.freezeBaseForStartup(input);
     const owned = this.store.selectOne(
       `SELECT worktree_id FROM git_worktrees
        WHERE repository_id=? AND created_by_startup_operation_id=? AND dedicated=1
@@ -36,7 +39,7 @@ export class WorktreeStartupPreparer {
       isDetached: prepared.isDetached,
       inventoryVersion: prepared.inventoryVersion,
       reused: true
-    } : await this.ensureWorkspace({ task, session: null });
+    } : await this.ensureWorkspace({ task, session: null, ...(baseContext ? { baseContext } : {}) });
     if (workspace.workspaceMode === "unborn-main") {
       throw coded("START_SOURCE_IDENTITY_UNAVAILABLE", "Unborn Repository has no commit/tree for a dedicated Work Session.", false);
     }
@@ -62,6 +65,7 @@ export class WorktreeStartupPreparer {
       operationId: input.startupOperationId,
       repositoryId: input.repositoryId,
       workspace,
+      baseContext,
       reused: workspace.reused === true
     });
   }
@@ -72,6 +76,7 @@ export class WorktreeStartupPreparer {
     return this.#verify({
       operationId: operation.startup_operation_id,
       repositoryId: allocation.repositoryId,
+      baseContext: operation.worktree_base_context_json ? JSON.parse(operation.worktree_base_context_json) : allocation.baseContext ?? null,
       workspace: {
         worktreeId: row.worktreeId,
         path: row.canonicalPath || row.path,
@@ -84,7 +89,7 @@ export class WorktreeStartupPreparer {
     });
   }
 
-  async #verify({ operationId, repositoryId, workspace, reused }) {
+  async #verify({ operationId, repositoryId, workspace, reused, baseContext = null }) {
     const repository = this.store.getGitRepository(repositoryId);
     const inventory = this.store.getGitWorktree(workspace.worktreeId);
     if (!repository || !inventory || inventory.repositoryId !== repositoryId
@@ -116,6 +121,9 @@ export class WorktreeStartupPreparer {
       throw coded("START_SOURCE_IDENTITY_UNAVAILABLE", "Repository has no verifiable source commit/tree.", false);
     }
     const detached = inventory.isDetached === true || workspace.isDetached === true;
+    if (baseContext && (sourceCommitOid !== baseContext.baseCommitOid || sourceTreeOid !== baseContext.baseTreeOid)) {
+      throw coded("START_BASE_DIVERGED", "Prepared child Worktree differs from its frozen parent base.", false);
+    }
     const branch = inventory.branchName ?? workspace.branchName ?? null;
     if (!detached && !branch) throw coded("START_WORKTREE_INVENTORY_MISMATCH", "Branch Worktree has no branch identity.", true);
     return {
@@ -131,7 +139,8 @@ export class WorktreeStartupPreparer {
       repositoryInventoryVersion: inventory.inventoryVersion,
       workspaceResourceVersion: inventory.resourceVersion,
       createdByStartupOperationId: operationId,
-      reused
+      reused,
+      ...(baseContext ? { baseContext } : {})
     };
   }
 }

@@ -511,6 +511,36 @@ struct PadHistoryAutoLoadGate: Equatable {
 final class PadWorkspace {
     var works: [ClientWork] = []
     var tasks: [ClientTask] = []
+    private(set) var taskChildrenCursors: [String: String] = [:]
+    @ObservationIgnored private var taskChildrenLoads = Set<String>()
+    func loadTaskChildren(_ parent: ClientTask, connection: PadConnection, more: Bool = false) async {
+        let scope="\(connection.serverID)|\(connection.address)|\(connection.deviceID ?? "")"
+        let key=scope+"|"+parent.id
+        guard taskChildrenLoads.insert(key).inserted else { return }
+        defer { taskChildrenLoads.remove(key) }
+        if more && taskChildrenCursors[parent.id] == nil { return }
+        let generation=inventoryGeneration
+        do {
+            let api=ClientTaskHierarchyAPI(transport:try await connection.transport(),surface:.pairedDevice)
+            let page=try await api.page(workID:parent.workId,parentTaskID:parent.id,
+                cursor:more ? taskChildrenCursors[parent.id] : nil,includeArchived:true)
+            guard !Task.isCancelled, generation == inventoryGeneration,
+                  scope == "\(connection.serverID)|\(connection.address)|\(connection.deviceID ?? "")" else { return }
+            var byID=Dictionary(tasks.map { ($0.id,$0) },uniquingKeysWith: { $1 })
+            var order=tasks.map(\.id)
+            for task in page.ancestors+page.tasks {
+                if byID[task.id] == nil { order.append(task.id) }
+                byID[task.id]=task
+            }
+            tasks=order.compactMap { byID[$0] }
+            taskChildrenCursors[parent.id]=page.nextCursor
+            rebuildGroups()
+        } catch {
+            guard !Task.isCancelled, generation == inventoryGeneration,
+                  scope == "\(connection.serverID)|\(connection.address)|\(connection.deviceID ?? "")" else { return }
+            connection.notice="加载子任务失败："+PadConnection.explain(error)
+        }
+    }
     var sessions: [ClientSession] = []
     var tasksByWork: [String: [ClientTask]] = [:]
     var discussionsByWork: [String: [ClientSession]] = [:]

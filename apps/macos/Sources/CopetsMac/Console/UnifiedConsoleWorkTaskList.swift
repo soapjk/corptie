@@ -1,6 +1,7 @@
 import AppKit
 import CorptieConversation
 import SwiftUI
+import CorptieClientCore
 
 extension UnifiedConsoleView {
     var assistantSessionList: some View {
@@ -79,8 +80,26 @@ extension UnifiedConsoleView {
             }
 
             Section {
-                ForEach(visibleWorkTasks) { task in
-                    taskRow(task)
+                ForEach(hierarchyTasks(visibleWorkTasks)) { task in
+                    HStack(spacing:4) {
+                        if (task.hierarchy?.childCount ?? 0)>0 {
+                            Button {
+                                if !expandedParentTaskIDs.insert(task.id).inserted { expandedParentTaskIDs.remove(task.id) }
+                                else { Task { await entityClient.loadTaskChildren(task) } }
+                            } label: { Image(systemName:expandedParentTaskIDs.contains(task.id) ? "chevron.down" : "chevron.right") }
+                            .buttonStyle(.plain).accessibilityLabel(L10n("展开子任务"))
+                            if expandedParentTaskIDs.contains(task.id),entityClient.taskChildrenCursors[task.id] != nil {
+                                Button {Task {await entityClient.loadTaskChildren(task,more:true)}} label:{Image(systemName:"ellipsis")}
+                                    .buttonStyle(.plain).accessibilityLabel(L10n("加载更多子任务"))
+                            }
+                        }
+                        taskRow(task)
+                        if let hierarchy = task.hierarchy, hierarchy.childCount > 0 {
+                            Text("\(hierarchy.completedChildCount)/\(hierarchy.childCount)")
+                                .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                                .accessibilityLabel(L10n("子任务完成进度"))
+                        }
+                    }.padding(.leading,task.parentTaskId == nil ? 0 : 16)
                 }
             } header: {
                 Text(L10n("Tasks"))
@@ -90,6 +109,16 @@ extension UnifiedConsoleView {
         .scrollIndicators(.hidden)
         .scrollContentBackground(.hidden)
         .contentMargins(.top, 40, for: .scrollContent)
+    }
+
+    func hierarchyTasks(_ tasks: [CorptieTask]) -> [CorptieTask] {
+        var all=tasks
+        let ids=Set(tasks.map(\.id))
+        let needed=Set(tasks.compactMap(\.parentTaskId)).subtracting(ids)
+        all.append(contentsOf:entityClient.tasks.filter{needed.contains($0.id)})
+        let byID=Dictionary(all.map{($0.id,$0)},uniquingKeysWith:{$1})
+        let expanded=searchText.isEmpty ? expandedParentTaskIDs : Set(all.map(\.id))
+        return TaskHierarchyIndex.visibleOrder(nodes:all.map{.init(id:$0.id,workId:$0.workId,parentTaskId:$0.parentTaskId)},expanded:expanded).compactMap{byID[$0]}
     }
 
     @ViewBuilder
@@ -150,6 +179,12 @@ extension UnifiedConsoleView {
         session: TaskSession?
     ) -> some View {
         TaskFixedDisplayMenuItem(task: task)
+        if task.hierarchy?.canCreateChild == true {
+            Button(L10n("新建子任务"),systemImage:"plus") { taskCreationTarget=TaskCreationTarget(workID:task.workId,parentTaskId:task.id) }
+        }
+        if let id=task.parentTaskId,let parent=entityClient.tasks.first(where:{$0.id == id}) {
+            Button(L10n("打开父任务"),systemImage:"arrow.turn.up.left") {openTask(parent,session:workerSession(for:parent))}
+        }
         Divider()
         Button(L10n("Rename"), systemImage: "pencil") {
             taskPendingRename = task

@@ -311,6 +311,7 @@ final class PadWorktreeStore {
     }
 
     func preparePlan(operation: ClientWorktreePlanOperation? = nil, sources: [String]? = nil, target: String? = nil,
+                     taskScope: TaskHierarchyScope? = nil, syncStrategy: String? = nil,
                      replacingDraft: Bool = false, connection: PadConnection) async {
         guard let repositoryID = detail?.repository.id, !planning, !jobBusy else { return }
         let token = operationScope
@@ -319,13 +320,16 @@ final class PadWorktreeStore {
         do {
             let api = ClientWorktreeAPI(transport: try await connection.transport())
             if replacingDraft, let existing = job, existing.status == "awaiting_confirmation" {
+                guard existing.plan.taskScope?.rootTaskId == taskScope?.rootTaskId else {
+                    throw ClientServiceFailure(statusCode:409,code:"TASK_HIERARCHY_BUSY")
+                }
                 let canceled = try await api.cancel(jobId: existing.id)
                 guard token == operationScope else { return }
                 replaceJob(canceled)
             }
             guard token == operationScope, !Task.isCancelled else { return }
             let next = try await api.preparePlan(repositoryId: repositoryID, operationType: operation,
-                                            sources: sources, target: target)
+                                            sources: sources, target: target, taskScope:taskScope,syncStrategy:syncStrategy)
             guard token == operationScope, !Task.isCancelled else { return }
             let key = "corptie.worktree.job:\(connection.serverID):\(connection.address):\(repositoryID)"
             UserDefaults.standard.set(next.id, forKey: key)
@@ -335,6 +339,16 @@ final class PadWorktreeStore {
             guard token == operationScope else { return }
             errorMessage = PadWorktreeFailure.describe(error, stage: "生成集成计划", mutation: true)
         }
+    }
+
+    func prepareHierarchy(_ tree: ClientManagedWorktree, action: String, receiptID: String? = nil, connection: PadConnection) async {
+        guard let h=tree.hierarchy, let project=detail?.project else { return }
+        let children=project.worktrees.filter { $0.hierarchy?.parentTaskId == h.rootTaskId }.map(\.worktreeId)
+        let sources=["merge_children","sync_children"].contains(action) ? (h.role == "child" ? [tree.worktreeId] : children) : [tree.worktreeId]
+        let target=["merge_children","sync_children"].contains(action) ? (h.parentWorktreeId ?? tree.worktreeId) : project.mainWorktreeId
+        await preparePlan(operation:["sync_children","sync_main"].contains(action) ? .synchronize : .merge,
+            sources:sources,target:target,taskScope:h.scope(action,receiptId:receiptID),syncStrategy:action == "sync_main" ? "merge" : nil,
+            replacingDraft:true,connection:connection)
     }
 
     @discardableResult func jobAction(_ action: String, decisions: [ClientWorktreeCommitDecision] = [], reviewedJob: ClientWorktreeJob? = nil,

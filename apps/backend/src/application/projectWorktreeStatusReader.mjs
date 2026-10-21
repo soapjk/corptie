@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { sessionHasActiveRun } from "../utils/sessionPresentation.mjs";
+import { TaskWorktreeHierarchyService } from "./taskWorktreeHierarchyService.mjs";
 
 export function createProjectWorktreeStatusReader({
   store, requireSessionReference, ensureLogicalRouteForProviderSession,
@@ -52,32 +53,48 @@ export function createProjectWorktreeStatusReader({
     if (!logical?.repositoryId || !logical.activeWorkspaceId || !logical.activeBinding?.boundCwd) {
       return { attached: false, worktree: null, mainBranch: null };
     }
-    const project = await (gitWorkspaces.sessionDetailInspection ?? gitWorkspaces.projectStatus).call(gitWorkspaces, logical.logicalSessionId);
+    let project = await (gitWorkspaces.sessionDetailInspection ?? gitWorkspaces.projectStatus).call(gitWorkspaces, logical.logicalSessionId);
+    if(store.getTaskDeliveryBinding) {
+      // Session-card inspections are bounded to main/current. Add the actual
+      // parent from inventory, never guess it from a Provider working directory.
+      const binding=store.selectOne(`SELECT p.worktree_id FROM task_delivery_worktrees c JOIN tasks t ON t.id=c.task_id
+        JOIN task_delivery_worktrees p ON p.task_id=t.parent_task_id WHERE c.worktree_id=?`,[logical.activeWorkspaceId]);
+      if(binding && !project.worktrees.some(w=>w.worktreeId===binding.worktree_id)) {
+        const parent=store.getGitWorktree(binding.worktree_id);
+        if(parent) {
+          const fresh=gitWorkspaces.inspectSyncWorktree ? await gitWorkspaces.inspectSyncWorktree({repositoryId:logical.repositoryId,item:parent,allowResume:false}).catch(()=>({...parent,availability:"unavailable"})) : parent;
+          project={...project,worktrees:[...project.worktrees,fresh]};
+        }
+      }
+      project=await new TaskWorktreeHierarchyService({store}).decorateInspection({...project,repositoryId:logical.repositoryId});
+    }
     const worktree = project.worktrees.find(row => row.worktreeId === logical.activeWorkspaceId);
     const main = project.worktrees.find(row => row.worktreeId === project.mainWorktreeId);
+    const baseline=worktree?.hierarchy?.parentWorktreeId ? project.worktrees.find(row=>row.worktreeId===worktree.hierarchy.parentWorktreeId) : main;
     if (!worktree) throw Object.assign(new Error("The current Worktree binding is unavailable."), { code: "WORKTREE_NOT_FOUND", statusCode: 409 });
     const associated = [
       ...(store.listLogicalSessionsByWorkspaceId?.(worktree.worktreeId) ?? [logical]),
-      ...(main ? store.listLogicalSessionsByWorkspaceId?.(main.worktreeId) ?? [] : [])
+      ...(baseline ? store.listLogicalSessionsByWorkspaceId?.(baseline.worktreeId) ?? [] : [])
     ];
     const busy = associated.some(row => sessionHasActiveRun(store.getSession(row.legacySessionId))
       || store.hasUnsettledSessionRuntimeWork?.(row.legacySessionId))
       || sessionHasActiveRun(reference.metadata.session);
     const blockedReason = worktree.isMain ? "MAIN_WORKTREE"
-      : worktree.availability !== "available" || !main || main.availability !== "available" ? "WORKTREE_UNAVAILABLE"
-      : worktree.operationState || main.operationState || worktree.conflictFiles?.length || main.conflictFiles?.length ? "GIT_OPERATION_IN_PROGRESS"
-      : worktree.isLocked || main.isLocked ? "WORKTREE_LOCKED"
-      : worktree.isDetached || !worktree.branchName || !main.branchName ? "DETACHED_HEAD"
+      : worktree.availability !== "available" || !baseline || baseline.availability !== "available" ? "WORKTREE_UNAVAILABLE"
+      : worktree.operationState || baseline.operationState || worktree.conflictFiles?.length || baseline.conflictFiles?.length ? "GIT_OPERATION_IN_PROGRESS"
+      : worktree.isLocked || baseline.isLocked ? "WORKTREE_LOCKED"
+      : worktree.isDetached || !worktree.branchName || !baseline.branchName ? "DETACHED_HEAD"
       : busy ? "SESSION_BUSY"
-      : worktree.dirty !== false || main.dirty !== false ? "UNCOMMITTED_CHANGES"
+      : worktree.dirty !== false || baseline.dirty !== false ? "UNCOMMITTED_CHANGES"
       : null;
     const latest = readLatestJob(logical.repositoryId);
     const job = ["awaiting_confirmation", "queued", "running", "paused", "failed", "cancellation_requested", "replanning"].includes(latest?.status)
       && latest?.plan?.items?.some(item => item.worktreeId === worktree.worktreeId) ? latest : null;
-    return { attached: true, repositoryId: logical.repositoryId, mainWorktreeId: project.mainWorktreeId, job,
+    return { attached: true, workId:reference.metadata.session.workId ?? null, repositoryId: logical.repositoryId, mainWorktreeId: project.mainWorktreeId, job,
       autoFollow: readAutoFollow(worktree.worktreeId),
       mainBranch: main?.branchName ?? project.mainBranch ?? null, blockedReason,
       worktree: { worktreeId: worktree.worktreeId, path: worktree.path, branchName: worktree.branchName,
+        hierarchy:worktree.hierarchy ?? null,
         isMain: worktree.isMain, availability: worktree.availability, dirty: worktree.dirty ?? null,
         changedFiles: (worktree.changedFiles ?? []).slice(0, 20), changedFileCount: worktree.changedFiles?.length ?? 0,
         aheadOfMain: worktree.aheadOfMain ?? null,

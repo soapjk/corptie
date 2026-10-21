@@ -21,6 +21,9 @@ export function createControlPlaneProjection({ store, environmentName, decorateS
     const messageCursors = store.listSessionMessageCursors(residentSessionIds);
     const timelineRevisions = store.listSessionTimelineRevisions(residentSessionIds);
     const residentTasks = store.listTasks({ includeCompleted: false });
+    // A completed root is context for its still-active children, not an orphan
+    // row or a reason to warm every completed Task in this Work.
+    residentTasks.push(...(store.taskHierarchyAncestors?.(residentTasks) ?? []));
     const pendingScheduledWakeTaskIds = new Set(store.listTaskIdsWithPendingScheduledWake({
       environment: environmentName
     }));
@@ -40,11 +43,12 @@ export function createControlPlaneProjection({ store, environmentName, decorateS
       console.log(`[snapshot] sessions=${sessionsById.size} tasks=${residentTasks.length} ` +
         `openclacky=[${detail}]`);
     }
+    const hierarchySummaries = store.hierarchySummaries?.(residentTasks.map(task => task.id));
     return {
       sessions: sortSessionsForList([...sessionsById.values()]),
       // Completed Work Items are cold history. The Work Room loads them through
       // the explicit 50-row Task cursor API only when the user opens that view.
-      tasks: residentTasks.map((task) => presentTaskForClient(task, pendingScheduledWakeTaskIds)),
+      tasks: residentTasks.map((task) => presentTaskForClient(task, pendingScheduledWakeTaskIds, hierarchySummaries)),
       works: store.listWorks(),
       agents: store.listAgents().map((agent) => ({
         ...agent,
@@ -107,8 +111,9 @@ export function createControlPlaneProjection({ store, environmentName, decorateS
     }
   }
 
-  function presentTaskForClient(task, pendingScheduledWakeTaskIds = null) {
+  function presentTaskForClient(task, pendingScheduledWakeTaskIds = null, hierarchySummaries = null) {
     return presentTaskAcceptance(task, {
+      hierarchy: hierarchySummaries?.get(task.id) ?? store.hierarchySummaries?.([task.id])?.get(task.id),
       hasPendingScheduledWake: pendingScheduledWakeTaskIds
         ? pendingScheduledWakeTaskIds.has(task.id)
         : store.hasPendingScheduledWakeForTask(task.id, { environment: environmentName })

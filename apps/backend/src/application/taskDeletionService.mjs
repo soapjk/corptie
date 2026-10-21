@@ -114,6 +114,9 @@ export class TaskDeletionService {
     const associations = this.store.listTaskDeletionBlockingAssociations(taskId);
     const artifacts = Array.isArray(associations?.artifacts) ? associations.artifacts : [];
     const associatedSessionCount = this.store.listSessionsByTask(taskId).length;
+    if (this.store.hasTaskChildren?.(taskId) || item.parent_task_id) {
+      return deletionPlan(item, null, [], [{code:"TASK_HIERARCHY_DEPENDENCY",message:"父子任务的集成和清理尚未完成，不能删除交付资源。"}], associatedSessionCount, artifacts);
+    }
     const owningIntegrationJob = this.store.getActiveWorktreeIntegrationJobForConflictTask?.(taskId) ?? null;
     if (owningIntegrationJob) {
       return deletionPlan(item, null, [], [{

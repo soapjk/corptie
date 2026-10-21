@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import CorptieClientCore
 
 // 统一控制台数据模型，对齐后端 entityHttpApi 的 canonical camelCase DTO。
 
@@ -85,6 +86,8 @@ func repositoryIDs(for work: Work?, in repositories: [GitRepository]) -> [String
 struct CorptieTask: Identifiable, Codable, Hashable {
     let id: String
     var workId: String
+    var parentTaskId: String? = nil
+    var hierarchy: TaskHierarchySummary? = nil
     var title: String
     var description: String
     var acceptanceCriteria: String

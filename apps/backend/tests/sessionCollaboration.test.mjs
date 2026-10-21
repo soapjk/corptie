@@ -188,12 +188,12 @@ test("an interrupted Worker remains an active collaboration delivery target", as
       role: "independentContributor"
     });
     const work = f.workService.createWork({
-      name: "Interrupted Target Work",
+      name: "Interrupted_Target_Work",
       contributorAgentIds: [agent.agentId]
     });
     const task = f.workService.createTask({
       workId: work.id,
-      title: "Continue after interruption",
+      title: "Continue_after_interruption",
       mainAgentId: agent.agentId
     });
     session(f.store, f.core, {
@@ -224,7 +224,7 @@ test("same-Agent Sessions are separately discoverable and can collaborate withou
   const f = await fixture();
   try {
     const agent = f.store.createAgent({ id: "agent:same", name: "Same Agent", role: "independentContributor" });
-    const work = f.workService.createWork({ name: "One Work", contributorAgentIds: [agent.agentId] });
+    const work = f.workService.createWork({ name: "One_Work", contributorAgentIds: [agent.agentId] });
     const source = f.workService.createTask({ workId: work.id, title: "Source" });
     const target = f.workService.createTask({ workId: work.id, title: "Target", mainAgentId: agent.agentId });
     session(f.store, f.core, { providerSessionId: "provider:one", logicalSessionId: "session:one", agentId: agent.agentId, kind: "worker", workId: work.id, taskId: source.id, cwd: f.directory });
@@ -239,7 +239,7 @@ test("same-Agent Sessions are separately discoverable and can collaborate withou
       initiatorSessionId: "session:one", recipientSessionId: "session:two",
       sourceWorkId: work.id, targetWorkId: work.id,
       sourceTaskId: source.id, taskId: target.id,
-      title: "Session handoff", summary: "Two isolated contexts cooperate."
+      title: "Session_handoff", summary: "Two isolated contexts cooperate."
     });
     assert.equal(task.initiatorSessionId, "session:one");
     assert.equal(task.recipientSessionId, "session:two");
@@ -284,7 +284,7 @@ test("protocol v3 persistence rejects missing authoritative recipient Session me
     const source = f.store.createAgent({ id: "agent:route-source", name: "Route Source", role: "independentContributor" });
     const recipient = f.store.createAgent({ id: "agent:route-recipient", name: "Route Recipient", role: "independentContributor" });
     const work = f.workService.createWork({
-      name: "Route Guard",
+      name: "Route_Guard",
       contributorAgentIds: [source.agentId, recipient.agentId]
     });
     session(f.store, f.core, {
@@ -293,7 +293,7 @@ test("protocol v3 persistence rejects missing authoritative recipient Session me
     });
     const recipientTask = f.workService.createTask({
       workId: work.id,
-      title: "Recipient route",
+      title: "Recipient_route",
       mainAgentId: recipient.agentId
     });
     session(f.store, f.core, {
@@ -311,12 +311,12 @@ test("protocol v3 persistence rejects missing authoritative recipient Session me
       recipientNameAtSend: "Recipient Worker Session",
       sourceWorkId: work.id,
       targetWorkId: work.id,
-      title: "Route metadata guard",
+      title: "Route_metadata_guard",
       summary: "Do not accept an ambiguous capsule."
     });
     const currentSourceTask = f.workService.createTask({
       workId: work.id,
-      title: "Current source route",
+      title: "Current_source_route",
       mainAgentId: source.agentId
     });
     session(f.store, f.core, {
@@ -362,10 +362,10 @@ test("recipient routing reports missing fields and Task ownership mismatches wit
     const recipient = f.store.createAgent({ id: "agent:routing-owner", name: "Owner", role: "independentContributor" });
     const other = f.store.createAgent({ id: "agent:routing-other", name: "Other", role: "independentContributor" });
     const work = f.workService.createWork({
-      name: "Routing validation", contributorAgentIds: [recipient.agentId, other.agentId]
+      name: "Routing_validation", contributorAgentIds: [recipient.agentId, other.agentId]
     });
     const productTask = f.workService.createTask({
-      workId: work.id, title: "Owned target", mainAgentId: other.agentId
+      workId: work.id, title: "Owned_target", mainAgentId: other.agentId
     });
     await assert.rejects(
       f.service.ensureTaskRecipientSession({
@@ -429,7 +429,7 @@ test("peer Work discovery exposes context without allowing Work Chat as a delive
       targetWorkId: peerWork.id,
       targetTaskId: peerTask.id,
       type: "change_request",
-      title: "Exact MarketCow collaboration",
+      title: "Exact_MarketCow_collaboration",
       summary: "Confirm the explicitly named active Worker."
     });
     const exactPrepared = await f.service.prepareTaskConfirmationTarget(exactConfirmation);
@@ -446,7 +446,7 @@ test("peer Work discovery exposes context without allowing Work Chat as a delive
       targetWorkId: peerWork.id,
       routingIntent: "best_available",
       type: "change_request",
-      title: "MarketCow collaboration",
+      title: "MarketCow_collaboration",
       summary: "Create the target-scoped Task only after confirmation."
     });
     assert.equal(confirmation.initiatorAgentName, "Source");
@@ -495,12 +495,12 @@ test("routing intent returns only suitable active Sessions and leaves creation a
   try {
     const sourceAgent = f.store.createAgent({ id: "agent:source", name: "Source", role: "independentContributor" });
     const peerAgent = f.store.createAgent({ id: "agent:peer", name: "Peer", role: "independentContributor" });
-    const sourceWork = f.workService.createWork({ name: "Source Work", contributorAgentIds: [sourceAgent.agentId] });
-    const peerWork = f.workService.createWork({ name: "Peer Work", contributorAgentIds: [peerAgent.agentId] });
+    const sourceWork = f.workService.createWork({ name: "Source_Work", contributorAgentIds: [sourceAgent.agentId] });
+    const peerWork = f.workService.createWork({ name: "Peer_Work", contributorAgentIds: [peerAgent.agentId] });
     session(f.store, f.core, { providerSessionId: "provider:source", logicalSessionId: "session:source", agentId: sourceAgent.agentId, kind: "workChat", workId: sourceWork.id, cwd: f.directory });
     const peerTasks = new Map();
     for (const suffix of ["one", "two"]) {
-      const task = f.workService.createTask({ workId: peerWork.id, title: `Worker ${suffix}`, mainAgentId: peerAgent.agentId });
+      const task = f.workService.createTask({ workId: peerWork.id, title: `Worker_${suffix}`, mainAgentId: peerAgent.agentId });
       peerTasks.set(suffix, task);
       session(f.store, f.core, {
         providerSessionId: `provider:peer:${suffix}`, logicalSessionId: `session:peer:${suffix}`,
@@ -542,14 +542,14 @@ test("closed and invalid Sessions are filtered while an active suitable Session 
   try {
     const sourceAgent = f.store.createAgent({ id: "agent:source-filter", name: "Source", role: "independentContributor" });
     const peerAgent = f.store.createAgent({ id: "agent:peer-filter", name: "Peer", role: "independentContributor" });
-    const sourceWork = f.workService.createWork({ name: "Source Filter", contributorAgentIds: [sourceAgent.agentId] });
-    const peerWork = f.workService.createWork({ name: "Peer Filter", contributorAgentIds: [peerAgent.agentId] });
+    const sourceWork = f.workService.createWork({ name: "Source_Filter", contributorAgentIds: [sourceAgent.agentId] });
+    const peerWork = f.workService.createWork({ name: "Peer_Filter", contributorAgentIds: [peerAgent.agentId] });
     session(f.store, f.core, { providerSessionId: "provider:source-filter", logicalSessionId: "session:source-filter", agentId: sourceAgent.agentId, kind: "workChat", workId: sourceWork.id, cwd: f.directory });
     const tasks = new Map();
     for (const suffix of ["closed", "invalid", "active"]) {
       const task = f.workService.createTask({
         workId: peerWork.id,
-        title: `Peer ${suffix}`,
+        title: `Peer_${suffix}`,
         mainAgentId: peerAgent.agentId
       });
       tasks.set(suffix, task);
@@ -591,10 +591,10 @@ test("a completed peer Worker is never routed and creation resources fall back t
     const peerAgent = f.store.createAgent({ id: "agent:peer-archived", name: "Peer", role: "independentContributor" });
     const unauthorizedAgent = f.store.createAgent({ id: "agent:unauthorized-archived", name: "Unauthorized", role: "independentContributor" });
     const sourceWork = f.workService.createWork({
-      name: "Source Archived", contributorAgentIds: [sourceAgent.agentId]
+      name: "Source_Archived", contributorAgentIds: [sourceAgent.agentId]
     });
     const peerWork = f.workService.createWork({
-      name: "Peer Archived", contributorAgentIds: [peerAgent.agentId]
+      name: "Peer_Archived", contributorAgentIds: [peerAgent.agentId]
     });
     session(f.store, f.core, {
       providerSessionId: "provider:source-archived", logicalSessionId: "session:source-archived",
@@ -602,17 +602,17 @@ test("a completed peer Worker is never routed and creation resources fall back t
     });
     const completedTask = f.workService.createTask({
       workId: peerWork.id,
-      title: "Completed peer work",
+      title: "Completed_peer_work",
       mainAgentId: peerAgent.agentId,
       lifecycleState: "in_progress"
     });
     const completionService = new TaskCompletionService({ store: f.store });
-    const receipt = completionService.issueMacOSIntent(completedTask.id, {
+    const receipt = await completionService.issueMacOSIntent(completedTask.id, {
       requestId: "peer-completed-intent", interactionId: "peer-completed-click",
       uiSurface: "task_completion_confirmation", displayedTaskId: completedTask.id,
       displayedTaskTitle: completedTask.title, displayedAcceptanceStatus: "not_assessed"
     }, { type: "user", id: "user:local-macos" });
-    completionService.completeFromMacOS(completedTask.id, {
+    await completionService.completeFromMacOS(completedTask.id, {
       intentToken: receipt.intentToken, requestId: "peer-completed-intent",
       idempotencyKey: "peer-completed"
     });
@@ -660,8 +660,8 @@ test("an unrouted confirmation creates its Task and target Session before the fo
     f.service.onRoutingEvent = (event, details) => routingEvents.push({ event, details });
     const sourceAgent = f.store.createAgent({ id: "agent:source-create", name: "Source", role: "independentContributor" });
     const peerAgent = f.store.createAgent({ id: "agent:peer-create", name: "Peer", role: "independentContributor" });
-    const sourceWork = f.workService.createWork({ name: "Source Create", contributorAgentIds: [sourceAgent.agentId] });
-    const peerWork = f.workService.createWork({ name: "Peer Create", contributorAgentIds: [peerAgent.agentId] });
+    const sourceWork = f.workService.createWork({ name: "Source_Create", contributorAgentIds: [sourceAgent.agentId] });
+    const peerWork = f.workService.createWork({ name: "Peer_Create", contributorAgentIds: [peerAgent.agentId] });
     session(f.store, f.core, { providerSessionId: "provider:source-create", logicalSessionId: "session:source-create", agentId: sourceAgent.agentId, kind: "workChat", workId: sourceWork.id, cwd: f.directory });
     session(f.store, f.core, { providerSessionId: "provider:peer-closed", logicalSessionId: "session:peer-closed-create", agentId: peerAgent.agentId, kind: "workChat", workId: peerWork.id, cwd: f.directory });
     f.store.db.run("UPDATE sessions SET archived=1 WHERE id='provider:peer-closed'");
@@ -673,7 +673,7 @@ test("an unrouted confirmation creates its Task and target Session before the fo
       sourceWorkId: sourceWork.id,
       targetWorkId: peerWork.id,
       sessionAgentId: peerAgent.agentId,
-      title: "Create a safe route",
+      title: "Create_a_safe_route",
       summary: "No closed Session may receive this message."
     });
     f.service.workSessionStartApplicationService.start = async ({ taskId, assigneeAgentId }) => {
@@ -706,11 +706,11 @@ test("a formal task never changes its target Session during delivery preflight",
   try {
     const sourceAgent = f.store.createAgent({ id: "agent:source-race", name: "Source", role: "independentContributor" });
     const peerAgent = f.store.createAgent({ id: "agent:peer-race", name: "Peer", role: "independentContributor" });
-    const sourceWork = f.workService.createWork({ name: "Source Race", contributorAgentIds: [sourceAgent.agentId] });
-    const peerWork = f.workService.createWork({ name: "Peer Race", contributorAgentIds: [peerAgent.agentId] });
+    const sourceWork = f.workService.createWork({ name: "Source_Race", contributorAgentIds: [sourceAgent.agentId] });
+    const peerWork = f.workService.createWork({ name: "Peer_Race", contributorAgentIds: [peerAgent.agentId] });
     session(f.store, f.core, { providerSessionId: "provider:source-race", logicalSessionId: "session:source-race", agentId: sourceAgent.agentId, kind: "workChat", workId: sourceWork.id, cwd: f.directory });
     const peerTask = f.workService.createTask({
-      workId: peerWork.id, title: "Race-safe route", mainAgentId: peerAgent.agentId
+      workId: peerWork.id, title: "Race-safe_route", mainAgentId: peerAgent.agentId
     });
     session(f.store, f.core, {
       providerSessionId: "provider:peer-race-old", logicalSessionId: "session:peer-race-old",
@@ -722,7 +722,7 @@ test("a formal task never changes its target Session during delivery preflight",
       initiatorSessionId: "session:source-race", recipientSessionId: "session:peer-race-old",
       sourceWorkId: sourceWork.id, targetWorkId: peerWork.id,
       taskId: peerTask.id, routingIntent: "best_available",
-      title: "Race-safe route", summary: "Deliver after revalidation."
+      title: "Race-safe_route", summary: "Deliver after revalidation."
     });
     const first = await f.service.ensureTaskRecipientSession(task, { reason: "initial_selection" });
     assert.equal(first.created, false);
@@ -746,7 +746,7 @@ test("a formal task rejects a replaced broken Worker without silently changing i
   try {
     const sourceAgent = f.store.createAgent({ id: "agent:source-repair", name: "Source", role: "independentContributor" });
     const peerAgent = f.store.createAgent({ id: "agent:peer-repair", name: "MarketCow", role: "independentContributor" });
-    const sourceWork = f.workService.createWork({ name: "Source Repair", contributorAgentIds: [sourceAgent.agentId] });
+    const sourceWork = f.workService.createWork({ name: "Source_Repair", contributorAgentIds: [sourceAgent.agentId] });
     const peerWork = f.workService.createWork({ name: "MarketCow", contributorAgentIds: [peerAgent.agentId] });
     session(f.store, f.core, {
       providerSessionId: "provider:source-repair", logicalSessionId: "session:source-repair",
@@ -754,7 +754,7 @@ test("a formal task rejects a replaced broken Worker without silently changing i
     });
     const productTask = f.workService.createTask({
       workId: peerWork.id,
-      title: "获取 MarketCow 当前 exact 100-market scope",
+      title: "获取_MarketCow_当前_exact_100-market_scope",
       mainAgentId: peerAgent.agentId
     });
     session(f.store, f.core, {
@@ -824,7 +824,7 @@ test("Worker creates an independent Task with Session provenance and retries ide
     assert.equal(origin.creatorSessionId, "session:worker");
     assert.equal(origin.creationContextTaskId, source.id);
     assert.throws(() => f.service.createTask(metadata, agent.agentId, {
-      title: "Deprecated hierarchy", relationship: "depends_on", idempotencyKey: "create:deprecated"
+      title: "Deprecated_hierarchy", relationship: "depends_on", idempotencyKey: "create:deprecated"
     }), { code: "UNKNOWN_FIELD" });
   } finally {
     await f.store.close();
@@ -836,7 +836,7 @@ test("tool Task creation uses one service operation to persist the Task and bind
   const f = await fixture();
   try {
     const agent = f.store.createAgent({ id: "agent:atomic-tool", name: "Atomic Tool", role: "independentContributor" });
-    const work = f.workService.createWork({ name: "Atomic Tool Work", contributorAgentIds: [agent.agentId] });
+    const work = f.workService.createWork({ name: "Atomic_Tool_Work", contributorAgentIds: [agent.agentId] });
     session(f.store, f.core, {
       providerSessionId: "provider:atomic-source", logicalSessionId: "session:atomic-source",
       agentId: agent.agentId, kind: "workChat", workId: work.id, cwd: f.directory
@@ -901,7 +901,7 @@ test("tool Task creation rejects assistant initiative and accepts only an explic
   const f = await fixture();
   try {
     const agent = f.store.createAgent({ id: "agent:creation-guard", name: "Guard", role: "independentContributor" });
-    const work = f.workService.createWork({ name: "Guarded creation", contributorAgentIds: [agent.agentId] });
+    const work = f.workService.createWork({ name: "Guarded_creation", contributorAgentIds: [agent.agentId] });
     session(f.store, f.core, {
       providerSessionId: "provider:creation-guard", logicalSessionId: "session:creation-guard",
       agentId: agent.agentId, kind: "workChat", workId: work.id, cwd: f.directory
@@ -914,7 +914,7 @@ test("tool Task creation rejects assistant initiative and accepts only an explic
     });
     await assert.rejects(
       f.service.createTaskAndSession(metadata, agent.agentId, {
-        title: "Unauthorized initiative", agentId: agent.agentId,
+        title: "Unauthorized_initiative", agentId: agent.agentId,
         ...policyOnly, idempotencyKey: "create:unauthorized"
       }),
       (error) => error.code === "USER_MESSAGE_TASK_CREATION_INTENT_MISSING"
@@ -928,7 +928,7 @@ test("tool Task creation rejects assistant initiative and accepts only an explic
     });
     await assert.rejects(
       f.service.createTaskAndSession(metadata, agent.agentId, {
-        title: "Peer initiated", agentId: agent.agentId,
+        title: "Peer_initiated", agentId: agent.agentId,
         ...collaborationEvidence, idempotencyKey: "create:peer"
       }),
       (error) => error.code === "COLLABORATION_MESSAGE_NOT_AUTHORIZED"
@@ -947,7 +947,7 @@ test("Task creation validates, persists, and returns an existing Artifact refere
   const f = await fixture();
   try {
     const agent = f.store.createAgent({ id: "agent:artifact-reference", name: "Artifact owner", role: "independentContributor" });
-    const work = f.workService.createWork({ name: "Artifact Work", contributorAgentIds: [agent.agentId] });
+    const work = f.workService.createWork({ name: "Artifact_Work", contributorAgentIds: [agent.agentId] });
     session(f.store, f.core, {
       providerSessionId: "provider:artifact-reference", logicalSessionId: "session:artifact-reference",
       agentId: agent.agentId, kind: "workChat", workId: work.id, cwd: f.directory
@@ -981,7 +981,7 @@ test("Task creation validates, persists, and returns an existing Artifact refere
     assert.equal(replay.idempotentReplay, true);
     assert.equal(f.store.listArtifactReferences({ taskId: created.task.id }).length, 1);
 
-    const otherWork = f.workService.createWork({ name: "Other Work", contributorAgentIds: [agent.agentId] });
+    const otherWork = f.workService.createWork({ name: "Other_Work", contributorAgentIds: [agent.agentId] });
     const otherArtifact = await f.artifactService.create({ kind: "local_user", workId: otherWork.id }, {
       title: "Other secret", content: "not visible"
     });
@@ -1000,7 +1000,7 @@ test("Task creation validates, persists, and returns an existing Artifact refere
     f.workService.updateWork(work.id, {
       contributorAgentIds: [agent.agentId, workerAgent.agentId]
     });
-    const source = f.workService.createTask({ workId: work.id, title: "Worker source" });
+    const source = f.workService.createTask({ workId: work.id, title: "Worker_source" });
     session(f.store, f.core, {
       providerSessionId: "provider:artifact-worker", logicalSessionId: "session:artifact-worker",
       agentId: workerAgent.agentId, kind: "worker", workId: work.id,
@@ -1024,7 +1024,7 @@ test("Task creation validates Workspace file authority and returns durable file 
   const outsideDirectory = await mkdtemp(join(tmpdir(), "corptie-file-reference-outside-"));
   try {
     const agent = f.store.createAgent({ id: "agent:file-reference", name: "File owner", role: "independentContributor" });
-    const work = f.workService.createWork({ name: "File Work", contributorAgentIds: [agent.agentId] });
+    const work = f.workService.createWork({ name: "File_Work", contributorAgentIds: [agent.agentId] });
     session(f.store, f.core, {
       providerSessionId: "provider:file-reference", logicalSessionId: "session:file-reference",
       agentId: agent.agentId, kind: "workChat", workId: work.id, cwd: f.directory
@@ -1073,10 +1073,10 @@ test("same-Work Work Sessions discover private Task Artifacts as read-only while
     const agentB = f.store.createAgent({ id: "agent:share-b", name: "Share B", role: "independentContributor" });
     const agentU = f.store.createAgent({ id: "agent:share-unrelated", name: "Unrelated", role: "independentContributor" });
     const work = f.workService.createWork({
-      name: "Shared Artifacts", contributorAgentIds: [agentA.agentId, agentB.agentId, agentU.agentId]
+      name: "Shared_Artifacts", contributorAgentIds: [agentA.agentId, agentB.agentId, agentU.agentId]
     });
-    const workA = f.workService.createTask({ workId: work.id, title: "Work A" });
-    const workB = f.workService.createTask({ workId: work.id, title: "Work B" });
+    const workA = f.workService.createTask({ workId: work.id, title: "Work_A" });
+    const workB = f.workService.createTask({ workId: work.id, title: "Work_B" });
     const unrelated = f.workService.createTask({ workId: work.id, title: "Unrelated" });
     f.workService.addDependency(workB.id, workA.id, "depends_on");
     session(f.store, f.core, {
@@ -1172,7 +1172,7 @@ test("Assistant Chat without an Work cannot create and Tasks reject non-lifecycl
     const source = f.workService.createTask({ workId: work.id, title: "Source" });
     session(f.store, f.core, { providerSessionId: "provider:work", logicalSessionId: "session:work", agentId: agent.agentId, kind: "workChat", workId: work.id, cwd: f.directory });
     assert.throws(() => f.workService.createTask({
-      workId: work.id, title: "Invalid canceled create", lifecycleState: "canceled"
+      workId: work.id, title: "Invalid_canceled_create", lifecycleState: "canceled"
     }), { code: "INVALID_LIFECYCLE_STATE" });
     assert.throws(() => f.store.updateTask(source.id, { lifecycleState: "blocked" }), { code: "INVALID_LIFECYCLE_STATE" });
   } finally {

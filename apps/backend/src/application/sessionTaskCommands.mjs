@@ -3,16 +3,26 @@
 export function createSessionTaskCommands({
   store, collaborationCore, workService, taskCompletionService, presentTaskForClient
 }) {
-  function reportTaskAcceptanceForAgent(agentId, input = {}, metadata = {}) {
+  async function reportTaskAcceptanceForAgent(agentId, input = {}, metadata = {}) {
     const { sessionId, task } = resolveBoundTaskForAgent(agentId, metadata, "Task acceptance");
-    return presentTaskForClient(workService.recordAcceptanceAssessment(task.id, {
+    return presentTaskForClient(await workService.recordAcceptanceAssessment(task.id, {
       sourceSessionId: sessionId,
-      results: input.results
+      results: input.results,
+      ...(input.integrationSnapshotId ? {integrationSnapshotId:input.integrationSnapshotId} : {})
     }));
   }
 
   function getBoundTaskForAgent(agentId, _input = {}, metadata = {}) {
     return presentTaskForClient(resolveBoundTaskForAgent(agentId, metadata, "Bound Task read").task);
+  }
+  async function captureTaskIntegrationForAgent(agentId,input={},metadata={}) {
+    const {task,sessionId}=resolveBoundTaskForAgent(agentId,metadata,"Integration snapshot");
+    return workService.integrationAcceptance.captureSnapshot(task.id,input,{revalidate:()=>{
+      const current=resolveBoundTaskForAgent(agentId,metadata,"Integration snapshot");
+      if(current.task.id!==task.id || current.sessionId!==sessionId) {
+        throw Object.assign(new Error("Session binding changed during integration snapshot capture."),{code:"TASK_SESSION_MISMATCH",statusCode:403});
+      }
+    }});
   }
 
   function resolveBoundTaskForAgent(agentId, metadata = {}, operation = "Task operation") {
@@ -89,7 +99,7 @@ export function createSessionTaskCommands({
     };
   }
 
-  function completeTaskForSession(agentId, input = {}, metadata = {}) {
+  async function completeTaskForSession(agentId, input = {}, metadata = {}) {
     const requestedSessionId = String(metadata.sessionId ?? "").trim();
     const logicalSessionId = String(metadata.logicalSessionId ?? "").trim();
     if (!requestedSessionId || !logicalSessionId) {
@@ -104,7 +114,7 @@ export function createSessionTaskCommands({
       error.code = "SESSION_ACTOR_MISMATCH";
       throw error;
     }
-    const result = taskCompletionService.completeFromSession(input, {
+    const result = await taskCompletionService.completeFromSession(input, {
       ...metadata,
       sessionId: requestedSessionId,
       logicalSessionId
@@ -118,6 +128,7 @@ export function createSessionTaskCommands({
 
   return {
     reportTaskAcceptanceForAgent, getBoundTaskForAgent,
+    captureTaskIntegrationForAgent,
     reviseTaskForSession, completeTaskForSession
   };
 }

@@ -75,11 +75,16 @@ struct CorptieTaskCreateView: View {
     @State private var submissionError: String?
     @State private var taskDefaults = TaskCreationDefaults()
     @State private var defaultsLoaded = false
+    @State private var parentTaskId: String?
+    private var parentChoices: [CorptieTask] {
+        client.tasks.filter { $0.workId == selectedWorkId && $0.hierarchy?.canCreateChild == true }
+    }
 
-    init(initialWorkId: String? = nil, onCreated: @escaping (CorptieTask) -> Void) {
+    init(initialWorkId: String? = nil, parentTaskId: String? = nil, onCreated: @escaping (CorptieTask) -> Void) {
         self.initialWorkId = initialWorkId
         self.onCreated = onCreated
         _selectedWorkId = State(initialValue: initialWorkId)
+        _parentTaskId = State(initialValue:parentTaskId)
     }
 
     var body: some View {
@@ -131,6 +136,12 @@ struct CorptieTaskCreateView: View {
             }
 
             workSection
+            if !parentChoices.isEmpty {
+                Picker(L10n("父任务"),selection:$parentTaskId) {
+                    Text(L10n("独立 Task")).tag(String?.none)
+                    ForEach(parentChoices) { Text($0.title).tag(Optional($0.id)) }
+                }
+            }
 
             agentSection
 
@@ -183,9 +194,12 @@ struct CorptieTaskCreateView: View {
             reconcileProviderSelection()
         }
         .onChange(of: client.works) { _, _ in reconcileWorkSelection() }
-        .onChange(of: selectedWorkId) { _, _ in reconcileAgentSelection() }
+        .onChange(of: selectedWorkId) { _, _ in reconcileAgentSelection(); parentTaskId=nil }
         .onChange(of: modelCatalog.agentProviders) { _, _ in reconcileProviderSelection() }
         .task(id: selectedProviderId) { await loadModelChoices() }
+        .task(id: selectedWorkId) {
+            if let selectedWorkId { await client.loadTaskParentChoices(workID:selectedWorkId) }
+        }
         .onChange(of: selectedModelId) { _, _ in reconcileReasoning() }
     }
 
@@ -218,6 +232,10 @@ struct CorptieTaskCreateView: View {
 
     private var canSubmit: Bool {
         guard validationMessage == nil, defaultsLoaded, selectedProvider != nil else { return false }
+        if let parentTaskId {
+            guard let parent = parentChoices.first(where: { $0.id == parentTaskId }),
+                  parent.resourceVersion > 0 else { return false }
+        }
         if !selectedModelId.isEmpty && modelProviderId == selectedProviderId {
             guard let model = models.first(where: { $0.id == selectedModelId }) else { return false }
             if !selectedReasoningLevel.isEmpty,
@@ -424,6 +442,11 @@ struct CorptieTaskCreateView: View {
         let requestDetail = trimmedDetail
         let requestAcceptanceCriteria = acceptanceCriteria
         let requestPriority = priority
+        let parent=parentChoices.first{$0.id == parentTaskId}
+        guard parentTaskId == nil || (parent != nil && parent?.resourceVersion != nil) else {
+            submissionError = L10n("父任务已变化，请重新选择父任务。")
+            return
+        }
         let providerId = selectedProviderId
         let model = modelProviderId == providerId ? selectedModelId : ""
         let reasoningLevel = modelProviderId == providerId ? selectedReasoningLevel : ""
@@ -442,7 +465,8 @@ struct CorptieTaskCreateView: View {
                     priority: requestPriority,
                     providerId: providerId,
                     model: model.isEmpty ? nil : model,
-                    reasoningLevel: reasoningLevel.isEmpty ? nil : reasoningLevel
+                    reasoningLevel: reasoningLevel.isEmpty ? nil : reasoningLevel,
+                    parentTaskId:parent?.id,expectedParentResourceVersion:parent?.resourceVersion
                 )
             }
             guard let task = created else {

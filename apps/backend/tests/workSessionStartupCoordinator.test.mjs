@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
+import { TaskWorktreeHierarchyService } from "../src/application/taskWorktreeHierarchyService.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,6 +17,50 @@ import { CorptieStore } from "../src/store/corptieStore.mjs";
 
 const COMMIT = "a".repeat(40);
 const TREE = "b".repeat(40);
+
+test("ready delivery binding and frozen parent base survive parent commits, sibling creation and recovery", async () => {
+  const f = await fixture();
+  const exec = promisify(execFileCallback);
+  const git = async (path,...args)=>(await exec("git",["-C",path,...args],{encoding:"utf8"})).stdout.trim();
+  try {
+    const repo=join(f.directory,"repo");
+    await mkdir(repo);
+    await git(repo,"init","-b","main");
+    await git(repo,"config","user.name","Corptie Tests");
+    await git(repo,"config","user.email","tests@corptie.local");
+    await git(repo,"commit","--allow-empty","-m","initial");
+    await mkdir(join(f.directory,"worktrees"));
+    const parentPath=f.allocation.canonicalWorktreePath;
+    await git(repo,"worktree","add","-b","task/one",parentPath,"HEAD");
+    await f.service.start({...input(),dispatchInitialTurn:false});
+    const binding=f.store.getTaskDeliveryBinding(f.task.id);
+    assert.equal(binding.worktree_id,"worktree:one");
+    const parent=f.store.getTask(f.task.id);
+    const createChild=(id)=>f.store.createTask({id,workId:parent.work_id,title:"Child",parentTaskId:parent.id,mainAgentId:"agent:worker"},{},{expectedParentResourceVersion:parent.resource_version});
+    const child=createChild("task:child");
+    const now=new Date().toISOString();
+    const allocate=(id,task)=>f.store.db.run(`INSERT INTO work_session_startup_operations
+      (startup_operation_id,work_id,task_id,assignee_agent_id,expected_task_version,provider_id,repository_id,
+       source_session_id,idempotency_key,request_fingerprint,state,correlation_id,allocated_at,updated_at)
+      VALUES (?,?,?,?,1,'test','repository:one','session:source',?,?,'allocated',?,?,?)`,
+    [id,task.work_id,task.id,"agent:worker",id,id,id,now,now]);
+    allocate("startup:child",child);
+    const hierarchy=new TaskWorktreeHierarchyService({store:f.store});
+    const base=await hierarchy.freezeBaseForStartup({startupOperationId:"startup:child",taskId:child.id,repositoryId:"repository:one"});
+    assert.equal(base.baseCommitOid,await git(parentPath,"rev-parse","HEAD"));
+    await writeFile(join(parentPath,"parent.txt"),"next");
+    await assert.rejects(hierarchy.validateCreate({workId:parent.work_id,parentTaskId:parent.id},{expectedParentResourceVersion:parent.resource_version}),{code:"PARENT_WORKTREE_DIRTY"});
+    await git(parentPath,"add","parent.txt"); await git(parentPath,"commit","-m","parent advanced");
+    const sibling=createChild("task:sibling"); allocate("startup:sibling",sibling);
+    const restored=await new TaskWorktreeHierarchyService({store:f.store}).freezeBaseForStartup({startupOperationId:"startup:child",taskId:child.id,repositoryId:"repository:one"});
+    assert.deepEqual(restored,base);
+    const siblingBase=await hierarchy.freezeBaseForStartup({startupOperationId:"startup:sibling",taskId:sibling.id,repositoryId:"repository:one"});
+    assert.notEqual(siblingBase.baseCommitOid,base.baseCommitOid);
+    assert.equal(await git(repo,"rev-parse","HEAD"),base.baseCommitOid);
+    f.store.db.run("UPDATE task_delivery_worktrees SET binding_revision=binding_revision+1 WHERE task_id=?",[parent.id]);
+    await assert.rejects(hierarchy.freezeBaseForStartup({startupOperationId:"startup:child",taskId:child.id,repositoryId:"repository:one"}),{code:"TASK_DELIVERY_BINDING_CHANGED"});
+  } finally { await cleanup(f); }
+});
 
 async function fixture(overrides = {}) {
   const directory = await mkdtemp(join(tmpdir(), "corptie-authoritative-startup-"));
@@ -41,7 +88,7 @@ async function fixture(overrides = {}) {
     workspaceId: "workspace:one"
   });
   const task = workService.createTask({
-    id: "task:one", workId: work.id, title: "Authoritative startup",
+    id: "task:one", workId: work.id, title: "Authoritative_startup",
     mainAgentId: agent.agentId
   });
   store.createSession({
@@ -643,7 +690,7 @@ test("backend reopen recovers an expired worktree_prepared lease without duplica
       clock: () => "2026-08-30T00:01:00.000Z",
       authorizeStart: async (value) => ({
         ...value, workId: "work:one", repositoryId: "repository:one",
-        taskTitle: "Authoritative startup"
+        taskTitle: "Authoritative_startup"
       }),
       prepareWorktree: async () => { throw new Error("must reuse committed allocation"); },
       inspectWorktree: async ({ allocation: value }) => value,

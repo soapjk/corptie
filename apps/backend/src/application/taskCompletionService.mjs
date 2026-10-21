@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { TaskIntegrationAcceptanceService } from "./taskIntegrationAcceptanceService.mjs";
 
 const COMPLETED = new Set(["done", "complete", "completed"]);
 const UI_SURFACES = new Set(["task_completion_confirmation", "task_edit_status_confirmation"]);
@@ -17,13 +18,14 @@ export class TaskCompletionService {
   constructor({ store, onCompleted = null, now = () => new Date(), uiTtlMs = 5 * 60_000, sessionTtlMs = 30 * 60_000 } = {}) {
     if (!store) throw new TypeError("TaskCompletionService requires a Store.");
     this.store = store;
+    this.integrationAcceptance = new TaskIntegrationAcceptanceService({store});
     this.onCompleted = onCompleted;
     this.now = now;
     this.uiTtlMs = uiTtlMs;
     this.sessionTtlMs = sessionTtlMs;
   }
 
-  issueMacOSIntent(taskId, input = {}, actor = {}) {
+  async issueMacOSIntent(taskId, input = {}, actor = {}) {
     const requestId = required(input.requestId, "COMPLETION_REQUEST_ID_REQUIRED", "requestId is required.");
     const existing = this.store.getTaskCompletionIntentByRequest("direct_macos_ui_action", requestId);
     if (existing) {
@@ -33,7 +35,7 @@ export class TaskCompletionService {
     if (actor.type !== "user" || actor.id !== "user:local-macos") {
       throw completionError("DIRECT_USER_INTENT_REQUIRED", "Only the authenticated local macOS user may issue this intent.", 403);
     }
-    const task = this.#task(taskId);
+    const task = this.#task(taskId, true);
     const interactionId = required(input.interactionId, "UI_INTERACTION_ID_REQUIRED", "interactionId is required.");
     const uiSurface = required(input.uiSurface, "UI_SURFACE_REQUIRED", "uiSurface is required.");
     if (!UI_SURFACES.has(uiSurface)) throw completionError("UI_SURFACE_NOT_AUTHORIZED", "This UI surface cannot issue completion intent.", 403);
@@ -41,6 +43,8 @@ export class TaskCompletionService {
       throw completionError("UI_TARGET_SNAPSHOT_MISMATCH", "The displayed Task snapshot is stale or mismatched.");
     }
     const issuedAt = this.now();
+    await this.integrationAcceptance.assertCompletionAllowed(task);
+    this.#assertUnchanged(task);
     const receiptId = `completion_intent:${randomUUID()}`;
     const nonce = randomBytes(32).toString("base64url");
     const token = `${receiptId}.${nonce}`;
@@ -66,9 +70,9 @@ export class TaskCompletionService {
     return presentReceipt(intent);
   }
 
-  completeFromMacOS(taskId, input = {}) {
+  async completeFromMacOS(taskId, input = {}) {
     const sourceType = "direct_macos_ui_action";
-    const task = this.#task(taskId);
+    const task = this.#task(taskId, true);
     const fallbackAttemptId = `invalid-completion-attempt:${randomUUID()}`;
     let idempotencyKey = optionalText(input.idempotencyKey) ?? fallbackAttemptId;
     let requestId = optionalText(input.requestId) ?? fallbackAttemptId;
@@ -88,6 +92,8 @@ export class TaskCompletionService {
       if (intent.requestId !== requestId) throw completionError("COMPLETION_INTENT_REQUEST_MISMATCH", "Completion request does not match its intent.", 403);
       if (intent.consumedOperationId) throw completionError("COMPLETION_INTENT_REPLAYED", "Completion intent was already consumed.", 409);
       if (Date.parse(intent.expiresAt) <= this.now().getTime()) throw completionError("COMPLETION_INTENT_EXPIRED", "Completion intent has expired.", 410);
+      await this.integrationAcceptance.assertCompletionAllowed(task);
+      this.#assertUnchanged(task);
       const result = this.store.completeTaskWithAuthorization(this.#operationInput({
         task, sourceType, idempotencyKey, requestId, nonce: intent.nonce,
         receiptId: intent.receiptId, interactionId: intent.interactionId,
@@ -103,10 +109,10 @@ export class TaskCompletionService {
     }
   }
 
-  completeFromSession(input = {}, metadata = {}) {
+  async completeFromSession(input = {}, metadata = {}) {
     const sourceType = "direct_session_user_instruction";
     const taskId = required(input.targetTaskId, "TASK_ID_REQUIRED", "targetTaskId is required.");
-    const task = this.#task(taskId);
+    const task = this.#task(taskId, true);
     const fallbackAttemptId = `invalid-completion-attempt:${randomUUID()}`;
     let idempotencyKey = optionalText(input.idempotencyKey) ?? fallbackAttemptId;
     let requestId = optionalText(input.requestId) ?? fallbackAttemptId;
@@ -146,6 +152,11 @@ export class TaskCompletionService {
       if (!containsCompletionIntent(message)) throw completionError("USER_MESSAGE_COMPLETION_INTENT_MISSING", "The direct user message does not explicitly request completion.", 403);
       if (!mentionsTarget(message, task)) throw completionError("USER_MESSAGE_TARGET_AMBIGUOUS", "The direct user message does not unambiguously identify this Task.", 403);
       const nonce = `session:${logicalSessionId}:${event.eventId}:${event.sequence}:${turnId}`;
+      await this.integrationAcceptance.assertCompletionAllowed(task);
+      this.#assertUnchanged(task);
+      if (!sessionCanOperate(this.store.getSession(logical.legacySessionId), task)) {
+        throw completionError("TASK_SESSION_UNAUTHORIZED", "The Session binding changed during validation.", 403);
+      }
       const result = this.store.completeTaskWithAuthorization(this.#operationInput({
         task, sourceType, idempotencyKey, requestId, nonce, logicalSessionId,
         userMessageEventId: event.eventId, userMessageSequence: event.sequence, turnId,
@@ -179,10 +190,18 @@ export class TaskCompletionService {
     throw completionError(errorCode, "A user-direct completion intent credential is required.", 403);
   }
 
-  #task(id) {
+  #task(id, completing = false) {
     const task = this.store.getTask(id);
     if (!task) throw completionError("TASK_NOT_FOUND", `Task not found: ${id}`, 404);
     return task;
+  }
+
+  #assertUnchanged(task) {
+    const current = this.#task(task.id);
+    if (current.resource_version !== task.resource_version || current.revision !== task.revision
+      || current.hierarchy_revision !== task.hierarchy_revision || current.work_id !== task.work_id) {
+      throw completionError("TASK_COMPLETION_SNAPSHOT_STALE", "Task changed during completion validation; reload and retry.");
+    }
   }
 
   #replay(operation, taskId, requestId) {

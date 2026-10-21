@@ -471,6 +471,7 @@ const taskCompletionService = new TaskCompletionService({
 });
 const {
   reportTaskAcceptanceForAgent, getBoundTaskForAgent,
+  captureTaskIntegrationForAgent,
   reviseTaskForSession, completeTaskForSession
 } = createSessionTaskCommands({
   store, collaborationCore, workService, taskCompletionService,
@@ -705,7 +706,7 @@ const hostToolCatalog = createHostToolCatalog({
   getProjectCodeApplicationService: () => projectCodeApplicationService,
   sessionCollaborationV2Enabled, port, skillRegistryService,
   scheduledSessionTaskService, getBoundTaskForAgent,
-  reportTaskAcceptanceForAgent, completeTaskForSession,
+  reportTaskAcceptanceForAgent, completeTaskForSession, captureTaskIntegrationForAgent,
   reviseTaskForSession, sceneService,
   getToolMaterializationPort: () => toolMaterializationPort,
   getPlatformOperationService: () => platformOperationService,
@@ -2056,8 +2057,8 @@ async function projectWorktreeStatus(sessionId, options) {
   return projectWorktreeStatusReader.projectWorktreeStatus(sessionId, options);
 }
 
-async function ensureTaskWorkspace({ task, session = null }) {
-  return taskWorkspaceService.ensure({ task, session });
+async function ensureTaskWorkspace({ task, session = null, baseContext = null }) {
+  return taskWorkspaceService.ensure({ task, session, baseContext });
 }
 
 

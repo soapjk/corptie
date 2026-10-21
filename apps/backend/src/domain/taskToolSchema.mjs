@@ -40,7 +40,8 @@ export const taskPatchSchema = Object.freeze({
     verificationCriteria: taskFieldsSchema.verification_criteria,
     priority: { type: "string", enum: [...TASK_PRIORITIES] },
     lifecycleState: { type: "string", enum: [...TASK_LIFECYCLE_STATES] },
-    mainAgentId: { type: ["string", "null"], description: agentIdSchema.description }
+    mainAgentId: { type: ["string", "null"], description: agentIdSchema.description },
+    parentTaskId: { type: ["string", "null"], description: "Creation only: root Task in the same Work. Reparenting is not supported." }
   },
   additionalProperties: false
 });

@@ -11,6 +11,8 @@ import { detailV2GetNegotiation, detailV2PinnedAuthenticate } from "./detailV2Ne
 import { createDetailBusinessActionService } from "./detailBusinessActionComposition.mjs";
 import { handleDetailActionHttp } from "./detailActionHttpAdapter.mjs";
 import { ClientResourceAPI } from "./clientResourceAPI.mjs";
+import { readTaskHierarchyPage } from "./taskHierarchyService.mjs";
+import { TaskIntegrationAcceptanceService } from "./taskIntegrationAcceptanceService.mjs";
 
 export const reply = (response, status, body) => {
   response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store",
@@ -127,6 +129,7 @@ export class ClientDeviceGateway {
       const resource = /^\/client\/v1\/resources(?:\/([^/]+)(?:\/(read|commands))?)?$/.exec(path);
       const eventV2 = path === "/client/v2/events";
       const inventory = /^\/client\/v1\/(works|tasks|sessions)$/.exec(path);
+      const taskHierarchy = /^\/client\/v1\/works\/([^/]+)\/task-hierarchy$/.exec(path);
       const discussion = /^\/client\/v1\/works\/([^/]+)\/discussion$/.exec(path);
       const deletionOperation = /^\/client\/v1\/task-deletion-operations\/([^/]+)$/.exec(path);
       const taskEntity = /^\/client\/v1\/tasks\/([^/]+)\/(management|deletion|update|archive|restart|delete)$/.exec(path);
@@ -147,7 +150,7 @@ export class ClientDeviceGateway {
       const worktreeJobAction = /^\/client\/v1\/worktrees\/jobs\/([^/]+)\/actions\/([^/]+)$/.exec(path);
       const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|message-deliveries|quick-messages|stop|capabilities|composer|conversation-commands|tasks|read-receipt|images|resources|usage|approval|user-input|collaboration-confirmation)$/.exec(path);
       const commandReceipt = /^\/client\/v1\/commands\/([A-Za-z0-9_-]{8,128})$/.exec(path);
-      if (url.search && !resource && !search && !inventory && !control && !eventV2 && !worktreeRepository
+      if (url.search && !resource && !search && !inventory && !taskHierarchy && !control && !eventV2 && !worktreeRepository
           && !(path === "/client/v1/provider-settings/task-creation" && request.method === "GET")
           && !(["messages", "tasks", "images", "resources", "usage"].includes(conversation?.[2]) && request.method === "GET")) {
         throw deviceError("REQUEST_NOT_ALLOWED", 403);
@@ -162,6 +165,23 @@ export class ClientDeviceGateway {
         return reply(response, 200, await this.authority.refresh(await body(request)));
       }
       const identity = this.authenticateRequest(request);
+      const integration = path.match(/^\/client\/v1\/tasks\/([^/]+)\/integration-(snapshots|acceptance)$/);
+      if(integration && this.readAPI?.store) {
+        const service=new TaskIntegrationAcceptanceService({store:this.readAPI.store}),taskId=decode(integration[1],"INVALID_TASK_ID");
+        if(request.method==="GET" && integration[2]==="acceptance") return reply(response,200,await service.readStatus(taskId));
+        if(request.method==="POST" && integration[2]==="snapshots") {
+          const input=await body(request);this.authenticateRequest(request);
+          return reply(response,201,await service.captureSnapshot(taskId,input,{revalidate:()=>{
+            const current=this.authenticateRequest(request);
+            if(current.deviceId!==identity.deviceId) throw deviceError("DEVICE_AUTH_CHANGED",403);
+          }}));
+        }
+        throw deviceError("REQUEST_NOT_ALLOWED",405);
+      }
+      if (taskHierarchy && this.readAPI) {
+        if (request.method !== "GET") throw deviceError("REQUEST_NOT_ALLOWED", 405);
+        return reply(response, 200, readTaskHierarchyPage(this.readAPI.store, decode(taskHierarchy[1], "INVALID_WORK_ID"), url.searchParams));
+      }
       if (resource && this.resourceAPI) {
         const resourceIdentity = { ...identity, revalidate: () => {
           const current = this.authenticateRequest(request);

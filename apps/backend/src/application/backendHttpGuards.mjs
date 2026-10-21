@@ -9,8 +9,8 @@ export function rejectDevelopmentPreviewWrite({ request, response, url, developm
       || /^\/sessions\/[^/]+\/(stored-snapshot|history|timeline\/window|timeline\/changes|events|usage|quick-messages|context-references|images|resources|fork|worktree-detail)$/.test(url.pathname)
       || /^\/sessions\/[^/]+\/detail(?:\/(events|capabilities))?$/.test(url.pathname)
       || /^\/sessions\/[^/]+\/detail\/receipts\/[A-Za-z0-9_-]{8,128}$/.test(url.pathname)
-      || /^\/works\/[^/]+(?:\/(tasks|artifacts))?$/.test(url.pathname)
-      || /^\/tasks\/[^/]+(?:\/(sessions|snapshots|artifacts))?$/.test(url.pathname)
+      || /^\/works\/[^/]+(?:\/(tasks|artifacts|task-hierarchy))?$/.test(url.pathname)
+      || /^\/tasks\/[^/]+(?:\/(sessions|snapshots|artifacts|integration-acceptance))?$/.test(url.pathname)
       || /^\/artifacts\/[^/]+$/.test(url.pathname)
       || /^\/resources\/[^/]+(?:\/read)?$/.test(url.pathname)
       || url.pathname === "/scene-templates"

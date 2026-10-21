@@ -53,6 +53,21 @@ test("Worker Session context preserves normal handling for in-scope requests", (
   assert.match(context.prompt, /another Task are not exposed/);
 });
 
+test("Worker hierarchy context retains the child parent id and exact snapshot verification workflow", () => {
+  const context = buildWorkSessionContext({
+    session: { id: "session:child", sessionKind: "worker", taskId: "task:child", workId: "work:quality" },
+    task: { id: "task:child", work_id: "work:quality", parent_task_id: "task:parent", title: "Child",
+      acceptance_criteria: "Changes verified", revision: 1, resource_version: 1 }
+  });
+  assert.match(context.prompt, /"parentTaskId":"task:parent"/);
+  assert.match(context.prompt, /A child delivers into its parent Worktree, not directly into main/);
+  assert.match(context.prompt, /corptie_task_capture_integration before verification/);
+  assert.match(context.prompt, /that exact integrationSnapshotId/);
+  assert.match(context.prompt, /a snapshot alone proves no tests/);
+  assert.match(context.prompt, /Git integration never grants Task completion authority/);
+  assert.doesNotMatch(workerContext().prompt, /"parentTaskId":/);
+});
+
 test("Worker Session context continues otherwise-allowed requests outside the Task scope", () => {
   const context = workerContext();
 

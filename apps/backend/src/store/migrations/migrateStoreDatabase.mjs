@@ -1,6 +1,7 @@
 import { migrateTaskProjectionColumns, migrateTaskCreationOrigins, migrateTaskLifecycleGuards } from "./taskEvolutionMigrations.mjs";
 import { migrateArtifactTaxonomy } from "./artifactTaxonomyMigrations.mjs";
 import { migrateStartupOperations } from "./startupOperationMigrations.mjs";
+import { migrateTaskHierarchy } from "./taskHierarchyMigrations.mjs";
 import { migrateCollaborationProtocol } from "./collaborationProtocolMigrations.mjs";
 import { migrateSessionEventStorage } from "./sessionEventEvolutionMigrations.mjs";
 import { ensureMemoryFoundationTables, quarantineLegacyExtractionNoise,
@@ -137,6 +138,7 @@ export function migrateStoreDatabase({ db, selectAll, selectOne, ensureColumn, r
       runDataMigrationOnce: (...args) => runDataMigrationOnce(...args),
       dropColumnIfExists: (...args) => dropColumnIfExists(...args)
     });
+    migrateTaskHierarchy({ db, ensureColumn });
     migrateTaskLifecycleGuards({
       db: db
     });

@@ -21,6 +21,7 @@ export function createWorkSessionStartupComposition({
     store,
     ensureWorkspace: async (input) => {
       const source = await forkContextForTask(input.task.id);
+      if (input.task.parent_task_id && source) throw Object.assign(new Error("Child Task cannot also fork another conversation workspace."), {code:"INVALID_CHILD_CREATION_MODE",statusCode:409});
       return source ? prepareConversationForkWorkspace(source, input.task.id) : ensureTaskWorkspace(input);
     }
   });

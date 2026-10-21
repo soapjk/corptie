@@ -554,13 +554,26 @@ final class WorktreeManagementClient: ObservableObject {
     func prepareBranchOperation(
         operationType: String,
         sourceWorktreeIds: [String],
-        targetWorktreeId: String
+        targetWorktreeId: String,
+        taskScope: TaskHierarchyScope? = nil, syncStrategy: String? = nil
     ) async {
-        await prepareCandidate(body: [
+        var body: [String: Any] = [
             "operationType": operationType,
             "sourceWorktreeIds": sourceWorktreeIds,
             "targetWorktreeId": targetWorktreeId
-        ])
+        ]
+        if let taskScope, let data=try? JSONEncoder().encode(taskScope), let object=try? JSONSerialization.jsonObject(with:data) { body["taskScope"]=object }
+        if let syncStrategy { body["syncStrategy"]=syncStrategy }
+        await prepareCandidate(body:body)
+    }
+
+    func prepareHierarchyOperation(_ tree: ManagedWorktree, action: String, receiptID: String? = nil) async {
+        guard let h=tree.hierarchy, let project=detail?.project else { return }
+        let children=project.worktrees.filter { $0.hierarchy?.parentTaskId == h.rootTaskId }.map(\.worktreeId)
+        let sources = ["merge_children","sync_children"].contains(action) ? (h.role == "child" ? [tree.worktreeId] : children) : [tree.worktreeId]
+        let target = ["merge_children","sync_children"].contains(action) ? (h.parentWorktreeId ?? tree.worktreeId) : project.mainWorktreeId
+        await prepareBranchOperation(operationType: ["sync_children","sync_main"].contains(action) ? "sync" : "merge",
+            sourceWorktreeIds:sources,targetWorktreeId:target,taskScope:h.scope(action,receiptId:receiptID),syncStrategy:action == "sync_main" ? "merge" : nil)
     }
 
     func retryCandidatePreparation() async {
@@ -592,7 +605,7 @@ final class WorktreeManagementClient: ObservableObject {
             return false
         }
         let repositoryId = candidate.repositoryId
-        let identityRequest = WorktreeIntegrationStartRequest(
+        var identityRequest = WorktreeIntegrationStartRequest(
             candidateId: candidate.id,
             candidateFingerprint: candidate.planFingerprint,
             operationType: candidate.operationType,
@@ -601,12 +614,13 @@ final class WorktreeManagementClient: ObservableObject {
             idempotencyKey: "",
             commitProtectionDecisions: commitProtectionDecisions
         )
+        identityRequest.taskScope=candidate.plan.taskScope; identityRequest.syncStrategy=candidate.plan.syncStrategy
         let payloadIdentity = identityRequest.payloadIdentity
         if candidateConfirmationPayloadIdentity != payloadIdentity {
             candidateConfirmationPayloadIdentity = payloadIdentity
             candidateIdempotencyKey = UUID().uuidString
         }
-        let request = WorktreeIntegrationStartRequest(
+        var request = WorktreeIntegrationStartRequest(
             candidateId: candidate.id,
             candidateFingerprint: candidate.planFingerprint,
             operationType: candidate.operationType,
@@ -615,6 +629,7 @@ final class WorktreeManagementClient: ObservableObject {
             idempotencyKey: candidateIdempotencyKey ?? UUID().uuidString,
             commitProtectionDecisions: commitProtectionDecisions
         )
+        request.taskScope=candidate.plan.taskScope; request.syncStrategy=candidate.plan.syncStrategy
         candidateIdempotencyKey = request.idempotencyKey
         isMutating = true
         defer { isMutating = false }

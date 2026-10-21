@@ -35,6 +35,7 @@ export function nativeBusinessModuleCard(name, result, { editors = false, page =
     if (editors && data.providerId) actions.push(nav("editor.open", "provider", data.providerId, "管理 Provider")); break;
   case "worktree":
     data = { attached: source?.attached === true, worktreeId: source?.workspace?.id ?? null, mainBranch: source?.mainBranch ?? "", blockedReason: source?.blockedReason ?? "", tree: source?.tree ?? null, autoFollow: source?.autoFollow ?? { enabled: false, status: "", reason: "" }, job: source?.job ? { jobId: source.job.resource.id, status: source.job.status, phase: source.job.phase } : null };
+    if (source?.hierarchy) data.hierarchy = source.hierarchy;
     if (editors && data.worktreeId) actions.push(nav("editor.open", "worktree", data.worktreeId, "管理 Worktree")); break;
   case "turn":
     data = { turnId: source?.resource.id ?? null, completeness: source?.completeness ?? "", wall: source?.wall ?? {}, wallPartition: source?.wallPartition ?? {}, inclusive: source?.inclusive ?? {} }; break;
@@ -51,7 +52,12 @@ export function projectNativeBusinessDocument(scope, results, generation, { edit
   if (scope.session.sessionKind === "workChat" && scope.work) cards.push(card("work-overview", "workOverview", { workId: scope.work.id, name: scope.work.name ?? "", description: scope.work.description ?? "" }));
   if (scope.session.sessionKind === "worker" && scope.task) {
     const task = scope.task, data = { taskId: task.id, title: task.title ?? "", status: task.lifecycle_state ?? "", description: task.description ?? "", acceptanceCriteria: task.acceptance_criteria ?? "", verificationCriteria: task.verification_criteria ?? "", resourceRevision: String(task.revision), summary: summary(task) };
-    cards.push(card("task-information", "taskInfo", data, editors ? [nav("editor.open", "task", task.id, "编辑 Task", { expectedResourceRevision: data.resourceRevision })] : []));
+    data.parentTaskId = task.parent_task_id ?? null;
+    data.parentSessionId = scope.parentSessionId ?? null;
+    if (scope.taskHierarchy) data.hierarchy = scope.taskHierarchy;
+    const actions = editors ? [nav("editor.open", "task", task.id, "编辑 Task", { expectedResourceRevision: data.resourceRevision })] : [];
+    if (scope.parentSessionId) actions.push(nav("resource.open", "session", scope.parentSessionId, "打开父任务"));
+    cards.push(card("task-information", "taskInfo", data, actions));
   }
   for (const name of eligibleNativeBusinessModules(scope)) {
     if (name === "worktree" && results[name]?.state !== "error" && results[name]?.data?.attached === false) continue;

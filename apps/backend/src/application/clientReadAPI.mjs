@@ -25,6 +25,9 @@ const projectors = {
       id: row.id,
       title: row.title,
       workId: row.work_id,
+      parentTaskId: row.parent_task_id ?? null,
+      resourceVersion: row.resource_version,
+      hierarchy: context.hierarchySummaries?.get(row.id) ?? null,
       lifecycleState: row.lifecycle_state,
       executionStatus,
       currentSessionId: boundSession ? row.current_session_id : null,
@@ -78,6 +81,7 @@ export class ClientReadAPI {
         : this.store.listSessionPage({ limit, cursor, archived: false });
     // One wake / read-cursor query per page instead of one per row.
     const context = { pendingWakeTaskIds: new Set(), messageCursors: new Map(), messageTimes: new Map() };
+    if (kind === "tasks") context.hierarchySummaries = this.store.hierarchySummaries?.(page.items.map(row => row.id));
     if (kind === "tasks" && page.items.length > 0 && typeof this.store.listTaskIdsWithPendingScheduledWake === "function") {
       context.pendingWakeTaskIds = new Set(this.store.listTaskIdsWithPendingScheduledWake());
     }

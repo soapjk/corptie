@@ -23,7 +23,7 @@ async function fixture() {
   });
   const task = entities.createTask({
     id: "task:completion", workId: work.id,
-    title: "Ship completion authorization", lifecycleState: "in_progress"
+    title: "Ship_completion_authorization", lifecycleState: "in_progress"
   });
   return { directory, dbPath, configPath, store, entities, work, task };
 }
@@ -43,7 +43,7 @@ test("macOS direct intent is target-bound, one-time, audited, and idempotently r
   const f = await fixture();
   try {
     const service = new TaskCompletionService({ store: f.store });
-    const receipt = service.issueMacOSIntent(
+    const receipt = await service.issueMacOSIntent(
       f.task.id, uiIntentInput(f.task), { type: "user", id: "user:local-macos" }
     );
     const request = {
@@ -51,8 +51,8 @@ test("macOS direct intent is target-bound, one-time, audited, and idempotently r
       requestId: "intent-request:one",
       idempotencyKey: "complete:one"
     };
-    const first = service.completeFromMacOS(f.task.id, request);
-    const replay = service.completeFromMacOS(f.task.id, request);
+    const first = await service.completeFromMacOS(f.task.id, request);
+    const replay = await service.completeFromMacOS(f.task.id, request);
     assert.equal(first.task.lifecycle_state, "done");
     assert.equal(first.operation.sourceType, "direct_macos_ui_action");
     assert.equal(replay.idempotentReplay, true);
@@ -79,7 +79,7 @@ test("ordinary PATCH semantics and direct Store updates cannot complete", async 
       () => f.store.updateTask(f.task.id, { lifecycleState: "done" }),
       (error) => error.code === "TASK_COMPLETION_INTENT_REQUIRED"
     );
-    assert.throws(
+    await assert.rejects(
       () => new TaskCompletionService({ store: f.store }).completeFromMacOS(f.task.id, {
         requestId: "missing-token-request", idempotencyKey: "missing-token-idempotency"
       }),
@@ -103,19 +103,19 @@ test("stale UI snapshots, cross-target receipts, expiration, and nonce replay fa
   const f = await fixture();
   try {
     const other = f.entities.createTask({
-      id: "task:other", workId: f.work.id, title: "Other target", lifecycleState: "in_progress"
+      id: "task:other", workId: f.work.id, title: "Other_target", lifecycleState: "in_progress"
     });
     const service = new TaskCompletionService({ store: f.store });
-    assert.throws(
+    await assert.rejects(
       () => service.issueMacOSIntent(f.task.id, {
         ...uiIntentInput(f.task, "stale"), displayedTaskTitle: "Stale title"
       }, { type: "user", id: "user:local-macos" }),
       (error) => error.code === "UI_TARGET_SNAPSHOT_MISMATCH"
     );
-    const receipt = service.issueMacOSIntent(
+    const receipt = await service.issueMacOSIntent(
       f.task.id, uiIntentInput(f.task, "cross"), { type: "user", id: "user:local-macos" }
     );
-    assert.throws(
+    await assert.rejects(
       () => service.completeFromMacOS(other.id, {
         intentToken: receipt.intentToken, requestId: "intent-request:cross", idempotencyKey: "cross-target"
       }),
@@ -124,11 +124,11 @@ test("stale UI snapshots, cross-target receipts, expiration, and nonce replay fa
     const expiring = new TaskCompletionService({
       store: f.store, uiTtlMs: 1, now: () => new Date("2026-08-29T00:00:00.000Z")
     });
-    const expired = expiring.issueMacOSIntent(
+    const expired = await expiring.issueMacOSIntent(
       f.task.id, uiIntentInput(f.task, "expired"), { type: "user", id: "user:local-macos" }
     );
     const later = new TaskCompletionService({ store: f.store, now: () => new Date("2026-08-29T00:00:01.000Z") });
-    assert.throws(
+    await assert.rejects(
       () => later.completeFromMacOS(f.task.id, {
         intentToken: expired.intentToken, requestId: "intent-request:expired", idempotencyKey: "expired"
       }),
@@ -150,22 +150,22 @@ test("UI receipt survives restart and concurrent distinct operations produce at 
   const f = await fixture();
   let store = f.store;
   try {
-    const receipt = new TaskCompletionService({ store }).issueMacOSIntent(
+    const receipt = await new TaskCompletionService({ store }).issueMacOSIntent(
       f.task.id, uiIntentInput(f.task, "restart"), { type: "user", id: "user:local-macos" }
     );
     await store.close();
     store = new CorptieStore({ dbPath: f.dbPath, configPath: f.configPath });
     await store.initialize();
     const service = new TaskCompletionService({ store });
-    const attempts = ["race:a", "race:b"].map((idempotencyKey) => {
+    const attempts = await Promise.all(["race:a", "race:b"].map(async (idempotencyKey) => {
       try {
-        return service.completeFromMacOS(f.task.id, {
+        return (await service.completeFromMacOS(f.task.id, {
           intentToken: receipt.intentToken, requestId: "intent-request:restart", idempotencyKey
-        }).operation.result;
+        })).operation.result;
       } catch (error) {
         return error.code;
       }
-    });
+    }));
     assert.equal(attempts.filter((value) => value === "succeeded").length, 1);
     assert.equal(store.getTask(f.task.id).lifecycle_state, "done");
   } finally {
@@ -178,13 +178,13 @@ test("completion transaction rolls back receipt consumption and status when audi
   const f = await fixture();
   try {
     const service = new TaskCompletionService({ store: f.store });
-    const receipt = service.issueMacOSIntent(
+    const receipt = await service.issueMacOSIntent(
       f.task.id, uiIntentInput(f.task, "rollback"), { type: "user", id: "user:local-macos" }
     );
     f.store.db.run(`CREATE TEMP TRIGGER reject_completion_audit
       BEFORE INSERT ON task_completion_operations
       BEGIN SELECT RAISE(ABORT, 'simulated audit persistence failure'); END`);
-    assert.throws(() => service.completeFromMacOS(f.task.id, {
+    await assert.rejects(() => service.completeFromMacOS(f.task.id, {
       intentToken: receipt.intentToken,
       requestId: "intent-request:rollback",
       idempotencyKey: "complete:rollback"
@@ -192,7 +192,7 @@ test("completion transaction rolls back receipt consumption and status when audi
     assert.equal(f.store.getTask(f.task.id).lifecycle_state, "in_progress");
     assert.equal(f.store.getTaskCompletionIntent(receipt.receiptId).consumedOperationId, null);
     f.store.db.run("DROP TRIGGER reject_completion_audit");
-    const recovered = service.completeFromMacOS(f.task.id, {
+    const recovered = await service.completeFromMacOS(f.task.id, {
       intentToken: receipt.intentToken,
       requestId: "intent-request:rollback",
       idempotencyKey: "complete:rollback"
@@ -208,10 +208,10 @@ test("completion audit is queryable and completion metadata is omitted without a
   const f = await fixture();
   try {
     const service = new TaskCompletionService({ store: f.store });
-    const receipt = service.issueMacOSIntent(
+    const receipt = await service.issueMacOSIntent(
       f.task.id, uiIntentInput(f.task, "query"), { type: "user", id: "user:local-macos" }
     );
-    const result = service.completeFromMacOS(f.task.id, {
+    const result = await service.completeFromMacOS(f.task.id, {
       intentToken: receipt.intentToken,
       requestId: "intent-request:query",
       idempotencyKey: "complete:query"
@@ -220,7 +220,7 @@ test("completion audit is queryable and completion metadata is omitted without a
     assert.equal(service.getAuditOperation(result.operation.operationId).taskId, f.task.id);
 
     const legacy = f.entities.createTask({
-      id: "task:legacy", workId: f.work.id, title: "Historical completion", lifecycleState: "in_progress"
+      id: "task:legacy", workId: f.work.id, title: "Historical_completion", lifecycleState: "in_progress"
     });
     f.store.db.run(
       `INSERT INTO task_completion_authorizations
@@ -288,7 +288,7 @@ test("provider-neutral Session completion accepts only the authoritative direct 
   const f = await sessionFixture();
   try {
     const service = new TaskCompletionService({ store: f.store });
-    const result = service.completeFromSession(sessionCompletionInput(f), {
+    const result = await service.completeFromSession(sessionCompletionInput(f), {
       sessionId: "provider-session:completion", logicalSessionId: "session:logical-completion"
     });
     assert.equal(result.task.lifecycle_state, "done");
@@ -309,7 +309,7 @@ for (const [label, source, expected, category] of [
     const f = await sessionFixture(source);
     try {
       const service = new TaskCompletionService({ store: f.store });
-      assert.throws(
+      await assert.rejects(
         () => service.completeFromSession(sessionCompletionInput(f), {
           sessionId: "provider-session:completion", logicalSessionId: "session:logical-completion"
         }),
@@ -343,7 +343,7 @@ test("assistant judgment, wrong turn, missing intent, ambiguous target, Provider
         requestId: `session-request:${index}`, idempotencyKey: `session-completion:${index}`,
         ...item.overrides
       });
-      assert.throws(
+      await assert.rejects(
         () => new TaskCompletionService({ store: f.store }).completeFromSession(input, {
           sessionId: "provider-session:completion", logicalSessionId: "session:logical-completion"
         }),

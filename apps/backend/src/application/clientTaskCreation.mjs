@@ -2,10 +2,13 @@ import { createHash } from "node:crypto";
 import { deviceError } from "./clientDeviceAuthority.mjs";
 import { validateEntityName, validateTaskInput } from "../domain/workTaskValidation.mjs";
 import { TASK_PRIORITIES } from "../domain/taskToolSchema.mjs";
+import { taskHierarchyCapabilities } from "./taskHierarchyService.mjs";
 
-const taskFields = ["workId", "title", "description", "acceptanceCriteria", "verificationCriteria", "priority", "mainAgentId"];
+const legacyTaskFields = ["workId", "title", "description", "acceptanceCriteria", "verificationCriteria", "priority", "mainAgentId"];
+const taskFields = [...legacyTaskFields, "parentTaskId"];
 const providerFields = ["providerId", "model", "reasoningLevel"];
-const fields = ["requestId", ...taskFields, ...providerFields];
+const legacyFields = ["requestId", ...legacyTaskFields, ...providerFields];
+const fields = [...legacyFields, "parentTaskId", "expectedParentResourceVersion"];
 
 /** Read-only, Work-scoped choices; never expose configuration, paths, or Provider envelopes. */
 export async function clientTaskCreationCatalog(api, identity, sourceID, query) {
@@ -38,7 +41,7 @@ export async function clientTaskCreationCatalog(api, identity, sourceID, query) 
   }));
   const agents = (currentWork.contributorAgentIds ?? []).map(id => api.store.getAgent(id)).filter(Boolean)
     .map(agent => ({ id: agent.agentId ?? agent.id, name: agent.name }));
-  const result = { schemaVersion: 1, sourceSessionId: sessionId,
+  const result = { schemaVersion: 1, sourceSessionId: sessionId, taskHierarchyCapabilities,
     work: { id: currentWork.id, name: currentWork.name }, agents, providers, providerId,
     defaultProviderId: options.configuredDefaultProviderId
       ?? (providers.some(row => row.id === options.defaultProviderId && row.available) ? options.defaultProviderId : null),
@@ -55,10 +58,17 @@ export async function createClientTask(api, identity, sourceID, input, revalidat
       || Object.keys(input).some(key => !fields.includes(key))
       || !/^[A-Za-z0-9_-]{8,128}$/.test(input.requestId ?? "")) throw deviceError("INVALID_TASK_CREATION", 400);
   for (const key of [...taskFields, ...providerFields]) {
+    if (key === "parentTaskId" && input[key] === null) continue;
     if (input[key] !== undefined && (typeof input[key] !== "string"
         || input[key].length > (["description", "acceptanceCriteria", "verificationCriteria"].includes(key) ? 16000 : 512))) {
       throw deviceError("INVALID_TASK_CREATION", 400);
     }
+  }
+  if (input.parentTaskId && (!Number.isSafeInteger(input.expectedParentResourceVersion) || input.expectedParentResourceVersion < 1)) {
+    throw deviceError("TASK_PARENT_VERSION_CONFLICT", 409);
+  }
+  if (input.expectedParentResourceVersion !== undefined && (!Number.isSafeInteger(input.expectedParentResourceVersion) || input.expectedParentResourceVersion < 1)) {
+    throw deviceError("INVALID_TASK_CREATION", 400);
   }
   for (const key of ["mainAgentId", "providerId"]) {
     if (!input[key]?.trim()) throw deviceError("INVALID_TASK_CREATION", 400);
@@ -67,7 +77,7 @@ export async function createClientTask(api, identity, sourceID, input, revalidat
     .map(key => [key, input[key]])));
   validateEntityName(taskInput.title, "title", "Task");
   const fingerprint = createHash("sha256").update(JSON.stringify([sourceID, "create_task",
-    ...fields.map(key => input[key] ?? null)])).digest("hex");
+    ...(input.parentTaskId ? fields : legacyFields).map(key => input[key] ?? null)])).digest("hex");
   const findReplay = () => {
     const existing = api.store.selectOne("SELECT payload_hash FROM client_command_receipts WHERE device_id=? AND request_id=?",
       [identity.deviceId, input.requestId]);
@@ -86,7 +96,9 @@ export async function createClientTask(api, identity, sourceID, input, revalidat
   }
   if (!api.store.getAgent(taskInput.mainAgentId)) throw deviceError("AGENT_NOT_FOUND", 404);
   const provider = Object.fromEntries(providerFields.filter(key => input[key] !== undefined).map(key => [key, input[key]]));
-  await api.taskCreation.validate(sessionId, { taskInput, ...provider });
+  const constraints = { expectedParentResourceVersion: input.expectedParentResourceVersion };
+  api.store.assertParentForCreate?.({ ...taskInput, ...constraints });
+  await api.taskCreation.validate(sessionId, { taskInput, ...provider, ...constraints });
   if (revalidateIdentity) {
     const current = revalidateIdentity();
     if (current.deviceId !== identity.deviceId) throw deviceError("INVALID_CREDENTIAL", 401);
@@ -114,7 +126,7 @@ export async function createClientTask(api, identity, sourceID, input, revalidat
   api.inFlight.add(key);
   try {
     const operationID = `device-task:${createHash("sha256").update(key).digest("hex")}`;
-    const result = await api.taskCreation.create(sessionId, { taskInput, ...provider, operationID });
+    const result = await api.taskCreation.create(sessionId, { taskInput, ...provider, ...constraints, operationID });
     if (typeof result?.task?.id !== "string" || typeof result?.session?.id !== "string") {
       throw new Error("Creation result is not a complete Task/Session binding");
     }
