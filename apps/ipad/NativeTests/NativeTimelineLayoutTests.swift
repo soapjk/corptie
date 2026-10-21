@@ -93,6 +93,7 @@ import CorptieConversation
 
 /// Actual UICollectionView + hosted SwiftUI cells, not source-string assertions.
 @MainActor final class NativeTimelineLayoutTests: XCTestCase {
+    private let imageStore = PadMessageImageStore()
     private var window: UIWindow!
     private var handle: PadNativeTimelineHandle!
     private var controller: PadNativeTimelineController<AnyView, AnyView>!
@@ -107,6 +108,7 @@ import CorptieConversation
         })
         return .init(ids: ids, versions: versions, ready: true, savedPosition: saved,
             jumpRevision: 0, keyboard: .init(), handle: handle,
+            imageStore: imageStore,
             row: { id, width in
                 let index = Int(id.split(separator: ":").last!)!
                 return AnyView(Text(id).frame(width: width, height: index == count - 1 ? tailHeight : CGFloat(40 + index % 7 * 35) + heightAdjustment))
@@ -133,6 +135,18 @@ import CorptieConversation
             try? await Task.sleep(for: .milliseconds(25))
         }
     }
+    func testImageGeometryPublicationWaitsForNativeScrollbarInteractionToEnd() async throws {
+        try await start()
+        var commits = 0
+        XCTAssertNotNil(imageStore.commitGeometry)
+        handle.scrollbarInteraction?(true)
+        imageStore.commitGeometry? { commits += 1 }
+        XCTAssertEqual(commits, 0)
+        handle.scrollbarInteraction?(false)
+        await settle()
+        XCTAssertEqual(commits, 1)
+    }
+
     private var maximum: CGFloat {
         max(-scroll.adjustedContentInset.top, scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom)
     }

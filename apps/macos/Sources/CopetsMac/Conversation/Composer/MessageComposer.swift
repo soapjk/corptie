@@ -66,7 +66,8 @@ struct MessageComposer: View {
     @State private var isShowingScheduleSheet = false
     @State private var scheduleSubmission: ComposerDraftBuffer.Submission?
     @State private var attachedImages: [ChatImageReference] = []
-    @State private var isImportingImages = false
+    @State private var imageImportState = ComposerImageImportState()
+    private var isImportingImages: Bool { imageImportState.busy }
     @State private var isShowingPhotoPicker = false
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var mentionQuery: ComposerMentionQuery?
@@ -141,6 +142,8 @@ struct MessageComposer: View {
             if notification.object as? String == sessionId { editorController.focusIfRequested() }
         }
         .onChange(of: attachedImages) { _, images in editorController.draft.images = images }
+        .onAppear { imageImportState.activate() }
+        .onDisappear { imageImportState.invalidate() }
         .photosPicker(
             isPresented: $isShowingPhotoPicker,
             selection: $selectedPhotoItems,
@@ -239,7 +242,7 @@ struct MessageComposer: View {
     private var sendButton: some View {
         Button { sendCurrentDraft() } label: {
             ComposerActionGlyph(systemName: "paperplane.fill", tint: ComposerPalette.softBlue,
-                                isBusy: backendClient.isSendingMessage, showsSurface: false)
+                                isBusy: backendClient.isSendingMessage || isImportingImages, showsSurface: false)
                 .frame(width: Self.sendControlEdge, height: Self.sendControlEdge)
                 .clipped()
                 .overlay {
@@ -253,8 +256,8 @@ struct MessageComposer: View {
         }
         .buttonStyle(.plain)
         .disabled(isSendDisabled)
-        .help(L10n("Send instruction"))
-        .accessibilityLabel(L10n("Send instruction"))
+        .help(isImportingImages ? L10n("正在导入图片…") : L10n("Send instruction"))
+        .accessibilityLabel(isImportingImages ? L10n("正在导入图片…") : L10n("Send instruction"))
         .accessibilityIdentifier("conversation-composer-send")
     }
 
@@ -349,6 +352,7 @@ struct MessageComposer: View {
     private func send(_ submission: ComposerDraftBuffer.Submission) {
         guard let session,
               canSend,
+              !isImportingImages,
               !backendClient.isSendingMessage else {
             return
         }
@@ -468,6 +472,7 @@ struct MessageComposer: View {
 
     private var isSendDisabled: Bool {
         return (!hasSendableText && attachedImages.isEmpty)
+            || isImportingImages
             || backendClient.isSendingMessage
             || !canSend
     }
@@ -488,111 +493,136 @@ struct MessageComposer: View {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK else { return }
-        importImageFiles(Array(panel.urls.prefix(max(0, 8 - attachedImages.count))), preserveOriginal: true)
+        let urls = panel.urls
+        startImageImport { ComposerImagePasteboard.Snapshot(items: urls.prefix(9).map { [.file($0)] }) }
     }
 
     private func importPhotoItems(_ items: [PhotosPickerItem]) {
-        guard let session, !items.isEmpty else { return }
-        let capacity = max(0, 8 - attachedImages.count)
-        isImportingImages = true
-        Task {
-            defer {
-                isImportingImages = false
-                selectedPhotoItems = []
-            }
-            for item in items.prefix(capacity) {
-                let temporaryURL = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("corptie-photo-\(UUID().uuidString).image")
+        guard !items.isEmpty else { return }
+        selectedPhotoItems = []
+        startImageImport {
+            var snapshot = ComposerImagePasteboard.Snapshot(items: [])
+            var remainingBytes = ComposerImagePasteboard.maximumTotalBytes
+            for item in items.prefix(9) {
                 do {
-                    guard let data = try await item.loadTransferable(type: Data.self) else { continue }
-                    try data.write(to: temporaryURL, options: .atomic)
-                    let image = try await backendClient.importChatImage(
-                        at: temporaryURL,
-                        to: session,
-                        preserveOriginal: false
-                    )
-                    if !attachedImages.contains(image) { attachedImages.append(image) }
-                } catch {
-                    backendClient.presentChatImageError(error)
-                }
-                try? FileManager.default.removeItem(at: temporaryURL)
+                    try Task.checkCancellation()
+                    guard let data = try await item.loadTransferable(type: Data.self),
+                          data.count <= ComposerImagePasteboard.maximumBytes, data.count <= remainingBytes
+                    else { snapshot.rejectedItems += 1; continue }
+                    remainingBytes -= data.count
+                    snapshot.items.append([.data(data)])
+                } catch is CancellationError { throw CancellationError() }
+                catch { snapshot.rejectedItems += 1 }
             }
+            return snapshot
         }
     }
 
     private func importImagesFromPasteboard(_ pasteboard: NSPasteboard) -> Bool {
-        let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: [
-            .urlReadingFileURLsOnly: true,
-            .urlReadingContentsConformToTypes: [UTType.image.identifier]
-        ]) as? [URL]) ?? []
-        if !urls.isEmpty {
-            importImageFiles(urls, preserveOriginal: true)
-            return true
-        }
-        guard let image = NSImage(pasteboard: pasteboard),
-              let tiff = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiff),
-              let png = bitmap.representation(using: .png, properties: [:]) else { return false }
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("corptie-paste-\(UUID().uuidString).png")
-        do {
-            try png.write(to: url, options: .atomic)
-            importImageFiles([url], preserveOriginal: false, cleanupAfterImport: true)
-            return true
-        } catch {
-            backendClient.presentChatImageError(error)
-            return false
-        }
+        guard let snapshot = ComposerImagePasteboard.capture(pasteboard) else { return false }
+        startImageImport { snapshot }
+        return true
     }
 
     private func importDroppedImages(_ providers: [NSItemProvider]) -> Bool {
-        let capacity = max(0, 8 - attachedImages.count)
-        let candidates = Array(providers.prefix(capacity))
+        let candidates = Array(providers.filter {
+            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+                || $0.hasItemConformingToTypeIdentifier(UTType.image.identifier)
+        }.prefix(9))
         guard !candidates.isEmpty else { return false }
-        for provider in candidates {
-            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                    let url = (item as? Data).flatMap { URL(dataRepresentation: $0, relativeTo: nil) }
-                        ?? item as? URL
-                    guard let url else { return }
-                    Task { @MainActor in importImageFiles([url], preserveOriginal: true) }
+        startImageImport {
+            var snapshot = ComposerImagePasteboard.Snapshot(items: [])
+            var remainingBytes = ComposerImagePasteboard.maximumTotalBytes
+            for provider in candidates {
+                try Task.checkCancellation()
+                var representations: [ComposerImagePasteboard.Representation] = []
+                if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                    let url: URL? = await withCheckedContinuation { continuation in
+                        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                            continuation.resume(returning: (item as? Data).flatMap { URL(dataRepresentation: $0, relativeTo: nil) }
+                                ?? item as? URL)
+                        }
+                    }
+                    if let url, url.isFileURL { representations.append(.file(url)) }
                 }
-            } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
-                provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
-                    guard let data else { return }
-                    let url = FileManager.default.temporaryDirectory
-                        .appendingPathComponent("corptie-drop-\(UUID().uuidString).image")
-                    guard (try? data.write(to: url, options: .atomic)) != nil else { return }
-                    Task { @MainActor in
-                        importImageFiles([url], preserveOriginal: false, cleanupAfterImport: true)
+                if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+                    let data: Data? = await withCheckedContinuation { continuation in
+                        provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+                            continuation.resume(returning: data)
+                        }
+                    }
+                    if let data, data.count <= ComposerImagePasteboard.maximumBytes, data.count <= remainingBytes {
+                        remainingBytes -= data.count
+                        representations.append(.data(data))
                     }
                 }
+                if representations.isEmpty { snapshot.rejectedItems += 1 }
+                else { snapshot.items.append(representations) }
             }
+            return snapshot
         }
         return true
     }
 
-    private func importImageFiles(
-        _ urls: [URL],
-        preserveOriginal: Bool,
-        cleanupAfterImport: Bool = false
+    private func startImageImport(
+        _ load: @escaping @MainActor () async throws -> ComposerImagePasteboard.Snapshot
     ) {
-        guard let session, !urls.isEmpty else { return }
-        isImportingImages = true
-        Task {
-            defer { isImportingImages = false }
-            for url in urls.prefix(max(0, 8 - attachedImages.count)) {
-                do {
-                    let image = try await backendClient.importChatImage(
-                        at: url,
-                        to: session,
-                        preserveOriginal: preserveOriginal
-                    )
-                    if !attachedImages.contains(image) { attachedImages.append(image) }
-                } catch {
-                    backendClient.presentChatImageError(error)
+        guard canAttachImages else {
+            backendClient.presentChatImageError(BackendError.message(ComposerImagePasteboard.PasteError.unsupported.message))
+            return
+        }
+        let capacity = max(0, 8 - attachedImages.count)
+        guard capacity > 0 else {
+            backendClient.presentChatImageError(BackendError.message(ComposerImagePasteboard.PasteError.full.message))
+            return
+        }
+        guard let session, let token = imageImportState.begin() else {
+            backendClient.presentChatImageError(BackendError.message(L10n("图片正在导入，请稍后再试。")))
+            return
+        }
+        let draft = editorController.draft
+        imageImportState.task = Task { @MainActor in
+            defer { imageImportState.finish(token) }
+            do {
+                let snapshot = try await load()
+                try Task.checkCancellation()
+                let batch = await ComposerImagePreparation.shared.prepare(snapshot, capacity: capacity)
+                defer { batch.cleanup() }
+                var failures = batch.failed
+                var firstImportError: String?
+                for prepared in batch.images {
+                    guard imageImportState.accepts(token), !Task.isCancelled else { return }
+                    do {
+                        let image = try await backendClient.importChatImage(at: prepared.url, to: session,
+                            preserveOriginal: !prepared.temporary)
+                        guard imageImportState.accepts(token), !Task.isCancelled,
+                              editorController.draft === draft else {
+                            await backendClient.removeUnsentChatImage(image, from: session)
+                            return
+                        }
+                        if !attachedImages.contains(image) {
+                            attachedImages.append(image)
+                            draft.images = attachedImages
+                        }
+                    } catch is CancellationError { return }
+                    catch {
+                        failures += 1
+                        if firstImportError == nil { firstImportError = error.localizedDescription }
+                    }
                 }
-                if cleanupAfterImport { try? FileManager.default.removeItem(at: url) }
+                guard imageImportState.accepts(token), !Task.isCancelled else { return }
+                var messages: [String] = []
+                if failures > 0 {
+                    messages.append(ComposerImagePasteboard.PasteError.partial(failures).message)
+                }
+                if let firstImportError { messages.append(firstImportError) }
+                if batch.truncated { messages.append(ComposerImagePasteboard.PasteError.truncated.message) }
+                if !messages.isEmpty {
+                    backendClient.presentChatImageError(BackendError.message(messages.joined(separator: "\n")))
+                }
+            } catch is CancellationError { return }
+            catch {
+                if imageImportState.accepts(token) { backendClient.presentChatImageError(error) }
             }
         }
     }

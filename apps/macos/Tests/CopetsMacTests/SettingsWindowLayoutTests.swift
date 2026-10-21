@@ -9,8 +9,30 @@ struct SettingsWindowLayoutTests {
     func categoriesUseCompactResizableColumnInsteadOfAnEightItemHorizontalBar() {
         #expect(SettingsTab.allCases.count == 8)
         #expect(SettingsPageLayout.sidebarMinimum == 180)
-        #expect(SettingsPageLayout.sidebarIdeal == 220)
-        #expect(SettingsPageLayout.sidebarMaximum == 280)
+        #expect(SettingsPageLayout.sidebarIdeal == 200)
+        #expect(SettingsPageLayout.sidebarMaximum == 240)
+    }
+
+    @Test
+    func actualSplitPaneCapsTheOuterCardWhenTheWindowGrows() throws {
+        let host = NSHostingView(rootView: SettingsView())
+        func split(in view: NSView) -> NSSplitView? {
+            if let view = view as? NSSplitView { return view }
+            return view.subviews.lazy.compactMap { split(in: $0) }.first
+        }
+        for width: CGFloat in [900, 1280, 1920, 900] {
+            host.frame = NSRect(x: 0, y: 0, width: width, height: 700)
+            host.layoutSubtreeIfNeeded()
+            let splitView = try #require(split(in: host))
+            splitView.layoutSubtreeIfNeeded()
+            let sidebar = try #require(splitView.arrangedSubviews.first)
+            let detail = try #require(splitView.arrangedSubviews.last)
+            let gap = MainWindowPageLayoutMetrics.halfColumnSpacing
+            #expect(sidebar.frame.width >= SettingsPageLayout.sidebarMinimum + gap - 1)
+            #expect(sidebar.frame.width <= SettingsPageLayout.sidebarMaximum + gap + 1)
+            #expect(detail.frame.width > sidebar.frame.width)
+            print("settings split: host=\(width) sidebar=\(sidebar.frame.width) detail=\(detail.frame.width)")
+        }
     }
 
     @Test

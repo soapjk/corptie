@@ -65,6 +65,7 @@ struct AppKitChatTimelineRow: Identifiable {
     let showsCollaborationSentStatus: Bool
     let messageStatus: UserMessageStatusPresentation?
     let images: [ChatTimelineImage]
+    @MainActor var imageGeometries: [MessageImageGeometry?] { images.map(\.resolvedGeometry) }
 
     var showsMessageStatusBar: Bool {
         !showsHeader
@@ -172,6 +173,10 @@ struct ChatTimelineImage: Hashable {
     let managedPath: String
     let displayURL: URL?
     let originalPath: String?
+    var geometry: MessageImageGeometry? = nil
+    @MainActor var resolvedGeometry: MessageImageGeometry? {
+        displayURL.flatMap { ChatTimelineImageLoader.shared.geometry(for: $0) } ?? geometry
+    }
 }
 
 struct AppKitChatRowReuseIdentity: Equatable {
@@ -300,8 +305,8 @@ enum ChatBubbleWidthPolicy {
             processWidth: row.processCount == nil ? 0 : collapsedProcessWidth,
             availableWidth: fullAvailableWidth
         )
-        return row.images.isEmpty ? preferred
-            : min(fullAvailableWidth, max(MessageImageGalleryLayout.preferredBodyWidth + horizontalPadding, preferred))
+        return row.images.isEmpty ? preferred : MessageImageGalleryLayout.cardWidth(
+            bodyWidth: max(0, preferred - horizontalPadding), geometries: row.imageGeometries, laneWidth: availableWidth)
     }
 }
 

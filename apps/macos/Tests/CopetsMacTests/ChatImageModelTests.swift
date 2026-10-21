@@ -2,9 +2,53 @@ import Foundation
 import XCTest
 import AppKit
 import CorptieConversation
+import CorptieClientCore
 @testable import CorptieMac
 
 final class ChatImageModelTests: XCTestCase {
+    @MainActor func testRichImageRepliesUseSharedGeometryAndDiscardStaleLayouts() throws {
+        func row(_ geometry: MessageImageGeometry?) -> AppKitChatTimelineRow {
+            AppKitChatTimelineRow(id: "rich-image", contentRevision: 1,
+                nativeText: "| A | B |\n|---|---|\n|One|Two|", copyText: "Table", nativeStyle: .agent,
+                title: "", metadata: "", expandableTurnId: nil, isExpanded: false, showsHeader: false,
+                images: [ChatTimelineImage(managedPath: "image", displayURL: nil, originalPath: nil, geometry: geometry)])
+        }
+        let portrait = row(MessageImageGeometry(pixelWidth: 900, pixelHeight: 1600))
+        XCTAssertTrue(MacSharedMessageTextCard.supports(portrait))
+        let layout = NativeTimelineLayoutCache.shared.layout(for: portrait, columnWidth: 500)
+        XCTAssertEqual(layout.imageLayout.size, CGSize(width:146.25,height:260))
+        let cell = AppKitSharedMessageTextCell(identifier: .init("rich-image"))
+        cell.setContent(portrait, availableWidth: 500, onToggleExpansion: { _ in })
+        XCTAssertTrue(cell.updateLayoutIfContentUnchanged(portrait, availableWidth: 500))
+        XCTAssertFalse(cell.updateLayoutIfContentUnchanged(row(nil), availableWidth: 500))
+    }
+    @MainActor func testUserAndModelImageGeometryDrivesBubbleCanvasAndRowHeightTogether() throws {
+        for type in ["userMessage", "imageView"] {
+            let item = try JSONDecoder().decode(CodexThreadItem.self, from: Data("""
+                {"id":"\(type)","turnId":"turn","turnStatus":"complete","type":"\(type)","title":"image","text":"[localImage]",
+                 "images":[{"managedPath":"chat-resources/\(type).png","pixelWidth":900,"pixelHeight":1600}]}
+                """.utf8))
+            let builder = ConversationNativeRowBuilder(sessionTitle: nil, workingDirectory: nil,
+                allowsFork: false, forkUnavailableReason: nil, imageURL: { _ in nil })
+            let row = builder.nativeAppKitRow(.init(kind: .message(item)), expandedTurnIds: [])
+            let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 500)
+            XCTAssertEqual(layout.cardWidth, 166.25, accuracy: 0.01)
+            XCTAssertEqual(layout.imageLayout.size, CGSize(width:146.25,height:260))
+            XCTAssertEqual(layout.textHeight, 0)
+            let cell = AppKitChatNativeTextCell(identifier: .init(type))
+            cell.setContent(row, availableWidth: 500, onToggleExpansion: { _ in })
+            func images(_ view: NSView) -> [NSButton] {
+                view.subviews.flatMap { child -> [NSButton] in
+                    if let button = child as? NSButton, button.accessibilityLabel()?.hasPrefix("Attached image") == true { return [button] }
+                    return images(child)
+                }
+            }
+            let button = try XCTUnwrap(images(cell).first)
+            XCTAssertEqual(button.frame.size, layout.imageLayout.size)
+            XCTAssertTrue(cell.updateLayoutIfContentUnchanged(row, availableWidth: 120))
+            XCTAssertLessThanOrEqual(button.frame.width, 96)
+        }
+    }
     @MainActor func testImageViewUsesSharedMediaRuleWithoutHeaderOrHostPath() throws {
         let data = Data(#"{"id":"qr","turnId":"turn","turnStatus":"complete","type":"imageView","title":"imageView","text":"/tmp/qr.png","images":[{"managedPath":"chat-resources/qr.png"}]}"#.utf8)
         let item = try JSONDecoder().decode(CodexThreadItem.self, from: data)
@@ -28,9 +72,9 @@ final class ChatImageModelTests: XCTestCase {
         XCTAssertEqual(row.images.count, 1)
         XCTAssertEqual(row.nativeText, "")
         let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 400)
-        XCTAssertEqual(layout.cardWidth, 360)
+        XCTAssertEqual(layout.cardWidth, 108)
         XCTAssertGreaterThanOrEqual(layout.rowHeight,
-            MessageImageGalleryLayout.height(count: 1, width: 340) + 20)
+            88 + 20)
     }
 
     @MainActor func testImageLoaderDownsamplesAndReusesDecodedBitmap() async throws {
@@ -47,6 +91,7 @@ final class ChatImageModelTests: XCTestCase {
         let decoded = try XCTUnwrap(image)
         let cg = try XCTUnwrap(decoded.cgImage(forProposedRect: nil, context: nil, hints: nil))
         XCTAssertLessThanOrEqual(cg.width, 1024)
+        XCTAssertEqual(ChatTimelineImageLoader.shared.geometry(for: url), MessageImageGeometry(pixelWidth: 4096, pixelHeight: 64))
         let cached = await withCheckedContinuation { continuation in
             ChatTimelineImageLoader.shared.load(url) { continuation.resume(returning: $0) }
         }

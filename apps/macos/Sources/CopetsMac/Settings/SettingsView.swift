@@ -9,8 +9,8 @@ import UserNotifications
 
 enum SettingsPageLayout {
     static let sidebarMinimum: CGFloat = 180
-    static let sidebarIdeal: CGFloat = 220
-    static let sidebarMaximum: CGFloat = 280
+    static let sidebarIdeal: CGFloat = 200
+    static let sidebarMaximum: CGFloat = 240
 }
 
 enum SettingsTab: Hashable, CaseIterable {
@@ -97,10 +97,12 @@ struct SettingsView: View {
     var body: some View {
         HSplitView {
             settingsCategories
+                .mainWindowPageCard()
+                // Constrain the card, not just its contents: the shared card
+                // deliberately expands, which otherwise widens this split pane.
                 .frame(minWidth: SettingsPageLayout.sidebarMinimum,
                        idealWidth: SettingsPageLayout.sidebarIdeal,
                        maxWidth: SettingsPageLayout.sidebarMaximum, maxHeight: .infinity)
-                .mainWindowPageCard()
                 .padding(.trailing, MainWindowPageLayoutMetrics.halfColumnSpacing)
             VStack(spacing: 12) {
                 HStack {

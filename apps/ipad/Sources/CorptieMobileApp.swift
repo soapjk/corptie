@@ -645,6 +645,7 @@ struct ConversationView: View {
                 : workspace.readingPosition(serverID: nativeScope[0], deviceID: nativeScope[1], sessionID: nativeScope[2]),
             jumpRevision: explicitJumpRevision, keyboard: keyboardViewport, handle: nativeTimeline,
             topOverlayHeight: nativeHeaderHeight + (usesStandardTimeline ? 0 : safeArea.top),
+            imageStore: messageImages,
             tracksVisibleFrames: false,
             row: { id, width in timelineRow(id: id, width: width) },
             composer: Group {
@@ -2388,6 +2389,11 @@ private struct MobileMessageBubble: View {
     }
     private var cardWidth: CGFloat {
         let availableLane = laneWidth > 0 ? laneWidth : MessageBubbleWidthPolicy.maximumWidth
+        if !attachments.isEmpty || !galleryResources.isEmpty {
+            return MessageImageGalleryLayout.cardWidth(
+                bodyWidth: PadMessageLayout.bodyWidth(text: displayText, style: fromUser ? .user : .agent),
+                geometries: imageGeometries, laneWidth: availableLane)
+        }
         return MessageBubbleWidthPolicy.cardWidth(
             bodyWidth: max(PadMessageLayout.bodyWidth(text: displayText, style: fromUser ? .user : .agent),
                 attachments.isEmpty && galleryResources.isEmpty ? 0 : MessageImageGalleryLayout.preferredBodyWidth),
@@ -2522,8 +2528,7 @@ private struct MobileMessageBubble: View {
 
     private var attachmentStrip: some View {
         let count = attachments.count + galleryResources.count
-        let frames = MessageImageGalleryLayout.frames(count: count,
-            width: cardWidth - MessageBubbleWidthPolicy.horizontalPadding)
+        let frames = imageLayout.frames
         return ZStack(alignment: .topLeading) {
             ForEach(Array(frames.enumerated()), id: \.offset) { index, frame in
                 if index < attachments.count {
@@ -2534,7 +2539,7 @@ private struct MobileMessageBubble: View {
                         } else { showGallery(index: index) }
                     } label: {
                         MessageImageThumbnail(state: thumbnailState(attachment), index: index,
-                            size: frame.size, fits: count == 1, extraCount: index == 3 ? max(0, count - 4) : 0)
+                            size: frame.size, fits: true, extraCount: index == 3 ? max(0, count - 4) : 0)
                     }.buttonStyle(.plain)
                         .offset(x: frame.minX, y: frame.minY)
                         .accessibilityIdentifier("message-attachment-\(index)")
@@ -2549,13 +2554,29 @@ private struct MobileMessageBubble: View {
                         } else { showGallery(index: index) }
                     } label: {
                         MessageImageThumbnail(state: resourceThumbnail(resource), index: index,
-                            size: frame.size, fits: count == 1, extraCount: index == 3 ? max(0, count - 4) : 0)
+                            size: frame.size, fits: true, extraCount: index == 3 ? max(0, count - 4) : 0)
                     }.buttonStyle(.plain).offset(x: frame.minX, y: frame.minY)
                         .onAppear { images.ensure(sessionID: sessionID, managedPath: path, connection: connection, itemID: local == nil ? nil : message.id) }
                 }
             }
         }
         .frame(width: frames.map(\.maxX).max() ?? 0, height: frames.map(\.maxY).max() ?? 0, alignment: .topLeading)
+    }
+
+    private var imageGeometries: [MessageImageGeometry?] {
+        attachments.map { images.geometry(sessionID: sessionID, managedPath: $0.managedPath) ?? $0.geometry }
+            + galleryResources.map { resource in
+                let local = ConversationLocalResource(url: resource.url)
+                return images.geometry(sessionID: sessionID, managedPath: local?.path ?? resource.url.absoluteString,
+                    itemID: local == nil ? nil : message.id)
+            }
+    }
+
+    private var imageLayout: MessageImageGalleryLayout.Layout {
+        let available = MessageBubbleWidthPolicy.fullAvailableWidth(
+            laneWidth: laneWidth > 0 ? laneWidth : MessageBubbleWidthPolicy.maximumWidth)
+        return MessageImageGalleryLayout.layout(geometries: imageGeometries,
+            width: available - MessageBubbleWidthPolicy.horizontalPadding)
     }
 
     private func thumbnailState(_ attachment: ClientMessageImage) -> MessageImageThumbnail.State {

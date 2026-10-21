@@ -53,7 +53,8 @@ struct ConversationNativeRowBuilder {
                 ChatTimelineImage(
                     managedPath: image.managedPath,
                     displayURL: imageURL(image.managedPath),
-                    originalPath: image.originalPath
+                    originalPath: image.originalPath,
+                    geometry: MessageImageGeometry(pixelWidth: image.pixelWidth, pixelHeight: image.pixelHeight)
                 )
             }
             let collaboration = nativeCollaborationCardPresentation(

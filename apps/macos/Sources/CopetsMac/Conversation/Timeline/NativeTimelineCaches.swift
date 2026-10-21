@@ -295,6 +295,7 @@ final class NativeTimelineLayoutCache {
     }
 
     struct Layout {
+        var imageLayout = MessageImageGalleryLayout.layout(geometries: [], width: 0)
         enum RichBlock {
             case markdown(id: String, NSAttributedString, CGFloat)
             case chart(id: String, ConversationChartSpec, CGFloat)
@@ -346,6 +347,7 @@ final class NativeTimelineLayoutCache {
         let widthBucket: Int
         let isWorkspaceCard: Bool
         let imagePaths: [String]
+        let imageGeometries: [MessageImageGeometry?]
         let userInput: ConversationUserInput?
         let userInputStatus: String?
         let executionPlan: ConversationExecutionPlan?
@@ -406,6 +408,7 @@ final class NativeTimelineLayoutCache {
             widthBucket: Int((normalizedWidth * 2).rounded()),
             isWorkspaceCard: row.isWorkspaceCard,
             imagePaths: row.images.map { $0.managedPath },
+            imageGeometries: row.imageGeometries,
             userInput: row.userInput,
             userInputStatus: row.userInputStatus,
             executionPlan: row.executionPlan
@@ -508,6 +511,8 @@ final class NativeTimelineLayoutCache {
         } else if !processBlocks.isEmpty {
             textHeight = processBlocks.reduce(0) { $0 + $1.height }
                 + CGFloat(max(0, processBlocks.count - 1)) * 6
+        } else if !row.images.isEmpty && row.nativeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            textHeight = 0
         } else {
             textHeight = NativeTextKitLayout.height(of: attributed, width: textWidth)
         }
@@ -552,10 +557,11 @@ final class NativeTimelineLayoutCache {
                 rowHeight = max(
                     row.showsHeader ? 54 : 30,
                     textHeight + verticalChrome + footerHeight + actionHeight + sentStatusHeight + messageStatusBarHeight
-                ) + (row.images.isEmpty ? 0 : MessageImageGalleryLayout.height(count: row.images.count, width: textWidth) + 8) + row.timeSeparatorHeight
+                ) + (row.images.isEmpty ? 0 : MessageImageGalleryLayout.layout(geometries: row.imageGeometries,
+                    width: MessageBubbleWidthPolicy.fullAvailableWidth(laneWidth: normalizedWidth) - MessageBubbleWidthPolicy.horizontalPadding).size.height + (textHeight > 0 ? 8 : 0)) + row.timeSeparatorHeight
             }
         }
-        let layout = Layout(
+        var layout = Layout(
             attributedText: attributed,
             richBlocks: richBlocks,
             processBlocks: processBlocks,
@@ -564,6 +570,8 @@ final class NativeTimelineLayoutCache {
             rawStatusHeight: rawStatusHeight,
             rowHeight: rowHeight
         )
+        layout.imageLayout = MessageImageGalleryLayout.layout(geometries: row.imageGeometries,
+            width: MessageBubbleWidthPolicy.fullAvailableWidth(laneWidth: normalizedWidth) - MessageBubbleWidthPolicy.horizontalPadding)
         values[key] = layout
         touch(key)
         estimatedBytes += (key.estimatedTextLength * 8) + attributed.length * 8

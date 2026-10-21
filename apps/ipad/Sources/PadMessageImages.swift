@@ -99,6 +99,20 @@ final class PadMessageImageStore {
     @ObservationIgnored private var byteCosts: [String: Int] = [:]
     @ObservationIgnored private var totalBytes = 0
     private static let maximumBytes = 64 * 1024 * 1024
+    @ObservationIgnored private var geometryValues: [String: MessageImageGeometry] = [:]
+    @ObservationIgnored private var geometryOrder: [String] = []
+    @ObservationIgnored private var pendingGeometry: [String: MessageImageGeometry] = [:]
+    /// The timeline may defer a geometry publication until a finger/scrollbar
+    /// gesture ends, then reuse its existing one-shot reading-position restore.
+    @ObservationIgnored var commitGeometry: ((@escaping @MainActor () -> Void) -> Void)?
+    @ObservationIgnored var geometryOwner: UUID?
+
+    // Reading entry first keeps observation scoped to this resource's readiness;
+    // geometry survives thumbnail eviction and is never inferred from its size.
+    func geometry(sessionID: String, managedPath: String, itemID: String? = nil) -> MessageImageGeometry? {
+        _ = entry(sessionID: sessionID, managedPath: managedPath, itemID: itemID)
+        return geometryValues[Self.key(sessionID, managedPath, itemID: itemID)]
+    }
 
     func retry(sessionID: String, managedPath: String, connection: PadConnection, itemID: String? = nil) {
         let key = Self.key(sessionID, managedPath, itemID: itemID)
@@ -123,6 +137,7 @@ final class PadMessageImageStore {
             scope = currentScope
             for task in inflight.values { task.cancel() }
             inflight = [:]; order = []; pending = []; byteCosts = [:]; totalBytes = 0
+            geometryValues = [:]; geometryOrder = []; pendingGeometry = [:]
             if !entries.isEmpty { entries = [:] }
         }
         let key = Self.key(sessionID, managedPath, itemID: itemID)
@@ -133,6 +148,7 @@ final class PadMessageImageStore {
             let evicted = order.removeFirst()
             inflight.removeValue(forKey: evicted)?.cancel()
             entries[evicted] = nil
+            pendingGeometry[evicted] = nil
             pending.removeAll { $0.0 == evicted }
             totalBytes -= byteCosts.removeValue(forKey: evicted) ?? 0
         }
@@ -140,15 +156,15 @@ final class PadMessageImageStore {
                 do {
                     if let url = URL(string: managedPath), ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
                         let data = try await ClientRemoteImageDownload.read(url)
-                        return await Self.decode(data)
+                        return await self.decodeAndRemember(data, key: key)
                     }
                     let api = ClientSessionAPI(transport: try await connection.transport())
                     if let itemID {
                         let data = try await api.resource(sessionId: sessionID, itemId: itemID, path: managedPath)
-                        return await Self.decode(data)
+                        return await self.decodeAndRemember(data, key: key)
                     }
                     guard let payload = try await api.image(sessionId: sessionID, managedPath: managedPath) else { return nil }
-                    return await Self.decode(payload.data)
+                    return await self.decodeAndRemember(payload.data, key: key)
                 } catch { return nil }
         }))
         drain()
@@ -157,10 +173,24 @@ final class PadMessageImageStore {
     private func drain() {
         while inflight.count < 3, !pending.isEmpty {
             let (key, load) = pending.removeFirst()
+            let generation = scope
             inflight[key] = Task { [weak self] in
                 let image = await load()
                 guard let self, !Task.isCancelled, self.entries[key] == .loading else { return }
+                let publish: @MainActor () -> Void = { [weak self] in
+                guard let self, self.scope == generation else { return }
+                guard self.entries[key] == .loading else {
+                    self.pendingGeometry[key] = nil
+                    self.inflight[key] = nil
+                    self.drain()
+                    return
+                }
                 self.inflight[key] = nil
+                if let geometry = self.pendingGeometry.removeValue(forKey: key) {
+                    if self.geometryValues[key] == nil { self.geometryOrder.append(key) }
+                    self.geometryValues[key] = geometry
+                    if self.geometryOrder.count > 2048 { self.geometryValues.removeValue(forKey: self.geometryOrder.removeFirst()) }
+                }
                 let cost = image?.cgImage.map { $0.bytesPerRow * $0.height } ?? 0
                 self.byteCosts[key] = cost
                 self.totalBytes += cost
@@ -173,21 +203,40 @@ final class PadMessageImageStore {
                     self.totalBytes -= self.byteCosts.removeValue(forKey: evicted) ?? 0
                 }
                 self.drain()
+                }
+                if self.pendingGeometry[key] != nil && self.pendingGeometry[key] != self.geometryValues[key],
+                   let commit = self.commitGeometry { commit(publish) }
+                else { publish() }
             }
         }
     }
 
+    private func decodeAndRemember(_ data: Data, key: String) async -> UIImage? {
+        let decoded = await Self.decodePayload(data)
+        guard !Task.isCancelled else { return nil }
+        if let result = decoded.1 {
+            pendingGeometry[key] = result
+        }
+        return decoded.0.map { UIImage(cgImage: $0) }
+    }
+
     nonisolated static func decode(_ data: Data) async -> UIImage? {
-        let bitmap = await Task.detached(priority: .utility) {
+        let decoded = await decodePayload(data)
+        return decoded.0.map { UIImage(cgImage: $0) }
+    }
+
+    nonisolated private static func decodePayload(_ data: Data) async -> (CGImage?, MessageImageGeometry?) {
+        await Task.detached(priority: .utility) { () -> (CGImage?, MessageImageGeometry?) in
             guard !data.isEmpty, data.count <= 20 * 1024 * 1024,
-                  let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil as CGImage? }
-            return CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  let source = CGImageSourceCreateWithData(data as CFData, nil) else { return (nil, nil) }
+            let geometry = MessageImageGeometry.read(source)
+            let bitmap = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
                 kCGImageSourceCreateThumbnailWithTransform: true,
                 kCGImageSourceThumbnailMaxPixelSize: thumbnailEdge,
                 kCGImageSourceShouldCacheImmediately: true
             ] as CFDictionary)
+            return (bitmap, geometry)
         }.value
-        return bitmap.map { UIImage(cgImage: $0) }
     }
 }

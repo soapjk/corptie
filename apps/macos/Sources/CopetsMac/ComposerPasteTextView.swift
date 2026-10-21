@@ -4,9 +4,31 @@ import AppKit
 /// text; image data goes to the composer attachment importer, not text storage.
 class ComposerPasteTextView: NSTextView {
     var onPasteImages: ((NSPasteboard) -> Bool)?
+    private var routingPaste = false
+    private var suppressImagePaste = false
+    // Overridable for command-level tests without touching the user's clipboard.
+    var imagePasteboard: NSPasteboard { .general }
 
     private static let imagePasteTypes: [NSPasteboard.PasteboardType] =
-        [.png, .tiff, .fileURL] + NSImage.imageTypes.map { NSPasteboard.PasteboardType($0) }
+        [.png, .tiff, .fileURL, ComposerImagePasteboard.legacyFileType]
+            + NSImage.imageTypes.map { NSPasteboard.PasteboardType($0) }
+
+    override func paste(_ sender: Any?) {
+        guard isEditable else { return }
+        if routingPaste || suppressImagePaste { super.paste(sender); return }
+        ComposerImagePasteboard.diagnoseCommand(imagePasteboard)
+        routingPaste = true
+        defer { routingPaste = false }
+        if onPasteImages?(imagePasteboard) == true { return }
+        super.paste(sender)
+    }
+
+    override func pasteAsPlainText(_ sender: Any?) {
+        guard isEditable else { return }
+        suppressImagePaste = true
+        defer { suppressImagePaste = false }
+        super.pasteAsPlainText(sender)
+    }
 
     override var readablePasteboardTypes: [NSPasteboard.PasteboardType] {
         var types = super.readablePasteboardTypes
@@ -17,7 +39,7 @@ class ComposerPasteTextView: NSTextView {
     func canImportImages(from pasteboard: NSPasteboard) -> Bool {
         // Metadata only: menu validation must not decode a screenshot or write
         // attachments, and must respect a non-editable input field.
-        isEditable && onPasteImages != nil && pasteboard.availableType(from: Self.imagePasteTypes) != nil
+        isEditable && !suppressImagePaste && onPasteImages != nil && ComposerImagePasteboard.hasCandidate(in: pasteboard)
     }
 
     override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
@@ -27,7 +49,7 @@ class ComposerPasteTextView: NSTextView {
 
     override func preferredPasteboardType(from availableTypes: [NSPasteboard.PasteboardType],
         restrictedToTypesFrom allowedTypes: [NSPasteboard.PasteboardType]?) -> NSPasteboard.PasteboardType? {
-        if isEditable, onPasteImages != nil,
+        if isEditable, !suppressImagePaste, onPasteImages != nil,
            let type = Self.imagePasteTypes.first(where: {
                availableTypes.contains($0) && (allowedTypes == nil || allowedTypes!.contains($0))
            }) { return type }
@@ -35,7 +57,9 @@ class ComposerPasteTextView: NSTextView {
     }
 
     override func readSelection(from pasteboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
-        if isEditable, Self.imagePasteTypes.contains(type), onPasteImages?(pasteboard) == true { return true }
+        if !routingPaste, !suppressImagePaste, isEditable,
+           Self.imagePasteTypes.contains(type) || ComposerImagePasteboard.isImageType(type) || type == .rtfd || type == .html,
+           onPasteImages?(pasteboard) == true { return true }
         return super.readSelection(from: pasteboard, type: type)
     }
 }

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { messageImageGeometry, IMAGE_GEOMETRY_HEADER_LIMIT } from "./messageImageGeometry.mjs";
 import { readMessageResource } from "./messageResources.mjs";
 import { constants } from "node:fs";
 import { access, copyFile, mkdir, open, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
@@ -37,7 +38,7 @@ export class ChatResourceService {
       throw resourceError("CHAT_IMAGE_SIZE_INVALID", "Images must be between 1 byte and 20 MB.");
     }
     const handle = await open(source, "r");
-    const header = Buffer.alloc(32);
+    const header = Buffer.alloc(Math.min(info.size, IMAGE_GEOMETRY_HEADER_LIMIT));
     let bytesRead = 0;
     try {
       ({ bytesRead } = await handle.read(header, 0, header.length, 0));
@@ -58,7 +59,8 @@ export class ChatResourceService {
       originalPath: preservesOriginal ? source : null,
       fileName: basename(source),
       mimeType: imageType.mimeType,
-      byteLength: info.size
+      byteLength: info.size,
+      ...messageImageGeometry(header.subarray(0, bytesRead))
     });
   }
 
@@ -73,7 +75,7 @@ export class ChatResourceService {
     const data = await readFile(path);
     const type = detectedImageType(data.subarray(0, 32), extname(path));
     if (!type) throw resourceError("CHAT_IMAGE_FORMAT_UNSUPPORTED", "The stored image format is unsupported.", 415);
-    return { data, path, mimeType: type.mimeType, byteLength: info.size };
+    return { data, path, mimeType: type.mimeType, byteLength: info.size, ...messageImageGeometry(data) };
   }
 
   /** Device uploads never supply a filesystem path on the Mac. */
@@ -87,7 +89,8 @@ export class ChatResourceService {
     const managedPath = `${directory}/${this.idFactory()}.${type.extension}`;
     await mkdir(join(this.environmentRoot, directory), { recursive: true, mode: 0o700 });
     await writeFile(this.#safePath(managedPath), data, { flag: "wx", mode: 0o600 });
-    return { managedPath, originalPath: null, fileName: basename(fileName), mimeType: type.mimeType, byteLength: data.length };
+    return { managedPath, originalPath: null, fileName: basename(fileName), mimeType: type.mimeType, byteLength: data.length,
+      ...messageImageGeometry(data) };
   }
 
   async removeUnsentImage(reference, managedPath) {
