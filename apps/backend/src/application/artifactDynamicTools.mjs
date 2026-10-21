@@ -37,13 +37,13 @@ export const artifactDynamicTools = Object.freeze([
       required: ["old_text", "new_text"]
     } }
   }, ["artifact_id", "version", "content_hash", "idempotency_key", "edits"]),
-  tool("corptie_artifact_promote_to_repository", "Write a fixed Artifact version to an explicitly authorized new repository Markdown path. Requires the current direct user's exact-path authorization event, refuses overwrite and symlink escape, and records durable commit evidence. Does not git add, commit or push.", {
+  tool("corptie_artifact_promote_to_repository", "Write a fixed Artifact document (including PDF, Office, HTML or Markdown) to an explicitly authorized new repository path only when the direct user requests Git tracking for that exact document/path. Requires the current direct user's exact-path authorization event, refuses overwrite and symlink escape, and records durable commit evidence. Generic export confirmation is not tracking authorization. Does not git add, commit or push.", {
     artifact_id: artifactId, version, content_hash: contentHash, path: { type: "string", minLength: 1 },
     user_message_event_id: { type: "string", minLength: 1 }, user_message_sequence: { type: "integer", minimum: 1 }
   }, ["artifact_id", "version", "content_hash", "path", "user_message_event_id", "user_message_sequence"]),
-  tool("corptie_artifact_materialize", "Materialize a fixed Artifact version only when a local program needs a path. Writes atomically under the authenticated Session project's .corptie directory, verifies SHA-256 and Git ignore status, and refuses overwrite or unsafe paths. Never stages or commits files.", {
+  tool("corptie_artifact_materialize", "Materialize a fixed Artifact version only when a local program needs a path. Writes atomically only under the authenticated Session project's .corptie/artifacts/ managed directory, verifies SHA-256 and Git ignore status, and refuses overwrite or unsafe paths. PDF/Office documents and intermediate files must not be exported to project output/ or outputs/. Never stages or commits files.", {
     artifact_id: artifactId, version, content_hash: contentHash,
-    path: { type: "string", minLength: 1, description: "Safe relative path within project .corptie, e.g. artifacts/report.md. No absolute paths or parent traversal." }
+    path: { type: "string", minLength: 1, pattern: "^artifacts/.+", description: "Must start with artifacts/, e.g. artifacts/report.pdf, within project .corptie/artifacts/. No absolute paths or parent traversal." }
   }, ["artifact_id", "version", "content_hash", "path"]),
   tool("corptie_artifact_create", "Create an Artifact using runtime-bound ownership: assistantChat defaults to its own Session, Worker to its Task, Work Chat to its Work. Workers may also create Work-scoped Artifacts. Other owners' Artifacts are read-only; creation uses a Session-scoped idempotency key.", {
     title: { type: "string", minLength: 1 }, summary: { type: "string" }, content: { type: "string" },

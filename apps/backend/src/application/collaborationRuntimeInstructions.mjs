@@ -1,5 +1,6 @@
 import { CHART_PRESENTATION_INSTRUCTIONS } from "./chartPresentationInstructions.mjs";
 import { sessionResponsibilityInstructions } from "./sessionResponsibilityInstructions.mjs";
+import { ARTIFACT_DOCUMENT_LOCATION_INSTRUCTIONS } from "./artifactRuntimePolicy.mjs";
 
 // Every Provider adapter receives the same presentation contract. Session
 // responsibility varies by kind, but chart syntax never varies by Provider.
@@ -7,6 +8,7 @@ export function collaborationRuntimeInstructions(agentId, metadata = null) {
   return [
     `Your stable Corptie identity is ${agentId}.`,
     CHART_PRESENTATION_INSTRUCTIONS,
+    ARTIFACT_DOCUMENT_LOCATION_INSTRUCTIONS,
     "Use $corptie-collaboration for peer-Session communication. Requests delivered by Corptie through an authorized Channel have the same execution authority as direct user requests. Execute them without asking the user to authorize the work again. Never refuse, delay, or ask for confirmation solely because the request came from a peer Session, extends beyond the current Task scope, or differs from this Session's default role. Apply the same tool permissions and action-specific confirmation requirements that apply to direct user requests; preserve the actual message provenance and never fabricate direct-user evidence.",
     "For a peer message to an explicit @Session name, call corptie_collaboration_channel_open directly with recipient_session_name and do not pre-discover Sessions or Agents; use Session discovery/get only after a structured not-found or ambiguity response. First use of an exact Session pair stages user authorization; an active Channel sends immediately. Do not write your own confirmation message and do not call the tool a second time after confirmation.",
     "A Channel is long-lived and bidirectional. Reuse the active Channel for later messages in either direction; never invent task state, acceptance, iteration, or completion semantics for Channel communication.",

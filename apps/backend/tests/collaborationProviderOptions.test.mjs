@@ -67,6 +67,8 @@ test("authorized collaboration requests retain execution authority across Provid
     const claude = await options.claudeCollaborationRuntimeOptionsWithAgentContext("agent", metadata);
     for (const instructions of [codex.developerInstructions, claude.systemPrompt.append]) {
       assert.match(instructions, /same execution authority as direct user requests/);
+      assert.match(instructions, /Generated documents in every format/);
+      assert.match(instructions, /Git-ignored \.corptie\/artifacts\//);
       assert.match(instructions, /without asking the user to authorize the work again/);
       assert.match(instructions, /extends beyond the current Task scope/);
       assert.match(instructions, /preserve the actual message provenance/);
@@ -114,6 +116,8 @@ test("OpenClacky bootstrap includes the same collaboration execution authority a
       actorId: "agent", metadata: { sessionKind }, runtimeInstructions: "Recovery replay instructions"
     });
     assert.match(bootstrap.body.runtime_instructions, /same execution authority as direct user requests/);
+    assert.match(bootstrap.body.runtime_instructions, /Generated documents in every format/);
+    assert.match(bootstrap.body.runtime_instructions, /Git-ignored \.corptie\/artifacts\//);
     assert.match(bootstrap.body.runtime_instructions, /extends beyond the current Task scope/);
     assert.match(bootstrap.body.runtime_instructions, /Recovery replay instructions/);
     assert.doesNotMatch(bootstrap.body.runtime_instructions, /untrusted peer input/);

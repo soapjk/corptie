@@ -70,10 +70,10 @@ test("platform Artifact create is explicitly Work-scoped, Session-attributed, at
   try {
     bindSession(f, { id: "provider:platform", logicalId: "session:platform", agentId: "assistant", capabilities: ["platform.manage"] });
     const work = f.workService.createWork({
-      name: "Artifact Work", contributorAgentIds: [f.contributorAgentId]
+      name: "ArtifactWork", contributorAgentIds: [f.contributorAgentId]
     });
     const other = f.workService.createWork({
-      name: "Other Work", contributorAgentIds: [f.contributorAgentId]
+      name: "OtherWork", contributorAgentIds: [f.contributorAgentId]
     });
     const wrongTask = f.workService.createTask({ workId: other.id, title: "Wrong" });
     const input = { actorId: "assistant", sessionId: "provider:platform", tool: "corptie_platform_artifacts_manage", arguments: { action: "create", work_id: work.id, title: "Platform evidence", content: "immutable", visibility: "work_private", idempotency_key: "artifact-create-1" } };
@@ -98,7 +98,7 @@ test("high-impact Artifact actions consume a Session-and-digest-bound server con
   try {
     bindSession(f, { id: "provider:platform", logicalId: "session:platform", agentId: "assistant", capabilities: ["platform.manage"] });
     const work = f.workService.createWork({
-      name: "Confirmed Work", contributorAgentIds: [f.contributorAgentId]
+      name: "ConfirmedWork", contributorAgentIds: [f.contributorAgentId]
     });
     const created = await f.service.execute({ actorId: "assistant", sessionId: "provider:platform", tool: "corptie_platform_artifacts_manage", arguments: { action: "create", work_id: work.id, title: "Status", content: "v1", idempotency_key: "create-confirmed" } });
     const arguments_ = { action: "supersede", work_id: work.id, artifact_id: created.result.artifactId };
@@ -116,7 +116,7 @@ test("platform collaboration discovers exact Sessions, starts shared-lifecycle W
   try {
     const workerAgent = f.store.createAgent({ name: "Worker", role: "independentContributor" });
     const work = f.workService.createWork({ name: "Target", contributorAgentIds: [workerAgent.agentId] });
-    const task = f.workService.createTask({ workId: work.id, title: "Target work", mainAgentId: workerAgent.agentId });
+    const task = f.workService.createTask({ workId: work.id, title: "TargetWork", mainAgentId: workerAgent.agentId });
     bindSession(f, { id: "provider:platform", logicalId: "session:platform", agentId: "assistant", capabilities: ["platform.manage"] });
     bindSession(f, { id: "provider:target", logicalId: "session:target", agentId: workerAgent.agentId, kind: "worker", workId: work.id, taskId: task.id });
     const discovered = await f.service.execute({ actorId: "assistant", sessionId: "provider:platform", tool: "corptie_platform_collaboration_manage", arguments: { action: "discover_sessions", work_id: work.id } });

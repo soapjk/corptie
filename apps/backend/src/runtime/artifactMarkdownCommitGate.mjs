@@ -31,12 +31,14 @@ export async function inspectArtifactMarkdownCommit(cwd, { verifyPromotion = asy
     if (path.split("/").some(part => part.normalize("NFC").toLowerCase() === ".corptie")) {
       violations.push({ path, code: "GIT_CORPTIE_CONTENT_FORBIDDEN" }); continue;
     }
-    if (!/\.md$/i.test(path) || headPaths.has(path)) continue;
-    if (!["100644", "100755"].includes(mode)) { violations.push({ path, code: "GIT_MARKDOWN_NOT_REGULAR" }); continue; }
+    const markdown = /\.md$/i.test(path);
+    const document = markdown || /\.(?:pdf|docx?|pptx?|xlsx?|odt|odp|ods|rtf|epub)$/i.test(path);
+    if (!document || headPaths.has(path)) continue;
+    if (!["100644", "100755"].includes(mode)) { violations.push({ path, code: markdown ? "GIT_MARKDOWN_NOT_REGULAR" : "GIT_DOCUMENT_NOT_REGULAR" }); continue; }
     const bytes = await git("cat-file", "blob", objectId);
     const contentHash = createHash("sha256").update(bytes).digest("hex");
     const fixed = { repositoryPath, path, contentHash, objectId };
-    if (await verifyPromotion(fixed) !== true) violations.push({ path, code: "GIT_MARKDOWN_PROMOTION_REQUIRED" });
+    if (await verifyPromotion(fixed) !== true) violations.push({ path, code: markdown ? "GIT_MARKDOWN_PROMOTION_REQUIRED" : "GIT_DOCUMENT_PROMOTION_REQUIRED" });
     else verified.push(fixed);
   }
   // A concurrent git add must not turn a previously checked receipt into
@@ -48,7 +50,7 @@ export async function inspectArtifactMarkdownCommit(cwd, { verifyPromotion = asy
 
 export async function assertArtifactMarkdownCommit(cwd, options) {
   const result = await inspectArtifactMarkdownCommit(cwd, options);
-  if (!result.ok) throw Object.assign(new Error("Artifact Markdown commit policy rejected the staged tree."), {
+  if (!result.ok) throw Object.assign(new Error("Artifact document commit policy rejected the staged tree."), {
     code: "GIT_ARTIFACT_POLICY_REJECTED", details: result
   });
   return result;
