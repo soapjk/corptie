@@ -27,18 +27,69 @@ struct PadControlSelection: Hashable {
 }
 
 enum PadTab: Int, CaseIterable, Identifiable {
-    case workspace, automations, worktrees, agents, resources
+    case workspace, automations, worktrees, agents, resources, settings
     var id: Int { rawValue }
     var title: String {
-        switch self { case .workspace: "工作台"; case .automations: "自动化"; case .worktrees: "Worktrees"; case .agents: "Agents"; case .resources: "资源管理" }
+        switch self { case .workspace: "工作台"; case .automations: "自动化"; case .worktrees: "Worktree"; case .agents: "Agents"; case .resources: "资源管理"; case .settings: "设置" }
     }
     var symbol: String {
         switch self { case .workspace: "circle.hexagongrid.fill"; case .automations: "bolt.badge.clock";
-        case .worktrees: "arrow.triangle.branch"; case .agents: "person.2"; case .resources: "tray.full" }
+        case .worktrees: "arrow.triangle.branch"; case .agents: "person.2"; case .resources: "tray.full"; case .settings: "gearshape" }
     }
     var resources: [ClientControlKind] {
-        switch self { case .workspace, .resources: []; case .automations: [.automations];
+        switch self { case .workspace, .resources, .settings: []; case .automations: [.automations];
         case .worktrees: [.repositories]; case .agents: [.agents, .skills] }
+    }
+
+    static let optionalTabs: [Self] = [.automations, .worktrees, .agents, .resources]
+    var isRequired: Bool { self == .workspace || self == .settings }
+    var preferenceID: String {
+        switch self {
+        case .workspace: "workspace"
+        case .automations: "automations"
+        case .worktrees: "worktrees"
+        case .agents: "agents"
+        case .resources: "resources"
+        case .settings: "settings"
+        }
+    }
+}
+
+/// The only new persistence is the user-authorized, local Tab visibility choice.
+/// Store native UserDefaults string arrays, not JSON or derived digests.
+@MainActor @Observable
+final class PadTabPreferences {
+    static let storageKey = "corptie.mobile.visibleOptionalTabs.v1"
+    private(set) var optionalTabs: [PadTab]
+    @ObservationIgnored private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        optionalTabs = Self.normalized(defaults.stringArray(forKey: Self.storageKey))
+    }
+
+    static func normalized(_ identifiers: [String]?) -> [PadTab] {
+        guard let identifiers else { return [.worktrees] }
+        return Array(PadTab.optionalTabs.filter { identifiers.contains($0.preferenceID) }.prefix(3))
+    }
+
+    var visibleTabs: [PadTab] { [.workspace] + optionalTabs + [.settings] }
+    func contains(_ tab: PadTab) -> Bool { tab.isRequired || optionalTabs.contains(tab) }
+    func canEnable(_ tab: PadTab) -> Bool { contains(tab) || optionalTabs.count < 3 }
+
+    func setEnabled(_ tab: PadTab, _ enabled: Bool) {
+        guard !tab.isRequired, PadTab.optionalTabs.contains(tab) else { return }
+        guard !enabled || canEnable(tab) else { return }
+        let next = PadTab.optionalTabs.filter { $0 == tab ? enabled : optionalTabs.contains($0) }
+        guard next != optionalTabs else { return }
+        optionalTabs = next
+        defaults.set(next.map(\.preferenceID), forKey: Self.storageKey)
+    }
+
+    func restoreDefaults() {
+        guard optionalTabs != [.worktrees] else { return }
+        optionalTabs = [.worktrees]
+        defaults.set([PadTab.worktrees.preferenceID], forKey: Self.storageKey)
     }
 }
 
