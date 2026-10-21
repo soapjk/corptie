@@ -373,17 +373,12 @@ struct PadWorkOutline: View {
                             .foregroundStyle(isSelected ? Color.primary : Color.secondary)
                             .lineLimit(1)
                     }
-                    if discussions.isEmpty {
-                        Spacer(minLength: 4)
-                        if !isExpanded, workspace.unreadWorkIDs.contains(work.id) {
-                            UnreadSessionDot()
-                        }
-                    }
                 }
                 .padding(.vertical, headerPadding)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .layoutPriority(1)
             .accessibilityLabel(work.name)
             .accessibilityValue(isExpanded ? "已展开" : "已折叠")
             .accessibilityIdentifier("work-header-\(work.id)")
@@ -402,22 +397,22 @@ struct PadWorkOutline: View {
                         .padding(.leading, 6)
                         .accessibilityIdentifier("work-discussion-\(discussion.id)")
                 }
-
-                Button(action: toggle) {
-                    HStack(spacing: 0) {
-                        Spacer(minLength: 4)
-                        if !isExpanded, workspace.unreadWorkIDs.contains(work.id) {
-                            UnreadSessionDot()
-                        }
-                    }
-                    .frame(minHeight: isPhone ? 28 : WorkOutlineMetrics.headerIconSize)
-                    .padding(.vertical, headerPadding)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityHidden(true)
-                .accessibilityIdentifier("work-header-empty-\(work.id)")
             }
+            Spacer(minLength: 4)
+            if !isExpanded, workspace.unreadWorkIDs.contains(work.id) {
+                UnreadSessionDot()
+            }
+        }
+        .background {
+            // A background participates in hit testing, not HStack width
+            // allocation. Keep the empty-area toggle behind the independent
+            // title/discussion buttons instead of making it a flexible sibling.
+            Button(action: toggle) {
+                Color.clear.contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHidden(true)
+            .accessibilityIdentifier("work-header-empty-\(work.id)")
         }
         .contextMenu {
             Button {

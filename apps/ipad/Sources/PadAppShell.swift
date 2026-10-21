@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import Observation
 import CorptieClientCore
 import CorptieConversation
 @preconcurrency import UserNotifications
@@ -10,20 +11,16 @@ struct PadAppShell: View {
     let connection: PadConnection
     @State private var workspace = PadWorkspace()
     @State private var controls = PadControlStore()
-    @State private var tab = PadTab.workspace
-    @State private var resourceFocus: ClientResourceFocus?
+    @State private var navigation = PadMobileNavigation()
+    @State private var tabPreferences = PadTabPreferences()
     @State private var sheet: Sheet?
-    @State private var keyboardViewport = PadKeyboardViewport()
-    @State private var compactWorkspaceIsRoot = true
-    @State private var compactOpenSessionRequest = 0
     @State private var wasBackgrounded = false
     private let notificationManager = PadNotificationManager.shared
     @AppStorage("corptie.mobile.navigationRailExpanded") private var navigationRailExpanded = true
     private enum Sheet: Identifiable {
-        case settings
         case operation(OperationNotificationEvent)
         var id: String {
-            switch self { case .settings: "settings"; case .operation(let event): "operation:" + event.id }
+            switch self { case .operation(let event): "operation:" + event.id }
         }
     }
 
@@ -31,70 +28,62 @@ struct PadAppShell: View {
         UIDevice.current.userInterfaceIdiom == .pad
     }
 
+    private var tab: PadTab {
+        get { navigation.selection }
+        nonmutating set {
+            navigation.open(newValue, visibleTabs: tabPreferences.visibleTabs, usesRail: usesNavigationRail)
+        }
+    }
+    private var keyboardViewport: PadKeyboardViewport {
+        get { navigation.keyboardViewport }
+        nonmutating set { navigation.keyboardViewport = newValue }
+    }
+    private var resourceFocus: ClientResourceFocus? {
+        get { navigation.resourceFocus }
+        nonmutating set { navigation.resourceFocus = newValue }
+    }
+    private var compactOpenSessionRequest: Int {
+        get { navigation.compactOpenSessionRequest }
+        nonmutating set { navigation.compactOpenSessionRequest = newValue }
+    }
+
     var body: some View {
         synchronizedContent
     }
 
     private var appContent: some View {
-        GeometryReader { geometry in
+        GeometryReader { _ in
         HStack(spacing: 0) {
             if usesNavigationRail {
                 PadNavigationRail(
-                    selection: $tab,
+                    selection: $navigation.selection,
                     isExpanded: $navigationRailExpanded,
-                    settings: { sheet = .settings }
+                    visibleTabs: tabPreferences.visibleTabs
                 )
                 .frame(width: navigationRailExpanded ? 200 : 64)
             }
 
-            ZStack {
-                WorkspaceView(connection: connection, workspace: workspace,
-                    compactOpenSessionRequest: compactOpenSessionRequest,
-                    onCompactRootChange: { compactWorkspaceIsRoot = $0 },
-                    onOpenWorktrees: { tab = .worktrees },
-                    onOpenAutomation: { id in
-                        if let destination = controls.selectAutomation(id: id) { tab = destination }
-                    }, navigationGesturesEnabled: tab == .workspace)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .opacity(tab == .workspace ? 1 : 0)
-                    .allowsHitTesting(tab == .workspace)
-                    .accessibilityHidden(tab != .workspace)
-                ForEach([PadTab.automations, .worktrees, .agents]) { page in
-                    PadControlView(tab: page, connection: connection, store: controls, openSession: { id in
-                        workspace.selection = id
-                        compactOpenSessionRequest &+= 1
-                        tab = .workspace
-                    })
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .opacity(tab == page ? 1 : 0)
-                    .allowsHitTesting(tab == page)
-                    .accessibilityHidden(tab != page)
+            Group {
+                if usesNavigationRail {
+                    ZStack {
+                        ForEach(PadTab.allCases) { page in
+                            tabPage(page)
+                                .opacity(tab == page ? 1 : 0)
+                                .allowsHitTesting(tab == page)
+                                .accessibilityHidden(tab != page)
+                        }
+                    }
+                } else {
+                    phoneTabs
+                        // UIKit owns the home-indicator and tab-bar safe area.
+                        // Do not reserve it a second time in the outer SwiftUI
+                        // shell. Keyboard avoidance remains enabled.
+                        .ignoresSafeArea(.container)
                 }
-                ResourceBrowser(focus: $resourceFocus, active: tab == .resources,
-                    connected: connection.connected, works: workspace.works.map { ($0.id, $0.name) },
-                    currentWorkId: workspace.selection.flatMap { workspace.detailSession($0)?.workId },
-                    api: { ClientResourceAPI(transport: try await connection.transport(), route: .pairedDevice) },
-                    openSession: { id in workspace.selection = id; compactOpenSessionRequest &+= 1; tab = .workspace })
-                    .id(connection.connectedCloudMacID?.uuidString ?? connection.serverID)
-                    .opacity(tab == .resources ? 1 : 0).allowsHitTesting(tab == .resources)
-                    .accessibilityHidden(tab != .resources)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if !usesNavigationRail, !keyboardViewport.isVisible,
-               (tab != .workspace || compactWorkspaceIsRoot) {
-                PadBottomTabBar(selection: $tab, settings: { sheet = .settings })
-                    .padding(.horizontal, 12)
-                    .padding(.top, 8)
-                    // Change layout reservation too, not just the drawing
-                    // offset: the list ends above the actual lowered bar.
-                    .padding(.bottom, -PadPhoneNavigationLayout.bottomOverlap(
-                        safeArea: geometry.safeAreaInsets.bottom))
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        }
         .background {
             LocalWallpaperCanvas(fallbackColor: tab == .workspace
                 ? WorkbenchCanvasSurface.defaultColor
@@ -109,11 +98,20 @@ struct PadAppShell: View {
         }
         .sheet(item: $sheet) { destination in
             switch destination {
-            case .settings: PadSettingsView(connection: connection, workspace: workspace)
             case .operation(let event): PadOperationResultView(event: event)
             }
         }
         .environment(\.padKeyboardViewport, keyboardViewport)
+        .onChange(of: scenePhase, initial: true) { _, phase in navigation.scenePhase = phase }
+        .onChange(of: tabPreferences.visibleTabs) { _, tabs in
+            if !tabs.contains(navigation.selection) { navigation.selection = .workspace }
+        }
+        .onChange(of: navigation.secondaryTab) { _, _ in
+            if scenePhase == .active {
+                controls.activate(navigation.secondaryTab ?? tab, connection: connection)
+            }
+            updateNotificationVisibility(sessionID: workspace.selection)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .corptieOpenResource)) { notification in
             guard let focus = notification.object as? ClientResourceFocus else { return }
             resourceFocus = focus; tab = .resources
@@ -140,13 +138,27 @@ struct PadAppShell: View {
                 workspace.prepareForegroundRealtime()
                 return
             }
-            controls.activate(tab, connection: connection)
+            controls.activate(navigation.secondaryTab ?? tab, connection: connection)
             // Keep the single server-pushed stream resident while the scene is
             // backgrounded. iPadOS may suspend the process, but the client must
             // not voluntarily tear down its only notification data source.
             await workspace.runRealtime(connection)
         }
         }
+    }
+
+    private var phoneTabs: PadPhoneTabs<PadResidentTabPage> {
+        PadPhoneTabs(navigation: navigation, visibleTabs: tabPreferences.visibleTabs,
+                     selection: navigation.selection, secondaryTab: navigation.secondaryTab,
+                     isBarHidden: keyboardViewport.isVisible ||
+                        (tab == .workspace && !navigation.compactWorkspaceIsRoot),
+                     page: tabPage)
+    }
+
+    private func tabPage(_ page: PadTab) -> PadResidentTabPage {
+        PadResidentTabPage(page: page, connection: connection, workspace: workspace,
+                           controls: controls, navigation: navigation, preferences: tabPreferences,
+                           usesRail: usesNavigationRail)
     }
 
     private func updateKeyboardViewport(_ notification: Notification, changing: Bool) {
@@ -174,11 +186,13 @@ struct PadAppShell: View {
                     workspace.prepareForegroundRealtime()
                     connection.requestRealtimeRecovery()
                 }
-                controls.activate(tab, connection: connection)
+                controls.activate(navigation.secondaryTab ?? tab, connection: connection)
             }
             else { controls.pause() }
         }
-        .onChange(of: tab) { if scenePhase == .active { controls.activate(tab, connection: connection) } }
+        .onChange(of: tab) {
+            if scenePhase == .active { controls.activate(navigation.secondaryTab ?? tab, connection: connection) }
+        }
         .onChange(of: workspace.controlRevision) {
             if let snapshot = workspace.directControlSnapshot { controls.apply(snapshot) }
             else { controls.invalidate(connection) }
@@ -210,7 +224,7 @@ struct PadAppShell: View {
             notificationManager.setScope("\(connection.serverID)|\(connection.address)")
             notificationManager.updateVisibility(
                 sessionID: workspace.selection,
-                tab: tab,
+                tab: navigation.secondaryTab ?? tab,
                 sceneIsActive: scenePhase == .active
             )
             notificationManager.syncSessions(workspace.sessions, works: workspace.works, tasks: workspace.tasks)
@@ -228,7 +242,7 @@ struct PadAppShell: View {
         .onChange(of: scenePhase) { _, phase in
             notificationManager.updateVisibility(
                 sessionID: workspace.selection,
-                tab: tab,
+                tab: navigation.secondaryTab ?? tab,
                 sceneIsActive: phase == .active
             )
             if phase == .active { PadOperationNotifications.shared.recover(connection: connection) }
@@ -239,7 +253,7 @@ struct PadAppShell: View {
     private func updateNotificationVisibility(sessionID: String?) {
         notificationManager.updateVisibility(
             sessionID: sessionID,
-            tab: tab,
+            tab: navigation.secondaryTab ?? tab,
             sceneIsActive: scenePhase == .active
         )
     }
@@ -315,23 +329,24 @@ private struct PadUnifiedTopScrollEdges: ViewModifier {
 private struct PadNavigationRail: View {
     @Binding var selection: PadTab
     @Binding var isExpanded: Bool
-    let settings: () -> Void
+    let visibleTabs: [PadTab]
 
     var body: some View {
         PlatformNavigationRail(
-            items: PadTab.allCases.map {
+            items: visibleTabs.filter { $0 != .settings }.map {
                 PlatformNavigationItem(id: String($0.rawValue), title: $0.title,
                                        symbol: $0.symbol,
                                        accessibilityID: "tab-\($0.rawValue)")
             },
             selectedID: String(selection.rawValue),
             expanded: isExpanded,
+            settingsSelected: selection == .settings,
             settingsTitle: "设置",
             settingsAccessibilityID: "navigation-settings",
             onSelect: { id in
                 if let rawValue = Int(id), let tab = PadTab(rawValue: rawValue) { selection = tab }
             },
-            onSettings: settings
+            onSettings: { selection = .settings }
         )
         .padding(.horizontal, 8)
         .padding(.vertical, 8)
@@ -376,66 +391,209 @@ private struct PadNavigationRail: View {
 
 }
 
-private struct PadBottomTabBar: View {
-    @Namespace private var selectionGlass
-    @Binding var selection: PadTab
-    let settings: () -> Void
+/// Presentation state crosses the SwiftUI/UIKit boundary without replacing any
+/// hosting root on message delivery. Business stores remain owned by PadAppShell.
+@MainActor @Observable
+private final class PadMobileNavigation {
+    var selection = PadTab.workspace
+    var secondaryTab: PadTab?
+    var resourceFocus: ClientResourceFocus?
+    var compactWorkspaceIsRoot = true
+    var compactOpenSessionRequest = 0
+    var keyboardViewport = PadKeyboardViewport()
+    var scenePhase = ScenePhase.active
 
-    var body: some View {
-        HStack(spacing: 8) {
-            PlatformAnimatedTabSelection(selectedID: String(selection.rawValue)) { displayedID, moving in
-                PlatformNavigationGlassContainer {
-                    HStack(spacing: 0) {
-                        ForEach(PadTab.allCases) { item in
-                            let isSelected = displayedID == String(item.rawValue)
-                            Button {
-                                selection = item
-                            } label: {
-                                compactLabel(symbol: item.symbol, title: item.title, selected: isSelected)
-                                    .background {
-                                        if isSelected { PlatformTabSelectionIndicator(namespace: selectionGlass, moving: moving) }
-                                    }
-                            }
-                            .buttonStyle(PlatformTabButtonStyle())
-                            .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                            .accessibilityLabel(item.title)
-                            .accessibilityAddTraits(isSelected ? .isSelected : [])
-                            .accessibilityIdentifier("tab-\(item.rawValue)")
-                        }
-                    }
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 4)
-                    .frame(maxWidth: 360)
-                }
-                .padGlassSurface(in: Capsule(), interactive: true, variant: .clear)
-            }
-
-            Button(action: settings) {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 17, weight: .medium))
-                    .frame(width: 50, height: 50)
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .padGlassSurface(in: Circle(), interactive: true, variant: .clear)
-            .accessibilityLabel("设置")
-            .accessibilityIdentifier("navigation-settings")
+    func open(_ destination: PadTab, visibleTabs: [PadTab], usesRail: Bool) {
+        if usesRail || visibleTabs.contains(destination) {
+            secondaryTab = nil
+            selection = destination
+        } else {
+            // A business link may open a hidden module, but must not change the
+            // user's Tab configuration or insert a sixth/temporary Tab.
+            secondaryTab = destination
         }
-        .frame(maxWidth: 430)
+    }
+}
+
+private struct PadResidentTabPage: View {
+    let page: PadTab
+    let connection: PadConnection
+    let workspace: PadWorkspace
+    let controls: PadControlStore
+    @Bindable var navigation: PadMobileNavigation
+    let preferences: PadTabPreferences
+    let usesRail: Bool
+
+    private var active: Bool {
+        navigation.secondaryTab == page || (navigation.secondaryTab == nil && navigation.selection == page)
     }
 
-    private func compactLabel(symbol: String, title: String, selected: Bool = false) -> some View {
-        VStack(spacing: 3) {
-            Image(systemName: symbol)
-                .font(.system(size: 16, weight: selected ? .semibold : .regular))
-            Text(title)
-                .font(.system(size: 10, weight: selected ? .semibold : .regular))
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+    var body: some View {
+        content
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .environment(\.padKeyboardViewport, navigation.keyboardViewport)
+            .environment(\.scenePhase, navigation.scenePhase)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if navigation.secondaryTab == page {
+                    HStack {
+                        Text(page.title).font(.headline)
+                        Spacer()
+                        Button("完成") { navigation.secondaryTab = nil }
+                    }
+                    .padding()
+                }
+            }
+    }
+
+    @ViewBuilder private var content: some View {
+        switch page {
+        case .workspace:
+            WorkspaceView(connection: connection, workspace: workspace,
+                compactOpenSessionRequest: navigation.compactOpenSessionRequest,
+                onCompactRootChange: { navigation.compactWorkspaceIsRoot = $0 },
+                onOpenWorktrees: { open(.worktrees) },
+                onOpenAutomation: { id in
+                    if let destination = controls.selectAutomation(id: id) { open(destination) }
+                }, navigationGesturesEnabled: active)
+        case .automations, .worktrees, .agents:
+            PadControlView(tab: page, connection: connection, store: controls, openSession: openSession)
+        case .resources:
+            ResourceBrowser(focus: $navigation.resourceFocus, active: active,
+                connected: connection.connected, works: workspace.works.map { ($0.id, $0.name) },
+                currentWorkId: workspace.selection.flatMap { workspace.detailSession($0)?.workId },
+                api: { ClientResourceAPI(transport: try await connection.transport(), route: .pairedDevice) },
+                openSession: openSession)
+                .id(connection.connectedCloudMacID?.uuidString ?? connection.serverID)
+        case .settings:
+            PadSettingsView(connection: connection, workspace: workspace,
+                            tabPreferences: preferences, showsDoneButton: false)
         }
-        .frame(maxWidth: .infinity, minHeight: 50)
-        .contentShape(Rectangle())
+    }
+
+    private func open(_ destination: PadTab) {
+        navigation.open(destination, visibleTabs: preferences.visibleTabs, usesRail: usesRail)
+    }
+    private func openSession(_ id: String) {
+        workspace.selection = id
+        navigation.compactOpenSessionRequest &+= 1
+        open(.workspace)
+    }
+}
+
+/// UIKit owns the native selection lens, safe area and tab transitions. Cached
+/// hosts also retain temporarily disabled pages; configuration never rebuilds
+/// a message timeline, navigation stack, Detail state or network subscription.
+private final class PadPhoneTabController: UITabBarController {
+    var appeared: (() -> Void)?
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        appeared?()
+    }
+}
+
+private struct PadPhoneTabs<Page: View>: UIViewControllerRepresentable {
+    let navigation: PadMobileNavigation
+    let visibleTabs: [PadTab]
+    let selection: PadTab
+    let secondaryTab: PadTab?
+    let isBarHidden: Bool
+    @ViewBuilder let page: (PadTab) -> Page
+
+    func makeCoordinator() -> Coordinator { Coordinator(navigation: navigation) }
+
+    func makeUIViewController(context: Context) -> UITabBarController {
+        let controller = PadPhoneTabController()
+        controller.mode = .tabBar
+        controller.tabBarMinimizeBehavior = .never
+        controller.view.backgroundColor = .clear
+        controller.delegate = context.coordinator
+        controller.customizableViewControllers = []
+        for tab in PadTab.allCases {
+            let host = UIHostingController(rootView: page(tab))
+            host.view.backgroundColor = .clear
+            host.tabBarItem = UITabBarItem(title: tab.title, image: UIImage(systemName: tab.symbol), tag: tab.rawValue)
+            host.tabBarItem.accessibilityIdentifier = "tab-\(tab.rawValue)"
+            context.coordinator.hosts[tab] = host
+        }
+        context.coordinator.controller = controller
+        controller.appeared = { [weak coordinator = context.coordinator] in
+            coordinator?.reconcileSecondary()
+        }
+        updateUIViewController(controller, context: context)
+        return controller
+    }
+
+    func updateUIViewController(_ controller: UITabBarController, context: Context) {
+        let coordinator = context.coordinator
+        let selected = visibleTabs.contains(selection) ? selection : .workspace
+        if coordinator.visibleTabs != visibleTabs {
+            // Select a surviving host before changing the list. Never give
+            // UIKit >5 controllers, so it cannot synthesize a More item.
+            if let host = coordinator.hosts[selected], controller.viewControllers?.contains(host) == true {
+                controller.selectedViewController = host
+            }
+            controller.setViewControllers(visibleTabs.compactMap { coordinator.hosts[$0] }, animated: false)
+            controller.customizableViewControllers = []
+            coordinator.visibleTabs = visibleTabs
+        }
+        if let host = coordinator.hosts[selected], controller.selectedViewController !== host {
+            controller.selectedViewController = host
+        }
+        if controller.isTabBarHidden != isBarHidden {
+            controller.setTabBarHidden(isBarHidden, animated: controller.view.window != nil)
+        }
+        coordinator.reconcileSecondary()
+    }
+
+    final class Coordinator: NSObject, UITabBarControllerDelegate, UIAdaptivePresentationControllerDelegate {
+        let navigation: PadMobileNavigation
+        var hosts: [PadTab: UIHostingController<Page>] = [:]
+        var visibleTabs: [PadTab] = []
+        weak var controller: UITabBarController?
+        private var presentedTab: PadTab?
+        private var transitioning = false
+
+        init(navigation: PadMobileNavigation) { self.navigation = navigation }
+
+        func tabBarController(_ controller: UITabBarController, shouldSelect viewController: UIViewController) -> Bool {
+            controller.selectedViewController !== viewController
+        }
+
+        func tabBarController(_ controller: UITabBarController, didSelect viewController: UIViewController) {
+            guard let tab = PadTab(rawValue: viewController.tabBarItem.tag), navigation.selection != tab else { return }
+            navigation.selection = tab
+        }
+
+        func reconcileSecondary() {
+            guard let controller, !transitioning else { return }
+            if let presentedTab, presentedTab != navigation.secondaryTab {
+                guard controller.presentedViewController === hosts[presentedTab] else { return }
+                transitioning = true
+                controller.dismiss(animated: true) { [weak self] in
+                    guard let self else { return }
+                    self.presentedTab = nil
+                    self.transitioning = false
+                    self.reconcileSecondary()
+                }
+            } else if presentedTab == nil, let target = navigation.secondaryTab,
+                      let host = hosts[target], controller.presentedViewController == nil,
+                      controller.view.window != nil, !visibleTabs.contains(target) {
+                presentedTab = target
+                transitioning = true
+                controller.present(host, animated: true) { [weak self] in
+                    guard let self else { return }
+                    self.transitioning = false
+                    self.reconcileSecondary()
+                }
+                host.presentationController?.delegate = self
+            }
+        }
+
+        func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+            presentedTab = nil
+            navigation.secondaryTab = nil
+        }
     }
 }
 
@@ -472,6 +630,8 @@ private struct PadSettingsView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     let connection: PadConnection
     let workspace: PadWorkspace
+    let tabPreferences: PadTabPreferences
+    var showsDoneButton = true
     @State private var selectedTab = PadSettingsTab.general
 
     var body: some View {
@@ -482,8 +642,6 @@ private struct PadSettingsView: View {
                 regularSettings
             }
         }
-        .presentationDetents([.large])
-        .presentationDragIndicator(.visible)
     }
 
     private var compactSettings: some View {
@@ -538,7 +696,7 @@ private struct PadSettingsView: View {
     private func settingsDetail(for tab: PadSettingsTab) -> some View {
         switch tab {
         case .general:
-            PadGeneralSettingsView(connection: connection, workspace: workspace)
+            PadGeneralSettingsView(connection: connection, workspace: workspace, tabPreferences: tabPreferences)
         case .provider:
             Form {
                 Section {
@@ -564,8 +722,10 @@ private struct PadSettingsView: View {
 
     @ToolbarContentBuilder
     private var doneToolbar: some ToolbarContent {
-        ToolbarItem(placement: .confirmationAction) {
-            Button("完成") { dismiss() }
+        if showsDoneButton {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("完成") { dismiss() }
+            }
         }
     }
 }
@@ -573,6 +733,7 @@ private struct PadSettingsView: View {
 private struct PadGeneralSettingsView: View {
     let connection: PadConnection
     let workspace: PadWorkspace
+    let tabPreferences: PadTabPreferences
 
     var body: some View {
         Form {
@@ -585,8 +746,52 @@ private struct PadGeneralSettingsView: View {
             } footer: {
                 Text("会话、自动化、Worktree 与 Agent 数据均由已配对的 Mac 通过长连接主动推送。")
             }
-
+            Section {
+                NavigationLink {
+                    PadTabConfigurationView(preferences: tabPreferences)
+                } label: {
+                    LabeledContent("Tab 栏", value: "已启用 \(tabPreferences.visibleTabs.count) / 5 项")
+                }
+                .accessibilityIdentifier("settings.general.tabs")
+            }
         }
+    }
+}
+
+private struct PadTabConfigurationView: View {
+    let preferences: PadTabPreferences
+
+    var body: some View {
+        Form {
+            Section {
+                ForEach(PadTab.allCases) { tab in
+                    Toggle(isOn: Binding(get: { preferences.contains(tab) }, set: { preferences.setEnabled(tab, $0) })) {
+                        Label {
+                            HStack {
+                                Text(tab.title)
+                                if tab.isRequired { Text("必选").font(.caption).foregroundStyle(.secondary) }
+                            }
+                        } icon: { Image(systemName: tab.symbol) }
+                    }
+                    .disabled(tab.isRequired || !preferences.canEnable(tab))
+                    .accessibilityIdentifier("settings.tabs.\(tab.preferenceID)")
+                }
+            } header: {
+                Text("已启用 \(preferences.visibleTabs.count) / 5 项")
+            } footer: {
+                Text(preferences.visibleTabs.count == 5
+                     ? "最多显示五项，请先关闭其他可选项。工作台和设置必须保留。"
+                     : "工作台固定最前，设置固定最后。关闭 Tab 不会禁用对应功能，仍可通过业务入口打开。")
+            }
+            Section {
+                Button("恢复默认") { preferences.restoreDefaults() }
+                    .accessibilityIdentifier("settings.tabs.restore-defaults")
+            } footer: {
+                Text("默认显示工作台、Worktree 和设置。配置只保存在本机。")
+            }
+        }
+        .navigationTitle("Tab 栏")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
