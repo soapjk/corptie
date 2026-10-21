@@ -8,7 +8,8 @@ struct SessionPreparationNoticeTests {
     @Test @MainActor func localRecoveryChromeFitsPhonePadAndDesktopWithoutReplacingTimeline() {
         for width in [320.0, 768.0, 1024.0] {
             let view = NSHostingView(rootView: SessionPreparationNotice(sessionID: "session",
-                api: { throw ClientConnectionError.invalidResponse }, didPrepare: {}))
+                api: { throw ClientConnectionError.invalidResponse }, didPrepare: {})
+                .frame(width: width))
             view.frame = NSRect(x: 0, y: 0, width: width, height: 100)
             view.layoutSubtreeIfNeeded()
             #expect(view.fittingSize.height.isFinite)
