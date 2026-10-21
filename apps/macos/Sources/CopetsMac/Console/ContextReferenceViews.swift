@@ -44,6 +44,7 @@ struct ContextReferenceAddSheet: View {
     @ObservedObject private var entityClient = EntityAPIClient.shared
     let session: TaskSession
     let mode: ContextReferenceAddMode
+    var canSubmit: @MainActor () -> Bool = { true }
     @State private var urlText = ""
     @State private var searchText = ""
     @State private var tasks: [CorptieTask] = []
@@ -69,7 +70,7 @@ struct ContextReferenceAddSheet: View {
                     Spacer()
                     Button("添加") { addWebURL() }
                         .buttonStyle(.borderedProminent)
-                        .disabled(urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSubmitting)
+                        .disabled(urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSubmitting || !canSubmit())
                 }
             } else {
                 TextField("搜索", text: $searchText)
@@ -101,7 +102,7 @@ struct ContextReferenceAddSheet: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .disabled(isSubmitting)
+                                    .disabled(isSubmitting || !canSubmit())
                     }
                     .listStyle(.inset)
                 }
@@ -156,18 +157,21 @@ struct ContextReferenceAddSheet: View {
 
     private func addWebURL() {
         let locator = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !locator.isEmpty else { return }
+        guard !locator.isEmpty, !isSubmitting, canSubmit() else { return }
         isSubmitting = true
         Task {
+            guard canSubmit() else { isSubmitting = false; return }
             let added = await backendClient.addContextReference(to: session, type: .webURL, locator: locator)
             isSubmitting = false
-            if added { dismiss() }
+            if added && canSubmit() { dismiss() }
         }
     }
 
     private func add(_ candidate: ContextReferenceCandidate) {
+        guard !isSubmitting, canSubmit() else { return }
         isSubmitting = true
         Task {
+            guard canSubmit() else { isSubmitting = false; return }
             let added = await backendClient.addContextReference(
                 to: session,
                 type: mode.referenceType,
@@ -175,7 +179,7 @@ struct ContextReferenceAddSheet: View {
                 displayName: candidate.title
             )
             isSubmitting = false
-            if added { dismiss() }
+            if added && canSubmit() { dismiss() }
         }
     }
 }

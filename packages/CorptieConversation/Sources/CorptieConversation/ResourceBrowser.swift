@@ -219,6 +219,8 @@ private struct ResourceDetail: View {
     @State private var version = 0
     @State private var loadedVersion = 0
     @State private var chunks: [ResourceDocumentChunk] = []
+    @State private var loadedPages = 0
+    @State private var readTask: Task<Void, Never>?
     @State private var offset: Int? = 0
     @State private var readID = UUID().uuidString
     @State private var error: String?
@@ -269,10 +271,10 @@ private struct ResourceDetail: View {
                     if binary { Text("此版本无法直接预览，请从右上角菜单导出原文件。").foregroundStyle(.secondary) }
                     if selectedVersion?.mimeType == "application/vnd.corptie.repository-reference" { Text("此资源引用仓库中的文件，不存储独立正文。").foregroundStyle(.secondary) }
                     ForEach(chunks) { chunk in ResourceDocumentView(chunk: chunk) }
-                    if let error { Text(error).font(.caption).foregroundStyle(.red); Button("重试") { Task { await loadNext() } } }
+                    if let error { Text(error).font(.caption).foregroundStyle(.red); Button("重试") { beginRead() } }
                     if offset != nil && !binary && error == nil {
-                        if chunks.count >= 32 { Text("已达到预览上限，请从右上角菜单导出全文").font(.caption) }
-                        else { Button(loading ? "读取中…" : "继续读取") { Task { await loadNext() } }.disabled(loading) }
+                        if loadedPages >= 32 { Text("已达到预览上限，请从右上角菜单导出全文").font(.caption) }
+                        else { Button(loading ? "读取中…" : "继续读取") { beginRead() }.disabled(loading) }
                     }
                     DisclosureGroup("来源与关联") {
                         VStack(alignment: .leading, spacing: 10) {
@@ -311,12 +313,14 @@ private struct ResourceDetail: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .corptieResourceCatalogChanged)) { _ in if active { metadataRefresh &+= 1 } }
         .task(id: "\(version):\(active)") {
+            readTask?.cancel(); readTask = nil
             guard active, version > 0 else { return }
             if loadedVersion == version && !chunks.isEmpty { return }
-            chunks = []; offset = 0; error = nil; binary = false; readID = UUID().uuidString
+            chunks = []; loadedPages = 0; offset = 0; error = nil; binary = false; readID = UUID().uuidString
             loading = false; loadedVersion = version
             await loadNext()
         }
+        .onDisappear { readTask?.cancel(); readTask = nil }
         .confirmationDialog("删除资源将影响现有引用，移除会话引用不会删除资源。是否继续？", isPresented: $deleteConfirm, titleVisibility: .visible) {
             Button("删除资源", role: .destructive) { Task { await command("revoke", fields: ["confirmed": .bool(true)]) } }
         }
@@ -355,14 +359,18 @@ private struct ResourceDetail: View {
         do {
             let value = try await api().detail(focus.id, version: preserveVersion && version > 0 ? version : focus.version); try Task.checkCancellation()
             guard value.schemaVersion == 1, value.resource.id == focus.id else { throw ClientConnectionError.invalidResponse }
-            detail = value; error = nil
             let selected = preserveVersion && version > 0 ? version : focus.version ?? value.resource.currentVersion
             guard let candidate = value.versions.first(where: { $0.version == selected }), selected != focus.version || focus.hash == nil || candidate.contentHash == focus.hash else { throw ClientConnectionError.invalidResponse }
+            detail = value; error = nil
             version = selected
         } catch is CancellationError { } catch { fail(error) }
     }
+    private func beginRead() {
+        guard active, !loading, readTask == nil else { return }
+        readTask = Task { await loadNext(); if !Task.isCancelled { readTask = nil } }
+    }
     private func loadNext() async {
-        guard active, !loading, let requested = offset, let selectedVersion, chunks.count < 32 else { return }
+        guard active, !loading, let requested = offset, let selectedVersion, loadedPages < 32 else { return }
         let expectedVersion = version, expectedRead = readID
         loading = true
         defer { if readID == expectedRead { loading = false } }
@@ -372,10 +380,20 @@ private struct ResourceDetail: View {
             guard active, version == expectedVersion, readID == expectedRead else { return }
             guard page.artifactId == focus.id, page.version == expectedVersion, page.contentHash == selectedVersion.contentHash,
                   page.range.offset == requested, page.range.nextOffset == nil || page.range.nextOffset! > requested else { throw ClientConnectionError.invalidResponse }
-            binary = page.encoding == "base64"
-            if !binary, let content = page.content { chunks.append(.init(id: requested, text: content)) }
+            let isBinary = page.encoding == "base64"
+            if !isBinary, let content = page.content {
+                let source = (chunks.first?.text ?? "") + content
+                guard source.utf8.count <= 2 * 1024 * 1024 else { throw ClientConnectionError.invalidResponse }
+                let prepared = try await ResourceDocumentChunk.prepare(id: 0, text: source,
+                    mimeType: page.mimeType, title: detail?.resource.title ?? "", previous: chunks.first)
+                try Task.checkCancellation()
+                guard active, version == expectedVersion, readID == expectedRead else { return }
+                chunks = [prepared]
+            }
+            binary = isBinary; loadedPages += 1
             offset = page.range.nextOffset; error = nil
-        } catch is CancellationError { } catch { fail(error) }
+        } catch is CancellationError { }
+        catch { if active, version == expectedVersion, readID == expectedRead { fail(error) } }
     }
     private func command(_ action: String, fields: [String: ClientInspectorValue]) async {
         guard !busy, let detail else { return }

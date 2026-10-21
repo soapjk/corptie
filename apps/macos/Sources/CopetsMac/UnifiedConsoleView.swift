@@ -4,7 +4,7 @@ import AppKit
 import SwiftUI
 
 struct UnifiedConsoleView: View {
-    @State private var detailPresentation = ConversationDetailPresentationRepository()
+    @State private var detailPresentation = ConversationDetailPresentationRepository(defaults: CorptieAppEnvironment.userDefaults)
     @ObservedObject var modelCatalog = BackendClient.shared.modelCatalog
     let backendClient = BackendClient.shared
     @ObservedObject var sessionIndexStore = BackendClient.shared.sessionIndexStore

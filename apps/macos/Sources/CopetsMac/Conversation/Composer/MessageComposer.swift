@@ -433,6 +433,7 @@ struct MessageComposer: View {
     }
 
     private func updateMentionQuery(_ query: ComposerMentionQuery?) {
+        guard query != mentionQuery else { return }
         if query?.text != mentionQuery?.text {
             mentionSelectionIndex = 0
         }

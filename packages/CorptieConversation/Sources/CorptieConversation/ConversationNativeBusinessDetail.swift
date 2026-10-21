@@ -8,13 +8,38 @@ struct ConversationNativeBusinessDetail: View {
     let context: ClientDetailContext
     let adapters: ConversationDetailAdapters
     let handle: ClientDetailBusinessHandle
+    let arrangement: ConversationDetailCardArrangement
+    let arranging: Bool
     let refresh: @MainActor () async -> Void
     let canCommand: (String, ClientDetailAction) -> Bool
     let perform: (String, ClientDetailAction, [String: ClientInspectorValue]) -> Void
+    private var cards: [ClientDetailBusinessCardState] {
+        arrangement.ordered(ClientDetailCardPolicy.orderedCards(in: store, context: context))
+    }
     var body: some View {
-        ForEach(ClientDetailCardPolicy.orderedCards(in: store, context: context)) { state in
+        if #available(macOS 27.0, iOS 27.0, *) {
+            VStack(alignment: .leading, spacing: 12) {
+                rows.reorderable()
+            }
+            .reorderContainer(for: ClientDetailBusinessCardState.self, isEnabled: arranging) { difference in
+                guard arranging else { return }
+                let destination: String?
+                switch difference.destination.position {
+                case .before(let id): destination = id
+                case .end: destination = nil
+                @unknown default: return
+                }
+                arrangement.move(difference.sources, before: destination, cards: cards)
+            }
+            .environment(\.detailArranging, arranging)
+        } else {
+            rows
+        }
+    }
+    private var rows: ForEach<[ClientDetailBusinessCardState], String, some View> {
+        ForEach(cards) { state in
             if state.card.loadState == "error" {
-                NativeBusinessCard(state: state, api: api, store: store, actions: actions,
+                NativeBusinessCard(state: state, api: api, store: store, actions: actions, references: adapters.referenceManagement, openArtifact: adapters.openArtifact, workID: context.workID,
                     canCommand: { canCommand(state.id, $0) }, perform: { perform(state.id, $0, $1) }, retry: { Task { await refresh() } })
                     .environment(\.detailSectionPrefix, state.id)
             } else {
@@ -40,7 +65,7 @@ struct ConversationNativeBusinessDetail: View {
                 state: handle.worktree, expectedWorktreeID: value.worktreeId)
                 .disabled(!store.isCurrent)
         default:
-            NativeBusinessCard(state: state, api: api, store: store, actions: actions,
+            NativeBusinessCard(state: state, api: api, store: store, actions: actions, references: adapters.referenceManagement, openArtifact: adapters.openArtifact, workID: context.workID,
                 canCommand: { canCommand(state.id, $0) }, perform: { perform(state.id, $0, $1) }, retry: { Task { await refresh() } })
         }
     }
@@ -51,6 +76,9 @@ private struct NativeBusinessCard: View {
     let api: ClientDetailAPI?
     let store: ClientDetailBusinessStore
     let actions: ConversationDetailActions?
+    let references: ConversationReferenceManagement?
+    let openArtifact: ((ClientResourceFocus) -> Void)?
+    let workID: String?
     let canCommand: (ClientDetailAction) -> Bool
     let perform: (ClientDetailAction, [String: ClientInspectorValue]) -> Void
     let retry: () -> Void
@@ -64,7 +92,17 @@ private struct NativeBusinessCard: View {
             ForEach(card.actions.filter { card.loadState != "error" && $0.kind == "navigation" && $0.operation == "editor.open" && $0.target?.resourceType == "task" }) { action in
                 NativeBusinessNavigation(action: action, symbol: "square.and.pencil", actions: actions)
             }
-            if card.loadState != "error", card.actions.contains(where: { $0.operation == "reference.add" }) {
+            if card.kind == "contextReferences", let references {
+                Menu {
+                    ForEach(references.addKinds) { kind in
+                        Button(kind.title) { references.add(kind) }
+                    }
+                } label: { ConversationDetailHeaderIcon(systemName: "plus") }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .disabled(!store.isCurrent || !references.canAdd || card.loadState == "error"
+                    || !card.actions.contains(where: { $0.operation == "reference.add" && $0.available }))
+                .help("添加引用").accessibilityLabel("添加引用")
+            } else if card.loadState != "error", card.actions.contains(where: { $0.operation == "reference.add" }) {
                 Button { addingReference.toggle() } label: { Image(systemName: "plus").frame(minWidth: 24, minHeight: 24) }
                     .buttonStyle(.plain).foregroundStyle(Color.accentColor).help("添加引用").accessibilityLabel("添加引用")
             }
@@ -94,7 +132,8 @@ private struct NativeBusinessCard: View {
             if let api {
             ConversationNativeArtifactReader(title: selection.row.title, artifactID: selection.row.id,
                 version: selection.row.version ?? 0, hash: selection.row.contentHash, action: selection.action,
-                cardID: card.id, documentID: store.documentID ?? "", sessionID: store.sessionID ?? "", api: api)
+                cardID: card.id, documentID: store.documentID ?? "", sessionID: store.sessionID ?? "", api: api,
+                openInResources: openArtifact, workID: workID)
             }
         }
         .onChange(of: store.generation) { _, _ in artifactSelection = nil }
@@ -122,14 +161,17 @@ private struct NativeBusinessCard: View {
                     HStack(alignment: .top, spacing: 8) {
                         Image(systemName: "doc.text").foregroundStyle(Color.accentColor)
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(row.title).font(.system(size: 12, weight: .medium))
+                            if let action = card.actions.first(where: { $0.operation == "artifact.content" && $0.target?.id == row.id }) {
+                                Button { artifactSelection = .init(row: row, action: action) } label: {
+                                    Text(row.title).font(.system(size: 12, weight: .medium))
+                                        .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                                .disabled(!row.readAvailable || !action.available || !store.isCurrent || api == nil)
+                                .accessibilityLabel("预览 \(row.title)").help("打开小窗预览")
+                            } else { Text(row.title).font(.system(size: 12, weight: .medium)) }
                             if !row.summary.isEmpty { Text(row.summary).font(.caption).foregroundStyle(.secondary).lineLimit(3) }
                         }.frame(maxWidth: .infinity, alignment: .leading)
-                        if let action = card.actions.first(where: { $0.operation == "artifact.content" && $0.target?.id == row.id }) {
-                            Button { artifactSelection = .init(row: row, action: action) } label: { Image(systemName: "arrow.up.right.square").frame(minWidth: 24, minHeight: 24) }
-                                .buttonStyle(.plain).foregroundStyle(Color.accentColor).disabled(!action.available || !store.isCurrent || api == nil)
-                                .accessibilityLabel("打开 Artifact").help("打开 Artifact")
-                        }
                     }
                 }
             }
@@ -151,18 +193,35 @@ private struct NativeBusinessCard: View {
                 }
             }
         case .references(let list):
-            listContainer(count: list.items.count) {
+            if list.items.isEmpty {
+                Text("暂无引用").font(.caption).foregroundStyle(.secondary)
+                pageTail
+            } else { listContainer(count: list.items.count) {
                 ForEach(list.items) { row in
                     HStack {
+                        Image(systemName: ConversationReferenceSymbol.symbol(for: row.targetType)).foregroundStyle(Color.accentColor)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(row.title).font(.system(size: 12, weight: .medium))
-                            NativeBusinessStatus(status: row.status)
+                            Text(ConversationReferenceStatus.label(for: row.status, targetType: row.targetType, enabled: row.enabled))
+                                .font(.caption).foregroundStyle(.secondary)
                         }.frame(maxWidth: .infinity, alignment: .leading)
-                        if let action = navigation(target: row.id) { NativeBusinessNavigation(action: action, symbol: "arrow.up.right.square", actions: actions) }
-                        if let action = command("reference.remove", target: row.id) { commandButton(action, symbol: "trash") }
+                        if let references {
+                            Menu {
+                                ForEach(references.operations(row.id)) { operation in
+                                    Button(operation.title, role: operation == .remove ? .destructive : nil) {
+                                        references.perform(row.id, operation)
+                                    }
+                                }
+                            } label: { ConversationDetailHeaderIcon(systemName: "ellipsis") }
+                            .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                            .disabled(!store.isCurrent).accessibilityLabel("引用操作")
+                        } else {
+                            if let action = navigation(target: row.id) { NativeBusinessNavigation(action: action, symbol: "arrow.up.right.square", actions: actions) }
+                            if let action = command("reference.remove", target: row.id) { commandButton(action, symbol: "trash") }
+                        }
                     }
                 }
-            }
+            } }
         case .memories(let list), .hits(let list):
             listContainer(count: list.items.count, longContent: list.items.contains { $0.content.count > 1000 }) {
                 ForEach(list.items) { row in

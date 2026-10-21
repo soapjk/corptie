@@ -71,6 +71,7 @@ public struct ConversationDetailModuleSurface: ViewModifier {
 }
 
 public struct ConversationDetailModuleCard<Content: View, HeaderActions: View>: View {
+    @Environment(\.detailArranging) private var arranging
     private let title: String
     private let systemImage: String
     private let headerActions: HeaderActions
@@ -87,7 +88,14 @@ public struct ConversationDetailModuleCard<Content: View, HeaderActions: View>: 
 
     public var body: some View {
         ConversationInspectorSection(title: title, systemImage: systemImage,
-            headerActions: { headerActions }) { content }
+            headerActions: {
+                headerActions.opacity(arranging ? 0 : 1).allowsHitTesting(!arranging)
+                    .accessibilityHidden(arranging)
+                if arranging {
+                    Image(systemName: "line.3.horizontal").foregroundStyle(.secondary)
+                        .accessibilityLabel("拖动卡片调整顺序")
+                }
+            }) { content }
             .modifier(ConversationDetailModuleSurface())
     }
 }

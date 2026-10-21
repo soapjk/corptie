@@ -19,6 +19,7 @@ public struct ConversationServerDetail: View {
     @State private var runtime = ConversationNativeBusinessActionRuntime()
     @State private var selected: ClientDetailAPI?
     @State private var refreshing = false
+    @State private var arranging = false
     public init(scope: String, sessionID: String, context: ClientDetailContext, actions: ConversationDetailActions? = nil,
                 coordinator: (@MainActor @Sendable (ClientDetailAPI, String) async throws -> ClientDetailActionCoordinator)? = nil,
                 onPresentationChanged: @escaping (Bool?) -> Void = { _ in },
@@ -39,12 +40,26 @@ public struct ConversationServerDetail: View {
                     coordinator: coordinatorFactory, onPresentationChanged: onPresentationChanged, api: api)
             } else {
                 VStack(alignment: .leading, spacing: 12) {
+                    if #available(macOS 27.0, iOS 27.0, *) {
+                        HStack {
+                            if arranging {
+                                Text("拖动卡片调整顺序").font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 8)
+                            Button { arranging.toggle() } label: {
+                                Label(arranging ? "完成" : "排列", systemImage: arranging ? "checkmark" : "arrow.up.arrow.down")
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(ClientDetailCardPolicy.orderedCards(in: store, context: context).count < 2 && !arranging)
+                            .accessibilityHint(arranging ? "退出卡片排列模式" : "进入卡片拖动排列模式")
+                        }
+                    }
                     if !store.order.isEmpty {
                         if !store.isCurrent && store.loadPhase != .failed {
                             Text("正在校验上次详情，操作暂不可用").font(.caption).foregroundStyle(.secondary)
                         }
                         ConversationNativeBusinessDetail(store: store, api: selected, actions: store.isCurrent ? actions : nil, context: context,
-                            adapters: adapters, handle: handle, refresh: refresh,
+                            adapters: adapters, handle: handle, arrangement: presentation.arrangement, arranging: arranging, refresh: refresh,
                             canCommand: { cardID, action in store.isCurrent && runtime.canPerform(cardID: cardID, action: action) },
                             perform: { cardID, action, fields in
                                 guard let selected else { return }
@@ -92,7 +107,7 @@ public struct ConversationServerDetail: View {
             Button("确认", role: runtime.confirmation?.confirmation == "destructive" ? .destructive : nil) { runtime.confirm(true) }
             Button("取消", role: .cancel) { runtime.confirm(false) }
         }
-        .onDisappear { runtime.retire(); selected = nil }
+        .onDisappear { runtime.retire(); selected = nil; arranging = false }
     }
     private func refresh() async {
         guard !refreshing, let selected else { return }; refreshing = true
