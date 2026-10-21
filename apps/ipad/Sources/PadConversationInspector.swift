@@ -141,7 +141,8 @@ struct PadConversationInspector: View {
                     PadOperationNotifications.shared.track(job.id, resourceName: "Worktree")
                     if let notification = job.notification { PadOperationNotifications.shared.observe(notification) }
                 }
-            }, resident: .init(taskTitle: task?.title ?? "", workName: work?.name ?? "", workDescription: work?.description ?? ""), turnSnapshot: turn.snapshot)
+            }, resident: .init(taskTitle: task?.title ?? "", workName: work?.name ?? "", workDescription: work?.description ?? ""), turnSnapshot: turn.snapshot,
+            openArtifact: { NotificationCenter.default.post(name: .corptieOpenResource, object: $0) })
     }
     private var nativeDetailNavigation: ConversationDetailActions {
         ConversationDetailActions(canPerform: { action in

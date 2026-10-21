@@ -13,37 +13,62 @@ struct ConversationNativeArtifactReader: View {
     let documentID: String
     let sessionID: String
     let api: ClientDetailAPI
+    let openInResources: ((ClientResourceFocus) -> Void)?
+    let workID: String?
     @Environment(\.dismiss) private var dismiss
     @State private var readID = UUID().uuidString
-    @State private var chunks: [Chunk] = []
+    @State private var document: ResourceDocumentChunk?
+    @State private var loadedPages = 0
     @State private var offset: Int? = 0
     @State private var loading = false
     @State private var error: String?
     @State private var binary = false
-    @State private var clipped = false
-    private struct Chunk: Identifiable { let id: Int; let text: String }
+    @State private var visible = true
+    @State private var readTask: Task<Void, Never>?
     var body: some View {
         NavigationStack {
             ScrollView(.vertical) {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    if clipped { Text("较早内容已移出预览窗口，可关闭后重新打开回到开头").font(.caption).foregroundStyle(.secondary).padding(.bottom, 12) }
                     if binary { Text("此版本是二进制文件，请在完整 Artifact 管理中导出查看").foregroundStyle(.secondary) }
-                    ForEach(chunks) { chunk in Text(chunk.text).font(.system(size: 12)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                    if let document { ResourceDocumentView(chunk: document) }
                     if let error {
                         Text(error).font(.caption).foregroundStyle(.secondary)
-                        Button("重试读取") { Task { await load() } }
+                        Button("重试读取") { beginRead() }.disabled(loading)
                     } else if offset != nil && !binary {
-                        ProgressView().frame(maxWidth: .infinity).onAppear { Task { await load() } }.id(offset)
+                        if loadedPages >= 4 {
+                            Text("已达到小窗预览上限，可在资源管理中查看或导出全文").font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            ProgressView().frame(maxWidth: .infinity).onAppear { beginRead() }.id(offset)
+                        }
                     }
                 }.padding(16)
             }
             .navigationTitle(title)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("关闭") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    if let openInResources {
+                        Button("在资源管理中打开", systemImage: "arrow.up.right.square") {
+                            readTask?.cancel(); dismiss()
+                            openInResources(.init(id: artifactID, version: version, hash: hash, workId: workID))
+                        }.disabled(version <= 0)
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) { Button("关闭") { dismiss() } }
+                ToolbarItem(placement: .automatic) {
+                    Button("复制已载入正文", systemImage: "doc.on.doc") { if let document { copyResourceText(document.text) } }
+                        .disabled(document == nil || binary)
+                }
+            }
         }
         .frame(minWidth: 280, idealWidth: 600, minHeight: 320, idealHeight: 560)
+        .onDisappear { visible = false; readTask?.cancel(); readTask = nil }
+    }
+    private func beginRead() {
+        guard visible, !loading, readTask == nil else { return }
+        readTask = Task { await load(); readTask = nil }
     }
     private func load() async {
-        guard !loading, let requested = offset, version > 0 else { return }
+        guard visible, !loading, let requested = offset, version > 0, loadedPages < 4 else { return }
         loading = true; error = nil
         defer { loading = false }
         do {
@@ -52,18 +77,27 @@ struct ConversationNativeArtifactReader: View {
                 fields: ["version": .number(Double(version)), "contentHash": .string(hash), "offset": .number(Double(requested)), "readId": .string(readID)])
             let value = try await api.nativeBusinessPolicy.actionTransport.read(sessionID: sessionID, request: request)
             try Task.checkCancellation()
+            guard visible else { return }
             guard value["artifactId"].text == artifactID, value["contentHash"].text == hash,
                   value["version"].number == Double(version), value["range"]["offset"].number == Double(requested) else { throw ClientConnectionError.invalidResponse }
             let next = value["range"]["nextOffset"].number.map(Int.init)
             guard next == nil || next! > requested else { throw ClientConnectionError.invalidResponse }
-            binary = value["encoding"].text == "base64"
-            if !binary, let text = value["content"].text { chunks.append(.init(id: requested, text: text)) }
-            while chunks.count > 32 { chunks.removeFirst(); clipped = true }
+            let isBinary = value["encoding"].text == "base64"
+            if !isBinary, let text = value["content"].text {
+                let source = (document?.text ?? "") + text
+                guard source.utf8.count <= 256 * 1024 else { throw ClientConnectionError.invalidResponse }
+                let prepared = try await ResourceDocumentChunk.prepare(id: 0, text: source,
+                    mimeType: value["mimeType"].text ?? "text/markdown", title: title, previous: document)
+                try Task.checkCancellation()
+                guard visible else { return }
+                document = prepared
+            }
+            binary = isBinary; loadedPages += 1
             offset = next
         } catch is CancellationError { }
         catch {
             if let failure = error as? ClientServiceFailure, [401, 403, 404].contains(failure.statusCode) {
-                chunks = []; self.error = "文档访问已失效"; offset = nil
+                document = nil; self.error = "文档访问已失效"; offset = nil
             } else { self.error = "文档读取未完成，请重试" }
         }
     }

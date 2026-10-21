@@ -31,6 +31,7 @@ struct ComposerInputTextView: NSViewRepresentable {
         scrollView.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
 
         let textView = ComposerSubmitTextView()
+        context.coordinator.beginProgrammaticUpdate(textView)
         textView.delegate = context.coordinator
         textView.placeholder = placeholder
         textView.font = font
@@ -55,9 +56,7 @@ struct ComposerInputTextView: NSViewRepresentable {
         scrollView.documentView = textView
         controller.attach(textView)
         context.coordinator.attach(textView)
-        DispatchQueue.main.async {
-            context.coordinator.reportContentHeight(of: textView)
-        }
+        context.coordinator.endProgrammaticUpdate()
         return scrollView
     }
 
@@ -65,6 +64,7 @@ struct ComposerInputTextView: NSViewRepresentable {
         guard let textView = scrollView.documentView as? ComposerSubmitTextView else {
             return
         }
+        context.coordinator.beginProgrammaticUpdate(textView)
         context.coordinator.update(
             controller: controller,
             onFocusChange: onFocusChange,
@@ -83,9 +83,12 @@ struct ComposerInputTextView: NSViewRepresentable {
         textView.onPasteImages = onPasteImages
         textView.onMentionCommand = onMentionCommand
         controller.attach(textView)
-        DispatchQueue.main.async {
-            context.coordinator.reportContentHeight(of: textView)
-        }
+        context.coordinator.endProgrammaticUpdate()
+    }
+
+    static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+        coordinator.detach()
+        (scrollView.documentView as? NSTextView)?.delegate = nil
     }
 
     func makeCoordinator() -> Coordinator {
@@ -112,6 +115,44 @@ struct ComposerInputTextView: NSViewRepresentable {
         private var onMentionCommand: (ComposerMentionCommand) -> Bool
         private var onSubmit: (ComposerDraftBuffer.Submission) -> Void
         private var lastSendableState: Bool
+        private weak var mountedTextView: ComposerSubmitTextView?
+        private var isProgrammaticUpdate = false
+        private var presentationGeneration: UInt = 0
+        private var pendingPresentation: DispatchWorkItem?
+        private var hasReportedMention = false
+        private var lastMentionQuery: ComposerMentionQuery?
+        private var lastMentionAnchor: UnitPoint?
+        private var lastContentHeight: CGFloat?
+
+        func beginProgrammaticUpdate(_ textView: ComposerSubmitTextView) {
+            isProgrammaticUpdate = true
+            mountedTextView = textView
+            presentationGeneration &+= 1
+            pendingPresentation?.cancel()
+            pendingPresentation = nil
+        }
+
+        func endProgrammaticUpdate() {
+            isProgrammaticUpdate = false
+            let generation = presentationGeneration
+            let report = DispatchWorkItem { [weak self] in
+                guard let self, self.presentationGeneration == generation,
+                      let textView = self.mountedTextView else { return }
+                self.pendingPresentation = nil
+                self.reportMentionPresentation(of: textView)
+                self.reportContentHeight(of: textView)
+                self.reportSendableState()
+            }
+            pendingPresentation = report
+            DispatchQueue.main.async(execute: report)
+        }
+
+        func detach() {
+            presentationGeneration &+= 1
+            pendingPresentation?.cancel()
+            pendingPresentation = nil
+            mountedTextView = nil
+        }
 
         init(
             controller: ComposerEditorController,
@@ -150,6 +191,12 @@ struct ComposerInputTextView: NSViewRepresentable {
             onMentionCommand: @escaping (ComposerMentionCommand) -> Bool,
             onSubmit: @escaping (ComposerDraftBuffer.Submission) -> Void
         ) {
+            if self.controller !== controller {
+                hasReportedMention = false
+                lastMentionQuery = nil
+                lastMentionAnchor = nil
+                lastContentHeight = nil
+            }
             self.controller = controller
             self.onFocusChange = onFocusChange
             self.onSendableTextChange = onSendableTextChange
@@ -158,16 +205,21 @@ struct ComposerInputTextView: NSViewRepresentable {
             self.onMentionAnchorChange = onMentionAnchorChange
             self.onMentionCommand = onMentionCommand
             self.onSubmit = onSubmit
-            lastSendableState = controller.draft.hasSendableText
         }
 
         func textDidChange(_ notification: Notification) {
-            guard let textView = notification.object as? NSTextView else {
+            guard !isProgrammaticUpdate,
+                  let textView = notification.object as? NSTextView,
+                  textView === mountedTextView else {
                 return
             }
             controller.recordEditorText(textView.string)
             reportMentionPresentation(of: textView)
             reportContentHeight(of: textView)
+            reportSendableState()
+        }
+
+        private func reportSendableState() {
             let nextSendableState = controller.draft.hasSendableText
             guard nextSendableState != lastSendableState else {
                 return
@@ -177,7 +229,9 @@ struct ComposerInputTextView: NSViewRepresentable {
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
-            guard let textView = notification.object as? NSTextView else { return }
+            guard !isProgrammaticUpdate,
+                  let textView = notification.object as? NSTextView,
+                  textView === mountedTextView else { return }
             reportMentionPresentation(of: textView)
         }
 
@@ -186,9 +240,18 @@ struct ComposerInputTextView: NSViewRepresentable {
                 in: textView.string,
                 selection: textView.selectedRange()
             )
-            onMentionQueryChange(query)
+            if !hasReportedMention || lastMentionQuery != query {
+                hasReportedMention = true
+                lastMentionQuery = query
+                onMentionQueryChange(query)
+            }
             guard let query,
-                  let anchor = mentionAnchorPoint(for: query, in: textView) else { return }
+                  let anchor = mentionAnchorPoint(for: query, in: textView) else {
+                lastMentionAnchor = nil
+                return
+            }
+            guard lastMentionAnchor != anchor else { return }
+            lastMentionAnchor = anchor
             onMentionAnchorChange(anchor)
         }
 
@@ -233,7 +296,7 @@ struct ComposerInputTextView: NSViewRepresentable {
             // Clearing can precede TextKit's next layout. Never let the old
             // multiline usedRect expand an empty editor after submission.
             if textView.string.isEmpty {
-                onContentHeightChange(ComposerInputLayout.minimumHeight)
+                publishContentHeight(ComposerInputLayout.minimumHeight)
                 return
             }
             guard let layoutManager = textView.layoutManager,
@@ -243,7 +306,13 @@ struct ComposerInputTextView: NSViewRepresentable {
             layoutManager.ensureLayout(for: textContainer)
             let usedHeight = layoutManager.usedRect(for: textContainer).height
             let contentHeight = usedHeight + (textView.textContainerInset.height * 2)
-            onContentHeightChange(ComposerInputLayout.resolvedHeight(text: textView.string, measuredHeight: contentHeight))
+            publishContentHeight(ComposerInputLayout.resolvedHeight(text: textView.string, measuredHeight: contentHeight))
+        }
+
+        private func publishContentHeight(_ height: CGFloat) {
+            guard lastContentHeight != height else { return }
+            lastContentHeight = height
+            onContentHeightChange(height)
         }
     }
 

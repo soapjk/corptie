@@ -35,7 +35,7 @@ public enum ClientDetailCardPolicy {
         case .summary(let value): return !value.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .artifacts(let value): return !value.items.isEmpty || value.hasMore
         case .focus(let value): return !value.items.isEmpty || value.hasMore
-        case .references(let value): return !value.items.isEmpty || value.hasMore
+        case .references: return true // This card is also the creation entry point.
         case .memories(let value), .hits(let value): return !value.items.isEmpty || value.hasMore
         case .schedules(let value): return !value.items.isEmpty || value.hasMore
         case .worktree(let value): return value.attached

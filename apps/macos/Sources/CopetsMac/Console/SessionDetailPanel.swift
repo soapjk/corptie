@@ -24,13 +24,15 @@ struct SessionDetailPanel: View {
     @State private var providerCatalogLoadFailed = false
     @State private var showsAllContextReferences = false
     private enum DetailNativeSheet: Identifiable {
-        case artifact(WorkArtifact), task(CorptieTask), provider(String), worktree(String)
+        case artifact(WorkArtifact), task(CorptieTask), provider(String), worktree(String), work(Work), agent(Agent)
         var id: String {
             switch self {
             case .artifact(let value): "artifact:\(value.artifactId)"
             case .task(let value): "task:\(value.id)"
             case .provider(let id): "provider:\(id)"
             case .worktree(let id): "worktree:\(id)"
+            case .work(let value): "work:\(value.id)"
+            case .agent(let value): "agent:\(value.agentId)"
             }
         }
     }
@@ -70,19 +72,24 @@ struct SessionDetailPanel: View {
             showsAllContextReferences = false
             detailNativeSheet = nil
             contextReferences = []
+            await backendClient.loadContextReferences(for: session)
             await loadProviderCatalogIfNeeded()
         }
         .onReceive(backendClient.supplementaryDataController.$selectedContextReferences) { references in
-            contextReferences = references
+            guard backendClient.selectedSession?.id == session.id else { return }
+            contextReferences = references.filter { $0.ownerSessionId == session.id || $0.ownerSessionId == session.external?.logicalSessionId }
         }
         .onReceive(backendClient.supplementaryDataController.$isLoadingContextReferences) { isLoading in
-            isLoadingContextReferences = isLoading
+            if backendClient.selectedSession?.id == session.id { isLoadingContextReferences = isLoading }
         }
         .onReceive(modelCatalog.$agentProviders) { _ in
             providerCatalogRevision &+= 1
         }
         .sheet(item: $contextReferenceAddMode) { mode in
-            ContextReferenceAddSheet(session: session, mode: mode)
+            let generation = detailOpeningGeneration
+            ContextReferenceAddSheet(session: session, mode: mode, canSubmit: {
+                generation == detailOpeningGeneration && canManageReferences
+            })
         }
         .sheet(item: $detailNativeSheet) { destination in
             switch destination {
@@ -90,6 +97,8 @@ struct SessionDetailPanel: View {
                 ArtifactDetailContainer(artifactId: artifact.artifactId, workId: artifact.workId, taskId: session.taskId) { }
             case .task(let task):
                 CorptieTaskEditView(task: task) { }
+            case .work(let work): WorkDetailView(work: work)
+            case .agent(let agent): AgentDetailView(agent: agent).environmentObject(AppTabRouter.shared)
             case .provider:
                 VStack(alignment: .leading, spacing: 12) {
                     Text(L10n("Provider 管理")).font(.headline)
@@ -156,13 +165,13 @@ struct SessionDetailPanel: View {
                 })
                 .id(session.id)
             if richDetailReady != false {
-                ConversationDetailResourceMenu(items: detailResourceItems)
+                if !detailResourceItems.isEmpty { ConversationDetailResourceMenu(items: detailResourceItems) }
             } else { nativeDetailContent }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
     private var detailResourceItems: [ConversationDetailResourceMenu.Item] {
-        var items: [ConversationDetailResourceMenu.Item] = [.init(.addReference) { contextReferenceAddMode = .webURL }]
+        var items: [ConversationDetailResourceMenu.Item] = []
         if let id = session.taskId { items.append(.init(.manageMemory) { AppTabRouter.shared.openMemory(ownerType: "task", ownerId: id) }) }
         else if let id = session.workId { items.append(.init(.manageMemory) { AppTabRouter.shared.openMemory(ownerType: "work", ownerId: id) }) }
         return items
@@ -187,7 +196,65 @@ struct SessionDetailPanel: View {
                     OperationNotificationManager.shared.track(jobID: job.id, resourceName: "Worktree")
                     if let notification = job.notification { OperationNotificationManager.shared.observe(notification) }
                 }
-            }, resident: .init(taskTitle: task?.title ?? "", workName: work?.name ?? "", workDescription: work?.description ?? ""))
+            }, resident: .init(taskTitle: task?.title ?? "", workName: work?.name ?? "", workDescription: work?.description ?? ""),
+            referenceManagement: .init(addKinds: ConversationReferenceAddKind.allCases, canAdd: canManageReferences,
+                add: beginAddingReference, operations: referenceOperations, perform: performReferenceOperation),
+            openArtifact: { AppTabRouter.shared.openResource($0) })
+    }
+    private var canManageReferences: Bool {
+        guard let current = backendClient.selectedSession else { return false }
+        return current.id == session.id && current.taskId == session.taskId && current.workId == session.workId && current.archived != true
+    }
+    private func beginAddingReference(_ kind: ConversationReferenceAddKind) {
+        guard canManageReferences else { return }
+        if kind == .localFile { chooseLocalFile(); return }
+        contextReferenceAddMode = ContextReferenceAddMode(rawValue: kind.rawValue)
+    }
+    private func ownedReference(_ id: String) -> SessionContextReference? {
+        guard canManageReferences else { return nil }
+        return contextReferences.first { $0.id == id && ($0.ownerSessionId == session.id || $0.ownerSessionId == session.external?.logicalSessionId) }
+    }
+    private func referenceOperations(_ id: String) -> [ConversationReferenceOperation] {
+        guard let reference = ownedReference(id) else { return [] }
+        var result: [ConversationReferenceOperation] = []
+        if reference.enabled && reference.status == "available" { result.append(.open) }
+        if reference.targetType == .localFile { result += [.reveal, .copyPath, .refresh, .replace] }
+        if reference.targetType == .webURL { result.append(.refresh) }
+        result += [reference.enabled ? .disable : .enable, .remove]
+        return result
+    }
+    private func performReferenceOperation(_ id: String, _ operation: ConversationReferenceOperation) {
+        guard let reference = ownedReference(id), referenceOperations(id).contains(operation) else { return }
+        switch operation {
+        case .enable, .disable:
+            Task { await backendClient.setContextReferenceEnabled(reference, enabled: operation == .enable) }
+        case .remove: Task { await backendClient.deleteContextReference(reference) }
+        case .refresh: Task { await backendClient.refreshContextReference(reference) }
+        case .replace: chooseLocalFile(replacing: reference)
+        case .copyPath:
+            if let path = reference.locator { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(path, forType: .string) }
+        case .reveal:
+            if let path = reference.locator { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
+        case .open:
+            switch reference.targetType {
+            case .webURL: if let url = detailReferenceURL(id) { NSWorkspace.shared.open(url) }
+            case .localFile:
+                if let path = reference.locator { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
+            case .work:
+                if let value = entityClient.works.first(where: { $0.id == reference.targetId }) { detailNativeSheet = .work(value) }
+                else { AppTabRouter.shared.navigationError = "Work 暂不可用，请先刷新资源列表" }
+            case .task:
+                if let value = backendClient.appState.task(reference.targetId ?? "") { detailNativeSheet = .task(value) }
+                else { AppTabRouter.shared.navigationError = "Task 暂不可用，请先刷新资源列表" }
+            case .agent:
+                if let value = entityClient.agents.first(where: { $0.agentId == reference.targetId }) { detailNativeSheet = .agent(value) }
+                else { AppTabRouter.shared.navigationError = "Agent 暂不可用，请先刷新资源列表" }
+            case .session:
+                if let target = reference.targetId, let resolved = residentDetailSessionID(target) {
+                    AppTabRouter.shared.openSession(resolved, source: .userSelection)
+                }
+            }
+        }
     }
     private var providerConfigurationCard: some View {
         ConversationDetailProviderCard(configuration: detailConfiguration, scope: session.id, select: selectDetailConfiguration) {
@@ -357,6 +424,7 @@ struct SessionDetailPanel: View {
     }
     private func retireDetailDestination() {
         detailOpeningGeneration = UUID(); detailNativeSheet = nil
+        contextReferenceAddMode = nil
         pendingProviderId = nil; showProviderSwitchConfirmation = false
     }
     private func residentDetailSessionID(_ id: String, expectedTaskID: String? = nil) -> String? {
@@ -538,17 +606,22 @@ struct SessionDetailPanel: View {
     }
 
     private func chooseLocalFile(replacing reference: SessionContextReference? = nil) {
+        guard canManageReferences else { return }
+        let generation = detailOpeningGeneration
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task {
+        panel.canCreateDirectories = false
+        panel.begin { response in
+          Task { @MainActor in
+            guard response == .OK, let url = panel.url, generation == detailOpeningGeneration, canManageReferences else { return }
             if let reference {
                 await backendClient.replaceContextReferenceFile(reference, path: url.path)
             } else {
                 _ = await backendClient.addContextReference(to: session, type: .localFile, locator: url.path)
             }
+          }
         }
     }
 

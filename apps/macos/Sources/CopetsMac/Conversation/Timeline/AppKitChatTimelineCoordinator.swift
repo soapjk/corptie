@@ -1316,9 +1316,8 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         pendingRestorePosition = position
         pendingInitialScrollToBottom = false
         followsLatest = position.followsLatest
-        if followsLatestBinding.wrappedValue != position.followsLatest {
-            followsLatestBinding.wrappedValue = position.followsLatest
-        }
+        // Called from make/updateNSView. Publish only after viewport restoration,
+        // outside SwiftUI's view-update transaction.
     }
 
     func prepareInitialScrollToBottom() {
@@ -1326,9 +1325,6 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         pendingRestorePosition = nil
         pendingInitialScrollToBottom = true
         followsLatest = true
-        if !followsLatestBinding.wrappedValue {
-            followsLatestBinding.wrappedValue = true
-        }
     }
 
     private func schedulePendingInitialViewportRestoreIfNeeded() {
@@ -1367,9 +1363,6 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                 // missing semantic anchor degrades once to latest.
                 clipView.scroll(to: NSPoint(x: 0, y: maximumY))
                 followsLatest = true
-                if !followsLatestBinding.wrappedValue {
-                    followsLatestBinding.wrappedValue = true
-                }
             }
         } else if pendingInitialScrollToBottom {
             clipView.scroll(to: NSPoint(x: 0, y: maximumY))
@@ -1383,9 +1376,14 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
 
     private func schedulePositionPublish() {
         positionPublishCorptieTask?.cancel()
+        let sessionID = representedSessionID
         let task = DispatchWorkItem { [weak self] in
-            guard let self, let tableView = self.tableView,
+            guard let self, self.representedSessionID == sessionID,
+                  let tableView = self.tableView,
                   let anchor = self.visibleAnchor(in: tableView) else { return }
+            if self.followsLatestBinding.wrappedValue != self.followsLatest {
+                self.followsLatestBinding.wrappedValue = self.followsLatest
+            }
             let position = AppKitChatTimelinePosition(
                 rowID: anchor.id,
                 offset: Double(anchor.offset),
