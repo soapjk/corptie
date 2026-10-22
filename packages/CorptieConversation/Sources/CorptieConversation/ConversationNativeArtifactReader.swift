@@ -27,32 +27,39 @@ struct ConversationNativeArtifactReader: View {
     @State private var readTask: Task<Void, Never>?
     var body: some View {
         NavigationStack {
-            ScrollView(.vertical) {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    if binary { Text("此版本是二进制文件，请在完整 Artifact 管理中导出查看").foregroundStyle(.secondary) }
-                    if let document { ResourceDocumentView(chunk: document) }
-                    if let error {
-                        Text(error).font(.caption).foregroundStyle(.secondary)
-                        Button("重试读取") { beginRead() }.disabled(loading)
-                    } else if offset != nil && !binary {
-                        if loadedPages >= 4 {
-                            Text("已达到小窗预览上限，可在资源管理中查看或导出全文").font(.caption).foregroundStyle(.secondary)
-                        } else {
-                            ProgressView().frame(maxWidth: .infinity).onAppear { beginRead() }.id(offset)
-                        }
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer(minLength: 0)
+                    Button("在资源管理器中打开", systemImage: "arrow.up.right.square") {
+                        guard let openInResources else { return }
+                        readTask?.cancel(); dismiss()
+                        openInResources(.init(id: artifactID, version: version, hash: hash, workId: workID))
                     }
-                }.padding(16)
+                    .labelStyle(.titleAndIcon)
+                    .buttonStyle(.bordered)
+                    .disabled(version <= 0 || openInResources == nil)
+                    .help(openInResources == nil ? "当前界面尚未提供资源管理入口" : "在资源管理器中打开此固定版本")
+                }.padding(.horizontal, 16).padding(.vertical, 10)
+                Divider()
+                ScrollView(.vertical) {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        if binary { Text("此版本是二进制文件，请在完整 Artifact 管理中导出查看").foregroundStyle(.secondary) }
+                        if let document { ResourceDocumentView(chunk: document) }
+                        if let error {
+                            Text(error).font(.caption).foregroundStyle(.secondary)
+                            Button("重试读取") { beginRead() }.disabled(loading)
+                        } else if offset != nil && !binary {
+                            if loadedPages >= 4 {
+                                Text("已达到小窗预览上限，可在资源管理中查看或导出全文").font(.caption).foregroundStyle(.secondary)
+                            } else {
+                                ProgressView().frame(maxWidth: .infinity).onAppear { beginRead() }.id(offset)
+                            }
+                        }
+                    }.padding(16)
+                }
             }
             .navigationTitle(title)
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    if let openInResources {
-                        Button("在资源管理中打开", systemImage: "arrow.up.right.square") {
-                            readTask?.cancel(); dismiss()
-                            openInResources(.init(id: artifactID, version: version, hash: hash, workId: workID))
-                        }.disabled(version <= 0)
-                    }
-                }
                 ToolbarItem(placement: .confirmationAction) { Button("关闭") { dismiss() } }
                 ToolbarItem(placement: .automatic) {
                     Button("复制已载入正文", systemImage: "doc.on.doc") { if let document { copyResourceText(document.text) } }

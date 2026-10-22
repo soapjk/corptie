@@ -173,13 +173,13 @@ private struct NativeBusinessCard: View {
                         VStack(alignment: .leading, spacing: 4) {
                             if let action = card.actions.first(where: { $0.operation == "artifact.content" && $0.target?.id == row.id }) {
                                 Button { artifactSelection = .init(row: row, action: action) } label: {
-                                    Text(row.title).font(.system(size: 12, weight: .medium))
+                                    Text(row.title).font(.system(size: 12, weight: .bold))
                                         .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                                 }
-                                .buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                                .buttonStyle(.plain).foregroundStyle(.primary)
                                 .disabled(!row.readAvailable || !action.available || !store.isCurrent || api == nil)
                                 .accessibilityLabel("预览 \(row.title)").help("打开小窗预览")
-                            } else { Text(row.title).font(.system(size: 12, weight: .medium)) }
+                            } else { Text(row.title).font(.system(size: 12, weight: .bold)).foregroundStyle(.primary) }
                             if !row.summary.isEmpty { Text(row.summary).font(.caption).foregroundStyle(.secondary).lineLimit(3) }
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
