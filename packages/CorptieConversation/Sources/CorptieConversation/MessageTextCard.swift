@@ -232,8 +232,8 @@ public struct MessageTextCard<Content: View>: View {
     private var cardBody: some View {
         VStack(alignment: role == .user ? .trailing : .leading, spacing: 2) {
             content($selectingText)
-                .padding(10)
-                .frame(width: cardWidth, height: cardHeight, alignment: .topLeading)
+                .padding(MessageCardMetrics.contentInset)
+                .frame(width: cardWidth, height: cardHeight, alignment: .leading)
                 .modifier(ConversationContentSurface(cornerRadius: 14,
                     tint: background, fallback: background, isMessage: true))
                 .accessibilityIdentifier("message-card-\(messageID)")

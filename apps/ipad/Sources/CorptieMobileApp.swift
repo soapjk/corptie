@@ -2407,6 +2407,7 @@ private struct MobileMessageBubble: View {
 
     var body: some View {
         let timestamp = ConversationTimestampText.messageLabel(createdAt: message.createdAt)
+        let blocks = contentBlocks
         let copyText = ConversationMessageDisplayText.copyText(
             type: message.type, authoritativeText: message.text,
             presentationText: message.presentationText, displayedText: displayText)
@@ -2440,12 +2441,17 @@ private struct MobileMessageBubble: View {
                                     .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                             }
                             if fromUser && (!attachments.isEmpty || !galleryResources.isEmpty) { attachmentStrip }
-                            ForEach(contentBlocks) { block in
+                            ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
+                                let boundary = MessageTextBoundary.fragment(index: index, count: blocks.count)
                                 switch block.content {
                                 case .markdown(let text):
-                                    if !text.isEmpty {
+                                    // Whitespace-only fragments around a table/image
+                                    // must not create a zero-height child plus a
+                                    // VStack gap at the edge of the painted card.
+                                    if text.contains(where: { !$0.isWhitespace }) {
                                         PadMessageText(text: text, fromUser: fromUser,
-                                            isTextSelectionEnabled: isTextSelectionEnabled, openLink: openMessageLink)
+                                            isTextSelectionEnabled: isTextSelectionEnabled, openLink: openMessageLink,
+                                            boundary: boundary)
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                     }
                                 case .chart(let spec, _):
@@ -2462,7 +2468,7 @@ private struct MobileMessageBubble: View {
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(reason).font(.caption2).foregroundStyle(.secondary)
                                         PadMessageText(text: original, fromUser: false,
-                                            isTextSelectionEnabled: isTextSelectionEnabled)
+                                            isTextSelectionEnabled: isTextSelectionEnabled, boundary: boundary)
                                     }
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 }

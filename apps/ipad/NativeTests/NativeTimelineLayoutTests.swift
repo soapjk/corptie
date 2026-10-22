@@ -25,6 +25,16 @@ import CorptieConversation
 }
 
 @MainActor final class MessageMeasurementCacheTests: XCTestCase {
+    func testMessageBoundaryIsPartOfTheAttributedMeasurementCacheKey() {
+        let source = "\n# 标题\n\n"
+        let exterior = PadMessageLayout.entry(text: source, style: .agent)
+        let interior = PadMessageLayout.entry(text: source, style: .agent, boundary: [])
+        XCTAssertFalse(exterior === interior)
+        XCTAssertEqual(exterior.attributed.string, "标题")
+        XCTAssertEqual(interior.attributed.string, "\n标题\n\n")
+        XCTAssertTrue(exterior === PadMessageLayout.entry(text: source, style: .agent))
+    }
+
     private func view(_ entry: PadMessageLayout.Entry) -> UITextView {
         let view = UITextView()
         view.isEditable = false

@@ -8,15 +8,18 @@ struct PadMessageText: UIViewRepresentable {
     let text: String
     let fromUser: Bool
     var steps: [ConversationExecutionStep]? = nil
+    var boundary: MessageTextBoundary = .both
     var openLink: ((URL) -> Void)? = nil
     @Binding var isTextSelectionEnabled: Bool
 
     init(text: String, fromUser: Bool, steps: [ConversationExecutionStep]? = nil,
-         isTextSelectionEnabled: Binding<Bool> = .constant(false), openLink: ((URL) -> Void)? = nil) {
+         isTextSelectionEnabled: Binding<Bool> = .constant(false), openLink: ((URL) -> Void)? = nil,
+         boundary: MessageTextBoundary = .both) {
         self.text = text
         self.fromUser = fromUser
         self.steps = steps
         self.openLink = openLink
+        self.boundary = boundary
         _isTextSelectionEnabled = isTextSelectionEnabled
     }
 
@@ -24,6 +27,7 @@ struct PadMessageText: UIViewRepresentable {
         var text: String?
         var fromUser: Bool?
         var steps: [ConversationExecutionStep]?
+        var boundary: MessageTextBoundary?
         var layoutEntry: PadMessageLayout.Entry?
         var isTextSelectionEnabled: Binding<Bool>?
         var openLink: ((URL) -> Void)?
@@ -61,15 +65,16 @@ struct PadMessageText: UIViewRepresentable {
         configureTextSelection(view, enabled: isTextSelectionEnabled)
         // Width changes and unrelated workspace updates must not reparse Markdown.
         guard context.coordinator.text != text || context.coordinator.fromUser != fromUser
-            || context.coordinator.steps != steps else { return }
+            || context.coordinator.steps != steps || context.coordinator.boundary != boundary else { return }
         context.coordinator.text = text
         context.coordinator.fromUser = fromUser
         context.coordinator.steps = steps
+        context.coordinator.boundary = boundary
         if let steps {
             context.coordinator.layoutEntry = nil
             view.attributedText = ExecutionTimelineAttributedText.make(steps: steps)
         } else {
-            let entry = PadMessageLayout.entry(text: text, style: fromUser ? .user : .agent)
+            let entry = PadMessageLayout.entry(text: text, style: fromUser ? .user : .agent, boundary: boundary)
             context.coordinator.layoutEntry = entry
             view.attributedText = entry.attributed
         }
