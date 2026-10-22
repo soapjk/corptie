@@ -60,7 +60,7 @@ const fileReferenceSchema = {
   additionalProperties: false
 };
 
-function tool(name, description, properties = {}, required = []) {
+function tool(name, description, properties = {}, required = [], constraints = {}) {
   return {
     type: "function",
     name,
@@ -70,7 +70,8 @@ function tool(name, description, properties = {}, required = []) {
       type: "object",
       properties,
       required,
-      additionalProperties: false
+      additionalProperties: false,
+      ...constraints
     }
   };
 }
@@ -90,10 +91,13 @@ export const collaborationDynamicTools = Object.freeze([
   tool("corptie_collaboration_tasks_get", "Read one Task visible to this Session.", {
     task_id: taskIdSchema
   }, ["task_id"]),
-  tool("corptie_collaboration_tasks_create", "Create an independent Work-scoped Task and its companion Worker Session in one operation. Call only when the current direct user message explicitly requests creation of a new Task. Complexity, decomposition, parallel work, missing information, and assistant or peer judgment are not authorization. Supply the authoritative direct-user message evidence shown in Corptie turn context; assistant, system, collaboration, and Automation evidence is rejected. Records this Session as creation origin; never creates a child or subtask.", {
+  tool("corptie_collaboration_tasks_create", "Create a Task and its companion Worker Session. Omit parent_task_id for an independent Task; specify it and expected_parent_resource_version for a child. Worker may create children only under its own bound root Task; Work Chat may select a root in its Work. Read the parent first. Never use platform administration tools as a fallback. Call only for an explicit current direct-user request to create Tasks, with authoritative turn evidence; planning, assistant initiative, collaboration and Automation are not authorization. Creation origin and parent relationship are independent.", {
     title: { type: "string", minLength: 1 },
     description: taskFieldsSchema.description,
     acceptance_criteria: taskFieldsSchema.acceptance_criteria,
+    verification_criteria: taskFieldsSchema.verification_criteria,
+    parent_task_id: { type: ["string", "null"], minLength: 1, description: "Explicit same-Work root Task; omit/null for independent creation." },
+    expected_parent_resource_version: { type: "integer", minimum: 1, description: "Required for a non-null parent_task_id; use the parent's current resourceVersion." },
     priority: taskFieldsSchema.priority,
     agent_id: agentIdSchema,
     provider_id: { type: "string", minLength: 1, description: "Optional explicit Provider override. Omit to use the user's Task creation defaults, including configured model and reasoning. Do not infer this from the calling Session's Provider." },
@@ -105,7 +109,10 @@ export const collaborationDynamicTools = Object.freeze([
     turn_id: { type: "string", minLength: 1, description: "Authoritative current delivery/turn id from the direct-user evidence block." },
     idempotency_key: { type: "string", minLength: 1 }
   }, ["title", "agent_id", "logical_session_id", "user_message_event_id",
-    "user_message_sequence", "turn_id", "idempotency_key"]),
+    "user_message_sequence", "turn_id", "idempotency_key"], {
+      allOf: [{ if: { required: ["parent_task_id"], properties: { parent_task_id: { type: "string" } } },
+        then: { required: ["expected_parent_resource_version"] } }]
+    }),
   tool("corptie_collaboration_tasks_relate", "Establish an allowed source/parent/dependency relation inside the authenticated Work; Worker relations must include its bound Task.", {
     task_id: taskIdSchema,
     target_task_id: taskIdSchema,
@@ -178,6 +185,9 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
       title: input.title,
       description: input.description,
       acceptanceCriteria: input.acceptance_criteria,
+      verificationCriteria: input.verification_criteria,
+      parentTaskId: input.parent_task_id,
+      expectedParentResourceVersion: input.expected_parent_resource_version,
       priority: input.priority,
       agentId: input.agent_id,
       providerId: input.provider_id,

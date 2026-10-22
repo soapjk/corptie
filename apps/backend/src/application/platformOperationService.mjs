@@ -55,6 +55,10 @@ export class PlatformOperationService {
 
   emitEntityChanged(type, entity, action) { this.onEntityChanged?.(type, { action, entity }); return entity; }
   capabilities() { return { operations: Object.entries(PLATFORM_OPERATIONS).map(([tool, actions]) => ({ tool, actions: [...actions] })), domains: PLATFORM_DOMAIN_COVERAGE }; }
+  canAccess({ actorId, metadata } = {}) {
+    try { resolvePlatformAdminSession(this.store, { actorId, sessionId: metadata?.sessionId }); return true; }
+    catch { return false; }
+  }
 
   async execute(input = {}) {
     if (input.tool === "corptie_platform_works_manage" && input.arguments?.action === "create") {

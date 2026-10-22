@@ -34,13 +34,13 @@ test("Channel HTTP routing opens a request to an exact peer Work Chat Session", 
       id: "agent:channel-target", name: "Channel Target", role: "independentContributor"
     });
     const sourceWork = works.createWork({
-      id: "work:channel-source", name: "Channel Source", contributorAgentIds: [source.agentId]
+      id: "work:channel-source", name: "Channel_Source", contributorAgentIds: [source.agentId]
     });
     const targetWork = works.createWork({
-      id: "work:channel-target", name: "Channel Target", contributorAgentIds: [target.agentId]
+      id: "work:channel-target", name: "Channel_Target", contributorAgentIds: [target.agentId]
     });
     const sourceTask = works.createTask({
-      id: "task:channel-source", workId: sourceWork.id, title: "Open exact Channel",
+      id: "task:channel-source", workId: sourceWork.id, title: "Open_exact_Channel",
       mainAgentId: source.agentId
     });
     bindSession(store, core, {
@@ -122,10 +122,10 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
       id: "work:marketcow", name: "MarketCow", contributorAgentIds: [marketCow.agentId]
     });
     works.createTask({
-      id: LEGACY_DISCOVERY_TASK, workId: sourceWork.id, title: "Expired discovery parent"
+      id: LEGACY_DISCOVERY_TASK, workId: sourceWork.id, title: "Expired_discovery_parent"
     });
     works.createTask({
-      id: AUTHORITATIVE_TASK, workId: sourceWork.id, title: "Authoritative runtime parent"
+      id: AUTHORITATIVE_TASK, workId: sourceWork.id, title: "Authoritative_runtime_parent"
     });
     bindSession(store, core, {
       providerSessionId: "provider:legacy", logicalSessionId: "session:legacy",
@@ -478,7 +478,7 @@ function marketCowSwitchRequest(recipient, work) {
     sessionAgentId: recipient.agentId,
     targetWorkId: work.id,
     type: "change_request",
-    title: "Switch MarketCow through the authoritative route",
+    title: "Switch_MarketCow_through_the_authoritative_route",
     summary: "Submit the MarketCow switch request without stale discovery context.",
     acceptanceCriteria: ["The authoritative collaboration route receives the request."],
     idempotencyKey: "marketcow-switch-authoritative"

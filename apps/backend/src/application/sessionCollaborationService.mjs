@@ -8,7 +8,9 @@ import {
 } from "../domain/taskToolSchema.mjs";
 import { createTaskAndSession } from "./taskCreationApplicationService.mjs";
 import { authorizeDirectUserTaskCreation } from "./directUserTaskCreationAuthorization.mjs";
-import { validateEntityName } from "../domain/workTaskValidation.mjs";
+import { validateEntityName, validateTaskInput } from "../domain/workTaskValidation.mjs";
+import { resolveTaskCreationDefaults } from "../utils/newSessionDefaults.mjs";
+import { taskHierarchyCapabilities } from "./taskHierarchyService.mjs";
 
 const RELATIONS = new Set(COLLABORATION_RELATION_TYPES);
 const ROUTING_INTENTS = new Set(COLLABORATION_ROUTING_INTENTS);
@@ -27,6 +29,8 @@ export class SessionCollaborationService {
     this.workSessionStartApplicationService = options.workSessionStartApplicationService;
     this.defaultProviderId = options.defaultProviderId;
     this.directUserTaskCreationTtlMs = options.directUserTaskCreationTtlMs ?? 30 * 60_000;
+    // Singleflight is an optimization; durable Task/startup receipts remain authoritative.
+    this.taskCreations = new Map();
     this.onRoutingEvent = options.onRoutingEvent ?? ((event, details) => {
       console.info(`[collaboration-routing] event=${event} ${JSON.stringify(details)}`);
     });
@@ -41,9 +45,14 @@ export class SessionCollaborationService {
       mutation: false,
       validateContext: options.validateContext === true
     });
-    const canCreate = scope.session.sessionKind === "workChat"
-      || (scope.session.sessionKind === "worker" && Boolean(scope.session.taskId));
+    const active = scope.logical?.activeBinding?.state === "active" && !scope.logical.archived && !scope.session.archived && !scope.session.deletedAt;
+    const canCreate = active && (scope.session.sessionKind === "workChat"
+      || (scope.session.sessionKind === "worker" && Boolean(scope.session.taskId)));
     const requestDenial = this.#collaborationRequestDenial(scope);
+    const parent = scope.session.taskId ? this.store.getTask(scope.session.taskId) : null;
+    const childReason = requestDenial?.code ?? (!canCreate ? "COLLABORATION_CREATE_FORBIDDEN"
+      : parent?.parent_task_id ? "TASK_MAX_DEPTH_EXCEEDED"
+      : parent && (parent.archived || parent.deletion_status) ? "TASK_PARENT_UNAVAILABLE" : null);
     return {
       actorAgentId: scope.agent.agentId,
       sourceSessionId: scope.logicalSessionId,
@@ -53,9 +62,14 @@ export class SessionCollaborationService {
       taskId: scope.session.taskId,
       actions: ["sessions.discover", "sessions.get", "channels.open", "channels.list", "channels.get",
         "channels.message_send", "channels.revoke", ...(scope.session.workId ? ["tasks.list", "tasks.get"] : []), ...(canCreate && !requestDenial
-        ? ["tasks.create", "tasks.relate", "tasks.share_artifact"]
+        ? ["tasks.create", ...(!childReason ? ["tasks.create_child"] : []), "tasks.relate", "tasks.share_artifact"]
         : [])],
-      denials: requestDenial ? { "tasks.create": requestDenial } : {},
+      denials: { ...(requestDenial ? { "tasks.create": requestDenial } : {}),
+        ...(childReason ? { "tasks.create_child": { code: childReason } } : {}) },
+      taskHierarchyCapabilities: { ...taskHierarchyCapabilities, createChild: !childReason },
+      taskCreation: { independent: canCreate && !requestDenial, child: !childReason,
+        parentTaskId: scope.session.sessionKind === "worker" ? scope.session.taskId : null,
+        requiresExplicitUserIntent: true, requiresParentPreflight: true },
       channelPolicy: {
         actor: "authenticated_session",
         firstUse: "user_confirmation",
@@ -102,31 +116,88 @@ export class SessionCollaborationService {
   listTasks(metadata, actorId) {
     const scope = this.#scope(metadata, actorId, { mutation: false });
     if (!scope.session.workId) return [];
-    return this.workService.listTasksByWork(scope.session.workId)
-      .filter((item) => this.#canReadTask(scope, item))
-      .map((item) => this.#presentTask(item));
+    const items = this.workService.listTasksByWork(scope.session.workId).filter(item => this.#canReadTask(scope, item));
+    const summaries = this.store.hierarchySummaries(items.map(item => item.id));
+    return items.map(item => this.#presentTask(item, summaries.get(item.id), this.#canReadTask(scope, item, false)));
   }
 
   getTask(metadata, actorId, taskId) {
     const scope = this.#scope(metadata, actorId, { mutation: false });
     const item = this.workService.getTask(required(taskId, "task_id"));
     if (!this.#canReadTask(scope, item)) throw coded("TASK_OUTSIDE_SCOPE", "Task is outside the authenticated Session scope.");
-    return this.#presentTask(item);
+    return this.#presentTask(item, undefined, this.#canReadTask(scope, item, false));
   }
 
   async createTaskAndSession(metadata, actorId, input = {}) {
     const scope = this.#scope(metadata, actorId, { mutation: true });
     const authorization = this.#authorizeDirectUserTaskCreation(scope, input);
-    const persisted = this.createTask(metadata, actorId, input, authorization);
+    const intent = this.#creationIntent(scope, input, authorization);
+    const key = JSON.stringify([scope.logicalSessionId, required(input.idempotencyKey, "idempotency_key")]);
+    const inFlight = this.taskCreations.get(key);
+    if (inFlight) {
+      if (inFlight.fingerprint !== intent.fingerprint) throw coded("IDEMPOTENCY_CONFLICT", "Task input changed while creation is in progress.", 409);
+      return inFlight.promise;
+    }
+    const entry = { fingerprint: intent.fingerprint };
+    entry.promise = this.#createTaskAndSession(metadata, actorId, input, scope, authorization, intent);
+    this.taskCreations.set(key, entry);
+    try { return await entry.promise; }
+    catch (error) {
+      const task = this.store.selectOne("SELECT id FROM tasks WHERE created_by_session_id=? AND idempotency_key=?", [scope.logicalSessionId, input.idempotencyKey]);
+      if (task) {
+        const startup = this.store.selectOne("SELECT startup_operation_id,state,error_retryable FROM work_session_startup_operations WHERE task_id=? AND idempotency_key=?", [task.id, `task-create:${input.idempotencyKey}`]);
+        const sandbox = !startup && this.store.selectOne("SELECT execution_space_id,status FROM execution_spaces WHERE task_id=? AND idempotency_key=?", [task.id, `task-create:${input.idempotencyKey}`]);
+        error.creationRecovery = { taskId: task.id, parentTaskId: input.parentTaskId ?? null,
+          startupOperationId: startup?.startup_operation_id ?? sandbox?.execution_space_id ?? null,
+          phase: startup?.state ?? sandbox?.status ?? "created",
+          retryable: startup ? Boolean(startup.error_retryable) : true, nextAction: "read_task_then_retry_same_request" };
+      }
+      throw error;
+    }
+    finally { if (this.taskCreations.get(key) === entry) this.taskCreations.delete(key); }
+  }
+
+  async #createTaskAndSession(metadata, actorId, input, scope, authorization, intent) {
+    const prior = this.#creationReplay(scope, input, intent);
+    const taskInput = prior?.creation_intent_fingerprint
+      ? { id: prior.id, workId: prior.work_id, parentTaskId: prior.parent_task_id ?? null }
+      : { ...intent.taskInput, ...(prior ? { id: prior.id } : {}) };
+    const runtime = prior?.creation_intent_json ? JSON.parse(prior.creation_intent_json).runtime
+      : resolveTaskCreationDefaults({ providerId: input.providerId }, this.store.settings?.().newSessionDefaults ?? {}, this.defaultProviderId);
+    const revalidate = () => {
+      const current = this.#scope(metadata, actorId, { mutation: true });
+      this.#assertCreationSource(current);
+      if (current.logicalSessionId !== scope.logicalSessionId || current.session.id !== scope.session.id
+        || current.session.workId !== scope.session.workId || current.session.taskId !== scope.session.taskId) {
+        throw coded("SOURCE_SESSION_CHANGED", "The source Session binding changed during creation.", 409);
+      }
+      this.#authorizeDirectUserTaskCreation(current, input);
+      this.#assertCreationParent(current, input);
+      this.#requireContributor(scope.session.workId, intent.taskInput.mainAgentId);
+    };
     const created = await createTaskAndSession({
       workService: this.workService,
-      startWorkSession: (command) => this.workSessionStartApplicationService.start(command),
-      taskInput: {},
+      startWorkSession: (command) => {
+        revalidate();
+        const row = this.store.getTask(command.taskId);
+        const saved = row?.creation_intent_json ? JSON.parse(row.creation_intent_json) : null;
+        const allocated = this.store.selectOne("SELECT startup_operation_id FROM work_session_startup_operations WHERE task_id=? AND idempotency_key=?", [command.taskId, command.idempotencyKey])
+          ?? this.store.selectOne("SELECT execution_space_id FROM execution_spaces WHERE task_id=? AND idempotency_key=?", [command.taskId, command.idempotencyKey]);
+        const frozen = allocated && saved?.startupCommand ? saved.startupCommand : command;
+        if (saved) {
+          this.store.db.run("UPDATE tasks SET creation_intent_json=? WHERE id=?", [JSON.stringify({ ...saved, startupCommand: frozen }), command.taskId]);
+          this.store.scheduleSave();
+        }
+        return this.workSessionStartApplicationService.start(frozen);
+      },
+      taskInput,
       sourceSessionId: scope.logicalSessionId,
-      providerId: optional(input.providerId)
-        ?? this.store.settings?.().newSessionDefaults?.taskCreation?.providerId ?? this.defaultProviderId,
+      runtimeConfiguration: runtime,
+      expectedParentResourceVersion: input.expectedParentResourceVersion,
       idempotencyKey: required(input.idempotencyKey, "idempotency_key"),
-      persistTask: async () => persisted
+      revalidate,
+      verifyExistingSession: (task, session) => this.#verifyCreationBinding(task, session),
+      persistTask: () => this.createTask(metadata, actorId, input, authorization, { ...intent, runtime, taskInput })
     });
     const currentTask = this.store.getTask(created.task.id);
     const currentSession = this.#resolveSession(
@@ -139,6 +210,7 @@ export class SessionCollaborationService {
         500
       );
     }
+    this.#verifyCreationBinding(currentTask, currentSession);
     return {
       ...created,
       ...this.#startReceipt(
@@ -150,15 +222,23 @@ export class SessionCollaborationService {
       ),
       task: this.#presentTask(currentTask),
       start: created.start,
-      phase: "started"
+      phase: "started",
+      startupStatus: "ready",
+      runtime: { providerId: runtime.providerId, model: runtime.model, reasoningLevel: runtime.reasoningLevel }
     };
   }
 
-  createTask(metadata, actorId, input = {}, creationAuthorization = null) {
-    assertKnown(input, ["title", "description", "acceptanceCriteria", "priority", "agentId",
+  // Internal metadata primitive retained for existing callers. Transport uses
+  // createTaskAndSession; child persistence additionally requires prepared intent.
+  createTask(metadata, actorId, input = {}, creationAuthorization = null, prepared = null) {
+    assertKnown(input, ["title", "description", "acceptanceCriteria", "verificationCriteria", "priority", "agentId",
+      "parentTaskId", "expectedParentResourceVersion",
       "providerId", "artifactReference", "fileReference", "logicalSessionId",
       "userMessageEventId", "userMessageSequence", "turnId", "idempotencyKey"]);
     const scope = this.#scope(metadata, actorId, { mutation: true });
+    this.#assertCreationParent(scope, input);
+    if (input.providerId != null && (typeof input.providerId !== "string" || !input.providerId.trim())) throw coded("INVALID_PROVIDER_ID", "Provider override must be an explicit nonempty identifier.", 400);
+    if (input.parentTaskId && (!prepared || !creationAuthorization)) throw coded("DIRECT_USER_MESSAGE_REQUIRED", "Child creation requires the authorized common workflow.", 403);
     const title = validateEntityName(input.title, "title", "Task");
     const kind = scope.session.sessionKind;
     if (!scope.session.workId || !["workChat", "worker"].includes(kind)) {
@@ -176,10 +256,14 @@ export class SessionCollaborationService {
       [scope.logicalSessionId, idempotencyKey]
     );
     if (prior) {
+      if ((prior.parent_task_id ?? null) !== (input.parentTaskId ?? null)
+        || prepared && prior.creation_intent_fingerprint && prior.creation_intent_fingerprint !== prepared.fingerprint) {
+        throw coded("IDEMPOTENCY_CONFLICT", "The request is bound to another Task intent.", 409);
+      }
       const priorOrigin = this.store.getTaskCreationOrigin(prior.id);
-      if (prior.title !== title || prior.work_id !== scope.session.workId
+      if ((!prepared || !prior.creation_intent_fingerprint) && prior.title !== title || prior.work_id !== scope.session.workId
         || (prior.creation_reference_fingerprint ?? null) !== creationReferenceFingerprint
-        || (creationAuthorization && priorOrigin?.creationContextMessageId !== creationAuthorization.eventId)) {
+        || (!prepared && creationAuthorization && priorOrigin?.creationContextMessageId !== creationAuthorization.eventId)) {
         throw coded("IDEMPOTENCY_CONFLICT", "The idempotency key is already associated with different Task input.", 409);
       }
       return { task: this.#presentTask(prior), idempotentReplay: true, phase: "created" };
@@ -194,15 +278,22 @@ export class SessionCollaborationService {
     if (!TASK_PRIORITIES.includes(priority)) throw coded("INVALID_PRIORITY", `Unsupported Task priority: ${priority}`);
     let item;
     this.store.runInTransaction(() => {
-      item = this.workService.createTask({
+      if (creationAuthorization) {
+        const grant = this.#authorizeDirectUserTaskCreation(scope, input);
+        const used = this.store.selectOne("SELECT COUNT(*) AS count FROM task_creation_origins WHERE creator_session_id=? AND creation_context_message_id=?", [scope.logicalSessionId, grant.eventId]).count;
+        if (used >= grant.maxTaskCount) throw coded("TASK_CREATION_QUOTA_EXCEEDED", "The direct user request has already created its authorized Task count. Read existing Tasks or obtain an explicit new creation request.", 409);
+      }
+      item = this.workService.createTask(prepared?.taskInput ?? {
         workId: scope.session.workId,
         title,
         description: input.description ?? "",
         acceptanceCriteria: input.acceptanceCriteria ?? "",
+        verificationCriteria: input.verificationCriteria ?? "",
         priority,
         lifecycleState: "todo",
         mainAgentId: targetAgentId
       }, {
+        expectedParentResourceVersion: input.expectedParentResourceVersion,
         creationOrigin: {
           originType: "session",
           creatorSessionId: scope.logicalSessionId,
@@ -213,8 +304,10 @@ export class SessionCollaborationService {
       });
       this.store.db.run(
         `UPDATE tasks SET created_by_session_id=?, idempotency_key=?,
-         creation_reference_fingerprint=?, resource_version=1 WHERE id=?`,
-        [scope.logicalSessionId, idempotencyKey, creationReferenceFingerprint, item.id]
+         creation_reference_fingerprint=?, creation_intent_json=?, creation_intent_fingerprint=?, resource_version=1 WHERE id=?`,
+        [scope.logicalSessionId, idempotencyKey, creationReferenceFingerprint,
+          prepared ? JSON.stringify({ version: 1, request: prepared.request, runtime: prepared.runtime }) : null,
+          prepared?.fingerprint ?? null, item.id]
       );
       if (artifactReference) this.artifactService.createPreparedTaskReference(artifactReference, item.id);
       if (fileReference) this.store.createTaskFileReference({
@@ -229,6 +322,85 @@ export class SessionCollaborationService {
     });
     this.store.scheduleSave();
     return { task: this.#presentTask(this.store.getTask(item.id)), idempotentReplay: false, phase: "created" };
+  }
+
+  #assertCreationParent(scope, input) {
+    if (input.parentTaskId == null) {
+      if (input.expectedParentResourceVersion != null) throw coded("INVALID_TASK_PARENT", "A parent version requires an explicit parent Task.", 400);
+      return;
+    }
+    const id = required(input.parentTaskId, "parentTaskId");
+    if (!Number.isSafeInteger(input.expectedParentResourceVersion) || input.expectedParentResourceVersion < 1) throw coded("TASK_PARENT_VERSION_CONFLICT", "Read the parent's current resourceVersion before creating a child.", 409);
+    if (!scope.session.workId || !["workChat", "worker"].includes(scope.session.sessionKind)) throw coded("COLLABORATION_CREATE_FORBIDDEN", "A bound Work Session is required.", 403);
+    if (scope.session.sessionKind === "worker" && id !== scope.session.taskId) throw coded("TASK_PARENT_OUTSIDE_SCOPE", "Worker can create children only under its own bound root Task.", 403);
+    const parent = this.store.getTask(id);
+    if (!parent || parent.work_id !== scope.session.workId) throw coded("TASK_PARENT_OUTSIDE_SCOPE", "Parent is outside the current Work.", 403);
+    if (parent.parent_task_id) throw coded("TASK_MAX_DEPTH_EXCEEDED", "Grandchildren are not supported.", 409);
+    if (parent.archived || parent.deletion_status || parent.lifecycle_state === "done") throw coded("TASK_PARENT_UNAVAILABLE", "Parent Task is unavailable.", 409);
+  }
+
+  #creationIntent(scope, input, authorization) {
+    assertKnown(input, ["title", "description", "acceptanceCriteria", "verificationCriteria", "priority", "agentId", "providerId",
+      "parentTaskId", "expectedParentResourceVersion", "artifactReference", "fileReference", "logicalSessionId",
+      "userMessageEventId", "userMessageSequence", "turnId", "idempotencyKey"]);
+    this.#assertCreationSource(scope);
+    this.#assertCreationParent(scope, input);
+    if (input.providerId != null && (typeof input.providerId !== "string" || !input.providerId.trim())) throw coded("INVALID_PROVIDER_ID", "Provider override must be an explicit nonempty identifier.", 400);
+    if (!scope.session.workId || !["workChat", "worker"].includes(scope.session.sessionKind)) throw coded("COLLABORATION_CREATE_FORBIDDEN", "A bound Work Session is required.", 403);
+    const agentId = required(input.agentId, "agentId");
+    this.#requireContributor(scope.session.workId, agentId);
+    const taskInput = validateTaskInput({ workId: scope.session.workId, title: validateEntityName(input.title, "title", "Task"),
+      description: input.description ?? "", acceptanceCriteria: input.acceptanceCriteria ?? "", verificationCriteria: input.verificationCriteria ?? "",
+      priority: input.priority ?? "medium", mainAgentId: agentId, parentTaskId: input.parentTaskId ?? null });
+    if (input.artifactReference != null && input.fileReference != null) throw coded("TASK_REFERENCE_CONFLICT", "Choose one creation reference.", 400);
+    const request = { ...taskInput, providerId: optional(input.providerId),
+      referenceFingerprint: fingerprintCreationReference(input), eventId: authorization.eventId };
+    // Authorization is revalidated on every attempt. A renewed direct-user
+    // grant may resume the same operation after expiry without changing the
+    // immutable creation origin or treating its event id as Task definition.
+    const { eventId, ...definition } = request;
+    return { taskInput, request, fingerprint: createHash("sha256").update(JSON.stringify(definition)).digest("hex") };
+  }
+
+  #assertCreationSource(scope) {
+    if (!scope.logical || scope.logical.archived || scope.session.archived || scope.session.deletedAt
+      || scope.logical.activeBinding?.state !== "active") throw coded("STALE_SESSION_ROUTE", "An active authenticated Session is required for Task creation.", 409);
+    if (!["workChat", "worker"].includes(scope.session.sessionKind)) throw coded("COLLABORATION_CREATE_FORBIDDEN", "A bound Work Chat or Worker Session is required.", 403);
+    if (scope.session.sessionKind === "worker" && this.store.getTask(scope.session.taskId)?.work_id !== scope.session.workId) {
+      throw coded("COLLABORATION_CONTEXT_MISMATCH", "Worker Task does not belong to the authenticated Work.", 409);
+    }
+  }
+
+  #creationReplay(scope, input, intent) {
+    const prior = this.store.selectOne("SELECT * FROM tasks WHERE created_by_session_id=? AND idempotency_key=?", [scope.logicalSessionId, required(input.idempotencyKey, "idempotency_key")]);
+    if (!prior) return null;
+    if (prior.creation_intent_fingerprint) {
+      if (prior.creation_intent_fingerprint !== intent.fingerprint) throw coded("IDEMPOTENCY_CONFLICT", "Task creation intent changed.", 409);
+      if (prior.main_agent_id !== intent.taskInput.mainAgentId) throw coded("IDEMPOTENCY_CONFLICT", "The existing Task was reassigned; read its current state instead of replaying creation.", 409);
+    } else {
+      // Historical root requests predate intent storage. Never reinterpret one
+      // as a child or silently accept changed persisted definition fields.
+      if (intent.taskInput.parentTaskId || prior.parent_task_id || prior.work_id !== scope.session.workId
+        || prior.title !== intent.taskInput.title || prior.description !== intent.taskInput.description
+        || prior.acceptance_criteria !== intent.taskInput.acceptanceCriteria || prior.verification_criteria !== intent.taskInput.verificationCriteria
+        || prior.priority !== intent.taskInput.priority || prior.main_agent_id !== intent.taskInput.mainAgentId
+        || (prior.creation_reference_fingerprint ?? null) !== intent.request.referenceFingerprint) throw coded("IDEMPOTENCY_CONFLICT", "Legacy creation intent cannot be changed.", 409);
+    }
+    if (prior.archived || prior.deletion_status) throw coded("TASK_PARENT_UNAVAILABLE", "Created Task is no longer available.", 409);
+    return prior;
+  }
+
+  #verifyCreationBinding(task, session) {
+    if (!session) throw coded("START_SESSION_UNRESOLVED", "The companion Session is unavailable.", 409);
+    const logical = this.store.getLogicalSessionByLegacySessionId(session.id);
+    if (!session || session.taskId !== task.id || session.workId !== task.work_id || session.agentId !== task.main_agent_id || session.archived || logical?.archived
+      || logical?.activeBinding?.state !== "active" || task.current_session_id !== session.id) throw coded("START_SESSION_UNRESOLVED", "The companion Session no longer has the expected active binding.", 409);
+    if (typeof this.workSessionStartApplicationService.getSessionBinding !== "function") {
+      throw coded("START_REFERENCE_INVALID", "Verified startup proof is unavailable.", 409);
+    }
+    const proof = this.workSessionStartApplicationService.getSessionBinding(logical.logicalSessionId);
+    if (proof?.status !== "ready" || proof.task?.id !== task.id || proof.session?.id !== session.id) throw coded("START_REFERENCE_INVALID", "Startup receipt does not match this Task and Session.", 409);
+    return proof;
   }
 
   #authorizeDirectUserTaskCreation(scope, input) {
@@ -303,13 +475,18 @@ export class SessionCollaborationService {
     };
   }
 
-  #presentTask(item) {
+  #presentTask(item, hierarchy = undefined, referencesAvailable = true) {
+    const { creation_intent_json, creation_intent_fingerprint, ...fields } = item;
     return {
-      ...item,
+      ...fields,
+      parentTaskId: item.parent_task_id ?? null,
+      resourceVersion: item.resource_version,
+      hierarchy: hierarchy ?? this.store.hierarchySummaries([item.id]).get(item.id),
       creationOrigin: this.store.getTaskCreationOrigin(item.id),
+      referencesAvailable,
       references: {
-        artifacts: this.store.listArtifactReferences({ taskId: item.id }),
-        files: this.store.listTaskFileReferences(item.id)
+        artifacts: referencesAvailable ? this.store.listArtifactReferences({ taskId: item.id }) : [],
+        files: referencesAvailable ? this.store.listTaskFileReferences(item.id) : []
       }
     };
   }
@@ -862,11 +1039,13 @@ export class SessionCollaborationService {
     return logical?.legacySessionId ? this.store.getSession(logical.legacySessionId) : this.store.getSession(sessionId);
   }
 
-  #canReadTask(scope, item) {
+  #canReadTask(scope, item, includeHierarchy = true) {
     if (!scope.session.workId || item.work_id !== scope.session.workId) return false;
     if (scope.session.sessionKind === "workChat") return true;
     if (scope.session.sessionKind !== "worker") return false;
     if (item.id === scope.session.taskId) return true;
+    const bound = this.store.getTask(scope.session.taskId);
+    if (includeHierarchy && (item.parent_task_id === bound?.id || bound?.parent_task_id === item.id)) return true;
     if (item.created_by_session_id === scope.logicalSessionId) return true;
     return this.store.listTaskDependencies(item.id).some((edge) => edge.target_task_id === scope.session.taskId)
       || this.store.listTaskDependents(item.id).some((edge) => edge.task_id === scope.session.taskId);

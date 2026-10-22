@@ -45,7 +45,20 @@ export function authorizeDirectUserTaskCreation(input = {}) {
   if (!containsExplicitTaskCreationIntent(message)) {
     throw coded("USER_MESSAGE_TASK_CREATION_INTENT_MISSING", "The direct user message does not explicitly request creation of a new Task.", 403);
   }
-  return { logicalSessionId, eventId: event.eventId, sequence: event.sequence, turnId };
+  return { logicalSessionId, eventId: event.eventId, sequence: event.sequence, turnId,
+    maxTaskCount: explicitTaskCreationCount(message) };
+}
+
+// A bounded creation grant, not a model-selected quota. Unspecified quantity
+// permits one creation; the user must explicitly request a batch for more.
+function explicitTaskCreationCount(text) {
+  const cleaned = String(text).replace(/```[\s\S]*?```|`[^`]*`|“[^”]*”|「[^」]*」|"[^"\n]*"/gu, "");
+  const match = /(?:创建|新建|新增|拆成|拆分为|分成)\s*([0-9]{1,3}|[一二两三四五六七八九十])\s*(?:个|项)?\s*(?:子\s*)?(?:任务|Task)/iu.exec(cleaned)
+    ?? /(?:create|open|make|add|into)\s+(one|two|three|four|five|six|seven|eight|nine|ten|[0-9]{1,3})\s+(?:new\s+)?(?:sub[ -]?tasks?|child\s+tasks?|tasks?|work\s*items?)/iu.exec(cleaned);
+  const words = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10,
+    one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+  const count = match ? Number(words[match[1].toLowerCase()] ?? match[1]) : 1;
+  return Math.max(1, Math.min(100, count));
 }
 
 export function directUserTaskCreationRejection(event) {
@@ -84,7 +97,12 @@ export function directUserTaskCreationRejection(event) {
 }
 
 export function containsExplicitTaskCreationIntent(text) {
-  const message = String(text ?? "");
+  const message = String(text ?? "")
+    .replace(/```[\s\S]*?```|`[^`]*`|“[^”]*”|「[^」]*」|"[^"\n]*"/gu, "")
+    .replace(/\bsub[ -]?tasks?\b/giu, "task");
+  if (/(?:如何|怎么|怎样).{0,40}(?:创建|新建|拆分|拆成)/u.test(message)
+    || /(?:创建|新建).{0,30}(?:任务|Task).{0,10}的(?:方案|设计|流程|功能)/iu.test(message)
+    || /(?:how\s+(?:to|can|do)|design|discuss|explain).{0,60}(?:creat|split)/iu.test(message)) return false;
   const chineseNegation = /(?:不要|别|禁止|不允许|不许|不能|不可|不应|无需|暂不|先不).{0,80}(?:创建|新建|新增|另建|另开|交给|转成|拆成).{0,40}(?:Task|任务|工作项)/iu;
   const englishNegation = /(?:do\s+not|don't|must\s+not|should\s+not|without|unless).{0,100}(?:create|open|make|add|spin\s+up).{0,40}(?:new|another|separate|independent)?\s*(?:task|work\s*item)/iu;
   if (chineseNegation.test(message) || englishNegation.test(message)) return false;
@@ -92,7 +110,7 @@ export function containsExplicitTaskCreationIntent(text) {
     || /(?:把|将|请|可以|直接).{0,80}(?:交给|放到|转成|拆成).{0,30}(?:另一个|新的?|独立的?)?\s*(?:Task|任务|工作项)/iu.test(message)
     || /(?:create|open|make|add|spin\s+up).{0,40}(?:a\s+)?(?:new|another|separate|independent)\s+(?:task|work\s*item)/iu.test(message)
     || /(?:^|[.!?]\s*|please\s+|can\s+you\s+|could\s+you\s+|go\s+ahead\s+and\s+)(?:create|open|make|add|spin\s+up)\s+(?:a\s+)?(?:task|work\s*item)/iu.test(message)
-    || /(?:hand|move|split).{0,60}(?:into|to).{0,20}(?:another|a\s+new|a\s+separate|an\s+independent)\s+(?:task|work\s*item)/iu.test(message);
+    || /(?:hand|move|split).{0,60}(?:into|to).{0,20}(?:(?:another|a\s+new|a\s+separate|an\s+independent)\s+)?(?:task|work\s*item)/iu.test(message);
 }
 
 function required(value, field) {
