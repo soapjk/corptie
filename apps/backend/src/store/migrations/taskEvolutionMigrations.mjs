@@ -15,6 +15,8 @@ export function migrateTaskProjectionColumns({ ensureColumn, db, migrateTaskSumm
     ensureColumn("tasks", "collaboration_relation", "TEXT");
     ensureColumn("tasks", "idempotency_key", "TEXT");
     ensureColumn("tasks", "creation_reference_fingerprint", "TEXT");
+    ensureColumn("tasks", "creation_intent_json", "TEXT");
+    ensureColumn("tasks", "creation_intent_fingerprint", "TEXT");
     ensureColumn("tasks", "resource_version", "INTEGER NOT NULL DEFAULT 1");
     ensureColumn("tasks", "canceled_at", "TEXT");
     ensureColumn("tasks", "archived", "INTEGER NOT NULL DEFAULT 0");

@@ -13,13 +13,16 @@ export async function createTaskAndSession({
   reasoningLevel,
   idempotencyKey,
   expectedParentResourceVersion,
+  runtimeConfiguration = null,
+  revalidate = () => {},
+  verifyExistingSession = null,
   persistTask = null
 }) {
   if (!workService || typeof startWorkSession !== "function") {
     throw coded("CAPABILITY_UNAVAILABLE", "Task creation and Session startup are unavailable.", 503);
   }
   const source = required(sourceSessionId, "sourceSessionId");
-  const runtime = resolveTaskCreationDefaults({ providerId, model, reasoningLevel },
+  const runtime = runtimeConfiguration ?? resolveTaskCreationDefaults({ providerId, model, reasoningLevel },
     workService.store.settings?.().newSessionDefaults ?? {});
   const provider = required(runtime.providerId, "providerId");
   const operationKey = required(idempotencyKey, "idempotencyKey");
@@ -32,6 +35,7 @@ export async function createTaskAndSession({
     await new TaskWorktreeHierarchyService({ store: workService.store }).validateCreate(normalizedTaskInput, { expectedParentResourceVersion });
   }
   if (persistTask) {
+    revalidate();
     persisted = await persistTask();
   } else {
     const existing = workService.store.getTask(normalizedTaskInput.id);
@@ -39,6 +43,7 @@ export async function createTaskAndSession({
       assertTaskCreationReplay(existing, normalizedTaskInput);
       persisted = { task: existing, idempotentReplay: true };
     } else {
+      revalidate();
       persisted = {
         task: workService.createTask(normalizedTaskInput, { creationOrigin, expectedParentResourceVersion }),
         idempotentReplay: false
@@ -62,15 +67,19 @@ export async function createTaskAndSession({
   if (existingSessionId) {
     const existingSession = workService.store.getSession(existingSessionId);
     if (existingSession) {
+      revalidate();
+      const proof = verifyExistingSession ? await verifyExistingSession(task, existingSession) : null;
+      revalidate();
       return {
         task: workService.getTask(taskId),
         session: existingSession,
-        start: null,
+        start: proof,
         idempotentReplay: true
       };
     }
   }
 
+  revalidate();
   const started = await startWorkSession({
     taskId,
     assigneeAgentId: agentId,
@@ -84,11 +93,12 @@ export async function createTaskAndSession({
     dispatchInitialTurn: false
   });
   if (started?.status && started.status !== "ready") {
-    throw coded("START_NOT_READY", "Task creation did not produce a ready Session binding.", 409);
+    throw coded(started.error?.code ?? "START_NOT_READY", "Task creation did not produce a ready Session binding.", 409);
   }
   if (!started?.session) {
     throw coded("START_SESSION_UNRESOLVED", "Task creation did not return its companion Session.", 500);
   }
+  revalidate();
   return {
     task: workService.getTask(taskId),
     session: started.session,

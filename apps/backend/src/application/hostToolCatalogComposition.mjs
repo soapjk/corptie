@@ -58,6 +58,7 @@ export function createHostToolCatalog({
     }),
     {
       id: "collaboration",
+      domainRevision: "2",
       tools: sessionCollaborationV2Enabled
         ? collaborationDynamicTools
         : collaborationDynamicTools.filter((tool) => !tool.name.startsWith("corptie_sessions_")
@@ -111,8 +112,10 @@ export function createHostToolCatalog({
     {
       id: "platform",
       tools: platformDynamicTools,
-      // Catalog visibility is not authorization. Operations revalidate scope.
-      authorize: () => true,
+      // Do not recommend administration as a fallback to ordinary Sessions.
+      // Execution independently revalidates the same capability.
+      authorizeDiscover: (input) => getPlatformOperationService()?.canAccess(input) === true,
+      authorize: (input) => getPlatformOperationService()?.canAccess(input) === true,
       execute: (input) => callPlatformDynamicTool(getPlatformOperationService(), input)
     },
     {

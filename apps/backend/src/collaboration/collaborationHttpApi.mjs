@@ -573,6 +573,11 @@ function recipientAliasError(resolution) {
 }
 
 function safeCollaborationErrorDetails(error) {
+  if (error?.creationRecovery && typeof error.creationRecovery.taskId === "string") {
+    const value = error.creationRecovery;
+    return { taskId: value.taskId, parentTaskId: value.parentTaskId, startupOperationId: value.startupOperationId,
+      phase: value.phase, retryable: value.retryable === true, nextAction: "read_task_then_retry_same_request" };
+  }
   if (!["RECIPIENT_SESSION_ALIAS_AMBIGUOUS", "RECIPIENT_SESSION_NOT_FOUND"].includes(error?.code)) return null;
   return error.details && typeof error.details === "object" ? error.details : null;
 }

@@ -29,6 +29,11 @@ async function fixture() {
   const service = new SessionCollaborationService({
     store, workService, artifactService, collaborationCore: core,
     workSessionStartApplicationService: {
+      getSessionBinding: id => {
+        const logical = store.getLogicalSession(id);
+        const session = store.getSession(logical?.legacySessionId);
+        return { status: "ready", session, task: store.getTask(session?.taskId), receipt: { logicalSessionId: id } };
+      },
       start: async (input) => { launches.push(input); return { session: { id: "worker:launched" } }; }
     },
     defaultProviderId: "codex-app-server"
@@ -817,7 +822,7 @@ test("Worker creates an independent Task with Session provenance and retries ide
     assert.equal(replay.task.id, created.task.id);
     assert.equal(replay.idempotentReplay, true);
     assert.deepEqual(f.store.listTaskDependencies(created.task.id), []);
-    assert.equal(created.task.parentTaskId, undefined);
+    assert.equal(created.task.parentTaskId, null);
     assert.equal(f.store.getTask(created.task.id).parent_task_id, null);
     assert.equal(f.store.getTask(created.task.id).source_task_id, null);
     const origin = f.store.getTaskCreationOrigin(created.task.id);

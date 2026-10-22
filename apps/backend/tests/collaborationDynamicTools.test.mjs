@@ -34,12 +34,12 @@ test("dynamic collaboration tools are top-level, eagerly loaded, unique, and pro
   }
   assert.equal(names.some((name) => name.includes("work_item")), false);
   const createTask = collaborationDynamicTools.find((entry) => entry.name === "corptie_collaboration_tasks_create");
-  assert.equal(Object.hasOwn(createTask.inputSchema.properties, "parent_task_id"), false);
+  assert.equal(Object.hasOwn(createTask.inputSchema.properties, "parent_task_id"), true);
   assert.equal(Object.hasOwn(createTask.inputSchema.properties, "source_task_id"), false);
   assert.equal(createTask.inputSchema.properties.artifact_reference.required[0], "artifact_id");
   assert.equal(createTask.inputSchema.properties.file_reference.required[0], "path");
-  assert.match(createTask.description, /current direct user message explicitly requests/);
-  assert.match(createTask.description, /assistant, system, collaboration, and Automation evidence is rejected/);
+  assert.match(createTask.description, /explicit current direct-user request/);
+  assert.match(createTask.description, /collaboration and Automation are not authorization/);
   assert.deepEqual(createTask.inputSchema.required, [
     "title", "agent_id", "logical_session_id", "user_message_event_id",
     "user_message_sequence", "turn_id", "idempotency_key"
