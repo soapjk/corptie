@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import CorptieClientCore
 import CorptieConversation
 
 enum ArtifactExportOutcome: Equatable {
@@ -321,6 +322,29 @@ final class ArtifactAPIClient: ObservableObject {
         let (data, response) = try await URLSession.shared.data(from: components.url!)
         try Self.validate(response: response, data: data)
         return try await decode(ArtifactLocalFileReceipt.self, data: data)
+    }
+
+    /// Resource management acts as the local user; the host resolves and
+    /// authorizes the selected immutable version, never a client-provided path.
+    func localFile(artifactID: String, version: Int, contentHash: String) async throws -> ArtifactLocalFileReceipt {
+        var detailURL = URLComponents(url: Self.endpointURL(baseURL: baseURL,
+            path: "resources/\(artifactID)"), resolvingAgainstBaseURL: false)!
+        detailURL.queryItems = [.init(name: "version", value: String(version))]
+        let detail: ClientResourceDetail = try await get(detailURL.url!)
+        guard detail.resource.id == artifactID, detail.resource.capabilities.contains("read"),
+              let reference = detail.references.first(where: { $0.version == version && $0.hash == contentHash }) else {
+            throw EntityLaunchError(message: "此版本没有有效的文件访问引用，无法打开所在文件夹。", code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN")
+        }
+        var components = URLComponents(url: Self.endpointURL(baseURL: baseURL,
+            path: "artifacts/\(artifactID)/local-file"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [.init(name: "version", value: String(version)),
+                                 .init(name: "contentHash", value: contentHash),
+                                 .init(name: "referenceId", value: reference.id)]
+        let receipt: ArtifactLocalFileReceipt = try await get(components.url!)
+        guard receipt.artifactId == artifactID, receipt.version == version else {
+            throw EntityLaunchError(message: "文档位置与所选版本不匹配。", code: "ARTIFACT_VERSION_HASH_MISMATCH")
+        }
+        return receipt
     }
 
     private func pinnedReference(artifact: WorkArtifact, version: Int) throws -> (referenceId: String, contentHash: String) {
