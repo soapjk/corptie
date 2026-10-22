@@ -84,11 +84,11 @@ enum PadMessageLayout {
         Task { @MainActor in removeAllCachedEntries() }
     }
 
-    static func entry(text: String, style: MessageMarkdown.Style) -> Entry {
+    static func entry(text: String, style: MessageMarkdown.Style, boundary: MessageTextBoundary = .both) -> Entry {
         _ = memoryWarningObserver
-        let key = "\(style)\u{0}\(text)" as NSString
+        let key = "\(style)\u{0}\(boundary.rawValue)\u{0}\(text)" as NSString
         if let cached = cache.object(forKey: key) { return cached }
-        let attributed = MessageMarkdown.make(text: text, style: style)
+        let attributed = MessageMarkdown.make(text: text, style: style, boundary: boundary)
         let bounds = attributed.boundingRect(
             with: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)

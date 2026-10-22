@@ -45,11 +45,12 @@ public enum MessageMarkdown {
     public static func make(
         text: String,
         style: Style,
-        rendersMath: Bool = true
+        rendersMath: Bool = true,
+        boundary: MessageTextBoundary = .both
     ) -> NSAttributedString {
         guard style != .process else { return makeMarkdown(text: text, style: style, rendersMath: false) }
         let result = NSMutableAttributedString(string: "")
-        for block in MessageMath.blocks(text) {
+        for block in MessageMath.blocks(messageSource(text, boundary: boundary)) {
             switch block {
             case .text(let text): result.append(makeMarkdown(text: text, style: style, rendersMath: rendersMath))
             case .formula(let formula):
@@ -62,7 +63,53 @@ public enum MessageMarkdown {
                         .paragraphStyle: paragraph]))
             }
         }
+        normalizeParagraphEdges(result, boundary: boundary)
         return result
+    }
+
+    /// Trim blank *lines*, not characters: indentation, hard-break spaces and
+    /// blank lines inside fenced code are content. An unfinished fence keeps
+    /// its trailing whitespace while a reply is streaming.
+    private static func messageSource(_ text: String, boundary: MessageTextBoundary) -> String {
+        let lines = text.components(separatedBy: "\n")
+        var first = 0
+        var end = lines.count
+        if boundary.contains(.start) {
+            while first < end, lines[first].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { first += 1 }
+        }
+        if boundary.contains(.end) {
+            var fence: (Character, Int)?
+            for line in lines[first..<end] {
+                let value = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let marker = value.first, marker == "`" || marker == "~" else { continue }
+                let length = value.prefix(while: { $0 == marker }).count
+                guard length >= 3 else { continue }
+                if let active = fence {
+                    if active.0 == marker, length >= active.1,
+                       value.dropFirst(length).allSatisfy(\.isWhitespace) { fence = nil }
+                } else { fence = (marker, length) }
+            }
+            if fence == nil {
+                while end > first, lines[end - 1].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { end -= 1 }
+            }
+        }
+        return lines[first..<end].joined(separator: "\n")
+    }
+
+    private static func normalizeParagraphEdges(_ text: NSMutableAttributedString, boundary: MessageTextBoundary) {
+        guard text.length > 0 else { return }
+        let source = text.string as NSString
+        for (enabled, index, leading) in [
+            (boundary.contains(.start), 0, true),
+            (boundary.contains(.end), text.length - 1, false)
+        ] where enabled {
+            let range = source.paragraphRange(for: NSRange(location: index, length: 0))
+            let style = (text.attribute(.paragraphStyle, at: index, effectiveRange: nil)
+                as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
+            if leading { style.paragraphSpacingBefore = 0 }
+            else { style.paragraphSpacing = 0 }
+            text.addAttribute(.paragraphStyle, value: style, range: range)
+        }
     }
 
     private static func makeMarkdown(text: String, style: Style, rendersMath: Bool = true) -> NSAttributedString {
@@ -78,11 +125,18 @@ public enum MessageMarkdown {
         let attributed = NSMutableAttributedString(string: "")
         var inCodeFence = false
         let lines = text.components(separatedBy: "\n")
-        for (index, sourceLine) in lines.enumerated() {
+        var hasRenderedLine = false
+        for sourceLine in lines {
             let line = sourceLine.trimmingCharacters(in: .whitespaces)
             if line.hasPrefix("```") || line.hasPrefix("~~~") {
                 inCodeFence.toggle()
-            } else if inCodeFence {
+                continue
+            }
+            if hasRenderedLine {
+                attributed.append(NSAttributedString(string: "\n", attributes: [.font: baseFont]))
+            }
+            hasRenderedLine = true
+            if inCodeFence {
                 attributed.append(blockLine(
                     sourceLine,
                     font: .monospacedSystemFont(ofSize: 12, weight: .regular),
@@ -134,9 +188,6 @@ public enum MessageMarkdown {
                 attributed.append(blockLine("────────", baseFont: baseFont, color: separatorColor))
             } else {
                 attributed.append(blockLine(sourceLine, baseFont: baseFont, color: color, rendersMath: rendersMath))
-            }
-            if index < lines.count - 1, !(line.hasPrefix("```") || line.hasPrefix("~~~")) {
-                attributed.append(NSAttributedString(string: "\n", attributes: [.font: baseFont]))
             }
         }
         return attributed

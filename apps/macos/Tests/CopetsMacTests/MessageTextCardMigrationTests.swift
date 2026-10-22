@@ -22,6 +22,48 @@ final class MessageTextCardMigrationTests: XCTestCase {
         XCTAssertFalse(MacSharedMessageTextCard.supports(process))
     }
 
+    func testSharedCardHeightSeparatesBodyPaddingFromRowInsets() {
+        for text in ["好", "\n正文\n\n", "# 标题\n\n两行正文\n第二行", "```swift\nlet x = 1\n```"] {
+            let model = row(text)
+            let layout = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 320)
+            XCTAssertEqual(layout.cardHeight, layout.textHeight + 20, accuracy: 0.001)
+            XCTAssertEqual(layout.rowHeight, layout.cardHeight + 2, accuracy: 0.001)
+        }
+    }
+
+    func testSeparatorAndScheduledSourceHaveIndependentHeightAndCacheIdentity() {
+        var model = row("来源与日期", id: "spacing-source")
+        let plain = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 320)
+        model.scheduledMessageSource = "计划任务"
+        let scheduled = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 320)
+        XCTAssertEqual(scheduled.cardHeight, plain.cardHeight + 19)
+        model.timeSeparatorText = "今天"
+        let dated = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 320)
+        XCTAssertEqual(dated.cardHeight, scheduled.cardHeight)
+        XCTAssertEqual(dated.rowHeight, scheduled.rowHeight + 28)
+    }
+
+    func testRenderedSharedTextHasSymmetricTopAndBottomInsets() throws {
+        _ = NSApplication.shared
+        for text in ["好", "# 标题\n正文", "正文\n\n最后一段"] {
+            let model = row(text)
+            let layout = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 320)
+            let host = NSHostingView(rootView: MacSharedMessageTextCard(row: model, layout: layout))
+            let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 320, height: layout.rowHeight),
+                styleMask: [.borderless], backing: .buffered, defer: false)
+            window.contentView = host
+            host.layoutSubtreeIfNeeded()
+            func leaves(_ view: NSView) -> [NativeTimelineTextView] {
+                (view as? NativeTimelineTextView).map { [$0] } ?? view.subviews.flatMap(leaves)
+            }
+            let body = try XCTUnwrap(leaves(host).first)
+            let rect = body.convert(body.bounds, to: host)
+            XCTAssertEqual(rect.minY - host.bounds.minY, 11, accuracy: 0.6)
+            XCTAssertEqual(host.bounds.maxY - rect.maxY, 11, accuracy: 0.6)
+            window.orderOut(nil)
+        }
+    }
+
     func testStatusDecorationDoesNotWidenShortMessage() throws {
         _ = NSApplication.shared
         let status = try XCTUnwrap(UserMessageStatusPresentation(

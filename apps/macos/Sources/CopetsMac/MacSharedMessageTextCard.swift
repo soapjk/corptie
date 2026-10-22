@@ -56,7 +56,7 @@ struct MacSharedMessageTextCard: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity,
                 alignment: row.nativeStyle == .user ? .topTrailing : .topLeading)
             .padding(.horizontal, 2)
-            .padding(.top, 1)
+            .padding(.vertical, MessageCardMetrics.rowInset)
         }
     }
 
@@ -134,7 +134,7 @@ struct MacSharedMessageTextCard: View {
         MessageTextCard(messageID: row.id, role: row.nativeStyle == .user ? .user : (row.isCommentary ? .commentary : .agent),
             timestamp: "", showsActions: false,
             actionsAlwaysVisible: false, cardWidth: layout.cardWidth,
-            cardHeight: layout.rowHeight - row.timeSeparatorHeight - 2,
+            cardHeight: layout.cardHeight,
             status: presentedMessageStatus, rendersStatusGlow: false, copy: copy) {
             VStack(alignment: .leading, spacing: 0) {
                 if let source = row.scheduledMessageSource {
@@ -143,14 +143,14 @@ struct MacSharedMessageTextCard: View {
                         .frame(height: 19, alignment: .topLeading)
                 }
                 if row.nativeStyle == .user && !row.images.isEmpty {
-                    attachmentStrip.padding(.bottom, 8)
+                    attachmentStrip.padding(.bottom, layout.textHeight > 0 ? MessageCardMetrics.contentSpacing : 0)
                 }
-                if layout.richBlocks.isEmpty {
+                if layout.richBlocks.isEmpty && layout.textHeight > 0 {
                     MeasuredMessageText(text: layout.attributedText,
                         size: CGSize(width: layout.cardWidth - 20, height: layout.textHeight),
                         baseDirectory: baseDirectory, contextMenu: contextMenu)
                         .frame(width: layout.cardWidth - 20, height: layout.textHeight)
-                } else {
+                } else if !layout.richBlocks.isEmpty {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(layout.richBlocks, id: \.id) { block in
                             switch block {
@@ -173,7 +173,7 @@ struct MacSharedMessageTextCard: View {
                            alignment: .topLeading)
                 }
                 if row.nativeStyle != .user && !row.images.isEmpty {
-                    attachmentStrip.padding(.top, 8)
+                    attachmentStrip.padding(.top, layout.textHeight > 0 ? MessageCardMetrics.contentSpacing : 0)
                 }
                 if !row.actions.isEmpty {
                     ScrollView(.horizontal) {

@@ -57,7 +57,7 @@ final class NativeMarkdownAttributedTextTests: XCTestCase {
 
         XCTAssertEqual(
             value.string,
-            "Heading\n\n•  first\n•  second with bold\n\n1.  ordered\n2.  next\n\n│  quoted\n\nlet value = 42\nprint(value)\n"
+            "Heading\n\n•  first\n•  second with bold\n\n1.  ordered\n2.  next\n\n│  quoted\n\nlet value = 42\nprint(value)"
         )
         let headingFont = value.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
         let codeLocation = (value.string as NSString).range(of: "let value = 42").location

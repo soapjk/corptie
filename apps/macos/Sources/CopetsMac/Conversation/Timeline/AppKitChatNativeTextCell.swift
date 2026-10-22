@@ -220,7 +220,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         labelTopToCardConstraint = label.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 10)
         imageTopToTitleConstraint = imageStack.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 7)
         imageTopToCardConstraint = imageStack.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 10)
-        labelTopToImagesConstraint = label.topAnchor.constraint(equalTo: imageStack.bottomAnchor, constant: 7)
+        labelTopToImagesConstraint = label.topAnchor.constraint(equalTo: imageStack.bottomAnchor, constant: MessageCardMetrics.contentSpacing)
         imageStackHeightConstraint = imageStack.heightAnchor.constraint(equalToConstant: 0)
         labelBottomToProcessConstraint = label.bottomAnchor.constraint(lessThanOrEqualTo: processSeparator.topAnchor, constant: -5)
         labelBottomToActionsConstraint = label.bottomAnchor.constraint(lessThanOrEqualTo: actionStack.topAnchor, constant: -4)
@@ -550,6 +550,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
 
     private func apply(layout: NativeTimelineLayoutCache.Layout) {
         labelHeightConstraint.constant = layout.textHeight
+        labelTopToImagesConstraint.constant = layout.textHeight > 0 ? MessageCardMetrics.contentSpacing : 0
         rawStatusHeightConstraint.constant = layout.rawStatusHeight
         rawStatusScrollView.isHidden = layout.rawStatusHeight == 0
         cardWidthConstraint.constant = layout.cardWidth

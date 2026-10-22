@@ -24,7 +24,27 @@ final class SharedMarkdownParityTests: XCTestCase {
             for (native, shared) in styles {
                 let expected = FrozenPreExtractionMarkdown.make(text: text, style: native)
                 let actual = MessageMarkdown.make(text: text, style: shared)
-                XCTAssertTrue(actual.isEqual(to: expected), "Changed attributed runs: \(text)")
+                // Only exterior paragraph spacing is intentionally different.
+                // Semantic text, fonts, links and interior runs retain parity.
+                let normalized = NSMutableAttributedString(attributedString: expected)
+                if shared != .process, (text.hasSuffix("```") || text.hasSuffix("~~~")),
+                   normalized.string.hasSuffix("\n") {
+                    // The frozen renderer emitted a newline for the invisible
+                    // closing fence, creating an extra empty final line.
+                    normalized.deleteCharacters(in: NSRange(location: normalized.length - 1, length: 1))
+                }
+                if shared != .process, normalized.length > 0 {
+                    let source = normalized.string as NSString
+                    for (index, leading) in [(0, true), (normalized.length - 1, false)] {
+                        let range = source.paragraphRange(for: NSRange(location: index, length: 0))
+                        let paragraph = (normalized.attribute(.paragraphStyle, at: index, effectiveRange: nil)
+                            as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
+                        if leading { paragraph.paragraphSpacingBefore = 0 }
+                        else { paragraph.paragraphSpacing = 0 }
+                        normalized.addAttribute(.paragraphStyle, value: paragraph, range: range)
+                    }
+                }
+                XCTAssertTrue(actual.isEqual(to: normalized), "Changed attributed runs: \(text)")
             }
         }
     }

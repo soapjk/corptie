@@ -35,8 +35,12 @@ final class ChatImageModelTests: XCTestCase {
             XCTAssertEqual(layout.cardWidth, 166.25, accuracy: 0.01)
             XCTAssertEqual(layout.imageLayout.size, CGSize(width:146.25,height:260))
             XCTAssertEqual(layout.textHeight, 0)
+            XCTAssertEqual(layout.cardHeight, layout.imageLayout.size.height + 20, accuracy: 0.01)
+            XCTAssertEqual(layout.rowHeight, layout.cardHeight + 2, accuracy: 0.01)
             let cell = AppKitChatNativeTextCell(identifier: .init(type))
+            cell.frame = .init(x: 0, y: 0, width: 500, height: layout.rowHeight)
             cell.setContent(row, availableWidth: 500, onToggleExpansion: { _ in })
+            cell.layoutSubtreeIfNeeded()
             func images(_ view: NSView) -> [NSButton] {
                 view.subviews.flatMap { child -> [NSButton] in
                     if let button = child as? NSButton, button.accessibilityLabel()?.hasPrefix("Attached image") == true { return [button] }
@@ -45,6 +49,9 @@ final class ChatImageModelTests: XCTestCase {
             }
             let button = try XCTUnwrap(images(cell).first)
             XCTAssertEqual(button.frame.size, layout.imageLayout.size)
+            let rect = button.convert(button.bounds, to: cell)
+            XCTAssertEqual(rect.minY - cell.bounds.minY, 11, accuracy: 0.6)
+            XCTAssertEqual(cell.bounds.maxY - rect.maxY, 11, accuracy: 0.6)
             XCTAssertTrue(cell.updateLayoutIfContentUnchanged(row, availableWidth: 120))
             XCTAssertLessThanOrEqual(button.frame.width, 96)
         }
