@@ -8,6 +8,10 @@ export const AGENT_PROVIDER_CAPABILITIES = Object.freeze({
   SESSION_DISCONNECT: "session.disconnect",
   SESSION_RENAME: "session.rename",
   SESSION_EXECUTION_PREPARE: "session.execution.prepare",
+  // A reconcileOnly probe performs no Provider mutation. Its result may set
+  // canRetryVerification only when the adapter proves no unresolved resume is
+  // pending in its current runtime. This permits binding verification, never
+  // replaying a conversation message. Absence means keep quarantining.
   SESSION_BINDING_PROBE: "session.binding.probe",
   TURN_EXECUTION_PROBE: "turn.execution.probe",
   SESSION_RECOVERY_STABILIZE: "session.recovery.stabilize",

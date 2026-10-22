@@ -314,7 +314,21 @@ export class SessionPreparationCoordinator {
         this.#finish(record, "superseded", "SESSION_BINDING_CHANGED", "not_sent");
         return;
       }
-      const result = await (record.mode === "reconcile" ? this.reconcile : this.verify)(record.reference.sessionId);
+      let result = await (record.mode === "reconcile" ? this.reconcile : this.verify)(record.reference.sessionId);
+      // The adapter can distinguish absent proof (e.g. after a process restart)
+      // from a genuinely outstanding RPC. Only explicit, current-runtime proof
+      // permits a fresh binding verification. This never dispatches a message.
+      if (record.mode === "reconcile" && !result.ready
+          && result.outcome?.canRetryVerification === true && !TERMINAL.has(record.state)) {
+        const next = await this.resolveReference(record.reference.sessionId);
+        if (TERMINAL.has(record.state)) return;
+        if (identity(next) !== record.key || sessionReadinessStamp(next) !== record.stamp) {
+          this.#finish(record, "superseded", "SESSION_BINDING_CHANGED", "unknown");
+          return;
+        }
+        record.mode = "verify";
+        result = await this.verify(record.reference.sessionId);
+      }
       if (TERMINAL.has(record.state)) return;
       const latest = await this.resolveReference(record.reference.sessionId);
       if (TERMINAL.has(record.state)) return;

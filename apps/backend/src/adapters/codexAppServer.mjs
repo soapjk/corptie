@@ -380,9 +380,14 @@ export class CodexAppServerClient {
 
   inspectThreadResume(threadId, options = {}) {
     this.requireThreadToolPlanConfirmation(threadId, options);
+    // Missing proof is not an outstanding RPC. A cold/replaced runtime or a
+    // settled rejection may safely verify again; timed-out requests may not.
+    const pending = this.unsettledResumes.has(threadId)
+      || this.threadResumePromises.has(threadId);
     return { ready: Boolean(this.transport.activeProcessGeneration)
-      && !this.unsettledResumes.has(threadId)
+      && !pending
       && threadResumeProofMatches(this.threadResumeFingerprints.get(threadId), options),
+      canRetryVerification: !pending && this.unsettledResumes.size < 128,
       reasonCode: "PROVIDER_RESUME_OUTCOME_UNKNOWN" };
   }
 

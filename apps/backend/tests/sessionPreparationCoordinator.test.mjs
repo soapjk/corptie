@@ -281,3 +281,61 @@ test("startup recovery is single-flight, bounded-backoff, resumes not-sent only 
   assert.equal((await restarted.preparations.current("cancelled")).state, "cancelled");
   restarted.gates.get("unsent").resolve({}); await tick();
 });
+
+test("persisted unknown after restart automatically verifies when the adapter proves no pending resume", async () => {
+  let snapshot;
+  const f = fixture({}, { read: () => null, write: value => { snapshot = structuredClone(value); } });
+  const first = await f.preparations.start("one"); await tick();
+  const saved = structuredClone(snapshot);
+  f.gates.get("one").resolve({}); await tick();
+  const restarted = fixture({}, { read: () => saved, write: () => {} });
+  const original = restarted.probe.probe;
+  restarted.probe.probe = (id, context) => context.reconcileOnly
+    ? { ready: false, canRetryVerification: true, reasonCode: "PROVIDER_RESUME_OUTCOME_UNKNOWN" }
+    : original(id, context);
+  await restarted.preparations.resumeAtStartup({ sleep: tick }); await tick();
+  assert.equal(restarted.calls(), 1, "cold proof must trigger a real verification rather than permanent waiting");
+  assert.equal((await restarted.preparations.current("one")).id, first.id);
+  restarted.gates.get("one").resolve({}); await tick();
+  assert.equal((await restarted.preparations.current("one")).state, "ready");
+  assert.equal(restarted.probe.readiness("one", "binding"), null);
+});
+
+test("late rejection allows a fresh verification while unresolved resumes never repeat", async () => {
+  const f = fixture();
+  const first = await f.preparations.start("one"); await tick();
+  f.gates.get("one").reject(Object.assign(new Error("timeout"), { code: "PROVIDER_RPC_TIMEOUT" }));
+  await tick();
+  let safe = false;
+  const original = f.probe.probe;
+  f.probe.probe = (id, context) => context.reconcileOnly
+    ? { ready: false, canRetryVerification: safe, reasonCode: "PROVIDER_RESUME_OUTCOME_UNKNOWN" }
+    : original(id, context);
+  await f.preparations.start("one"); await tick();
+  assert.equal(f.calls(), 1);
+  assert.equal((await f.preparations.current("one")).remoteDisposition, "unknown");
+  safe = true;
+  f.preparations.records.values().next().value.reconcileAfter = 0;
+  await Promise.all([f.preparations.start("one"), f.preparations.start("one")]); await tick();
+  assert.equal(f.calls(), 2, "concurrent polling must issue only one new verification");
+  f.gates.get("one").resolve({}); await tick();
+  assert.equal((await f.preparations.current("one")).id, first.id);
+  assert.equal((await f.preparations.current("one")).state, "ready");
+});
+
+for (const action of ["cancel", "replace"]) {
+  test(`${action} during reconciliation cannot launch a newly permitted verification`, async () => {
+    const f = fixture();
+    const first = await f.preparations.start("one"); await tick();
+    f.gates.get("one").reject(Object.assign(new Error("timeout"), { code: "PROVIDER_RPC_TIMEOUT" }));
+    await tick();
+    let release;
+    f.probe.probe = () => new Promise(resolve => { release = resolve; });
+    await f.preparations.start("one"); await tick();
+    if (action === "cancel") await f.preparations.cancel("one", first.id);
+    else f.replaceBinding("replacement");
+    release({ ready: false, canRetryVerification: true }); await tick();
+    assert.equal(f.calls(), 1);
+    assert.notEqual(f.probe.readiness("one", "replacement"), null);
+  });
+}

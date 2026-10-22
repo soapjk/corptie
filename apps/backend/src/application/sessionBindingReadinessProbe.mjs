@@ -133,7 +133,7 @@ export class SessionBindingReadinessProbe {
         const readiness = unavailable(outcome.reasonCode ?? "PROVIDER_RESUME_OUTCOME_UNKNOWN",
           "The previous Provider operation cannot yet be confirmed. No message was resent.");
         this.#set(reference, bindingId, readiness);
-        return Object.freeze({ ready: false, readiness });
+        return Object.freeze({ ready: false, readiness, outcome: outcome ?? null });
       }
       this.#set(current, bindingId, null);
       return Object.freeze({ ready: true, readiness: null, outcome: outcome ?? null });

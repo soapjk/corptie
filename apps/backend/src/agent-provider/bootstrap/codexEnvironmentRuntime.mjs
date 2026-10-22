@@ -81,7 +81,11 @@ export function createCodexEnvironmentRuntime({ registry, environment, prepare, 
     async inspectThreadResume(threadId, input = {}) {
       const profile = registry.forThread(threadId);
       const runtime = runtimes.get(profile.profileId);
-      if (!runtime || !prepared.has(profile.profileId)) {
+      if (!runtime) {
+        return { ready: false, canRetryVerification: true,
+          runtimeEpoch: readinessEpoch(threadId), reasonCode: "PROVIDER_RESUME_OUTCOME_UNKNOWN" };
+      }
+      if (!prepared.has(profile.profileId)) {
         return { ready: false, reasonCode: "PROVIDER_RESUME_OUTCOME_UNKNOWN" };
       }
       await prepared.get(profile.profileId);

@@ -51,6 +51,7 @@ test("read-only resume proof follows exact thread environment without spawning o
   t.after(() => runtime.close());
   const coldEpoch = runtime.readinessRuntimeEpoch("thread");
   assert.equal((await runtime.inspectThreadResume("thread", {})).ready, false);
+  assert.equal((await runtime.inspectThreadResume("thread", {})).canRetryVerification, true);
   assert.equal(created, 0);
   assert.equal(preparations, 0);
   await runtime.ensureThreadResumed("thread", { cwd: "/workspace" });
