@@ -65,6 +65,7 @@ public struct ResourceBrowser: View {
     let currentWorkId: String?
     let api: @MainActor () async throws -> ClientResourceAPI
     let openSession: (String) -> Void
+    let revealFile: (@MainActor (ClientResourceFocus) async throws -> Void)?
     @State private var store = ResourceBrowserStore()
     @State private var query = ""
     @State private var work = ""
@@ -84,9 +85,11 @@ public struct ResourceBrowser: View {
     }
     public init(focus: Binding<ClientResourceFocus?>, active: Bool, connected: Bool = true,
                 works: [(id: String, name: String)], currentWorkId: String? = nil,
-                api: @escaping @MainActor () async throws -> ClientResourceAPI, openSession: @escaping (String) -> Void) {
+                api: @escaping @MainActor () async throws -> ClientResourceAPI, openSession: @escaping (String) -> Void,
+                revealFile: (@MainActor (ClientResourceFocus) async throws -> Void)? = nil) {
         _focus = focus; self.active = active; self.connected = connected; self.works = works
         self.currentWorkId = currentWorkId; self.api = api; self.openSession = openSession
+        self.revealFile = revealFile
         _work = State(initialValue: focus.wrappedValue?.workId ?? "")
     }
     private var requestKey: String { "\(active):\(connected):\(query):\(work):\(status):\(sort):\(refreshID)" }
@@ -178,6 +181,7 @@ public struct ResourceBrowser: View {
     @ViewBuilder private var selected: some View {
         if let focus, !focus.id.isEmpty, connected {
             ResourceDetail(focus: focus, active: active, api: api, openSession: openSession,
+                           revealFile: revealFile,
                            changed: { refreshID &+= 1 }, removed: { self.focus = nil; refreshID &+= 1 }).id(focus)
         } else { Text("选择资源查看内容").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity) }
     }
@@ -213,6 +217,7 @@ private struct ResourceDetail: View {
     let active: Bool
     let api: @MainActor () async throws -> ClientResourceAPI
     let openSession: (String) -> Void
+    let revealFile: (@MainActor (ClientResourceFocus) async throws -> Void)?
     let changed: () -> Void
     let removed: () -> Void
     @State private var detail: ClientResourceDetail?
@@ -252,6 +257,10 @@ private struct ResourceDetail: View {
                         Picker("版本", selection: $version) { ForEach(detail.versions) { value in Text("v\(value.version)\(value.approvalStatus == "draft" ? " · 草稿" : "")").tag(value.version) } }.frame(maxWidth: 260)
                         Spacer()
                         Menu {
+                            if revealFile != nil {
+                                Button("打开所在文件夹", systemImage: "folder") { Task { await revealSelectedFile() } }
+                                    .disabled(selectedVersion == nil || !detail.resource.capabilities.contains("read"))
+                            }
                             Button(offset == nil ? "复制正文" : "复制已载入正文") { copyResourceText(chunks.map(\.text).joined()) }.disabled(binary || chunks.isEmpty)
                             if detail.resource.capabilities.contains("metadata") { Button("编辑信息") { editingResource = detail.resource; editedTitle = detail.resource.title; editedSummary = detail.resource.summary; editor = .metadata } }
                             if detail.resource.capabilities.contains("publish") {
@@ -404,6 +413,16 @@ private struct ResourceDetail: View {
             changed(); NotificationCenter.default.post(name: .corptieResourceCatalogChanged, object: nil)
             if action == "revoke" { removed() } else { await loadDetail() }
         } catch is CancellationError { } catch { fail(error) }
+    }
+    private func revealSelectedFile() async {
+        guard !busy, active, let revealFile, let selectedVersion,
+              let resource = detail?.resource, resource.capabilities.contains("read") else { return }
+        let requested = ClientResourceFocus(id: resource.id, version: selectedVersion.version,
+            hash: selectedVersion.contentHash, workId: resource.workId)
+        busy = true
+        defer { busy = false }
+        do { try await revealFile(requested) }
+        catch { self.error = "无法打开所在文件夹：\(error.localizedDescription)" }
     }
     private func exportVersion() async {
         guard !busy, let resource = detail?.resource, let selectedVersion else { return }
