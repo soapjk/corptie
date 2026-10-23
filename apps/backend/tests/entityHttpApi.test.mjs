@@ -2833,7 +2833,8 @@ test("execution failure is explicit and retrying the existing Task does not crea
     assert.equal(failed.statusCode, 502);
     assert.equal(failed.body.code, "PROVIDER_LAUNCH_FAILED");
     assert.match(failed.body.error, /Provider launch failed clearly/);
-    assert.equal(services.store.listTasksByWork(work.id).length, 1);
+    assert.equal(services.store.listTasksByWork(work.id).length, 0);
+    assert.equal(services.store.getTask(taskBody.id).creation_state, "failed");
     assert.equal(services.store.getTask(taskBody.id).execution_status, "idle");
     assert.equal(performance[0].outcome, "failed");
 

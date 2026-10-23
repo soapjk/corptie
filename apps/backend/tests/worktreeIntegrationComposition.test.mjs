@@ -9,6 +9,7 @@ function fixture(overrides = {}) {
     resolveWorkspacePath: () => "/main",
     listTasks: () => [],
     getTask: () => ({ id: "task", work_id: "work", title: "Conflict", main_agent_id: "agent" }),
+    setTaskCreationState: (...args) => calls.push(["creation-state", ...args]),
     getSession: () => ({ id: "session", title: "Session", cwd: "/integration" }),
     getWorktreeIntegrationJobByIdempotencyKey: () => null,
     selectOne: () => null,
@@ -261,7 +262,7 @@ test("a plan Session bound to a different worktree is rejected before mutation",
   assert.deepEqual(calls, []);
 });
 
-test("failed conflict Session startup rolls back the newly created Task", async () => {
+test("failed conflict Session startup retains only explicit failure recovery evidence", async () => {
   const error = new Error("launch failed");
   const { projectWorktreeIntegrationService: project, calls } = fixture({
     startPreparedWorkSession: async () => { throw error; }
@@ -270,5 +271,6 @@ test("failed conflict Session startup rolls back the newly created Task", async 
     work: { id: "work" }, agent: { agentId: "agent" }, workspace: { path: "/integration" },
     title: "Conflict", integrationRunId: "run"
   }), (failure) => failure === error);
-  assert.deepEqual(calls.map(([kind]) => kind), ["create", "delete"]);
+  assert.deepEqual(calls.map(([kind]) => kind), ["create", "creation-state"]);
+  assert.deepEqual(calls[1], ["creation-state", "created", "failed", "START_FAILED"]);
 });

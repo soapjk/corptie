@@ -2078,7 +2078,7 @@ export class GitWorkspaceManager {
 
   async assertCommitHasNoMainLinkedAgentConfiguration(sourcePath, mainPath, revision) {
     const unsafePaths = [];
-    for (const relativePath of DEFAULT_SHARED_AGENT_CONFIGURATION_PATHS) {
+    for (const relativePath of [".corptie", ...DEFAULT_SHARED_AGENT_CONFIGURATION_PATHS]) {
       const entry = await this.gitOutput(sourcePath, [
         "ls-tree", revision, "--", relativePath
       ]);

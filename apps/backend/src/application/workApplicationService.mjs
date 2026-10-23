@@ -133,11 +133,10 @@ export class WorkApplicationService {
         return existing;
       }
     }
-    return this.emit(
-      "TaskChanged",
-      this.store.createTask(normalized, options.creationOrigin ?? {}, { expectedParentResourceVersion: options.expectedParentResourceVersion }),
-      "created"
-    );
+    const task = this.store.createTask(normalized, options.creationOrigin ?? {}, {
+      expectedParentResourceVersion: options.expectedParentResourceVersion, creationPending: options.creationPending === true
+    });
+    return options.creationPending ? task : this.emit("TaskChanged", task, "created");
   }
 
   listTasks() {

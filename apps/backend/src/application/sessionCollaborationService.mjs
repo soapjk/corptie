@@ -147,7 +147,7 @@ export class SessionCollaborationService {
       if (task) {
         const startup = this.store.selectOne("SELECT startup_operation_id,state,error_retryable FROM work_session_startup_operations WHERE task_id=? AND idempotency_key=?", [task.id, `task-create:${input.idempotencyKey}`]);
         const sandbox = !startup && this.store.selectOne("SELECT execution_space_id,status FROM execution_spaces WHERE task_id=? AND idempotency_key=?", [task.id, `task-create:${input.idempotencyKey}`]);
-        error.creationRecovery = { taskId: task.id, parentTaskId: input.parentTaskId ?? null,
+        error.creationRecovery = { ...error.creationRecovery, taskId: task.id, parentTaskId: input.parentTaskId ?? null,
           startupOperationId: startup?.startup_operation_id ?? sandbox?.execution_space_id ?? null,
           phase: startup?.state ?? sandbox?.status ?? "created",
           retryable: startup ? Boolean(startup.error_retryable) : true, nextAction: "read_task_then_retry_same_request" };
@@ -300,7 +300,8 @@ export class SessionCollaborationService {
           creationContextTaskId: scope.session.taskId,
           creationContextMessageId: creationAuthorization?.eventId,
           operationId: idempotencyKey
-        }
+        },
+        creationPending: Boolean(prepared)
       });
       this.store.db.run(
         `UPDATE tasks SET created_by_session_id=?, idempotency_key=?,
@@ -769,7 +770,7 @@ export class SessionCollaborationService {
           creatorSessionId: channelRequest.requestingSessionId,
           creationContextTaskId: request.sourceContext?.taskId ?? null,
           operationId: `channel-request:${channelRequest.requestId}`
-        }
+        }, creationPending: true
       });
     }
     if (task.work_id !== targetWorkId || task.main_agent_id !== agent.agentId) {
@@ -793,6 +794,7 @@ export class SessionCollaborationService {
     if (!eligibility?.active) {
       throw coded("CREATED_SESSION_NOT_ACTIVE", `The target Worker Session was not created successfully: ${eligibility?.reasons.join(", ") || "unresolved"}.`, 503);
     }
+    this.store.setTaskCreationState(task.id, "ready");
     return {
       recipientSessionId: eligibility.logicalSessionId,
       taskId: task.id,
@@ -848,7 +850,7 @@ export class SessionCollaborationService {
           creatorSessionId: confirmation.initiatorSessionId,
           creationContextTaskId: request.sourceTaskId ?? null,
           operationId: `collaboration-confirmation:${confirmation.confirmationId}`
-        }
+        }, creationPending: true
       });
       this.store.db.run(
         `UPDATE tasks SET created_by_session_id=?, idempotency_key=?, resource_version=1 WHERE id=?`,
@@ -883,6 +885,7 @@ export class SessionCollaborationService {
     if (!target?.active) {
       throw coded("CREATED_SESSION_NOT_ACTIVE", `The target Worker Session was not created successfully: ${target?.reasons.join(", ") || "unresolved"}.`, 503);
     }
+    this.store.setTaskCreationState(task.id, "ready");
     return {
       recipientSessionId: target.logicalSessionId,
       recipientAgentId: agent.agentId,

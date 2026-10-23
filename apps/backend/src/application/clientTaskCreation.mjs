@@ -132,10 +132,12 @@ export async function createClientTask(api, identity, sourceID, input, revalidat
     }
     api.update(identity.deviceId, input.requestId, "completed", null,
       { taskId: result.task.id, sessionId: result.session.id, workId: taskInput.workId });
-  } catch {
+  } catch (error) {
     // The Task may already exist even if companion Session startup failed.
     // Never represent a partial write as a pre-dispatch rejection or auto-replay it.
-    api.update(identity.deviceId, input.requestId, "unknown", "TASK_CREATION_OUTCOME_UNCERTAIN");
+    const failed = error.creationRecovery?.status === "failed";
+    api.update(identity.deviceId, input.requestId, failed ? "rejected" : "unknown",
+      failed ? (error.code ?? "TASK_CREATION_FAILED") : "TASK_CREATION_OUTCOME_UNCERTAIN");
   } finally { api.inFlight.delete(key); }
   return api.receipt(identity, input.requestId);
 }

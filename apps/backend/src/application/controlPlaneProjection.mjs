@@ -92,7 +92,7 @@ export function createControlPlaneProjection({ store, environmentName, decorateS
       }
       case "task": {
         const task = store.getTask(entityId);
-        return task && task.lifecycle_state !== "done" ? presentTaskForClient(task) : null;
+        return task && (task.creation_state ?? "ready") === "ready" && task.lifecycle_state !== "done" ? presentTaskForClient(task) : null;
       }
       case "work": return store.getWork(entityId);
       case "agent": {

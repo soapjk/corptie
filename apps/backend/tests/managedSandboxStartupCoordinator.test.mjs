@@ -27,7 +27,7 @@ test("managed Sandbox starts a non-Git Task in an isolated copy and persists its
       contributorAgentIds: [agent.agentId]
     });
     const task = workService.createTask({
-      id: "task:plain", workId: work.id, title: "Write docs", mainAgentId: agent.agentId
+      id: "task:plain", workId: work.id, title: "Write_docs", mainAgentId: agent.agentId
     });
     let createdCwd = null;
     const providerWorkSessionPort = {

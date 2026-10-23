@@ -150,7 +150,7 @@ export class SessionForkService {
           acceptanceCriteria: input.acceptanceCriteria ?? parent.acceptance_criteria ?? "",
           verificationCriteria: input.verificationCriteria ?? parent.verification_criteria ?? "",
           priority: input.priority ?? parent.priority,
-          mainAgentId: parent.main_agent_id }, { creationOrigin: { originType: "direct_user", operationId: input.requestId } });
+          mainAgentId: parent.main_agent_id }, { creationPending: true, creationOrigin: { originType: "direct_user", operationId: input.requestId } });
         const current = this.store.getTask(task.id);
         const started = await this.startWorkSession({ taskId, assigneeAgentId: parent.main_agent_id,
           expectedTaskVersion: Number(current.resource_version ?? 1), providerId: source.reference.providerId,
@@ -170,11 +170,7 @@ export class SessionForkService {
         [session ? "finalizing" : "failed", error.code ?? "FORK_FAILED", error.message, input.requestId]);
       // A failed new Task must not look like a ready, empty task awaiting instructions.
       if (taskId && this.store.getTask(taskId) && !this.store.getTask(taskId).current_session_id) {
-        try { this.workService.deleteTask(taskId); }
-        catch (cleanupError) {
-          error.cleanupError = cleanupError.message;
-          this.store.setTaskArchived(taskId, true);
-        }
+        this.store.setTaskCreationState(taskId, "failed", error.code ?? "FORK_FAILED");
       }
       this.store.scheduleSave();
       throw error;

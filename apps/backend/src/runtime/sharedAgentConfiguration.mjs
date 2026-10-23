@@ -7,7 +7,6 @@ const execFileAsync = promisify(execFile);
 const EXCLUDE_HEADER = "# Corptie shared Agent configuration";
 
 export const DEFAULT_SHARED_AGENT_CONFIGURATION_PATHS = Object.freeze([
-  ".corptie",
   ".agents",
   ".agent",
   ".codex",
@@ -35,6 +34,8 @@ export async function linkSharedAgentConfiguration(options) {
   };
 
   for (const relativePath of paths) {
+    // .corptie is Worktree-local state, never shared Agent configuration.
+    if (String(relativePath).split(/[\\/]/u).some(part => part.toLowerCase() === ".corptie")) continue;
     const source = join(mainPath, relativePath);
     const target = join(targetPath, relativePath);
     if (!await pathExists(source)) {

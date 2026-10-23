@@ -91,10 +91,11 @@ test("common Task creation applies configured runtime for every Provider without
     let task = null, command = null;
     const saved = { providerId, model: "chosen-model", reasoningLevel: "high" };
     const store = { settings: () => ({ newSessionDefaults: { taskCreation: saved } }),
-      getTask: () => task, getSession: () => ({ id: "session:existing" }) };
-    const workService = { store, createTask: input => (task = { ...input, main_agent_id: input.mainAgentId, resource_version: 1 }), getTask: () => task };
-    const options = { workService, taskInput: { title: "New", mainAgentId: "agent:one" }, sourceSessionId: "session:source",
-      idempotencyKey: "test", startWorkSession: async input => { command = input; return { status: "ready", session: { id: "session:new" } }; } };
+      getTask: () => task, getSession: id => ({ id, taskId: task.id, workId: task.workId }),
+      setTaskCreationState: (_id, state) => Object.assign(task, { creation_state: state }) };
+    const workService = { store, createTask: input => (task = { ...input, work_id: input.workId, main_agent_id: input.mainAgentId, resource_version: 1 }), getTask: () => task };
+    const options = { workService, taskInput: { workId: "work:one", title: "New", mainAgentId: "agent:one" }, sourceSessionId: "session:source",
+      idempotencyKey: "test", startWorkSession: async input => { command = input; task.current_session_id = "session:new"; return { status: "ready", session: { id: "session:new" } }; } };
     await createTaskAndSession(options);
     assert.equal(command.providerId, saved.providerId);
     assert.equal(command.model, saved.model);

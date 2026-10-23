@@ -211,6 +211,8 @@ export function presentTaskAcceptance(task, options = {}) {
     archived: Boolean(task.archived),
     mainAgentId: task.main_agent_id ?? null,
     currentSessionId: task.current_session_id ?? null,
+    creationState: task.creation_state ?? "ready",
+    creationErrorCode: task.creation_error_code ?? null,
     executionStatus: task.execution_status,
     hasPendingScheduledWake: options.hasPendingScheduledWake === true,
     userSummary: presentTaskSummary(task),
