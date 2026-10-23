@@ -30,7 +30,7 @@ test("resource catalog: scoped metadata, fixed versions, source discovery and au
   const api = new ClientResourceAPI({ store, artifacts }), identity = { deviceId: "test-user" };
   const core = new CollaborationCore(store);
   const agent = store.createAgent({ name: "Resource Session", provider: "claude-sdk" });
-  for (const workId of ["work:a", "work:b"]) store.createWork({ id: workId, name: workId, contributorAgentIds: [agent.agentId] });
+  for (const workId of ["work:a", "work:b"]) store.createWork({ id: workId, name: workId.replace(":", "-"), contributorAgentIds: [agent.agentId] });
   store.createTask({ id: "task:a", workId: "work:a", title: "SDK", mainAgentId: agent.agentId });
   store.upsertSession({ id: "session:a", title: "SDK Session", provider: "claude-sdk", status: "running", sessionKind: "worker", agentId: agent.agentId, workId: "work:a", taskId: "task:a" });
   store.bindSessionToTask("session:a", "task:a", "work:a"); core.bindSession({ agentId: agent.agentId, sessionId: "session:a" });
@@ -88,6 +88,9 @@ test("resource catalog: scoped metadata, fixed versions, source discovery and au
       assert.equal(Buffer.from(exported.dataBase64, "base64").toString(), page.content);
       assert.ok(api.detail(identity, created.artifactId).references.every(ref => ref.taskId || ref.sessionId));
       await assert.rejects(api.command(identity, created.artifactId, { action: "metadata", title: "bad", expectedRevision: -1 }), { code: "RESOURCE_REVISION_CONFLICT" });
+      await api.command(identity, created.artifactId, { action: "metadata", title: "SDK updated", expectedRevision: detail.resource.revision });
+      assert.equal(store.getArtifact(created.artifactId).title, "SDK updated");
+      assert.ok(store.listArtifactVersions(created.artifactId).every(version => version.storageKey.startsWith("files/SDK updated")));
       await assert.rejects(api.read({ ...identity, revalidate: () => { throw Object.assign(Error("revoked"), { status: 403 }); } }, created.artifactId,
         new URLSearchParams({ version: "1", hash: old.contentHash, readId: "revoked-resource-read" })), { status: 403 });
     });

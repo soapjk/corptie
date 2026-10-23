@@ -118,7 +118,7 @@ export class ClientResourceAPI {
     if (!this.writesAllowed) throw deviceError("RESOURCE_READ_ONLY", 403);
     const row = this.row(id), context = this.context(row, identity);
     if (input.expectedRevision !== row.resourceVersion) throw deviceError("RESOURCE_REVISION_CONFLICT", 409);
-    if (input.action === "metadata") this.artifacts.updateMetadata(context, id, { title: input.title, summary: input.summary });
+    if (input.action === "metadata") await this.artifacts.updateMetadata(context, id, { title: input.title, summary: input.summary });
     else if (input.action === "export") return this.artifacts.downloadForUser(context, id, { version: input.version, contentHash: input.hash, confirmed: input.confirmed });
     else if (input.action === "publish") {
       if (typeof input.content !== "string" || Buffer.byteLength(input.content) > 131072) throw deviceError("RESOURCE_INPUT_INVALID", 400);
