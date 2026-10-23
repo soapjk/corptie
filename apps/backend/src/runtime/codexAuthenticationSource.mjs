@@ -37,10 +37,16 @@ export async function readCodexAuthenticationSource(sourceAuthPath, options = {}
   // Respect an explicit store selection: a leftover file/Keychain entry may
   // belong to a logged-out account. Codex's auto mode permits file fallback.
   // Unconfigured installations can discover either supported persisted store.
-  const readers = preference === "keyring" ? [keychain]
-    : preference === "auto" ? [keychain, file]
+  if (preference === "keyring" && options.allowKeychainRead !== true) {
+    throw Object.assign(new Error("本机认证保存在系统钥匙串中，请明确选择导入钥匙串或在独立环境重新登录。"), {
+      code: "PROVIDER_AUTH_IMPORT_REQUIRES_CONFIRMATION"
+    });
+  }
+  const permittedKeychain = options.allowKeychainRead === true ? [keychain] : [];
+  const readers = preference === "keyring" ? permittedKeychain
+    : preference === "auto" ? [...permittedKeychain, file]
       : preference === "file" ? [file]
-        : preference === "ephemeral" ? [] : [file, keychain];
+        : preference === "ephemeral" ? [] : [file, ...permittedKeychain];
   let failed = false;
   for (const read of readers) {
     try {

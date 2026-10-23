@@ -23,7 +23,7 @@ test("file authentication works without reading Keychain or importing native con
     const nativeConfig = '# User settings\nmodel = "native-model"\n';
     await writeFile(join(home, "config.toml"), nativeConfig);
     const auth = await readCodexAuthenticationSource(authPath, {
-      platform: "darwin", readKeychainCredential: () => assert.fail("unexpected Keychain access")
+      platform: "darwin", allowKeychainRead: true, readKeychainCredential: () => assert.fail("unexpected Keychain access")
     });
     assert.equal(auth.source, "copied");
     assert.deepEqual(JSON.parse(auth.content), JSON.parse(fileAuth));
@@ -38,7 +38,7 @@ for (const preference of ["keyring", "auto"]) {
       await writeFile(authPath, fileAuth);
       await writeFile(join(home, "config.toml"), `cli_auth_credentials_store = '${preference}' # login\n`);
       const auth = await readCodexAuthenticationSource(authPath, {
-        platform: "darwin", readKeychainCredential: async ({ service, account }) => {
+        platform: "darwin", allowKeychainRead: true, readKeychainCredential: async ({ service, account }) => {
           assert.equal(service, "Codex Auth");
           assert.equal(account, await codexKeychainAccount(home));
           return keychainAuth;
@@ -54,7 +54,7 @@ for (const preference of ["keyring", "auto"]) {
 test("missing file authentication reuses an existing Keychain login", async () => {
   await fixture(async ({ authPath }) => {
     const auth = await readCodexAuthenticationSource(authPath, {
-      platform: "darwin", readKeychainCredential: async () => keychainAuth
+      platform: "darwin", allowKeychainRead: true, readKeychainCredential: async () => keychainAuth
     });
     assert.equal(auth.source, "keychain");
   });
@@ -65,7 +65,7 @@ test("unavailable Keychain falls back to existing file authentication", async ()
     await writeFile(authPath, fileAuth);
     await writeFile(join(home, "config.toml"), 'cli_auth_credentials_store = "auto"\n');
     const auth = await readCodexAuthenticationSource(authPath, {
-      platform: "darwin", readKeychainCredential: async () => { throw new Error("secret diagnostic"); }
+      platform: "darwin", allowKeychainRead: true, readKeychainCredential: async () => { throw new Error("secret diagnostic"); }
     });
     assert.equal(auth.source, "copied");
   });
@@ -76,10 +76,10 @@ test("explicit keyring selection never falls back to a stale file account", asyn
     await writeFile(authPath, fileAuth);
     await writeFile(join(home, "config.toml"), 'cli_auth_credentials_store = "keyring"\n');
     await assert.rejects(readCodexAuthenticationSource(authPath, {
-      platform: "darwin", readKeychainCredential: async () => { throw new Error("access denied"); }
+      platform: "darwin", allowKeychainRead: true, readKeychainCredential: async () => { throw new Error("access denied"); }
     }), /钥匙串/);
     assert.equal(await readCodexAuthenticationSource(authPath, {
-      platform: "darwin", readKeychainCredential: async () => null
+      platform: "darwin", allowKeychainRead: true, readKeychainCredential: async () => null
     }), null);
   });
 });
@@ -88,10 +88,10 @@ test("empty authentication files do not mark an unauthenticated installation as 
   await fixture(async ({ authPath }) => {
     await writeFile(authPath, '{}\n');
     assert.equal(await readCodexAuthenticationSource(authPath, {
-      platform: "darwin", readKeychainCredential: async () => null
+      platform: "darwin", allowKeychainRead: true, readKeychainCredential: async () => null
     }), null);
     assert.equal((await readCodexAuthenticationSource(authPath, {
-      platform: "darwin", readKeychainCredential: async () => keychainAuth
+      platform: "darwin", allowKeychainRead: true, readKeychainCredential: async () => keychainAuth
     })).source, "keychain");
   });
 });
@@ -101,7 +101,7 @@ test("explicit file and ephemeral selection cannot import a residual Keychain lo
     for (const preference of ["file", "ephemeral"]) {
       await writeFile(join(home, "config.toml"), `cli_auth_credentials_store = "${preference}"\n`);
       assert.equal(await readCodexAuthenticationSource(authPath, {
-        platform: "darwin", readKeychainCredential: () => assert.fail("unexpected residual Keychain login")
+        platform: "darwin", allowKeychainRead: true, readKeychainCredential: () => assert.fail("unexpected residual Keychain login")
       }), null);
     }
   });
@@ -112,7 +112,7 @@ test("table-scoped settings do not switch the native account", async () => {
     await writeFile(authPath, fileAuth);
     await writeFile(join(home, "config.toml"), '[profiles.other]\ncli_auth_credentials_store = "keyring"\n');
     const auth = await readCodexAuthenticationSource(authPath, {
-      platform: "darwin", readKeychainCredential: () => assert.fail("unexpected Keychain access")
+      platform: "darwin", allowKeychainRead: true, readKeychainCredential: () => assert.fail("unexpected Keychain access")
     });
     assert.equal(auth.source, "copied");
   });
@@ -133,7 +133,7 @@ test("Keychain account follows Codex's canonical-home hash including symlinks", 
 test("missing login returns null and unsupported hosts never invoke macOS security", async () => {
   await fixture(async ({ authPath }) => {
     assert.equal(await readCodexAuthenticationSource(authPath, {
-      platform: "darwin", readKeychainCredential: async () => null
+      platform: "darwin", allowKeychainRead: true, readKeychainCredential: async () => null
     }), null);
     assert.equal(await readCodexAuthenticationSource(authPath, {
       platform: "linux", readKeychainCredential: () => assert.fail("unexpected macOS command")
@@ -147,7 +147,7 @@ test("invalid credential JSON and Keychain diagnostics never leak credential mat
       throw Object.assign(new Error("test-secret"), { stdout: "test-secret" });
     }]) {
       await assert.rejects(readCodexAuthenticationSource(authPath, {
-        platform: "darwin", readKeychainCredential: reader
+        platform: "darwin", allowKeychainRead: true, readKeychainCredential: reader
       }), error => !error.message.includes("test-secret") && error.cause == null);
     }
   });
@@ -168,4 +168,16 @@ test("security lookup targets only the exact Codex service and account without a
   await assert.rejects(readCodexKeychainCredential({ service: "Codex Auth", account: "cli|abc" }, async () => {
     throw Object.assign(new Error("test-secret"), { code: 36, stdout: "test-secret" });
   }), error => !error.message.includes("test-secret") && error.cause == null);
+});
+
+
+test("default import never probes the system store and keyring needs explicit consent", async () => {
+  await fixture(async ({home, authPath}) => {
+    let calls=0;
+    assert.equal(await readCodexAuthenticationSource(authPath,{platform:"darwin",readKeychainCredential:()=>{calls++;}}),null);
+    await writeFile(join(home,"config.toml"),'cli_auth_credentials_store = "keyring"\n');
+    await assert.rejects(readCodexAuthenticationSource(authPath,{platform:"darwin",readKeychainCredential:()=>{calls++;}}),
+      {code:"PROVIDER_AUTH_IMPORT_REQUIRES_CONFIRMATION"});
+    assert.equal(calls,0);
+  });
 });

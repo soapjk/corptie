@@ -1,6 +1,6 @@
 export function createBackendShutdown({
   backgroundAgentService, memoryExtractionScheduler, getClientDeviceGateway, taskSummaryService,
-  turnObservability, runtimeActivity, mcpCleanupInterval, turnExecutionProbe,
+  turnObservability, runtimeActivity, mcpCleanupInterval, turnExecutionProbe, mcpRegistryService,
   stateSyncPublisher, scheduledSessionTaskService, getResetForecastMonitor,
   openClackyManager, feishuGateway, codexRuntime, skillMcpGateway,
   runIsolationCoordinator, projectCodeFreshnessMonitor,
@@ -19,6 +19,8 @@ export function createBackendShutdown({
       turnObservability.flush();
       runtimeActivity.stopTimers();
       clearInterval(mcpCleanupInterval);
+      mcpRegistryService?.credentialMigration?.cancel();
+      await mcpRegistryService?.secretStore?.pause?.();
       stateSyncPublisher.cancelPendingPublish();
       runtimeActivity.closeTimelinePublisher();
       scheduledSessionTaskService.stop();

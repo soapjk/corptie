@@ -1507,3 +1507,33 @@
 "加载更多子任务" = "Load more subtasks";
 "独立 Task" = "Independent task";
 "与父分支" = "Compared with parent";
+
+"本地凭据存储" = "Local credential storage";
+
+"登录凭据保存在仅当前系统用户可读写的本地文件中。同一用户运行的其他程序可能读取这些文件。" = "Credentials are stored in files readable only by the current system user. Other programs running as that user may read them.";
+
+"旧凭据仅在点击导入后读取，macOS 可能要求授权。拒绝授权不会删除原数据。" = "Old credentials are read only after you choose Import. macOS may request permission. Denying it does not delete existing data.";
+
+"导入旧 Cloud 登录" = "Import previous Cloud sign-in";
+
+"导入旧缓存密钥" = "Import previous cache key";
+
+"密钥已导入；旧记录会在实际访问时验证，尚未完整验证。原密文未修改。" = "Key imported. Existing records will be verified when accessed; verification is incomplete. Original encrypted files were preserved.";
+
+"密钥导入未完成，原数据已保留。" = "Key import did not complete. Existing data was preserved.";
+
+"导入旧 MCP 凭据" = "Import previous MCP credentials";
+
+"停止导入" = "Stop import";
+
+"开发版不导入正式版的旧缓存密钥。" = "Development does not import production cache keys.";
+
+"正在导入旧 MCP 凭据…" = "Importing previous MCP credentials…";
+
+"MCP 导入未完成；已保存的项目保留，可再次导入或重新配置。" = "MCP import did not complete. Saved entries were retained; you can import again or reconfigure.";
+
+"已停止等待；已保存的项目保留。" = "Stopped waiting. Saved entries were retained.";
+
+"MCP 导入请求失败；未自动重发。可稍后检查或重新配置。" = "MCP import request failed and was not automatically resent. Check later or reconfigure.";
+
+"MCP import completed: %d migrated, %d missing. The Keychain was unchanged." = "MCP import completed: %d migrated, %d missing. The Keychain was unchanged.";

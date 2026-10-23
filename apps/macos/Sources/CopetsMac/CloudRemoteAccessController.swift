@@ -83,11 +83,10 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
     @Published private(set) var currentDeviceID: UUID?
     @Published private(set) var status = "尚未登录 Corptie Cloud"
 
-    private let vault = CloudCredentialVault(
-        service: CorptieAppEnvironment.cloudCredentialService,
-        storage: CorptieAppEnvironment.usesDataProtectionCloudKeychain
-            ? .dataProtectionKeychain : .legacyKeychain
-    )
+    private let vault = MacCredentialServices.store
+    private var credentialGeneration: Int?
+    private var operationGeneration = UUID()
+    private var refreshTask: Task<MacAppCredentialStore.CloudState, Error>?
     private var credential: CloudCredential?
     private var webSession: ASWebAuthenticationSession?
     private var agent: CloudRelayMacAgent?
@@ -103,20 +102,20 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
     }
 
     func restore() async {
-        guard !restored else { return }
+        guard !restored, !restoring else { return }
         restored = true
         restoring = true
         defer { restoring = false }
         do {
             let configuration = try Self.configuration()
-            guard let saved = try await vault.loadMigrating(
-                configuration: configuration,
-                legacyService: "com.corptie.mac.cloud-credentials"
-            ) else { return }
+            let generation = operationGeneration
+            let stored = try await vault.state(configuration: configuration)
+            guard generation == operationGeneration else { return }
+            guard let saved = stored.credential else { return }
+            credentialGeneration = stored.generation
             credential = saved
             currentDeviceID = saved.identity.id
             signedIn = true
-            try await refreshDevices()
             if enabled { startAgent() }
             else { status = "已登录；远程连接已关闭" }
         } catch {
@@ -124,7 +123,8 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
                 status = "设备注册未完成，正在自动重试…"
                 startAgent()
             } else {
-                status = "Cloud 凭据不可用，请重新登录"
+                restored = false
+                status = "Cloud 凭据不可用，请检查本地存储或重新登录"
             }
         }
     }
@@ -135,6 +135,9 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
         defer { busy = false }
         do {
             let configuration = try Self.configuration()
+            let generation = UUID(); operationGeneration = generation
+            refreshTask?.cancel(); refreshTask = nil
+            let expected = try await vault.state(configuration: configuration).generation
             let authorization = try CloudOAuthAuthorization(configuration: configuration)
             let callback = try await authenticate(at: authorization.url)
             let code = try authorization.code(from: callback, configuration: configuration)
@@ -146,7 +149,9 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
                 kind: .mac, displayName: name, privateKey: CloudRelayDeviceKey().privateKeyData
             )
             let next = CloudCredential(tokens: tokens, identity: identity)
-            try await vault.save(next, configuration: configuration)
+            guard generation == operationGeneration else { return }
+            credentialGeneration = try await vault.save(next, configuration: configuration, expectedGeneration: expected)
+            guard generation == operationGeneration else { return }
             credential = next
             directoryPolicy.invalidate()
             currentDeviceID = next.identity.id
@@ -207,18 +212,17 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
         guard !busy else { return }
         busy = true
         defer { busy = false }
+        operationGeneration = UUID()
+        refreshTask?.cancel(); refreshTask = nil
         stopAgent()
         var serverRevoked = false
         if let configuration = try? Self.configuration(),
-           let current = try? await validCredential(configuration),
+           let current = credential,
            let client = try? CloudDeviceClient(endpoint: configuration.endpoint, accessToken: current.tokens.accessToken) {
             serverRevoked = (try? await client.revokeCurrent()) != nil
         }
         do {
-            try await vault.removeIncludingLegacy(
-                configuration: Self.configuration(),
-                legacyService: "com.corptie.mac.cloud-credentials"
-            )
+            try await vault.remove(configuration: Self.configuration())
         }
         catch { status = "无法清除本机 Cloud 凭据"; return }
         credential = nil
@@ -277,6 +281,10 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
                     Self.connectionLog.error("Mac relay recovery: stage=\(stage, privacy: .public) reason=\(ConnectionDiagnostic.failure(error), privacy: .public) elapsed=\(String(describing: started.duration(to: .now)), privacy: .public) retrySeconds=\(delay)")
                     self.connected = false
                     self.agent = nil
+                    if error is LocalCredentialError {
+                        self.status = "本地登录凭据无法保存或读取，请检查存储后重新登录"
+                        break
+                    }
                     if CloudDirectoryRefreshPolicy.requiresReauthentication(error, credentialStage: stage == "credential") {
                         self.directoryPolicy.invalidate()
                         self.status = "Cloud 登录授权已失效，请重新登录；本机凭据未清除。"
@@ -321,17 +329,54 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
     }
 
     private func validCredential(_ configuration: CloudOAuthConfiguration) async throws -> CloudCredential {
-        let loaded: CloudCredential?
-        if let credential { loaded = credential }
-        else { loaded = try await vault.load(configuration: configuration) }
-        guard var current = loaded else { throw ClientConnectionError.invalidCredential }
-        if current.tokens.isNearExpiry {
-            let tokens = try await CloudOAuthTokenClient(configuration: configuration).refresh(current.tokens)
-            current = CloudCredential(tokens: tokens, identity: current.identity)
-            try await vault.save(current, configuration: configuration)
+        let generation = operationGeneration
+        if let refreshTask {
+            let value = try await refreshTask.value
+            guard generation == operationGeneration, let credential = value.credential else { throw CancellationError() }
+            return credential
         }
-        credential = current
-        return current
+        let stored = try await vault.state(configuration: configuration)
+        guard generation == operationGeneration, let current = stored.credential else { throw ClientConnectionError.invalidCredential }
+        // Actor reentrancy while reading the file may have installed a refresh.
+        if let refreshTask {
+            let value = try await refreshTask.value
+            guard generation == operationGeneration, let next = value.credential else { throw CancellationError() }
+            return next
+        }
+        if !current.tokens.isNearExpiry { credential = current; credentialGeneration = stored.generation; return current }
+        let vault = self.vault
+        let task = Task<MacAppCredentialStore.CloudState, Error> {
+            let tokens = try await CloudOAuthTokenClient(configuration: configuration).refresh(current.tokens)
+            try Task.checkCancellation()
+            let next = CloudCredential(tokens: tokens, identity: current.identity)
+            _ = try await vault.save(next, configuration: configuration, expectedGeneration: stored.generation)
+            return try await vault.state(configuration: configuration)
+        }
+        refreshTask = task
+        defer { if generation == operationGeneration { refreshTask = nil } }
+        let result = try await task.value
+        guard generation == operationGeneration, let next = result.credential else { throw CancellationError() }
+        credential = next; credentialGeneration = result.generation
+        return next
+    }
+
+    func importLegacyCredentials() async {
+        guard !busy, !restoring else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            let configuration = try Self.configuration()
+            let legacy = CloudCredentialVault(service: CorptieAppEnvironment.cloudCredentialService,
+                storage: CorptieAppEnvironment.usesDataProtectionCloudKeychain ? .dataProtectionKeychain : .legacyKeychain)
+            var saved = try await legacy.load(configuration: configuration)
+            if saved == nil && CorptieAppEnvironment.usesDataProtectionCloudKeychain {
+                saved = try await CloudCredentialVault(service: "com.corptie.mac.cloud-credentials").load(configuration: configuration)
+            }
+            guard let saved else { status = "未找到旧登录，请重新登录"; return }
+            try await vault.importCloud(saved, configuration: configuration)
+            restored = false
+            await restore()
+        } catch { status = "旧登录导入未完成；原凭据已保留，请重试或重新登录" }
     }
 
     private func registerAndLoad(_ current: CloudCredential, configuration: CloudOAuthConfiguration) async throws {

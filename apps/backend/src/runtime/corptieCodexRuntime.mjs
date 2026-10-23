@@ -257,6 +257,7 @@ async function bootstrapAuthenticationOnce(paths, options) {
   }
   const authentication = await readCodexAuthenticationSource(paths.sourceAuthPath, {
     platform: options.authenticationPlatform,
+    allowKeychainRead: options.allowKeychainImport === true,
     readKeychainCredential: options.readKeychainCredential
   });
   if (!authentication) return false;

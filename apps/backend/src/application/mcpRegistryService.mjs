@@ -1,3 +1,4 @@
+import { createMcpCredentialMigration } from "./mcpCredentialMigration.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
@@ -15,13 +16,37 @@ import { createMcpSecretStore } from "./mcpSecretStore.mjs";
 // Independent MCP installations are resources. A Session receives tools only
 // through its bound Agent's current assignment and the fixed Tool Host.
 export class McpRegistryService {
-  constructor({ store, timeoutMs = 10_000, packageRoot, secretStore } = {}) {
+  constructor({ store, timeoutMs = 10_000, packageRoot, secretStore, ephemeral = false } = {}) {
     if (!store) throw new TypeError("McpRegistryService requires a store.");
     this.store = store;
     this.timeoutMs = timeoutMs;
     this.packageRoot = resolve(packageRoot ?? join(store.dataDir ?? store.dataRoot ?? process.cwd(), "mcp-packages"));
-    this.secretStore = secretStore ?? createMcpSecretStore({ dataRoot: store.dataDir ?? store.dataRoot ?? process.cwd() });
+    this.assignmentMutations = new Map();
+    this.secretStore = secretStore ?? createMcpSecretStore({ dataRoot: store.dataDir ?? store.dataRoot ?? null, environmentId: store.layout?.environment ?? "production", ephemeral });
   }
+
+  get credentialMigration() {
+    return this._credentialMigration ??= createMcpCredentialMigration(this);
+  }
+
+  async initializeCredentials() { await this.secretStore.initialize?.(); }
+
+  async #discardUncommittedCredential(reference, serverId) {
+    try { await this.secretStore.delete(reference); }
+    catch {
+      // Keep a durable retry when compensation fails, without replacing the
+      // original registration/SQL error with a storage cleanup error.
+      try { this.#enqueueCleanup("credential_ref", reference, serverId); } catch { /* original DB error wins */ }
+    }
+  }
+
+  credentialMigrationReferences() {
+    return [...new Set(this.store.selectAll(`SELECT credential_ref FROM mcp_server_registry
+      WHERE credential_ref IS NOT NULL UNION SELECT credential_ref FROM mcp_server_package_versions
+      WHERE credential_ref IS NOT NULL UNION SELECT credential_ref FROM agent_mcp_assignments
+      WHERE credential_ref IS NOT NULL`).map(row => row.credential_ref))];
+  }
+
 
   list() {
     return this.store.selectAll(`
@@ -123,12 +148,12 @@ export class McpRegistryService {
     const credentials = credentialPayload(input, verified.transport);
     const serverId = `mcp:${randomUUID()}`;
     const credentialRef = credentials ? `${serverId}:1:${randomUUID()}` : null;
-    if (credentialRef) this.secretStore.put(credentialRef, credentials);
+    if (credentialRef) await this.secretStore.put(credentialRef, credentials);
     try {
       return this.#saveVerified(verified, { serverId, credentialRef, installRequestId,
         credentialNames: credentials ? Object.keys(verified.transport === "stdio" ? credentials.env : credentials.headers) : [] });
     } catch (error) {
-      if (credentialRef) this.secretStore.delete(credentialRef);
+      if (credentialRef) await this.#discardUncommittedCredential(credentialRef, serverId);
       const winner = this.#installedForRequest(installRequestId);
       if (winner) return { ...winner, idempotentReplay: true };
       throw error;
@@ -179,7 +204,7 @@ export class McpRegistryService {
       const verified = await this.verify(config);
       const credentials = credentialPayload(config, verified.transport);
       const credentialRef = credentials ? `${serverId}:1:${randomUUID()}` : null;
-      if (credentialRef) this.secretStore.put(credentialRef, credentials);
+      if (credentialRef) await this.secretStore.put(credentialRef, credentials);
       try {
         return this.#saveVerified(verified, {
           serverId,
@@ -194,7 +219,7 @@ export class McpRegistryService {
           credentialNames: Object.keys(credentials?.[verified.transport === "stdio" ? "env" : "headers"] ?? {})
         });
       } catch (error) {
-        if (credentialRef) this.secretStore.delete(credentialRef);
+        if (credentialRef) await this.#discardUncommittedCredential(credentialRef, serverId);
         throw error;
       }
     } catch (error) {
@@ -281,7 +306,7 @@ export class McpRegistryService {
             WHERE credential_ref = ? UNION SELECT 1 FROM mcp_server_package_versions
             WHERE credential_ref = ? UNION SELECT 1 FROM agent_mcp_assignments
             WHERE credential_ref = ? LIMIT 1`, [row.target, row.target, row.target]);
-          if (!stillReferenced) this.secretStore.delete(row.target);
+          if (!stillReferenced) await this.secretStore.delete(row.target);
         } else throw registryError("MCP_CLEANUP_INVALID", "MCP cleanup item is invalid.", 409);
         this.store.db.run(`DELETE FROM mcp_cleanup_queue
           WHERE cleanup_kind = ? AND target = ?`, [row.cleanup_kind, row.target]);
@@ -359,7 +384,7 @@ export class McpRegistryService {
         ? (explicitCredential ? `${serverId}:${current.configRevision + 1}:${randomUUID()}` : current.credentialRef)
         : null;
       wroteCredentials = Boolean(credentialRef && credentialRef !== current.credentialRef);
-      if (wroteCredentials) this.secretStore.put(credentialRef, credentials);
+      if (wroteCredentials) await this.secretStore.put(credentialRef, credentials);
       const now = new Date().toISOString();
       this.store.db.run("BEGIN IMMEDIATE");
       try {
@@ -403,7 +428,7 @@ export class McpRegistryService {
       return { ...this.get(serverId), cleanupPending };
     } catch (error) {
       if (wroteCredentials) {
-        try { this.secretStore.delete(credentialRef); } catch { /* preserve original failure */ }
+        await this.#discardUncommittedCredential(credentialRef, serverId);
       }
       await rm(destination, { recursive: true, force: true });
       throw error;
@@ -462,7 +487,7 @@ export class McpRegistryService {
     const wroteCredentials = Boolean(explicitCredentials && supplied);
     if (wroteCredentials) {
       credentialRef = `${serverId}:${current.configRevision + 1}:${randomUUID()}`;
-      this.secretStore.put(credentialRef, supplied);
+      await this.secretStore.put(credentialRef, supplied);
     } else if (!credentials) credentialRef = null;
     const now = new Date().toISOString();
     try {
@@ -505,7 +530,7 @@ export class McpRegistryService {
       }
     } catch (error) {
       if (wroteCredentials) {
-        try { this.secretStore.delete(credentialRef); } catch { /* preserve rollback failure */ }
+        await this.#discardUncommittedCredential(credentialRef, serverId);
       }
       throw error;
     }
@@ -585,7 +610,7 @@ export class McpRegistryService {
         ? `${serverId}:${current.configRevision + 1}:${randomUUID()}` : current.credentialRef)
       : null;
     const wroteCredentials = credentialRef && credentialRef !== current.credentialRef;
-    if (wroteCredentials) this.secretStore.put(credentialRef, credentials);
+    if (wroteCredentials) await this.secretStore.put(credentialRef, credentials);
     const now = new Date().toISOString();
     try {
       this.store.db.run("BEGIN IMMEDIATE");
@@ -614,7 +639,7 @@ export class McpRegistryService {
       }
     } catch (error) {
       if (wroteCredentials) {
-        try { this.secretStore.delete(credentialRef); } catch { /* preserve update failure */ }
+        await this.#discardUncommittedCredential(credentialRef, serverId);
       }
       throw error;
     }
@@ -694,6 +719,15 @@ export class McpRegistryService {
   }
 
   setAssignment(agentId, serverId, assigned, options = {}) {
+    const pending = (this.assignmentMutations.get(serverId) ?? Promise.resolve())
+      .then(() => this.#setAssignment(agentId, serverId, assigned, options));
+    const tail = pending.catch(() => {});
+    this.assignmentMutations.set(serverId, tail);
+    void tail.then(() => { if (this.assignmentMutations.get(serverId) === tail) this.assignmentMutations.delete(serverId); });
+    return pending;
+  }
+
+  async #setAssignment(agentId, serverId, assigned, options) {
     if (!this.store.getAgent(agentId)) throw registryError("AGENT_NOT_FOUND", "Agent not found.", 404);
     if (isPlatformAssistant(agentId)) {
       throw registryError("PLATFORM_ASSISTANT_PROTECTED", "The built-in assistant's MCP assignments are managed by Corptie.", 403);
@@ -728,7 +762,7 @@ export class McpRegistryService {
       || (assigned && toolAllowlistJson !== (existing?.tool_allowlist_json ?? null));
     if (!changed) return { agentId, serverId, assigned, hasOwnCredentials: Boolean(credentialRef),
       credentialNames, toolAllowlist, changed: false };
-    if (replacement) this.secretStore.put(credentialRef, replacement);
+    if (replacement) await this.secretStore.put(credentialRef, replacement);
     try {
       this.store.db.run("BEGIN IMMEDIATE");
       try {
@@ -761,7 +795,7 @@ export class McpRegistryService {
       }
     } catch (error) {
       if (replacement) {
-        try { this.secretStore.delete(credentialRef); } catch { /* preserve original failure */ }
+        await this.#discardUncommittedCredential(credentialRef, serverId);
       }
       throw error;
     }
@@ -898,18 +932,18 @@ export class McpRegistryService {
     return Object.fromEntries(rows.map((row) => {
       const selectedRef = row.assignment_credential_ref ?? row.credential_ref;
       const toolAllowlist = row.tool_allowlist_json === null ? null : JSON.parse(row.tool_allowlist_json);
-      let credentials;
+      let credentials, storageError;
       try { credentials = selectedRef ? this.secretStore.get(selectedRef) : null; }
-      catch { credentials = null; }
-      const unavailableCode = selectedRef && !credentials ? "MCP_CREDENTIAL_MISSING" : null;
+      catch (error) { credentials = null; storageError = error.code ?? "MCP_CREDENTIAL_STORAGE_UNAVAILABLE"; }
+      const unavailableCode = selectedRef && !credentials ? storageError ?? "MCP_CREDENTIAL_MISSING" : null;
       return [serverKey(row.server_id), row.transport === "stdio"
         ? { serverId: row.server_id, type: "stdio", command: row.command, args: JSON.parse(row.args_json), cwd: row.cwd,
           env: { ...isolatedStdioEnv(), ...(credentials?.env ?? {}) }, isolatedEnv: true,
           displayName: row.name, observationRevision: row.verified_at,
-          credentialVersion: selectedRef ?? "none", toolAllowlist, unavailableCode }
+          credentialVersion: `${selectedRef ?? "none"}:${this.secretStore.revision?.() ?? 0}`, toolAllowlist, unavailableCode }
         : { serverId: row.server_id, type: row.transport, url: row.url, headers: credentials?.headers,
           displayName: row.name, observationRevision: row.verified_at,
-          credentialVersion: selectedRef ?? "none", toolAllowlist, unavailableCode }];
+          credentialVersion: `${selectedRef ?? "none"}:${this.secretStore.revision?.() ?? 0}`, toolAllowlist, unavailableCode }];
     }));
   }
 
@@ -924,7 +958,7 @@ export class McpRegistryService {
       WHERE a.agent_id = ? ORDER BY s.server_id
     `, [agentId]);
     return rows.length === 0 ? "none"
-      : createHash("sha256").update(JSON.stringify(rows)).digest("hex");
+      : createHash("sha256").update(JSON.stringify({ rows, credentialStorageRevision: this.secretStore.revision?.() ?? 0 })).digest("hex");
   }
 }
 
