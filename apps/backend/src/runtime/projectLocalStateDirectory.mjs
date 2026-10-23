@@ -56,7 +56,7 @@ function read(bound, create = false, expected = null) {
   const result = native().localStateDirectory(bound.root, create, bound.rootDevice, bound.rootInode,
     expected?.directoryDevice, expected?.directoryInode);
   if (result.errorCode) {
-    const error = failure(result.errorCode, "Cannot safely prepare .corptie. Check its type, permissions, existing content and ignore file.");
+    const error = failure(result.errorCode, `Cannot safely prepare .corptie (${result.errorCode}). Check for symbolic links, wrong types, permissions, existing content and ignore rules.`);
     error.localStateReceipt = { ...bound, nativeReceipt: result };
     throw error;
   }

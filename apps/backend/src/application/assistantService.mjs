@@ -149,32 +149,9 @@ export class AssistantService {
         ];
       }
       case "task.create": {
-        const works = this.workService.listWorks();
-        const specified = args.workId
-          ? works.find((o) => o.id === args.workId)
-          : null;
-        let work = specified ?? works[0];
-        if (!work) {
-          return [
-            { role: "user", content },
-            { role: "assistant", content: "还没有可用的 Work。请先新建 Work 并选择 Contributor Agent。" }
-          ];
-        }
-        const task = this.workService.createTask({
-          workId: work.id,
-          title: args.title || "未命名"
-        }, {
-          creationOrigin: { originType: "direct_user" }
-        });
-        return [
-          { role: "user", content },
-          {
-            role: "assistant",
-            kind: "receipt",
-            content: `已在目标「${work.name}」下创建工作项「${task.title}」`,
-            data: { type: "task", task, work }
-          }
-        ];
+        if (!this.workService.listWorks().length) return [{ role: "user", content },
+          { role: "assistant", content: "请先新建 Work 并选择 Contributor Agent，然后通过新建 Task 表单创建 Task 与会话。" }];
+        return [{ role: "user", content }, { role: "assistant", content: "请使用“新建 Task”表单创建。Task 和会话必须一起完成创建。" }];
       }
       case "agent.create": {
         const agent = this.store.createAgent({

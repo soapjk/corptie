@@ -652,7 +652,7 @@ export class WorkSessionStartupCoordinator {
       );
       requireSingleRowChange(this.store, "Startup operation changed before ready commit.");
       this.store.db.run(
-        `UPDATE tasks SET current_session_id=?, lifecycle_state='in_progress', execution_status=?,
+        `UPDATE tasks SET current_session_id=?, lifecycle_state='in_progress', execution_status=?, creation_state='ready', creation_error_code=NULL,
          main_agent_id=?, acceptance_assessment_json='{}',
          resource_version=resource_version+1, updated_at=?
          WHERE id=? AND resource_version=? AND lifecycle_state='todo'
@@ -842,12 +842,14 @@ export class WorkSessionStartupCoordinator {
       requireSingleRowChange(this.store, "Startup compensation result lost its state claim.");
       this.store.db.run(
         `UPDATE tasks SET
+         creation_error_code=CASE WHEN creation_state='pending' THEN ? ELSE creation_error_code END,
+         creation_state=CASE WHEN creation_state='pending' THEN 'failed' ELSE creation_state END,
          execution_status=CASE WHEN current_session_id=? THEN 'idle' ELSE execution_status END,
          lifecycle_state=CASE WHEN current_session_id=? THEN 'todo' ELSE lifecycle_state END,
          updated_at=?,
          current_session_id=CASE WHEN current_session_id=? THEN NULL ELSE current_session_id END,
          main_agent_id=CASE WHEN current_session_id=? THEN NULL ELSE main_agent_id END WHERE id=?`,
-        [current.legacy_session_id, current.legacy_session_id, now,
+        [current.error_code ?? errorCode, current.legacy_session_id, current.legacy_session_id, now,
           current.legacy_session_id, current.legacy_session_id, current.task_id]
       );
       this.#insertAudit(latest, manualRequired ? "startup.compensation_failed" : "startup.compensation_completed",

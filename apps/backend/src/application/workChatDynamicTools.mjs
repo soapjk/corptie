@@ -73,9 +73,7 @@ export class WorkChatOperationService {
     switch (text(args.action, "action")) {
       case "list": return this.workService.listTasksByWork(workId);
       case "get": return this.#task(workId, text(args.task_id, "task_id"));
-      case "create": return this.workService.createTask({
-        ...this.#taskPatch(workId, object(args.patch ?? {}, "patch")), workId, title: text(args.title, "title")
-      });
+      case "create": throw coded("TASK_CREATION_REQUIRES_SESSION_WORKFLOW", "Use the authenticated Task-and-Session creation workflow; metadata-only creation is forbidden.");
       case "update": {
         const item = this.#task(workId, text(args.task_id, "task_id"));
         return this.workService.updateTask(item.id, this.#taskPatch(workId, object(args.patch, "patch")));

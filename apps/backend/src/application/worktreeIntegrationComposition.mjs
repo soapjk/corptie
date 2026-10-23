@@ -150,7 +150,7 @@ export function createWorktreeIntegrationServices({
         acceptanceCriteria,
         priority: "high",
         mainAgentId: agent.agentId
-      });
+      }, { creationPending: true });
       let session;
       try {
         session = await startPreparedWorkSession({
@@ -163,7 +163,7 @@ export function createWorktreeIntegrationServices({
           sourceSessionId
         });
       } catch (error) {
-        workService.deleteTask(task.id);
+        if (!store.getTask(task.id)?.current_session_id) store.setTaskCreationState(task.id, "failed", error.code ?? "START_FAILED");
         throw error;
       }
       const finalized = store.finalizeConflictResolutionLaunch({
@@ -420,7 +420,7 @@ export function createWorktreeIntegrationServices({
         acceptanceCriteria,
         priority: "high",
         mainAgentId: agent.agentId
-      });
+      }, { creationPending: true });
       let session;
       try {
       const providerId = store.settings?.().newSessionDefaults?.taskCreation?.providerId
@@ -443,7 +443,7 @@ export function createWorktreeIntegrationServices({
           initialPrompt: prompt
         });
       } catch (error) {
-        if (error?.code !== "START_INITIAL_TURN_FAILED") workService.deleteTask(task.id);
+        if (!store.getTask(task.id)?.current_session_id) store.setTaskCreationState(task.id, "failed", error.code ?? "START_FAILED");
         throw error;
       }
       return {

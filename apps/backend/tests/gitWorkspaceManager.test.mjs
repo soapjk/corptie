@@ -79,11 +79,10 @@ test("createWorktree uses parameterized Git arguments, validates identity, and s
     assert.equal(switches.length, 1);
     assert.equal(switches[0].targetWorktreeId, result.worktree.worktreeId);
     assert.equal(switches[0].activeTurnId, "turn-active");
-    assert.deepEqual(result.sharedAgentConfiguration.linked.sort(), [".agents", ".corptie"]);
-    assert.equal(
-      await readlink(join(target, ".corptie")),
-      join(await realpath(fixture.repository), ".corptie")
-    );
+    assert.deepEqual(result.sharedAgentConfiguration.linked.sort(), [".agents"]);
+    assert.equal((await lstat(join(target, ".corptie"))).isSymbolicLink(), false);
+    assert.equal(await readFile(join(target, ".corptie/.gitignore"), "utf8"), "*\n");
+    await assert.rejects(readFile(join(target, ".corptie/private.json")), { code: "ENOENT" });
     assert.equal(
       await readlink(join(target, ".agents")),
       join(await realpath(fixture.repository), ".agents")
@@ -95,7 +94,7 @@ test("createWorktree uses parameterized Git arguments, validates identity, and s
     ], target)).trim();
     const excludes = await readFile(join(commonGitDir, "info", "exclude"), "utf8");
     assert.match(excludes, /^\/\.agents$/mu);
-    assert.match(excludes, /^\/\.corptie$/mu);
+    assert.doesNotMatch(excludes, /^\/\.corptie$/mu);
     const identity = await inspectGitWorkspace(target);
     assert.equal(identity.repositoryId, result.repositoryId);
   } finally {

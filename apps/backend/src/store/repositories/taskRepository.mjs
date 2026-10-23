@@ -49,8 +49,8 @@ export class TaskRepository {
       this.hierarchy.assertParentForCreate({ ...normalized, ...constraints });
       this.db.run(
         `INSERT INTO tasks (id, work_id, title, description, acceptance_criteria,
-          verification_criteria, priority, lifecycle_state, main_agent_id, auto_title_enabled, created_at, updated_at, parent_task_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          verification_criteria, priority, lifecycle_state, main_agent_id, auto_title_enabled, created_at, updated_at, parent_task_id, creation_state)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           normalized.workId,
@@ -65,6 +65,7 @@ export class TaskRepository {
           now,
           now,
           normalized.parentTaskId ?? null,
+          constraints.creationPending ? "pending" : "ready",
         ]
       );
       this.db.run(
@@ -97,11 +98,31 @@ export class TaskRepository {
     } : null;
   }
 
+  setTaskCreationState(id, state, errorCode = null) {
+    if (!["pending", "ready", "failed"].includes(state)) throw new TypeError("Invalid Task creation state.");
+    this.runInTransaction(() => {
+      const task = this.getTask(id);
+      if (!task) throw storeDomainError("TASK_NOT_FOUND", "Task was not found.", 404);
+      if (state === "ready") {
+        const session = task.current_session_id ? this.getSession(task.current_session_id) : null;
+        if (!session || session.id !== task.current_session_id || session.taskId !== task.id || session.workId !== task.work_id
+            || session.deletedAt || session.status === "deleted") {
+          throw storeDomainError("TASK_SESSION_BINDING_INCOMPLETE", "Task cannot be published without its persisted companion Session.", 409);
+        }
+      }
+      if (task.creation_state !== state || task.creation_error_code !== errorCode) {
+        this.db.run("UPDATE tasks SET creation_state=?, creation_error_code=? WHERE id=?", [state, errorCode, id]);
+      }
+    });
+    this.scheduleSave();
+    return this.getTask(id);
+  }
+
   listTasks(options = {}) {
     const includeCompleted = options.includeCompleted !== false;
     return this.selectAll(
       `SELECT * FROM tasks
-       WHERE COALESCE(deletion_status, '') <> 'deleted'
+       WHERE COALESCE(deletion_status, '') <> 'deleted' AND creation_state='ready'
          ${includeCompleted ? "" : "AND lifecycle_state <> 'done'"}
        ORDER BY created_at ASC`
     );
@@ -110,7 +131,7 @@ export class TaskRepository {
   listTasksByWork(workId) {
     return this.selectAll(
       `SELECT * FROM tasks
-       WHERE work_id = ? AND COALESCE(deletion_status, '') <> 'deleted'
+       WHERE work_id = ? AND COALESCE(deletion_status, '') <> 'deleted' AND creation_state='ready'
        ORDER BY created_at ASC`,
       [workId]
     );
@@ -134,7 +155,7 @@ export class TaskRepository {
     const rows = this.selectAll(
       `SELECT tasks.*, ${completionRankSQL} AS completion_rank
        FROM tasks
-       WHERE COALESCE(tasks.deletion_status, '') <> 'deleted'
+       WHERE COALESCE(tasks.deletion_status, '') <> 'deleted' AND tasks.creation_state='ready'
          ${workId ? "AND tasks.work_id = ?" : ""}
          ${queryTerms.length ? `AND (${queryTerms.map(() => "tasks.title LIKE ? ESCAPE '\\' OR tasks.description LIKE ? ESCAPE '\\'").join(" OR ")})` : ""}
          ${includeCompleted ? "" : "AND tasks.lifecycle_state <> 'done'"}

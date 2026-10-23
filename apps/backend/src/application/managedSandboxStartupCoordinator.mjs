@@ -140,7 +140,7 @@ export class ManagedSandboxStartupCoordinator {
         );
         requireSingleChange(this.store, "Managed Sandbox ready commit lost its claim.");
         this.store.db.run(
-          `UPDATE tasks SET current_session_id=?, lifecycle_state='in_progress', execution_status=?,
+          `UPDATE tasks SET current_session_id=?, lifecycle_state='in_progress', execution_status=?, creation_state='ready', creation_error_code=NULL,
            main_agent_id=?, acceptance_assessment_json='{}', resource_version=resource_version+1,
            updated_at=? WHERE id=? AND resource_version=? AND lifecycle_state='todo'
            AND current_session_id IS NULL AND COALESCE(deletion_status, '')=''`,
@@ -162,6 +162,8 @@ export class ManagedSandboxStartupCoordinator {
       }
       return this.#view(this.#row(operationId), false);
     } catch (error) {
+      this.store.db.run("UPDATE tasks SET creation_state='failed', creation_error_code=? WHERE id=? AND creation_state='pending'",
+        [error?.code ?? "START_MANAGED_SANDBOX_FAILED", command.taskId]);
       if (session?.id && this.#row(operationId)?.status !== "ready") {
         await this.providerWorkSessionPort.compensateSession({
           sessionId: session.id, startupOperationId: operationId,

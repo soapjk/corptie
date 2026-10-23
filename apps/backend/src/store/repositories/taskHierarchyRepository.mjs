@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-const active = "COALESCE(deletion_status,'') <> 'deleted'";
+const active = "COALESCE(deletion_status,'') <> 'deleted' AND creation_state='ready'";
 export function taskHierarchyError(code, message = code, statusCode = 409) {
   return Object.assign(new Error(message), { code, statusCode });
 }
@@ -19,7 +19,7 @@ export class TaskHierarchyRepository {
       throw taskHierarchyError("TASK_PARENT_VERSION_CONFLICT");
     }
     if (parent.parent_task_id) throw taskHierarchyError("TASK_MAX_DEPTH_EXCEEDED");
-    if (parent.archived || parent.lifecycle_state === "done" || parent.deletion_status) {
+    if (parent.archived || parent.lifecycle_state === "done" || parent.deletion_status || parent.creation_state !== "ready") {
       throw taskHierarchyError("TASK_PARENT_UNAVAILABLE");
     }
     const context = this.getTaskWorkspaceContext(parent);
@@ -34,7 +34,8 @@ export class TaskHierarchyRepository {
   }
 
   hasTaskChildren(taskId) {
-    return Boolean(this.selectOne(`SELECT 1 FROM tasks WHERE parent_task_id=? AND ${active} LIMIT 1`, [taskId]));
+    return Boolean(this.selectOne(`SELECT 1 FROM tasks WHERE parent_task_id=? AND COALESCE(deletion_status,'')<>'deleted'
+      AND (creation_state<>'failed' OR current_session_id IS NOT NULL) LIMIT 1`, [taskId]));
   }
 
   taskHierarchyAncestors(tasks) {
@@ -101,7 +102,7 @@ export class TaskHierarchyRepository {
       const childrenByParent=new Map();
       for(const child of this.selectAll(`SELECT t.id,t.parent_task_id,t.revision,d.worktree_id,d.binding_revision,w.head_oid
         FROM tasks t LEFT JOIN task_delivery_worktrees d ON d.task_id=t.id LEFT JOIN git_worktrees w ON w.worktree_id=d.worktree_id
-        WHERE t.parent_task_id IN (${placeholders}) AND COALESCE(t.deletion_status,'')<>'deleted' ORDER BY t.id`,batch)) {
+        WHERE t.parent_task_id IN (${placeholders}) AND COALESCE(t.deletion_status,'')<>'deleted' AND t.creation_state='ready' ORDER BY t.id`,batch)) {
         const children=childrenByParent.get(child.parent_task_id) ?? [];
         children.push(child);childrenByParent.set(child.parent_task_id,children);
       }
@@ -137,7 +138,7 @@ export class TaskHierarchyRepository {
         const valid = !row.parent_task_id || (row.root_revision && row.parent_work_id === row.work_id && !row.grandparent_task_id);
         const unavailable = !valid ? "TASK_PARENT_INVALID"
           : row.parent_task_id ? "TASK_MAX_DEPTH_EXCEEDED"
-            : row.archived || row.lifecycle_state === "done" || row.deletion_status ? "TASK_PARENT_UNAVAILABLE" : null;
+            : row.archived || row.lifecycle_state === "done" || row.deletion_status || row.creation_state !== "ready" ? "TASK_PARENT_UNAVAILABLE" : null;
         output.set(row.id, {
           version: 1, rootTaskId: row.parent_task_id ?? row.id, depth: row.parent_task_id ? 1 : 0,
           revision: row.root_revision ?? row.hierarchy_revision,

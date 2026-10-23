@@ -11,7 +11,12 @@ function fixture() {
   const workService = {
     store: {
       getTask: (id) => tasks.get(id) ?? null,
-      getSession: (id) => sessions.get(id) ?? null
+      getSession: (id) => sessions.get(id) ?? null,
+      setTaskCreationState: (id, state, code) => {
+        const task = tasks.get(id);
+        if (task) { task.creation_state = state; task.creation_error_code = code ?? null; }
+        return task;
+      }
     },
     createTask: (input) => {
       persistCount += 1;
@@ -35,7 +40,7 @@ function fixture() {
   const startWorkSession = async (command) => {
     startCount += 1;
     startCommands.push(command);
-    const session = { id: `session:${command.taskId}`, taskId: command.taskId };
+    const session = { id: `session:${command.taskId}`, taskId: command.taskId, workId: tasks.get(command.taskId).work_id };
     sessions.set(session.id, session);
     tasks.set(command.taskId, {
       ...tasks.get(command.taskId),
@@ -162,4 +167,47 @@ test("canonical Task creation rejects conflicting reuse of an idempotency key", 
     { code: "ENTITY_CREATION_CONFLICT", statusCode: 409 }
   );
   assert.deepEqual(f.counts(), { persistCount: 1, startCount: 1 });
+});
+
+test("ready-shaped replies cannot succeed without a persisted two-way Task/Work binding", async () => {
+  for (const fault of ["missing", "pointer", "task", "work"]) {
+    const f = fixture();
+    const options = { ...f, taskInput: { workId: "work:one", title: "New", mainAgentId: "agent:worker" },
+      sourceSessionId: "session:source", providerId: "provider:test", idempotencyKey: fault };
+    let taskId;
+    await assert.rejects(createTaskAndSession({ ...options, startWorkSession: async command => {
+      taskId = command.taskId;
+      if (fault === "missing") return { status: "ready", session: { id: "phantom" } };
+      const value = await f.startWorkSession(command);
+      if (fault === "pointer") f.workService.store.getTask(taskId).current_session_id = null;
+      if (fault === "task") f.workService.store.getSession(value.session.id).taskId = "task:other";
+      if (fault === "work") f.workService.store.getSession(value.session.id).workId = "work:other";
+      return value;
+    } }), { code: "TASK_SESSION_BINDING_INCOMPLETE" });
+    assert.equal(f.workService.store.getTask(taskId).creation_state, "failed");
+  }
+});
+
+test("parallel identical creates share one startup, while pending startup never reports success", async () => {
+  const f = fixture();
+  const input = { ...f, taskInput: { workId: "work:one", title: "New", mainAgentId: "agent:worker" },
+    sourceSessionId: "session:source", providerId: "provider:test", idempotencyKey: "parallel" };
+  const [one, two] = await Promise.all([createTaskAndSession(input), createTaskAndSession(input)]);
+  assert.equal(one.session.id, two.session.id);
+  assert.deepEqual(f.counts(), { persistCount: 1, startCount: 1 });
+  let taskId;
+  await assert.rejects(createTaskAndSession({ ...input, idempotencyKey: "pending", startWorkSession: async command => {
+    taskId = command.taskId;
+    return { status: "pending" };
+  } }), error => error.code === "START_NOT_READY" && error.creationRecovery.status === "pending");
+  assert.equal(f.workService.store.getTask(taskId).creation_state, "pending");
+});
+
+test("a stale existing companion cannot turn an idempotent replay into success", async () => {
+  const f = fixture();
+  const input = { ...f, taskInput: { workId: "work:one", title: "New", mainAgentId: "agent:worker" },
+    sourceSessionId: "session:source", providerId: "provider:test", idempotencyKey: "stale" };
+  const created = await createTaskAndSession(input);
+  f.workService.store.getSession(created.session.id).workId = "work:wrong";
+  await assert.rejects(createTaskAndSession(input), { code: "TASK_SESSION_BINDING_INCOMPLETE" });
 });
