@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, mkdir, open, readFile, readdir, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { access, link, mkdir, open, readFile, readdir, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import mimeTypes from "mime-types";
 import { resolvePlatformAdminSession } from "../utils/platformAssistantIdentity.mjs";
 import { ArtifactReferenceAuthorizer, SessionAuthorizationResolver, artifactError as pinnedReadError, safeHashEqual } from "./artifactAuthorization.mjs";
 import { buildArtifactContextIndex } from "./artifactContextIndex.mjs";
@@ -34,6 +35,7 @@ export class ArtifactService {
     this.idFactory = options.idFactory ?? randomUUID;
     this.ensureCommitHook = options.ensureCommitHook ?? ensureArtifactCommitHook;
     this.contentRoot = options.contentRoot ?? null;
+    this.namingOperations = new Map();
     this.sessionAuthorizationResolver = options.sessionAuthorizationResolver
       ?? new SessionAuthorizationResolver({ store: this.store });
     this.referenceAuthorizer = options.referenceAuthorizer
@@ -54,6 +56,7 @@ export class ArtifactService {
 
   async runStartupMaintenance() {
     const recovered = await this.recoverContentOperations();
+    const renamed = await this.migrateStoredFilenames();
     const lastOrphanAudit = this.store.getRuntimeState?.(ARTIFACT_ORPHAN_AUDIT_STATE_KEY);
     const orphanAuditDue = !lastOrphanAudit?.completedAt
       || Date.now() - Date.parse(lastOrphanAudit.completedAt) >= ARTIFACT_ORPHAN_AUDIT_INTERVAL_MS;
@@ -79,7 +82,7 @@ export class ArtifactService {
       this.store.reconcileArtifactTurnReadUsage?.(this.clock());
       this.store.setRuntimeState?.(ARTIFACT_USAGE_RECONCILIATION_STATE_KEY, { completedAt: this.clock() });
     }
-    return [...recovered, ...orphaned];
+    return [...recovered, ...renamed, ...orphaned];
   }
 
   async rebuildSearchIndex() {
@@ -495,7 +498,7 @@ export class ArtifactService {
       return this.present(created);
     }
     const buffer = contentBuffer(input.content);
-    const prepared = await this.#prepareContent(artifactId, 1, buffer);
+    const prepared = await this.#prepareContent(artifactId, 1, buffer, input.title, input.mimeType ?? "text/markdown");
     try {
       this.store.runInTransaction(() => {
         this.store.createArtifactMetadata({
@@ -587,7 +590,7 @@ export class ArtifactService {
     const createdAt = this.clock();
     const workerActorId = context.sessionId;
     const workerAuditContext = { ...context, actorId: workerActorId };
-    const prepared = await this.#prepareContent(artifactId, 1, buffer);
+    const prepared = await this.#prepareContent(artifactId, 1, buffer, title, mimeType);
     try {
       this.store.runInTransaction(() => {
         // The Task can be completed/unbound while content is prepared. Check
@@ -681,7 +684,8 @@ export class ArtifactService {
     const info = await stat(path);
     if (!info.isFile()) throw artifactError("ARTIFACT_IMPORT_NOT_FILE", "Import path must be a local regular file.", 400);
     const content = await readFile(path);
-    const artifact = await this.create(contextInput, { ...input, content, title: input.title ?? path.split("/").pop() });
+    const artifact = await this.create(contextInput, { ...input, content, title: input.title ?? basename(path),
+      mimeType: input.mimeType ?? artifactMimeTypeForFilename(path) });
     return { artifact, receipt: { sourcePath: path, sourcePreserved: true, byteLength: content.byteLength, contentHash: sha256(content), remoteWrite: false } };
   }
 
@@ -771,7 +775,7 @@ export class ArtifactService {
     if (artifact.status === "revoked") throw artifactError("ARTIFACT_REVOKED", "Revoked Artifact is immutable.", 409);
     const versionNumber = artifact.currentVersion + 1;
     const buffer = contentBuffer(input.content);
-    const prepared = await this.#prepareContent(artifact.artifactId, versionNumber, buffer);
+    const prepared = await this.#prepareContent(artifact.artifactId, versionNumber, buffer, artifact.title, input.mimeType ?? "text/markdown");
     const createdAt = this.clock();
     const approvalStatus = input.approvalStatus === "draft" ? "draft" : "approved";
     try {
@@ -881,7 +885,7 @@ export class ArtifactService {
     }
     const reference = candidates[0];
     const versionNumber = artifact.currentVersion + 1;
-    const prepared = await this.#prepareContent(artifact.artifactId, versionNumber, buffer);
+    const prepared = await this.#prepareContent(artifact.artifactId, versionNumber, buffer, artifact.title, mimeType);
     const createdAt = this.clock();
     const actorContext = context.kind === "worker" ? { ...context, actorId: context.sessionId } : context;
     try {
@@ -1151,7 +1155,7 @@ export class ArtifactService {
     return receipt;
   }
 
-  updateMetadata(contextInput, artifactId, patch = {}) {
+  async updateMetadata(contextInput, artifactId, patch = {}) {
     const context = this.context(contextInput);
     const artifact = this.#sameWorkArtifact(context, artifactId);
     this.#assertCanManageArtifact(context, artifact);
@@ -1167,11 +1171,37 @@ export class ArtifactService {
       throw artifactError("ARTIFACT_INVALID_INPUT", "At least one Artifact metadata field is required.", 400);
     }
     next.updatedAt = this.clock();
-    const updated = this.store.updateArtifact(artifact.artifactId, next);
+    const renamed = [];
+    let updated;
+    try {
+      if (next.title && next.title !== artifact.title) {
+        for (const version of this.store.listArtifactVersions(artifactId)) {
+          if (!version.storageKey) continue;
+          const prepared = await this.#prepareRenamedVersion(artifact, version, next.title);
+          renamed.push({ version, prepared });
+        }
+      }
+      this.store.runInTransaction(() => {
+        const current = this.#sameWorkArtifact(this.context(contextInput), artifactId);
+        this.#assertCanManageArtifact(this.context(contextInput), current);
+        if (current.resourceVersion !== artifact.resourceVersion) {
+          throw artifactError("ARTIFACT_RESOURCE_VERSION_CONFLICT", "Artifact changed during metadata update.", 409);
+        }
+        for (const { version, prepared } of renamed) {
+          this.store.relocateArtifactVersion(artifactId, version.version, version.storageKey, prepared.storageKey);
+          this.store.updateArtifactContentOperation(prepared.operationId, "completed");
+        }
+        updated = this.store.updateArtifact(artifact.artifactId, next);
+        this.#audit(context, artifact.artifactId, "artifact.metadata_updated", {
+          changedFields: Object.keys(next).filter((key) => key !== "updatedAt")
+        });
+      });
+    } catch (error) {
+      for (const { prepared } of renamed) await this.#rollbackPrepared(prepared, error);
+      throw error;
+    }
+    for (const { version } of renamed) await this.#retireStoredFile(version.storageKey);
     this.#indexArtifact(updated);
-    this.#audit(context, artifact.artifactId, "artifact.metadata_updated", {
-      changedFields: Object.keys(next).filter((key) => key !== "updatedAt")
-    });
     return this.#presentForContext(context, updated);
   }
 
@@ -1316,7 +1346,7 @@ export class ArtifactService {
       this.#readableArtifact(this.context(contextInput), artifactId);
       if (bytes.length !== version.byteLength || !safeHashEqual(sha256(bytes), version.contentHash)) throw artifactError("ARTIFACT_INTEGRITY_FAILED", "Export integrity failed.", 409);
       this.#audit(context, artifactId, "artifact.user_downloaded", { version: version.version, contentHash: version.contentHash, byteLength: bytes.length }, version.version, version.version);
-      return { schemaVersion: 1, mimeType: version.mimeType, dataBase64: bytes.toString("base64"), fileName: artifact.title.replace(/[\\/:\x00-\x1f]/g, "_").slice(0, 100) };
+      return { schemaVersion: 1, mimeType: version.mimeType, dataBase64: bytes.toString("base64"), fileName: artifactSuggestedFilename(artifact.title, version.mimeType) };
     } finally { this.userDownloads -= 1; }
   }
 
@@ -1515,7 +1545,9 @@ export class ArtifactService {
       contentHash: input.contentHash,
       referenceId: input.referenceId
     });
-    const { artifact, version } = authorized;
+    const { artifact } = authorized;
+    let { version } = authorized;
+    if (version.storageKey) version = await this.#ensureStoredFilename(artifact, version);
 
     let path;
     if (version.storageKey) {
@@ -1668,7 +1700,7 @@ export class ArtifactService {
           continue;
         }
         let prepared = null;
-        if (item) prepared = await this.#prepareContent(artifact.artifactId, version.version, item.buffer);
+        if (item) prepared = await this.#prepareContent(artifact.artifactId, version.version, item.buffer, artifact.title, version.mimeType);
         try {
           this.store.createArtifactVersion({
             artifactId: artifact.artifactId, version: version.version, contentHash: version.contentHash,
@@ -1716,14 +1748,17 @@ export class ArtifactService {
     const recovered = [];
     for (const operation of this.store.listIncompleteArtifactContentOperations()) {
       const version = this.store.getArtifactVersion(operation.artifact_id, Number(operation.version));
-      if (version) {
+      const storageKey = relative(this.contentRoot, operation.final_path);
+      const finalPath = this.#safeStoragePath(storageKey);
+      if (version?.storageKey === storageKey) {
+        await unlink(operation.temp_path).catch(() => {});
         this.store.updateArtifactContentOperation(operation.operation_id, "completed");
         recovered.push({ operationId: operation.operation_id, action: "completed_existing_metadata" });
         continue;
       }
       await unlink(operation.temp_path).catch(() => {});
-      const referenced = this.store.selectOne(`SELECT 1 FROM artifact_versions WHERE storage_key = ?`, [this.#storageKeyForHash(operation.content_hash)]);
-      if (!referenced) await unlink(operation.final_path).catch(() => {});
+      const referenced = this.store.selectOne(`SELECT 1 FROM artifact_versions WHERE storage_key = ?`, [storageKey]);
+      if (!referenced) await unlink(finalPath).catch(() => {});
       this.store.updateArtifactContentOperation(operation.operation_id, "rolled_back", "ARTIFACT_RECOVERED_ORPHAN");
       recovered.push({ operationId: operation.operation_id, action: "rolled_back_orphan" });
     }
@@ -1754,7 +1789,97 @@ export class ArtifactService {
         detected.push({ action: "orphan_content_detected", storageKey, contentHash: entry.name, byteLength: info.size });
       }
     }
+    const filesRoot = join(this.contentRoot, "files");
+    for (const entry of await readdir(filesRoot, { withFileTypes: true }).catch(error => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    })) {
+      if (!entry.isFile()) continue;
+      const storageKey = join("files", entry.name);
+      if (this.store.selectOne("SELECT 1 FROM artifact_versions WHERE storage_key = ?", [storageKey])) continue;
+      const path = this.#safeStoragePath(storageKey);
+      if (this.store.selectOne("SELECT 1 FROM artifact_content_operations WHERE final_path = ? AND status IN ('prepared', 'file_committed')", [path])) continue;
+      const buffer = await readFile(path);
+      const contentHash = sha256(buffer);
+      this.store.appendArtifactStorageAudit({
+        auditId: `artifact_storage_audit:${this.idFactory()}`, action: "orphan_content_detected",
+        storageKey, contentHash, byteLength: buffer.length,
+        details: { retained: true, path }, createdAt: this.clock()
+      });
+      detected.push({ action: "orphan_content_detected", storageKey, contentHash, byteLength: buffer.length });
+    }
     return detected;
+  }
+
+  async migrateStoredFilenames() {
+    const results = [];
+    for (const row of this.store.selectAll(
+      "SELECT artifact_id, version FROM artifact_versions WHERE storage_key IS NOT NULL ORDER BY artifact_id, version"
+    )) {
+      const artifact = this.store.getArtifact(row.artifact_id);
+      const version = this.store.getArtifactVersion(row.artifact_id, Number(row.version));
+      try {
+        const named = await this.#ensureStoredFilename(artifact, version);
+        if (named.storageKey !== version.storageKey) results.push({
+          action: "filename_migrated", artifactId: row.artifact_id, version: named.version
+        });
+      } catch (error) {
+        // A missing or externally changed file must not prevent the entire Store
+        // from starting. Keep its original record and report the failed migration.
+        results.push({ action: "filename_migration_failed", artifactId: row.artifact_id,
+          version: version.version, errorCode: error.code ?? "ARTIFACT_STORAGE_MIGRATION_FAILED" });
+      }
+    }
+    return results;
+  }
+
+  async #ensureStoredFilename(artifact, version) {
+    const filename = artifactSuggestedFilename(artifact.title, version.mimeType);
+    if (dirname(version.storageKey) === "files" && matchesArtifactFilename(basename(version.storageKey), filename)) return version;
+    const key = `${artifact.artifactId}:${version.version}`;
+    if (this.namingOperations.has(key)) return this.namingOperations.get(key);
+    const operation = this.#renameStoredVersion(artifact, version);
+    this.namingOperations.set(key, operation);
+    try { return await operation; }
+    finally { this.namingOperations.delete(key); }
+  }
+
+  async #prepareRenamedVersion(artifact, version, title) {
+    const oldPath = this.#safeStoragePath(version.storageKey);
+    const content = await readFile(oldPath);
+    if (content.byteLength !== version.byteLength || sha256(content) !== version.contentHash) {
+      throw artifactError("ARTIFACT_INTEGRITY_FAILED", "Artifact filename migration failed content verification.", 409);
+    }
+    return this.#prepareContent(artifact.artifactId, version.version, content, title, version.mimeType);
+  }
+
+  async #renameStoredVersion(artifact, version) {
+    const prepared = await this.#prepareRenamedVersion(artifact, version, artifact.title);
+    try {
+      this.store.runInTransaction(() => {
+        this.store.relocateArtifactVersion(artifact.artifactId, version.version, version.storageKey, prepared.storageKey);
+        this.store.updateArtifactContentOperation(prepared.operationId, "completed");
+        this.store.appendArtifactStorageAudit({
+          auditId: `artifact_storage_audit:${this.idFactory()}`, action: "content_filename_migrated",
+          storageKey: prepared.storageKey, contentHash: version.contentHash, byteLength: version.byteLength,
+          details: { artifactId: artifact.artifactId, version: version.version, previousStorageKey: version.storageKey },
+          createdAt: this.clock()
+        });
+      });
+    } catch (error) {
+      await this.#rollbackPrepared(prepared, error);
+      throw error;
+    }
+    // Legacy objects can be shared by multiple versions. Retire them only after
+    // the final reference has moved and the verified destination is committed.
+    await this.#retireStoredFile(version.storageKey);
+    return this.store.getArtifactVersion(artifact.artifactId, version.version);
+  }
+
+  async #retireStoredFile(storageKey) {
+    if (!this.store.selectOne("SELECT 1 FROM artifact_versions WHERE storage_key = ?", [storageKey])) {
+      await unlink(this.#safeStoragePath(storageKey)).catch(() => {});
+    }
   }
 
   #assertManager(context) {
@@ -1982,30 +2107,46 @@ export class ArtifactService {
     return affected;
   }
 
-  async #prepareContent(artifactId, version, buffer) {
+  async #prepareContent(artifactId, version, buffer, title, mimeType) {
     const hash = sha256(buffer);
-    const storageKey = this.#storageKeyForHash(hash);
-    const finalPath = this.#safeStoragePath(storageKey);
-    const operationId = `artifact_content_operation:${this.idFactory()}`;
-    const tempPath = join(this.contentRoot, "tmp", `${operationId.replaceAll(":", "-")}.tmp`);
-    const createdAt = this.clock();
-    this.store.createArtifactContentOperation({ operationId, artifactId, version, contentHash: hash, tempPath, finalPath, createdAt });
-    await mkdir(dirname(finalPath), { recursive: true, mode: 0o700 });
-    let createdFinal = false;
-    try {
-      await access(finalPath, constants.F_OK);
-      const existing = await readFile(finalPath);
-      if (sha256(existing) !== hash) throw artifactError("ARTIFACT_CONTENT_COLLISION", "Existing content-addressed object failed hash verification.", 409);
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-      await writeFile(tempPath, buffer, { mode: 0o600, flag: "wx" });
-      const handle = await open(tempPath, "r+");
-      try { await handle.sync(); } finally { await handle.close(); }
-      await rename(tempPath, finalPath);
-      createdFinal = true;
+    const directory = join(this.contentRoot, "files");
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    if (await realpath(directory) !== join(await realpath(this.contentRoot), "files")) {
+      throw artifactError("ARTIFACT_STORAGE_KEY_INVALID", "Artifact files directory must not be a symbolic link.", 409);
     }
-    this.store.updateArtifactContentOperation(operationId, "file_committed");
-    return { operationId, hash, storageKey, finalPath, tempPath, createdFinal };
+    const filename = artifactSuggestedFilename(title, mimeType);
+    const extension = extname(filename);
+    const stem = filename.slice(0, -extension.length);
+    for (let number = 1; ; number += 1) {
+      const storageKey = join("files", number === 1 ? filename : `${stem}_${number}${extension}`);
+      const finalPath = this.#safeStoragePath(storageKey);
+      // Reserve existing names even when a user has deleted their file.
+      if (this.store.selectOne("SELECT 1 FROM artifact_versions WHERE storage_key = ?", [storageKey])) continue;
+      const operationId = `artifact_content_operation:${this.idFactory()}`;
+      const tempPath = join(this.contentRoot, "tmp", `${operationId.replaceAll(":", "-")}.tmp`);
+      this.store.createArtifactContentOperation({ operationId, artifactId, version, contentHash: hash, tempPath, finalPath, createdAt: this.clock() });
+      const prepared = { operationId, hash, storageKey, finalPath, tempPath, createdFinal: false };
+      try {
+        await writeFile(tempPath, buffer, { mode: 0o600, flag: "wx" });
+        const handle = await open(tempPath, "r+");
+        try { await handle.sync(); } finally { await handle.close(); }
+        // link publishes the fully written file atomically and refuses to replace
+        // existing files or symlinks, including concurrent same-name creations.
+        try { await link(tempPath, finalPath); }
+        catch (error) {
+          if (error.code !== "EEXIST") throw error;
+          await this.#rollbackPrepared(prepared, error);
+          continue;
+        }
+        prepared.createdFinal = true;
+        await unlink(tempPath);
+        this.store.updateArtifactContentOperation(operationId, "file_committed");
+        return prepared;
+      } catch (error) {
+        await this.#rollbackPrepared(prepared, error);
+        throw error;
+      }
+    }
   }
 
   async #rollbackPrepared(prepared, error) {
@@ -2038,8 +2179,6 @@ export class ArtifactService {
       throw error;
     }
   }
-
-  #storageKeyForHash(hash) { return join("objects", hash.slice(0, 2), hash); }
 
   #safeStoragePath(storageKey) {
     const path = resolve(this.contentRoot, storageKey);
@@ -2178,16 +2317,33 @@ async function firstExistingFileCandidate(candidates) {
   }
   return null;
 }
+function artifactMimeTypeForFilename(filename) {
+  return mimeTypes.lookup(filename) || "application/octet-stream";
+}
+
 function artifactSuggestedFilename(title, mimeType) {
-  const fallbackExtension = new Map([
-    ["text/markdown", ".md"],
-    ["text/plain", ".txt"],
-    ["application/json", ".json"],
-    ["text/html", ".html"],
-    ["text/csv", ".csv"]
-  ]).get(mimeType) ?? "";
-  const filename = basename(optionalText(title) ?? "Artifact").replaceAll("\0", "");
-  return extname(filename) || !fallbackExtension ? filename : `${filename}${fallbackExtension}`;
+  const type = String(mimeType ?? "").split(";", 1)[0].trim().toLowerCase();
+  const extensions = mimeTypes.extensions[type];
+  let filename = basename((optionalText(title) ?? "Artifact").normalize("NFKC").replaceAll("\\", "/"))
+    .replace(/[\x00-\x1f\x7f<>:"/\\|?*]/gu, "_")
+    .replace(/\p{P}/gu, character => "._-".includes(character) ? character : "_")
+    .replace(/^\.+|[. ]+$/gu, "");
+  if (!filename) filename = "Artifact";
+  const existing = extname(filename).slice(1).toLowerCase();
+  const extension = existing && Buffer.byteLength(existing) <= 32 && (!extensions || type === "application/octet-stream" || extensions.includes(existing))
+    ? extname(filename) : `.${extensions?.[0] ?? "bin"}`;
+  let stem = filename.endsWith(extension) ? filename.slice(0, -extension.length) : filename;
+  // Leave room for the extension and a numeric collision suffix on APFS/ext4.
+  while (Buffer.byteLength(stem + extension, "utf8") > 200) stem = [...stem].slice(0, -1).join("");
+  return `${stem || "Artifact"}${extension}`;
+}
+
+function matchesArtifactFilename(actual, expected) {
+  if (actual === expected) return true;
+  const extension = extname(expected);
+  if (extname(actual) !== extension) return false;
+  const collision = /^(.*)_(\d+)$/u.exec(actual.slice(0, -extension.length));
+  return collision?.[1] === expected.slice(0, -extension.length) && Number(collision[2]) >= 2;
 }
 function contentBuffer(value) {
   if (Buffer.isBuffer(value)) return value;

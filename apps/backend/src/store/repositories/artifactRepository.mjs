@@ -271,6 +271,19 @@ export class ArtifactRepository {
     return row ? artifactVersionFromRow(row) : null;
   }
 
+  relocateArtifactVersion(artifactId, version, expectedStorageKey, storageKey) {
+    this.db.run(
+      "UPDATE artifact_versions SET storage_key = ? WHERE artifact_id = ? AND version = ? AND storage_key = ?",
+      [storageKey, artifactId, version, expectedStorageKey]
+    );
+    if (Number(this.db.getRowsModified()) !== 1) {
+      throw Object.assign(new Error("Artifact storage location changed during filename migration."), {
+        code: "ARTIFACT_STORAGE_VERSION_CONFLICT", statusCode: 409
+      });
+    }
+    this.scheduleSave();
+  }
+
   listArtifactVersions(artifactId, { limit = null } = {}) {
     return this.selectAll(
       `SELECT * FROM artifact_versions WHERE artifact_id = ? ORDER BY version DESC ${limit == null ? "" : "LIMIT ?"}`,

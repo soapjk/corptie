@@ -16,7 +16,7 @@ test("same Agent parallel Workers read project Artifacts but mutate only exact T
     for (const suffix of ["a", "b"]) {
       store.createTask({
         id: `task:${suffix}`, workId: "work:parallel",
-        title: `Work ${suffix}`, mainAgentId: agent.agentId
+        title: `Work-${suffix}`, mainAgentId: agent.agentId
       });
       store.upsertSession({
         id: `session:${suffix}`, title: `Session ${suffix}`, provider: "codex-app-server",
@@ -49,8 +49,8 @@ test("same Agent parallel Workers read project Artifacts but mutate only exact T
     assert.equal((await service.get(context("b"), artifactB.artifactId, pinned(artifactB))).content, "b");
     assert.equal((await service.get(context("a"), artifactB.artifactId, pinned(artifactB))).content, "b");
     assert.equal((await service.get(context("b"), artifactA.artifactId, pinned(artifactA))).content, "a");
-    assert.throws(() => service.updateMetadata(context("a"), artifactB.artifactId, { title: "forbidden" }), { code: "ARTIFACT_READ_ONLY" });
-    assert.throws(() => service.updateMetadata(context("b"), artifactA.artifactId, { title: "forbidden" }), { code: "ARTIFACT_READ_ONLY" });
+    await assert.rejects(() => service.updateMetadata(context("a"), artifactB.artifactId, { title: "forbidden" }), { code: "ARTIFACT_READ_ONLY" });
+    await assert.rejects(() => service.updateMetadata(context("b"), artifactA.artifactId, { title: "forbidden" }), { code: "ARTIFACT_READ_ONLY" });
     store.updateAgent(agent.agentId, { currentSessionId: "session:b" });
     assert.equal((await service.get(context("a"), artifactA.artifactId, pinned(artifactA))).content, "a");
     assert.equal((await service.get(context("b"), artifactB.artifactId, pinned(artifactB))).content, "b");

@@ -93,6 +93,20 @@ final class ArtifactTests: XCTestCase {
     }
 
     @MainActor
+    func testNamedHTMLStorageFileUsesItsRealExtensionAndRegisteredBrowser() {
+        let receipt = ArtifactLocalFileReceipt(
+            artifactId: "artifact:html",
+            version: 1,
+            path: "/data/artifacts/files/搜索报告_2.html",
+            suggestedFilename: "搜索报告.html",
+            mimeType: "text/html"
+        )
+        XCTAssertEqual(receipt.fileURL.lastPathComponent, "搜索报告_2.html")
+        XCTAssertEqual(receipt.fileURL.pathExtension, "html")
+        XCTAssertNotNil(ArtifactSystemApplicationOpener.defaultApplicationURL(for: receipt))
+    }
+
+    @MainActor
     func testUnknownArtifactFileTypeHasNoRegisteredDefaultApplication() {
         let receipt = ArtifactLocalFileReceipt(
             artifactId: "artifact:1",

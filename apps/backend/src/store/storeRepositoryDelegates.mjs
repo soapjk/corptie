@@ -163,7 +163,7 @@ const domainDelegates = Object.freeze({
     "listArtifactsByWork", "countArtifactsByWork", "listArtifactsReferencedByTask",
     "countArtifactsReferencedByTask", "listArtifactVersionsByArtifactIds", "listArtifactReferencesByArtifactIds",
     "listArtifactAuditByArtifactIds", "updateArtifact", "upsertArtifactSearchDocument",
-    "searchArtifactDocuments", "createArtifactVersion", "getArtifactVersion",
+    "searchArtifactDocuments", "createArtifactVersion", "getArtifactVersion", "relocateArtifactVersion",
     "listArtifactVersions", "createArtifactReference", "getArtifactWorkerCreateOperation",
     "createArtifactWorkerCreateOperation", "getArtifactWorkerPublishOperation", "createArtifactWorkerPublishOperation",
     "getArtifactReference", "listArtifactReferences", "createTaskFileReference",
