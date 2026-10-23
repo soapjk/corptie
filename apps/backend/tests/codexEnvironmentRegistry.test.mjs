@@ -17,31 +17,31 @@ async function fixture(t, { legacyConfig = false, hasExistingSessions = () => fa
   return { registry, root, options };
 }
 
-test("a new installation defaults to native while unindexed threads remain isolated", async t => {
+test("a new installation defaults to the managed Home and keeps unindexed threads isolated", async t => {
   const { registry, options } = await fixture(t);
-  assert.equal(registry.current.mode, "native");
-  assert.equal(registry.current.home, options.nativeHome);
+  assert.equal(registry.current.mode, "isolated");
+  assert.equal(registry.current.home, options.isolatedHome);
   assert.equal(registry.forThread("unindexed-old-thread").mode, "isolated");
   const restored = new CodexEnvironmentRegistry(options);
   await restored.initialize();
-  assert.equal(restored.current.mode, "native");
+  assert.equal(restored.current.mode, "isolated");
 });
 
-test("upgrades default new Sessions to official Home while preserving legacy threads and configuration", async t => {
+test("upgrades preserve the managed Home and its configuration", async t => {
   const { registry, options } = await fixture(t, { legacyConfig: true });
-  assert.equal(registry.current.mode, "native");
+  assert.equal(registry.current.mode, "isolated");
   const config = await readFile(join(options.isolatedHome, "config.toml"), "utf8");
   assert.equal(config, 'model = "legacy-model"\n');
   const restored = new CodexEnvironmentRegistry(options);
   await restored.initialize();
-  assert.equal(restored.current.mode, "native");
+  assert.equal(restored.current.mode, "isolated");
   assert.equal(restored.forThread("old-thread").mode, "isolated");
   assert.equal(await readFile(join(options.isolatedHome, "config.toml"), "utf8"), config);
 });
 
-test("existing sessions retain legacy bindings while new Sessions use native Home", async t => {
+test("existing sessions and new Sessions retain the managed Home", async t => {
   const { registry } = await fixture(t, { hasExistingSessions: () => true });
-  assert.equal(registry.current.mode, "native");
+  assert.equal(registry.current.mode, "isolated");
   assert.equal(registry.forThread("old-thread").mode, "isolated");
 });
 
@@ -55,12 +55,12 @@ test("an explicitly saved native selection survives upgrade evidence", async t =
   assert.equal(restored.forThread("old-thread").mode, "isolated");
 });
 
-test("a legacy isolated default no longer controls new Sessions after restart", async t => {
+test("an explicitly saved isolated default survives restart", async t => {
   const { registry, options } = await fixture(t);
   await registry.register(registry.legacy, { makeDefault: true });
   const restored = new CodexEnvironmentRegistry(options);
   await restored.initialize();
-  assert.equal(restored.current.mode, "native");
+  assert.equal(restored.current.mode, "isolated");
   assert.equal(restored.forThread("unindexed").profileId, registry.legacy.profileId);
 });
 
@@ -97,28 +97,30 @@ test("validation canonicalizes Home without changing native configuration or aut
 
 test("config changes invalidate environment fingerprint, credentials are not inspected", async t => {
   const { registry, options } = await fixture(t);
-  const first = await registry.fingerprint(registry.current);
+  const profile = registry.selection({ mode: "native" });
+  const first = await registry.fingerprint(profile);
   await writeFile(join(options.nativeHome, "config.toml"), 'model = "different-model"\n');
-  assert.notEqual(await registry.fingerprint(registry.current), first);
-  const second = await registry.fingerprint(registry.current);
+  assert.notEqual(await registry.fingerprint(profile), first);
+  const second = await registry.fingerprint(profile);
   await writeFile(join(options.nativeHome, "auth.json"), "private");
-  assert.equal(await registry.fingerprint(registry.current), second);
+  assert.equal(await registry.fingerprint(profile), second);
 });
 
-test("a retired custom default does not replace the official Home on restart", async t => {
+test("a saved custom Home remains available after switching back to isolated", async t => {
   const { registry, options, root } = await fixture(t);
   const home = join(root, "custom-native"); await mkdir(home);
   await registry.register(registry.selection({ mode: "native", home }), { makeDefault: true });
   await registry.register(registry.legacy, { makeDefault: true });
   const restored = new CodexEnvironmentRegistry(options); await restored.initialize();
-  assert.equal(restored.nativeHome, options.nativeHome);
-  assert.equal(restored.current.mode, "native");
+  assert.equal(restored.nativeHome, home);
+  assert.equal(restored.selection({ mode: "native" }).home, home);
+  assert.equal(restored.current.mode, "isolated");
 });
 
 test("first official login can create its own missing Home without Corptie writing config or credentials", async t => {
   const { registry, options } = await fixture(t);
   await rm(options.nativeHome, { recursive: true });
-  assert.equal((await registry.validate(registry.current)).home, options.nativeHome);
+  assert.equal((await registry.validate(registry.selection({ mode: "native" }))).home, options.nativeHome);
   await assert.rejects(readFile(join(options.nativeHome, "config.toml")), { code: "ENOENT" });
   await assert.rejects(registry.validate(registry.selection({ mode: "native", home: join(options.nativeHome, "missing-custom") })),
     { code: "PROVIDER_HOME_UNAVAILABLE" });

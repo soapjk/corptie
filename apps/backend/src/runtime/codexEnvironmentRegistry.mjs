@@ -28,17 +28,14 @@ export class CodexEnvironmentRegistry {
         throw new Error("Codex 环境记录损坏，请恢复本地配置。");
       }
       this.state = saved;
+      if (saved.nativeHome) this.nativeHome = saved.nativeHome;
       this.state.profiles[this.legacy.profileId] ??= this.legacy;
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
-    // New Sessions always use the official Home. Old thread bindings, including
-    // unindexed legacy threads, keep their original profile and are never moved.
-    const native = this.profile("native", this.nativeHome);
-    const changed = this.state.defaultProfileId !== native.profileId;
-    this.state.profiles[native.profileId] ??= native;
-    this.state.defaultProfileId = native.profileId;
-    if (changed) await this.save();
+    // Corptie's managed Home is authoritative until the user explicitly selects
+    // another environment. Restarting must preserve that selection and every
+    // existing thread binding; never infer a switch from a native installation.
   }
 
   get current() { return this.state.profiles[this.state.defaultProfileId]; }
