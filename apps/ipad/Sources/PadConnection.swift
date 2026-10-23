@@ -163,6 +163,8 @@ final class PadConnection {
     private var cloudCredential: CloudCredential? { didSet { if oldValue?.identity.id != cloudCredential?.identity.id { retireDetailBusinessOwner() } } }
     @ObservationIgnored private let cloudAuthDependencies: CloudAuthDependencies?
     @ObservationIgnored private var cloudAuthGeneration = UUID()
+    // In-memory tombstones prevent an older directory response from restoring a removed row.
+    @ObservationIgnored private var removedCloudDeviceIDs: Set<UUID> = []
     @ObservationIgnored private var cloudTokenRefreshTask: (id: UUID, task: Task<CloudCredential, Error>)?
     @ObservationIgnored private var cloudCredentialNeedsSave = false
     private var cloudAuthorization: CloudOAuthAuthorization?
@@ -583,33 +585,76 @@ final class PadConnection {
     }
 
     func revokeCloudDevice(_ device: CloudDevice) async {
-        guard !busy, device.kind == .mobile, device.revokedAt == nil,
+        guard !busy, device.revokedAt == nil,
               device.id != cloudCurrentDeviceID else { return }
+        let generation = cloudAuthGeneration
         busy = true
-        notice = ""
+        cloudNotice = ""
         defer { busy = false }
         do {
             let configuration = try Self.cloudConfiguration()
             let credential = try await validCloudCredential(configuration)
+            guard generation == cloudAuthGeneration else { return }
             let client = try CloudDeviceClient(
                 endpoint: configuration.endpoint,
                 accessToken: credential.tokens.accessToken
             )
-            _ = try await client.revoke(device.id)
-            cloudDevices = try await client.list()
-            notice = "已撤销 \(device.displayName) 的 Cloud 访问。"
-        } catch ClientConnectionError.httpStatus(403) {
-            notice = "为保护账号，撤销设备需要最近 5 分钟内重新登录 Cloud。"
+            let receipt = try await client.revoke(device.id)
+            guard generation == cloudAuthGeneration else { return }
+            try CloudDeviceManagement.validateRevocation(receipt, requestedID: device.id)
+            removedCloudDeviceIDs.insert(device.id)
+            cloudDevices.removeAll { $0.id == device.id }
+            retireRevokedCloudMac(device.id)
+            cloudNotice = "已移除 \(device.displayName) 的 Cloud 访问。"
+            // A failed refresh must not turn a confirmed revocation into a failure.
+            do {
+                let refreshed = try await client.list()
+                guard generation == cloudAuthGeneration else { return }
+                cloudDevices = refreshed.filter { !removedCloudDeviceIDs.contains($0.id) }
+            } catch {
+                guard generation == cloudAuthGeneration else { return }
+                cloudNotice = "设备已移除；设备列表暂未刷新，请稍后刷新核对。"
+            }
         } catch is CancellationError {
         } catch {
-            notice = Self.explain(error)
+            guard generation == cloudAuthGeneration else { return }
+            cloudNotice = CloudDeviceManagement.failureMessage(error)
         }
     }
 
+    private func retireRevokedCloudMac(_ macID: UUID) {
+        if UserDefaults.standard.string(forKey: "cloudMacID").flatMap(UUID.init(uuidString:)) == macID {
+            UserDefaults.standard.removeObject(forKey: "cloudMacID")
+        }
+        guard cloudTargetMacID == macID || connectedCloudMacID == macID else { return }
+        UserDefaults.standard.removeObject(forKey: "connectionMode")
+        connected = false
+        networkRecoveryTask?.cancel(); networkRecoveryTask = nil
+        invalidateRealtimeTransport()
+        cloudTargetMacID = nil
+        connectedCloudMacID = nil
+        connectedCloudMacName = nil
+        recoveryBlockedMessage = nil
+        for entry in lanRefreshTasks.values { entry.task.cancel() }
+        lanRefreshTasks.removeAll()
+        credentials = nil
+        endpoint = nil
+        claim = nil
+        // Retain account credentials and independent LAN pairing, but require an explicit new connection.
+        recoveryRevision += 1
+    }
+
     private func connectCloudImpl(to mac: CloudDevice) async throws {
-        guard mac.kind == .mac, mac.revokedAt == nil else { throw ClientConnectionError.invalidResponse }
+        guard mac.kind == .mac, mac.revokedAt == nil, !removedCloudDeviceIDs.contains(mac.id) else {
+            throw ClientConnectionError.invalidResponse
+        }
+        let authGeneration = cloudAuthGeneration
+        let expectedConnectionGeneration = connectionGeneration
         let configuration = try Self.cloudConfiguration()
         let credential = try await validCloudCredential(configuration)
+        guard authGeneration == cloudAuthGeneration, expectedConnectionGeneration == connectionGeneration else {
+            throw CancellationError()
+        }
         let key = try CloudRelayDeviceKey(rawRepresentation: credential.identity.privateKey)
         let channel = try await CloudRelayMobileChannel.connect(
             cloudEndpoint: configuration.endpoint,
@@ -629,7 +674,13 @@ final class PadConnection {
             grantRequest.httpMethod = "POST"
             let (grantData, _) = try await transport.data(for: grantRequest)
             let grant = try JSONDecoder().decode(CloudOfflineLANGrant.self, from: grantData)
+            try Task.checkCancellation()
+            guard authGeneration == cloudAuthGeneration, expectedConnectionGeneration == connectionGeneration,
+                  !removedCloudDeviceIDs.contains(mac.id) else { throw CancellationError() }
             try await saveOfflineGrant(grant)
+            try Task.checkCancellation()
+            guard authGeneration == cloudAuthGeneration, expectedConnectionGeneration == connectionGeneration,
+                  !removedCloudDeviceIDs.contains(mac.id) else { throw CancellationError() }
             let previous = cloudClient
             connectionGeneration = UUID()
             cloudRecoveryTask?.cancel(); cloudRecoveryTask = nil
@@ -733,6 +784,7 @@ final class PadConnection {
 
     private func resetCloudAuthGeneration() {
         cloudAuthGeneration = UUID()
+        removedCloudDeviceIDs.removeAll()
         cloudTokenRefreshTask?.task.cancel()
         cloudTokenRefreshTask = nil
     }
@@ -825,6 +877,7 @@ final class PadConnection {
     }
 
     private func registerCloudDeviceAndRefresh(_ credential: CloudCredential, configuration: CloudOAuthConfiguration) async throws {
+        let generation = cloudAuthGeneration
         let key = try CloudRelayDeviceKey(rawRepresentation: credential.identity.privateKey)
         let client = try CloudDeviceClient(endpoint: configuration.endpoint, accessToken: credential.tokens.accessToken)
         _ = try await client.register(.init(
@@ -833,7 +886,12 @@ final class PadConnection {
             displayName: credential.identity.displayName,
             publicKey: key.publicKeyBase64
         ))
-        cloudDevices = try await client.list()
+        let refreshed = try await client.list()
+        try Task.checkCancellation()
+        guard generation == cloudAuthGeneration, cloudCredential?.identity.id == credential.identity.id else {
+            throw CancellationError()
+        }
+        cloudDevices = refreshed.filter { !removedCloudDeviceIDs.contains($0.id) }
     }
 
     func reconnect() async {

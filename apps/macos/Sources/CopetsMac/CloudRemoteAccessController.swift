@@ -96,6 +96,8 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
     private var directoryPolicy = CloudDirectoryRefreshPolicy()
     private var directoryTask: Task<Void, Never>?
     private var directoryGeneration = UUID()
+    private var cloudAuthGeneration = UUID()
+    private var removedCloudDeviceIDs: Set<UUID> = []
 
     private override init() {
         enabled = CorptieAppEnvironment.userDefaults.bool(forKey: "cloudRemoteAccessEnabled")
@@ -104,6 +106,7 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
 
     func restore() async {
         guard !restored else { return }
+        let generation = cloudAuthGeneration
         restored = true
         restoring = true
         defer { restoring = false }
@@ -113,6 +116,7 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
                 configuration: configuration,
                 legacyService: "com.corptie.mac.cloud-credentials"
             ) else { return }
+            guard generation == cloudAuthGeneration else { return }
             credential = saved
             currentDeviceID = saved.identity.id
             signedIn = true
@@ -120,6 +124,7 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
             if enabled { startAgent() }
             else { status = "已登录；远程连接已关闭" }
         } catch {
+            guard generation == cloudAuthGeneration else { return }
             if signedIn && enabled {
                 status = "设备注册未完成，正在自动重试…"
                 startAgent()
@@ -147,6 +152,8 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
             )
             let next = CloudCredential(tokens: tokens, identity: identity)
             try await vault.save(next, configuration: configuration)
+            cloudAuthGeneration = UUID()
+            removedCloudDeviceIDs.removeAll()
             credential = next
             directoryPolicy.invalidate()
             currentDeviceID = next.identity.id
@@ -187,19 +194,50 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
         try await registerAndLoad(current, configuration: configuration)
     }
 
+    func refreshDeviceDirectory() async {
+        guard !busy, signedIn else { return }
+        let generation = cloudAuthGeneration
+        busy = true
+        defer { busy = false }
+        do {
+            try await refreshDevices()
+        } catch is CancellationError {
+        } catch {
+            guard generation == cloudAuthGeneration else { return }
+            status = "设备列表暂未刷新，请稍后重试；现有连接和凭据已保留。"
+        }
+    }
+
     func revoke(_ device: CloudDevice) async {
-        guard !busy, device.revokedAt == nil else { return }
+        guard !busy, signedIn, device.revokedAt == nil, device.id != currentDeviceID else { return }
+        let generation = cloudAuthGeneration
         busy = true
         defer { busy = false }
         do {
             let configuration = try Self.configuration()
             let current = try await validCredential(configuration)
+            guard generation == cloudAuthGeneration else { return }
             let client = try CloudDeviceClient(endpoint: configuration.endpoint, accessToken: current.tokens.accessToken)
-            _ = try await client.revoke(device.id)
-            devices = try await client.list()
-            status = "已撤销 \(device.displayName)"
+            let receipt = try await client.revoke(device.id)
+            guard generation == cloudAuthGeneration else { return }
+            try CloudDeviceManagement.validateRevocation(receipt, requestedID: device.id)
+            removedCloudDeviceIDs.insert(device.id)
+            devices.removeAll { $0.id == device.id }
+            directoryTask?.cancel(); directoryTask = nil
+            directoryGeneration = UUID()
+            directoryPolicy.invalidate()
+            status = "已移除 \(device.displayName) 的 Cloud 访问。"
+            do {
+                // Also reconcile the local mobile-device allowlist through the existing path.
+                try await registerAndLoad(current, configuration: configuration)
+            } catch {
+                guard generation == cloudAuthGeneration else { return }
+                status = "设备已移除；设备列表暂未刷新，请稍后刷新核对。"
+            }
+        } catch is CancellationError {
         } catch {
-            status = "撤销失败；为保护账号，请重新登录后再试"
+            guard generation == cloudAuthGeneration else { return }
+            status = CloudDeviceManagement.failureMessage(error)
         }
     }
 
@@ -207,6 +245,8 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
         guard !busy else { return }
         busy = true
         defer { busy = false }
+        cloudAuthGeneration = UUID()
+        removedCloudDeviceIDs.removeAll()
         stopAgent()
         var serverRevoked = false
         if let configuration = try? Self.configuration(),
@@ -335,6 +375,8 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
     }
 
     private func registerAndLoad(_ current: CloudCredential, configuration: CloudOAuthConfiguration) async throws {
+        let generation = cloudAuthGeneration
+        let directory = directoryGeneration
         let key = try CloudRelayDeviceKey(rawRepresentation: current.identity.privateKey)
         let client = try CloudDeviceClient(endpoint: configuration.endpoint, accessToken: current.tokens.accessToken)
         _ = try await client.register(.init(
@@ -345,18 +387,22 @@ final class CloudRemoteAccessController: NSObject, ObservableObject, ASWebAuthen
         ))
         let refreshedDevices = try await client.list()
         try Task.checkCancellation()
-        guard credential?.identity.id == current.identity.id else { return }
+        guard generation == cloudAuthGeneration, directory == directoryGeneration,
+              credential?.identity.id == current.identity.id else { throw CancellationError() }
         guard let dataRoot = BackendClient.shared.settings?.dataRoot, !dataRoot.isEmpty else {
             throw ClientConnectionError.invalidResponse
         }
-        let activeMobileIDs = refreshedDevices.filter { $0.kind == .mobile && $0.revokedAt == nil }
+        let activeMobileIDs = refreshedDevices.filter {
+            $0.kind == .mobile && $0.revokedAt == nil && !removedCloudDeviceIDs.contains($0.id)
+        }
             .map { $0.id.uuidString.lowercased() }
         _ = try await LocalDeviceAdminClient.request(
             dataRoot: dataRoot, action: "cloud-sync", body: ["activeCloudDeviceIds": activeMobileIDs]
         )
         try Task.checkCancellation()
-        guard credential?.identity.id == current.identity.id else { return }
-        devices = refreshedDevices
+        guard generation == cloudAuthGeneration, directory == directoryGeneration,
+              credential?.identity.id == current.identity.id else { throw CancellationError() }
+        devices = refreshedDevices.filter { !removedCloudDeviceIDs.contains($0.id) }
         directoryPolicy.reconciled(current.identity.id)
     }
 
