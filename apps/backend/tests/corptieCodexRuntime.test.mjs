@@ -15,7 +15,7 @@ test("ordinary startup never reads native credentials or Keychain", async () => 
     await rm(sourceAuthPath);
     const options = { corptieHome: join(directory, ".corptie"), sourceAuthPath,
       bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath, authenticationPlatform: "darwin",
-      readKeychainCredential: async () => { throw new Error("unexpected-keychain-access"); } };
+      allowKeychainImport: true, readKeychainCredential: async () => { throw new Error("unexpected-keychain-access"); } };
     const runtime = await ensureCorptieCodexRuntime(options);
     assert.equal(runtime.authCopied, false);
     await assert.rejects(readFile(runtime.authPath), /ENOENT/);
@@ -138,7 +138,7 @@ test("Keychain-only login is imported once into both isolated runtime environmen
         importAuthentication: true,
         bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath,
         authenticationPlatform: "darwin",
-        readKeychainCredential: async ({ service, account }) => {
+        allowKeychainImport: true, readKeychainCredential: async ({ service, account }) => {
           reads++;
           assert.equal(service, "Codex Auth");
           assert.match(account, /^cli\|[a-f0-9]{16}$/);
@@ -179,7 +179,7 @@ test("Keychain denial leaves authentication bootstrap retryable without leaking 
       importAuthentication: true,
       bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath,
       authenticationPlatform: "darwin",
-      readKeychainCredential: async () => { throw new Error("test-secret-from-keychain"); }
+      allowKeychainImport: true, readKeychainCredential: async () => { throw new Error("test-secret-from-keychain"); }
     };
     await assert.rejects(ensureCorptieCodexRuntime(options), error =>
       !error.message.includes("test-secret") && error.message.includes("钥匙串"));

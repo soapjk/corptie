@@ -310,7 +310,7 @@ test("direct MCP credentials stay out of SQLite and rotate without changing Serv
     assert.equal(installed.hasCredentials, true);
     assert.deepEqual(installed.credentialNames, ["Authorization"]);
     assert.doesNotMatch(JSON.stringify(installed), /original-secret|credentialRef/);
-    service.setAssignment(agent.agentId, installed.serverId, true);
+    (await service.setAssignment(agent.agentId, installed.serverId, true));
     assert.equal(Object.values(service.serversForAgent(agent.agentId))[0].headers.Authorization,
       "Bearer original-secret");
     const changed = await service.updateConfig(installed.serverId, {
@@ -324,7 +324,7 @@ test("direct MCP credentials stay out of SQLite and rotate without changing Serv
     assert.equal(Object.values(service.serversForAgent(agent.agentId))[0].headers.Authorization,
       "Bearer rotated-secret");
     assert.doesNotMatch(await readFile(join(directory, "db.sqlite"), "utf8"), /original-secret|rotated-secret/);
-    service.setAssignment(agent.agentId, installed.serverId, false);
+    (await service.setAssignment(agent.agentId, installed.serverId, false));
     await service.remove(installed.serverId);
     assert.equal(secrets.size, 0);
   } finally {
@@ -347,8 +347,8 @@ test("a missing MCP credential isolates only its assigned Server", async () => {
       url: "https://example.test/secured", headers: { Authorization: "Bearer value" } });
     const publicServer = await service.register({ name: "Public", transport: "http",
       url: "https://example.test/public" });
-    service.setAssignment(agent.agentId, secured.serverId, true);
-    service.setAssignment(agent.agentId, publicServer.serverId, true);
+    (await service.setAssignment(agent.agentId, secured.serverId, true));
+    (await service.setAssignment(agent.agentId, publicServer.serverId, true));
     secrets.clear();
     const servers = service.serversForAgent(agent.agentId);
     assert.equal(Object.values(servers).filter((server) => server.unavailableCode).length, 1);
@@ -384,9 +384,9 @@ test("two Agents may use separate Keychain-backed MCP credentials without sharin
     const second = store.createAgent({ name: "Second", provider: "codex-app-server" });
     const server = await service.register({ name: "Shared", transport: "http",
       url: "https://example.test/mcp", headers: { Authorization: "Bearer install-level" } });
-    service.setAssignment(first.agentId, server.serverId, true,
-      { headers: { Authorization: "Bearer first-agent" } });
-    service.setAssignment(second.agentId, server.serverId, true);
+    (await service.setAssignment(first.agentId, server.serverId, true,
+      { headers: { Authorization: "Bearer first-agent" } }));
+    (await service.setAssignment(second.agentId, server.serverId, true));
     const firstRevision = service.assignmentRevisionForAgent(first.agentId);
     assert.equal(Object.values(service.serversForAgent(first.agentId))[0].headers.Authorization,
       "Bearer first-agent");
@@ -401,15 +401,15 @@ test("two Agents may use separate Keychain-backed MCP credentials without sharin
     assert.equal(Object.values(service.serversForAgent(first.agentId))[0].unavailableCode,
       "MCP_CREDENTIAL_MISSING");
     assert.equal(Object.values(service.serversForAgent(second.agentId))[0].unavailableCode, null);
-    service.setAssignment(first.agentId, server.serverId, true,
-      { headers: { Authorization: "Bearer rotated-agent" } });
+    (await service.setAssignment(first.agentId, server.serverId, true,
+      { headers: { Authorization: "Bearer rotated-agent" } }));
     assert.notEqual(service.assignmentRevisionForAgent(first.agentId), firstRevision);
     await service.drainCleanup({ serverId: server.serverId });
     assert.equal(Object.values(service.serversForAgent(first.agentId))[0].headers.Authorization,
       "Bearer rotated-agent");
     assert.equal(Object.values(service.serversForAgent(second.agentId))[0].headers.Authorization,
       "Bearer install-level");
-    service.setAssignment(first.agentId, server.serverId, false);
+    (await service.setAssignment(first.agentId, server.serverId, false));
     await service.drainCleanup({ serverId: server.serverId });
     assert.equal(secrets.size, 1);
     assert.doesNotMatch(await readFile(join(directory, "db.sqlite"), "utf8"),
@@ -432,8 +432,8 @@ test("Agent deletion queues its MCP credential for safe Keychain cleanup", async
     const agent = store.createAgent({ name: "Temporary", provider: "codex-app-server" });
     const server = await service.register({ name: "Remote", transport: "http",
       url: "https://example.test/mcp" });
-    service.setAssignment(agent.agentId, server.serverId, true,
-      { headers: { Authorization: "Bearer temporary" } });
+    (await service.setAssignment(agent.agentId, server.serverId, true,
+      { headers: { Authorization: "Bearer temporary" } }));
     assert.equal(secrets.size, 1);
     store.deleteAgent(agent.agentId);
     assert.equal(store.selectOne("SELECT COUNT(*) AS count FROM mcp_cleanup_queue").count, 1);
@@ -518,12 +518,12 @@ test("standalone MCP registration, assignment and revocation change existing Age
     assert.equal(service.list().length, 1);
     assert.deepEqual(service.serversForAgent(agent.agentId), {});
     const before = service.assignmentRevisionForAgent(agent.agentId);
-    assert.equal(service.setAssignment(agent.agentId, server.serverId, true).changed, true);
+    assert.equal((await service.setAssignment(agent.agentId, server.serverId, true)).changed, true);
     assert.deepEqual(service.deletionImpact(server.serverId).assignedAgents,
       [{ agentId: agent.agentId, name: "MCP Test Agent" }]);
     assert.equal(service.deletionImpact(server.serverId).canRemove, false);
     const unchangedAssignmentRevision = service.assignmentRevisionForAgent(agent.agentId);
-    assert.equal(service.setAssignment(agent.agentId, server.serverId, true).changed, false);
+    assert.equal((await service.setAssignment(agent.agentId, server.serverId, true)).changed, false);
     assert.equal(service.assignmentRevisionForAgent(agent.agentId), unchangedAssignmentRevision);
     assert.notEqual(service.assignmentRevisionForAgent(agent.agentId), before);
     const [key] = Object.keys(service.serversForAgent(agent.agentId));
@@ -552,7 +552,7 @@ test("standalone MCP registration, assignment and revocation change existing Age
       const canonical = found.domains[0].tools[0].canonicalName;
       assert.equal(canonical, `${key}__lookup`);
       assert.equal((await gateway.execute({ ...input, tool: canonical, arguments: {} })).content[0].text, "ok");
-      service.setAssignment(agent.agentId, server.serverId, false);
+      (await service.setAssignment(agent.agentId, server.serverId, false));
       assert.equal(service.deletionImpact(server.serverId).canRemove, true);
       await assert.rejects(() => gateway.execute({ ...input, tool: canonical, arguments: {} }),
         { code: "HOST_TOOL_UNSUPPORTED" });
@@ -575,7 +575,7 @@ test("standalone MCP runtime receipts correlate tools/list and calls without rec
     const agent = store.createAgent({ name: "Receipt Agent", provider: "codex-app-server" });
     const server = await service.register({ name: "Receipt Server", transport: "http",
       url: "https://example.test/mcp" });
-    service.setAssignment(agent.agentId, server.serverId, true);
+    (await service.setAssignment(agent.agentId, server.serverId, true));
     const gateway = new SkillMcpGateway({
       resolveServers: async () => service.serversForAgent(agent.agentId),
       onRuntimeEvent: (event) => service.recordRuntimeEvent(event),
@@ -618,7 +618,7 @@ test("installed MCP checks record safe failure and recovery without disabling as
   try {
     const agent = store.createAgent({ name: "Check Agent", provider: "codex-app-server" });
     const installed = await service.register({ name: "Check Server", url: "https://example.test/mcp", transport: "http" });
-    service.setAssignment(agent.agentId, installed.serverId, true);
+    (await service.setAssignment(agent.agentId, installed.serverId, true));
     service.verify = async () => {
       throw Object.assign(new Error("secret endpoint details"), { code: "MCP_CONNECTION_FAILED" });
     };
@@ -646,7 +646,7 @@ test("direct MCP configuration update verifies before CAS switch and preserves t
   try {
     const agent = store.createAgent({ name: "Update Agent", provider: "codex-app-server" });
     const installed = await service.register({ name: "Before", transport: "http", url: "https://old.example.test/mcp" });
-    service.setAssignment(agent.agentId, installed.serverId, true);
+    (await service.setAssignment(agent.agentId, installed.serverId, true));
     const beforeRevision = service.assignmentRevisionForAgent(agent.agentId);
     service.verify = async () => { throw Object.assign(new Error("offline"), { code: "MCP_CONNECTION_FAILED" }); };
     await assert.rejects(() => service.updateConfig(installed.serverId, {
@@ -698,8 +698,8 @@ test("two standalone Servers with the same remote tool name keep distinct canoni
     const agent = store.createAgent({ name: "Two Servers", provider: "claude-sdk" });
     const first = await service.register({ name: "First", url: "https://first.example.test/mcp", transport: "http" });
     const second = await service.register({ name: "Second", url: "https://second.example.test/mcp", transport: "http" });
-    service.setAssignment(agent.agentId, first.serverId, true);
-    service.setAssignment(agent.agentId, second.serverId, true);
+    (await service.setAssignment(agent.agentId, first.serverId, true));
+    (await service.setAssignment(agent.agentId, second.serverId, true));
     const gateway = new SkillMcpGateway({
       resolveServers: async () => service.serversForAgent(agent.agentId),
       connectServer: async (name) => ({
@@ -734,9 +734,9 @@ test("Agent tool allowlist revokes an old canonical MCP tool without changing it
     const agent = store.createAgent({ name: "Limited", provider: "codex-app-server" });
     const server = await service.register({ name: "Two tools", transport: "http",
       url: "https://example.test/mcp" });
-    await assert.rejects(async () => service.setAssignment(agent.agentId, server.serverId, true,
-      { toolAllowlist: ["unknown"] }), { code: "MCP_TOOL_ALLOWLIST_INVALID" });
-    service.setAssignment(agent.agentId, server.serverId, true, { toolAllowlist: ["read"] });
+    await assert.rejects(async () => (await service.setAssignment(agent.agentId, server.serverId, true,
+      { toolAllowlist: ["unknown"] })), { code: "MCP_TOOL_ALLOWLIST_INVALID" });
+    (await service.setAssignment(agent.agentId, server.serverId, true, { toolAllowlist: ["read"] }));
     const gateway = new SkillMcpGateway({
       resolveServers: async () => service.serversForAgent(agent.agentId),
       connectServer: async () => ({
@@ -754,16 +754,16 @@ test("Agent tool allowlist revokes an old canonical MCP tool without changing it
       assert.equal(firstCatalog.domains[0].tools.length, 1);
       const oldTool = firstCatalog.domains[0].tools[0].canonicalName;
       assert.match(oldTool, /__read$/);
-      service.setAssignment(agent.agentId, server.serverId, true, { toolAllowlist: ["write"] });
+      (await service.setAssignment(agent.agentId, server.serverId, true, { toolAllowlist: ["write"] }));
       await assert.rejects(() => gateway.execute({ ...scope, tool: oldTool, arguments: {} }),
         { code: "HOST_TOOL_UNSUPPORTED" });
       const nextCatalog = await gateway.search(scope);
       assert.notEqual(nextCatalog.catalogVersion, firstCatalog.catalogVersion);
       assert.match(nextCatalog.domains[0].tools[0].canonicalName, /__write$/);
       assert.deepEqual(service.assignmentDetailsForAgent(agent.agentId)[0].toolAllowlist, ["write"]);
-      service.setAssignment(agent.agentId, server.serverId, true, { toolAllowlist: [] });
+      (await service.setAssignment(agent.agentId, server.serverId, true, { toolAllowlist: [] }));
       assert.deepEqual((await gateway.search(scope)).domains, []);
-      service.setAssignment(agent.agentId, server.serverId, true, { toolAllowlist: null });
+      (await service.setAssignment(agent.agentId, server.serverId, true, { toolAllowlist: null }));
       assert.equal((await gateway.search(scope)).domains[0].tools.length, 2);
     } finally {
       await gateway.close();
@@ -815,7 +815,7 @@ test("real loopback MCP Server verifies, installs and calls through the existing
     const verification = await service.verify(config);
     assert.deepEqual(verification.toolNames, ["ping"]);
     const installed = await service.register(config);
-    service.setAssignment(agent.agentId, installed.serverId, true);
+    (await service.setAssignment(agent.agentId, installed.serverId, true));
     const gateway = new SkillMcpGateway({
       resolveServers: async () => service.serversForAgent(agent.agentId)
     });
@@ -826,7 +826,7 @@ test("real loopback MCP Server verifies, installs and calls through the existing
       const result = await gateway.execute({ ...input, tool: canonical, arguments: {} },
         { expectedCatalogVersion: found.catalogVersion });
       assert.equal(result.content[0].text, "pong");
-      service.setAssignment(agent.agentId, installed.serverId, false);
+      (await service.setAssignment(agent.agentId, installed.serverId, false));
       await assert.rejects(() => gateway.execute({ ...input, tool: canonical, arguments: {} }),
         { code: "HOST_TOOL_UNSUPPORTED" });
     } finally {
@@ -850,7 +850,7 @@ test("pure stdio MCP without SKILL.md installs and runs with an isolated environ
     const verified = await service.verify(config);
     assert.deepEqual(verified.toolNames, ["ping"]);
     const installed = await service.register(config);
-    service.setAssignment(agent.agentId, installed.serverId, true);
+    (await service.setAssignment(agent.agentId, installed.serverId, true));
     const gateway = new SkillMcpGateway({ resolveServers: async () => service.serversForAgent(agent.agentId) });
     try {
       const input = { actorId: agent.agentId, providerId: "claude-sdk", intent: "Local tool ping" };
@@ -915,7 +915,7 @@ test("pure MCP package installs a selected stdio Server into managed storage and
     assert.equal(replay.serverId, installed.serverId);
     assert.equal(replay.idempotentReplay, true);
     const agent = store.createAgent({ name: "Package MCP", provider: "codex-app-server" });
-    service.setAssignment(agent.agentId, installed.serverId, true);
+    (await service.setAssignment(agent.agentId, installed.serverId, true));
     const gateway = new SkillMcpGateway({ resolveServers: async () => service.serversForAgent(agent.agentId) });
     try {
       const input = { actorId: agent.agentId, providerId: "codex-app-server", intent: "ping" };
@@ -926,7 +926,7 @@ test("pure MCP package installs a selected stdio Server into managed storage and
     } finally {
       await gateway.close();
     }
-    service.setAssignment(agent.agentId, installed.serverId, false);
+    (await service.setAssignment(agent.agentId, installed.serverId, false));
     assert.equal((await service.remove(installed.serverId)).cleanupPending, false);
     await assert.rejects(() => stat(installed.packageRoot), { code: "ENOENT" });
   } finally {
@@ -969,7 +969,7 @@ test("pure MCP package receives Keychain-backed environment credentials after so
     assert.equal(secrets.size, 1);
     await rm(source, { recursive: true, force: true });
     const agent = store.createAgent({ name: "Secured package", provider: "claude-sdk" });
-    service.setAssignment(agent.agentId, installed.serverId, true);
+    (await service.setAssignment(agent.agentId, installed.serverId, true));
     const gateway = new SkillMcpGateway({ resolveServers: async () => service.serversForAgent(agent.agentId) });
     try {
       const scope = { actorId: agent.agentId, providerId: "claude-sdk", intent: "ping" };
@@ -979,7 +979,7 @@ test("pure MCP package receives Keychain-backed environment credentials after so
       assert.equal(called.content[0].text, "credential-present");
     } finally { await gateway.close(); }
     assert.doesNotMatch(await readFile(join(directory, "db.sqlite"), "utf8"), /private-token/);
-    service.setAssignment(agent.agentId, installed.serverId, false);
+    (await service.setAssignment(agent.agentId, installed.serverId, false));
     await service.remove(installed.serverId);
     assert.equal(secrets.size, 0);
   } finally {
@@ -1018,7 +1018,7 @@ test("remote MCP package binds supplied Header credentials without persisting th
     assert.equal(installed.hasCredentials, true);
     assert.doesNotMatch(JSON.stringify(installed), /private-token/);
     const agent = store.createAgent({ name: "Remote MCP", provider: "codex-app-server" });
-    service.setAssignment(agent.agentId, installed.serverId, true);
+    (await service.setAssignment(agent.agentId, installed.serverId, true));
     assert.equal(Object.values(service.serversForAgent(agent.agentId))[0].headers.Authorization,
       "Bearer private-token");
     assert.doesNotMatch(await readFile(join(directory, "db.sqlite"), "utf8"), /private-token/);
@@ -1042,7 +1042,7 @@ test("remote MCP package binds supplied Header credentials without persisting th
     assert.equal(Object.values(service.serversForAgent(agent.agentId))[0].headers.Authorization,
       "Bearer rotated-token");
     assert.equal(secrets.size, 1);
-    service.setAssignment(agent.agentId, installed.serverId, false);
+    (await service.setAssignment(agent.agentId, installed.serverId, false));
     await service.remove(installed.serverId);
     assert.equal(secrets.size, 0);
   } finally {
@@ -1067,7 +1067,7 @@ test("package update keeps Server identity, assignment, and a versioned rollback
     const installed = await service.registerPackage({ sourceType: "local", source,
       serverName: "remote", expectedContentHash: firstDiscovery.contentHash });
     const agent = store.createAgent({ name: "Versioned MCP", provider: "codex-app-server" });
-    service.setAssignment(agent.agentId, installed.serverId, true);
+    (await service.setAssignment(agent.agentId, installed.serverId, true));
     const oldRevision = service.assignmentRevisionForAgent(agent.agentId);
     await writeFile(join(source, ".mcp.json"), descriptor("v2"));
     const nextDiscovery = await service.discoverPackage({ sourceType: "local", source });
@@ -1099,7 +1099,7 @@ test("package update keeps Server identity, assignment, and a versioned rollback
     assert.equal(rolledBack.configRevision, 3);
     assert.deepEqual(service.listPackageVersions(installed.serverId).map((version) => version.revision), [3, 2, 1]);
     assert.deepEqual(service.listForAgent(agent.agentId), [installed.serverId]);
-    service.setAssignment(agent.agentId, installed.serverId, false);
+    (await service.setAssignment(agent.agentId, installed.serverId, false));
     await service.remove(installed.serverId);
     await assert.rejects(() => stat(installed.packageRoot), { code: "ENOENT" });
     await assert.rejects(() => stat(updated.packageRoot), { code: "ENOENT" });
@@ -1231,4 +1231,38 @@ test("stdio schema migration preserves an existing remote MCP and Agent assignme
     await store.close();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+
+test("async secret persistence precedes Agent assignment publication", async () => {
+  const {directory,store,service}=await fixture();
+  try {
+    const agent=store.createAgent({name:"durable assignment",provider:"codex-app-server"});
+    const installed=await service.register({name:"test",transport:"http",url:"https://example.test/mcp"});
+    let release;
+    const gate=new Promise(resolve=>{release=resolve;});
+    const secrets=new Map();
+    service.secretStore={get:ref=>secrets.get(ref),put:async(ref,value)=>{await gate;secrets.set(ref,value);},delete:async ref=>secrets.delete(ref)};
+    const pending=service.setAssignment(agent.agentId,installed.serverId,true,{headers:{Authorization:"synthetic"}});
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.deepEqual(service.listForAgent(agent.agentId),[]);
+    release();await pending;
+    assert.deepEqual(service.listForAgent(agent.agentId),[installed.serverId]);
+    assert.equal(secrets.size,1);
+  } finally {await store.close();await rm(directory,{recursive:true,force:true});}
+});
+
+
+test("restoring a referenced credential invalidates the Agent materialization revision", async () => {
+  const {directory,store,service}=await fixture();
+  try {
+    let revision=0;
+    const agent=store.createAgent({name:"restored credential",provider:"codex-app-server"});
+    const installed=await service.register({name:"test",transport:"http",url:"https://example.test/mcp"});
+    await service.setAssignment(agent.agentId,installed.serverId,true);
+    service.secretStore={...service.secretStore, revision:()=>revision};
+    const before=service.assignmentRevisionForAgent(agent.agentId);
+    revision++;
+    assert.notEqual(service.assignmentRevisionForAgent(agent.agentId),before);
+  } finally {await store.close();await rm(directory,{recursive:true,force:true});}
 });

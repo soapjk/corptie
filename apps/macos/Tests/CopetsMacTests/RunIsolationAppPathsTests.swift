@@ -2,6 +2,19 @@ import XCTest
 @testable import CorptieMac
 
 final class RunIsolationAppPathsTests: XCTestCase {
+    func testCredentialAndRecoveryPathsAreEnvironmentScoped() {
+        let support = URL(fileURLWithPath: "/tmp/synthetic-support")
+        let production = RunIsolationAppPaths.credentialDirectory(environment: [:], isDevelopment: false, applicationSupportURL: support)
+        let development = RunIsolationAppPaths.credentialDirectory(environment: [:], isDevelopment: true, applicationSupportURL: support)
+        XCTAssertNotEqual(production, development)
+        let standalone = RunIsolationAppPaths.credentialDirectory(environment: [:], isDevelopment: false,
+            applicationSupportURL: support, isProductionBundle: false)
+        XCTAssertNotEqual(production, standalone)
+        XCTAssertEqual(production.lastPathComponent, "security")
+        let isolated = RunIsolationAppPaths.credentialDirectory(environment: ["CORPTIE_RUN_ID": "run:one", "CORPTIE_DATA_DIR": "/Volumes/T9/run/one"], isDevelopment: true, applicationSupportURL: support)
+        XCTAssertEqual(isolated.path, "/Volumes/T9/run/one/security")
+    }
+
     func testDevelopmentBackendConfigurationRequiresExternalCanonicalPaths() {
         let environment = [
             "CORPTIE_DEVELOPMENT_BACKEND_LAUNCHER": "/Volumes/T9/project/scripts/start-backend-development.sh",

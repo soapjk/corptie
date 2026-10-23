@@ -276,11 +276,27 @@ public actor ReliableMessageOutbox {
 
     /// Local cache encryption shares the device-only key, with distinct AAD.
     public func timelinePersistenceKey() throws -> SymmetricKey {
-        try load()
+        if key == nil {
+            if let injectedKey { key = injectedKey }
+            else {
+                // The mobile Keychain provider may need to create its first
+                // key before any message has initialized the outbox directory.
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                    attributes: [.posixPermissions: 0o700])
+                var url = directory, values = URLResourceValues()
+                values.isExcludedFromBackup = true
+                try url.setResourceValues(values)
+                key = try loadKey()
+            }
+        }
         return key!
     }
 
     private func loadKey() throws -> SymmetricKey {
+        #if os(macOS)
+        // Mac hosts must inject their local key. Never prompt implicitly.
+        throw ReliableOutboxError.invalidIdentity
+        #else
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: "com.corptie.client.message-outbox",
             kSecAttrAccount as String: "encryption-v1", kSecAttrSynchronizable as String: false]
@@ -300,5 +316,6 @@ public actor ReliableMessageOutbox {
         if added == errSecDuplicateItem { return try loadKey() }
         guard added == errSecSuccess else { throw ReliableOutboxError.keychain(added) }
         return generated
+        #endif
     }
 }

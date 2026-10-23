@@ -1,3 +1,4 @@
+import { authorizeCredentialMigration } from "./mcpCredentialMigration.mjs";
 // Local management surface for independently installed MCP Servers.
 export async function handleMcpRegistryHttpRequest({ request, response, url, service, availabilityService, onChanged }) {
   const path = url.pathname;
@@ -11,6 +12,27 @@ export async function handleMcpRegistryHttpRequest({ request, response, url, ser
     if (request.headers?.origin) {
       return send(response, 403, { code: "MCP_BROWSER_ORIGIN_FORBIDDEN",
         error: "MCP management is available only to the native local client." });
+    }
+    if (path === "/mcp-servers/credential-migration") {
+      if (!await authorizeCredentialMigration(request, service.store.dataDir)) {
+        return send(response, 403, { code: "LOCAL_ADMIN_REQUIRED", error: "Local authorization is required." });
+      }
+      if (request.method === "GET") {
+        const status = service.credentialMigration.status();
+        if (status.state === "completed" && status.migrated > 0 && service.lastCredentialMigrationEvent !== status.operationId) {
+          service.lastCredentialMigrationEvent = status.operationId;
+          onChanged?.("McpCredentialsChanged", { migrated: status.migrated });
+        }
+        return send(response, 200, status);
+      }
+      if (request.method === "POST") {
+        const body = await readBody(request);
+        if (!["import", "cancel"].includes(body.action) || Object.keys(body).some(key => key !== "action")) {
+          return send(response, 400, { code: "INVALID_INPUT" });
+        }
+        return send(response, 202, body.action === "cancel"
+          ? service.credentialMigration.cancel() : await service.credentialMigration.start());
+      }
     }
     if (path === "/mcp-availability" && request.method === "GET") {
       const reference = url.searchParams.get("session")?.trim();
@@ -83,7 +105,7 @@ export async function handleMcpRegistryHttpRequest({ request, response, url, ser
           assignments: service.assignmentDetailsForAgent(agentId) });
       }
       if (agentMatch[2] && ["PUT", "DELETE"].includes(request.method)) {
-        const assignment = service.setAssignment(agentId, decodeURIComponent(agentMatch[2]),
+        const assignment = await service.setAssignment(agentId, decodeURIComponent(agentMatch[2]),
           request.method === "PUT", request.method === "PUT" ? await readBody(request, { allowEmpty: true }) : {});
         if (assignment.changed !== false) onChanged?.("McpAssignmentChanged", {
           action: request.method === "PUT" ? "assigned" : "unassigned", entity: assignment

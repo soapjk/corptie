@@ -85,7 +85,7 @@ export function createCodexEnvironmentSetup({ registry, environment, prepare, ru
       if (!canImport(profile)) throw new Error("此环境有正在执行的任务，请结束后再导入登录。");
       await prepare(profile);
       const imported = await importAuthentication({ ...runtimeOptions, codexHome: profile.home,
-        sourceAuthPath: join(registry.nativeHome, "auth.json") });
+        sourceAuthPath: join(registry.nativeHome, "auth.json"), allowKeychainImport: input.allowKeychainImport === true });
       if (!imported) throw new Error("未找到可导入的本机登录，或独立环境已保存认证。请重新登录或重新检测。");
       await afterAuthentication(profile);
       return { state: "imported" };

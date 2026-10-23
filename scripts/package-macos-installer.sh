@@ -215,6 +215,14 @@ if [ -d "${BACKEND_SOURCE}/node_modules" ]; then
   cp -RL "${BACKEND_SOURCE}/node_modules" "${BACKEND_DEST}/"
 fi
 
+# Runtime credentials must never enter an application distribution.
+/usr/bin/python3 - "${APP_DIR}" <<'CREDENTIAL_AUDIT'
+import os, sys
+for directory, _, names in os.walk(sys.argv[1], followlinks=False):
+    if any(name in {"app-credentials.v1.json", "mcp-secrets.v1.json", "auth.json", "admin-token"} for name in names):
+        raise SystemExit("Refusing to package runtime credentials")
+CREDENTIAL_AUDIT
+
 cat > "${APP_DIR}/Contents/Resources/corptie-backend-launch.sh" <<'LAUNCHER'
 #!/usr/bin/env bash
 set -euo pipefail

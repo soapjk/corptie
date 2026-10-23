@@ -6,7 +6,6 @@ import AppKit
 import SwiftUI
 
 struct SessionDetailPanel: View {
-    private static let detailJournalKeyOwner = ReliableMessageOutbox()
     @ObservedObject private var modelCatalog = BackendClient.shared.modelCatalog
     @ObservedObject private var entityClient = EntityAPIClient.shared
     private let backendClient = BackendClient.shared
@@ -444,9 +443,10 @@ struct SessionDetailPanel: View {
             sessionID: canonicalSessionID, accountID: "os-user:\(NSUserName())",
             credentialBindingID: "local-loopback:\(NSUserName()):\(Bundle.main.bundleIdentifier ?? "corptie")",
             catalog: selected.negotiation.catalog, capabilityDigest: selected.negotiation.capabilityDigest)
-        let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
-            appropriateFor: nil, create: false).appendingPathComponent("Corptie/DetailActionRecovery", isDirectory: true)
-        let journal = ClientDetailActionFileJournal(directory: directory, key: try await Self.detailJournalKeyOwner.timelinePersistenceKey())
+        let directory = CorptieAppEnvironment.detailActionRecoveryDirectory
+        let key = try await MacCredentialServices.store.cacheKey(purpose: "detail-action-recovery",
+                                                               legacyDirectories: MacCredentialServices.legacyRecoveryDirectories)
+        let journal = ClientDetailActionFileJournal(directory: directory, key: key)
         let transport = ClientDetailDynamicActionTransport(api: {
             ClientDetailActionAPI(transport: try BackendTransport(endpoint: BackendEndpoint(origin)), route: .desktop,
                 negotiation: selected.negotiation)

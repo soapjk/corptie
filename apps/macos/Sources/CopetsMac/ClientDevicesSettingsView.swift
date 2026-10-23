@@ -86,6 +86,7 @@ struct ClientDevicesSettingsView: View {
 
     var body: some View {
         Form {
+            MacCredentialMigrationSection()
             Section {
                 Label {
                     VStack(alignment: .leading, spacing: 3) {

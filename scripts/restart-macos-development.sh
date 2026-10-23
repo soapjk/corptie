@@ -23,7 +23,7 @@ if [[ -z "${CORPTIE_DEVELOPMENT_DATA_ROOT:-}" && ! -e "${WORKTREE_RUNTIME_ROOT}/
   # One stable browsing dataset, cloned on APFS for each Worktree. Backends
   # must retain distinct Data Roots because each owns its own process lock.
   mkdir -p "${WORKTREE_RUNTIME_ROOT}"
-  cp -c -R "${SHARED_PREVIEW_ROOT}" "${WORKTREE_RUNTIME_ROOT}/preview-data"
+  node "${ROOT_DIR}/scripts/clone-development-preview-data.mjs" clone "${SHARED_PREVIEW_ROOT}" "${WORKTREE_RUNTIME_ROOT}/preview-data"
   echo "Development preview cloned from shared dataset."
 fi
 LEGACY_APP_LAUNCH_LABEL="com.corptie.mac.development.${WORKTREE_HASH}"
@@ -32,6 +32,7 @@ APP_LOG="${CORPTIE_APP_LOG:-${WORKTREE_RUNTIME_ROOT}/logs/app.log}"
 BACKEND_LOG="${CORPTIE_BACKEND_LOG:-${WORKTREE_RUNTIME_ROOT}/logs/backend.log}"
 DEVELOPMENT_DATA_ROOT="${CORPTIE_DEVELOPMENT_DATA_ROOT:-${WORKTREE_RUNTIME_ROOT}/backend-data}"
 if [[ -z "${CORPTIE_DEVELOPMENT_DATA_ROOT:-}" && -f "${WORKTREE_RUNTIME_ROOT}/preview-data/.preview-only" ]]; then
+  node "${ROOT_DIR}/scripts/clone-development-preview-data.mjs" verify "${WORKTREE_RUNTIME_ROOT}/preview-data"
   DEVELOPMENT_DATA_ROOT="${WORKTREE_RUNTIME_ROOT}/preview-data"
   echo "Development preview: read-only snapshot; execution is disabled."
 fi

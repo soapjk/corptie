@@ -22,6 +22,15 @@ enum CorptieAppEnvironment {
     static let displayName = isDevelopment ? "Development" : "Production"
     static let appName = isDevelopment ? "Corptie Dev" : "Corptie"
     static let appSupportFolderName = isDevelopment ? "Corptie Development" : "Corptie"
+    static let credentialEnvironmentID = RunIsolationAppPaths.userDefaultsSuite(environment: environment, isDevelopment: isDevelopment || !canManageProductionBackend)
+    static let credentialDirectory: URL = {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return RunIsolationAppPaths.credentialDirectory(environment: environment, isDevelopment: isDevelopment,
+                                                       applicationSupportURL: support, isProductionBundle: canManageProductionBackend)
+    }()
+    static var detailActionRecoveryDirectory: URL {
+        credentialDirectory.deletingLastPathComponent().appendingPathComponent("DetailActionRecovery", isDirectory: true)
+    }
     static let cloudCredentialService = RunIsolationAppPaths.cloudCredentialService(
         environment: environment,
         isDevelopment: isDevelopment,
@@ -101,6 +110,18 @@ enum CorptieProcessLifecycle {
 }
 
 enum RunIsolationAppPaths {
+    static func credentialDirectory(environment: [String: String], isDevelopment: Bool,
+                                    applicationSupportURL: URL, isProductionBundle: Bool = true) -> URL {
+        let isDevelopment = isDevelopment || !isProductionBundle
+        if let directory = dataDirectory(environment: environment) {
+            return directory.appendingPathComponent("security", isDirectory: true)
+        }
+        var root = applicationSupportURL.appendingPathComponent(isDevelopment ? "Corptie Development" : "Corptie", isDirectory: true)
+        if isDevelopment {
+            root.appendPathComponent(userDefaultsSuite(environment: environment, isDevelopment: true), isDirectory: true)
+        }
+        return root.appendingPathComponent("security", isDirectory: true)
+    }
     static func cloudCredentialService(
         environment: [String: String], isDevelopment: Bool, isProductionBundle: Bool
     ) -> String {

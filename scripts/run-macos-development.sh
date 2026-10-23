@@ -16,9 +16,10 @@ if [[ -z "${CORPTIE_DEVELOPMENT_DATA_ROOT:-}" && ! -e "${WORKTREE_RUNTIME_ROOT}/
       && -f "${SHARED_PREVIEW_ROOT}/.preview-only" \
       && -f "${SHARED_PREVIEW_ROOT}/development/database/corptie.sqlite" ]]; then
   mkdir -p "${WORKTREE_RUNTIME_ROOT}"
-  cp -c -R "${SHARED_PREVIEW_ROOT}" "${WORKTREE_RUNTIME_ROOT}/preview-data"
+  node "${ROOT_DIR}/scripts/clone-development-preview-data.mjs" clone "${SHARED_PREVIEW_ROOT}" "${WORKTREE_RUNTIME_ROOT}/preview-data"
 fi
 if [[ -z "${CORPTIE_DEVELOPMENT_DATA_ROOT:-}" && -f "${WORKTREE_RUNTIME_ROOT}/preview-data/.preview-only" ]]; then
+  node "${ROOT_DIR}/scripts/clone-development-preview-data.mjs" verify "${WORKTREE_RUNTIME_ROOT}/preview-data"
   export CORPTIE_DATA_ROOT="${WORKTREE_RUNTIME_ROOT}/preview-data"
   export CORPTIE_DEVELOPMENT_PREVIEW_SESSION_ID="session:development-structured-preview-v1"
 fi

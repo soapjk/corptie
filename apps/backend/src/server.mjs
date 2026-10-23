@@ -609,11 +609,11 @@ const skillRegistryService = new SkillRegistryService({
     "claude-sdk": join(corptieClaudeRuntimePaths.pluginPath, "skills")
   }
 });
-const mcpRegistryService = new McpRegistryService({ store });
+const mcpRegistryService = new McpRegistryService({ store, ephemeral: developmentPreview });
 // Reconcile exact, durably queued package/Keychain cleanup after a prior crash.
-void mcpRegistryService.drainCleanup().catch(() => {});
+void mcpRegistryService.initializeCredentials().then(() => mcpRegistryService.drainCleanup()).catch(() => {});
 const mcpCleanupInterval = setInterval(() => {
-  void mcpRegistryService.drainCleanup().catch(() => {});
+  void mcpRegistryService.initializeCredentials().then(() => mcpRegistryService.drainCleanup()).catch(() => {});
 }, 5 * 60 * 1000);
 mcpCleanupInterval.unref();
 function mcpAssignmentRevisionForAgent(agentId) {
@@ -2077,10 +2077,13 @@ function inspectDataRootMigrationBlockers() {
 }
 
 async function quiescePersistentRuntime() {
-  return persistentRuntimeLifecycle.quiescePersistentRuntime();
+  await mcpRegistryService.secretStore.pause?.();
+  try { return await persistentRuntimeLifecycle.quiescePersistentRuntime(); }
+  catch (error) { mcpRegistryService.secretStore.resume?.(); throw error; }
 }
 
 async function resumePersistentRuntime() {
+  mcpRegistryService.secretStore.resume?.();
   return persistentRuntimeLifecycle.resumePersistentRuntime();
 }
 
@@ -2437,7 +2440,7 @@ startBackendRuntime();
 
 const shutdownBackend = createBackendShutdown({
   backgroundAgentService, memoryExtractionScheduler, getClientDeviceGateway: () => clientDeviceGateway,
-  taskSummaryService, turnObservability, runtimeActivity, mcpCleanupInterval, turnExecutionProbe,
+  taskSummaryService, turnObservability, runtimeActivity, mcpCleanupInterval, turnExecutionProbe, mcpRegistryService,
   stateSyncPublisher, scheduledSessionTaskService,
   getResetForecastMonitor: () => codexResetForecastMonitor,
   openClackyManager, feishuGateway, codexRuntime, skillMcpGateway,
