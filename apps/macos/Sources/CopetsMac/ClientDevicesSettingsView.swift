@@ -1,5 +1,6 @@
 import SwiftUI
 import CorptieClientCore
+import CorptieConversation
 
 struct ClientDeviceInventory: Decodable {
     let state: String?
@@ -114,7 +115,7 @@ struct ClientDevicesSettingsView: View {
                         ))
                         .toggleStyle(.switch)
                         Spacer()
-                        Button("刷新设备") { Task { try? await cloud.refreshDevices() } }
+                        Button("刷新设备") { Task { await cloud.refreshDeviceDirectory() } }
                             .disabled(cloud.busy || cloud.restoring)
                         Button("退出账号", role: .destructive) { Task { await cloud.signOut() } }
                     } else {
@@ -130,20 +131,11 @@ struct ClientDevicesSettingsView: View {
                         Text("暂无已注册设备").foregroundStyle(.secondary)
                     } else {
                         ForEach(activeDevices) { device in
-                            HStack {
-                                Image(systemName: device.kind == .mac ? "desktopcomputer" : "ipad.and.iphone")
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(device.displayName)
-                                    Text(device.kind == .mac ? "Mac" : "移动设备")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if device.id == cloud.currentDeviceID {
-                                    Text("此 Mac").font(.caption).foregroundStyle(.secondary)
-                                } else {
-                                    Button("撤销", role: .destructive) { cloudRevocation = device }
-                                }
-                            }
+                            CloudDeviceRow(device: device, isCurrentDevice: device.id == cloud.currentDeviceID,
+                                hasDuplicateName: activeDevices.filter {
+                                    $0.kind == device.kind && $0.displayName == device.displayName
+                                }.count > 1,
+                                busy: cloud.busy || cloud.restoring, remove: { cloudRevocation = device })
                         }
                     }
                 }
@@ -259,16 +251,16 @@ struct ClientDevicesSettingsView: View {
             Text("\(confirmation?.name ?? "")\n\(confirmation?.id ?? "")\n" +
                  (confirmation?.revoke == true ? "设备将失去访问权限，现有连接也会关闭。" : "仅批准你正在配对的设备。批准后，该设备可以使用客户端提供的全部功能。"))
         }
-        .alert("撤销 Cloud 设备？", isPresented: Binding(
+        .alert("移除 Cloud 设备？", isPresented: Binding(
             get: { cloudRevocation != nil }, set: { if !$0 { cloudRevocation = nil } }
         )) {
             Button("取消", role: .cancel) { cloudRevocation = nil }
-            Button("撤销", role: .destructive) {
+            Button("移除设备", role: .destructive) {
                 if let device = cloudRevocation { Task { await cloud.revoke(device) } }
                 cloudRevocation = nil
             }
         } message: {
-            Text("\(cloudRevocation?.displayName ?? "") 将立即失去 Cloud 访问权限，现有 Relay 连接会关闭。")
+            CloudDeviceRemovalMessage(device: cloudRevocation)
         }
         .alert("删除已撤销的设备？", isPresented: Binding(
             get: { deletion != nil }, set: { if !$0 { deletion = nil } }

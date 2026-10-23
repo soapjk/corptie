@@ -86,9 +86,12 @@ struct PairingView: View {
                             }
                         } else {
                             ForEach(macs) { mac in
-                                Button("连接 \(mac.displayName)", systemImage: "desktopcomputer") {
-                                    Task { await connection.connectCloud(to: mac) }
-                                }
+                                CloudDeviceRow(device: mac, isCurrentDevice: false,
+                                    isConnected: connection.connectedCloudMacID == mac.id,
+                                    hasDuplicateName: macs.filter { $0.displayName == mac.displayName }.count > 1,
+                                    busy: connection.busy,
+                                    connect: { Task { await connection.connectCloud(to: mac) } },
+                                    remove: { cloudRevocation = mac })
                             }
                         }
                         Button("刷新设备列表", systemImage: "arrow.clockwise") {
@@ -97,15 +100,10 @@ struct PairingView: View {
                         let mobileDevices = connection.cloudDevices.filter { $0.kind == .mobile && $0.revokedAt == nil }
                         if !mobileDevices.isEmpty {
                             ForEach(mobileDevices) { device in
-                                HStack {
-                                    Label(device.displayName, systemImage: "ipad.and.iphone")
-                                    Spacer()
-                                    if device.id == connection.cloudCurrentDeviceID {
-                                        Text("此设备").font(.caption).foregroundStyle(.secondary)
-                                    } else {
-                                        Button("撤销", role: .destructive) { cloudRevocation = device }
-                                    }
-                                }
+                                CloudDeviceRow(device: device,
+                                    isCurrentDevice: device.id == connection.cloudCurrentDeviceID,
+                                    hasDuplicateName: mobileDevices.filter { $0.displayName == device.displayName }.count > 1,
+                                    busy: connection.busy, remove: { cloudRevocation = device })
                             }
                         }
                         Button("退出 Cloud 账号", role: .destructive) {
@@ -211,16 +209,17 @@ struct PairingView: View {
             .sheet(item: $scanner, onDismiss: consumeScan) { _ in
                 PairingScannerView(onScan: { scannedPayload = $0 })
             }
-            .alert("撤销移动设备？", isPresented: Binding(
+            .alert("移除 Cloud 设备？", isPresented: Binding(
                 get: { cloudRevocation != nil }, set: { if !$0 { cloudRevocation = nil } }
             )) {
                 Button("取消", role: .cancel) { cloudRevocation = nil }
-                Button("撤销", role: .destructive) {
+                Button("移除设备", role: .destructive) {
                     if let device = cloudRevocation { Task { await connection.revokeCloudDevice(device) } }
                     cloudRevocation = nil
                 }
             } message: {
-                Text("\(cloudRevocation?.displayName ?? "") 将立即失去 Cloud 访问权限。此操作需要最近重新认证。")
+                CloudDeviceRemovalMessage(device: cloudRevocation,
+                    disconnectsCurrentMac: cloudRevocation?.id == connection.connectedCloudMacID)
             }
         }
     }

@@ -822,22 +822,24 @@ private struct PadDeviceSettingsView: View {
             }
             if connection.cloudSignedIn {
                 Section {
-                    ForEach(connection.cloudDevices.filter { $0.kind == .mac && $0.revokedAt == nil }) { mac in
-                        Button("切换到 \(mac.displayName)", systemImage: "arrow.triangle.2.circlepath") {
-                            Task { await connection.connectCloud(to: mac) }
-                        }
-                        .disabled(connection.busy || UserDefaults.standard.string(forKey: "cloudMacID") == mac.id.uuidString)
+                    let macs = connection.cloudDevices.filter { $0.kind == .mac && $0.revokedAt == nil }
+                    ForEach(macs) { mac in
+                        CloudDeviceRow(device: mac, isCurrentDevice: false,
+                            isConnected: connection.connectedCloudMacID == mac.id,
+                            hasDuplicateName: macs.filter { $0.displayName == mac.displayName }.count > 1,
+                            busy: connection.busy,
+                            connect: { Task { await connection.connectCloud(to: mac) } },
+                            remove: { cloudRevocation = mac })
                     }
-                    ForEach(connection.cloudDevices.filter { $0.kind == .mobile && $0.revokedAt == nil }) { device in
-                        HStack {
-                            Label(device.displayName, systemImage: "ipad.and.iphone")
-                            Spacer()
-                            if device.id == connection.cloudCurrentDeviceID {
-                                Text("此设备").font(.caption).foregroundStyle(.secondary)
-                            } else {
-                                Button("撤销", role: .destructive) { cloudRevocation = device }
-                            }
-                        }
+                    let mobileDevices = connection.cloudDevices.filter { $0.kind == .mobile && $0.revokedAt == nil }
+                    ForEach(mobileDevices) { device in
+                        CloudDeviceRow(device: device,
+                            isCurrentDevice: device.id == connection.cloudCurrentDeviceID,
+                            hasDuplicateName: mobileDevices.filter { $0.displayName == device.displayName }.count > 1,
+                            busy: connection.busy, remove: { cloudRevocation = device })
+                    }
+                    if !connection.cloudNotice.isEmpty {
+                        Text(connection.cloudNotice).font(.callout).foregroundStyle(.secondary)
                     }
                     Button("退出 Cloud 账号", role: .destructive) {
                         Task {
@@ -849,7 +851,7 @@ private struct PadDeviceSettingsView: View {
                 } header: {
                     Text("Corptie Cloud 设备")
                 } footer: {
-                    Text("同账号只有一台可用 Mac 时会自动连接；多台时可在此切换。撤销移动设备需要最近重新认证。")
+                    Text("点击 Mac 名称即可连接；菜单可移除旧设备。最近联系时间不表示实时在线状态。移除设备需要最近重新验证账号。")
                 }
             }
             Section {
@@ -862,16 +864,17 @@ private struct PadDeviceSettingsView: View {
                 Text("此 iPad 已由你在 Mac 上扫码批准，使用与其他已批准客户端一致的功能权限。")
             }
         }
-        .alert("撤销移动设备？", isPresented: Binding(
+        .alert("移除 Cloud 设备？", isPresented: Binding(
             get: { cloudRevocation != nil }, set: { if !$0 { cloudRevocation = nil } }
         )) {
             Button("取消", role: .cancel) { cloudRevocation = nil }
-            Button("撤销", role: .destructive) {
+            Button("移除设备", role: .destructive) {
                 if let device = cloudRevocation { Task { await connection.revokeCloudDevice(device) } }
                 cloudRevocation = nil
             }
         } message: {
-            Text("\(cloudRevocation?.displayName ?? "") 将立即失去 Cloud 访问权限，现有 Relay 连接会关闭。")
+            CloudDeviceRemovalMessage(device: cloudRevocation,
+                disconnectsCurrentMac: cloudRevocation?.id == connection.connectedCloudMacID)
         }
     }
 }
