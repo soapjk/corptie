@@ -108,7 +108,7 @@ struct MainWindowResizeLayoutTests {
         ) == NSSize(width: 1_324, height: 791))
         #expect(MainWindowInitialLayout.contentSize(
             for: NSRect(x: 0, y: 0, width: 1_000, height: 650)
-        ) == NSSize(width: 980, height: 620))
+        ) == NSSize(width: 1000, height: 620))
     }
 
     @MainActor

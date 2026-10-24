@@ -138,7 +138,8 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
         sidebar.maximumThickness = 900
         addSplitViewItem(sidebar)
         let detail = NSSplitViewItem(viewController: detailController)
-        detail.minimumThickness = 580
+        // Reserve the transcript column beside the two-cell widget rail.
+        detail.minimumThickness = ConversationDetailWidgetMetrics.railWidth + 264
         addSplitViewItem(detail)
         super.viewDidLoad()
     }

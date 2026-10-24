@@ -77,6 +77,8 @@ import SwiftUI
                 return view.subviews.compactMap(findText).first
             }
             let text = try #require(findText(host))
+            #expect(text.textLayoutManager == nil)
+            #expect(!text.isVerticallyResizable)
             #expect(text.string.contains("这是一段"))
             #expect(text.string.hasSuffix(" …⌄"))
             #expect(host.fittingSize.height < 90)
@@ -85,6 +87,56 @@ import SwiftUI
             #expect(expansion.value)
             #expect(delegate.textView?(text, clickedOnLink: StampedParagraphLayout.toggleURL, at: text.string.utf16.count - 1) == true)
             #expect(!expansion.value)
+        }
+    }
+
+    @Test func shortMemoryInNestedDetailScrollSettlesAcrossResizeAndContentChanges() async throws {
+        let host = NSHostingView(rootView: memoryRail(revision: 0))
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 320, height: 500),
+            styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        window.orderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        for revision in 0..<12 {
+            host.rootView = memoryRail(revision: revision)
+            window.setContentSize(CGSize(width: revision.isMultiple(of: 2) ? 320 : 284, height: 500))
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        func textViews(_ view: NSView) -> [NSTextView] {
+            if let text = view as? NSTextView { return [text] }
+            return view.subviews.flatMap(textViews)
+        }
+        let texts = textViews(host)
+        #expect(texts.count == 12)
+        for text in texts {
+            #expect(text.textLayoutManager == nil)
+            #expect(!text.isVerticallyResizable)
+            #expect(text.bounds.height > 0 && text.bounds.height < 80)
+            let container = try #require(text.textContainer)
+            let layout = try #require(text.layoutManager)
+            layout.ensureLayout(for: container)
+            #expect(layout.usedRect(for: container).height <= text.bounds.height)
+        }
+        let frames = texts.map(\.frame)
+        for _ in 0..<10 {
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(texts.map(\.frame) == frames)
+    }
+
+    private func memoryRail(revision: Int) -> some View {
+        ConversationDetailDashboard {
+            ConversationDetailBoundedScroll {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(0..<12) { index in
+                        ConversationStampedParagraph(title: "事实",
+                            text: index == 0 ? "用户现有一对约5公斤的哑铃。" : "短记忆 \(index)：\(revision)")
+                    }
+                }
+            }
         }
     }
 

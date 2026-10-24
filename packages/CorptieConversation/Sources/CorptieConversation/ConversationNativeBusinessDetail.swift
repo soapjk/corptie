@@ -18,7 +18,7 @@ struct ConversationNativeBusinessDetail: View {
     }
     var body: some View {
         if #available(macOS 27.0, iOS 27.0, *) {
-            VStack(alignment: .leading, spacing: 12) {
+            DetailWidgetLayout(sizes: cards.map { DetailWidgetSizing.preferredSize(for: $0.card) }) {
                 rows.reorderable()
             }
             .reorderContainer(for: ClientDetailBusinessCardState.self, isEnabled: arranging) { difference in
@@ -33,18 +33,21 @@ struct ConversationNativeBusinessDetail: View {
             }
             .environment(\.detailArranging, arranging)
         } else {
-            rows
+            DetailWidgetLayout(sizes: cards.map { DetailWidgetSizing.preferredSize(for: $0.card) }) { rows }
         }
     }
     private var rows: ForEach<[ClientDetailBusinessCardState], String, some View> {
         ForEach(cards) { state in
-            if state.card.loadState == "error" {
-                NativeBusinessCard(state: state, api: api, store: store, actions: actions, references: adapters.referenceManagement, openArtifact: adapters.openArtifact, workID: context.workID,
-                    canCommand: { canCommand(state.id, $0) }, perform: { perform(state.id, $0, $1) }, retry: { Task { await refresh() } })
-                    .environment(\.detailSectionPrefix, state.id)
-            } else {
-                sharedCard(state).environment(\.detailSectionPrefix, state.id)
+            Group {
+                if state.card.loadState == "error" {
+                    NativeBusinessCard(state: state, api: api, store: store, actions: actions, references: adapters.referenceManagement, openArtifact: adapters.openArtifact, workID: context.workID,
+                        canCommand: { canCommand(state.id, $0) }, perform: { perform(state.id, $0, $1) }, retry: { Task { await refresh() } })
+                        .environment(\.detailSectionPrefix, state.id)
+                } else {
+                    sharedCard(state).environment(\.detailSectionPrefix, state.id)
+                }
             }
+            .detailWidget(DetailWidgetSizing.preferredSize(for: state.card))
         }
     }
     @ViewBuilder private func sharedCard(_ state: ClientDetailBusinessCardState) -> some View {
@@ -72,6 +75,7 @@ struct ConversationNativeBusinessDetail: View {
 }
 
 private struct NativeBusinessCard: View {
+    @Environment(\.detailWidgetSize) private var widgetSize
     @Bindable var state: ClientDetailBusinessCardState
     let api: ClientDetailAPI?
     let store: ClientDetailBusinessStore
@@ -291,6 +295,8 @@ private struct NativeBusinessCard: View {
         if count == 0 {
             Text("暂无内容").font(.caption).foregroundStyle(.secondary)
             pageTail
+        } else if widgetSize != nil {
+            LazyVStack(alignment: .leading, spacing: 12) { windowNotice; rows(); pageTail }
         } else if count > 4 || card.nextCursor != nil || longContent {
             ScrollView(.vertical) {
                 LazyVStack(alignment: .leading, spacing: 12) { windowNotice; rows(); pageTail }

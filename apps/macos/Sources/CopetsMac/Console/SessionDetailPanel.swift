@@ -142,7 +142,7 @@ struct SessionDetailPanel: View {
 
     private var sessionCard: some View {
         ConversationDetailDashboard {
-            sessionDetailContent.background(ConsoleOverlayScroller())
+            sessionDetailContent
         }
     }
 

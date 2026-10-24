@@ -128,7 +128,7 @@ struct UnifiedConsoleControlSurfaceTests {
         let source = try source(named: "UnifiedConsoleView.swift")
         #expect(!source.contains("showsCardTaskDetails"))
         #expect(!source.contains("显示或隐藏 Task Info"))
-        #expect(source.contains("SessionDetailPanel(session: session, railWidth: 320)"))
+        #expect(source.contains("SessionDetailPanel(session: session, railWidth: ConversationDetailWidgetMetrics.railWidth,"))
         #expect(source.contains("SessionCorptieTaskDetailCard(taskId: task.id)"))
         #expect(source.contains("ConsoleWindowSplitView(mode: navigationMode"))
     }

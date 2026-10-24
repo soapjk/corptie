@@ -3,6 +3,9 @@ import SwiftUI
 /// One scroll owner for both platform Detail rails.
 public struct ConversationDetailDashboard<Content: View>: View {
     private let content: Content
+    #if os(macOS)
+    @State private var scrollRouter = DetailScrollRouter()
+    #endif
 
     public init(@ViewBuilder content: () -> Content) {
         self.content = content()
@@ -15,6 +18,10 @@ public struct ConversationDetailDashboard<Content: View>: View {
             }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(12)
+                #if os(macOS)
+                .background(DetailRailProbe(router: scrollRouter))
+                .environment(\.detailScrollRouter, scrollRouter)
+                #endif
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(WorkbenchCanvasSurface.color)
@@ -60,13 +67,29 @@ public struct ConversationDetailContentSurface: ViewModifier {
 
 /// One static material and color surface per Detail module; no nested glass.
 public struct ConversationDetailModuleSurface: ViewModifier {
+    @Environment(\.detailWidgetSize) private var widgetSize
     public init() {}
 
     public func body(content: Content) -> some View {
-        content
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        Group {
+            if let widgetSize {
+                ScrollView(.vertical) {
+                    content.frame(maxWidth: .infinity, alignment: .topLeading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(widgetSize.columns == 1 ? 12 : 16)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            } else {
+                content
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
             .modifier(ConversationDetailContentSurface(cornerRadius: 18))
+            #if os(macOS)
+            .modifier(DetailCardScrollActivation())
+            #endif
     }
 }
 
