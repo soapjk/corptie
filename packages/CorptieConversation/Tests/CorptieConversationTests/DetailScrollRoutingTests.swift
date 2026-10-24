@@ -120,9 +120,10 @@ import Testing
     }
 
     @Test func swiftUIButtonClickActivatesItsCardAndPassesThrough() async throws {
+        var clicks = 0
         let host = NSHostingView(rootView: ConversationDetailDashboard {
             ConversationDetailModuleCard(title: "记忆", systemImage: "list.bullet") {
-                Button("立即操作") {}.buttonStyle(.plain)
+                Button("立即操作") { clicks += 1 }.buttonStyle(.plain)
                     .background(ButtonBoundsProbe())
                 Color.clear.frame(height: 80)
             }
@@ -154,6 +155,54 @@ import Testing
         #expect(card.router.route(event) === event)
         #expect(card.router.activeID == card.id)
         #expect(card.isActive)
+        window.sendEvent(event)
+        let up = try #require(NSEvent.mouseEvent(with: .leftMouseUp, location: location,
+            modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 0))
+        window.sendEvent(up)
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(clicks == 1)
+    }
+
+    @Test func wheelBurstKeepsOneDeliveryAndDoesNotRecreateScrollers() throws {
+        let fixture = Fixture()
+        defer { fixture.close() }
+        fixture.router.activate(fixture.cardA.id)
+        let scroller = try #require(fixture.innerA.verticalScroller)
+        let wheel = try fixture.event(.scrollWheel, at: CGPoint(x: 70, y: 90))
+        let start = ContinuousClock.now
+        for _ in 0..<10_000 { #expect(fixture.router.route(wheel) == nil) }
+        let elapsed = start.duration(to: .now)
+        #expect(fixture.innerA.wheels == 10_000)
+        #expect(fixture.outer.wheels == 0 && fixture.innerB.wheels == 0)
+        #expect(fixture.innerA.verticalScroller === scroller)
+        #expect(fixture.cardA.isActive && !fixture.cardB.isActive)
+        print("DETAIL_WHEEL_BURST count=10000 elapsed=\(elapsed)")
+    }
+
+    @Test func detachedDashboardReleasesRouterAndItsMonitorOwner() async throws {
+        weak var releasedRouter: DetailScrollRouter?
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 376, height: 400),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.contentView = nil; window.close() }
+        do {
+            let host = NSHostingView(rootView: ConversationDetailDashboard {
+                ConversationDetailModuleCard(title: "生命周期", systemImage: "list.bullet") { Text("内容") }
+            })
+            window.contentView = host
+            window.orderFront(nil)
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(30))
+            func find(_ view: NSView) -> DetailCardProbe.View? {
+                if let card = view as? DetailCardProbe.View { return card }
+                return view.subviews.compactMap(find).first
+            }
+            releasedRouter = try #require(find(host)).router
+            window.contentView = nil
+        }
+        for _ in 0..<10 where releasedRouter != nil { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(releasedRouter == nil)
     }
 
     private final class FlippedView: NSView { override var isFlipped: Bool { true } }
