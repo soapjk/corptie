@@ -88,7 +88,10 @@ export function createSessionApplicationComposition({
         baseContext = workChatContextService.build(session.workId, session);
         referenceContext = await resolveContextReferences(reference.sessionId, { characterBudget: 4_096 });
         if (referenceContext?.prompt) {
-          baseContext = { ...baseContext, prompt: `${baseContext.prompt}\n\n${referenceContext.prompt}` };
+          baseContext = { ...baseContext, prompt: `${baseContext.prompt}\n\n${referenceContext.prompt}`,
+            contextSections: [...(baseContext.contextSections ?? [
+              { id: "work-context", prompt: baseContext.prompt, reusable: true }
+            ]), { id: "context-references", prompt: referenceContext.prompt, reusable: true }] };
         }
       } else if (session?.sessionKind === "assistantChat") {
         baseContext = await resolveContextReferences(reference.sessionId);
@@ -165,13 +168,15 @@ export function createSessionApplicationComposition({
       // contain only this turn's Corptie product context and never replay chat
       // history from either Provider or session_items.
       const directUserIntentContext = buildDirectUserMessageEvidence(store, reference, messageContext);
-      const skillRoutingContext = skillMcpTurnContext(
+      const skillRoutingContext = { ...skillMcpTurnContext(
         mcpAssignmentRevisionForAgent(session?.agentId),
         session?.agentId ? await resolveAssignedCapabilities(session.agentId) : []
-      );
+      ), contextKey: "skill-routing", contextReusable: true };
       // Refresh presentation capabilities at Turn boundaries, including already
       // running/resumed Sessions whose Provider thread predates this contract.
-      const presentationContext = { prompt: `<corptie_message_presentation>\n${CHART_PRESENTATION_INSTRUCTIONS}\n</corptie_message_presentation>` };
+      const presentationContext = { contextKey: "presentation", contextReusable: true,
+        prompt: `<corptie_message_presentation>\n${CHART_PRESENTATION_INSTRUCTIONS}\n</corptie_message_presentation>` };
+      if (globalPreferenceContext) globalPreferenceContext.contextKey = "global-preferences";
       const contexts = [baseContext, globalPreferenceContext, skillRoutingContext,
         presentationContext, mentionContext, directUserIntentContext, memoryContext]
         .filter((item) => item?.prompt);
@@ -204,6 +209,15 @@ export function createSessionApplicationComposition({
       return {
         ...baseContext,
         prompt: contexts.map((item) => item.prompt).join("\n\n"),
+        contextSections: [
+          ...(baseContext?.contextSections ?? [{ id: "base-context", prompt: baseContext?.prompt ?? "", reusable: true }]),
+          { id: "global-preferences", prompt: globalPreferenceContext?.prompt ?? "", reusable: false },
+          { id: "skill-routing", prompt: skillRoutingContext.prompt, reusable: true },
+          { id: "presentation", prompt: presentationContext.prompt, reusable: true },
+          { id: "mentions", prompt: mentionContext?.prompt ?? "", reusable: false },
+          { id: "direct-user-evidence", prompt: directUserIntentContext?.prompt ?? "", reusable: false },
+          { id: "memory-recall", prompt: memoryContext?.prompt ?? "", reusable: false }
+        ],
         memoryRecall: memoryContext?.memoryRecall ?? null,
         globalPreferenceRecall: globalPreferences
       };

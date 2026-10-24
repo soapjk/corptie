@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { providerSafeDiagnosticPayload } from "../utils/providerRawMetadata.mjs";
 
 export const PROVIDER_EVENT_TYPES = new Set([
+  "context.compacted",
   "execution.notice",
   "turn.started",
   "turn.completed",

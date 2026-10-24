@@ -1,5 +1,6 @@
 import { AGENT_PROVIDER_CAPABILITIES, AgentProviderNotFoundError } from "./contracts.mjs";
 import { SingleFlight } from "../utils/singleFlight.mjs";
+import { SessionContextDelivery } from "../application/sessionContextDelivery.mjs";
 import { validateEntityName } from "../domain/workTaskValidation.mjs";
 import { SESSION_COMMAND_CATALOG, validateSessionCommand, sessionCommandAvailability,
   sessionCommandPermissions, sessionCommandError } from "../commands/sessionCommandCatalog.mjs";
@@ -32,6 +33,7 @@ export class SessionApplicationService {
     this.resolveRequiredToolDomains = options.resolveRequiredToolDomains ?? (() => []);
     this.observeLifecycle = options.observeLifecycle ?? (() => {});
     this.toolReadinessFlights = new SingleFlight();
+    this.contextDelivery = new SessionContextDelivery();
     if (!this.registry) throw new TypeError("SessionApplicationService requires an Agent Provider Registry.");
     if (typeof this.resolveSessionReference !== "function") {
       throw new TypeError("SessionApplicationService requires resolveSessionReference().");
@@ -230,6 +232,7 @@ export class SessionApplicationService {
   }
 
   async resumeSession(sessionId, context = {}) {
+    this.invalidateSessionContext(sessionId);
     const ready = await this.ensureActiveBindingToolsReady(sessionId, {
       ...context,
       purpose: normalizedText(context.purpose) ?? "session-resume",
@@ -420,6 +423,7 @@ export class SessionApplicationService {
   }
 
   async deleteSession(sessionId, context = {}) {
+    this.invalidateSessionContext(sessionId);
     return this.#deleteSession(sessionId, context, false);
   }
 
@@ -429,6 +433,7 @@ export class SessionApplicationService {
   // cleanup is still attempted first and its result is returned for audit,
   // while the product binding is retired regardless of Provider availability.
   async deleteSessionForTaskDeletion(sessionId, context = {}) {
+    this.invalidateSessionContext(sessionId);
     return this.#deleteSession(sessionId, context, true);
   }
 
@@ -518,6 +523,7 @@ export class SessionApplicationService {
   }
 
   async restartSession(sessionId, context = {}) {
+    this.invalidateSessionContext(sessionId);
     const reference = await this.referenceFor(sessionId);
     assertTaskNotArchived(reference);
     const audit = restartAudit(reference, context);
@@ -563,6 +569,7 @@ export class SessionApplicationService {
   }
 
   async disconnectSession(sessionId, context = {}) {
+    this.invalidateSessionContext(sessionId);
     const reference = await this.referenceFor(sessionId);
     return this.registry.invoke(
       reference.providerId,
@@ -660,6 +667,7 @@ export class SessionApplicationService {
     }
     // Resolve again after preparation: never send control RPCs to a stale binding.
     const prepared = await this.referenceFor(sessionId);
+    if (command.name === "compact") this.invalidateSessionContext(sessionId);
     try {
       return await this.registry.invoke(prepared.providerId, AGENT_PROVIDER_CAPABILITIES.CONVERSATION_COMMAND,
         prepared, command, context);
@@ -707,6 +715,15 @@ export class SessionApplicationService {
     } catch (error) {
       throw withDispatchStateNotSent(error);
     }
+    const contextReceipt = this.contextDelivery.prepare(dispatchReference, sessionContext,
+      this.registry.get?.(dispatchReference.providerId)?.descriptor?.metadata?.sessionContextDelivery);
+    sessionContext = contextReceipt.context;
+    if (sessionContext?.contextDelivery) {
+      console.info(`[session-context-delivery] ${JSON.stringify({
+        sessionId: dispatchReference.sessionId, providerId: dispatchReference.providerId,
+        ...sessionContext.contextDelivery
+      })}`);
+    }
     if (sessionContext?.contextIntegrity) {
       console.info(`[worker-context-dispatch] ${JSON.stringify({
         sessionId: dispatchReference.sessionId,
@@ -716,7 +733,10 @@ export class SessionApplicationService {
         taskDefinitionSha256: sessionContext.contextIntegrity.taskDefinitionSha256,
         corePromptSha256: sessionContext.contextIntegrity.corePromptSha256,
         finalPromptSha256: sessionContext.contextIntegrity.finalPromptSha256,
-        finalUtf8Bytes: sessionContext.contextBudget?.finalTurnUtf8Bytes ?? null,
+        contextIntegrityScope: "validated_canonical_context",
+        contextDelivery: sessionContext.contextDelivery ?? null,
+        finalUtf8Bytes: sessionContext.contextDelivery?.sentUtf8Bytes
+          ?? sessionContext.contextBudget?.finalTurnUtf8Bytes ?? null,
         omittedOptionalArtifacts: sessionContext.contextBudget?.omittedOptionalArtifacts ?? 0,
         omissionReasons: sessionContext.contextBudget?.omissionReasons ?? {}
       })}`);
@@ -729,9 +749,11 @@ export class SessionApplicationService {
         message,
         sessionContext ? { ...context, sessionContext } : context
       );
+      contextReceipt.commit();
       this.#recordMemoryDispatch(sessionContext, "provider_accepted");
       return result;
     } catch (error) {
+      contextReceipt.reject();
       this.#recordMemoryDispatch(sessionContext, "provider_rejected");
       throw error;
     }
@@ -748,6 +770,18 @@ export class SessionApplicationService {
     }
   }
 
+  invalidateSessionContext(sessionId) {
+    this.contextDelivery.invalidate(sessionId);
+  }
+
+  observeSessionContextEvent({ event, binding }) {
+    if (event.type === "context.compacted"
+      || event.payload?.item?.type === "contextCompaction"
+      || ["turn.failed", "turn.cancelled"].includes(event.type)) {
+      this.invalidateSessionContext(binding.sessionId);
+    }
+  }
+
   #canReplaceProviderBinding(error) {
     return typeof this.recoverUnavailableSession === "function"
       && error?.dispatchState === "not_sent"
@@ -755,6 +789,7 @@ export class SessionApplicationService {
   }
 
   async clearConversation(sessionId, context = {}) {
+    this.invalidateSessionContext(sessionId);
     const reference = await this.referenceFor(sessionId);
     return this.registry.invoke(
       reference.providerId,

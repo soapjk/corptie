@@ -55,6 +55,7 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
       ]
     },
     metadata: {
+      sessionContextDelivery: { mode: "append", maxDeltaTurns: 32 },
       bindingReadiness: { version: 1, reconciliation: "unsupported", runtimeEpoch: true },
       backgroundPermissionProfiles: ["read-only"],
       backgroundExecutionPolicies: ["no-tools"],

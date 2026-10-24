@@ -79,7 +79,7 @@ function createWork(workService, contributor, input) {
 test("workChat is a distinct persisted Session kind bound to an Work without a Task", async () => {
   const { directory, store, workService, contributor } = await fixture();
   try {
-    const work = createWork(workService, contributor, { name: "Work Chat" });
+    const work = createWork(workService, contributor, { name: "Work_Chat" });
     store.createSession({ id: "chat", title: "Chat", agentId: "assistant", sessionKind: "assistantChat" });
     const session = store.bindSessionToWork("chat", work.id);
     assert.equal(session.sessionKind, "workChat");
@@ -96,7 +96,7 @@ test("workChat is a distinct persisted Session kind bound to an Work without a T
 test("an Work keeps only its first bound Work Chat Session", async () => {
   const { directory, store, workService, contributor } = await fixture();
   try {
-    const work = createWork(workService, contributor, { name: "Unique Work Chat" });
+    const work = createWork(workService, contributor, { name: "Unique_Work_Chat" });
     store.createSession({ id: "first-chat", title: "First", sessionKind: "assistantChat" });
     store.createSession({ id: "second-chat", title: "Second", sessionKind: "assistantChat" });
 
@@ -119,15 +119,18 @@ test("Work Chat context is bounded and includes traceable Work state", async () 
   const { directory, store, workService, contributor } = await fixture();
   try {
     const work = createWork(workService, contributor, {
-      name: "Ship feature", description: "Delivery remains reliable across every path", profile: "software"
+      name: "Ship_feature", description: "Delivery remains reliable across every path", profile: "software"
     });
     workService.createTask({ workId: work.id, title: "Backend" });
-    const context = new WorkChatContextService({ store, characterBudget: 6_000 }).build(work.id);
+    const context = new WorkChatContextService({ store, characterBudget: 16_000 }).build(work.id);
     assert.equal(context.workId, work.id);
-    assert.ok(context.characters <= 6_100);
+    assert.ok(context.characters <= 16_000);
     assert.match(context.prompt, /Delivery remains reliable across every path/);
     assert.match(context.prompt, /Backend/);
     assert.ok(context.generatedAt);
+    const again = new WorkChatContextService({ store, characterBudget: 16_000 }).build(work.id);
+    assert.equal(again.prompt, context.prompt);
+    assert.equal(context.contextSections.map(section => section.prompt).join("\n\n"), context.prompt);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -137,7 +140,7 @@ test("Work Chat context is bounded and includes traceable Work state", async () 
 test("Work Chat context forbids Task creation without a direct explicit user request", async () => {
   const { directory, store, workService, contributor } = await fixture();
   try {
-    const work = createWork(workService, contributor, { name: "Delegated implementation" });
+    const work = createWork(workService, contributor, { name: "Delegated_implementation" });
     const context = new WorkChatContextService({ store }).build(work.id);
 
     assert.ok(context.prompt.includes(WORK_CHAT_REPOSITORY_CHANGE_RULE));
@@ -176,8 +179,8 @@ test("Work Chat tools enforce the bound Work and contributor scope", async () =>
     const outsider = store.createAgent({ name: "Outside", role: "independentContributor", provider: "codex" });
     const work = workService.createWork({ name: "Scoped", contributorAgentIds: [contributor.agentId, planner.agentId] });
     const other = createWork(workService, contributor, { name: "Other" });
-    const scopedItem = workService.createTask({ workId: work.id, title: "Scoped item" });
-    const otherItem = workService.createTask({ workId: other.id, title: "Other item" });
+    const scopedItem = workService.createTask({ workId: work.id, title: "Scoped_item" });
+    const otherItem = workService.createTask({ workId: other.id, title: "Other_item" });
     const starts = [];
     const service = new WorkChatOperationService({
       store,
@@ -198,7 +201,7 @@ test("Work Chat tools enforce the bound Work and contributor scope", async () =>
     assert.equal(agents.some((agent) => agent.agentId === outsider.agentId), false);
     const created = await service.execute({
       tool: "corptie_work_tasks_manage", metadata,
-      arguments: { action: "create", title: "New scoped item" }
+      arguments: { action: "create", title: "New_scoped_item" }
     });
     assert.equal(created.work_id, work.id);
     await assert.rejects(() => service.execute({

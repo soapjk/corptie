@@ -27,6 +27,7 @@ export function createCodexAppServerProvider(operations, options = {}) {
     runtime: { lifecycle: "managed" },
     metadata: {
       ...(options.metadata ?? {}),
+      sessionContextDelivery: { mode: "append", maxDeltaTurns: 32 },
       bindingReadiness: { version: 1, reconciliation: typeof operations.readinessEpoch === "function"
         ? "local-proof" : "unsupported", runtimeEpoch: typeof operations.readinessEpoch === "function" },
       conversationCommands: ["goal", "compact", "review", "ps", "stop", "clean"],

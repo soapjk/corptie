@@ -196,9 +196,22 @@ export function mergeWorkerSessionContexts({
   const memoryFits = memoryContext?.prompt
     && encoder.encode(`${requiredPrompt}\n\n${memoryContext.prompt}`).byteLength <= maxContextBytes;
   const prompt = memoryFits ? `${requiredPrompt}\n\n${memoryContext.prompt}` : requiredPrompt;
+  const artifactPrompt = selectedBasePrompt.startsWith(corePrompt)
+    ? selectedBasePrompt.slice(corePrompt.length).trim() : "";
+  const contextSections = [
+    { id: "session-binding", prompt: corePrompt, reusable: true },
+    { id: "artifact-index", prompt: artifactPrompt, reusable: true },
+    ...requiredContexts.map((item, index) => ({ id: item.contextKey ?? `required-${index}`,
+      prompt: item.prompt ?? "", reusable: item.contextReusable === true })),
+    { id: "direct-user-evidence", prompt: directUserIntentContext?.prompt ?? "", reusable: false },
+    { id: "mentions", prompt: mentionContext?.prompt ?? "", reusable: false },
+    { id: "context-references", prompt: referencePrompt, reusable: true },
+    { id: "memory-recall", prompt: memoryFits ? memoryContext.prompt : "", reusable: false }
+  ];
   return {
     ...baseContext,
     prompt,
+    contextSections,
     contextIntegrity: baseContext.contextIntegrity ? Object.freeze({
       ...baseContext.contextIntegrity,
       finalPromptSha256: sha256(prompt)
@@ -269,7 +282,7 @@ function fitsWithOptional(prefixLines, artifacts, artifactIndex, suffix, maximum
     JSON.stringify({ artifacts, omittedCount, omissionReasons }),
     "Use the exact pinned version/hash shown. A pendingUpdate is an impact notice, not permission to silently change versions."
   ].join("\n");
-  return encoder.encode([...prefixLines, section].join("\n") + suffix).byteLength <= maximum;
+  return encoder.encode(prefixLines.join("\n") + suffix + "\n\n" + section).byteLength <= maximum;
 }
 
 function optionalArtifactPrompt(corePrompt, artifacts, omittedCount, omissionReasons, maximum) {
@@ -279,8 +292,7 @@ function optionalArtifactPrompt(corePrompt, artifacts, omittedCount, omissionRea
     JSON.stringify({ artifacts, omittedCount, omissionReasons }),
     "Use the exact pinned version/hash shown. A pendingUpdate is an impact notice, not permission to silently change versions."
   ].join("\n");
-  const suffix = "\n</corptie_work_session_binding>";
-  const prompt = corePrompt.slice(0, -suffix.length) + "\n" + section + suffix;
+  const prompt = `${corePrompt}\n\n${section}`;
   return encoder.encode(prompt).byteLength <= maximum ? prompt : artifacts.length ? null : corePrompt;
 }
 
@@ -298,7 +310,12 @@ function assertComplete(prompt, maximum, taskDefinition, requiredArtifacts) {
   const missingFields = [];
   if (!prompt.includes(JSON.stringify(taskDefinition))) missingFields.push("taskDefinition");
   if (requiredArtifacts.length && !prompt.includes(JSON.stringify(requiredArtifacts))) missingFields.push("requiredArtifacts");
-  if (!prompt.endsWith("</corptie_work_session_binding>")) missingFields.push("closingBindingTag");
+  const closingTag = "</corptie_work_session_binding>";
+  const closingIndex = prompt.indexOf(closingTag);
+  const afterBinding = closingIndex < 0 ? null : prompt.slice(closingIndex + closingTag.length);
+  if (afterBinding === null || (afterBinding !== "" && !afterBinding.startsWith("\n\nOptional Artifact index ("))) {
+    missingFields.push("closingBindingTag");
+  }
   if (encoder.encode(prompt).byteLength > maximum) missingFields.push("contextBudget");
   if (missingFields.length) {
     throw contextError("WORK_SESSION_CONTEXT_INCOMPLETE", "Worker Session context failed its completeness invariant.", {
