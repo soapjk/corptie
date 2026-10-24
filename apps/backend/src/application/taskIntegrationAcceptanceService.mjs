@@ -74,7 +74,7 @@ export class TaskIntegrationAcceptanceService {
     const graph=await this.graph(taskId);
     if(graph.hierarchyRevision!==input.expectedHierarchyRevision) throw fail("TASK_HIERARCHY_CHANGED");
     if(graph.bindingRevision!==input.expectedBindingRevision) throw fail("TASK_DELIVERY_BINDING_CHANGED");
-    this.assertNoGitJob(graph.root.binding.repository_id);
+    this.assertNoGitJob(graph.root.binding.repository_id,this.waitingAcceptanceJob(graph.root.binding.repository_id,taskId));
     const {root,...projection}=graph;
     const value={...projection,snapshotId,createdAt:new Date().toISOString()};
     const persisted=this.store.runInTransaction(()=>{
@@ -86,7 +86,7 @@ export class TaskIntegrationAcceptanceService {
         return frozen;
       }
       this.assertRevisions(graph);
-      this.assertNoGitJob(graph.root.binding.repository_id);
+      this.assertNoGitJob(graph.root.binding.repository_id,this.waitingAcceptanceJob(graph.root.binding.repository_id,taskId));
       this.store.db.run(`INSERT INTO task_integration_snapshots
         (snapshot_id,task_id,worktree_id,parent_head_oid,hierarchy_revision,binding_revision,scope_hash,payload_json,content_hash,created_at)
         VALUES (?,?,?,?,?,?,?,?,?,?)`,[snapshotId,taskId,value.parentWorktreeId,value.parentHeadOid,value.hierarchyRevision,
@@ -109,6 +109,14 @@ export class TaskIntegrationAcceptanceService {
     const job=this.store.getLatestWorktreeIntegrationJob?.(repositoryId);
     if(job && job.id!==ownJobId && ["queued","running","paused","cancellation_requested","replanning"].includes(job.status)) throw fail("TASK_HIERARCHY_BUSY");
   }
+  waitingAcceptanceJob(repositoryId,taskId) {
+    const job=this.store.getLatestWorktreeIntegrationJob?.(repositoryId);
+    const state=job?.details?.graphExecution;
+    const step=state?.steps[state.index];
+    return job?.status==="paused" && job.phase==="awaiting_integration_acceptance"
+      && job.details.plan.orchestration?.version===1 && step?.kind==="acceptance"
+      && step.rootTaskId===taskId ? job.id : null;
+  }
   async validateSnapshotForAssessment(task,input) {
     if(!this.required(task)) return null;
     if(!input.integrationSnapshotId) throw fail("INTEGRATION_ACCEPTANCE_REQUIRED");
@@ -117,7 +125,7 @@ export class TaskIntegrationAcceptanceService {
     const snapshot=JSON.parse(record.payload_json);
     const current=await this.graph(task.id);
     this.assertRevisions(current);
-    this.assertNoGitJob(current.root.binding.repository_id);
+    this.assertNoGitJob(current.root.binding.repository_id,this.waitingAcceptanceJob(current.root.binding.repository_id,task.id));
     if(current.parentHeadOid!==snapshot.parentHeadOid || current.scopeHash!==snapshot.scopeHash) throw fail("INTEGRATION_ACCEPTANCE_STALE");
     return snapshot;
   }

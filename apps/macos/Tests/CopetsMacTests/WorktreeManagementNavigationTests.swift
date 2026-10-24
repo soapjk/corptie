@@ -429,7 +429,8 @@ final class WorktreeManagementNavigationTests: XCTestCase {
             encoding: .utf8
         )
 
-        XCTAssertTrue(view.contains("Task { await client.prepareFreshPlan() }"))
+        XCTAssertTrue(view.contains("showingIntegrationSelection = true"))
+        XCTAssertTrue(view.contains("Task { await client.prepareMainIntegration(sourceWorktreeIds: sources) }"))
         XCTAssertTrue(view.contains("client.cancelPlanPreparation()"))
         XCTAssertFalse(view.contains("worktree.integrate.regenerate"))
         XCTAssertFalse(view.contains("Regenerate Plan"))

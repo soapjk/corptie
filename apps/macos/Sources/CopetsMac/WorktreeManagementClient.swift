@@ -548,7 +548,15 @@ final class WorktreeManagementClient: ObservableObject {
     }
 
     func prepareFreshPlan() async {
-        await prepareCandidate(body: [:])
+        guard let project = detail?.project else { await prepareCandidate(body: [:]); return }
+        let sources = project.worktrees.filter { !$0.isMain && ($0.pendingIntegration == true || $0.hierarchy != nil) }.map(\.worktreeId)
+        guard !sources.isEmpty else { await prepareCandidate(body: [:]); return }
+        await prepareMainIntegration(sourceWorktreeIds: sources)
+    }
+
+    func prepareMainIntegration(sourceWorktreeIds: [String]) async {
+        guard let project = detail?.project, !sourceWorktreeIds.isEmpty else { return }
+        await prepareBranchOperation(operationType: "integrate", sourceWorktreeIds: sourceWorktreeIds.sorted(), targetWorktreeId: project.mainWorktreeId)
     }
 
     func prepareBranchOperation(

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
 import { ProjectWorktreeIntegrationService } from "./projectWorktreeIntegrationService.mjs";
 import { WorktreeIntegrationJobService } from "./worktreeIntegrationJobService.mjs";
+import { integrationTrackingTargets } from "./worktreeIntegrationGraph.mjs";
 import { resolveConflictResolutionAgentContext } from "./conflictResolutionAgentContext.mjs";
 import { generatedEntityTitle } from "../domain/entityTitlePolicy.mjs";
 import { sessionHasActiveRun } from "../utils/sessionPresentation.mjs";
@@ -104,10 +105,20 @@ export function createWorktreeIntegrationServices({
         contentHash: file.contentHash,
         decisionId: input.decisionId
       });
+      const job = store.getWorktreeIntegrationJob?.(input.jobId);
+      for (const targetPath of await integrationTrackingTargets(job, file.repositoryRoot)) {
+        await artifactService.promoteExistingRepositoryFileFromUserDecision({ kind: "local_user", actorId: "user:local-macos", workId: binding.workId }, artifact.artifactId, {
+          repositoryPath: targetPath, sourceRepositoryPath: file.repositoryRoot, integrationJobId: input.jobId,
+          path: file.relativePath, version: artifact.currentVersion, contentHash: file.contentHash,
+          decisionId: `${input.decisionId}:target:${targetPath}`
+        });
+      }
     }
     if (removeSource) {
       await gitWorkspaces.deleteIntegrationMarkdownFile({
         repositoryId: input.repositoryId,
+        jobId: input.jobId,
+        decisionId: input.decisionId,
         path: input.item.path,
         relativePath: input.relativePath,
         expectedContentHash: input.expectedContentHash

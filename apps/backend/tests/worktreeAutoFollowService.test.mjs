@@ -6,6 +6,22 @@ import { ClientInspectorAPI } from "../src/application/clientInspectorAPI.mjs";
 import { handleSessionGitHttpRequest } from "../src/application/sessionGitHttpApi.mjs";
 import { GitWorkspaceManager } from "../src/runtime/gitWorkspaceManager.mjs";
 
+test("hierarchical integration reserves only its closure and permits the exact parent acceptance Session while waiting", () => {
+  let workspace = "child";
+  const job = { status: "running", phase: "merging", details: { plan: { orchestration: { version: 1 }, reservedWorktreeIds: ["parent", "child", "main"] },
+    graphExecution: { index: 0, steps: [{ kind: "acceptance", rootTaskId: "task:parent", targetWorktreeId: "parent" }] } } };
+  const store = { getLogicalSessionByLegacySessionId: () => ({ repositoryId: "repo", activeWorkspaceId: workspace, taskId: "task:parent" }), getLatestWorktreeIntegrationJob: () => job };
+  assert.throws(() => assertNoAutomaticWorktreeMutation(store, { sessionId: "session" }), { code: "SESSION_BUSY" });
+  workspace = "unrelated";
+  assert.doesNotThrow(() => assertNoAutomaticWorktreeMutation(store, { sessionId: "session" }));
+  workspace = "parent";
+  assert.throws(() => assertNoAutomaticWorktreeMutation(store, { sessionId: "session" }), { code: "SESSION_BUSY" });
+  job.status = "paused"; job.phase = "awaiting_integration_acceptance";
+  assert.doesNotThrow(() => assertNoAutomaticWorktreeMutation(store, { sessionId: "session" }));
+  workspace = "child";
+  assert.throws(() => assertNoAutomaticWorktreeMutation(store, { sessionId: "session" }), { code: "SESSION_BUSY" });
+});
+
 function fixture() {
   let persisted = null, reads = 0, heads = 0, count = 0;
   const logical = { logicalSessionId: "logical", legacySessionId: "session", repositoryId: "repo", activeWorkspaceId: "tree", activeBinding: { boundCwd: "/tree" } };

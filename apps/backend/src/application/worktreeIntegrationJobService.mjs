@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { inspectGitWorkspace } from "../utils/gitWorktreeInventory.mjs";
 import { ensureProjectLocalState, inspectProjectLocalState, rollbackProjectLocalState, verifyProjectLocalState } from "../runtime/projectLocalStateDirectory.mjs";
 import { TaskWorktreeHierarchyService } from "./taskWorktreeHierarchyService.mjs";
+import { WorktreeIntegrationGraph } from "./worktreeIntegrationGraph.mjs";
 
 const ACTIVE_JOB_STATUSES = Object.freeze([
   "queued", "running", "paused", "cancellation_requested", "replanning"
@@ -29,6 +30,7 @@ export class WorktreeIntegrationJobService {
   constructor(options = {}) {
     this.store = options.store;
     this.hierarchy = new TaskWorktreeHierarchyService({store:this.store});
+    this.integrationGraph = new WorktreeIntegrationGraph({ store: this.store, hierarchy: this.hierarchy });
     this.inspectRepository = options.inspectRepository;
     this.inspectRepositorySummary = options.inspectRepositorySummary ?? options.inspectRepository;
     this.inspectGitHubPushStatus = options.inspectGitHubPushStatus ?? null;
@@ -354,6 +356,7 @@ export class WorktreeIntegrationJobService {
   }
 
   async #buildPlan(repository, options = {}, inspectionOptions = {}) {
+    if (options.operationType === "integrate") return this.#buildIntegrationGraphPlan(repository, options, inspectionOptions);
     const branchOperation = normalizeBranchOperation(options);
     if (branchOperation) {
       const plan = await this.#buildBranchOperationPlan(repository, branchOperation, inspectionOptions);
@@ -441,6 +444,42 @@ export class WorktreeIntegrationJobService {
       planFingerprint: fingerprint(plan),
       noWorkRequired: items.length === 0
     };
+  }
+
+  async #buildIntegrationGraphPlan(repository, options, inspectionOptions) {
+    const inspection = this.#associate(await this.inspectRepository(repository.id, inspectionOptions));
+    inspection.repositoryId = repository.id;
+    if (options.targetWorktreeId !== inspection.mainWorktreeId) throw new WorktreeIntegrationJobError("INVALID_INTEGRATION_TARGET", "Hierarchical integration must target main.", 409);
+    const graph = await this.integrationGraph.build(inspection, options.sourceWorktreeIds);
+    const selected = new Set([inspection.mainWorktreeId, ...graph.includedWorktreeIds]);
+    // Reuse the existing item/protection builder, but only for the confirmed
+    // closure. Unselected Worktrees must not enter validation or risk checks.
+    const scopedInspection = { ...inspection, worktrees: inspection.worktrees.filter(tree => selected.has(tree.worktreeId)) };
+    const items = [];
+    const blockingRisks = [];
+    for (const tree of scopedInspection.worktrees.sort((a, b) => Number(b.isMain) - Number(a.isMain) || a.worktreeId.localeCompare(b.worktreeId))) {
+      const risks = risksFor(tree);
+      const shouldCommit = !tree.isMain && tree.dirty === true;
+      const protection = shouldCommit ? withProtectedPathsDigest(await this.inspectCommitProtection(tree.path)) : null;
+      if (protection?.localSymlinkPaths?.length) risks.push({ code: "GIT_LOCAL_AGENT_SYMLINK_NOT_COMMITTABLE", message: "Local Agent configuration links cannot be committed." });
+      blockingRisks.push(...risks.map(risk => ({ worktreeId: tree.worktreeId, ...risk })));
+      items.push({ ordinal: items.length, worktreeId: tree.worktreeId, path: tree.path, branchName: tree.branchName,
+        isMain: tree.isMain, actualIsMain: tree.isMain, availability: tree.availability, sourceHeadBefore: tree.headOid,
+        statusSummary: tree.statusSummary ?? "", changedFiles: tree.changedFiles ?? [], dirty: tree.dirty === true,
+        aheadOfMain: tree.aheadOfMain, behindMain: tree.behindMain, mergedIntoMain: tree.mergedIntoMain,
+        associations: tree.associations ?? [], risks, commitProtection: protection,
+        commitMessage: shouldCommit ? `Corptie: preserve changes in ${tree.branchName}`.slice(0, 120) : null,
+        commitStatus: shouldCommit ? "pending" : "not_needed", commitHead: null,
+        mergeStatus: tree.isMain ? "not_needed" : "pending", mergeMainHead: null, resolutionHead: null,
+        conflictFiles: [...(tree.conflictFiles ?? [])], error: null });
+    }
+    const plan = { repositoryId: repository.id, operationType: "integrate", targetWorktreeId: inspection.mainWorktreeId,
+      targetBranchName: inspection.mainBranch ?? "main", sourceWorktreeIds: options.sourceWorktreeIds,
+      mainWorktreeId: inspection.mainWorktreeId, mainPath: inspection.mainPath, mainHeadBefore: inspection.mainHeadOid,
+      inventoryVersion: fingerprint(planValidationSnapshot(scopedInspection)), validationSnapshot: planValidationSnapshot(scopedInspection),
+      mergeOrder: graph.includedWorktreeIds, blockingRisks, items, orchestration: graph,
+      reservedWorktreeIds: [...selected], writeWorktreeIds: [...selected] };
+    return { plan, planFingerprint: fingerprint(plan), noWorkRequired: graph.steps.length === 0 };
   }
 
   async #buildBranchOperationPlan(repository, operation, inspectionOptions = {}) {
@@ -832,7 +871,7 @@ export class WorktreeIntegrationJobService {
       job.planFingerprint
     );
     assertCommitProtectionDecisions(job.details.plan, boundCommitProtectionDecisions);
-    await this.hierarchy.assertOperationFresh(job.details.plan,job.id);
+    await this.#assertIntegrationScopeFresh(job);
     const current = this.#associate(await this.inspectRepository(job.repositoryId));
     const mismatch = planInspectionMismatch(job.details.plan, current);
     if (mismatch) {
@@ -923,9 +962,10 @@ export class WorktreeIntegrationJobService {
     const conflictItem = job.details.plan.items.find((candidate) =>
       candidate.worktreeId === job.details.currentWorktreeId);
     const isSync = job.details.plan.operationType === "sync";
-    if (isSync) conflictPreserved = job.details.plan.items.some(item => item.mergeStatus === "conflict");
-    const shouldRestoreTaskOwnedConflict = !isSync && conflictItem?.mergeStatus === "conflict";
-    if (!isSync && (replan || shouldRestoreTaskOwnedConflict)) {
+    const isGraph = Boolean(job.details.plan.orchestration);
+    if (isSync || isGraph) conflictPreserved = job.details.plan.items.some(item => item.mergeStatus === "conflict");
+    const shouldRestoreTaskOwnedConflict = !isSync && !isGraph && conflictItem?.mergeStatus === "conflict";
+    if (!isSync && !isGraph && (replan || shouldRestoreTaskOwnedConflict)) {
       try {
         const cleanup = await this.#abortConflictMergeForReplan(job);
         if (cleanup) {
@@ -1003,10 +1043,13 @@ export class WorktreeIntegrationJobService {
     }
     let replacement;
     try {
-      const priorPlan = canceled.details.plan ?? {};
+      const recordedPlan = canceled.details.plan ?? {};
+      const priorPlan = recordedPlan.orchestration ? { operationType: "integrate",
+        sourceWorktreeIds: recordedPlan.orchestration.requestedWorktreeIds,
+        targetWorktreeId: recordedPlan.orchestration.mainWorktreeId } : recordedPlan;
       const operationType = priorPlan.operationType === "merge" ? "batch_merge"
         : priorPlan.operationType === "sync" ? "one_way_sync"
-          : priorPlan.operationType === "converge" ? "converge" : null;
+          : priorPlan.operationType === "converge" ? "converge" : priorPlan.operationType === "integrate" ? "integrate" : null;
       replacement = await this.preflight(canceled.repositoryId, {
         ignoreJobId: canceled.id,
         ...(operationType ? {
@@ -1111,6 +1154,7 @@ export class WorktreeIntegrationJobService {
 
   async resolveCommitPolicy(jobId, input = {}) {
     let job = this.#requireJob(jobId);
+    if (job.details.plan.orchestration) this.integrationGraph.assertFresh(job.details.plan.orchestration);
     const blocker = job.details.commitPolicyBlocker;
     if (job.status !== "paused" || job.phase !== "awaiting_commit_policy_resolution" || !blocker) {
       throw new WorktreeIntegrationJobError(
@@ -1210,7 +1254,20 @@ export class WorktreeIntegrationJobService {
         auditData: { blockerId: blocker.id, path: file.path, action, artifactId: result?.artifactId ?? null }
       });
     }
-    const refreshed = await this.#refreshWorktreeItem(job, blocker.worktreeId);
+    let refreshed = await this.#refreshWorktreeItem(job, blocker.worktreeId);
+    if (job.details.plan.orchestration && blocker.resumeStage === "merge_source"
+      && decisionItem.path === item.path && refreshed.item.dirty) {
+      // A publication-time delete/ignore/artifact decision changes the accepted
+      // parent code. Commit only that explicitly reviewed decision, then demand
+      // a new acceptance snapshot; never publish under the previous receipt.
+      const changed = { ...refreshed.item, commitStatus: "pending", commitHead: null,
+        commitMessage: `Corptie: apply Markdown decisions in ${item.branchName}`,
+        commitProtection: withProtectedPathsDigest(await this.inspectCommitProtection(item.path)) };
+      const plan = { ...refreshed.job.details.plan, items: refreshed.job.details.plan.items.map(entry => entry.worktreeId === item.worktreeId ? changed : entry),
+        writeWorktreeIds: [...new Set([...refreshed.job.details.plan.writeWorktreeIds, item.worktreeId])] };
+      const updated = this.#update(refreshed.job, { details: { ...refreshed.job.details, plan, graphPolicyRecommit: { worktreeId: item.worktreeId } } });
+      refreshed = { job: updated, item: changed };
+    }
     const resumePatch = blocker.resumeStage === "merge_source"
       ? { mergeStatus: "pending", error: null }
       : { commitStatus: "pending", error: null };
@@ -1606,6 +1663,10 @@ export class WorktreeIntegrationJobService {
   async recover() {
     const jobs = this.store.listRecoverableWorktreeIntegrationJobs();
     for (const job of jobs) {
+      if (job.details.plan.orchestration && job.status !== "cancellation_requested") {
+        this.#update(job, { status: "paused", phase: "recovery_required", error: "Integration progress was preserved. Revalidate and continue explicitly after restart.", auditEvent: "backend_recovered" });
+        continue;
+      }
       if (["cancellation_requested", "replanning"].includes(job.status)) {
         await this.#finishCancellation(job, { replan: job.details.replanAfterCancel === true });
         continue;
@@ -1646,7 +1707,17 @@ export class WorktreeIntegrationJobService {
         return;
       }
       if (!['queued', 'running'].includes(job.status)) return;
-      await this.hierarchy.assertOperationFresh(job.details.plan,job.id);
+      if (job.details.plan.orchestration) {
+        this.integrationGraph.assertFresh(job.details.plan.orchestration);
+        if (job.details.graphExecution?.phase !== "committing") {
+          const next = await this.#prepareGraphStep(job);
+          if (!next) return;
+          job = next;
+        }
+      }
+      await this.#assertIntegrationScopeFresh(job);
+      if (await this.#stopIfRequested(jobId)) return;
+      job = this.#requireJob(jobId);
       job = this.#update(job, { status: "running", phase: "validating", auditEvent: "execution_started" });
       await this.#assertAutomaticFollowSafe(job);
       let items = job.details.plan.items;
@@ -1660,7 +1731,9 @@ export class WorktreeIntegrationJobService {
           forceFresh: true,
           reason: "integration_execution_validation"
         });
-        const mismatch = planInspectionMismatch(job.details.plan, current);
+        const relevant = job.details.plan.orchestration
+          ? { ...current, worktrees: current.worktrees.filter(tree => job.details.plan.validationSnapshot.some(item => item.worktreeId === tree.worktreeId)) } : current;
+        const mismatch = planInspectionMismatch(job.details.plan, relevant);
         if (mismatch) {
           throw new WorktreeIntegrationJobError(
             mismatch.code, mismatch.message, 409
@@ -1673,6 +1746,11 @@ export class WorktreeIntegrationJobService {
           auditEvent: "execution_validation_completed"
         });
         items = job.details.plan.items;
+      }
+      if (job.details.plan.orchestration && !job.details.graphExecution) {
+        job = this.#update(job, { details: { ...job.details, graphExecution: { phase: "committing", index: 0,
+          steps: job.details.plan.orchestration.steps.map(step => ({ ...step, status: "pending" })),
+          reviewedItems: job.details.plan.items, expectedHeads: Object.fromEntries(job.details.plan.items.map(item => [item.worktreeId, item.sourceHeadBefore])) } }, auditEvent: "integration_graph_initialized" });
       }
 
       for (const item of items) {
@@ -1728,6 +1806,30 @@ export class WorktreeIntegrationJobService {
         }, "committing", "commit_completed");
         items = job.details.plan.items;
         if (await this.#stopIfRequested(jobId)) return;
+      }
+
+      if (job.details.graphPolicyRecommit) {
+        const state = job.details.graphExecution;
+        const source = job.details.plan.items.find(item => item.worktreeId === job.details.graphPolicyRecommit.worktreeId);
+        const index = state.index - 1;
+        const { graphPolicyRecommit: _done, ...details } = job.details;
+        this.#update(job, { status: "queued", phase: "step_queued", currentWorktreeId: null,
+          details: { ...details, graphExecution: { ...state, index, activeStepId: null,
+            expectedHeads: { ...state.expectedHeads, [source.worktreeId]: source.commitHead ?? source.sourceHeadBefore },
+            steps: state.steps.map((step, at) => at === index ? { ...step, status: "waiting", acceptanceReceiptId: null, testedHeadOid: null }
+              : at === state.index ? { ...step, status: "pending" } : step) } }, auditEvent: "integration_policy_requires_new_acceptance" });
+        this.#schedule(jobId);
+        return;
+      }
+
+      if (job.details.graphExecution?.phase === "committing") {
+        const state = job.details.graphExecution;
+        this.#update(job, { status: "queued", phase: "step_queued", currentWorktreeId: null,
+          details: { ...job.details, graphExecution: { ...state, phase: "steps", reviewedItems: job.details.plan.items,
+            expectedHeads: Object.fromEntries(job.details.plan.items.map(item => [item.worktreeId, item.commitHead ?? item.sourceHeadBefore])) } },
+          auditEvent: "integration_graph_commits_completed" });
+        this.#schedule(jobId);
+        return;
       }
 
       if (job.details.plan.operationType === "sync") {
@@ -1814,6 +1916,7 @@ export class WorktreeIntegrationJobService {
           });
         }
         await this.#assertWorktreeIdle(job.repositoryId, item.worktreeId);
+        const allowRecordedMergeRecovery = ["running", "conflict", "failed"].includes(item.mergeStatus);
         job = this.#item(
           job,
           item.worktreeId,
@@ -1826,13 +1929,15 @@ export class WorktreeIntegrationJobService {
           let result;
           for (let attempt = 0; attempt < this.maxConflictFallbackAttempts; attempt += 1) {
             try {
-              await this.hierarchy.assertOperationFresh(job.details.plan,jobId);
+              await this.#assertIntegrationScopeFresh(job);
               result = await this.mergeSource({
                 mainPath: job.details.plan.executionPath ?? job.details.plan.mainPath,
                 sourceHead,
                 sourcePath:item.path,
                 mergeStrategy:job.details.plan.mergeStrategy,
                 expectedMainHead,
+                strictExpectedMain: Boolean(job.details.plan.orchestration),
+                allowRecordedMergeRecovery,
                 jobId
               });
               break;
@@ -1841,12 +1946,12 @@ export class WorktreeIntegrationJobService {
               if (error.code === "GIT_ARTIFACT_POLICY_REJECTED") {
                 await this.#pauseForCommitPolicy(job, item, error, {
                   resumeStage: "merge_source",
-                  decisionPath: job.details.plan.executionPath ?? job.details.plan.mainPath
+                  decisionPath: job.details.plan.mergeStrategy === "ff-only" ? item.path : job.details.plan.executionPath ?? job.details.plan.mainPath
                 });
                 return;
               }
               if (error.code === "INTEGRATION_POSTCONDITION_DIRTY") throw error;
-              if (job.details.plan.taskScope || !isRecoverableConflictFallbackError(error) || attempt + 1 >= this.maxConflictFallbackAttempts) {
+              if (job.details.plan.taskScope || job.details.plan.orchestration || !isRecoverableConflictFallbackError(error) || attempt + 1 >= this.maxConflictFallbackAttempts) {
                 throw conflictFallbackFailure(error, "merge_source", attempt + 1);
               }
               const inspection = await this.inspectRepository(job.repositoryId);
@@ -1944,6 +2049,16 @@ export class WorktreeIntegrationJobService {
           });
         }
       }
+      if (job.details.graphExecution) {
+        const state = job.details.graphExecution;
+        const steps = state.steps.map((step, index) => index === state.index ? { ...step, status: "completed", completedAt: new Date().toISOString(), resultHead: expectedMainHead, items: job.details.plan.items } : step);
+        const expectedHeads = { ...state.expectedHeads, [job.details.plan.mainWorktreeId]: expectedMainHead };
+        job = this.#update(job, { status: "queued", phase: "step_queued", currentWorktreeId: null,
+          details: { ...job.details, graphExecution: { ...state, index: state.index + 1, steps, expectedHeads, activeStepId: null } },
+          auditEvent: "integration_graph_step_completed", auditData: { stepId: steps[state.index].id } });
+        this.#schedule(jobId);
+        return;
+      }
       this.#update(job, {
         status: "completed",
         phase: "completed",
@@ -1983,6 +2098,82 @@ export class WorktreeIntegrationJobService {
     if (latest.status !== "cancellation_requested") return false;
     await this.#finishCancellation(latest, { replan: latest.details.replanAfterCancel === true });
     return true;
+  }
+
+  async #assertIntegrationScopeFresh(job) {
+    const graph = job.details.plan.orchestration;
+    if (!graph) return this.hierarchy.assertOperationFresh(job.details.plan, job.id);
+    this.integrationGraph.assertFresh(graph);
+    const state = job.details.graphExecution;
+    const step = state?.steps[state.index];
+    if (step?.kind === "promote_parent" && !job.details.graphPolicyRecommit) {
+      const status = await this.integrationGraph.acceptanceStatus(step, job.id);
+      if (!status.canPromote) throw new WorktreeIntegrationJobError(status.reason ?? "INTEGRATION_ACCEPTANCE_REQUIRED", "The parent integration acceptance is missing or stale. Complete acceptance for the current parent HEAD, then continue.", 409);
+    }
+    this.hierarchy.assertIdle(job.details.plan.reservedWorktreeIds, true);
+  }
+
+  async #prepareGraphStep(job) {
+    let state = job.details.graphExecution;
+    if (!state || state.phase === "committing" || state.activeStepId) return job;
+    const graph = job.details.plan.orchestration;
+    while (state.index < state.steps.length) {
+      if (await this.#stopIfRequested(job.id)) return null;
+      this.integrationGraph.assertFresh(graph);
+      const step = state.steps[state.index];
+      if (step.kind === "acceptance") {
+        const status = await this.integrationGraph.acceptanceStatus(step, job.id);
+        if (await this.#stopIfRequested(job.id)) return null;
+        if (!status.canPromote) {
+          this.#update(job, { status: "paused", phase: "awaiting_integration_acceptance", currentWorktreeId: step.targetWorktreeId,
+            error: "Children were integrated. Complete acceptance of this parent's current committed code, then revalidate and continue.",
+            details: { ...job.details, graphExecution: { ...state, steps: state.steps.map((entry, index) => index === state.index ? { ...entry, status: "waiting", reason: status.reason } : entry) } },
+            auditEvent: "integration_acceptance_required", auditData: { taskId: step.rootTaskId, code: status.reason } });
+          return null;
+        }
+        state = { ...state, index: state.index + 1, steps: state.steps.map((entry, index) => index === state.index ? { ...entry, status: "completed", acceptanceReceiptId: status.receiptId, testedHeadOid: status.testedHeadOid } : entry) };
+        job = this.#update(job, { details: { ...job.details, graphExecution: state }, auditEvent: "integration_acceptance_verified", auditData: { taskId: step.rootTaskId, receiptId: status.receiptId } });
+        continue;
+      }
+      const inspection = this.#associate(await this.inspectRepository(job.repositoryId, { forceFresh: true, reason: "integration_graph_step" }));
+      if (await this.#stopIfRequested(job.id)) return null;
+      const byId = new Map(inspection.worktrees.map(tree => [tree.worktreeId, tree]));
+      // Compare only the reviewed dependency closure. HEAD changes created by
+      // completed steps are recorded, not mistaken for external mutations.
+      for (const reviewed of state.reviewedItems) {
+        const tree = byId.get(reviewed.worktreeId);
+        if (!tree || tree.path !== reviewed.path || tree.branchName !== reviewed.branchName || tree.availability !== "available"
+          || tree.headOid !== state.expectedHeads[tree.worktreeId] || tree.dirty || tree.operationState || tree.isLocked) {
+          throw new WorktreeIntegrationJobError("INTEGRATION_GRAPH_STATE_CHANGED", `The reviewed Worktree ${reviewed.branchName} changed outside this plan. Completed steps were preserved; review a new plan.`, 409);
+        }
+      }
+      const target = byId.get(step.targetWorktreeId);
+      const ids = [step.targetWorktreeId, ...step.sourceWorktreeIds];
+      const items = ids.map((id, index) => {
+        const original = state.reviewedItems.find(item => item.worktreeId === id);
+        const tree = byId.get(id);
+        return { ...original, ordinal: index, isMain: index === 0, actualIsMain: tree.isMain,
+          sourceHeadBefore: tree.headOid, commitHead: null, commitStatus: "not_needed", commitMessage: null,
+          statusSummary: "", dirty: false, changedFiles: [], commitProtection: null,
+          mergeStatus: index === 0 ? "not_needed" : "pending", mergeMainHead: null, resolutionHead: null, conflictFiles: [], error: null };
+      });
+      const group = graph.groups.find(value => value.rootTaskId === step.rootTaskId);
+      const plan = { ...job.details.plan, operationType: "merge", taskScope: group ? { ...group.scope,
+        action: step.kind === "merge_children" ? "merge_children" : step.kind === "promote_parent" ? "promote_parent" : "sync_main" } : null,
+        sourceWorktreeIds: step.sourceWorktreeIds, targetWorktreeId: target.worktreeId, targetBranchName: target.branchName,
+        mainWorktreeId: target.worktreeId, mainPath: target.path, mainHeadBefore: target.headOid, items,
+        writeWorktreeIds: [target.worktreeId],
+        mergeStrategy: step.kind === "promote_parent" ? "ff-only" : "merge", mergeOrder: step.sourceWorktreeIds,
+        validationSnapshot: planValidationSnapshot({ worktrees: ids.map(id => byId.get(id)) }), blockingRisks: [] };
+      state = { ...state, activeStepId: step.id, steps: state.steps.map((entry, index) => index === state.index ? { ...entry, status: "running", startedAt: new Date().toISOString() } : entry) };
+      return this.#update(job, { phase: "step_running", currentWorktreeId: null,
+        details: { ...job.details, plan, graphExecution: state, executionValidationCompleted: true,
+          conflictResolution: null, conflictAutomation: null, commitPolicyBlocker: null },
+        auditEvent: "integration_graph_step_started", auditData: { stepId: step.id, kind: step.kind } });
+    }
+    this.#update(job, { status: "completed", phase: "completed", completedAt: new Date().toISOString(), error: null, currentWorktreeId: null,
+      auditEvent: "execution_completed" });
+    return null;
   }
 
   async #runSync(jobId) {
@@ -2147,7 +2338,7 @@ export class WorktreeIntegrationJobService {
       error.recoverable = false;
       throw error;
     }
-    if (job.details.plan.taskScope && current.headOid !== (recorded.resolutionHead ?? recorded.commitHead ?? recorded.sourceHeadBefore)) {
+    if ((job.details.plan.taskScope || job.details.plan.orchestration) && current.headOid !== (recorded.resolutionHead ?? recorded.commitHead ?? recorded.sourceHeadBefore)) {
       throw new WorktreeIntegrationJobError("WORKTREE_STATE_CHANGED", "The source HEAD changed after the parent-scoped candidate was reviewed. Generate a fresh candidate.", 409);
     }
     const nextStatusSummary = current.statusSummary ?? "";
@@ -2175,6 +2366,17 @@ export class WorktreeIntegrationJobService {
   }
 
   #pause(job, error) {
+    const graphState = job.details.graphExecution;
+    if (graphState?.steps[graphState.index]?.kind === "promote_parent"
+      && ["INTEGRATION_ACCEPTANCE_REQUIRED", "INTEGRATION_ACCEPTANCE_STALE", "CHILDREN_NOT_INTEGRATED"].includes(error.code)) {
+      const index = graphState.index - 1;
+      return this.#update(job, { status: "paused", phase: "awaiting_integration_acceptance", error: error.message,
+        currentWorktreeId: graphState.steps[index].targetWorktreeId,
+        details: { ...job.details, graphExecution: { ...graphState, index, activeStepId: null,
+          steps: graphState.steps.map((step, at) => at === index ? { ...step, status: "waiting", reason: error.code }
+            : at === graphState.index ? { ...step, status: "pending" } : step) } },
+        auditEvent: "integration_acceptance_required", auditData: { code: error.code } });
+    }
     const currentItem = job.details.plan.items.find((item) => item.worktreeId === job.details.currentWorktreeId);
     const automation = job.details.conflictAutomation;
     const shouldBlockAutomation = automation?.status === "running" && error.code !== "MERGE_CONFLICT";
@@ -2224,6 +2426,11 @@ export class WorktreeIntegrationJobService {
     const paths = [...new Set((error.violations ?? [])
       .filter((entry) => entry?.code === "GIT_MARKDOWN_PROMOTION_REQUIRED" && typeof entry.path === "string")
       .map((entry) => entry.path))].sort();
+    if (!paths.length) {
+      this.#pause(job, new WorktreeIntegrationJobError("INTEGRATION_STAGED_TREE_REJECTED", error.message, 409,
+        { violations: error.violations ?? [] }));
+      return;
+    }
     const inspected = await this.inspectCommitPolicyFiles({ path: decisionPath, relativePaths: paths });
     const files = inspected.map((file) => ({
       ...file,
@@ -2259,7 +2466,8 @@ export class WorktreeIntegrationJobService {
   }
 
   #scheduleAutomaticConflictResolution(jobId) {
-    if(this.store.getWorktreeIntegrationJob(jobId)?.details?.plan?.taskScope) return;
+    const plan = this.store.getWorktreeIntegrationJob(jobId)?.details?.plan;
+    if(plan?.taskScope && !plan.orchestration) return;
     setImmediate(() => this.resolveConflictWithAgent(jobId).catch(() => {
       // #resolveConflictWithAgent persists a concrete blocked state. The UI
       // obtains it through the existing job endpoint without an unhandled task.
@@ -2756,6 +2964,14 @@ function requestObject(value) {
 
 function candidateOptions(value = {}, { canonicalOnly = false } = {}) {
   const rawType = String(value.operationType ?? "").trim();
+  if (rawType === "integrate") {
+    if (value.taskScope || !Array.isArray(value.sourceWorktreeIds) || !value.sourceWorktreeIds.length
+      || value.sourceWorktreeIds.length > 100 || value.sourceWorktreeIds.some(id => typeof id !== "string" || !id || id !== id.trim())
+      || new Set(value.sourceWorktreeIds).size !== value.sourceWorktreeIds.length || typeof value.targetWorktreeId !== "string" || !value.targetWorktreeId) {
+      throw new WorktreeIntegrationJobError("BRANCH_OPERATION_INVALID", "Choose explicit unique sources and main as the integration target.");
+    }
+    return { operationType: "integrate", sourceWorktreeIds: [...value.sourceWorktreeIds].sort(), targetWorktreeId: value.targetWorktreeId };
+  }
   const hasSources = Array.isArray(value.sourceWorktreeIds)
     ? value.sourceWorktreeIds.length > 0
     : value.sourceWorktreeIds != null;
@@ -2785,7 +3001,7 @@ function candidateOptions(value = {}, { canonicalOnly = false } = {}) {
 }
 
 function branchCandidateId(candidateId) {
-  return /^integration_candidate:(?:merge|sync|converge):/.test(candidateId);
+  return /^integration_candidate:(?:merge|sync|converge|integrate):/.test(candidateId);
 }
 
 function requiredBoundedText(value, code, maxLength) {
@@ -2938,6 +3154,10 @@ function planValidationSnapshot(inspection) {
 }
 
 function planMatchesInspection(plan, inspection) {
+  if (plan.orchestration && plan.validationSnapshot) {
+    const ids = new Set(plan.validationSnapshot.map(item => item.worktreeId));
+    inspection = { ...inspection, worktrees: inspection.worktrees.filter(tree => ids.has(tree.worktreeId)) };
+  }
   if (plan.validationSnapshot) {
     return JSON.stringify(plan.validationSnapshot) === JSON.stringify(planValidationSnapshot(inspection));
   }
@@ -3149,6 +3369,15 @@ export function presentJob(job) {
   const availableActions = integrationJobAvailableActions({ ...presented, commitPolicyResidue });
   return {
     ...presented,
+    ...(details.graphExecution ? { graphExecution: { phase: details.graphExecution.phase, index: details.graphExecution.index,
+      acceptanceSessionId: details.graphExecution.steps[details.graphExecution.index]?.kind === "acceptance"
+        ? details.graphExecution.reviewedItems.find(item => item.worktreeId === details.graphExecution.steps[details.graphExecution.index].targetWorktreeId)?.associations?.find(item => item.taskId === details.graphExecution.steps[details.graphExecution.index].rootTaskId)?.sessionId
+          ?? details.graphExecution.steps[details.graphExecution.index].acceptanceSessionId ?? null : null,
+      steps: details.graphExecution.steps.map(({ items, ...step }) => step) },
+      progress: { completed: details.graphExecution.steps.filter(step => step.status === "completed").length,
+        total: details.graphExecution.steps.length,
+        fraction: details.graphExecution.steps.length ? details.graphExecution.steps.filter(step => step.status === "completed").length / details.graphExecution.steps.length : 1 }
+    } : {}),
     ...(presented.plan?.operationType === "sync" ? {
       syncExecution: {
         runningWorktreeIds: presented.plan.items.filter(item => item.mergeStatus === "running").map(item => item.worktreeId),
@@ -3170,6 +3399,9 @@ function integrationJobAvailableActions(job) {
     return ["cancel"];
   }
   if (job.status !== "paused") return [];
+  if (job.phase === "awaiting_integration_acceptance") return ["retry", "cancel"];
+  if (job.plan?.orchestration && ["INTEGRATION_GRAPH_STATE_CHANGED", "TASK_HIERARCHY_CHANGED", "TASK_DELIVERY_BINDING_CHANGED",
+    "MAIN_HEAD_CHANGED", "MAIN_DIRTY", "WORKTREE_STATE_CHANGED", "WORKTREE_RECHECK_DIRTY"].includes([...(job.audit ?? [])].reverse().find(event => event.code)?.code)) return ["repreflight", "cancel"];
   if (job.conflictResolution?.status === "running") return ["open_agent_session"];
   if (job.commitPolicyBlocker || legacyCommitPolicyPaths(job.error).length > 0) {
     return ["resolve_commit_policy", "cancel"];

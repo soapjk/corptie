@@ -72,6 +72,28 @@ export class TaskHierarchyRepository {
       const job=jobId && this.selectOne("SELECT * FROM worktree_integration_jobs WHERE id=?",[jobId]);
       const plan=job?.details_json ? JSON.parse(job.details_json).plan : null;
       const scope=plan?.taskScope;
+      const graph=plan?.orchestration;
+      if(graph?.version===1 && ["queued","running","paused","cancellation_requested"].includes(job?.status)) {
+        // The graph is generated exclusively on the server and bound to the
+        // reviewed candidate. Restrict each Git write to the active step.
+        const reserved=new Set(plan.reservedWorktreeIds ?? []);
+        const writable=new Set(plan.writeWorktreeIds ?? []);
+        const graphMembers=this.selectAll(`SELECT worktree_id,path,canonical_path FROM git_worktrees w WHERE ${predicates.join(" OR ")}`,[...ids,...locations,...locations]);
+        const rootsFresh=graph.groups.every(group=>{
+          const task=this.getTask(group.rootTaskId);
+          return task && !task.archived && !task.deletion_status && task.lifecycle_state!=="done" && task.hierarchy_revision===group.scope.expectedHierarchyRevision
+            && group.bindings.every(item=>{
+              const binding=this.getTaskDeliveryBinding(item.taskId),child=this.getTask(item.taskId);
+              return binding?.worktree_id===item.worktreeId && binding.binding_revision===item.bindingRevision
+                && child?.work_id===task.work_id && (child.parent_task_id ?? null)===item.parentTaskId;
+            });
+        });
+        if(rootsFresh && graphMembers.length && graphMembers.every(tree=>reserved.has(tree.worktree_id))
+          && ids.every(id=>graphMembers.some(tree=>tree.worktree_id===id && writable.has(id)))
+          && paths.every(path=>graphMembers.some(tree=>(tree.path===path || tree.canonical_path===path) && writable.has(tree.worktree_id)))
+          && readPaths.every(path=>graphMembers.some(tree=>tree.path===path || tree.canonical_path===path))) return;
+        throw taskHierarchyError("TASK_HIERARCHY_SCOPE_REQUIRED", "The integration graph no longer authorizes this write.");
+      }
       const root=scope && this.getTask(scope.rootTaskId);
       const binding=scope && this.getTaskDeliveryBinding(scope.rootTaskId);
       const actual=this.selectAll(`SELECT worktree_id FROM git_worktrees w WHERE ${predicates.join(" OR ")}`,[...ids,...locations,...locations]);

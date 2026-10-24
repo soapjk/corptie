@@ -303,6 +303,8 @@ struct WorktreeManagementView: View {
     @State private var showingCommitPolicyResidueResolution = false
     @State private var pendingGitOperationAction: PendingGitOperationAction?
     @State private var showingIntegrationCancellation = false
+    @State private var showingIntegrationSelection = false
+    @State private var integrationSources: [String]?
 
     var body: some View {
         NavigationSplitView(columnVisibility: $sidebarState.visibility) {
@@ -368,6 +370,16 @@ struct WorktreeManagementView: View {
         }
         .sheet(isPresented: $showingPlan, onDismiss: client.discardCandidateReview) {
             WorktreeIntegrationFlowSheet(client: client, isPresented: $showingPlan)
+        }
+        .sheet(isPresented: $showingIntegrationSelection, onDismiss: {
+            guard let sources = integrationSources else { return }
+            integrationSources = nil
+            showingPlan = true
+            Task { await client.prepareMainIntegration(sourceWorktreeIds: sources) }
+        }) {
+            WorktreeMainIntegrationSelection(worktrees: client.detail?.project.worktrees ?? []) { sources in
+                integrationSources = sources
+            }
         }
         .sheet(item: $batchOperationDraft) { draft in
             WorktreeBatchOperationFlowSheet(
@@ -949,14 +961,14 @@ struct WorktreeManagementView: View {
             }
             HStack(spacing: 8) {
                 Button {
-                    showingPlan = true
-                    Task { await client.prepareFreshPlan() }
+                    integrationSources = nil
+                    showingIntegrationSelection = true
                 } label: {
                     Label(L10n("Merge All into main"), systemImage: "arrow.triangle.merge")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(project.worktrees.contains{$0.hierarchy != nil} || client.isMutating || client.isPreparingPlan || client.job?.isActive == true || client.job?.status == "paused")
+                .disabled(client.isMutating || client.isPreparingPlan || client.job?.isActive == true || client.job?.status == "paused")
                 .accessibilityIdentifier("worktree.integrate.preflight")
 
                 Button {
@@ -967,6 +979,10 @@ struct WorktreeManagementView: View {
                 }
                 .disabled(eligible.isEmpty || client.isMutating)
                 .accessibilityIdentifier("worktree.cleanup")
+            }
+            if client.job?.isActive == true || client.job?.status == "paused" {
+                Text(L10n("An integration is already in progress. Use its progress panel to continue or cancel before starting another."))
+                    .font(.caption).foregroundStyle(.secondary)
             }
             if let progress = client.cleanupProgress {
                 VStack(alignment: .leading, spacing: 5) {
@@ -1021,7 +1037,16 @@ struct WorktreeManagementView: View {
                 Text(localizedIntegrationPhase(job.phase)).font(.caption.weight(.semibold))
                 Spacer()
                 Text("\(job.progress.completed)/\(job.progress.total)").font(.caption.monospacedDigit())
-                if job.hasMergeConflict,
+                if job.phase == "awaiting_integration_acceptance" {
+                    if let sessionId = job.graphExecution?.acceptanceSessionId,
+                       let state = job.graphExecution, state.steps.indices.contains(state.index) {
+                        Button(L10n("Open Parent Acceptance Session")) {
+                            openConflictSession(sessionId: sessionId, taskId: state.steps[state.index].rootTaskId)
+                        }.controlSize(.small)
+                    }
+                    Button(L10n("Revalidate and Continue")) { Task { await client.retryJob() } }
+                        .controlSize(.small).disabled(client.isMutating)
+                } else if job.hasMergeConflict,
                           let resolution = job.currentConflictResolution,
                           let sessionId = resolution.sessionId {
                     Button(L10n("View Agent Session")) {
@@ -1078,9 +1103,14 @@ struct WorktreeManagementView: View {
                 } else if job.supports("repreflight") {
                     Button(L10n("Generate New Merge Plan")) {
                         Task {
+                            let sources = client.job?.plan.orchestration?.requestedWorktreeIds
                             guard await client.finishJobForFreshPreflight() else { return }
                             showingPlan = true
-                            await client.prepareFreshPlan()
+                            if let sources {
+                                await client.prepareMainIntegration(sourceWorktreeIds: sources)
+                            } else {
+                                await client.prepareFreshPlan()
+                            }
                         }
                     }
                     .controlSize(.small)
@@ -1103,6 +1133,13 @@ struct WorktreeManagementView: View {
                 }
             }
             ProgressView(value: job.progress.fraction)
+            if let graph = job.graphExecution {
+                WorktreeIntegrationStepsView(steps: graph.steps)
+                if job.phase == "awaiting_integration_acceptance" {
+                    Text(L10n("Child changes are preserved in the parent. In its Session, capture the current integration version, verify it and report acceptance, then return here to continue. Nothing is published to main before acceptance passes."))
+                        .font(.caption).foregroundStyle(.orange)
+                }
+            }
             if job.status == "cancellation_requested" {
                 Text(L10n("Cancellation requested. Corptie is stopping at the next safe boundary; repository changes are preserved."))
                     .font(.caption)
@@ -2047,6 +2084,9 @@ private func localizedIntegrationPhase(_ value: String) -> String {
     case "validating_resolution": L10n("Validating the Agent result")
     case "retry_queued": L10n("Retry queued")
     case "recovery_queued": L10n("Recovery queued")
+    case "recovery_required": L10n("Revalidate and Continue")
+    case "awaiting_integration_acceptance": L10n("Waiting for Parent Acceptance")
+    case "step_queued", "step_running": L10n("Executing Integration Steps")
     case "plan_stale": L10n("Plan changed")
     case "stopping": L10n("Stopping at a safe boundary")
     case "replanning": L10n("Generating a new plan")
@@ -2401,6 +2441,15 @@ private struct WorktreeIntegrationPlanReview: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     preflightStatus
+                    if let graph = candidate.plan.orchestration {
+                        Text(L10n("Review the complete dependency scope. Selecting a child also includes its parent and siblings; the parent's other changes will enter main after acceptance."))
+                            .font(.caption).foregroundStyle(.orange)
+                        if !graph.addedWorktreeIds.isEmpty {
+                            Text(L10nFormat("Added dependencies: %@", labels(for: graph.addedWorktreeIds)))
+                                .font(.caption).foregroundStyle(.orange)
+                        }
+                        WorktreeIntegrationStepsView(steps: graph.steps)
+                    }
                     if !candidate.plan.blockingRisks.isEmpty {
                         blockingRiskDetails
                     }

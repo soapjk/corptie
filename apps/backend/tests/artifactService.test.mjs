@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import test from "node:test";
@@ -12,6 +12,8 @@ import { inspectArtifactMarkdownCommit } from "../src/runtime/artifactMarkdownCo
 import { artifactDynamicTools, callArtifactDynamicTool } from "../src/application/artifactDynamicTools.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
+import { inspectGitWorkspace } from "../src/utils/gitWorktreeInventory.mjs";
+import { GitWorkspaceManager } from "../src/runtime/gitWorkspaceManager.mjs";
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "corptie-artifacts-"));
@@ -146,6 +148,46 @@ test("a Worktree decision can approve the exact existing Markdown version withou
       verifyPromotion: (candidate) => f.service.verifyRepositoryPromotion(candidate)
     });
     assert.equal(result.ok, true);
+  } finally { f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("a graph tracking decision promotes exact receipts only along confirmed same-repository targets before publication", async () => {
+  const f = await fixture();
+  try {
+    const directory = await realpath(f.directory);
+    const main = join(directory, "graph-main"), source = join(directory, "graph-source"), unrelated = join(directory, "graph-unrelated");
+    await mkdir(main);
+    const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    git(main, "init", "-b", "main"); git(main, "config", "user.name", "Graph"); git(main, "config", "user.email", "graph@example.invalid");
+    await writeFile(join(main, "base.txt"), "base\n"); git(main, "add", "base.txt"); git(main, "commit", "-m", "base");
+    const base = git(main, "rev-parse", "HEAD");
+    git(main, "worktree", "add", "-b", "source", source); git(main, "worktree", "add", "-b", "unrelated", unrelated);
+    const content = "exactly approved graph Markdown\n", path = "graph.md";
+    await writeFile(join(source, path), content);
+    const artifact = await f.service.create(localUserContext, { title: "graph.md", content, visibility: "work_private" });
+    const version = artifact.versions[0];
+    const identity = await inspectGitWorkspace(main);
+    const job = { id: "graph:receipt", repositoryId: identity.repositoryId, status: "paused", phase: "awaiting_commit_policy_resolution",
+      details: { plan: { orchestration: { version: 1, steps: [{ sourceWorktreeIds: ["source"], targetWorktreeId: "main" }] }, items: [{ worktreeId: "source", path: source }] },
+        graphExecution: { phase: "committing", index: 0, reviewedItems: [{ worktreeId: "source", path: source }, { worktreeId: "main", path: main }, { worktreeId: "unrelated", path: unrelated }] },
+        commitPolicyBlocker: { id: "blocker", version: 1, worktreeId: "source", files: [{ path, contentHash: version.contentHash }] } } };
+    f.store.getWorktreeIntegrationJob = () => job;
+    const decisionId = `${job.id}:blocker:1:${path}:track`;
+    const common = { path, version: version.version, contentHash: version.contentHash };
+    await f.service.promoteExistingRepositoryFileFromUserDecision(localUserContext, artifact.artifactId, { ...common, repositoryPath: source, decisionId });
+    const target = { ...common, repositoryPath: main, sourceRepositoryPath: source, integrationJobId: job.id, decisionId: `${decisionId}:target:${main}` };
+    await f.service.promoteExistingRepositoryFileFromUserDecision(localUserContext, artifact.artifactId, target);
+    await assert.rejects(() => f.service.promoteExistingRepositoryFileFromUserDecision(localUserContext, artifact.artifactId,
+      { ...target, repositoryPath: unrelated, decisionId: `${decisionId}:target:${unrelated}` }), { code: "ARTIFACT_PROMOTION_AUTHORIZATION_REQUIRED" });
+    await assert.rejects(() => f.service.promoteExistingRepositoryFileFromUserDecision(localUserContext, artifact.artifactId,
+      { ...target, decisionId: "forged" }), { code: "ARTIFACT_PROMOTION_AUTHORIZATION_REQUIRED" });
+    git(source, "add", path); git(source, "commit", "-m", "approved graph doc");
+    const manager = new GitWorkspaceManager({ store: f.store });
+    await manager.assertIntegrationTreePolicy(main, git(source, "rev-parse", "HEAD"), base);
+    assert.equal(git(main, "ls-files", path), "");
+    assert.equal(git(main, "rev-parse", "HEAD"), base);
+    await writeFile(join(source, path), "changed after consent");
+    await assert.rejects(() => f.service.promoteExistingRepositoryFileFromUserDecision(localUserContext, artifact.artifactId, target), { code: "ARTIFACT_VERSION_HASH_MISMATCH" });
   } finally { f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 

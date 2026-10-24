@@ -10,6 +10,8 @@ import { ArtifactReadCoordinator, ARTIFACT_READ_DEFAULT_LIMITS } from "./artifac
 import { assertArtifactExportOutsideProjects, materializeArtifactBytes, publishArtifactRepositoryFile } from "./artifactMaterialization.mjs";
 import { authorizeArtifactPromotion } from "./artifactPromotionAuthorization.mjs";
 import { ensureArtifactCommitHook } from "../runtime/artifactCommitHook.mjs";
+import { inspectGitWorkspace } from "../utils/gitWorktreeInventory.mjs";
+import { integrationTrackingTargets } from "./worktreeIntegrationGraph.mjs";
 
 export const ARTIFACT_VISIBILITIES = Object.freeze([
   "work_private", "task_private", "session_private", "repository_tracked"
@@ -1449,13 +1451,32 @@ export class ArtifactService {
       throw artifactError("ARTIFACT_VERSION_HASH_MISMATCH", "Tracking approval requires an exact stored Artifact version/hash.", 409);
     }
     const repositoryPath = await realpath(requiredText(input.repositoryPath, "repositoryPath"));
+    const sourceRepositoryPath = input.sourceRepositoryPath ? await realpath(input.sourceRepositoryPath) : repositoryPath;
+    if (sourceRepositoryPath !== repositoryPath) {
+      const job = this.store.getWorktreeIntegrationJob(input.integrationJobId);
+      const blocker = job?.details?.commitPolicyBlocker;
+      const expectedDecision = blocker && `${job.id}:${blocker.id}:${blocker.version}:${path}:track`;
+      const sourceItem = job?.details?.plan?.items.find(item => item.worktreeId === blocker?.worktreeId);
+      const plannedSource = blocker?.decisionPath ?? sourceItem?.path;
+      if (job?.status !== "paused" || job.phase !== "awaiting_commit_policy_resolution"
+        || !plannedSource || await realpath(plannedSource) !== sourceRepositoryPath
+        || !blocker.files.some(file => file.path === path && file.contentHash === input.contentHash)
+        || decisionId !== `${expectedDecision}:target:${repositoryPath}`
+        || !(await integrationTrackingTargets(job, sourceRepositoryPath)).includes(repositoryPath)) {
+        throw artifactError("ARTIFACT_PROMOTION_AUTHORIZATION_REQUIRED", "The reviewed integration does not authorize this exact target.", 403);
+      }
+      const [sourceIdentity, targetIdentity] = await Promise.all([inspectGitWorkspace(sourceRepositoryPath), inspectGitWorkspace(repositoryPath)]);
+      if (sourceIdentity.repositoryId !== targetIdentity.repositoryId || sourceIdentity.repositoryId !== job.repositoryId) {
+        throw artifactError("ARTIFACT_PROMOTION_AUTHORIZATION_REQUIRED", "Tracking consent cannot cross repositories.", 403);
+      }
+    }
     const destination = resolve(repositoryPath, path);
     const relation = relative(repositoryPath, destination);
     if (!relation || relation === ".." || relation.startsWith(`..${sep}`) || isAbsolute(relation)) {
       throw artifactError("ARTIFACT_PATH_INVALID", "The Markdown file is outside the repository.", 400);
     }
-    const actualPath = await realpath(destination);
-    const actualRelation = relative(repositoryPath, actualPath);
+    const actualPath = await realpath(resolve(sourceRepositoryPath, path));
+    const actualRelation = relative(sourceRepositoryPath, actualPath);
     if (actualRelation === ".." || actualRelation.startsWith(`..${sep}`) || isAbsolute(actualRelation)) {
       throw artifactError("ARTIFACT_PATH_INVALID", "The Markdown file resolves outside the repository.", 400);
     }
@@ -1491,7 +1512,8 @@ export class ArtifactService {
       eventId: interactionId,
       path,
       action: "track",
-      contentHash: version.contentHash
+      contentHash: version.contentHash,
+      ...(sourceRepositoryPath !== repositoryPath ? { sourceRepositoryPath, integrationJobId: input.integrationJobId } : {})
     };
     this.store.runInTransaction(() => {
       this.store.db.run("INSERT INTO artifact_repository_promotions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
