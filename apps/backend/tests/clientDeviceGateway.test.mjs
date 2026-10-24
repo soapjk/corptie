@@ -276,6 +276,12 @@ test("real TLS route boundary and authenticated local approval", async () => {
     taskCreationOptions(identity, sessionId, query) {
       return { schemaVersion: 1, sourceSessionId: sessionId, providerId: query.get("providerId") };
     },
+    session(id) { assert.equal(id, "session:test"); return { sessionId: id }; },
+    taskCreation: { startup: async (sourceId, taskId, operation) => {
+      assert.equal(sourceId, "session:test");
+      assert.equal(taskId, "task:failed");
+      return { taskId, status: "failed", startupOperationId: operation ?? "startup:failed", canRetry: true };
+    } },
     configuration(identity, sessionId, input) {
       return { schemaVersion: 1, sessionId, currentModel: input?.model ?? "current" };
     },
@@ -519,6 +525,14 @@ test("real TLS route boundary and authenticated local approval", async () => {
     assert.equal((await call("/internal/client-devices/permissions", { local: true, token, method: "POST",
       value: { deviceId: creds.deviceId, permissions: [] } })).status, 404);
     const createPath = "/client/v1/sessions/session%3Atest/tasks";
+    const recoveryPath = "/client/v1/sessions/session%3Atest/task-startup";
+    assert.equal((await call(`${recoveryPath}?taskId=task%3Afailed`)).status, 401);
+    assert.equal((await call(`${recoveryPath}?taskId=task%3Afailed`, { token: creds.accessToken })).body.status, "failed");
+    assert.equal((await call(recoveryPath, { token: creds.accessToken, method: "POST",
+      value: { taskId: "task:failed", startupOperationId: "startup:failed" } })).status, 200);
+    assert.equal((await call(recoveryPath, { token: creds.accessToken, method: "POST",
+      value: { taskId: "task:failed", providerId: "forged" } })).status, 400);
+    gateway.buckets.clear();
     const newChatPath = "/client/v1/chats/create";
     assert.equal((await call(newChatPath)).status, 401);
     assert.equal((await call(newChatPath, { token: creds.accessToken })).body.schemaVersion, 1);

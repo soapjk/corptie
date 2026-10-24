@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, realpath } from "node:fs/promises";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { TaskWorktreeHierarchyService } from "../src/application/taskWorktreeHierarchyService.mjs";
+import { WorktreeStartupPreparer } from "../src/application/worktreeStartupPreparer.mjs";
+import { WorkSessionStartApplicationService } from "../src/application/workSessionStartApplicationService.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -45,7 +47,25 @@ test("ready delivery binding and frozen parent base survive parent commits, sibl
       VALUES (?,?,?,?,1,'test','repository:one','session:source',?,?,'allocated',?,?,?)`,
     [id,task.work_id,task.id,"agent:worker",id,id,id,now,now]);
     allocate("startup:child",child);
-    const hierarchy=new TaskWorktreeHierarchyService({store:f.store});
+    // Production injects raw stdout through the startup preparer, not the
+    // hierarchy service's standalone Git runner. Exercise that exact edge.
+    const childPath = join(f.directory, "worktrees", "child workspace ");
+    let allocations = 0;
+    const preparer = new WorktreeStartupPreparer({ store: f.store, ensureWorkspace: async ({ baseContext }) => {
+      allocations += 1;
+      await git(repo, "worktree", "add", "-b", "task/child", childPath, baseContext.baseCommitOid);
+      f.store.db.run(`INSERT INTO git_worktrees
+        (worktree_id,repository_id,path,canonical_path,availability,inventory_version,observed_at,branch_name)
+        VALUES ('worktree:child','repository:one',?,?,'available','inventory:child',?,'task/child')`, [childPath, childPath, now]);
+      return { worktreeId: "worktree:child", path: childPath, branchName: "task/child", localState: {} };
+    } });
+    const childStart = { startupOperationId: "startup:child", taskId: child.id, repositoryId: "repository:one" };
+    const allocation = await preparer.prepare(childStart);
+    assert.equal(allocation.sourceCommitOid, await git(parentPath, "rev-parse", "HEAD"));
+    assert.equal(allocation.canonicalWorktreePath, await realpath(childPath));
+    assert.equal((await preparer.prepare(childStart)).reused, true);
+    assert.equal(allocations, 1);
+    const hierarchy=preparer.hierarchy;
     const base=await hierarchy.freezeBaseForStartup({startupOperationId:"startup:child",taskId:child.id,repositoryId:"repository:one"});
     assert.equal(base.baseCommitOid,await git(parentPath,"rev-parse","HEAD"));
     await writeFile(join(parentPath,"parent.txt"),"next");
@@ -211,6 +231,41 @@ function input(key = "start:one") {
     providerId: "codex-app-server", idempotencyKey: key, sourceSessionId: "session:source"
   };
 }
+
+test("user recovery keeps the same Task and frozen runtime, deduplicates clicks and exposes actionable Git errors", async () => {
+  const observed = [];
+  const f = await fixture({ observeSettings: settings => observed.push(settings) });
+  const original = f.service.prepareWorktree;
+  const application = new WorkSessionStartApplicationService({ store: f.store, coordinator: f.service,
+    providerRegistry: { supports: () => true } });
+  try {
+    f.service.prepareWorktree = async () => { throw Object.assign(new Error("parent is dirty"), { code: "PARENT_WORKTREE_DIRTY" }); };
+    let failed;
+    await assert.rejects(f.service.start({ ...input(), model: "frozen-model", reasoningLevel: "high", dispatchInitialTurn: false }), cause => {
+      failed = cause.startup; return cause.code === "PARENT_WORKTREE_DIRTY";
+    });
+    assert.equal(failed.error.code, "PARENT_WORKTREE_DIRTY");
+    const source = { taskId: f.task.id, sourceSessionId: "session:source" };
+    const status = application.taskStartup(source);
+    assert.equal(status.status, "failed");
+    assert.equal(status.canRetry, true);
+    assert.deepEqual(status.error, { code: "PARENT_WORKTREE_DIRTY", retryable: true });
+    assert.equal(JSON.stringify(status).includes("parent is dirty"), false);
+    f.service.prepareWorktree = original;
+    const requests = Array.from({ length: 5 }, () => application.retryTaskStartup({ ...source, startupOperationId: failed.startupOperationId }));
+    await Promise.all(requests);
+    const ready = application.taskStartup(source);
+    assert.equal(ready.status, "ready");
+    assert.equal(ready.taskId, f.task.id);
+    assert.equal(f.calls.create, 1);
+    assert.deepEqual(observed, [{ model: "frozen-model", reasoningLevel: "high" }]);
+    assert.equal(f.store.selectOne("SELECT COUNT(*) count FROM work_session_startup_operations").count, 2);
+    await application.retryTaskStartup({ ...source, startupOperationId: failed.startupOperationId });
+    assert.equal(f.store.selectOne("SELECT COUNT(*) count FROM work_session_startup_operations").count, 2);
+    assert.equal(f.calls.activate, 0, "Recovery never dispatches an initial prompt");
+    assert.throws(() => application.taskStartup({ ...source, sourceSessionId: "missing" }), { code: "SOURCE_SESSION_NOT_FOUND" });
+  } finally { await cleanup(f); }
+});
 
 test("startup persists model settings and delivers them through the shared Provider port", async () => {
   const observed = [];

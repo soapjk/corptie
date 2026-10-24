@@ -32,7 +32,8 @@ export async function createTaskAndSession({
   };
   let persisted;
   if (normalizedTaskInput.parentTaskId && !workService.store.getTask(normalizedTaskInput.id)) {
-    await new TaskWorktreeHierarchyService({ store: workService.store }).validateCreate(normalizedTaskInput, { expectedParentResourceVersion });
+    await new TaskWorktreeHierarchyService({ store: workService.store }).validateCreate(normalizedTaskInput, { expectedParentResourceVersion })
+      .catch(error => { error.taskCreationRejectedBeforePersistence = true; throw error; });
   }
   if (persistTask) {
     revalidate();
@@ -91,9 +92,18 @@ export async function createTaskAndSession({
     idempotencyKey: `task-create:${operationKey}`,
     sourceSessionId: source,
     dispatchInitialTurn: false
+  }).catch(error => {
+    if (error.startup?.status === "failed") {
+      error.taskId = taskId;
+      error.startupOperationId = error.startup.startupOperationId;
+    }
+    throw error;
   });
   if (started?.status && started.status !== "ready") {
-    throw coded(started.error?.code ?? "START_NOT_READY", "Task creation did not produce a ready Session binding.", 409);
+    throw Object.assign(coded(started.error?.code ?? "START_NOT_READY",
+      "Task was saved, but its Session did not start. Open startup recovery from the existing Task; do not create another Task.", 409),
+      { taskId, startupOperationId: started.startupOperationId, stage: started.error?.stage,
+        retryable: started.error?.retryable === true });
   }
   if (!started?.session) {
     throw coded("START_SESSION_UNRESOLVED", "Task creation did not return its companion Session.", 500);

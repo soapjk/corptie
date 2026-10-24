@@ -99,6 +99,35 @@ test("identity changes and racing requests cannot dispatch twice", async () => {
   } finally { await f.close(); }
 });
 
+test("a proven saved Task with failed startup has a durable recoverable receipt, not an unknown outcome", async () => {
+  const f = await fixture();
+  try {
+    const task = f.store.createTask({ id: "task:partial", workId: input.workId, title: input.title, mainAgentId: input.mainAgentId });
+    let calls = 0;
+    f.taskCreation.create = async () => { calls++; throw Object.assign(new Error("PRIVATE path"), {
+      code: "PARENT_WORKTREE_DIRTY", taskId: task.id, startupOperationId: "startup:failed" }); };
+    const receipt = await f.make().createTask(identity, "session:test", input);
+    assert.equal(receipt.status, "failed");
+    assert.equal(receipt.errorCode, "PARENT_WORKTREE_DIRTY");
+    assert.deepEqual(receipt.taskResult, { taskId: task.id, workId: input.workId, sessionId: "", startupOperationId: "startup:failed" });
+    assert.equal(JSON.stringify(receipt).includes("PRIVATE"), false);
+    assert.deepEqual(await f.make().createTask(identity, "session:test", input), receipt);
+    assert.equal(calls, 1);
+  } finally { await f.close(); }
+});
+
+test("proven pre-persistence rejection is distinct from an unknown or partial outcome", async () => {
+  const f = await fixture();
+  try {
+    f.taskCreation.create = async () => { throw Object.assign(new Error("parent is dirty"), {
+      code: "PARENT_WORKTREE_DIRTY", taskCreationRejectedBeforePersistence: true }); };
+    const receipt = await f.make().createTask(identity, "session:test", input);
+    assert.equal(receipt.status, "rejected");
+    assert.equal(receipt.errorCode, "PARENT_WORKTREE_DIRTY");
+    assert.equal(receipt.taskResult, undefined);
+  } finally { await f.close(); }
+});
+
 test("partial creation or lost response remains uncertain and is never automatically replayed", async () => {
   const f = await fixture();
   try {

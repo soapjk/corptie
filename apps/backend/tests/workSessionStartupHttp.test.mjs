@@ -32,11 +32,28 @@ async function call(method, path, body, callbacks = {}) {
     workService: { store: {} },
     startWorkSession: callbacks.start,
     getTaskStartup: callbacks.get,
+    taskStartupRecovery: callbacks.recovery,
     getSessionStartupBinding: callbacks.session
   });
   await res.finished;
   return { handled, statusCode: res.statusCode, body: res.body };
 }
+
+test("startup recovery routes derive source identity from the header and reject injected runtime fields", async () => {
+  const calls = [];
+  const recovery = async (input, retry) => { calls.push({ input, retry }); return { taskId: input.taskId, status: "failed" }; };
+  const read = await call("GET", "/tasks/task%3Achild/startup-recovery", {}, { recovery });
+  assert.equal(read.statusCode, 200);
+  const retry = await call("POST", "/tasks/task%3Achild/startup-recovery", { startupOperationId: "startup:failed" }, { recovery });
+  assert.equal(retry.statusCode, 200);
+  assert.deepEqual(calls, [
+    { input: { taskId: "task:child", sourceSessionId: "session:source" }, retry: false },
+    { input: { taskId: "task:child", sourceSessionId: "session:source", startupOperationId: "startup:failed" }, retry: true }
+  ]);
+  const rejected = await call("POST", "/tasks/task%3Achild/startup-recovery", { providerId: "forged" }, { recovery });
+  assert.equal(rejected.statusCode, 400);
+  assert.equal(calls.length, 2);
+});
 
 test("POST start returns only the authoritative ready receipt and polling exposes the same receipt", async () => {
   const ready = {

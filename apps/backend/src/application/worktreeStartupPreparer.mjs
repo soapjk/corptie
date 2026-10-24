@@ -4,6 +4,7 @@ import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { TaskWorktreeHierarchyService } from "./taskWorktreeHierarchyService.mjs";
 import { ensureProjectLocalState } from "../runtime/projectLocalStateDirectory.mjs";
+import { gitScalarOutput } from "../utils/gitScalarOutput.mjs";
 
 const execFile = promisify(execFileCallback);
 
@@ -111,13 +112,13 @@ export class WorktreeStartupPreparer {
       }
     }
     const commonGitDirText = await this.execGit(canonicalWorktreePath, ["rev-parse", "--git-common-dir"]);
-    const commonGitDir = await canonical(resolve(canonicalWorktreePath, commonGitDirText.trim()));
+    const commonGitDir = await canonical(resolve(canonicalWorktreePath, gitScalarOutput(commonGitDirText)));
     const registeredCommonGitDir = await canonical(repository.commonGitDirCanonicalPath);
     if (commonGitDir !== registeredCommonGitDir) {
       throw coded("START_WORKTREE_INVENTORY_MISMATCH", "Worktree common Git directory differs from the registered Repository.", true);
     }
-    const sourceCommitOid = (await this.execGit(canonicalWorktreePath, ["rev-parse", "HEAD"])).trim();
-    const sourceTreeOid = (await this.execGit(canonicalWorktreePath, ["rev-parse", "HEAD^{tree}"])).trim();
+    const sourceCommitOid = gitScalarOutput(await this.execGit(canonicalWorktreePath, ["rev-parse", "HEAD"]));
+    const sourceTreeOid = gitScalarOutput(await this.execGit(canonicalWorktreePath, ["rev-parse", "HEAD^{tree}"]));
     if (!fullOid(sourceCommitOid) || !fullOid(sourceTreeOid)) {
       throw coded("START_SOURCE_IDENTITY_UNAVAILABLE", "Repository has no verifiable source commit/tree.", false);
     }

@@ -5,6 +5,7 @@ import { close, fstat, read as readDescriptor, fchmod } from "node:fs";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
 import { isAbsolute, join, resolve } from "node:path";
+import { gitScalarOutput } from "../utils/gitScalarOutput.mjs";
 
 const require = createRequire(import.meta.url);
 const scopes = new Set(["projectShared", "worktreeLocal"]);
@@ -41,7 +42,7 @@ async function context(root, scope) {
   let isGit = true;
   try {
     const result = await git(canonical, ["rev-parse", "--show-toplevel"]);
-    if (await realpath(result.stdout.trim()) !== canonical) throw failure("LOCAL_STATE_ROOT_INVALID", "Use the bound Worktree root, not a repository subdirectory.");
+    if (await realpath(gitScalarOutput(result.stdout)) !== canonical) throw failure("LOCAL_STATE_ROOT_INVALID", "Use the bound Worktree root, not a repository subdirectory.");
   } catch (error) {
     if (error.code !== 128 || await lstat(join(canonical, ".git")).then(() => true, missing => {
       if (missing.code === "ENOENT") return false;

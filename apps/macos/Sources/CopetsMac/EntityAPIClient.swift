@@ -1686,6 +1686,14 @@ final class EntityAPIClient: ObservableObject {
             let (data, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
                 let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                if request.httpMethod == "POST", request.url?.lastPathComponent == "tasks",
+                   let fields = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   fields["taskId"] is String {
+                    await AppStateSyncController.shared.refreshSnapshot()
+                    errorMessage = L10n("Task 已保存，但会话未启动。") + " "
+                        + L10n("请从任务列表打开启动状态与恢复，不要重复创建。")
+                    return nil
+                }
                 errorMessage = envelope?.displayMessage ?? "操作失败（HTTP \(http.statusCode)）"
                 return nil
             }

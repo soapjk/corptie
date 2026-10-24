@@ -179,6 +179,9 @@ extension UnifiedConsoleView {
         session: TaskSession?
     ) -> some View {
         TaskFixedDisplayMenuItem(task: task)
+        if session == nil && task.deletionStatus == nil {
+            Button(L10n("启动状态与恢复"), systemImage: "arrow.clockwise") { taskStartupRecoveryTarget = task }
+        }
         if task.hierarchy?.canCreateChild == true {
             Button(L10n("新建子任务"),systemImage:"plus") { taskCreationTarget=TaskCreationTarget(workID:task.workId,parentTaskId:task.id) }
         }

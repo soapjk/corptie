@@ -27,6 +27,8 @@ export function createEntityHttpRoutes({
     startWorkSession: (input) => workSessionStartApplicationService.start(input),
     defaultSessionProviderId: agentProviderRegistry.defaultProviderId,
     getTaskStartup: (input) => workSessionStartApplicationService.getReceipt(input),
+    taskStartupRecovery: (input, retry) => retry
+      ? workSessionStartApplicationService.retryTaskStartup(input) : workSessionStartApplicationService.taskStartup(input),
     getSessionStartupBinding: (logicalSessionId) => workSessionStartApplicationService.getSessionBinding(logicalSessionId),
     launchAgentSession,
     workDiscussionService,

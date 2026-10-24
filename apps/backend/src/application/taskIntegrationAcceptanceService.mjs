@@ -3,14 +3,16 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { TaskWorktreeHierarchyService } from "./taskWorktreeHierarchyService.mjs";
 import { taskHierarchyError as fail } from "../store/repositories/taskHierarchyRepository.mjs";
+import { gitScalarOutput } from "../utils/gitScalarOutput.mjs";
 
 const exec = promisify(execFileCallback);
 export const hierarchyDigest = value => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 export class TaskIntegrationAcceptanceService {
-  constructor({store, execGit = async (path,args)=>(await exec("git",["-C",path,...args],{encoding:"utf8",timeout:15000,maxBuffer:1024*1024})).stdout.trim()}) {
+  constructor({store, execGit = async (path,args)=>(await exec("git",["-C",path,...args],{encoding:"utf8",timeout:15000,maxBuffer:1024*1024})).stdout}) {
     this.store=store; this.git=execGit;
     this.delivery=new TaskWorktreeHierarchyService({store,execGit});
   }
+  async scalar(path,args) { return gitScalarOutput(await this.git(path,args)); }
   required(task) { return Boolean(task && this.store.hasTaskChildren?.(task.id) && this.store.getTaskWorkspaceContext(task)?.repository); }
   async graph(taskId,{requireIncluded=true}={}) {
     const task=this.store.getTask(taskId);
@@ -19,8 +21,8 @@ export class TaskIntegrationAcceptanceService {
     const rows=this.store.selectAll("SELECT * FROM tasks WHERE parent_task_id=? AND COALESCE(deletion_status,'')<>'deleted' ORDER BY id",[taskId]);
     const path=root.inventory.canonicalPath || root.inventory.path;
     await this.delivery.assertClean(root.inventory);
-    const parentHeadOid=await this.git(path,["rev-parse","HEAD"]);
-    const parentTreeOid=await this.git(path,["rev-parse",`${parentHeadOid}^{tree}`]);
+    const parentHeadOid=await this.scalar(path,["rev-parse","HEAD"]);
+    const parentTreeOid=await this.scalar(path,["rev-parse",`${parentHeadOid}^{tree}`]);
     const children=[];
     for (const child of rows) {
       if(child.work_id!==task.work_id) throw fail("TASK_PARENT_INVALID");
@@ -28,7 +30,7 @@ export class TaskIntegrationAcceptanceService {
       try { item=this.delivery.resolveTaskDelivery(child.id,{allowAdoption:false}); }
       catch (cause) { if(requireIncluded) throw fail("CHILDREN_NOT_INTEGRATED"); children.push({taskId:child.id,worktreeId:null,sourceHeadOid:null,includedInParent:false});continue; }
       if(item.binding.repository_id!==root.binding.repository_id) throw fail("TASK_PARENT_INVALID");
-      const sourceHeadOid=await this.git(item.inventory.canonicalPath || item.inventory.path,["rev-parse","HEAD"]);
+      const sourceHeadOid=await this.scalar(item.inventory.canonicalPath || item.inventory.path,["rev-parse","HEAD"]);
       const includedInParent=await this.git(path,["merge-base","--is-ancestor",sourceHeadOid,parentHeadOid]).then(()=>true,cause=>{if(cause.code===1)return false;throw cause;});
       if(requireIncluded && !includedInParent) throw fail("CHILDREN_NOT_INTEGRATED");
       if(requireIncluded) await this.delivery.assertClean(item.inventory);
@@ -45,10 +47,10 @@ export class TaskIntegrationAcceptanceService {
         || this.store.getTaskDeliveryBinding(child.taskId)?.binding_revision!==child.bindingRevision)) throw fail("INTEGRATION_ACCEPTANCE_STALE");
       if (child.worktreeId) {
         const item=this.delivery.resolveTaskDelivery(child.taskId,{allowAdoption:false});
-        if (await this.git(item.inventory.canonicalPath || item.inventory.path,["rev-parse","HEAD"])!==child.sourceHeadOid) throw fail("INTEGRATION_ACCEPTANCE_STALE");
+        if (await this.scalar(item.inventory.canonicalPath || item.inventory.path,["rev-parse","HEAD"])!==child.sourceHeadOid) throw fail("INTEGRATION_ACCEPTANCE_STALE");
       }
     }
-    if(await this.git(path,["rev-parse","HEAD"])!==parentHeadOid) throw fail("INTEGRATION_ACCEPTANCE_STALE");
+    if(await this.scalar(path,["rev-parse","HEAD"])!==parentHeadOid) throw fail("INTEGRATION_ACCEPTANCE_STALE");
     const scope={taskRevision:current.revision,criteria:current.acceptance_criteria,verification:current.verification_criteria,
       hierarchyRevision:current.hierarchy_revision,bindingRevision:root.binding.binding_revision,children};
     const {children:excludedChildren,...rootScope}=scope;

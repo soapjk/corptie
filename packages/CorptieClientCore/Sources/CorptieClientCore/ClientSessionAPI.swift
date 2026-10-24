@@ -313,6 +313,7 @@ public struct ClientSessionCapabilities: Decodable, Sendable {
     public let reliableMessages: ReliableMessages?
     public let scheduleMessage: Bool?
     public let createTask: Action?
+    public let taskStartupRecovery: Action?
     public let collaborationConfirmation: Action?
     public let currentModel: String?
     public let currentReasoningLevel: String?

@@ -149,11 +149,11 @@ export class ClientDeviceGateway {
       const worktreeRepositoryJobs = /^\/client\/v1\/worktrees\/repositories\/([^/]+)\/integration-jobs$/.exec(path);
       const worktreeJob = /^\/client\/v1\/worktrees\/jobs\/([^/]+)$/.exec(path);
       const worktreeJobAction = /^\/client\/v1\/worktrees\/jobs\/([^/]+)\/actions\/([^/]+)$/.exec(path);
-      const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|message-deliveries|quick-messages|stop|capabilities|composer|conversation-commands|tasks|read-receipt|images|resources|usage|approval|user-input|collaboration-confirmation)$/.exec(path);
+      const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|message-deliveries|quick-messages|stop|capabilities|composer|conversation-commands|tasks|task-startup|read-receipt|images|resources|usage|approval|user-input|collaboration-confirmation)$/.exec(path);
       const commandReceipt = /^\/client\/v1\/commands\/([A-Za-z0-9_-]{8,128})$/.exec(path);
       if (url.search && !resource && !search && !inventory && !taskHierarchy && !control && !eventV2 && !worktreeRepository
           && !(path === "/client/v1/provider-settings/task-creation" && request.method === "GET")
-          && !(["messages", "tasks", "images", "resources", "usage"].includes(conversation?.[2]) && request.method === "GET")) {
+          && !(["messages", "tasks", "task-startup", "images", "resources", "usage"].includes(conversation?.[2]) && request.method === "GET")) {
         throw deviceError("REQUEST_NOT_ALLOWED", 403);
       }
       if (request.method === "POST" && path === "/client/v1/pairing/claim") {
@@ -504,6 +504,23 @@ export class ClientDeviceGateway {
       if (conversation && this.sessionAPI) {
         let sessionId;
         try { sessionId = decodeURIComponent(conversation[1]); } catch { throw deviceError("INVALID_SESSION_ID", 400); }
+        if (conversation[2] === "task-startup" && ["GET", "POST"].includes(request.method)) {
+          if (request.method === "GET" && (url.searchParams.getAll("taskId").length !== 1
+              || [...url.searchParams.keys()].some(key => key !== "taskId"))) throw deviceError("INVALID_QUERY", 400);
+          const input = request.method === "POST" ? await body(request, 2048) : Object.fromEntries(url.searchParams);
+          if (!input || Object.keys(input).some(key => !["taskId", "startupOperationId"].includes(key))
+            || typeof input.taskId !== "string" || !input.taskId || input.taskId.length > 512
+            || request.method === "POST" && (typeof input.startupOperationId !== "string" || !input.startupOperationId || input.startupOperationId.length > 200)) {
+            throw deviceError("INVALID_INPUT", 400);
+          }
+          this.authenticateRequest(request);
+          this.sessionAPI.session(sessionId);
+          if (!this.sessionAPI.taskCreation?.startup) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
+          const result = await this.sessionAPI.taskCreation.startup(sessionId, input.taskId,
+            request.method === "POST" ? input.startupOperationId : null);
+          this.authenticateRequest(request);
+          return reply(response, 200, result);
+        }
         if (conversation[2] === "tasks" && request.method === "GET") {
           const result = await this.sessionAPI.taskCreationOptions(identity, sessionId, url.searchParams);
           this.authenticateRequest(request);

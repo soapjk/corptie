@@ -61,6 +61,9 @@ function normalizeEnvironment(value = "") {
 }
 
 function safeApiErrorMessage(error) {
+  if (typeof error?.taskId === "string") {
+    return "Task was saved, but its Session did not start. Open startup recovery from the existing Task; do not create another Task.";
+  }
   const code = typeof error?.code === "string" ? error.code : "INTERNAL";
   const stage = typeof error?.stage === "string" ? error.stage : null;
   if (code.startsWith("START_") && stage && stage !== "validation") {
@@ -87,6 +90,7 @@ export function handleEntityHttpRequest({
   startWorkSession,
   defaultSessionProviderId,
   getTaskStartup,
+  taskStartupRecovery,
   getSessionStartupBinding,
   launchAgentSession,
   workDiscussionService,
@@ -1055,6 +1059,15 @@ export function handleEntityHttpRequest({
         return sendJson(response, 200, { sessions: workService.store.listSessionsByTask(id) });
       }
 
+      const taskRecoveryMatch = path.match(/^\/tasks\/([^/]+)\/startup-recovery$/);
+      if (taskRecoveryMatch && ["GET", "POST"].includes(request.method)) {
+        if (!taskStartupRecovery) throw apiError("CAPABILITY_UNAVAILABLE", "Startup recovery is unavailable.", 503);
+        const sourceSessionId = boundedHeaderText(request, "x-corptie-logical-session-id");
+        const input = request.method === "POST" ? await readJson(request) : {};
+        rejectUnknownFields(input, new Set(["startupOperationId"]));
+        return sendJson(response, 200, await taskStartupRecovery({ taskId: decodeURIComponent(taskRecoveryMatch[1]),
+          sourceSessionId, ...input }, request.method === "POST"));
+      }
       const taskStartMatch = path.match(/^\/tasks\/([^/]+)\/start$/);
       if (request.method === "POST" && taskStartMatch) {
         if (typeof startWorkSession !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Authoritative Work Session startup is unavailable.", 503);
@@ -1394,6 +1407,8 @@ export function handleEntityHttpRequest({
         error: error.code ? safeApiErrorMessage(error) : "Entity operation failed.",
         code,
         ...(typeof error.stage === "string" ? { stage: error.stage } : {}),
+        ...(typeof error.taskId === "string" ? { taskId: error.taskId } : {}),
+        ...(typeof error.startupOperationId === "string" ? { startupOperationId: error.startupOperationId } : {}),
         ...(typeof error.field === "string" ? { field: error.field } : {}),
         ...(typeof error.expected === "string" ? { expected: error.expected } : {}),
         ...(error.received && typeof error.received === "object" ? { received: error.received } : {}),

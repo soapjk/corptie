@@ -1507,3 +1507,17 @@
 "加载更多子任务" = "Load more subtasks";
 "独立 Task" = "Independent task";
 "与父分支" = "Compared with parent";
+"启动状态与恢复" = "Startup status and recovery";
+"父任务已变化，请刷新并重新选择父任务。" = "The parent task changed. Refresh and select it again.";
+"正在准备工作区与会话" = "Preparing workspace and session";
+"Task 已保存，但会话未启动。" = "Task saved, but its session did not start.";
+"请从任务列表打开启动状态与恢复，不要重复创建。" = "Open startup status and recovery from the task list; do not create another task.";
+"尚未找到可恢复的启动记录。" = "No recoverable startup record was found.";
+"重试启动" = "Retry startup";
+"父任务工作区存在未提交改动，请先提交或处理，再重试启动。" = "The parent workspace has uncommitted changes. Commit or handle them before retrying.";
+"父分支正在执行任务或 Git 操作，请处理完成后重试。" = "The parent branch has a running task or Git operation. Finish it before retrying.";
+"父任务工作区不可用或绑定已改变，需要先恢复父任务。" = "The parent workspace is unavailable or its binding changed. Restore the parent first.";
+"父任务不可用，不能重试启动。" = "The parent task is unavailable; startup cannot be retried.";
+"准备工作区失败，请检查本机 Git 与工作区路径后重试。" = "Workspace preparation failed. Check local Git and workspace paths before retrying.";
+"会话启动失败，请核对错误代码和启动记录。" = "Session startup failed. Check the error code and startup record.";
+"无法确认启动结果，请刷新状态，不要重复创建 Task。" = "Startup could not be confirmed. Refresh its status; do not create another task.";

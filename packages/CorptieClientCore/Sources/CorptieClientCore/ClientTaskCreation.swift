@@ -28,6 +28,11 @@ public struct ClientTaskCreationResult: Codable, Sendable, Equatable {
     public let taskId: String
     public let sessionId: String
     public let workId: String
+    public var startupOperationId: String?
+    public init(taskId: String, sessionId: String, workId: String, startupOperationId: String? = nil) {
+        self.taskId = taskId; self.sessionId = sessionId; self.workId = workId
+        self.startupOperationId = startupOperationId
+    }
 }
 
 public struct ClientTaskCreationOptions: Decodable, Sendable {

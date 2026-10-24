@@ -553,6 +553,8 @@ export class ClientSessionAPI {
       scheduleMessage: Boolean(this.schedule),
       createTask: { available: Boolean(this.taskCreation) && Boolean(resolved.session.workId),
         reason: !this.taskCreation ? "CAPABILITY_UNSUPPORTED" : !resolved.session.workId ? "WORK_REQUIRED" : null },
+      taskStartupRecovery: { available: Boolean(this.taskCreation?.startup) && Boolean(resolved.session.workId),
+        reason: !this.taskCreation?.startup ? "CAPABILITY_UNSUPPORTED" : !resolved.session.workId ? "WORK_REQUIRED" : null },
       collaborationConfirmation: {
         available: Boolean(this.respondToCollaborationConfirmation || this.respondToSessionChannelRequest),
         reason: this.respondToCollaborationConfirmation || this.respondToSessionChannelRequest

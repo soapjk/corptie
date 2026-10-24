@@ -1,5 +1,6 @@
 import Combine
 import CorptieConversation
+import CorptieClientCore
 import AppKit
 import SwiftUI
 
@@ -55,6 +56,7 @@ struct UnifiedConsoleView: View {
         var parentTaskId: String? = nil
     }
     @State var taskCreationTarget: TaskCreationTarget?
+    @State var taskStartupRecoveryTarget: CorptieTask?
     @State var expandedParentTaskIDs: Set<String> = []
     /// 已收起的子分类分组 key 集合（仅内存态，跟随当前页面生命周期）。
     @State var collapsedGroupKeys: Set<String> = []
@@ -182,6 +184,25 @@ struct UnifiedConsoleView: View {
         }
         .sheet(item: $taskPendingEdit) { task in
             CorptieTaskEditView(task: task) {}
+        }
+        .sheet(item: $taskStartupRecoveryTarget) { task in
+            ConversationTaskStartupRecovery(taskId: task.id, api: {
+                let preferred = backendClient.sessions.first { $0.workId == task.workId && $0.sessionKind == .workChat }
+                    ?? backendClient.sessions.first { $0.workId == task.workId && $0.taskId == (task.parentTaskId ?? task.id) }
+                guard let source = CorptieTaskSessionSourcePolicy.resolve(workId: task.workId,
+                    preferred: preferred, sessions: backendClient.sessions),
+                      let sourceId = CorptieTaskSessionSourcePolicy.sourceSessionId(for: source) else {
+                    throw ClientConnectionError.invalidResponse
+                }
+                return ClientTaskStartupAPI(transport: try BackendTransport(endpoint: BackendEndpoint(CorptieAppEnvironment.backendBaseURL)),
+                    route: .desktop, sourceSessionId: sourceId)
+            }, openSession: { sessionId in
+                router.pendingSessionId = sessionId
+            }, openParent: { parentId in
+                if let parent = entityClient.tasks.first(where: { $0.id == parentId }) {
+                    openTask(parent, session: workerSession(for: parent))
+                }
+            }, localize: L10n)
         }
         .sheet(item: $taskPendingRename) { task in
             RenameCorptieTaskSheet(task: task) {
