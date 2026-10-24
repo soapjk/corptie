@@ -58,6 +58,7 @@ struct MessageComposer: View {
     let isReady: Bool
     let notReadyReason: SessionNotReadyReason?
     let activityStatus: String?
+    let onSubmissionStarted: () -> Void
     @FocusState private var isFocused: Bool
     @State private var composerWidth: CGFloat = 0
     @State private var inputHeight = ComposerInputLayout.minimumHeight
@@ -85,7 +86,8 @@ struct MessageComposer: View {
         status: TaskStatus?,
         isReady: Bool,
         notReadyReason: SessionNotReadyReason?,
-        activityStatus: String?
+        activityStatus: String?,
+        onSubmissionStarted: @escaping () -> Void = {}
     ) {
         self.sessionId = sessionId
         _modelCatalog = ObservedObject(wrappedValue: modelCatalog)
@@ -96,6 +98,7 @@ struct MessageComposer: View {
         self.isReady = isReady
         self.notReadyReason = notReadyReason
         self.activityStatus = activityStatus
+        self.onSubmissionStarted = onSubmissionStarted
         let draft = draftRepository.draft(for: sessionId)
         draft.sessionId = sessionId
         _attachedImages = State(initialValue: draft.images)
@@ -113,7 +116,9 @@ struct MessageComposer: View {
                     load: { try await backendClient.quickMessages(for: sessionId) }) { text in
                     guard canSend, !backendClient.isSendingMessage, let session, session.archived != true else { return }
                     // Independent send: never clear or attach the editor's draft.
-                    backendClient.sendMessage(text, to: session, onSuccess: { quickMessageRefresh += 1 })
+                    if backendClient.sendMessage(text, to: session, onSuccess: { quickMessageRefresh += 1 }) {
+                        onSubmissionStarted()
+                    }
                 }
             }
             if compact {
@@ -392,6 +397,7 @@ struct MessageComposer: View {
         guard didStartSending else {
             return
         }
+        onSubmissionStarted()
         if editorController.clear(ifUnchangedSince: submission) {
             hasSendableText = false
             inputHeight = ComposerInputLayout.minimumHeight

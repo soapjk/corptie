@@ -1560,3 +1560,11 @@
 "无法读取这份图片，请重新复制图片内容后重试。" = "This image could not be read. Copy the image itself and try again.";
 "当前会话已不可用，图片未添加。" = "This Session is no longer available. The image was not added.";
 "图片导入失败（HTTP %d），请稍后重试。" = "Image import failed (HTTP %d). Try again later.";
+
+"Hello, I'm your Corptie assistant" = "Hello, I'm your Corptie assistant";
+
+"Start with an idea" = "Start with an idea";
+
+"Ask me about Corptie, or tell me what you'd like to work on." = "Ask me about Corptie, or tell me what you'd like to work on.";
+
+"Describe a goal, ask a question, or share something to explore." = "Describe a goal, ask a question, or share something to explore.";

@@ -1840,3 +1840,11 @@
 "无法读取这份图片，请重新复制图片内容后重试。" = "无法读取这份图片，请重新复制图片内容后重试。";
 "当前会话已不可用，图片未添加。" = "当前会话已不可用，图片未添加。";
 "图片导入失败（HTTP %d），请稍后重试。" = "图片导入失败（HTTP %d），请稍后重试。";
+
+"Hello, I'm your Corptie assistant" = "你好，我是你的 Corptie 助理";
+
+"Start with an idea" = "从一个想法开始";
+
+"Ask me about Corptie, or tell me what you'd like to work on." = "可以问我如何使用 Corptie，也可以告诉我你想完成什么。";
+
+"Describe a goal, ask a question, or share something to explore." = "描述一个目标、提出问题，或分享你想一起探索的内容。";
