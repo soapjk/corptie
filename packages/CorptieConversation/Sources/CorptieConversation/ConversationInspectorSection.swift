@@ -77,8 +77,10 @@ public struct ConversationDetailModuleSurface: ViewModifier {
         Group {
             if let widgetSize {
                 ScrollView(.vertical) {
+                    // Preserve the viewport proposal for lazy collection rows.
+                    // An ideal-height override makes nested lazy layout keep
+                    // invalidating as paged content and scrollbars change.
                     content.frame(maxWidth: .infinity, alignment: .topLeading)
-                        .fixedSize(horizontal: false, vertical: true)
                         .padding(widgetSize.columns == 1 ? 12 : 16)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

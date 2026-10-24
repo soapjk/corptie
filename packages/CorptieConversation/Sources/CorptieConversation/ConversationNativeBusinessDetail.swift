@@ -310,13 +310,24 @@ private struct NativeBusinessCard: View {
         if let message = state.pageError {
             VStack(alignment: .leading) {
                 Text(message).font(.caption).foregroundStyle(.secondary)
-                Button("重试加载") { if let api { Task { await store.loadMore(cardID: state.id, api: api, retry: true) } } }.font(.caption).disabled(api == nil || !store.isCurrent)
+                Button("重试加载") { if let api { Task { await store.loadMore(cardID: state.id, api: api, retry: true) } } }.font(.caption).disabled(state.loading || api == nil || !store.isCurrent)
             }
         } else if card.nextCursor != nil {
-            ProgressView().controlSize(.small).frame(maxWidth: .infinity)
-                .task(id: "\(card.nextCursor ?? ""):\(store.isCurrent):\(api != nil)") {
-                    if store.isCurrent, let api { await store.loadMore(cardID: state.id, api: api) }
+            // A task on a lazy tail can repeatedly appear/cancel at the viewport
+            // boundary, invalidating layout even when loadMore returns early.
+            // Keep paging tied to an explicit action, outside appearance state.
+            Button {
+                if let api { Task { await store.loadMore(cardID: state.id, api: api, retry: true) } }
+            } label: {
+                HStack(spacing: 6) {
+                    if state.loading { ProgressView().controlSize(.small) }
+                    Text(state.loading ? "正在加载…" : "加载更多")
                 }
+            }
+            .font(.caption)
+            .disabled(state.loading || api == nil || !store.isCurrent)
+            .accessibilityLabel("加载更多")
+            .accessibilityIdentifier("detail.collection.load-more.\(state.id)")
         }
     }
     private var title: String {
