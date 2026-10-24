@@ -236,7 +236,7 @@ struct ConversationInspectorTests {
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         #expect(source.contains(".platformGlassSurface(in: Capsule(), variant: .clear)"))
         #expect(!source.contains(".platformGlassSurface(in: Circle()"))
-        #expect(source.contains("Button(action: onSettings)"))
+        #expect(source.contains("onSettings()"))
         #expect(source.contains("Text(settingsTitle)"))
         #expect(source.contains(".frame(maxHeight: .infinity, alignment: verticalAlignment)"))
         #expect(source.contains(".accessibilityIdentifier(\"navigation-tab-capsule\")"))
@@ -244,8 +244,8 @@ struct ConversationInspectorTests {
         #expect(source.contains(".accessibilityValue(selected ? \"selected\" : \"not-selected\")"))
         #expect(source.contains(".buttonStyle(PlatformTabButtonStyle())"))
         #expect(source.contains("@Environment(\\.accessibilityReduceMotion)"))
-        #expect(source.contains(".scaleEffect(configuration.isPressed && !reduceMotion ? 0.94 : 1)"))
-        #expect(source.contains(".opacity(configuration.isPressed ? 0.76 : 1)"))
+        #expect(source.contains(".scaleEffect(isPressed && !reduceMotion ? 0.94 : 1)"))
+        #expect(source.contains(".opacity(isPressed ? 0.76 : 1)"))
     }
 }
 

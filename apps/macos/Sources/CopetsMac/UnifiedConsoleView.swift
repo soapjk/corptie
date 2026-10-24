@@ -869,7 +869,8 @@ struct UnifiedConsoleView: View {
         } label: {
             PlatformWorkOutlineToolbarGlyph(
                 symbol: isShowingWorkerArchive ? "archivebox.fill" : "archivebox",
-                color: isShowingWorkerArchive ? .accentColor : .primary
+                color: isShowingWorkerArchive ? .accentColor : .primary,
+                selected: isShowingWorkerArchive
             )
         }
         .platformWorkOutlineToolbarControl()
