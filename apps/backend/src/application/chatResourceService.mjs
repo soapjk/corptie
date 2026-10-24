@@ -30,6 +30,25 @@ export class ChatResourceService {
   }
 
   async importImage(reference, input = {}) {
+    try {
+      return await this.#importImage(reference, input);
+    } catch (error) {
+      // Filesystem errors contain source/destination paths. Never expose another
+      // application's private container in an HTTP error response.
+      if (["EACCES", "EPERM"].includes(error?.code)) {
+        throw resourceError("CHAT_IMAGE_ACCESS_DENIED", "The system denied access while importing the image.", 403);
+      }
+      if (error?.code === "ENOENT") {
+        throw resourceError("CHAT_IMAGE_SOURCE_MISSING", "The source image is no longer available.", 404);
+      }
+      if (error?.syscall) {
+        throw resourceError("CHAT_IMAGE_IMPORT_FAILED", "The image could not be imported.", 500);
+      }
+      throw error;
+    }
+  }
+
+  async #importImage(reference, input) {
     const sourcePath = requiredAbsolutePath(input.sourcePath, "sourcePath");
     const source = await realpath(sourcePath);
     const info = await stat(source);

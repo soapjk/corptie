@@ -132,6 +132,26 @@ struct MessageComposer: View {
                 }
                 .frame(maxWidth: .infinity)
             }
+            if isImportingImages {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(L10n("正在添加图片…")).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if let error = imageImportState.errorMessage {
+                HStack(alignment: .top, spacing: 8) {
+                    Text(error).font(.callout).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                    Button { imageImportState.dismissError() } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.plain)
+                    .help(L10n("关闭图片导入提示"))
+                    .accessibilityLabel(L10n("关闭图片导入提示"))
+                }
+                .accessibilityIdentifier("composer-image-import-error")
+            }
         }
         .background(
             GeometryReader { proxy in
@@ -569,16 +589,16 @@ struct MessageComposer: View {
         _ load: @escaping @MainActor () async throws -> ComposerImagePasteboard.Snapshot
     ) {
         guard canAttachImages else {
-            backendClient.presentChatImageError(BackendError.message(ComposerImagePasteboard.PasteError.unsupported.message))
+            imageImportState.showError(ComposerImagePasteboard.PasteError.unsupported.message)
             return
         }
         let capacity = max(0, 8 - attachedImages.count)
         guard capacity > 0 else {
-            backendClient.presentChatImageError(BackendError.message(ComposerImagePasteboard.PasteError.full.message))
+            imageImportState.showError(ComposerImagePasteboard.PasteError.full.message)
             return
         }
         guard let session, let token = imageImportState.begin() else {
-            backendClient.presentChatImageError(BackendError.message(L10n("图片正在导入，请稍后再试。")))
+            imageImportState.showError(L10n("图片正在导入，请稍后再试。"))
             return
         }
         let draft = editorController.draft
@@ -619,11 +639,11 @@ struct MessageComposer: View {
                 if let firstImportError { messages.append(firstImportError) }
                 if batch.truncated { messages.append(ComposerImagePasteboard.PasteError.truncated.message) }
                 if !messages.isEmpty {
-                    backendClient.presentChatImageError(BackendError.message(messages.joined(separator: "\n")))
+                    imageImportState.showError(messages.joined(separator: "\n"), token: token)
                 }
             } catch is CancellationError { return }
             catch {
-                if imageImportState.accepts(token) { backendClient.presentChatImageError(error) }
+                imageImportState.showError(error.localizedDescription, token: token)
             }
         }
     }

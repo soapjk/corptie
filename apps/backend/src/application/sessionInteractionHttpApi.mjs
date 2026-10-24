@@ -81,7 +81,7 @@ export function handleSessionInteractionHttpRequest({
       readJson(request)
         .then((input) => chatResourceService.importImage(requireSessionReference(sessionId), input))
         .then((image) => sendJson(response, 201, { image }))
-        .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
+        .catch((error) => sendChatImageFailure(response, sendJson, error));
       return true;
     }
     if (request.method === "GET") {
@@ -98,7 +98,7 @@ export function handleSessionInteractionHttpRequest({
           });
           response.end(image.data);
         })
-        .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
+        .catch((error) => sendChatImageFailure(response, sendJson, error));
       return true;
     }
     if (request.method === "DELETE") {
@@ -108,7 +108,7 @@ export function handleSessionInteractionHttpRequest({
           input.managedPath
         ))
         .then((result) => sendJson(response, 200, result))
-        .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
+        .catch((error) => sendChatImageFailure(response, sendJson, error));
       return true;
     }
   }
@@ -157,4 +157,25 @@ export function handleSessionInteractionHttpRequest({
   }
 
   return false;
+}
+
+// Image-specific mapping: leave message/session/global error semantics alone.
+function sendChatImageFailure(response, sendJson, error) {
+  const failures = {
+    CHAT_IMAGE_ACCESS_DENIED: [403, "The system denied access while importing the image."],
+    CHAT_IMAGE_FORBIDDEN: [403, "This image does not belong to this session."],
+    CHAT_IMAGE_SOURCE_MISSING: [404, "The source image is no longer available."],
+    CHAT_IMAGE_MISSING: [404, "The image is no longer available."],
+    CHAT_IMAGE_SIZE_INVALID: [413, "The image exceeds the attachment size limit."],
+    CHAT_IMAGE_FORMAT_UNSUPPORTED: [415, "The image format is not supported."],
+    CHAT_IMAGE_PATH_INVALID: [400, "The image path is invalid."],
+    CHAT_IMAGE_NOT_FILE: [400, "The source is not an image file."],
+    CHAT_IMAGE_IMPORT_FAILED: [500, "The image could not be imported."],
+    SESSION_NOT_FOUND: [404, "The session is not available."]
+  };
+  const code = typeof error?.code === "string" && Object.hasOwn(failures, error.code)
+    ? error.code : error instanceof SyntaxError ? "INVALID_REQUEST" : "CHAT_IMAGE_REQUEST_FAILED";
+  const [status, message] = failures[code]
+    ?? (code === "INVALID_REQUEST" ? [400, "The request is invalid."] : [500, "The image request could not be completed."]);
+  sendJson(response, status, { code, error: message });
 }
