@@ -78,18 +78,25 @@ public struct PlatformWorkOutlineToolbar<Leading: View, Trailing: View>: View {
 
 public struct PlatformWorkOutlineToolbarGlyph: View {
     @Environment(\.workOutlineToolbarDensity) private var density
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let symbol: String
     private let color: Color
+    private let selected: Bool
 
-    public init(symbol: String, color: Color = .primary) {
+    public init(symbol: String, color: Color = .primary, selected: Bool = false) {
         self.symbol = symbol
         self.color = color
+        self.selected = selected
     }
 
     public var body: some View {
         Image(systemName: symbol)
             .font(.system(size: density.symbolSize, weight: .medium))
             .foregroundStyle(color)
+            #if os(macOS)
+            .scaleEffect(selected ? 1.12 : 1)
+            .animation(reduceMotion ? nil : .snappy(duration: 0.30, extraBounce: 0), value: selected)
+            #endif
             .frame(
                 width: density.controlSurfaceDiameter,
                 height: density.controlSurfaceDiameter
@@ -102,8 +109,13 @@ private struct PlatformWorkOutlineToolbarControlModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            #if os(macOS)
+            .menuStyle(.button)
+            .buttonStyle(PlatformTabButtonStyle(symbolFeedback: true))
+            #else
             .menuStyle(.borderlessButton)
             .buttonStyle(.plain)
+            #endif
             .frame(
                 width: density.controlSize,
                 height: density.controlSize

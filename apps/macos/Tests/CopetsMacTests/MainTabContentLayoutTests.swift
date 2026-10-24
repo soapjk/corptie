@@ -264,7 +264,7 @@ struct MainTabContentLayoutTests {
             .deletingLastPathComponent()
             .appendingPathComponent("packages/CorptieConversation/Sources/CorptieConversation/PlatformNavigationRail.swift")
         let sharedContents = try String(contentsOf: shared, encoding: .utf8)
-        #expect(sharedContents.contains("Button(action: onSettings)"))
+        #expect(sharedContents.contains("onSettings()"))
         #expect(sharedContents.contains("Text(settingsTitle)"))
         #expect(!sharedContents.contains(".platformGlassSurface(in: Circle()"))
     }

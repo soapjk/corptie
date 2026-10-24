@@ -4,15 +4,64 @@ import SwiftUI
 /// Keeping it in the shared package makes macOS, iPad and compact mobile tabs
 /// feel identical without introducing timers or page-level animation state.
 public struct PlatformTabButtonStyle: ButtonStyle {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private let symbolFeedback: Bool
 
-    public init() {}
+    public init(symbolFeedback: Bool = false) { self.symbolFeedback = symbolFeedback }
 
     public func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.94 : 1)
-            .opacity(configuration.isPressed ? 0.76 : 1)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
+        PlatformTabPressFeedback(label: configuration.label, isPressed: configuration.isPressed,
+                                 symbolFeedback: symbolFeedback)
+    }
+}
+
+private struct PlatformTabPressFeedback<Label: View>: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var activation = 0
+    let label: Label
+    let isPressed: Bool
+    let symbolFeedback: Bool
+
+    @ViewBuilder private var animatedLabel: some View {
+        if symbolFeedback {
+            label.symbolEffect(.bounce.up, options: .speed(1), value: reduceMotion ? 0 : activation)
+        } else {
+            label
+        }
+    }
+
+    var body: some View {
+        animatedLabel
+            .scaleEffect(isPressed && !reduceMotion ? 0.94 : 1)
+            .opacity(isPressed ? 0.76 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isPressed)
+            .onChange(of: isPressed) { _, pressed in
+                if pressed && symbolFeedback && !reduceMotion { activation &+= 1 }
+            }
+    }
+}
+
+/// Selection changes the icon's transform, never the button's layout. A separate
+/// activation value replays the native one-shot effect even on the current tab.
+private struct PlatformTabSymbol: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let symbol: String
+    let selected: Bool
+    let activation: Int
+
+    var body: some View {
+        #if os(macOS)
+        let symbolSpeed = 1.0
+        let selectionDuration = 0.30
+        #else
+        let symbolSpeed = 2.0
+        let selectionDuration = 0.18
+        #endif
+        Image(systemName: symbol)
+            .font(.system(size: 17, weight: .medium))
+            .symbolEffect(.bounce.up, options: .speed(symbolSpeed), value: reduceMotion ? 0 : activation)
+            .scaleEffect(selected ? 1.12 : 1)
+            .animation(reduceMotion ? nil : .snappy(duration: selectionDuration, extraBounce: 0), value: selected)
+            .frame(width: 40, height: 40)
     }
 }
 
@@ -79,19 +128,28 @@ public struct PlatformAnimatedTabSelection<Content: View>: View {
         guard next != displayedID else { return }
         guard !reduceMotion else { settleImmediately(); return }
         let id = UUID(); motionID = id
-        withTransaction(Transaction(animation: nil)) { moving = !reduceTransparency }
-        withAnimation(.spring(duration: 0.34, bounce: 0.16), completionCriteria: .removed) {
+        #if !os(macOS)
+        var immediate = Transaction(animation: nil); immediate.disablesAnimations = true
+        withTransaction(immediate) { moving = !reduceTransparency }
+        #endif
+        #if os(macOS)
+        let travel = Animation.easeOut(duration: 0.20)
+        #else
+        let travel = Animation.spring(duration: 0.34, bounce: 0.16)
+        #endif
+        withAnimation(travel, completionCriteria: .logicallyComplete) {
             displayedID = next
         } completion: {
             guard motionID == id else { return }
-            withAnimation(.easeOut(duration: 0.12)) { moving = false }
+            // Drop mobile's backdrop as soon as travel ends, without a second fade.
+            var settled = Transaction(animation: nil); settled.disablesAnimations = true
+            withTransaction(settled) { moving = false }
         }
     }
 }
 
-/// Only the travelling selection uses native glass; rest is a flat soft tint.
-/// Explicit frame matching drives travel between buttons; native glass owns
-/// the material, not the insertion/removal of disconnected glass surfaces.
+/// macOS uses a flat tint throughout travel; mobile keeps transient glass.
+/// Explicit frame matching drives travel without changing button layout.
 public struct PlatformTabSelectionIndicator: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -104,16 +162,22 @@ public struct PlatformTabSelectionIndicator: View {
 
     public var body: some View {
         Group {
-            if #available(iOS 26.0, macOS 26.0, *), !reduceTransparency {
-                Capsule().fill(Color.primary.opacity(moving ? 0 : 0.08))
-                    .glassEffect(moving ? .regular.interactive() : .identity, in: .capsule)
-                    .glassEffectID("navigation-selection", in: namespace)
-                    .glassEffectTransition(.identity)
-            } else if reduceTransparency {
+            if reduceTransparency {
                 Capsule().fill(.background)
                     .overlay { Capsule().strokeBorder(Color.primary.opacity(0.22), lineWidth: 1) }
             } else {
-                Capsule().fill(Color.accentColor.opacity(0.14))
+                #if os(macOS)
+                Capsule().fill(Color.primary.opacity(0.12))
+                #else
+                if #available(iOS 26.0, *) {
+                    Capsule().fill(Color.primary.opacity(0.12))
+                        .glassEffect(moving ? .regular : .identity, in: .capsule)
+                        .glassEffectID("navigation-selection", in: namespace)
+                        .glassEffectTransition(.identity)
+                } else {
+                    Capsule().fill(Color.accentColor.opacity(0.14))
+                }
+                #endif
             }
         }
         // Match the whole rendered surface, not just its clear input view.
@@ -129,6 +193,7 @@ public struct PlatformTabSelectionIndicator: View {
 /// navigation state, window insets and edge-drag resizing.
 public struct PlatformNavigationRail: View {
     @Namespace private var selectionGlass
+    @State private var activations: [String: Int] = [:]
     public let items: [PlatformNavigationItem]
     public let selectedID: String
     public let expanded: Bool
@@ -156,7 +221,7 @@ public struct PlatformNavigationRail: View {
     }
 
     public var body: some View {
-        PlatformAnimatedTabSelection(selectedID: selectedID) { displayedID, moving in
+        PlatformAnimatedTabSelection(selectedID: settingsSelected ? settingsAccessibilityID : selectedID) { displayedID, moving in
             PlatformNavigationGlassContainer { railContents(selectedID: displayedID, moving: moving).padding(5) }
                 .platformGlassSurface(in: Capsule(), variant: .clear)
                 .accessibilityElement(children: .contain)
@@ -169,11 +234,13 @@ public struct PlatformNavigationRail: View {
         VStack(spacing: 2) {
             ForEach(items) { item in
                 let selected = item.id == selectedID
-                Button { onSelect(item.id) } label: {
+                Button {
+                    activations[item.id, default: 0] &+= 1
+                    onSelect(item.id)
+                } label: {
                     HStack(spacing: 10) {
-                        Image(systemName: item.symbol)
-                            .font(.system(size: 17, weight: selected ? .semibold : .medium))
-                            .frame(width: 40, height: 40)
+                        PlatformTabSymbol(symbol: item.symbol, selected: selected,
+                                          activation: activations[item.id, default: 0])
                         if expanded {
                             Text(item.title)
                                 .font(.system(size: 14, weight: selected ? .semibold : .medium))
@@ -203,11 +270,14 @@ public struct PlatformNavigationRail: View {
                 .padding(.horizontal, expanded ? 8 : 10)
                 .padding(.vertical, 4)
 
-            Button(action: onSettings) {
+            let selected = selectedID == settingsAccessibilityID
+            Button {
+                activations[settingsAccessibilityID, default: 0] &+= 1
+                onSettings()
+            } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 17, weight: .medium))
-                        .frame(width: 40, height: 40)
+                    PlatformTabSymbol(symbol: "gearshape", selected: selected,
+                                      activation: activations[settingsAccessibilityID, default: 0])
                     if expanded {
                         Text(settingsTitle)
                             .font(.system(size: 14, weight: .medium))
@@ -217,9 +287,9 @@ public struct PlatformNavigationRail: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 44, alignment: expanded ? .leading : .center)
                 .padding(.horizontal, expanded ? 8 : 0)
-                .foregroundStyle(settingsSelected ? Color.accentColor : .secondary)
+                .foregroundStyle(selected ? Color.accentColor : .secondary)
                 .background {
-                    if settingsSelected { Capsule().fill(Color.accentColor.opacity(0.12)) }
+                    if selected { PlatformTabSelectionIndicator(namespace: selectionGlass, moving: moving) }
                 }
                 .contentShape(Rectangle())
             }
@@ -227,8 +297,8 @@ public struct PlatformNavigationRail: View {
             .help(settingsTitle)
             .accessibilityLabel(settingsTitle)
             .accessibilityIdentifier(settingsAccessibilityID)
-            .accessibilityAddTraits(settingsSelected ? .isSelected : [])
-            .accessibilityValue(settingsSelected ? "selected" : "not-selected")
+            .accessibilityAddTraits(selected ? .isSelected : [])
+            .accessibilityValue(selected ? "selected" : "not-selected")
         }
     }
 }

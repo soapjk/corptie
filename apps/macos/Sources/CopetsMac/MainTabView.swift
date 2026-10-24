@@ -142,7 +142,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .automations: "bolt.badge.clock"
         case .scenes: "camera.macro"
         case .worktrees: "arrow.triangle.branch"
-        case .resources: "tray.full"
+        case .resources: "folder"
         case .agents: "person.2"
         case .memory: "brain.head.profile"
         case .settings: "gearshape"
