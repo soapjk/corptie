@@ -1,11 +1,13 @@
 import SwiftUI
 import CorptieClientCore
+import CorptieConversation
 
 struct PadTaskCreationRoute: Identifiable {
     let id = UUID()
     let workName: String
     let state: PadTaskCreationState
 }
+private struct PadTaskStartupRecoveryRoute: Identifiable { let id: String }
 
 struct PadTaskCreationSheet: View {
     let route: PadTaskCreationRoute
@@ -14,6 +16,7 @@ struct PadTaskCreationSheet: View {
     @Bindable var state: PadTaskCreationState
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    @State private var startupRecoveryTarget: PadTaskStartupRecoveryRoute?
 
     private var provider: Binding<String> {
         Binding(get: { state.draft.providerID }, set: { state.selectProvider($0) })
@@ -93,6 +96,12 @@ struct PadTaskCreationSheet: View {
                         }.disabled(!state.matches(connection))
                         Button("再创建一个 Task") { state.startAnother() }
                             .disabled(!state.matches(connection))
+                    } else if let taskId = state.failedTaskID {
+                        Button("启动状态与恢复") { startupRecoveryTarget = .init(id: taskId) }
+                            .disabled(!state.matches(connection))
+                        Text("Task 已保留，请在任务列表中查看，不要重复创建。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text(taskId).font(.caption2.monospaced()).textSelection(.enabled)
                     } else if state.pending != nil {
                         Button("核对创建结果") { Task { await state.reconcile(connection) } }
                             .disabled(state.checking || !state.matches(connection))
@@ -133,5 +142,18 @@ struct PadTaskCreationSheet: View {
                 : (options?.models.first(where: { $0.id == model })?.defaultReasoningLevel ?? "")
         }
         .onDisappear { state.flush() }
+        .sheet(item: $startupRecoveryTarget) { target in
+                ConversationTaskStartupRecovery(taskId: target.id, api: {
+                    guard state.matches(connection) else { throw ClientConnectionError.invalidResponse }
+                    return ClientTaskStartupAPI(transport: try await connection.transport(), route: .paired,
+                        sourceSessionId: state.sourceSessionID)
+                }, openSession: { sessionId in
+                    guard state.matches(connection) else { return }
+                    state.acceptRecovered(taskId: target.id, sessionId: sessionId)
+                    workspace.selection = sessionId
+                }, openParent: { parentId in
+                    if let sessionId = workspace.sessionIDByTaskID[parentId] { workspace.selection = sessionId }
+                })
+        }
     }
 }

@@ -38,6 +38,7 @@ final class PadTaskCreationState {
     var draft = PadTaskDraft() { didSet { scheduleSave() } }
     private(set) var pending: Pending?
     private(set) var result: ClientTaskCreationResult?
+    private(set) var failedTaskID: String?
     private(set) var options: ClientTaskCreationOptions?
     private(set) var loading = false
     private(set) var submitting = false
@@ -194,6 +195,17 @@ final class PadTaskCreationState {
               receipt.sessionId == pending.sourceSessionID else {
             notice = "创建回执不匹配，已保留原请求。"; return
         }
+        if receipt.status == "rejected" {
+            self.pending = nil; flush()
+            notice = ClientTaskStartup.failureReasonKey(receipt.errorCode)
+            return
+        }
+        if receipt.status == "failed", let value = receipt.taskResult, value.workId == workID,
+           !value.taskId.isEmpty, value.startupOperationId != nil {
+            failedTaskID = value.taskId
+            notice = "Task 已保存，但会话未启动。请查看启动状态与恢复，不要重复创建。"
+            return
+        }
         if receipt.status == "completed", let value = receipt.taskResult, value.workId == workID,
            !value.taskId.isEmpty, !value.sessionId.isEmpty {
             PadOperationNotifications.shared.complete(.init(id: "environment:\(receipt.requestId)", category: .environment,
@@ -208,6 +220,12 @@ final class PadTaskCreationState {
     func startAnother() {
         guard result != nil, !submitting else { return }
         result = nil; pending = nil; draft = PadTaskDraft(); options = nil; notice = ""; flush()
+    }
+
+    func acceptRecovered(taskId: String, sessionId: String) {
+        guard failedTaskID == taskId, !sessionId.isEmpty else { return }
+        result = .init(taskId: taskId, sessionId: sessionId, workId: workID)
+        failedTaskID = nil; notice = "Task 与配套会话已创建。"; flush()
     }
 
     func flush() {

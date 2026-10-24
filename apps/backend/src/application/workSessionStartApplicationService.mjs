@@ -43,6 +43,66 @@ export class WorkSessionStartApplicationService {
     return this.coordinator.getReceipt(input);
   }
 
+  taskStartup({ taskId, sourceSessionId }) {
+    const { task, operation } = this.#recoveryScope(taskId, sourceSessionId);
+    if (!operation) return { taskId, workId: task.work_id, parentTaskId: task.parent_task_id ?? null,
+      status: "unavailable", startupOperationId: null, sessionId: task.current_session_id ?? null, canRetry: false, error: null };
+    const view = this.coordinator.getReceipt({ taskId, startupOperationId: operation.startup_operation_id });
+    return { taskId, workId: task.work_id, parentTaskId: task.parent_task_id ?? null,
+      status: view.status, phase: operation.state, startupOperationId: operation.startup_operation_id,
+      sessionId: operation.state === "ready" ? operation.legacy_session_id : null,
+      canRetry: operation.state === "failed_compensated" && operation.compensation_state === "completed"
+        && Boolean(operation.error_retryable) && !task.archived && task.lifecycle_state !== "done"
+        && task.main_agent_id === operation.assignee_agent_id
+        && !task.deletion_status && !task.current_session_id,
+      // Do not expose host paths, Provider errors or configuration to paired clients.
+      error: view.error ? { code: view.error.code, retryable: view.error.retryable } : null };
+  }
+
+  async retryTaskStartup({ taskId, sourceSessionId, startupOperationId }) {
+    const { task, operation } = this.#recoveryScope(taskId, sourceSessionId);
+    if (typeof startupOperationId !== "string" || !startupOperationId || startupOperationId.length > 200) {
+      throw startContractError("START_REFERENCE_INVALID", "An exact failed startup operation is required.");
+    }
+    // A lost response or a concurrent click only reads the successor. It must
+    // never advance a second attempt without a new explicit user action.
+    if (operation?.startup_operation_id !== startupOperationId) return this.taskStartup({ taskId, sourceSessionId });
+    if (!this.taskStartup({ taskId, sourceSessionId }).canRetry) {
+      throw startContractError("START_RETRY_UNAVAILABLE", "Startup is not safely recoverable; inspect its current state first.");
+    }
+    try {
+      await this.start({ taskId, sourceSessionId, assigneeAgentId: operation.assignee_agent_id,
+        expectedTaskVersion: Number(task.resource_version), providerId: operation.provider_id,
+        idempotencyKey: `retry:${startupOperationId}`, title: task.title,
+        ...(operation.requested_model != null ? { model: operation.requested_model } : {}),
+        ...(operation.requested_reasoning_level != null ? { reasoningLevel: operation.requested_reasoning_level } : {}),
+        // Recovery establishes a Session only; it never resends a failed prompt.
+        dispatchInitialTurn: false });
+    } catch (error) {
+      if (error.code !== "START_ALREADY_IN_PROGRESS" && error.startup?.status !== "failed") throw error;
+    }
+    return this.taskStartup({ taskId, sourceSessionId });
+  }
+
+  #recoveryScope(taskId, sourceSessionId) {
+    const task = this.store.getTask(taskId);
+    const source = resolveSourceSession(this.store, sourceSessionId);
+    if (!source || source.logical.archived || source.logical.activeBinding?.state !== "active") {
+      throw startContractError("SOURCE_SESSION_NOT_FOUND", "The source Session is not active.");
+    }
+    if (!task || task.work_id !== source.session.workId
+      || source.session.sessionKind === "worker" && ![task.id, task.parent_task_id].includes(source.session.taskId)) {
+      throw startContractError("TASK_OUTSIDE_WORK", "Task is outside the source Session scope.");
+    }
+    const work = this.store.getWork(task.work_id);
+    if (!(work?.contributorAgentIds ?? []).includes(task.main_agent_id)) {
+      throw startContractError("AGENT_OUTSIDE_WORK", "The Task assignee is no longer a Work contributor.");
+    }
+    const operation = this.store.selectOne(`SELECT * FROM work_session_startup_operations
+      WHERE task_id=? ORDER BY rowid DESC LIMIT 1`, [taskId]);
+    return { task, operation };
+  }
+
   getSessionBinding(logicalSessionId) {
     try {
       return this.coordinator.getSessionBinding(logicalSessionId);

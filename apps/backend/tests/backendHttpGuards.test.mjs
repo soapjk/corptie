@@ -14,6 +14,11 @@ function check(guard, path, method = "GET", overrides = {}) {
   return { blocked, response: responses[0] };
 }
 
+test("startup recovery status is preview-readable while retries remain forbidden", () => {
+  assert.equal(check(rejectDevelopmentPreviewWrite, "/tasks/task:one/startup-recovery", "GET").blocked, false);
+  assert.equal(check(rejectDevelopmentPreviewWrite, "/tasks/task:one/startup-recovery", "POST").blocked, true);
+});
+
 test("local directory diagnosis is preview-readable but repairs remain forbidden", () => {
   assert.equal(check(rejectDevelopmentPreviewWrite, "/works/work:test/local-state").blocked, false);
   assert.equal(check(rejectDevelopmentPreviewWrite, "/works/work:test/local-state", "POST").blocked, true);

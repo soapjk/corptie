@@ -5,6 +5,41 @@ import CorptieClientCore
 
 @MainActor @Suite(.serialized)
 struct PadTaskCreationTests {
+    @Test func savedFailureStaysOnOriginalTaskAndRecoveryIsDurableWithoutAnotherCreate() async throws {
+        let (state, connection, defaults, name) = try await fixture()
+        defer { defaults.removePersistentDomain(forName: name) }
+        CreationProtocol.mode = "unknown"
+        await state.submit(connection)
+        let requestID = try #require(state.pending?.input.requestId)
+        let data = try JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "requestId": requestID,
+            "sessionId": "session:a", "kind": "create_task", "status": "failed", "updatedAt": "now",
+            "taskResult": ["taskId": "task:saved", "sessionId": "", "workId": "work:a", "startupOperationId": "startup:failed"]])
+        state.acceptPushed(try JSONDecoder().decode(ClientCommandReceipt.self, from: data))
+        #expect(state.failedTaskID == "task:saved")
+        #expect(!state.canSubmit && state.result == nil)
+        state.acceptRecovered(taskId: "other", sessionId: "new")
+        #expect(state.result == nil)
+        state.acceptRecovered(taskId: "task:saved", sessionId: "session:recovered")
+        let restored = PadTaskCreationState(workID: "work:a", sourceSessionID: "session:a", connection: connection, defaults: defaults)
+        #expect(restored.result?.taskId == "task:saved")
+        #expect(restored.result?.sessionId == "session:recovered")
+        #expect(CreationProtocol.posts == 1)
+    }
+
+    @Test func provenRejectionUnlocksDraftButUnknownOutcomeNeverDoes() async throws {
+        let (state, connection, defaults, name) = try await fixture()
+        defer { defaults.removePersistentDomain(forName: name) }
+        CreationProtocol.mode = "unknown"
+        await state.submit(connection)
+        let requestID = try #require(state.pending?.input.requestId)
+        let data = try JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "requestId": requestID,
+            "sessionId": "session:a", "kind": "create_task", "status": "rejected", "updatedAt": "now", "errorCode": "PARENT_WORKTREE_DIRTY"])
+        state.acceptPushed(try JSONDecoder().decode(ClientCommandReceipt.self, from: data))
+        #expect(state.pending == nil && state.canSubmit)
+        #expect(state.notice.contains("未提交改动"))
+        #expect(CreationProtocol.posts == 1)
+    }
+
     private func fixture() async throws -> (PadTaskCreationState, PadConnection, UserDefaults, String) {
         CreationProtocol.reset()
         let name = "pad-task-create-\(UUID().uuidString)"

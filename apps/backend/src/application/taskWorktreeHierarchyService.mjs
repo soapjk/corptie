@@ -4,15 +4,17 @@ import { realpath } from "node:fs/promises";
 import { taskHierarchyError as error } from "../store/repositories/taskHierarchyRepository.mjs";
 import { TaskIntegrationAcceptanceService, hierarchyDigest } from "./taskIntegrationAcceptanceService.mjs";
 import { sessionHasActiveRun } from "../utils/sessionPresentation.mjs";
+import { gitScalarOutput } from "../utils/gitScalarOutput.mjs";
 
 const execFile = promisify(execFileCallback);
 async function runGit(path, args) {
-  return (await execFile("git", ["-C", path, ...args], { encoding:"utf8", timeout:15000, maxBuffer:1024*1024 })).stdout.trim();
+  return (await execFile("git", ["-C", path, ...args], { encoding:"utf8", timeout:15000, maxBuffer:1024*1024 })).stdout;
 }
 
 // Project capability; never depends on an Agent Provider or its configuration.
 export class TaskWorktreeHierarchyService {
   constructor({ store, execGit = runGit }) { this.store = store; this.git = execGit; }
+  async scalar(path, args) { return gitScalarOutput(await this.git(path, args)); }
 
   async resolveOperationScope(repositoryId, input, inspection) {
     const scope=input.taskScope;
@@ -50,7 +52,7 @@ export class TaskWorktreeHierarchyService {
       const published=await Promise.all(input.sourceWorktreeIds.map(async id=>{
         const tree=inspection.worktrees.find(w=>w.worktreeId===id);
         if(!tree?.branchName) throw error("WORKTREE_STATE_CHANGED");
-        return Boolean(await this.git(tree.path,["for-each-ref","--format=%(upstream)",`refs/heads/${tree.branchName}`]));
+        return Boolean(await this.scalar(tree.path,["for-each-ref","--format=%(upstream)",`refs/heads/${tree.branchName}`]));
       }));
       syncStrategy=published.some(Boolean) ? "merge" : "rebase";
     }
@@ -90,7 +92,7 @@ export class TaskWorktreeHierarchyService {
     // do not silently incorporate commits made after the reviewed candidate.
     if(["sync_children","sync_main"].includes(scope.action)) {
       const target=plan.items.find(item=>item.worktreeId===plan.targetWorktreeId);
-      if(!target || await this.git(target.path,["rev-parse","HEAD"])!==plan.baseHeadOid) throw error("WORKTREE_STATE_CHANGED");
+      if(!target || await this.scalar(target.path,["rev-parse","HEAD"])!==plan.baseHeadOid) throw error("WORKTREE_STATE_CHANGED");
       const inventory=this.store.getGitWorktree(target.worktreeId);
       if(!inventory || inventory.path!==target.path || inventory.branchName!==target.branchName) throw error("TASK_DELIVERY_BINDING_CHANGED");
       await this.assertClean(inventory);
@@ -199,14 +201,14 @@ export class TaskWorktreeHierarchyService {
   async assertClean(inventory) {
     const path = inventory.canonicalPath || inventory.path;
     const repository = this.store.getGitRepository(inventory.repositoryId);
-    const common = await this.git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    const common = await this.scalar(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
     if (!repository || await realpath(common) !== await realpath(repository.commonGitDirCanonicalPath)) {
       throw error("TASK_DELIVERY_BINDING_CHANGED");
     }
     const status = await this.git(path, ["status", "--porcelain=v1", "--untracked-files=normal"]);
     if (status) throw error("PARENT_WORKTREE_DIRTY", "Commit or handle parent Worktree changes before creating a child.");
     for (const ref of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD"]) {
-      const result = await this.git(path, ["rev-parse", "--verify", "--quiet", ref]).catch(cause => {
+      const result = await this.scalar(path, ["rev-parse", "--verify", "--quiet", ref]).catch(cause => {
         if (cause.code === 1 || cause.code === 128) return "";
         throw cause;
       });
@@ -229,11 +231,11 @@ export class TaskWorktreeHierarchyService {
     if (parent.archived || parent.lifecycle_state === "done" || parent.deletion_status) throw error("TASK_PARENT_UNAVAILABLE");
     await this.assertClean(inventory);
     const path = inventory.canonicalPath || inventory.path;
-    const baseCommitOid = await this.git(path, ["rev-parse", "HEAD"]);
-    const baseTreeOid = await this.git(path, ["rev-parse", `${baseCommitOid}^{tree}`]);
+    const baseCommitOid = await this.scalar(path, ["rev-parse", "HEAD"]);
+    const baseTreeOid = await this.scalar(path, ["rev-parse", `${baseCommitOid}^{tree}`]);
     if (!/^[a-f0-9]{40,64}$/i.test(baseCommitOid) || !/^[a-f0-9]{40,64}$/i.test(baseTreeOid)) throw error("START_SOURCE_IDENTITY_UNAVAILABLE");
     await this.assertClean(inventory);
-    if (await this.git(path, ["rev-parse", "HEAD"]) !== baseCommitOid) throw error("TASK_HIERARCHY_CHANGED");
+    if (await this.scalar(path, ["rev-parse", "HEAD"]) !== baseCommitOid) throw error("TASK_HIERARCHY_CHANGED");
     const base = {version:1,kind:"parent",rootTaskId:parent.id,parentTaskId:parent.id,
       parentWorktreeId:binding.worktree_id,parentBindingRevision:binding.binding_revision,
       hierarchyRevision:parent.hierarchy_revision,baseCommitOid,baseTreeOid};

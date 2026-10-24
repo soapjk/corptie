@@ -86,6 +86,11 @@ export function startClientDeviceGateway({
         open: input => workDiscussionService.open(input)
       },
       taskCreation: {
+        startup: (sourceSessionId, taskId, startupOperationId = null) => {
+          const input = { sourceSessionId: requireSessionReference(sourceSessionId).logicalSessionId, taskId, startupOperationId };
+          return startupOperationId == null ? workSessionStartApplicationService.taskStartup(input)
+            : workSessionStartApplicationService.retryTaskStartup(input);
+        },
         options: async (_id, selectedProviderId) => {
           const required = [AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE, AGENT_PROVIDER_CAPABILITIES.WORKSPACE_BIND,
             AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME, AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND];

@@ -53,7 +53,8 @@ async function createTaskAndSessionOnce({
   };
   let persisted;
   if (normalizedTaskInput.parentTaskId && !workService.store.getTask(normalizedTaskInput.id)) {
-    await new TaskWorktreeHierarchyService({ store: workService.store }).validateCreate(normalizedTaskInput, { expectedParentResourceVersion });
+    await new TaskWorktreeHierarchyService({ store: workService.store }).validateCreate(normalizedTaskInput, { expectedParentResourceVersion })
+      .catch(error => { error.taskCreationRejectedBeforePersistence = true; throw error; });
   }
   if (persistTask) {
     revalidate();
@@ -116,11 +117,20 @@ async function createTaskAndSessionOnce({
       idempotencyKey: `task-create:${operationKey}`,
       sourceSessionId: source,
       dispatchInitialTurn: false
+    }).catch(error => {
+      if (error.startup?.status === "failed") {
+        error.taskId = taskId;
+        error.startupOperationId = error.startup.startupOperationId;
+      }
+      throw error;
     });
     if (started?.status !== "ready") {
       const error = coded(started?.error?.code ?? "START_NOT_READY", started?.error?.message ?? "Task creation did not produce a ready Session binding.", 409);
       error.creationPending = started?.status === "pending";
       error.retryable = error.creationPending || started?.error?.retryable === true;
+      error.taskId = taskId;
+      error.startupOperationId = started?.startupOperationId;
+      error.stage = started?.error?.stage;
       throw error;
     }
     if (!started?.session) {

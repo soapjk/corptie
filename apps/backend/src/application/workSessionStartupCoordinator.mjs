@@ -760,7 +760,7 @@ export class WorkSessionStartupCoordinator {
         );
         if (this.store.db.getRowsModified() !== 1) return;
         claimed = true;
-        this.#insertAudit(current, "startup.failed", current.resource_version, nextVersion, { errorCode });
+        this.#insertAudit(current, "startup.failed", current.resource_version, nextVersion, { errorCode, causeCode: error.causeCode ?? null });
         this.#insertAudit({ ...current, resource_version: nextVersion }, "startup.compensation_started", nextVersion, nextVersion, {});
       });
       current = this.#operation(current.startup_operation_id);
@@ -1127,10 +1127,15 @@ function compensationFor(operation) {
 
 function phaseFailure(error, fallbackCode, stage) {
   if (!error || typeof error !== "object") error = new Error(String(error));
-  if (!String(error.code ?? "").startsWith("START_")) error.code = fallbackCode;
+  const actionable = new Set(["PARENT_WORKTREE_DIRTY", "TASK_HIERARCHY_BUSY", "PARENT_WORKTREE_REQUIRED",
+    "TASK_PARENT_UNAVAILABLE", "TASK_DELIVERY_BINDING_CHANGED", "TASK_PARENT_INVALID", "TASK_HIERARCHY_CHANGED"]);
+  if (!String(error.code ?? "").startsWith("START_") && !actionable.has(error.code)) {
+    error.causeCode = error.code ?? null;
+    error.code = fallbackCode;
+  }
   error.stage ??= stage;
   error.statusCode ??= 409;
-  error.retryable ??= true;
+  error.retryable ??= !["TASK_PARENT_INVALID", "TASK_PARENT_UNAVAILABLE", "TASK_DELIVERY_BINDING_CHANGED", "PARENT_WORKTREE_REQUIRED"].includes(error.code);
   return error;
 }
 

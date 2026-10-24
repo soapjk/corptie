@@ -32,6 +32,7 @@ struct PadWorkOutline: View {
     @State private var searchText = ""
     @State private var showingArchived = false
     @State private var selectedArchivedTask: ClientTask?
+    @State private var startupRecoveryTask: ClientTask?
     @State private var fullyExpandedWorkIDs = Set<String>()
     @FocusState private var searchFocused: Bool
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -114,6 +115,17 @@ struct PadWorkOutline: View {
         .scrollIndicators(.automatic)
         .safeAreaInset(edge: .top, spacing: 0) { outlineToolbar }
         .background(WorkbenchCanvasSurface.color)
+        .sheet(item: $startupRecoveryTask) { task in
+            ConversationTaskStartupRecovery(taskId: task.id, api: {
+                guard let source = workspace.sessions.first(where: { $0.workId == task.workId && $0.sessionKind == "workChat" })
+                    ?? workspace.sessions.first(where: { $0.workId == task.workId && $0.taskId == (task.parentTaskId ?? task.id) }) else {
+                    throw ClientConnectionError.invalidResponse
+                }
+                return ClientTaskStartupAPI(transport: try await connection.transport(), route: .paired, sourceSessionId: source.id)
+            }, openSession: onOpenSession, openParent: { parentId in
+                if let sessionId = workspace.sessionIDByTaskID[parentId] { onOpenSession(sessionId) }
+            })
+        }
         .onChange(of: workspace.works, initial: true) { _, _ in rebuildOrder() }
         .onChange(of: workspace.tasks) { _, _ in rebuildOrder() }
         .onChange(of: expandedParentIDs) { _, _ in rebuildOrder() }
@@ -556,6 +568,9 @@ struct PadWorkOutline: View {
         .accessibilityValue(activity.labelKey)
         .accessibilityIdentifier("work-task-\(task.id)")
         .contextMenu {
+            if sessionID == nil && task.deletionStatus == nil {
+                Button("启动状态与恢复", systemImage: "arrow.clockwise") { startupRecoveryTask = task }
+            }
             if task.hierarchy?.canCreateChild == true {
                 Button("新建子任务",systemImage:"plus") {createChild(task)}
             }
