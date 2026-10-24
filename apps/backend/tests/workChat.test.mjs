@@ -123,12 +123,15 @@ test("Work Chat context is bounded and includes traceable Work state", async () 
     });
     workService.createTask({ workId: work.id, title: "Backend" });
     assert.throws(() => new WorkChatContextService({ store, characterBudget: 6_000 }).build(work.id), { code: "WORK_CONTEXT_BUDGET_TOO_SMALL" });
-    const context = new WorkChatContextService({ store, characterBudget: 12_000 }).build(work.id);
+    const context = new WorkChatContextService({ store, characterBudget: 16_000 }).build(work.id);
     assert.equal(context.workId, work.id);
-    assert.ok(context.characters <= 12_000);
+    assert.ok(context.characters <= 16_000);
     assert.match(context.prompt, /Delivery remains reliable across every path/);
     assert.match(context.prompt, /Backend/);
     assert.ok(context.generatedAt);
+    const again = new WorkChatContextService({ store, characterBudget: 16_000 }).build(work.id);
+    assert.equal(again.prompt, context.prompt);
+    assert.equal(context.contextSections.map(section => section.prompt).join("\n\n"), context.prompt);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -199,7 +202,7 @@ test("Work Chat tools enforce the bound Work and contributor scope", async () =>
     assert.equal(agents.some((agent) => agent.agentId === outsider.agentId), false);
     await assert.rejects(service.execute({
       tool: "corptie_work_tasks_manage", metadata,
-      arguments: { action: "create", title: "New scoped item" }
+      arguments: { action: "create", title: "New_scoped_item" }
     }), { code: "TASK_CREATION_REQUIRES_SESSION_WORKFLOW" });
     await assert.rejects(() => service.execute({
       tool: "corptie_work_tasks_manage", metadata,

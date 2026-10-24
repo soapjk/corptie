@@ -417,12 +417,14 @@ const providerEventPublisher = createProviderEventPublisher({
   publishDeviceTimeline: (sessionId) => clientDeviceGateway?.events.publishTimeline(sessionId)
 });
 const { publishProviderEventOutbox, notifySessionEventListeners } = providerEventPublisher;
+let observeSessionContextEvent = () => {};
 const providerEventIngestion = new ProviderEventIngestionService({
   store,
   resolveBinding: resolveProviderEventBinding,
   project: (context) => providerEventProjector.project(context),
   onCommitted: publishProviderEventOutbox,
   observe: (context) => {
+    observeSessionContextEvent(context);
     const observation = turnObservability.ingestProviderEvent(context);
     providerTurnResponseWatchdog?.observe(context);
     turnExecutionProbe?.observe(context);
@@ -1267,6 +1269,7 @@ const sessionApplicationService = createSessionApplicationComposition({
   ensureCollaborationAgentForSession, ensureLogicalRouteForProviderSession,
   sessionWithLogicalWorkspace, collaborationCore, emitEvent
 });
+observeSessionContextEvent = (context) => sessionApplicationService.observeSessionContextEvent(context);
 const { interruptUnifiedSession, respondUnifiedSessionApproval, respondUnifiedSessionUserInput } = createSessionInteractionCommands({
   store, requireSessionReference, sessionApplicationService, providerEventIngestion,
   handleCommittedProviderTerminalLifecycle, sendUnifiedSessionMessage, emitEvent, now,

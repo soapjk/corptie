@@ -217,6 +217,8 @@ function providerEnvelope(binding, event) {
 }
 
 function codexEventType(method, item, turn) {
+  if (method === "thread/compacted"
+    || (method === "item/completed" && item?.type === "contextCompaction")) return "context.compacted";
   if (method === "turn/plan/updated") return "plan.updated";
   if (method === "turn/started") return "turn.started";
   if (method === "turn/completed") {

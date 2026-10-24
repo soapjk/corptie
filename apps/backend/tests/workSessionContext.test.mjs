@@ -5,6 +5,33 @@ import {
   mergeWorkerSessionContexts,
   WORKER_SESSION_CONTEXT_LIMITS
 } from "../src/application/workSessionContext.mjs";
+import { SessionContextDelivery } from "../src/application/sessionContextDelivery.mjs";
+
+test("Task and Artifact updates remain independently deliverable after validation", () => {
+  const session = { id: "s", sessionKind: "worker", taskId: "t", workId: "w" };
+  const task = { id: "t", work_id: "w", title: "Task", description: "Original scope",
+    acceptance_criteria: "Complete", verification_criteria: "Verify", revision: 1, resource_version: 1 };
+  const build = (title) => mergeWorkerSessionContexts({
+    baseContext: buildWorkSessionContext({ session, task,
+      artifactIndex: { items: [{ artifactId: "a", title, required: false }] } }),
+    directUserIntentContext: { prompt: "<direct>current</direct>" }
+  });
+  const reference = { sessionId: "s", providerId: "p", providerSessionId: "native", bindingId: "b" };
+  const policy = { mode: "append" }, cache = new SessionContextDelivery();
+  const first = build("Artifact one");
+  assert.equal(first.contextSections.filter(s => s.prompt).map(s => s.prompt).join("\n\n"), first.prompt);
+  cache.prepare(reference, first, policy).commit();
+  const changedIndex = cache.prepare(reference, build("Artifact two"), policy);
+  assert.match(changedIndex.context.prompt, /Artifact two/);
+  assert.doesNotMatch(changedIndex.context.prompt, /Original scope|authoritative Task binding/);
+  assert.match(changedIndex.context.prompt, /<direct>current<\/direct>/);
+  changedIndex.commit();
+  task.description = "Revised scope"; task.revision = 2;
+  const revised = cache.prepare(reference, build("Artifact two"), policy);
+  assert.match(revised.context.prompt, /Revised scope/);
+  assert.match(revised.context.prompt, /"revision":2/);
+  assert.doesNotMatch(revised.context.prompt, /Artifact two/);
+});
 
 function workerContext() {
   return buildWorkSessionContext({

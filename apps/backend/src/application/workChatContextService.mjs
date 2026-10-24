@@ -105,7 +105,9 @@ export class WorkChatContextService {
     const totalLimits = ARTIFACT_CONTEXT_DEFAULT_LIMITS.workChatSnapshot;
     // Compact JSON materially reduces both serialization work and context
     // bytes at the 80/80 boundary; structure, not indentation, is the contract.
-    let raw = JSON.stringify(snapshot);
+    // The sampling clock is metadata, not a change to Work state.
+    const serializeSnapshot = () => JSON.stringify({ ...snapshot, generatedAt: undefined });
+    let raw = serializeSnapshot();
     const omittedForTotal = { artifacts: 0, tasks: 0, contributors: 0, workspaces: 0 };
     for (const [field, omissionField] of [
       ["tasks", "tasks"], ["artifacts", "artifacts"],
@@ -118,14 +120,14 @@ export class WorkChatContextService {
       snapshot[field] = kept;
       snapshot.omissions[omissionField] += omitted;
       omittedForTotal[omissionField] += omitted;
-      raw = JSON.stringify(snapshot);
+      raw = serializeSnapshot();
     }
     while (!snapshotFits(prefix, raw, totalLimits, this.characterBudget)) {
       if (!shrinkWork(snapshot.work)) {
         throw serviceError("WORK_CONTEXT_BUDGET_TOO_SMALL", "Work Chat context header exceeds the configured hard budget.");
       }
       snapshot.omissions.workTextTruncated = true;
-      raw = JSON.stringify(snapshot);
+      raw = serializeSnapshot();
     }
     const prompt = `${prefix}${raw}`;
     const truncated = Object.values(snapshot.omissions).some((value) =>
@@ -133,6 +135,10 @@ export class WorkChatContextService {
     );
     return {
       prompt,
+      contextSections: [
+        { id: "work-rules", prompt: header, reusable: true },
+        { id: "work-snapshot", prompt: `Work snapshot:\n${raw}`, reusable: true }
+      ],
       workId: work.id,
       generatedAt: snapshot.generatedAt,
       characterBudget: this.characterBudget,

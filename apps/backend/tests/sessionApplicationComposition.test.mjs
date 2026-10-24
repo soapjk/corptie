@@ -207,7 +207,7 @@ test("Worker message context retains user-saved Global preferences independently
     mcpAssignmentRevisionForAgent: () => null,
     resolveContextReferences: async () => null,
     memoryRecallService: {
-      globalPreferences: () => globalRecall,
+      applicablePreferences: () => globalRecall,
       hasStartupRecall: () => true,
       turn: async () => ({ id: "recall:ordinary", mode: "skipped", memories: [] }),
       markInjection: (recall, status) => statuses.push([recall.id, status])
