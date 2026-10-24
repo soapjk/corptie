@@ -1,32 +1,42 @@
 import Foundation
+import Observation
 
 /// Synchronous local selection authority. Selecting a row never starts I/O;
 /// transports observe the committed identity afterwards.
 @MainActor
+@Observable
 final class SessionSelectionController: ObservableObject {
-    @Published private(set) var selectedSessionID: String?
-    @Published private(set) var selectedSessionRevision: UInt64 = 0
-    private(set) var generation: UInt64 = 0
+    @ObservationIgnored @Published private(set) var selectedSessionID: String?
+    @ObservationIgnored @Published private(set) var selectedSessionRevision: UInt64 = 0
+    @ObservationIgnored private(set) var generation: UInt64 = 0
+
+    /// SwiftUI tracks this read through BackendClient computed selectors. Keep
+    /// the Combine publishers for explicit subscribers, without broadcasting
+    /// selection to every observer of the shared BackendClient.
+    var presentationSessionID: String? {
+        access(keyPath: \.presentationSessionID)
+        return selectedSessionID
+    }
 
     @discardableResult
     func select(_ sessionID: String) -> UInt64 {
         guard selectedSessionID != sessionID else { return generation }
         generation &+= 1
-        selectedSessionID = sessionID
+        withMutation(keyPath: \.presentationSessionID) { selectedSessionID = sessionID }
         return generation
     }
 
     func clear() {
         guard selectedSessionID != nil else { return }
         generation &+= 1
-        selectedSessionID = nil
+        withMutation(keyPath: \.presentationSessionID) { selectedSessionID = nil }
     }
 
     /// The Session value remains in SessionIndexStore/AppStateStore. This
     /// revision only invalidates the selected surface when that one row changes.
     func notifySelectedSessionChanged(_ sessionID: String) {
         guard selectedSessionID == sessionID else { return }
-        selectedSessionRevision &+= 1
+        withMutation(keyPath: \.presentationSessionID) { selectedSessionRevision &+= 1 }
     }
 }
 

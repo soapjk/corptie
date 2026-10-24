@@ -47,19 +47,14 @@ public struct ConsoleWorkTitle: View {
 private struct ConsoleFlowingGradientWorkTitle: View {
     let title: String
     let animates: Bool
-    @State private var isVisible = false
+    @State private var progress: CGFloat = 0
 
     @ViewBuilder
     var body: some View {
         if animates {
-            TimelineView(.animation(
-                minimumInterval: WorkActivityAnimation.frameInterval,
-                paused: !isVisible
-            )) { context in
-                flowingTitle(progress: ConsoleWorkFlowingGradientPolicy.progress(at: context.date))
-            }
-            .onAppear { isVisible = true }
-            .onDisappear { isVisible = false }
+            flowingTitle(progress: progress)
+                .onAppear { progress = 1 }
+                .onDisappear { progress = 0 }
         } else {
             Text(title)
                 .foregroundStyle(staticGradient)
@@ -74,6 +69,10 @@ private struct ConsoleFlowingGradientWorkTitle: View {
                     seamlessGradient
                         .frame(width: proxy.size.width * 2, height: proxy.size.height)
                         .offset(x: proxy.size.width * (progress - 1))
+                        // Let SwiftUI interpolate this paint-only offset; a
+                        // TimelineView would rebuild the text/mask every tick.
+                        .animation(.linear(duration: WorkActivityAnimation.duration)
+                            .repeatForever(autoreverses: false), value: progress)
                 }
                 .mask(Text(title))
             }

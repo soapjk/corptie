@@ -86,6 +86,10 @@ final class SessionTimelineRepository {
         residentStates.pin(sessionIDs)
     }
 
+    func setPinned(_ pinned: Bool, for sessionID: String) {
+        residentStates.setPinned(pinned, for: sessionID)
+    }
+
     func prune(to validSessionIDs: Set<String>) {
         residentStates.prune(to: validSessionIDs)
     }

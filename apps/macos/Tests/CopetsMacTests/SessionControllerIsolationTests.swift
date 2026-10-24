@@ -1,4 +1,5 @@
 import Combine
+import Observation
 import XCTest
 @testable import CorptieMac
 
@@ -19,16 +20,27 @@ final class SessionControllerIsolationTests: XCTestCase {
         withExtendedLifetime(cancellable) {}
     }
 
-    func testSelectionStillInvalidatesComputedSelectedSessionSurface() {
+    func testSelectionInvalidatesOnlyReadersOfComputedSelectedSession() {
         let client = BackendClient()
         var backendInvalidations = 0
         let cancellable = client.objectWillChange.sink {
             backendInvalidations += 1
         }
 
+        let selectionChanged = expectation(description: "computed Session reader invalidated")
+        withObservationTracking {
+            _ = client.selectedSession
+        } onChange: {
+            selectionChanged.fulfill()
+        }
         client.sessionSelectionController.select("session:selection-isolation")
 
-        XCTAssertEqual(backendInvalidations, 1)
+        XCTAssertEqual(backendInvalidations, 0)
+        wait(for: [selectionChanged], timeout: 1)
+        let metadataChanged = expectation(description: "selected Session metadata reader invalidated")
+        withObservationTracking { _ = client.selectedSession } onChange: { metadataChanged.fulfill() }
+        client.sessionSelectionController.notifySelectedSessionChanged("session:selection-isolation")
+        wait(for: [metadataChanged], timeout: 1)
         withExtendedLifetime(cancellable) {}
     }
 

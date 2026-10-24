@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import CorptieClientCore
 
 enum SessionListTitlePolicy {
     static let maximumVisualWidth = 32
@@ -44,6 +45,39 @@ enum SessionListTitlePolicy {
     }
 }
 
+/// Immutable lookup built once at the Session collection update boundary.
+/// Selection uses collection order; activity deliberately uses the latest
+/// active fallback, matching the existing two presentation policies.
+struct TaskSessionLookup {
+    private var byID: [String: TaskSession] = [:]
+    private var firstActiveByTaskID: [String: TaskSession] = [:]
+    private var latestActiveByTaskID: [String: TaskSession] = [:]
+
+    init(sessions: [TaskSession] = []) {
+        for session in sessions {
+            byID[session.id] = session
+            guard session.archived != true, let taskID = session.taskId else { continue }
+            if firstActiveByTaskID[taskID] == nil { firstActiveByTaskID[taskID] = session }
+            if let previous = latestActiveByTaskID[taskID], previous.updatedAt >= session.updatedAt { continue }
+            latestActiveByTaskID[taskID] = session
+        }
+    }
+
+    func session(for task: CorptieTask) -> TaskSession? {
+        if let id = task.currentSessionId, let current = byID[id],
+           current.taskId == task.id, current.archived != true { return current }
+        return firstActiveByTaskID[task.id]
+    }
+
+    func activity(for task: CorptieTask) -> TaskSessionActivity {
+        let currentID = task.currentSessionId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let bound = currentID.flatMap { byID[$0] } ?? latestActiveByTaskID[task.id]
+        return TaskSessionActivity.resolve(hasBinding: currentID?.isEmpty == false || bound != nil,
+            sessionExecutionStatus: bound?.executionTaskStatus.rawValue,
+            taskExecutionStatus: task.executionStatus)
+    }
+}
+
 @MainActor
 final class SessionRowModel: ObservableObject, Identifiable {
     let id: String
@@ -83,6 +117,8 @@ final class SessionIndexStore: ObservableObject {
     @Published private(set) var cardRevision: UInt64 = 0
     private var rowsByID: [String: SessionRowModel] = [:]
     private var isReordering = false
+    private(set) var contentRevision: UInt64 = 0
+    private(set) var taskSessionLookup = TaskSessionLookup()
 
     var sessions: [TaskSession] {
         orderedIDs.compactMap { rowsByID[$0]?.session }
@@ -136,6 +172,10 @@ final class SessionIndexStore: ObservableObject {
     }
 
     func apply(_ patch: SessionCollectionPatch, authoritativeSessions: [TaskSession]) {
+        if patch.hasStructuralChanges || !patch.updated.isEmpty {
+            taskSessionLookup = TaskSessionLookup(sessions: authoritativeSessions)
+            contentRevision &+= 1
+        }
         if isReordering {
             applyContentOnly(authoritativeSessions)
             return

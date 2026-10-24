@@ -7,6 +7,20 @@ import Testing
 @MainActor
 struct ConsoleWindowSplitViewTests {
     @Test
+    func hiddenHostsKeepStateAndReceiveLatestContentOnReactivation() {
+        let controller = ConsoleSplitController(mode: .workOutline, sidebar: Text("One"), detail: Text("One"))
+        controller.loadViewIfNeeded()
+        controller.update(mode: .workOutline, isActive: false, sidebar: Text("Inactive"), detail: Text("Inactive"))
+        let before = controller.contentUpdateCount
+        for _ in 0..<100 {
+            controller.update(mode: .workOutline, isActive: false, sidebar: Text("Hidden"), detail: Text("Hidden"))
+        }
+        #expect(controller.contentUpdateCount == before)
+        controller.update(mode: .workOutline, isActive: true, sidebar: Text("Latest"), detail: Text("Latest"))
+        #expect(controller.contentUpdateCount == before + 1)
+    }
+
+    @Test
     func embeddedWindowShellPreservesFullHeightSidebar() throws {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),

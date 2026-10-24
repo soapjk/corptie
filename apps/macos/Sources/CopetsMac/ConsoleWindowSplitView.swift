@@ -106,6 +106,7 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
     private let detailController: ConsolePaneController<Detail>
     private var mode: ConsoleNavigationMode
     private var isActive = true
+    private(set) var contentUpdateCount = 0
     private var restoredWidth = false
     private var isRestoring = false
     private var saveWork: DispatchWorkItem?
@@ -153,8 +154,13 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
     }
 
     func update(mode: ConsoleNavigationMode, isActive: Bool, sidebar: Sidebar, detail: Detail) {
-        sidebarController.host.rootView = sidebar
-        detailController.host.rootView = detail
+        // Commit the transition to inactive once, then leave retained hidden
+        // hosts alone. Reactivation always receives the latest root values.
+        if isActive || self.isActive {
+            sidebarController.host.rootView = sidebar
+            detailController.host.rootView = detail
+            contentUpdateCount += 1
+        }
         self.isActive = isActive
         if self.mode != mode {
             saveWidth()
