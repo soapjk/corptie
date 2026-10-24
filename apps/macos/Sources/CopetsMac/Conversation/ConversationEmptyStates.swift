@@ -5,6 +5,32 @@ import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct ConversationWelcomeView: View {
+    let isAssistant: Bool
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: isAssistant ? "bubble.left.and.bubble.right" : "text.bubble")
+                .font(.system(size: 28, weight: .light))
+                .foregroundStyle(CorptiePalette.softBlue)
+                .accessibilityHidden(true)
+            Text(L10n(isAssistant ? "Hello, I'm your Corptie assistant" : "Start with an idea"))
+                .font(.system(size: 26, weight: .semibold))
+                .foregroundStyle(CorptiePalette.primaryText)
+                .accessibilityAddTraits(.isHeader)
+            Text(L10n(isAssistant
+                ? "Ask me about Corptie, or tell me what you'd like to work on."
+                : "Describe a goal, ask a question, or share something to explore."))
+                .font(.system(size: 13))
+                .foregroundStyle(CorptiePalette.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .multilineTextAlignment(.center)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("conversation.welcome")
+    }
+}
+
 struct QuickReplyField: View {
     @Binding var text: String
     var isFocused: FocusState<Bool>.Binding

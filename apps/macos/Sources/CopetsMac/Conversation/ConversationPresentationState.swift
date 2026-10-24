@@ -13,6 +13,24 @@ enum SessionDetailContentPhase: Equatable {
     case empty
 }
 
+enum ConversationWelcomePolicy {
+    /// Inspect only the empty/single-item case, never scan an existing history.
+    /// The product introduction is durable history, but is not a user turn.
+    static func showsWelcome(
+        detail: CodexThreadDetail?, sessionID: String, isAssistant: Bool,
+        isLoading: Bool, hasLoadError: Bool, hasSubmittedMessage: Bool
+    ) -> Bool {
+        guard let detail, !isLoading, !hasLoadError, !hasSubmittedMessage,
+              detail.hasMoreHistory != true,
+              (detail.historyItemsCount ?? 0) == 0 else { return false }
+        if detail.items.isEmpty { return detail.turnCount == 0 }
+        guard isAssistant, detail.items.count == 1, detail.turnCount <= 1,
+              let item = detail.items.first else { return false }
+        return item.type == "agentMessage"
+            && item.id == "first-run:introduction:v1:\(sessionID)"
+    }
+}
+
 func sessionDetailContentPhase(
     hasLiveDetail: Bool,
     cachedSessionID: String?,

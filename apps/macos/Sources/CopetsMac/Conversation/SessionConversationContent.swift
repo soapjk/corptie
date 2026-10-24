@@ -52,6 +52,7 @@ struct SessionConversationContent: View {
     @State private var scrollTargetTurnID: String?
     @State private var scrollTargetTurnRevision = 0
     @State private var pendingFork: SessionForkSelection?
+    @State private var hasSubmittedMessage = false
     let sessionId: String
     let composerDraftRepository: ComposerDraftRepository
     let initialTimelinePosition: AppKitChatTimelinePosition?
@@ -156,6 +157,17 @@ struct SessionConversationContent: View {
         )
     }
 
+    private var showsWelcome: Bool {
+        guard presentation == .standard, !compactComposer else { return false }
+        return ConversationWelcomePolicy.showsWelcome(
+            detail: displayedDetail, sessionID: sessionId,
+            isAssistant: selectedSession?.resolvedSessionKind == .assistantChat,
+            isLoading: displaysLoadingDetail,
+            hasLoadError: backendClient.selectedTimelineLoadError != nil,
+            hasSubmittedMessage: hasSubmittedMessage
+        )
+    }
+
     @ViewBuilder
     private var backendConnectionBanner: some View {
         if !backendClient.isOnline {
@@ -188,7 +200,8 @@ struct SessionConversationContent: View {
                 status: selectedSession?.executionTaskStatus ?? displayedDetail?.status,
                 isReady: selectedSession?.isReady ?? displayedDetail?.isReady ?? true,
                 notReadyReason: selectedSession?.notReadyReason ?? displayedDetail?.notReadyReason,
-                activityStatus: selectedSession?.activityStatus ?? displayedDetail?.activityStatus
+                activityStatus: selectedSession?.activityStatus ?? displayedDetail?.activityStatus,
+                onSubmissionStarted: { hasSubmittedMessage = true }
             )
             .id(sessionId)
         }
@@ -215,7 +228,9 @@ struct SessionConversationContent: View {
                 case .live:
                     if let detail = displayedDetail {
                         Group {
-                            if shouldRenderDetailMessages {
+                            if showsWelcome {
+                                Color.clear
+                            } else if shouldRenderDetailMessages {
                                 appKitCachedDetailMessages()
                             } else {
                                 DetailMessagesPlaceholder()
@@ -282,15 +297,28 @@ struct SessionConversationContent: View {
                     .padding(.bottom, composerClearance + 10)
             }
             .overlay(alignment: .bottom) {
-                VStack(spacing: 6) {
-                    if let session = selectedSession {
-                        SessionSendFailureView(sessionID: session.id)
+                // One editor at one structural position: placement changes must
+                // not recreate the native text view, attachments or draft owner.
+                VStack(spacing: 24) {
+                    if showsWelcome {
+                        ConversationWelcomeView(
+                            isAssistant: selectedSession?.resolvedSessionKind == .assistantChat
+                        )
                     }
-                    sessionReadinessNotice
-                    sessionComposer
+                    VStack(spacing: 6) {
+                        if let session = selectedSession {
+                            SessionSendFailureView(sessionID: session.id)
+                        }
+                        sessionReadinessNotice
+                        sessionComposer
+                    }
+                    .padding(.bottom, 4)
+                    .background { conversationChromeFrame(.composer) }
                 }
-                .padding(.bottom, 4)
-                .background { conversationChromeFrame(.composer) }
+                .frame(maxWidth: showsWelcome ? 720 : .infinity)
+                .padding(.horizontal, showsWelcome ? 24 : 0)
+                .frame(maxWidth: .infinity, maxHeight: showsWelcome ? .infinity : nil)
+                .padding(.top, showsWelcome ? headerClearance : 0)
             }
             .coordinateSpace(name: ConversationChromeFramePreferenceKey.coordinateSpace)
             .onPreferenceChange(ConversationChromeFramePreferenceKey.self) { frames in
@@ -318,6 +346,7 @@ struct SessionConversationContent: View {
             restoreMissingHistoryAnchorIfNeeded()
         }
         .onChange(of: sessionId) { _, _ in
+            hasSubmittedMessage = false
             displayProjectionTask?.cancel()
             displayProjectionTask = nil
             displayProjectionGeneration &+= 1
