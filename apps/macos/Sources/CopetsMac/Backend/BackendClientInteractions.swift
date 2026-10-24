@@ -82,8 +82,10 @@ extension BackendClient {
             "preserveOriginal": preserveOriginal
         ])
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw BackendError.message(Self.errorMessage(from: data) ?? L10n("Could not attach image."))
+        guard let http = response as? HTTPURLResponse else { throw ClientConnectionError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            let failure = try? JSONDecoder().decode(ChatImageImportFailureBody.self, from: data)
+            throw ChatImageImportFailure(statusCode: http.statusCode, code: failure?.code)
         }
         if let direct = try? JSONDecoder().decode(ChatImageReference.self, from: data) {
             return direct
@@ -198,5 +200,43 @@ extension BackendClient {
             session: replacement.session
         )
         sessionReplacements.send(replacement)
+    }
+}
+
+private struct ChatImageImportFailureBody: Decodable {
+    let code: String?
+}
+
+/// Do not echo server-supplied filesystem paths or collapse attachment failures into network errors.
+private struct ChatImageImportFailure: LocalizedError {
+    let statusCode: Int
+    let code: String?
+    private let message: String
+
+    @MainActor init(statusCode: Int, code: String?) {
+        self.statusCode = statusCode
+        self.code = code
+        message = Self.localizedMessage(statusCode: statusCode, code: code)
+    }
+
+    var errorDescription: String? { message }
+
+    @MainActor private static func localizedMessage(statusCode: Int, code: String?) -> String {
+        switch code {
+        case "CHAT_IMAGE_ACCESS_DENIED":
+            return L10n("图片导入失败：系统拒绝访问图片文件。请尝试复制图片内容后重新粘贴。")
+        case "CHAT_IMAGE_SOURCE_MISSING", "CHAT_IMAGE_MISSING":
+            return L10n("图片文件已不可用，请重新复制或选择图片。")
+        case "CHAT_IMAGE_SIZE_INVALID":
+            return L10n("图片超过附件大小限制，未添加。")
+        case "CHAT_IMAGE_FORMAT_UNSUPPORTED":
+            return L10n("图片格式不受支持，请使用 PNG、JPEG、GIF、WebP 或 HEIC 图片。")
+        case "CHAT_IMAGE_PATH_INVALID", "CHAT_IMAGE_NOT_FILE":
+            return L10n("无法读取这份图片，请重新复制图片内容后重试。")
+        case "SESSION_NOT_FOUND":
+            return L10n("当前会话已不可用，图片未添加。")
+        default:
+            return String(format: L10n("图片导入失败（HTTP %d），请稍后重试。"), statusCode)
+        }
     }
 }

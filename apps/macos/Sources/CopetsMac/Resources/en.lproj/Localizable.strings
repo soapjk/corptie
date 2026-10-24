@@ -1551,3 +1551,12 @@
 "准备工作区失败，请检查本机 Git 与工作区路径后重试。" = "Workspace preparation failed. Check local Git and workspace paths before retrying.";
 "会话启动失败，请核对错误代码和启动记录。" = "Session startup failed. Check the error code and startup record.";
 "无法确认启动结果，请刷新状态，不要重复创建 Task。" = "Startup could not be confirmed. Refresh its status; do not create another task.";
+"正在添加图片…" = "Adding image…";
+"关闭图片导入提示" = "Dismiss image import notice";
+"图片导入失败：系统拒绝访问图片文件。请尝试复制图片内容后重新粘贴。" = "Image import failed: access to the image file was denied. Try copying the image itself and pasting again.";
+"图片文件已不可用，请重新复制或选择图片。" = "The image file is no longer available. Copy or select the image again.";
+"图片超过附件大小限制，未添加。" = "The image exceeds the attachment size limit and was not added.";
+"图片格式不受支持，请使用 PNG、JPEG、GIF、WebP 或 HEIC 图片。" = "Unsupported image format. Use PNG, JPEG, GIF, WebP, or HEIC.";
+"无法读取这份图片，请重新复制图片内容后重试。" = "This image could not be read. Copy the image itself and try again.";
+"当前会话已不可用，图片未添加。" = "This Session is no longer available. The image was not added.";
+"图片导入失败（HTTP %d），请稍后重试。" = "Image import failed (HTTP %d). Try again later.";

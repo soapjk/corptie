@@ -52,16 +52,13 @@ enum ComposerImagePasteboard {
 
     @MainActor
     static func capture(_ board: NSPasteboard) -> Snapshot? {
+        let changeCount = board.changeCount
         var result = Snapshot(items: [])
         var remainingBytes = maximumTotalBytes
         for item in (board.pasteboardItems ?? []).prefix(maximumImages + 1) {
             if result.items.count > maximumImages { break }
             var representations: [Representation] = []
             let imageTypes = item.types.filter(isImageType).sorted { rank($0) < rank($1) }
-            if let path = item.string(forType: .fileURL), let url = URL(string: path), url.isFileURL,
-               !imageTypes.isEmpty || UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true {
-                representations.append(.file(url))
-            }
             var rejected = false
             for type in imageTypes.prefix(4) {
                 guard let data = item.data(forType: type) else { continue }
@@ -72,6 +69,15 @@ enum ComposerImagePasteboard {
                 }
                 remainingBytes -= data.count
                 representations.append(.data(data))
+            }
+            // Image-copy operations frequently also advertise a private source
+            // URL. Clipboard access does not grant our backend access to that
+            // application's container. Never use that URL when bitmap data was
+            // advertised, including when its provider fails to supply the data.
+            if imageTypes.isEmpty,
+               let path = item.string(forType: .fileURL), let url = URL(string: path), url.isFileURL,
+               UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true {
+                representations.append(.file(url))
             }
             // RTFD is an archive of actual attachments, not HTML fetched from
             // a URL. Only inspect this bounded fallback when no bitmap exists.
@@ -113,6 +119,7 @@ enum ComposerImagePasteboard {
                 }
             }
         }
+        guard board.changeCount == changeCount else { return Snapshot(items: [], rejectedItems: 1) }
         return result.items.isEmpty && result.rejectedItems == 0 ? nil : result
     }
 
