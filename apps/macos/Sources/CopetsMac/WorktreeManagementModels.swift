@@ -419,6 +419,7 @@ struct WorktreeGitOperationResult: Decodable, Sendable {
 }
 
 struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
+    var graphExecution: WorktreeIntegrationGraphExecution? = nil
     let notification: OperationJobSnapshot?
     let id: String
     let repositoryId: String
@@ -465,6 +466,7 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
         isActive || isStartingConflictAgent || currentConflictResolution?.status == "running"
     }
     var requiresPlanRegeneration: Bool {
+        if plan.orchestration != nil, supports("repreflight") { return true }
         let code = audit.last(where: { $0.code != nil })?.code
         return WorktreeIntegrationRecoveryPolicy.requiresRepreflight(status: status, phase: phase, auditCode: code)
     }
@@ -633,6 +635,7 @@ struct WorktreeConflictResolutionWorkspace: Decodable, Equatable, Sendable {
 }
 
 struct WorktreeIntegrationPlan: Decodable, Equatable, Sendable {
+    var orchestration: WorktreeIntegrationGraph? = nil
     var taskScope: TaskHierarchyScope? = nil
     var syncStrategy: String? = nil
     let repositoryId: String
@@ -653,6 +656,39 @@ struct WorktreeIntegrationPlan: Decodable, Equatable, Sendable {
     var preflightState: WorktreeIntegrationPreflightState {
         WorktreeIntegrationPreflightState(risks: blockingRisks)
     }
+}
+
+struct WorktreeIntegrationGraph: Decodable, Equatable, Sendable {
+    let version: Int
+    let requestedWorktreeIds: [String]
+    let includedWorktreeIds: [String]
+    let addedWorktreeIds: [String]
+    let steps: [WorktreeIntegrationGraphStep]
+}
+
+struct WorktreeIntegrationGraphStep: Identifiable, Decodable, Equatable, Sendable {
+    let id: String
+    let kind: String
+    let rootTaskId: String?
+    let sourceWorktreeIds: [String]
+    let targetWorktreeId: String
+    let sourceBranchNames: [String]
+    let targetBranchName: String
+    let status: String?
+    let reason: String?
+
+    @MainActor var label: String {
+        kind == "acceptance"
+            ? L10nFormat("Verify integrated parent: %@", targetBranchName)
+            : "\(sourceBranchNames.joined(separator: ", ")) → \(targetBranchName)"
+    }
+}
+
+struct WorktreeIntegrationGraphExecution: Decodable, Equatable, Sendable {
+    let phase: String
+    let index: Int
+    let acceptanceSessionId: String?
+    let steps: [WorktreeIntegrationGraphStep]
 }
 
 enum WorktreeIntegrationPreflightState: Equatable, Sendable {

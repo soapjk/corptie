@@ -1552,6 +1552,25 @@ test("Markdown policy rejection pauses once for a user decision and resumes afte
   assert.equal(completed.commitPolicyBlocker, undefined);
 });
 
+test("graph commit resumes after exact Markdown tracking approval without invalidating its own state changes", async () => {
+  const policy = Object.assign(new Error("Markdown approval required"), { code: "GIT_ARTIFACT_POLICY_REJECTED", recoverable: false,
+    violations: [{ code: "GIT_MARKDOWN_PROMOTION_REQUIRED", path: "docs/graph.md" }] });
+  const { service, calls } = memoryFixture({ commitErrors: [policy], mutateWorktreeOnTracking: true });
+  service.hierarchy.decorateInspection = async inspection => inspection;
+  const options = { operationType: "integrate", sourceWorktreeIds: ["wt:feature"], targetWorktreeId: "wt:main" };
+  const candidate = await service.createCandidate("repository:1", options);
+  const job = await service.startCandidate("repository:1", { ...options, candidateId: candidate.id,
+    candidateFingerprint: candidate.planFingerprint, idempotencyKey: "graph:markdown" });
+  const paused = await waitForJob(service, job.id, "paused");
+  assert.equal(paused.phase, "awaiting_commit_policy_resolution");
+  await service.resolveCommitPolicy(job.id, { blockerId: paused.commitPolicyBlocker.id, version: paused.commitPolicyBlocker.version,
+    decisions: [{ path: "docs/graph.md", action: "track" }] });
+  const completed = await waitForJob(service, job.id, "completed");
+  assert.equal(completed.graphExecution.steps[0].status, "completed");
+  assert.ok(calls.includes("track:docs/graph.md"));
+  assert.equal(completed.audit.some(entry => entry.code === "PLAN_STALE"), false);
+});
+
 test("Markdown policy decisions apply a different supported action to every file", async () => {
   const paths = ["docs/keep.md", "docs/remove.md", "docs/archive.md", "docs/track.md"];
   const policy = Object.assign(new Error("Markdown approval required"), {

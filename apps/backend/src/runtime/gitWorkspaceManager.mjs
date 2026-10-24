@@ -699,7 +699,8 @@ export class GitWorkspaceManager {
     if (contentHash !== input.expectedContentHash) {
       throw integrationGitError("COMMIT_POLICY_FILE_CHANGED", `${relativePath} changed after the decision panel was opened.`);
     }
-    if (await this.gitSucceeds(repositoryRoot, ["cat-file", "-e", `HEAD:${relativePath}`])) {
+    const tracked = await this.gitSucceeds(repositoryRoot, ["cat-file", "-e", `HEAD:${relativePath}`]);
+    if (tracked && !await this.#allowsTrackedGraphPolicyDecision(input, ["ignore"])) {
       throw integrationGitError("COMMIT_POLICY_FILE_TRACKED", `${relativePath} is already tracked and cannot be ignored by this action.`);
     }
     const ignorePath = resolve(repositoryRoot, ".gitignore");
@@ -712,7 +713,8 @@ export class GitWorkspaceManager {
       const separator = current && !current.endsWith("\n") ? "\n" : "";
       await writeFile(ignorePath, `${current}${separator}${rule}\n`, "utf8");
     }
-    await this.runGit(repositoryRoot, ["reset", "--quiet", "HEAD", "--", relativePath]).catch(() => {});
+    if (tracked) await this.runGit(repositoryRoot, ["rm", "--cached", "--", relativePath]);
+    else await this.runGit(repositoryRoot, ["reset", "--quiet", "HEAD", "--", relativePath]).catch(() => {});
     // The ignore rule is part of the user's integration decision. Stage it
     // immediately so a resumed merge cannot commit the source changes while
     // leaving its policy side effect behind as a dirty main Worktree.
@@ -733,13 +735,30 @@ export class GitWorkspaceManager {
     if (contentHash !== input.expectedContentHash) {
       throw integrationGitError("COMMIT_POLICY_FILE_CHANGED", `${relativePath} changed after the decision panel was opened.`);
     }
-    if (await this.gitSucceeds(repositoryRoot, ["cat-file", "-e", `HEAD:${relativePath}`])) {
+    const tracked = await this.gitSucceeds(repositoryRoot, ["cat-file", "-e", `HEAD:${relativePath}`]);
+    if (tracked && !await this.#allowsTrackedGraphPolicyDecision(input, ["delete", "artifact"])) {
       throw integrationGitError("COMMIT_POLICY_FILE_TRACKED", `${relativePath} is already tracked and cannot be deleted by this action.`);
     }
-    await this.runGit(repositoryRoot, ["reset", "--quiet", "HEAD", "--", relativePath]).catch(() => {});
-    await unlink(absolute);
+    if (tracked) await this.runGit(repositoryRoot, ["rm", "--", relativePath]);
+    else {
+      await this.runGit(repositoryRoot, ["reset", "--quiet", "HEAD", "--", relativePath]).catch(() => {});
+      await unlink(absolute);
+    }
     this.invalidateInspectionCache(input.repositoryId, "commit_policy_delete");
     return { relativePath, contentHash, deleted: true };
+  }
+
+  async #allowsTrackedGraphPolicyDecision(input, actions) {
+    const job = this.store.getWorktreeIntegrationJob?.(input.jobId);
+    const blocker = job?.details?.commitPolicyBlocker;
+    const state = job?.details?.graphExecution;
+    const source = job?.details?.plan?.items.find(item => item.worktreeId === blocker?.worktreeId);
+    if (!job?.details?.plan?.orchestration || job.status !== "paused" || job.phase !== "awaiting_commit_policy_resolution"
+      || state?.steps[state.index]?.kind !== "promote_parent" || !source || source.isMain
+      || !(blocker.files ?? []).some(file => file.path === input.relativePath && file.contentHash === input.expectedContentHash)
+      || !actions.some(action => input.decisionId === `${job.id}:${blocker.id}:${blocker.version}:${input.relativePath}:${action}`)
+      || await realpath(source.path) !== await realpath(input.path)) return false;
+    return (await this.gitOutput(input.path, ["rev-parse", "HEAD"])).trim() === (source.commitHead ?? source.sourceHeadBefore);
   }
 
   async resolveIntegrationMarkdownResidue(input) {
@@ -839,6 +858,16 @@ export class GitWorkspaceManager {
 
   async mergeIntegrationSource(input) {
     this.store.assertStandaloneWorktreeMutation?.({paths:[input.mainPath],readPaths:[input.sourcePath],jobId:input.jobId});
+    if (input.strictExpectedMain) {
+      const head = (await this.gitOutput(input.mainPath, ["rev-parse", "HEAD"])).trim();
+      if (head !== input.expectedMainHead) {
+        const parents = (await this.gitOutput(input.mainPath, ["rev-list", "--parents", "-n", "1", "HEAD"])).trim().split(/\s+/).slice(1);
+        const recordedMerge = input.allowRecordedMergeRecovery && (input.mergeStrategy === "ff-only"
+          ? head === input.sourceHead && await this.gitSucceeds(input.mainPath, ["merge-base", "--is-ancestor", input.expectedMainHead, head])
+          : parents.length === 2 && parents[0] === input.expectedMainHead && parents[1] === input.sourceHead);
+        if (!recordedMerge) throw integrationGitError("MAIN_HEAD_CHANGED", "The integration target changed outside the recorded step. Review a new plan; completed changes were preserved.");
+      }
+    }
     if (await this.gitSucceeds(input.mainPath, ["merge-base", "--is-ancestor", input.sourceHead, "HEAD"])) {
       const mainHead = (await this.gitOutput(input.mainPath, ["rev-parse", "--verify", "HEAD"])).trim();
       if(input.mergeStrategy==="ff-only" && mainHead!==input.sourceHead) throw integrationGitError("INTEGRATION_ACCEPTANCE_STALE","main is not exactly the accepted parent HEAD.");
@@ -901,6 +930,7 @@ export class GitWorkspaceManager {
     const names=(await this.gitOutput(path,["ls-tree","-r","--name-only","-z",head])).split("\0").filter(Boolean);
     if(names.some(name=>name.split("/").some(part=>part.toLowerCase()===".corptie"))) throw integrationGitError("GIT_ARTIFACT_POLICY_REJECTED","Managed .corptie content cannot be integrated.");
     const previous=new Set((await this.gitOutput(path,["ls-tree","-r","--name-only","-z",base])).split("\0"));
+    const violations = [];
     for(const name of names.filter(name=>/\.md$/i.test(name) && !previous.has(name))) {
       const bytes=await this.execFile("git",["-C",path,"cat-file","blob",`${head}:${name}`],{encoding:"buffer",maxBuffer:32*1024*1024});
       const hash=createHash("sha256").update(bytes.stdout).digest("hex");
@@ -909,8 +939,13 @@ export class GitWorkspaceManager {
         JOIN artifact_versions v ON v.artifact_id=p.artifact_id AND v.version=p.version AND v.content_hash=p.content_hash
         WHERE p.repository_path=? AND p.target_path=? AND p.content_hash=?`,[repositoryPath,name,hash]);
       if(!receipts.some(row=>{const proof=JSON.parse(row.authorization_json);return proof.eventId && proof.sessionId && proof.turnId && proof.path===name;})) {
-        throw integrationGitError("GIT_ARTIFACT_POLICY_REJECTED",`Markdown ${name} needs exact-version authorized Artifact promotion before integration.`);
+        violations.push({ code: "GIT_MARKDOWN_PROMOTION_REQUIRED", path: name });
       }
+    }
+    if (violations.length) {
+      const error = integrationGitError("GIT_ARTIFACT_POLICY_REJECTED", "New Markdown needs exact-version authorized Artifact promotion before integration.");
+      error.violations = violations;
+      throw error;
     }
   }
 
