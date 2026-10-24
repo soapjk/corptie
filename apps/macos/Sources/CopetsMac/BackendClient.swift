@@ -20,7 +20,7 @@ final class BackendClient: ObservableObject {
     let detailBusinessRepository = ClientDetailBusinessRepository()
     let detailBusinessOwnerID = UUID().uuidString
     private let timelineDeltaProcessor = SessionTimelineDeltaProcessor()
-    var sessions: [TaskSession] { appState.sessions.filter { $0.archived != true } }
+    var sessions: [TaskSession] { appState.activeSessions }
     let sessionIndexStore = SessionIndexStore()
     let sessionRestartActivityController = SessionRestartActivityController()
 
@@ -47,7 +47,7 @@ final class BackendClient: ObservableObject {
     /// Resolve the value from an authoritative collection instead of retaining
     /// a second mutable Session snapshot that can keep an obsolete status.
     var selectedSession: TaskSession? {
-        guard let id = sessionSelectionController.selectedSessionID else { return nil }
+        guard let id = sessionSelectionController.presentationSessionID else { return nil }
         return appState.session(id) ?? archivedSessions.first(where: { $0.id == id })
     }
     @Published var selectedHistoricalDetail: CodexThreadDetail?
@@ -512,13 +512,12 @@ final class BackendClient: ObservableObject {
     }
     private var appStateCancellable: AnyCancellable?
     private var reachabilityCancellable: AnyCancellable?
-    private var pageControllerCancellables = Set<AnyCancellable>()
     private var lastProjectedSessions: [TaskSession]?
+    private var residentActiveSessionIDs: Set<String>?
+    private var residentSelectedSessionID: String?
+    private(set) var residentCachePruneCount = 0
 
     init() {
-        sessionSelectionController.objectWillChange
-            .sink { [weak self] in self?.objectWillChange.send() }
-            .store(in: &pageControllerCancellables)
         appStateCancellable = appState.$state
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.projectSessionsFromAppState() }
@@ -762,12 +761,32 @@ final class BackendClient: ObservableObject {
     }
 
     func retainResidentSessionCaches(activeSessionIDs: Set<String>? = nil) {
-        var residentSessionIDs = activeSessionIDs ?? Set(sessions.map(\.id))
-        if let selectedSession { residentSessionIDs.insert(selectedSession.id) }
-        SessionTimelineRepository.shared.pin(residentSessionIDs)
-        SessionTimelineRepository.shared.prune(to: residentSessionIDs)
-        SessionPresentationCache.shared.pin(residentSessionIDs)
-        SessionPresentationCache.shared.prune(to: residentSessionIDs)
+        let selectedID = sessionSelectionController.selectedSessionID
+        // Full maintenance belongs to collection changes, not row clicks.
+        if residentActiveSessionIDs == nil || (activeSessionIDs != nil && activeSessionIDs != residentActiveSessionIDs) {
+            let activeIDs = activeSessionIDs ?? Set(sessions.map(\.id))
+            residentActiveSessionIDs = activeIDs
+            var retainedIDs = activeIDs
+            if let selectedID { retainedIDs.insert(selectedID) }
+            SessionTimelineRepository.shared.pin(retainedIDs)
+            SessionTimelineRepository.shared.prune(to: retainedIDs)
+            SessionPresentationCache.shared.pin(retainedIDs)
+            SessionPresentationCache.shared.prune(to: retainedIDs)
+            residentCachePruneCount += 1
+        } else if residentSelectedSessionID != selectedID {
+            // Pin the destination before releasing the previous archived item,
+            // so capacity trimming cannot evict the newly selected warm cache.
+            if let selectedID, residentActiveSessionIDs?.contains(selectedID) != true {
+                SessionTimelineRepository.shared.setPinned(true, for: selectedID)
+                SessionPresentationCache.shared.setPinned(true, for: selectedID)
+            }
+            if let previousID = residentSelectedSessionID,
+               residentActiveSessionIDs?.contains(previousID) != true {
+                SessionTimelineRepository.shared.setPinned(false, for: previousID)
+                SessionPresentationCache.shared.setPinned(false, for: previousID)
+            }
+        }
+        residentSelectedSessionID = selectedID
     }
 
 
@@ -816,6 +835,7 @@ final class BackendClient: ObservableObject {
         coldTimelineLoadTask?.cancel()
         coldTimelineLoadTask = nil
         sessionSelectionController.clear()
+        retainResidentSessionCaches()
         supplementaryDataController.select(nil)
         selectedHistoricalDetail = nil
         viewingHistoricalThreadId = nil

@@ -124,6 +124,6 @@ extension UnifiedConsoleView {
     }
 
     func workerSession(for task: CorptieTask) -> TaskSession? {
-        ConsoleTaskSelectionPolicy.session(for: task, in: backendClient.sessions)
+        sessionIndexStore.taskSessionLookup.session(for: task)
     }
 }

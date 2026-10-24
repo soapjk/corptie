@@ -74,6 +74,15 @@ final class SessionPresentationCache: ObservableObject {
 
     func pin(_ sessionIDs: Set<String>) {
         pinnedSessionIDs = sessionIDs
+        trimIfNeeded()
+    }
+
+    func setPinned(_ pinned: Bool, for sessionID: String) {
+        if pinned { pinnedSessionIDs.insert(sessionID) }
+        else { pinnedSessionIDs.remove(sessionID); trimIfNeeded() }
+    }
+
+    private func trimIfNeeded() {
         while caches.count > capacity,
               let evictionIndex = recency.firstIndex(where: { !pinnedSessionIDs.contains($0) }) {
             let evicted = recency.remove(at: evictionIndex)

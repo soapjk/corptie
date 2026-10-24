@@ -69,12 +69,18 @@ final class AppStateStore: ObservableObject {
             // (tasks/works/agents…) must not drop the sort cache.
             if oldValue.sessions != state.sessions {
                 cachedSessions = nil
+                cachedActiveSessions = nil
                 cachedSessionAliases = nil
             }
+            if oldValue.tasks != state.tasks { cachedTasks = nil }
+            if oldValue.works != state.works { cachedWorks = nil }
         }
     }
     @Published private(set) var syncError: String?
     private var cachedSessions: [TaskSession]?
+    private var cachedActiveSessions: [TaskSession]?
+    private var cachedTasks: [CorptieTask]?
+    private var cachedWorks: [Work]?
     private var cachedSessionAliases: [String: String]?
     private var hasAppliedAuthoritativeState = false
     private(set) var pendingCreatedSessionIDs = Set<String>()
@@ -90,8 +96,24 @@ final class AppStateStore: ObservableObject {
         cachedSessions = sorted
         return sorted
     }
-    var tasks: [CorptieTask] { state.tasks.values.sorted { $0.createdAt < $1.createdAt } }
-    var works: [Work] { state.works.values.sorted { $0.createdAt > $1.createdAt } }
+    var activeSessions: [TaskSession] {
+        if let cachedActiveSessions { return cachedActiveSessions }
+        let result = sessions.filter { $0.archived != true }
+        cachedActiveSessions = result
+        return result
+    }
+    var tasks: [CorptieTask] {
+        if let cachedTasks { return cachedTasks }
+        let result = state.tasks.values.sorted { $0.createdAt < $1.createdAt }
+        cachedTasks = result
+        return result
+    }
+    var works: [Work] {
+        if let cachedWorks { return cachedWorks }
+        let result = state.works.values.sorted { $0.createdAt > $1.createdAt }
+        cachedWorks = result
+        return result
+    }
     var agents: [Agent] { state.agents.values.sorted { $0.createdAt < $1.createdAt } }
     var skills: [Skill] { state.skills.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending } }
     var repositories: [GitRepository] { state.repositories.values.sorted { $0.name < $1.name } }

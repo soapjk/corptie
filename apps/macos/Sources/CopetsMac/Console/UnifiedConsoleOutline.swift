@@ -58,10 +58,7 @@ extension UnifiedConsoleView {
         let tasksByWorkID = outlineTasksByWorkID
         let taskActivity = isShowingWorkerArchive ? outlineTaskActivity : [:]
         let archivedRowsByWorkID = outlineArchivedRowsByWorkID
-        let processingWorkIDs = ConsoleWorkActivityPolicy.processingWorkIDs(
-            tasks: entityClient.tasks,
-            sessions: backendClient.sessions
-        )
+        let processingWorkIDs = outlineProjection.processingWorkIDs
 
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 4) {
@@ -282,7 +279,8 @@ extension UnifiedConsoleView {
                 guard let workChat else { return }
                 openWorkChat(for: work, session: workChat)
             },
-            createTask: { presentTaskCreation(for: work.id) }
+            createTask: { presentTaskCreation(for: work.id) },
+            isActive: sidebarState.isSelected
         )
     }
 
@@ -297,31 +295,37 @@ extension UnifiedConsoleView {
         }
     }
 
-    var outlineTasksByWorkID: [String: [CorptieTask]] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let activeTasks = entityClient.tasks.filter { $0.lifecycleState != "done" && $0.archived != true }
-        let grouped = Dictionary(grouping: activeTasks, by: \.workId)
-        let activity = outlineTaskActivity
-        return grouped.mapValues { tasks in
-            let filtered = tasks
-                .filter { task in
-                    query.isEmpty
-                        || task.title.localizedCaseInsensitiveContains(query)
-                        || task.description.localizedCaseInsensitiveContains(query)
-                }
-            return sortedOutlineTasks(filtered, activity: activity)
+    var outlineProjection: ConsoleOutlineProjection {
+        let key = ConsoleOutlineProjectionKey(entityRevision: entityGroupingRevision,
+            sessionRevision: sessionIndexStore.contentRevision, search: searchText, sort: outlineSort)
+        return outlineProjectionStore.value(for: key) {
+            let tasks = entityClient.tasks
+            let works = entityClient.works
+            let sessions = backendClient.sessions
+            let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let grouped = Dictionary(grouping: tasks.filter {
+                $0.lifecycleState != "done" && $0.archived != true
+            }, by: \.workId)
+            let activity = outlineTaskActivity
+            let tasksByWorkID = grouped.mapValues { tasks in
+                sortedOutlineTasks(tasks.filter {
+                    query.isEmpty || $0.title.localizedCaseInsensitiveContains(query)
+                        || $0.description.localizedCaseInsensitiveContains(query)
+                }, activity: activity)
+            }
+            let workActivity = outlineSort == .updated
+                ? Dictionary(grouping: sessions, by: { $0.workId ?? "" })
+                    .mapValues { $0.compactMap(\.lastMessageAt).max() ?? "" } : [:]
+            let orderedWorks = outlineSort.ordered(works, id: { $0.id }, title: { $0.name },
+                updatedAt: { $0.updatedAt },
+                activityAt: { workActivity[$0.id].flatMap { $0.isEmpty ? nil : $0 } })
+            return ConsoleOutlineProjection(tasksByWorkID: tasksByWorkID, works: orderedWorks,
+                processingWorkIDs: ConsoleWorkActivityPolicy.processingWorkIDs(tasks: tasks, sessions: sessions))
         }
     }
 
-    var orderedOutlineWorks: [Work] {
-        guard outlineSort != .standard else { return entityClient.works }
-        let activity = outlineSort == .updated
-            ? Dictionary(grouping: backendClient.sessions, by: { $0.workId ?? "" })
-                .mapValues { $0.compactMap(\.lastMessageAt).max() ?? "" } : [:]
-        return outlineSort.ordered(entityClient.works, id: { $0.id }, title: { $0.name },
-                                   updatedAt: { $0.updatedAt },
-                                   activityAt: { activity[$0.id].flatMap { $0.isEmpty ? nil : $0 } })
-    }
+    var outlineTasksByWorkID: [String: [CorptieTask]] { outlineProjection.tasksByWorkID }
+    var orderedOutlineWorks: [Work] { outlineProjection.works }
 
     var outlineTaskActivity: [String: String] {
         outlineSort == .updated

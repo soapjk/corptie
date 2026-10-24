@@ -43,8 +43,9 @@ enum ConsoleWorkActivityPolicy {
         tasks: [CorptieTask],
         sessions: [TaskSession]
     ) -> Set<String> {
-        Set(tasks.lazy.compactMap { task in
-            CorptieTaskBoundSessionActivity.resolve(task: task, sessions: sessions) == .processing
+        let lookup = TaskSessionLookup(sessions: sessions)
+        return Set(tasks.lazy.compactMap { task in
+            lookup.activity(for: task) == .processing
                 ? task.workId
                 : nil
         })
@@ -200,6 +201,8 @@ struct ConsoleWorkOutlineHeader: View {
     let toggleExpanded: () -> Void
     let openChat: () -> Void
     let createTask: () -> Void
+    var isActive = true
+    @Environment(\.controlActiveState) private var controlActiveState
 
     @State private var isHovering = false
     @FocusState private var isCreateTaskFocused: Bool
@@ -214,7 +217,8 @@ struct ConsoleWorkOutlineHeader: View {
                         avatarPath: work.avatarPath,
                         size: 22
                     )
-                    ConsoleWorkTitle(title: work.name, isWorking: isWorking)
+                    ConsoleWorkTitle(title: work.name, isWorking: isWorking,
+                        isActive: isActive && controlActiveState != .inactive)
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(isSelected ? Color.primary : Color.secondary)
                         .lineLimit(1)

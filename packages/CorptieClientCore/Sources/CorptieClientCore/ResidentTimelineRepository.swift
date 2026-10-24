@@ -58,6 +58,11 @@ public struct ResidentSessionCache<Value> {
         trimIfNeeded()
     }
 
+    public mutating func setPinned(_ pinned: Bool, for key: String) {
+        if pinned { pinnedKeys.insert(key) }
+        else { pinnedKeys.remove(key); trimIfNeeded() }
+    }
+
     public mutating func prune(to validKeys: Set<String>) {
         values = values.filter { validKeys.contains($0.key) }
         recency.removeAll { !validKeys.contains($0) }
