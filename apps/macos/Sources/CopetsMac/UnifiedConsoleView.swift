@@ -1073,7 +1073,7 @@ struct UnifiedConsoleView: View {
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
                 }
 
-                SessionDetailPanel(session: session, railWidth: 320, detailPresentation: detailPresentation)
+                SessionDetailPanel(session: session, railWidth: ConversationDetailWidgetMetrics.railWidth, detailPresentation: detailPresentation)
                     .frame(maxHeight: .infinity)
             }
             .padding(MainWindowPageLayoutMetrics.outerPadding)
@@ -1105,7 +1105,7 @@ struct UnifiedConsoleView: View {
                 .modifier(ConversationDetailCardSurface(enabled: navigationMode == .taskCards))
 
                 SessionCorptieTaskDetailCard(taskId: task.id)
-                    .frame(width: 320)
+                    .frame(width: ConversationDetailWidgetMetrics.railWidth)
                     .frame(maxHeight: .infinity)
             }
             .padding(MainWindowPageLayoutMetrics.outerPadding)

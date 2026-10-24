@@ -216,10 +216,19 @@ private struct StampedParagraphNative: NSViewRepresentable {
     let title: String; let text: String; @Binding var expanded: Bool
     func makeCoordinator() -> StampedParagraphCoordinator { StampedParagraphCoordinator() }
     func makeNSView(context: Context) -> StampedParagraphTextView {
-        let view = StampedParagraphTextView()
+        // Match StampedParagraphLayout's TextKit 1 measurement. The default
+        // NSTextView uses TextKit 2, whose viewport fragments can repeatedly
+        // invalidate SwiftUI's constraints inside nested Detail scroll views.
+        let storage = NSTextStorage()
+        let layout = NSLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: 300, height: CGFloat.greatestFiniteMagnitude))
+        storage.addLayoutManager(layout)
+        layout.addTextContainer(container)
+        let view = StampedParagraphTextView(frame: .zero, textContainer: container)
         view.isEditable = false; view.isSelectable = true; view.drawsBackground = false
         view.textContainerInset = .zero; view.textContainer?.lineFragmentPadding = 0
-        view.isHorizontallyResizable = false; view.isVerticallyResizable = true
+        // SwiftUI owns the measured frame; TextKit must not resize it in return.
+        view.isHorizontallyResizable = false; view.isVerticallyResizable = false
         view.textContainer?.widthTracksTextView = true; view.delegate = context.coordinator
         view.linkTextAttributes = [.foregroundColor: NSColor.controlAccentColor]
         return view
@@ -238,7 +247,8 @@ private struct StampedParagraphNative: NSViewRepresentable {
         let width = proposed.isFinite ? max(1, proposed) : 300
         let value = context.coordinator.layout(title: title, text: text, width: width, expanded: expanded,
             appearance: view.effectiveAppearance.name.rawValue)
-        view.textContainer?.containerSize = CGSize(width: width, height: .greatestFiniteMagnitude)
+        let size = CGSize(width: width, height: .greatestFiniteMagnitude)
+        if view.textContainer?.containerSize != size { view.textContainer?.containerSize = size }
         if !view.attributedString().isEqual(to: value.text) { view.textStorage?.setAttributedString(value.text) }
         return value.size
     }

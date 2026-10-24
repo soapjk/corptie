@@ -33,7 +33,7 @@ enum MainWindowActivationPolicy {
 
 enum MainWindowInitialLayout {
     static let idealContentSize = NSSize(width: 1_480, height: 900)
-    static let minimumContentSize = NSSize(width: 980, height: 620)
+    static let minimumContentSize = NSSize(width: 1000, height: 620)
     static let maximumVisibleFraction: CGFloat = 0.92
 
     static func contentSize(for visibleFrame: NSRect) -> NSSize {
