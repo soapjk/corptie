@@ -13,7 +13,10 @@ public struct ConversationDetailDashboard<Content: View>: View {
 
     public var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 12) {
+            // This rail contains a bounded dashboard whose custom layout already
+            // places every card. Lazily realizing the dashboard can repeatedly
+            // retire/recreate nested scroll content during Task navigation.
+            VStack(alignment: .leading, spacing: 12) {
                 content
             }
                 .frame(maxWidth: .infinity, alignment: .leading)
