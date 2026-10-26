@@ -3,6 +3,8 @@ import CorptieClientCore
 
 struct ConversationNativeBusinessDetail: View {
     let store: ClientDetailBusinessStore
+    var commandStore: ClientDetailBusinessStore? = nil
+    private var operationStore: ClientDetailBusinessStore { commandStore ?? store }
     let api: ClientDetailAPI?
     let actions: ConversationDetailActions?
     let context: ClientDetailContext
@@ -11,6 +13,8 @@ struct ConversationNativeBusinessDetail: View {
     let arrangement: ConversationDetailCardArrangement
     let arranging: Bool
     let refresh: @MainActor () async -> Void
+    var renderState: ConversationDetailRenderState? = nil
+    var activity: ConversationDetailPresentationActivity? = nil
     let canCommand: (String, ClientDetailAction) -> Bool
     let perform: (String, ClientDetailAction, [String: ClientInspectorValue]) -> Void
     private var cards: [ClientDetailBusinessCardState] {
@@ -40,7 +44,7 @@ struct ConversationNativeBusinessDetail: View {
         ForEach(cards) { state in
             Group {
                 if state.card.loadState == "error" {
-                    NativeBusinessCard(state: state, api: api, store: store, actions: actions, references: adapters.referenceManagement, openArtifact: adapters.openArtifact, workID: context.workID,
+                    NativeBusinessCard(state: state, api: api, store: store, commandStore: operationStore, activity: activity, actions: actions, references: adapters.referenceManagement, openArtifact: adapters.openArtifact, workID: context.workID,
                         canCommand: { canCommand(state.id, $0) }, perform: { perform(state.id, $0, $1) }, retry: { Task { await refresh() } })
                         .environment(\.detailSectionPrefix, state.id)
                 } else {
@@ -59,16 +63,18 @@ struct ConversationNativeBusinessDetail: View {
             if let id = value.turnId {
                 ConversationDetailTurnCard(state: handle.turn, executionID: id,
                     expectedSessionIDs: [handle.scope.sessionID, store.sessionID ?? ""],
-                    readSummary: { try await adapters.readTurnSummary(id) }, readTrace: adapters.readTurnTrace, liveSnapshot: adapters.turnSnapshot)
+                    readSummary: { try await adapters.readTurnSummary(id) }, readTrace: adapters.readTurnTrace, liveSnapshot: adapters.turnSnapshot,
+                    presentationState: renderState?.turn, activity: activity)
                     .disabled(!store.isCurrent)
             }
         case .worktree(let value):
             ConversationWorktreeCard(sessionID: handle.scope.sessionID, refreshID: "\(value.worktreeId ?? ""):\(state.card.revision)",
                 api: { try await adapters.worktreeAPI(value.worktreeId) }, onJob: adapters.onWorktreeJob,
-                state: handle.worktree, expectedWorktreeID: value.worktreeId)
+                state: handle.worktree, expectedWorktreeID: value.worktreeId,
+                presentationState: renderState?.worktree, activity: activity)
                 .disabled(!store.isCurrent)
         default:
-            NativeBusinessCard(state: state, api: api, store: store, actions: actions, references: adapters.referenceManagement, openArtifact: adapters.openArtifact, workID: context.workID,
+            NativeBusinessCard(state: state, api: api, store: store, commandStore: operationStore, activity: activity, actions: actions, references: adapters.referenceManagement, openArtifact: adapters.openArtifact, workID: context.workID,
                 canCommand: { canCommand(state.id, $0) }, perform: { perform(state.id, $0, $1) }, retry: { Task { await refresh() } })
         }
     }
@@ -79,6 +85,9 @@ private struct NativeBusinessCard: View {
     @Bindable var state: ClientDetailBusinessCardState
     let api: ClientDetailAPI?
     let store: ClientDetailBusinessStore
+    var commandStore: ClientDetailBusinessStore? = nil
+    private var operationStore: ClientDetailBusinessStore { commandStore ?? store }
+    let activity: ConversationDetailPresentationActivity?
     let actions: ConversationDetailActions?
     let references: ConversationReferenceManagement?
     let openArtifact: ((ClientResourceFocus) -> Void)?
@@ -240,7 +249,7 @@ private struct NativeBusinessCard: View {
             listContainer(count: list.items.count, longContent: list.items.contains { $0.content.count > 1000 }) {
                 ForEach(list.items) { row in
                     NativeBusinessMemoryRow(row: row, isHit: card.kind == "memoryHits", actions: card.actions.filter { $0.target?.id == row.id },
-                        canCommand: canCommand, perform: perform, onEditingChanged: { state.setEditing(resourceID: row.id, $0) })
+                        canCommand: canCommand, perform: perform, onEditingChanged: { operationStore.setEditing(cardID: state.id, resourceID: row.id, $0) })
                         .environment(\.detailSectionPrefix, "\(card.id):\(row.id)")
                 }
             }
@@ -310,14 +319,14 @@ private struct NativeBusinessCard: View {
         if let message = state.pageError {
             VStack(alignment: .leading) {
                 Text(message).font(.caption).foregroundStyle(.secondary)
-                Button("重试加载") { if let api { Task { await store.loadMore(cardID: state.id, api: api, retry: true) } } }.font(.caption).disabled(state.loading || api == nil || !store.isCurrent)
+                Button("重试加载") { if let api { Task { guard activity?.allows(generation: activity?.generation ?? 0) ?? true else { return }; await operationStore.loadMore(cardID: state.id, api: api, retry: true) } } }.font(.caption).disabled(state.loading || api == nil || !store.isCurrent)
             }
         } else if card.nextCursor != nil {
             // A task on a lazy tail can repeatedly appear/cancel at the viewport
             // boundary, invalidating layout even when loadMore returns early.
             // Keep paging tied to an explicit action, outside appearance state.
             Button {
-                if let api { Task { await store.loadMore(cardID: state.id, api: api, retry: true) } }
+                if let api { Task { guard activity?.allows(generation: activity?.generation ?? 0) ?? true else { return }; await operationStore.loadMore(cardID: state.id, api: api, retry: true) } }
             } label: {
                 HStack(spacing: 6) {
                     if state.loading { ProgressView().controlSize(.small) }

@@ -7,6 +7,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     let sessionID: String
     let rows: [AppKitChatTimelineRow]
     let scrollToBottomRevision: Int
+    var contentRevision: UInt64? = nil
+    var renderInputs: SessionPageRenderInputs? = nil
     var baseDirectory: String? = nil
     var canAdvanceProcessClock = false
     @Binding var followsLatest: Bool
@@ -35,7 +37,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(
+        let coordinator = Coordinator(
             sessionID: sessionID,
             baseDirectory: baseDirectory,
             canAdvanceProcessClock: canAdvanceProcessClock,
@@ -47,6 +49,12 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             onUnderfilledHistory: onUnderfilledHistory,
             onPositionChange: onPositionChange
         )
+        if let renderInputs {
+            renderInputs.suspendNativePresentation = { [weak coordinator] in coordinator?.setPresentationActive(false) }
+            renderInputs.resumeNativePresentation = { [weak coordinator] in coordinator?.setPresentationActive(true) }
+            coordinator.setPresentationActive(renderInputs.acceptsPresentationUpdates)
+        }
+        return coordinator
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
@@ -72,7 +80,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         } else {
             context.coordinator.prepareInitialScrollToBottom()
         }
-        context.coordinator.apply(rows: rows, animated: false)
+        context.coordinator.apply(rows: rows, contentRevision: contentRevision, animated: false)
         context.coordinator.setTopClearance(topClearance)
         context.coordinator.setBottomClearance(bottomClearance)
         context.coordinator.lastScrollToBottomRevision = scrollToBottomRevision
@@ -136,9 +144,12 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        let trace = SessionSwitchTrace.shared.start(.timelineUpdate, sessionID: sessionID)
+        defer { SessionSwitchTrace.shared.finish(trace) }
         context.coordinator.switchSessionIfNeeded(
             to: sessionID,
-            initialPosition: initialPosition
+            initialPosition: initialPosition,
+            deferReloadUntilRowsArrive: true
         )
         context.coordinator.updateBaseDirectory(baseDirectory)
         context.coordinator.updateProcessCollapseLocalization()
@@ -149,7 +160,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         context.coordinator.onUnderfilledHistory = onUnderfilledHistory
         context.coordinator.updateHistoryAvailability(hasMoreHistory)
         context.coordinator.onPositionChange = onPositionChange
-        context.coordinator.apply(rows: rows, animated: context.transaction.animation != nil)
+        context.coordinator.apply(rows: rows, contentRevision: contentRevision, animated: context.transaction.animation != nil)
         // Decide whether to follow new rows against the previous stable
         // viewport before changing the document's chrome clearances.
         context.coordinator.setTopClearance(topClearance)

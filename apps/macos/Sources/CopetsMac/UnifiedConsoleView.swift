@@ -3,10 +3,28 @@ import CorptieConversation
 import CorptieClientCore
 import AppKit
 import SwiftUI
+import Observation
+
+/// Navigation resources are not a second Session selection authority. Pane
+/// roots read only the fields they use, so a Task highlight does not invalidate
+/// the window-sized split and replace both native hosting roots.
+@MainActor
+@Observable
+final class ConsoleNavigationSelectionState {
+    var category: SessionCategory = .worker
+    var workID: String?
+    var taskID: String?
+
+    func commit(category: SessionCategory, workID: String?, taskID: String?) {
+        if self.category != category { self.category = category }
+        if self.workID != workID { self.workID = workID }
+        if self.taskID != taskID { self.taskID = taskID }
+    }
+}
 
 struct UnifiedConsoleView: View {
     @State private var detailPresentation = ConversationDetailPresentationRepository(defaults: CorptieAppEnvironment.userDefaults)
-    @ObservedObject var modelCatalog = BackendClient.shared.modelCatalog
+    let modelCatalog = BackendClient.shared.modelCatalog
     let backendClient = BackendClient.shared
     @ObservedObject var sessionIndexStore = BackendClient.shared.sessionIndexStore
     @ObservedObject var archivedSessionState = BackendClient.shared.archivedSessionController
@@ -17,16 +35,27 @@ struct UnifiedConsoleView: View {
     @StateObject var layoutState = PanelLayoutState()
     @ObservedObject var presentationCache = SessionPresentationCache.shared
     @ObservedObject var viewportController = SessionViewportController.shared
-    @ObservedObject var selectionController = BackendClient.shared.sessionSelectionController
+    let selectionController = BackendClient.shared.sessionSelectionController
     @StateObject var sessionGroupProjectionStore = SessionGroupProjectionStore()
     @StateObject var outlineProjectionStore = ConsoleOutlineProjectionStore()
     @State var composerDraftRepository = ComposerDraftRepository()
     @State var detailRenderTask: Task<Void, Never>?
     @State var pendingSelectionTask: Task<Void, Never>?
-    @State var selectedCategory: SessionCategory = .worker
+    @State private var navigationSelection = ConsoleNavigationSelectionState()
+    @State private var pagePresentation = SessionPagePresentationState()
+    var selectedCategory: SessionCategory {
+        get { navigationSelection.category }
+        nonmutating set { if navigationSelection.category != newValue { navigationSelection.category = newValue } }
+    }
     /// nil 表示 Assistant 空间；非 nil 表示对应 Work 的 Task 空间。
-    @State var selectedWorkId: String?
-    @State var selectedTaskId: String?
+    var selectedWorkId: String? {
+        get { navigationSelection.workID }
+        nonmutating set { if navigationSelection.workID != newValue { navigationSelection.workID = newValue } }
+    }
+    var selectedTaskId: String? {
+        get { navigationSelection.taskID }
+        nonmutating set { if navigationSelection.taskID != newValue { navigationSelection.taskID = newValue } }
+    }
     @State var workPendingEdit: Work?
     @State var workPendingDeletion: Work?
     @State var workDeletionError: String?
@@ -47,6 +76,12 @@ struct UnifiedConsoleView: View {
         store: CorptieAppEnvironment.userDefaults
     ) var workerGroupingModeRawValue = WorkerSessionGroupingMode.work.rawValue
     @EnvironmentObject var router: AppTabRouter
+    private static let usesResidentDetailHosts = CorptieAppEnvironment.isDevelopment
+        && ProcessInfo.processInfo.environment["CORPTIE_DETAIL_RESIDENT_HOSTS"] == "1"
+    static let usesResidentPages = CorptieAppEnvironment.isDevelopment
+        && ProcessInfo.processInfo.environment["CORPTIE_SESSION_RESIDENT_PAGES"] == "1"
+    static let usesPageGateProof = CorptieAppEnvironment.isDevelopment
+        && ProcessInfo.processInfo.environment["CORPTIE_SESSION_FRAME_GATE"] == "1"
     @EnvironmentObject var sidebarState: TabSidebarState
     /// Chat「+」只创建 Assistant Chat；Work Chat 与 Task Session 由系统伴生创建。
     @State var showNewSessionCreation = false
@@ -67,12 +102,28 @@ struct UnifiedConsoleView: View {
     @State var searchText = ""
     @State var searchSubmitRevision = 0
     @FocusState var isSearchFieldFocused: Bool
-    @AppStorage(
-        "console.navigationCard.navigationMode",
-        store: CorptieAppEnvironment.userDefaults
-    ) var navigationModeRawValue = ConsoleNavigationMode.workOutline.rawValue
-    @AppStorage("console.workOutline.sort", store: CorptieAppEnvironment.userDefaults)
-    var outlineSortRaw = WorkOutlineSort.standard.rawValue
+    // Recent-Session writes notify the whole defaults domain. Publish only
+    // actual changes to these existing preferences into the window split.
+    @State private var navigationModeValue = CorptieAppEnvironment.userDefaults.string(
+        forKey: "console.navigationCard.navigationMode") ?? ConsoleNavigationMode.workOutline.rawValue
+    @State private var outlineSortValue = CorptieAppEnvironment.userDefaults.string(
+        forKey: "console.workOutline.sort") ?? WorkOutlineSort.standard.rawValue
+    var navigationModeRawValue: String {
+        get { navigationModeValue }
+        nonmutating set {
+            guard navigationModeValue != newValue else { return }
+            navigationModeValue = newValue
+            CorptieAppEnvironment.userDefaults.set(newValue, forKey: "console.navigationCard.navigationMode")
+        }
+    }
+    var outlineSortRaw: String {
+        get { outlineSortValue }
+        nonmutating set {
+            guard outlineSortValue != newValue else { return }
+            outlineSortValue = newValue
+            CorptieAppEnvironment.userDefaults.set(newValue, forKey: "console.workOutline.sort")
+        }
+    }
     @StateObject var outlineExpansionPreferences = ConsoleOutlineExpansionPreferences()
     @State var outlineFullyExpandedWorkIDs = Set<String>()
     @State var cardAttentionCount = 0
@@ -124,6 +175,14 @@ struct UnifiedConsoleView: View {
                 deactivateSessions()
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification,
+            object: CorptieAppEnvironment.userDefaults)) { _ in
+            let defaults = CorptieAppEnvironment.userDefaults
+            let mode = defaults.string(forKey: "console.navigationCard.navigationMode") ?? ConsoleNavigationMode.workOutline.rawValue
+            let sort = defaults.string(forKey: "console.workOutline.sort") ?? WorkOutlineSort.standard.rawValue
+            if navigationModeValue != mode { navigationModeValue = mode }
+            if outlineSortValue != sort { outlineSortValue = sort }
+        }
         .onReceive(backendClient.sessionsDidChange) { sessions in
             guard sidebarState.isSelected else { return }
             attemptPendingSelection(sessions)
@@ -143,6 +202,7 @@ struct UnifiedConsoleView: View {
             attemptPendingSelection(backendClient.sessions)
         }
         .onReceive(selectionController.$selectedSessionID) { sessionID in
+            if Self.usesPageGateProof || Self.usesResidentPages { pagePresentation.businessSelectionWillChange(to: sessionID) }
             // @Published emits before storing the new value. Use the emitted
             // identity and never write back into the selection publisher.
             guard let sessionID,
@@ -338,7 +398,7 @@ struct UnifiedConsoleView: View {
 
     var outlineSortMenu: some View {
         Menu {
-            Picker("排序方式", selection: $outlineSortRaw) {
+            Picker("排序方式", selection: Binding(get: { outlineSortRaw }, set: { outlineSortRaw = $0 })) {
                 ForEach(WorkOutlineSort.allCases, id: \.rawValue) { mode in
                     Text(mode.title).tag(mode.rawValue)
                 }
@@ -400,7 +460,7 @@ struct UnifiedConsoleView: View {
             if isSearching { sessionSearchBar.padding(.horizontal, 10) }
             ConsoleCardWorkspace(isActive: navigationMode == .taskCards, works: entityClient.works, tasks: entityClient.tasks,
                 sessions: sessionIndexStore.rows.map(\.session), selectedTaskID: selectedTaskId,
-                selectedSessionID: selectionController.selectedSessionID, query: searchText,
+                selectedSessionID: selectionController.presentationSessionID, query: searchText,
                 sortMode: outlineSort, showsArchive: isShowingWorkerArchive,
                 attentionCount: $cardAttentionCount,
                 openChat: { selectSessionAfterHighlight($0) }, createChat: { showNewSessionCreation = true },
@@ -557,10 +617,14 @@ struct UnifiedConsoleView: View {
     }
 
     func synchronizeConsoleSelection(with session: TaskSession) {
-        selectedCategory = SessionCategory(session: session)
-        selectedWorkId = session.resolvedSessionKind == .assistantChat ? nil : session.workId
-        selectedTaskId = session.resolvedSessionKind == .worker ? session.taskId : nil
+        commitNavigationSelection(session)
         isShowingWorkerArchive = selectedCategory == .worker && isArchivedWorkerSession(session)
+    }
+
+    func commitNavigationSelection(_ session: TaskSession) {
+        navigationSelection.commit(category: SessionCategory(session: session),
+            workID: session.resolvedSessionKind == .assistantChat ? nil : session.workId,
+            taskID: session.resolvedSessionKind == .worker ? session.taskId : nil)
     }
 
     func activateSessions() {
@@ -581,6 +645,7 @@ struct UnifiedConsoleView: View {
     }
 
     func deactivateSessions() {
+        pagePresentation.cancel()
         detailRenderTask?.cancel()
         detailRenderTask = nil
         pendingSelectionTask?.cancel()
@@ -702,21 +767,31 @@ struct UnifiedConsoleView: View {
     }
 
     func selectSessionAfterHighlight(_ session: TaskSession, focusComposer: Bool = false) {
+        SessionSwitchTrace.shared.ensureSelection(sessionID: session.id)
+        let trace = SessionSwitchTrace.shared.start(.navigationSelection, sessionID: session.id)
+        defer { SessionSwitchTrace.shared.finish(trace) }
         cardSelectionExplicitlyCleared = false
         pendingSelectionTask?.cancel()
         pendingSelectionTask = nil
+        if Self.usesResidentPages, pagePresentation.settledSessionID == session.id,
+           backendClient.sessionSelectionController.selectedSessionID == session.id {
+            if focusComposer { ComposerDraftRepository.requestUserFocus(for: session.id) }
+            return
+        }
+        if Self.usesPageGateProof || Self.usesResidentPages, pagePresentation.request(sessionID: session.id, title: session.title, activate: {
+            guard let current = backendClient.appState.session(session.id)
+                    ?? backendClient.archivedSessions.first(where: { $0.id == session.id }),
+                  current.hasValidProductClassification, current.taskId == session.taskId,
+                  current.workId == session.workId else { pagePresentation.cancel(); return }
+            commitNavigationSelection(current)
+            viewportController.hydrate(current.id)
+            backendClient.select(session: current, focusComposer: focusComposer)
+        }) { return }
         // Commit the lightweight local selection synchronously. The native
         // row highlight and a warm timeline host can therefore paint in the
         // same event turn; provider/network work starts only after the target
         // content identity is already correct.
-        selectedCategory = SessionCategory(session: session)
-        if session.resolvedSessionKind == .assistantChat {
-            selectedWorkId = nil
-            selectedTaskId = nil
-        } else {
-            selectedWorkId = session.workId
-            selectedTaskId = session.taskId
-        }
+        commitNavigationSelection(session)
         viewportController.hydrate(session.id)
         backendClient.select(session: session, focusComposer: focusComposer)
     }
@@ -938,7 +1013,7 @@ struct UnifiedConsoleView: View {
     }
 
     func sessionRow(_ row: SessionRowModel) -> some View {
-        let isSelected = selectionController.selectedSessionID == row.session.id
+        let isSelected = selectionController.presentationSessionID == row.session.id
         return ConsoleSessionRow(
             row: row,
             selectionRequested: { selectSessionAfterHighlight($0, focusComposer: true) }
@@ -1072,8 +1147,38 @@ struct UnifiedConsoleView: View {
 
     // MARK: - 中：对话（纸面卡片 + 常驻详情 side panel）
 
-    @ViewBuilder
-    var sessionConversation: some View {
+    @ViewBuilder var sessionConversation: some View {
+        if Self.usesResidentPages {
+            ResidentSessionPageSwitcher(presentation: pagePresentation,
+                selectedSessionID: residentSelectedSessionID, isActive: sidebarState.isSelected,
+                backend: backendClient, cache: presentationCache, drafts: composerDraftRepository,
+                viewport: viewportController, detailPresentation: detailPresentation, layout: layoutState) {
+                legacySessionConversation.environmentObject(router).environmentObject(sidebarState)
+                    .environmentObject(backendClient).environmentObject(layoutState)
+            }
+        } else if Self.usesPageGateProof {
+            SessionPageHostSwitcher(presentation: pagePresentation,
+                selectedSessionID: backendClient.selectedSession?.id, isActive: sidebarState.isSelected) {
+                legacySessionConversation
+                    .environmentObject(router)
+                    .environmentObject(sidebarState)
+                    .environmentObject(backendClient)
+                    .environmentObject(layoutState)
+            }
+        } else {
+            legacySessionConversation
+        }
+    }
+
+    private var residentSelectedSessionID: String? {
+        guard let session = backendClient.selectedSession, session.hasValidProductClassification,
+              SessionCategory(session: session) == selectedCategory,
+              navigationMode == .taskCards || selectedCategory != .worker
+                || isArchivedWorkerSession(session) == isShowingWorkerArchive else { return nil }
+        return session.id
+    }
+
+    @ViewBuilder var legacySessionConversation: some View {
         if let session = backendClient.selectedSession,
            session.hasValidProductClassification,
            SessionCategory(session: session) == selectedCategory,
@@ -1096,8 +1201,19 @@ struct UnifiedConsoleView: View {
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
                 }
 
-                SessionDetailPanel(session: session, railWidth: ConversationDetailWidgetMetrics.railWidth, detailPresentation: detailPresentation)
-                    .frame(maxHeight: .infinity)
+                if Self.usesResidentDetailHosts {
+                    SessionDetailHostSwitcher(session: session,
+                        scope: ClientDetailBusinessScope(serverID: CorptieAppEnvironment.backendBaseURL.absoluteString,
+                            ownerID: backendClient.detailBusinessOwnerID, principalID: "local-user", sessionID: session.id,
+                            taskID: session.taskId, workID: session.workId),
+                        repository: backendClient.detailBusinessRepository, presentation: detailPresentation,
+                        revision: entityGroupingRevision, railWidth: ConversationDetailWidgetMetrics.railWidth,
+                        isActive: sidebarState.isSelected)
+                        .frame(width: ConversationDetailWidgetMetrics.railWidth, alignment: .top)
+                } else {
+                    SessionDetailPanel(session: session, railWidth: ConversationDetailWidgetMetrics.railWidth, detailPresentation: detailPresentation)
+                        .frame(maxHeight: .infinity)
+                }
             }
             .padding(MainWindowPageLayoutMetrics.outerPadding)
         } else if let task = selectedTask {

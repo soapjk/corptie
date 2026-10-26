@@ -52,6 +52,18 @@ extension UnifiedConsoleView {
     }
 
     func openTask(_ task: CorptieTask, session: TaskSession?) {
+        if let session {
+            SessionSwitchTrace.shared.begin(sessionID: session.id, eventTimestamp: NSApp.currentEvent?.timestamp)
+        }
+        let trace = SessionSwitchTrace.shared.start(.taskAction, sessionID: session?.id)
+        defer { SessionSwitchTrace.shared.finish(trace) }
+        if Self.usesPageGateProof, let session,
+           case .selectSession = ConsoleTaskOpenDecision.resolve(task: task, session: session) {
+            // P0 keeps navigation-induced SwiftUI work behind the same native
+            // opening-page opportunity as business selection.
+            selectSessionAfterHighlight(session, focusComposer: true)
+            return
+        }
         cardSelectionExplicitlyCleared = false
         selectedWorkId = task.workId
         selectedCategory = .worker

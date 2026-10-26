@@ -7,6 +7,13 @@ final class PanelFocusState: ObservableObject {
     @Published var isFocused = false
 }
 
+/// The root stays alive to retain drafts and panel-local preferences, while
+/// its expensive conversation subtree exists only during presentation.
+@MainActor
+final class FloatingPanelPresentationState: ObservableObject {
+    @Published fileprivate(set) var isActive = false
+}
+
 struct ListLayoutMetrics: Equatable {
     let layoutKey: String
     let minimumHeight: CGFloat
@@ -59,6 +66,8 @@ final class FloatingPanelController: NSObject {
     private let client: BackendClient
     private let focusState = PanelFocusState()
     private let layoutState = PanelLayoutState()
+    private let presentationState = FloatingPanelPresentationState()
+    private var presentationGeneration: UInt64 = 0
     private let listMinimumSize = NSSize(width: 402, height: 92)
     private let detailSizeStorageKey = "corptie.detailWindowSizesBySession"
     private let listHeightStorageKey = "corptie.userListWindowHeightsByLayout.v4"
@@ -82,7 +91,7 @@ final class FloatingPanelController: NSObject {
         panel.isVisible
     }
 
-    init(client: BackendClient) {
+    init(client: BackendClient, viewportController: SessionViewportController = .shared) {
         self.client = client
 
         let initialFrame = NSRect(x: 1120, y: 580, width: 420, height: 460)
@@ -113,13 +122,15 @@ final class FloatingPanelController: NSObject {
             self?.finishListResizeIfNeeded()
         }
 
-        let rootView = FloatingRootView()
+        let rootView = FloatingRootView(presentationState: presentationState, viewportController: viewportController)
             .environmentObject(client)
             .environmentObject(client.sessionIndexStore)
             .environmentObject(focusState)
             .environmentObject(layoutState)
 
         let hostingView = FirstMouseHostingView(rootView: rootView)
+        // The window owns its size, including when the inactive root is empty.
+        hostingView.sizingOptions = []
         // The SwiftUI root (including the liquid-glass panel background) must
         // always have exactly the same bounds as the NSWindow content view.
         // Without autoresizing or constraints, a layout-mode transition can
@@ -141,21 +152,28 @@ final class FloatingPanelController: NSObject {
             .removeDuplicates()
             .receive(on: RunLoop.main)
             .sink { [weak self] sessionCount in
-                self?.resizeForSessionCount(sessionCount)
-                self?.adjustListHeightForCurrentMeasurements(animated: true)
+                guard let self, self.presentationState.isActive else { return }
+                self.resizeForSessionCount(sessionCount)
+                self.adjustListHeightForCurrentMeasurements(animated: true)
             }
             .store(in: &cancellables)
 
         client.sessionSelectionController.$selectedSessionID
             .receive(on: RunLoop.main)
             .sink { [weak self] selectedSessionID in
-                guard let self else { return }
+                guard let self,
+                      selectedSessionID == self.client.sessionSelectionController.selectedSessionID else { return }
+                guard self.presentationState.isActive else {
+                    self.currentDisplayedSessionId = selectedSessionID
+                    return
+                }
                 let previousSessionId = self.currentDisplayedSessionId
                 let nextSessionId = selectedSessionID
                 guard previousSessionId != nextSessionId else {
                     return
                 }
                 self.currentDisplayedSessionId = nextSessionId
+                self.presentationGeneration &+= 1
                 if selectedSessionID == nil {
                     self.pendingDetailTransitionUnlock?.cancel()
                     self.isDetailTransitionLocked = false
@@ -175,7 +193,18 @@ final class FloatingPanelController: NSObject {
             .compactMap { $0 }
             .receive(on: RunLoop.main)
             .sink { [weak self] metrics in
-                self?.applyListMetrics(metrics)
+                guard let self, self.presentationState.isActive else { return }
+                self.applyListMetrics(metrics)
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: NSApplication.didHideNotification)
+            .sink { [weak self] _ in self?.suspendPresentation() }
+            .store(in: &cancellables)
+        NotificationCenter.default.publisher(for: NSApplication.didUnhideNotification)
+            .sink { [weak self] _ in
+                guard let self, self.panel.isVisible else { return }
+                self.mountPresentationIfNeeded()
             }
             .store(in: &cancellables)
 
@@ -183,21 +212,74 @@ final class FloatingPanelController: NSObject {
 
     func show() {
         NSApp.activate(ignoringOtherApps: true)
+        mountPresentationIfNeeded()
         panel.makeKeyAndOrderFront(nil)
         panel.orderFrontRegardless()
         focusState.isFocused = panel.isKeyWindow
     }
 
     func hide() {
+        suspendPresentation()
         panel.orderOut(nil)
         focusState.isFocused = false
     }
 
     @objc private func closePanelButtonPressed() {
-        panel.orderOut(nil)
+        hide()
+    }
+
+    private func mountPresentationIfNeeded() {
+        guard !presentationState.isActive else { return }
+        presentationGeneration &+= 1
+        currentDisplayedSessionId = client.selectedSession?.id
+        presentationState.isActive = true
+        if currentDisplayedSessionId != nil {
+            listWidthBeforeDetail = listWidthBeforeDetail ?? panel.frame.width
+            applyDetailSizing(animated: false, restoreSavedSize: true)
+            layoutState.canRenderDetailMessages = true
+        } else {
+            layoutState.canRenderDetailMessages = false
+            restoreListFrameForTransition(animated: false)
+        }
+    }
+
+    private func suspendPresentation() {
+        guard presentationState.isActive else { return }
+        // Capture this panel only, before its native rows disappear. A global
+        // capture would let another window overwrite this panel's viewport.
+        var descendants = panel.contentView.map { [$0] } ?? []
+        while let view = descendants.popLast() {
+            if let table = view as? NSTableView,
+               let coordinator = table.delegate as? AppKitChatTimelineCoordinator {
+                coordinator.publishPositionImmediately()
+            }
+            descendants.append(contentsOf: view.subviews)
+        }
+        presentationGeneration &+= 1
+        // Supersede a native frame animation at its current geometry before
+        // hiding; delayed completions are independently generation-checked.
+        panel.setFrame(panel.frame, display: false, animate: false)
+        pendingResizeBounce?.cancel()
+        pendingResizeBounce = nil
+        pendingListTransitionUnlock?.cancel()
+        pendingListTransitionUnlock = nil
+        pendingDetailTransitionUnlock?.cancel()
+        pendingDetailTransitionUnlock = nil
+        isListTransitionLocked = false
+        isDetailTransitionLocked = false
+        isBouncingResize = false
+        isProgrammaticResize = false
+        isNativeUserLiveResize = false
+        presentationState.isActive = false
+        layoutState.canRenderDetailMessages = false
+        // Flush removal while the panel can still lay out. Its root and draft
+        // repository remain mounted, but no hidden transcript/editor is left.
+        panel.contentView?.layoutSubtreeIfNeeded()
     }
 
     private func beginListTransition() {
+        guard presentationState.isActive else { return }
+        let generation = presentationGeneration
         pendingListTransitionUnlock?.cancel()
         isListTransitionLocked = true
         layoutState.canRenderDetailMessages = false
@@ -205,7 +287,8 @@ final class FloatingPanelController: NSObject {
         restoreListFrameForTransition(animated: true)
 
         let task = DispatchWorkItem { [weak self] in
-            guard let self else {
+            guard let self, self.presentationState.isActive,
+                  self.presentationGeneration == generation else {
                 return
             }
             self.isListTransitionLocked = false
@@ -219,13 +302,16 @@ final class FloatingPanelController: NSObject {
     }
 
     private func beginDetailTransition() {
+        guard presentationState.isActive else { return }
+        let generation = presentationGeneration
         pendingDetailTransitionUnlock?.cancel()
         pendingDetailTransitionUnlock = nil
         isDetailTransitionLocked = true
         layoutState.canRenderDetailMessages = false
 
         applyDetailSizing(animated: true, restoreSavedSize: true) { [weak self] in
-            guard let self else {
+            guard let self, self.presentationState.isActive,
+                  self.presentationGeneration == generation else {
                 return
             }
             self.isDetailTransitionLocked = false
@@ -236,7 +322,9 @@ final class FloatingPanelController: NSObject {
         // it to match the current session id meant an intermediate switch's
         // completion dropped the unlock and the next session stayed blank.
         let unlock = DispatchWorkItem { [weak self] in
-            guard let self, self.client.selectedSession != nil else { return }
+            guard let self, self.presentationState.isActive,
+                  self.presentationGeneration == generation,
+                  self.client.selectedSession != nil else { return }
             self.layoutState.canRenderDetailMessages = true
         }
         pendingDetailTransitionUnlock = unlock
@@ -523,6 +611,8 @@ final class FloatingPanelController: NSObject {
     }
 
     private func setPanelSize(_ size: NSSize, duration: TimeInterval, timing: CAMediaTimingFunctionName, completion: (@MainActor @Sendable () -> Void)? = nil) {
+        guard presentationState.isActive else { return }
+        let generation = presentationGeneration
         var frame = panel.frame
         let oldMaxY = frame.maxY
         frame.size = size
@@ -530,6 +620,13 @@ final class FloatingPanelController: NSObject {
 
         logWindowGeometry("set-size target=\(format(size.width))x\(format(size.height)) duration=\(String(format: "%.2f", duration))")
 
+        if duration == 0 {
+            isProgrammaticResize = true
+            panel.setFrame(frame, display: true)
+            isProgrammaticResize = false
+            completion?()
+            return
+        }
         isProgrammaticResize = true
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration
@@ -537,9 +634,8 @@ final class FloatingPanelController: NSObject {
             panel.animator().setFrame(frame, display: true)
         } completionHandler: { [weak self] in
             Task { @MainActor in
-                guard let self else {
-                    return
-                }
+                guard let self, self.presentationState.isActive,
+                      self.presentationGeneration == generation else { return }
                 self.isProgrammaticResize = false
                 self.logWindowGeometry("set-size-complete")
                 completion?()
@@ -548,6 +644,8 @@ final class FloatingPanelController: NSObject {
     }
 
     private func setPanelHeight(_ height: CGFloat, duration: TimeInterval, timing: CAMediaTimingFunctionName) {
+        guard presentationState.isActive else { return }
+        let generation = presentationGeneration
         var frame = panel.frame
         let oldMaxY = frame.maxY
         frame.size.height = height
@@ -555,6 +653,12 @@ final class FloatingPanelController: NSObject {
 
         logWindowGeometry("set-height target=\(format(height)) duration=\(String(format: "%.2f", duration))")
 
+        if duration == 0 {
+            isProgrammaticResize = true
+            panel.setFrame(frame, display: true)
+            isProgrammaticResize = false
+            return
+        }
         isProgrammaticResize = true
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration
@@ -562,8 +666,10 @@ final class FloatingPanelController: NSObject {
             panel.animator().setFrame(frame, display: true)
         } completionHandler: { [weak self] in
             Task { @MainActor in
-                self?.isProgrammaticResize = false
-                self?.logWindowGeometry("set-height-complete")
+                guard let self, self.presentationState.isActive,
+                      self.presentationGeneration == generation else { return }
+                self.isProgrammaticResize = false
+                self.logWindowGeometry("set-height-complete")
             }
         }
     }
@@ -587,6 +693,8 @@ final class FloatingPanelController: NSObject {
     }
 
     private func bounceHeightBackIfNeeded() {
+        guard presentationState.isActive else { return }
+        let generation = presentationGeneration
         guard client.selectedSession == nil, !panel.inLiveResize,
               !panel.isPerformingCustomLiveResize, !isBouncingResize else {
             return
@@ -607,17 +715,21 @@ final class FloatingPanelController: NSObject {
         setPanelHeight(undershoot, duration: 0.16, timing: .easeOut)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) { [weak self] in
-            guard let self else { return }
+            guard let self, self.presentationState.isActive,
+                  self.presentationGeneration == generation else { return }
             self.setPanelHeight(rebound, duration: 0.11, timing: .easeInEaseOut)
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.27) { [weak self] in
-            guard let self else { return }
+            guard let self, self.presentationState.isActive,
+                  self.presentationGeneration == generation else { return }
             self.setPanelHeight(targetHeight, duration: 0.13, timing: .easeOut)
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.40) { [weak self] in
-            self?.isBouncingResize = false
+            guard let self, self.presentationState.isActive,
+                  self.presentationGeneration == generation else { return }
+            self.isBouncingResize = false
         }
     }
 
@@ -664,11 +776,15 @@ final class FloatingPanelController: NSObject {
     }
 
     private func scheduleResizeBounceCheck() {
+        guard presentationState.isActive else { return }
+        let generation = presentationGeneration
         pendingResizeBounce?.cancel()
 
         let task = DispatchWorkItem { [weak self] in
             Task { @MainActor in
-                self?.bounceHeightBackIfNeeded()
+                guard let self, self.presentationState.isActive,
+                      self.presentationGeneration == generation else { return }
+                self.bounceHeightBackIfNeeded()
             }
         }
         pendingResizeBounce = task
@@ -718,7 +834,7 @@ private struct StoredPanelSize: Codable {
 
 extension FloatingPanelController: NSWindowDelegate {
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        sender.orderOut(nil)
+        hide()
         return false
     }
 
@@ -731,6 +847,7 @@ extension FloatingPanelController: NSWindowDelegate {
     }
 
     func windowDidResize(_ notification: Notification) {
+        guard presentationState.isActive else { return }
         logWindowGeometry("window-did-resize")
         let isUserDrivenResize = isNativeUserLiveResize || panel.isPerformingCustomLiveResize
         if isUserDrivenResize && !isProgrammaticResize && !isBouncingResize {
@@ -755,6 +872,8 @@ extension FloatingPanelController: NSWindowDelegate {
     }
 
     private func finishListResizeIfNeeded() {
+        guard presentationState.isActive else { return }
+        let generation = presentationGeneration
         pendingResizeBounce?.cancel()
         if client.selectedSession != nil {
             saveCurrentDetailWindowSizeIfNeeded()
@@ -762,7 +881,9 @@ extension FloatingPanelController: NSWindowDelegate {
             captureEffectiveListHeight()
             bounceHeightBackIfNeeded()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.41) { [weak self] in
-                self?.captureEffectiveListHeight()
+                guard let self, self.presentationState.isActive,
+                      self.presentationGeneration == generation else { return }
+                self.captureEffectiveListHeight()
             }
         }
     }

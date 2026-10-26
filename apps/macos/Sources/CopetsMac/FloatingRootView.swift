@@ -19,6 +19,7 @@ extension EnvironmentValues {
 }
 
 struct FloatingRootView: View {
+    @ObservedObject var presentationState: FloatingPanelPresentationState
     @EnvironmentObject private var backendClient: BackendClient
     @ObservedObject private var sessionCreationState = BackendClient.shared.sessionCreationController
     @EnvironmentObject private var sessionIndexStore: SessionIndexStore
@@ -48,7 +49,7 @@ struct FloatingRootView: View {
     @State private var isHoveringReplyPreviewBubble = false
     @State private var hoverPreviewCloseTask: Task<Void, Never>?
     @ObservedObject private var presentationCache = SessionPresentationCache.shared
-    @ObservedObject private var viewportController = SessionViewportController.shared
+    @ObservedObject var viewportController: SessionViewportController = .shared
     @State private var composerDraftRepository = ComposerDraftRepository()
     @State private var listHeightMeasurements: [ListHeightMetric: CGFloat] = [:]
     @State private var isSearching = false
@@ -65,6 +66,20 @@ struct FloatingRootView: View {
     private let closeButtonLeadingInset: CGFloat = 12
 
     var body: some View {
+        // Keep this root's @State owners (especially drafts) alive across hide,
+        // without retaining a second live conversation behind the main window.
+        Group {
+            if presentationState.isActive {
+                activeContent
+                    .onDisappear {
+                        dismissExternalMenus()
+                        newSessionPanel.close()
+                    }
+            }
+        }
+    }
+
+    private var activeContent: some View {
         ZStack {
             LiquidGlassPanelBackground(cornerRadius: 26)
             WindowDragArea()
@@ -76,6 +91,7 @@ struct FloatingRootView: View {
                         sessionId: selectedSession.id,
                         presentationCache: presentationCache,
                         composerDraftRepository: composerDraftRepository,
+                        backendClient: backendClient,
                         initialTimelinePosition: viewportController.position(for: selectedSession.id),
                         onTimelinePositionChange: { position in
                             viewportController.store(position, for: selectedSession.id)

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import CorptieClientCore
 import CorptieConversation
 import PhotosUI
@@ -42,14 +43,53 @@ enum ComposerMentionAnchorPolicy {
     }
 }
 
+/// Existing windows keep their legacy observation boundary. Retained pages
+/// instantiate the scoped surface directly, without these global publishers.
 struct MessageComposer: View {
+    @EnvironmentObject private var backendClient: BackendClient
+    let sessionId: String
+    let draftRepository: ComposerDraftRepository
+    let modelCatalog: ProviderCatalogStore
+    var allowsModelSwitch = true
+    var compact = false
+    let status: TaskStatus?
+    let isReady: Bool
+    let notReadyReason: SessionNotReadyReason?
+    let activityStatus: String?
+    var onSubmissionStarted: () -> Void = {}
+    @State private var revision: UInt64 = 0
+    var body: some View {
+        SessionMessageComposerSurface(sessionId: sessionId, draftRepository: draftRepository,
+            modelCatalog: modelCatalog, backendClient: backendClient,
+            allowsModelSwitch: allowsModelSwitch, compact: compact, status: status,
+            isReady: isReady, notReadyReason: notReadyReason, activityStatus: activityStatus,
+            onSubmissionStarted: onSubmissionStarted, legacyRevision: revision)
+        .onReceive(Publishers.MergeMany([
+            backendClient.objectWillChange.eraseToAnyPublisher(),
+            backendClient.appState.objectWillChange.eraseToAnyPublisher(),
+            backendClient.archivedSessionController.objectWillChange.eraseToAnyPublisher(),
+            backendClient.sessionCommandController.objectWillChange.eraseToAnyPublisher(),
+            modelCatalog.objectWillChange.eraseToAnyPublisher()
+        ])) { _ in revision &+= 1 }
+    }
+}
+
+struct SessionMessageComposerSurface: View {
     private static let sendControlEdge = ComposerShellMetrics.actionVisualEdge
 
-    @ObservedObject private var archivedSessionState = BackendClient.shared.archivedSessionController
-    @ObservedObject private var modelCatalog: ProviderCatalogStore
-    @EnvironmentObject private var backendClient: BackendClient
-    @ObservedObject private var appState = AppStateStore.shared
-    @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
+    private let modelCatalog: ProviderCatalogStore
+    private let backendClient: BackendClient
+    let renderInputs: SessionPageRenderInputs?
+    let legacyRevision: UInt64
+    private var acceptsPresentationUpdates: Bool { renderInputs?.acceptsPresentationUpdates ?? true }
+    private var allowsActions: Bool {
+        guard let renderInputs else { return true }
+        return renderInputs.actionSession(generation: renderInputs.activity.generation) != nil
+    }
+    private var online: Bool { renderInputs?.online ?? backendClient.isOnline }
+    private var sendingMessage: Bool { renderInputs?.sendingMessage ?? backendClient.isSendingMessage }
+    private var mentionSessions: [TaskSession] { renderInputs?.mentionSessions ?? backendClient.appState.sessions }
+    private var mentionWorks: [Work] { renderInputs?.works ?? backendClient.appState.works }
     let sessionId: String
     let draftRepository: ComposerDraftRepository
     let allowsModelSwitch: Bool
@@ -81,16 +121,20 @@ struct MessageComposer: View {
         sessionId: String,
         draftRepository: ComposerDraftRepository,
         modelCatalog: ProviderCatalogStore,
+        backendClient: BackendClient,
         allowsModelSwitch: Bool = true,
         compact: Bool = false,
         status: TaskStatus?,
         isReady: Bool,
         notReadyReason: SessionNotReadyReason?,
         activityStatus: String?,
-        onSubmissionStarted: @escaping () -> Void = {}
+        onSubmissionStarted: @escaping () -> Void = {},
+        renderInputs: SessionPageRenderInputs? = nil, legacyRevision: UInt64 = 0
     ) {
         self.sessionId = sessionId
-        _modelCatalog = ObservedObject(wrappedValue: modelCatalog)
+        self.modelCatalog = modelCatalog
+        self.backendClient = backendClient
+        self.renderInputs = renderInputs; self.legacyRevision = legacyRevision
         self.draftRepository = draftRepository
         self.allowsModelSwitch = allowsModelSwitch
         self.compact = compact
@@ -103,20 +147,28 @@ struct MessageComposer: View {
         draft.sessionId = sessionId
         _attachedImages = State(initialValue: draft.images)
         _selectedMentions = State(initialValue: draft.mentions)
-        _editorController = State(initialValue: ComposerEditorController(draft: draft))
+        _editorController = State(initialValue: renderInputs?.editorController(for: draftRepository) ?? ComposerEditorController(draft: draft))
         _hasSendableText = State(initialValue: draft.hasSendableText)
     }
 
     var body: some View {
+        let _ = legacyRevision
+        let _ = SessionSwitchTrace.shared.mark(.composerBody, sessionID: sessionId)
+        return composerLayout
+            .onChange(of: renderInputs?.activity.isActive) { _, _ in synchronizePresentation() }
+    }
+
+    private var composerLayout: some View {
         VStack(alignment: .leading, spacing: 4) {
             if !compact {
                 MacComposerQuickMessages(host: backendClient.baseURL.absoluteString, sessionID: sessionId,
-                    taskID: session?.taskId, online: backendClient.isOnline, refreshRevision: quickMessageRefresh,
-                    enabled: canSend && !backendClient.isSendingMessage && session?.archived != true,
+                    taskID: session?.taskId, online: online, refreshRevision: renderInputs?.quickMessageRevision ?? quickMessageRefresh,
+                    enabled: canSend && !sendingMessage && session?.archived != true,
+                    activity: renderInputs?.activity,
                     load: { try await backendClient.quickMessages(for: sessionId) }) { text in
-                    guard canSend, !backendClient.isSendingMessage, let session, session.archived != true else { return }
+                    guard canSend, !sendingMessage, let session, session.archived != true else { return }
                     // Independent send: never clear or attach the editor's draft.
-                    if backendClient.sendMessage(text, to: session, onSuccess: { quickMessageRefresh += 1 }) {
+                    if backendClient.sendMessage(text, to: session, onSuccess: didSendMessage) {
                         onSubmissionStarted()
                     }
                 }
@@ -127,10 +179,8 @@ struct MessageComposer: View {
             } else {
                 ConversationComposerChrome {
                     HStack(spacing: 0) {
-                        ThreadMetaView(sessionID: sessionId, status: status, isReady: isReady,
-                                       notReadyReason: notReadyReason, activityStatus: activityStatus)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        SessionComposerStopButton(session: session)
+                        statusRow.frame(maxWidth: .infinity, alignment: .leading)
+                        stopButton(compact: false)
                     }
                 } content: {
                     editorRow
@@ -164,10 +214,12 @@ struct MessageComposer: View {
             }
         )
         .onReceive(NotificationCenter.default.publisher(for: .consoleComposerFocusRequested)) { notification in
-            if notification.object as? String == sessionId { editorController.focusIfRequested() }
+            if acceptsPresentationUpdates, notification.object as? String == sessionId { editorController.focusIfRequested() }
         }
-        .onChange(of: attachedImages) { _, images in editorController.draft.images = images }
-        .onAppear { imageImportState.activate() }
+        .onChange(of: attachedImages) { _, images in
+            if acceptsPresentationUpdates { editorController.draft.images = images }
+        }
+        .onAppear { synchronizePresentation() }
         .onDisappear { imageImportState.invalidate() }
         .photosPicker(
             isPresented: $isShowingPhotoPicker,
@@ -177,10 +229,14 @@ struct MessageComposer: View {
             preferredItemEncoding: .current
         )
         .onChange(of: selectedPhotoItems) { _, items in importPhotoItems(items) }
-        .onChange(of: selectedMentions) { _, mentions in editorController.draft.mentions = mentions }
-        .onPreferenceChange(ComposerWidthPreferenceKey.self) { width in composerWidth = width }
-        .task {
-            guard allowsModelSwitch,
+        .onChange(of: selectedMentions) { _, mentions in
+            if acceptsPresentationUpdates { editorController.draft.mentions = mentions }
+        }
+        .onPreferenceChange(ComposerWidthPreferenceKey.self) { width in
+            if acceptsPresentationUpdates, composerWidth != width { composerWidth = width }
+        }
+        .task(id: renderInputs?.activity.isActive) {
+            guard acceptsPresentationUpdates, allowsActions, allowsModelSwitch,
                   backendClient.selectedSession?.id == sessionId else { return }
             let provider = backendClient.selectedSession?.external?.provider ?? "codex-pty"
             if modelCatalog.codexModels.isEmpty || modelCatalog.loadedModelProvider != provider {
@@ -199,6 +255,59 @@ struct MessageComposer: View {
         }
     }
 
+    private func synchronizePresentation() {
+        if acceptsPresentationUpdates {
+            attachedImages = editorController.draft.images
+            selectedMentions = editorController.draft.mentions
+            hasSendableText = editorController.draft.hasSendableText
+            imageImportState.activate()
+        } else {
+            imageImportState.invalidate()
+            mentionQuery = nil
+            isShowingPhotoPicker = false
+            isShowingScheduleSheet = false
+        }
+    }
+
+    private func didSendMessage() {
+        if let renderInputs { renderInputs.didSendMessage() }
+        else { quickMessageRefresh &+= 1 }
+    }
+
+    @ViewBuilder private var modelMenu: some View {
+        if let page = renderInputs {
+            SessionModelMenuSurface(models: page.models, defaultModelID: page.defaultModel,
+                defaultReasoningLevel: page.defaultReasoning, loadingModels: page.loadingModels,
+                switchingModel: page.switchingModel, switchingReasoning: page.switchingReasoning,
+                backendClient: backendClient, maxWidth: modelMenuMaxWidth, session: session,
+                activity: page.activity, renderInputs: page)
+        } else { CodexModelMenu(modelCatalog: modelCatalog, maxWidth: modelMenuMaxWidth, session: session) }
+    }
+
+    @ViewBuilder private var statusRow: some View {
+        if let page = renderInputs {
+            ConversationComposerStatusRow(isReady: isReady,
+                readinessTitle: notReadyReason?.presentationTitle ?? L10n("Session Not Ready"),
+                readinessMessage: notReadyReason?.presentationMessage ?? L10n("This Session cannot accept messages right now."),
+                readinessCode: notReadyReason?.code, executionState: status?.sharedExecutionState,
+                activity: page.restart?.text ?? activityStatus) {
+                    ChatUsageBar(sessionID: sessionId, usage: page.usage)
+                }
+        } else {
+            ThreadMetaView(sessionID: sessionId, status: status, isReady: isReady,
+                notReadyReason: notReadyReason, activityStatus: activityStatus)
+        }
+    }
+
+    private func stopButton(compact: Bool) -> some View {
+        SessionComposerStopSurface(session: session, online: online, compact: compact) {
+            guard allowsActions else { return }
+            let target = renderInputs?.actionSession(generation: renderInputs?.activity.generation ?? 0) ?? session
+            guard let target, target.executionTaskStatus == .running, target.canInterruptNow else { return }
+            backendClient.interrupt(session: target, surface: .sessionDetailComposerControl)
+        }
+    }
+
     private var editorRow: some View {
         ConversationComposerEditorRow(
             showsAttachments: !attachedImages.isEmpty,
@@ -212,7 +321,7 @@ struct MessageComposer: View {
         } more: {
             moreMenu
         } model: {
-            CodexModelMenu(modelCatalog: modelCatalog, maxWidth: modelMenuMaxWidth)
+            modelMenu
         }
         .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier], isTargeted: nil) { providers in
             importDroppedImages(providers)
@@ -231,7 +340,7 @@ struct MessageComposer: View {
                 sendButton
                 if session?.executionTaskStatus == .running,
                    session?.canInterruptNow == true {
-                    SessionComposerStopButton(session: session, compact: true)
+                    stopButton(compact: true)
                 }
                 moreMenu
                     .padding(.trailing, 4)
@@ -267,7 +376,7 @@ struct MessageComposer: View {
     private var sendButton: some View {
         Button { sendCurrentDraft() } label: {
             ComposerActionGlyph(systemName: "paperplane.fill", tint: ComposerPalette.softBlue,
-                                isBusy: backendClient.isSendingMessage || isImportingImages, showsSurface: false)
+                                isBusy: sendingMessage || isImportingImages, showsSurface: false)
                 .frame(width: Self.sendControlEdge, height: Self.sendControlEdge)
                 .clipped()
                 .overlay {
@@ -289,6 +398,7 @@ struct MessageComposer: View {
     private var moreMenu: some View {
         Menu {
             Button {
+                guard allowsActions else { return }
                 isShowingPhotoPicker = true
             } label: {
                 Label(isImportingImages ? L10n("正在导入图片…") : L10n("从照片选择"),
@@ -300,6 +410,7 @@ struct MessageComposer: View {
             }
             .disabled(!canAttachImages || isImportingImages || attachedImages.count >= 8)
             Button {
+                guard allowsActions else { return }
                 scheduleSubmission = editorController.submission()
                 isShowingScheduleSheet = true
             } label: {
@@ -326,17 +437,18 @@ struct MessageComposer: View {
             placeholder: "Send a instruction",
             font: .systemFont(ofSize: 12, weight: .medium),
             textInsetHeight: compact ? CompactComposerLayout.textInsetHeight : ComposerShellMetrics.textInsetHeight,
-            onFocusChange: { isFocused = $0 },
+            onFocusChange: { if acceptsPresentationUpdates { isFocused = $0 } },
             onSendableTextChange: { nextValue in
-                if hasSendableText != nextValue { hasSendableText = nextValue }
+                if acceptsPresentationUpdates, hasSendableText != nextValue { hasSendableText = nextValue }
             },
             onContentHeightChange: { nextHeight in
+                guard acceptsPresentationUpdates else { return }
                 let resolved = compact ? CompactComposerLayout.resolvedInputHeight(nextHeight) : nextHeight
                 if abs(inputHeight - resolved) > 0.5 { inputHeight = resolved }
             },
             onPasteImages: importImagesFromPasteboard,
             onMentionQueryChange: updateMentionQuery,
-            onMentionAnchorChange: { mentionAnchorPoint = $0 },
+            onMentionAnchorChange: { if acceptsPresentationUpdates { mentionAnchorPoint = $0 } },
             onMentionCommand: handleMentionCommand,
             onSubmit: send
         )
@@ -353,6 +465,7 @@ struct MessageComposer: View {
     }
 
     private func sendCurrentDraft() {
+        guard allowsActions else { return }
         guard let submission = editorController.submission()
                 ?? (!attachedImages.isEmpty
                     ? ComposerDraftBuffer.Submission(
@@ -366,7 +479,7 @@ struct MessageComposer: View {
     }
 
     private func clearScheduledSubmissionIfUnchanged() {
-        guard let scheduleSubmission else { return }
+        guard allowsActions, let scheduleSubmission else { return }
         if editorController.clear(ifUnchangedSince: scheduleSubmission) {
             hasSendableText = false
             inputHeight = ComposerInputLayout.minimumHeight
@@ -378,7 +491,7 @@ struct MessageComposer: View {
         guard let session,
               canSend,
               !isImportingImages,
-              !backendClient.isSendingMessage else {
+              !sendingMessage else {
             return
         }
         let submittedImages = attachedImages
@@ -386,13 +499,18 @@ struct MessageComposer: View {
         let didStartSending = backendClient.sendMessage(submission.text, to: session,
             images: submittedImages,
             mentions: submittedMentions,
-            onSuccess: { quickMessageRefresh += 1 },
+            onSuccess: didSendMessage,
             onFailure: {
-            if editorController.restoreAfterFailedSubmission(submission) {
-                hasSendableText = true
+            guard renderInputs?.acceptsScopeResults ?? true,
+                  editorController.draft.images.isEmpty, editorController.draft.mentions.isEmpty,
+                  editorController.restoreAfterFailedSubmission(submission) else { return }
+            editorController.draft.images = submittedImages
+            editorController.draft.mentions = submittedMentions
+            if acceptsPresentationUpdates {
+                hasSendableText = editorController.draft.hasSendableText
+                attachedImages = submittedImages
+                selectedMentions = submittedMentions
             }
-            attachedImages = submittedImages
-            selectedMentions = submittedMentions
         })
         guard didStartSending else {
             return
@@ -402,21 +520,23 @@ struct MessageComposer: View {
             hasSendableText = false
             inputHeight = ComposerInputLayout.minimumHeight
         }
+        editorController.draft.images = []
+        editorController.draft.mentions = []
         attachedImages = []
         selectedMentions = []
         mentionQuery = nil
     }
 
     private var mentionCandidates: [ComposerMentionCandidate] {
-        guard let mentionQuery else { return [] }
+        guard acceptsPresentationUpdates, let mentionQuery else { return [] }
         let activeMentionIDs = Set(selectedMentions
             .filter { editorController.draft.text.contains("@\($0.displayName)") }
             .map(\.id))
         guard activeMentionIDs.count < 8 else { return [] }
         let needle = mentionQuery.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let availableSessions = appState.sessions.filter { $0.id != sessionId && $0.archived != true }
+        let availableSessions = mentionSessions.filter { $0.id != sessionId && $0.archived != true }
         let sessionsByWork = Dictionary(grouping: availableSessions, by: { $0.workId ?? "" })
-        let workIDs = Set(appState.works.map(\.id))
+        let workIDs = Set(mentionWorks.map(\.id))
         func sessionCandidate(_ candidate: TaskSession, workName: String?) -> ComposerMentionCandidate {
             ComposerMentionCandidate(
                 mention: ConversationMention(targetType: .session, targetId: candidate.id, displayName: candidate.title),
@@ -425,7 +545,7 @@ struct MessageComposer: View {
             )
         }
         var candidates: [ComposerMentionCandidate] = []
-        for work in appState.works {
+        for work in mentionWorks {
             candidates.append(ComposerMentionCandidate(
                 mention: ConversationMention(targetType: .work, targetId: work.id, displayName: work.name),
                 detail: L10n("Work"),
@@ -459,7 +579,7 @@ struct MessageComposer: View {
     }
 
     private func updateMentionQuery(_ query: ComposerMentionQuery?) {
-        guard query != mentionQuery else { return }
+        guard acceptsPresentationUpdates, query != mentionQuery else { return }
         if query?.text != mentionQuery?.text {
             mentionSelectionIndex = 0
         }
@@ -467,7 +587,7 @@ struct MessageComposer: View {
     }
 
     private func handleMentionCommand(_ command: ComposerMentionCommand) -> Bool {
-        guard mentionQuery != nil else { return false }
+        guard allowsActions, mentionQuery != nil else { return false }
         switch command {
         case .move(let delta):
             guard !mentionCandidates.isEmpty else { return false }
@@ -485,10 +605,11 @@ struct MessageComposer: View {
     }
 
     private func selectMention(_ candidate: ComposerMentionCandidate) {
-        guard let mentionQuery else { return }
+        guard allowsActions, let mentionQuery else { return }
         editorController.replaceMentionQuery(mentionQuery, with: candidate.mention.displayName)
         if !selectedMentions.contains(where: { $0.id == candidate.mention.id }) {
             selectedMentions.append(candidate.mention)
+            editorController.draft.mentions = selectedMentions
         }
         self.mentionQuery = nil
         mentionSelectionIndex = 0
@@ -500,7 +621,7 @@ struct MessageComposer: View {
     private var isSendDisabled: Bool {
         return (!hasSendableText && attachedImages.isEmpty)
             || isImportingImages
-            || backendClient.isSendingMessage
+            || sendingMessage
             || !canSend
     }
 
@@ -515,6 +636,7 @@ struct MessageComposer: View {
     }
 
     private func chooseImageFiles() {
+        guard allowsActions else { return }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = true
@@ -594,6 +716,7 @@ struct MessageComposer: View {
     private func startImageImport(
         _ load: @escaping @MainActor () async throws -> ComposerImagePasteboard.Snapshot
     ) {
+        guard allowsActions else { return }
         guard canAttachImages else {
             imageImportState.showError(ComposerImagePasteboard.PasteError.unsupported.message)
             return
@@ -608,21 +731,28 @@ struct MessageComposer: View {
             return
         }
         let draft = editorController.draft
+        let generation = renderInputs?.activity.generation
+        let acceptsImport = {
+            guard acceptsPresentationUpdates else { return false }
+            guard let generation, let renderInputs else { return true }
+            return renderInputs.actionSession(generation: generation) != nil
+        }
         imageImportState.task = Task { @MainActor in
             defer { imageImportState.finish(token) }
             do {
                 let snapshot = try await load()
                 try Task.checkCancellation()
+                guard acceptsImport() else { return }
                 let batch = await ComposerImagePreparation.shared.prepare(snapshot, capacity: capacity)
                 defer { batch.cleanup() }
                 var failures = batch.failed
                 var firstImportError: String?
                 for prepared in batch.images {
-                    guard imageImportState.accepts(token), !Task.isCancelled else { return }
+                    guard acceptsImport(), imageImportState.accepts(token), !Task.isCancelled else { return }
                     do {
                         let image = try await backendClient.importChatImage(at: prepared.url, to: session,
                             preserveOriginal: !prepared.temporary)
-                        guard imageImportState.accepts(token), !Task.isCancelled,
+                        guard acceptsImport(), imageImportState.accepts(token), !Task.isCancelled,
                               editorController.draft === draft else {
                             await backendClient.removeUnsentChatImage(image, from: session)
                             return
@@ -637,7 +767,7 @@ struct MessageComposer: View {
                         if firstImportError == nil { firstImportError = error.localizedDescription }
                     }
                 }
-                guard imageImportState.accepts(token), !Task.isCancelled else { return }
+                guard acceptsImport(), imageImportState.accepts(token), !Task.isCancelled else { return }
                 var messages: [String] = []
                 if failures > 0 {
                     messages.append(ComposerImagePasteboard.PasteError.partial(failures).message)
@@ -655,24 +785,26 @@ struct MessageComposer: View {
     }
 
     private func removeAttachedImage(_ image: ChatImageReference) {
+        guard allowsActions else { return }
         attachedImages.removeAll { $0.id == image.id }
+        editorController.draft.images = attachedImages
         guard let session else { return }
         Task { await backendClient.removeUnsentChatImage(image, from: session) }
     }
 
     private var session: TaskSession? {
-        backendClient.sessions.first(where: { $0.id == sessionId })
+        if let renderInputs { return renderInputs.session }
+        return backendClient.sessions.first(where: { $0.id == sessionId })
             ?? backendClient.archivedSessions.first(where: { $0.id == sessionId })
     }
 
     private var canSend: Bool {
-        guard backendClient.isOnline,
-              let session,
-              session.isReady,
-              !backendClient.bindingVerificationSessionIDs.contains(sessionId) else { return false }
-        if backendClient.selectedSession?.id == sessionId,
-           backendClient.viewingHistoricalThreadId != nil {
-            return false
+        guard allowsActions, online, let session, session.isReady else { return false }
+        if let renderInputs {
+            guard !renderInputs.verifyingBinding, renderInputs.historicalThreadID == nil else { return false }
+        } else {
+            guard !backendClient.bindingVerificationSessionIDs.contains(sessionId),
+                  backendClient.selectedSession?.id != sessionId || backendClient.viewingHistoricalThreadId == nil else { return false }
         }
         return session.actions?.send.available ?? true
     }

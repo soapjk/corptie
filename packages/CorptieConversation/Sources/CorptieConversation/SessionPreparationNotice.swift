@@ -4,6 +4,8 @@ import CorptieClientCore
 /// Local recovery chrome only. It never owns the composer draft or Timeline.
 @MainActor
 public struct SessionPreparationNotice: View {
+    private let activity: ConversationDetailPresentationActivity?
+    private var isActive: Bool { activity?.isActive ?? true }
     private let sessionID: String
     private let api: @MainActor () async throws -> ClientSessionPreparationAPI
     private let didPrepare: @MainActor () async -> Void
@@ -14,8 +16,9 @@ public struct SessionPreparationNotice: View {
 
     public init(sessionID: String,
                 api: @escaping @MainActor () async throws -> ClientSessionPreparationAPI,
-                didPrepare: @escaping @MainActor () async -> Void) {
-        self.sessionID = sessionID; self.api = api; self.didPrepare = didPrepare
+                didPrepare: @escaping @MainActor () async -> Void,
+                activity: ConversationDetailPresentationActivity? = nil) {
+        self.sessionID = sessionID; self.api = api; self.didPrepare = didPrepare; self.activity = activity
     }
 
     public var body: some View {
@@ -31,32 +34,37 @@ public struct SessionPreparationNotice: View {
             .textSelection(.enabled)
             Spacer(minLength: 4)
             if let preparation, preparation.isAwaitingConfirmation, issue == nil {
-                Button("停止等待") { cancelAttemptID = preparation.id; revision += 1 }
+                Button("停止等待") { guard isActive else { return }; cancelAttemptID = preparation.id; revision += 1 }
                     .accessibilityHint("只停止核验等待，不声称远端操作已取消")
             } else if preparation?.isReady != true {
-                Button("重新核验") { cancelAttemptID = nil; revision += 1 }
+                Button("重新核验") { guard isActive else { return }; cancelAttemptID = nil; revision += 1 }
                     .accessibilityHint("结果未知时只核对状态，不重发消息")
             }
         }
         .buttonStyle(.bordered).controlSize(.small)
         .accessibilityIdentifier("session-preparation-notice")
-        .task(id: "\(sessionID):\(revision)") { await run() }
+        .task(id: "\(sessionID):\(revision):\(isActive):\(activity?.generation ?? 0)") { await run() }
     }
 
     private func run() async {
+        guard isActive else { return }
+        let generation = activity?.generation ?? 0
+        let accepts = { !Task.isCancelled && (activity?.allows(generation: generation) ?? true) }
         issue = nil
         do {
             let client = try await api()
+            guard accepts() else { return }
             let initial = if let cancelAttemptID {
                 try await client.cancel(sessionID: sessionID, attemptID: cancelAttemptID)
             } else {
                 try await client.start(sessionID: sessionID)
             }
-            guard !Task.isCancelled else { return }
+            guard accepts() else { return }
             preparation = initial
             while preparation?.isAwaitingConfirmation == true {
                 let awaitingRemoteResult = preparation?.isActive != true
                 try await Task.sleep(for: .seconds(awaitingRemoteResult ? 10 : 2))
+                guard accepts() else { return }
                 // For an unknown sent operation, start only schedules the
                 // server's read-only reconciliation of the same attempt.
                 let next = if awaitingRemoteResult {
@@ -64,15 +72,15 @@ public struct SessionPreparationNotice: View {
                 } else {
                     try await client.current(sessionID: sessionID)
                 }
-                guard !Task.isCancelled else { return }
+                guard accepts() else { return }
                 if preparation != next { preparation = next }
             }
-            guard !Task.isCancelled else { return }
+            guard accepts() else { return }
             if preparation?.isReady == true { await didPrepare() }
         } catch is CancellationError {
             return
         } catch {
-            guard !Task.isCancelled else { return }
+            guard accepts() else { return }
             issue = "\(ClientSessionPreparation.requestFailureDetail(error))；草稿已保留"
         }
     }

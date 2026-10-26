@@ -90,6 +90,56 @@ final class SessionContextReferenceControllerTests: XCTestCase {
         XCTAssertEqual(decoded.metadata?.lastError, "Permission denied")
     }
 
+    func testConcurrentLoadsShareOneRequestAndTagEmptyResponseOwner() async {
+        let api = ContextReferenceAPIStub(), state = SessionSupplementaryDataController()
+        let target = session()
+        var release: CheckedContinuation<[SessionContextReference], Error>?
+        api.onList = { _ in try await withCheckedThrowingContinuation { release = $0 } }
+        let controller = SessionContextReferenceController(api: api, state: state,
+            selectedSession: { target }, reportError: { _ in })
+        let first = Task { await controller.loadContextReferences(for: target) }
+        while release == nil { await Task.yield() }
+        let second = Task { await controller.loadContextReferences(for: target) }
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertEqual(api.listCount, 1)
+        release?.resume(returning: [])
+        await first.value; await second.value
+        XCTAssertEqual(state.contextReferencesSessionID, target.id)
+        XCTAssertEqual(state.selectedContextReferences, [])
+        XCTAssertFalse(state.isLoadingContextReferences)
+    }
+
+    func testForeignReferenceCannotMutateSelectedSession() async {
+        let api = ContextReferenceAPIStub(), state = SessionSupplementaryDataController()
+        let target = session()
+        let foreign = reference(owner: "session:foreign")
+        let controller = SessionContextReferenceController(api: api, state: state,
+            selectedSession: { target }, reportError: { _ in })
+        await controller.setContextReferenceEnabled(foreign, enabled: false)
+        XCTAssertNil(api.updatedSessionID)
+        XCTAssertEqual(api.listCount, 0)
+    }
+
+    func testMutationReloadDoesNotReuseReadStartedBeforeMutation() async {
+        let api = ContextReferenceAPIStub(), state = SessionSupplementaryDataController()
+        let target = session(), latest = reference(id: "latest")
+        var release: CheckedContinuation<[SessionContextReference], Error>?
+        api.onList = { _ in
+            if api.listCount == 1 { return try await withCheckedThrowingContinuation { release = $0 } }
+            return [latest]
+        }
+        let controller = SessionContextReferenceController(api: api, state: state,
+            selectedSession: { target }, reportError: { _ in })
+        let oldRead = Task { await controller.loadContextReferences(for: target) }
+        while release == nil { await Task.yield() }
+        await controller.setContextReferenceEnabled(reference(), enabled: false)
+        XCTAssertEqual(api.listCount, 2)
+        XCTAssertEqual(state.selectedContextReferences, [latest])
+        release?.resume(returning: [])
+        await oldRead.value
+        XCTAssertEqual(state.selectedContextReferences, [latest])
+    }
+
     private func session() -> TaskSession {
         var session = ChatPerformanceFixture.make(configuration: .init(
             turnCount: 1, rawItemCount: 3, longMessageCharacters: 32
@@ -98,9 +148,9 @@ final class SessionContextReferenceControllerTests: XCTestCase {
         return session
     }
 
-    private func reference(id: String = "reference:1") -> SessionContextReference {
+    private func reference(id: String = "reference:1", owner: String? = nil) -> SessionContextReference {
         SessionContextReference(
-            referenceId: id, ownerSessionId: "session:1", targetType: .webURL,
+            referenceId: id, ownerSessionId: owner ?? session().id, targetType: .webURL,
             targetKey: "example", targetId: nil, locator: "https://example.com",
             displayName: "Example", inclusionMode: "snapshot", enabled: true,
             priority: 0, status: "ready", snapshotTitle: nil, snapshotAt: nil,

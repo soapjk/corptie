@@ -16,6 +16,7 @@ struct MacComposerQuickMessages: View {
     let refreshRevision: Int
     let enabled: Bool
     let cache: ClientQuickMessageCache
+    let activity: ConversationDetailPresentationActivity?
     let load: @MainActor @Sendable () async throws -> ClientQuickMessageRecommendations
     let send: (String) -> Void
     @State private var state: MacQuickMessageState
@@ -24,11 +25,12 @@ struct MacComposerQuickMessages: View {
     init(host: String, sessionID: String, taskID: String?, online: Bool, refreshRevision: Int,
          enabled: Bool, cache: ClientQuickMessageCache = BackendClient.quickMessageCache,
          state: MacQuickMessageState = MacQuickMessageState(),
+         activity: ConversationDetailPresentationActivity? = nil,
          load: @escaping @MainActor @Sendable () async throws -> ClientQuickMessageRecommendations,
          send: @escaping (String) -> Void) {
         self.host = host; self.sessionID = sessionID; self.taskID = taskID
         self.online = online; self.refreshRevision = refreshRevision; self.enabled = enabled
-        self.cache = cache; self.load = load; self.send = send
+        self.cache = cache; self.load = load; self.send = send; self.activity = activity
         _state = State(initialValue: state)
     }
 
@@ -36,17 +38,20 @@ struct MacComposerQuickMessages: View {
         .init(host: host, sessionID: sessionID, taskID: taskID)
     }
 
+    private var isActive: Bool { activity?.isActive ?? visibility.visible }
     private var refreshKey: String {
-        "\(identity.scope):\(sessionID):\(online):\(refreshRevision):\(cache.revision(for: identity.scope, host: host)):\(visibility.visible):\(visibility.activation)"
+        "\(identity.scope):\(sessionID):\(online):\(refreshRevision):\((isActive ? cache.revision(for: identity.scope, host: host) : 0)):\(isActive):\(visibility.activation)"
     }
 
     var body: some View {
         // Never show A's items during the first rendering pass after switching to B.
-        ConversationQuickMessages(items: state.identity == identity ? state.items : cache.items(for: identity.scope),
+        ConversationQuickMessages(items: state.identity == identity || !isActive ? state.items : cache.items(for: identity.scope),
                                   enabled: enabled, send: send)
-            .background(MacQuickMessageVisibilityBridge { visibility = $0 })
+            .background {
+                if activity == nil { MacQuickMessageVisibilityBridge { visibility = $0 } }
+            }
             .task(id: refreshKey) {
-                await state.refresh(identity: identity, visible: visibility.visible, online: online,
+                await state.refresh(identity: identity, visible: isActive, online: online,
                                     cache: cache, load: load)
             }
     }

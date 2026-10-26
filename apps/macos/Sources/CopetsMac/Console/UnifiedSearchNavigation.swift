@@ -30,15 +30,26 @@ final class UnifiedSearchNavigation: ObservableObject {
 struct SearchMessageNavigationBar: View {
     let sessionID: String
     @ObservedObject private var navigation = UnifiedSearchNavigation.shared
+    var body: some View {
+        SearchMessageNavigationSurface(sessionID: sessionID, target: navigation.target,
+            matches: navigation.matches, step: navigation.step)
+    }
+}
+
+struct SearchMessageNavigationSurface: View {
+    let sessionID: String
+    let target: UnifiedSearchNavigation.Target?
+    let matches: [UnifiedSearchHit]
+    let step: (Int) -> Void
     private var index: Int? {
-        navigation.matches.firstIndex { $0.messageId == navigation.target?.messageID }
+        matches.firstIndex { $0.messageId == target?.messageID }
     }
     var body: some View {
-        if navigation.target?.sessionID == sessionID, let index, !navigation.matches.isEmpty {
+        if target?.sessionID == sessionID, let index, !matches.isEmpty {
             HStack {
-                Text(L10n("Search match") + " \(index + 1)/\(navigation.matches.count)").font(.caption).foregroundStyle(.secondary)
-                Button(L10n("Previous match"), systemImage: "chevron.up") { navigation.step(-1) }.disabled(index == 0)
-                Button(L10n("Next match"), systemImage: "chevron.down") { navigation.step(1) }.disabled(index + 1 == navigation.matches.count)
+                Text(L10n("Search match") + " \(index + 1)/\(matches.count)").font(.caption).foregroundStyle(.secondary)
+                Button(L10n("Previous match"), systemImage: "chevron.up") { step(-1) }.disabled(index == 0)
+                Button(L10n("Next match"), systemImage: "chevron.down") { step(1) }.disabled(index + 1 == matches.count)
                 Spacer()
             }.controlSize(.small)
         }

@@ -101,8 +101,13 @@ struct SessionSendFailureView: View {
     @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     let sessionID: String
 
+    var body: some View { SessionSendFailureSurface(message: commandState.sendFailures[sessionID]) }
+}
+
+struct SessionSendFailureSurface: View {
+    let message: String?
     var body: some View {
-        if let message = commandState.sendFailures[sessionID] {
+        if let message {
             Text(message)
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.red)
@@ -121,13 +126,30 @@ struct SessionNotReadyComposerNotice: View {
     let reason: SessionNotReadyReason
 
     var body: some View {
+        SessionNotReadyComposerSurface(backendClient: backendClient, session: session, reason: reason,
+            restarting: commandState.restartingSessionIds.contains(session.id))
+    }
+}
+
+struct SessionNotReadyComposerSurface: View {
+    let backendClient: BackendClient
+    let session: TaskSession
+    let reason: SessionNotReadyReason
+    let restarting: Bool
+    var renderInputs: SessionPageRenderInputs? = nil
+    private var allowsActions: Bool {
+        guard let renderInputs else { return true }
+        return renderInputs.actionSession(generation: renderInputs.activity.generation) != nil
+    }
+    var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             SessionPreparationNotice(sessionID: session.id, api: {
                 let transport = try BackendTransport(endpoint: BackendEndpoint(backendClient.baseURL))
                 return ClientSessionPreparationAPI(transport: transport, route: .desktop)
             }, didPrepare: {
+                guard allowsActions else { return }
                 await AppStateSyncController.shared.refreshSnapshot()
-            })
+            }, activity: renderInputs?.activity)
         HStack(alignment: .center, spacing: 9) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 11, weight: .semibold))
@@ -144,9 +166,13 @@ struct SessionNotReadyComposerNotice: View {
             if reason.shouldOfferRestartRecovery,
                session.actions?.restart?.available == true {
                 Button {
-                    backendClient.restart(session: session)
+                    guard allowsActions else { return }
+                    if let renderInputs {
+                        guard let current = renderInputs.actionSession(generation: renderInputs.activity.generation) else { return }
+                        backendClient.restart(session: current)
+                    } else { backendClient.restart(session: session) }
                 } label: {
-                    if commandState.restartingSessionIds.contains(session.id) {
+                    if restarting {
                         ProgressView()
                             .controlSize(.small)
                     } else {
@@ -155,7 +181,7 @@ struct SessionNotReadyComposerNotice: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .disabled(commandState.restartingSessionIds.contains(session.id))
+                .disabled(restarting)
                 .accessibilityLabel(L10n("Restart Session"))
             }
         }

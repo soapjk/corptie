@@ -3,7 +3,7 @@ import Observation
 
 @MainActor @Observable public final class ClientDetailBusinessCardState: Identifiable {
     public let id: String
-    public private(set) var card: ClientDetailBusinessCard
+    public fileprivate(set) var card: ClientDetailBusinessCard
     public fileprivate(set) var loading = false
     public fileprivate(set) var pageError: String?
     public fileprivate(set) var windowClipped = false
@@ -60,7 +60,26 @@ import Observation
 }
 
 @MainActor @Observable public final class ClientDetailBusinessStore {
-    public enum LoadPhase { case idle, loading, ready, failed }
+    /// Value-only display data. Request ownership, editing fences and cursors
+    /// stay on the authoritative store, never on a retained presentation copy.
+    public struct PresentationSnapshot: Equatable, Sendable {
+        public struct Card: Equatable, Sendable {
+            public let value: ClientDetailBusinessCard
+            public let loading: Bool
+            public let pageError: String?
+            public let windowClipped: Bool
+        }
+        public let loadPhase: LoadPhase
+        public let sessionID: String?
+        public let documentID: String?
+        public let generation: String?
+        public let order: [String]
+        public let error: String?
+        public let selected: Bool
+        public let isCurrent: Bool
+        public let cards: [Card]
+    }
+    public enum LoadPhase: Sendable { case idle, loading, ready, failed }
     public private(set) var loadPhase: LoadPhase = .idle
     public private(set) var sessionID: String?
     public private(set) var documentID: String?
@@ -75,6 +94,38 @@ import Observation
     @ObservationIgnored var contentChanged: (() -> Void)?
     @ObservationIgnored var canRetainPage: (() -> Bool)?
     public init() {}
+    public func makePresentationSnapshot() -> PresentationSnapshot {
+        .init(loadPhase: loadPhase, sessionID: sessionID, documentID: documentID,
+              generation: generation, order: order, error: error, selected: selected, isCurrent: isCurrent,
+              cards: orderedCards.map { .init(value: $0.card, loading: $0.loading,
+                  pageError: $0.pageError, windowClipped: $0.windowClipped) })
+    }
+    /// Apply only changed display fields, retaining unchanged card identities.
+    /// Call only on a dedicated presentation store; this does not own a feed.
+    public func applyPresentationSnapshot(_ value: PresentationSnapshot) {
+        if loadPhase != value.loadPhase { loadPhase = value.loadPhase }
+        if sessionID != value.sessionID { sessionID = value.sessionID }
+        if documentID != value.documentID { documentID = value.documentID }
+        if generation != value.generation { generation = value.generation }
+        if order != value.order { order = value.order }
+        if error != value.error { error = value.error }
+        if selected != value.selected { selected = value.selected }
+        if isCurrent != value.isCurrent { isCurrent = value.isCurrent }
+        let ids = Set(value.order)
+        if cards.keys.contains(where: { !ids.contains($0) }) { cards = cards.filter { ids.contains($0.key) } }
+        for item in value.cards {
+            let state: ClientDetailBusinessCardState
+            if let existing = cards[item.value.id] { state = existing }
+            else { state = ClientDetailBusinessCardState(item.value); cards[item.value.id] = state }
+            if state.card != item.value { state.card = item.value }
+            if state.loading != item.loading { state.loading = item.loading }
+            if state.pageError != item.pageError { state.pageError = item.pageError }
+            if state.windowClipped != item.windowClipped { state.windowClipped = item.windowClipped }
+        }
+    }
+    public func setEditing(cardID: String, resourceID: String, _ editing: Bool) {
+        cards[cardID]?.setEditing(resourceID: resourceID, editing)
+    }
     public var orderedCards: [ClientDetailBusinessCardState] { order.compactMap { cards[$0] } }
     public var estimatedRetainedBytes: Int { cards.values.reduce(0) { $0 + $1.card.estimatedRetainedBytes } }
     public func markRefreshing() { isCurrent = false; loadPhase = .loading; error = nil }

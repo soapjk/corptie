@@ -26,6 +26,9 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     private var pendingProcessCollapseRowID: String?
     private var hasExpandedProcessRows = false
     private var rows: [AppKitChatTimelineRow] = []
+    private var presentationActive = true
+    private var lastAppliedContentRevision: UInt64?
+    private var lastAppliedContentSessionID: String?
     private var canAdvanceProcessClock: Bool
     private var processClockTimer: Timer?
     private var activeProcessClockRowIndex: Int?
@@ -153,9 +156,12 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     /// alive, while Session-specific height/revision state is discarded.
     func switchSessionIfNeeded(
         to sessionID: String,
-        initialPosition: AppKitChatTimelinePosition?
+        initialPosition: AppKitChatTimelinePosition?,
+        deferReloadUntilRowsArrive: Bool = false
     ) {
         guard representedSessionID != sessionID else { return }
+        let trace = SessionSwitchTrace.shared.start(.sessionRebind, sessionID: sessionID)
+        defer { SessionSwitchTrace.shared.finish(trace) }
         publishPositionImmediately()
         positionPublishCorptieTask?.cancel()
         positionPublishCorptieTask = nil
@@ -189,7 +195,9 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         lastUnderfilledHistoryRequestSignature = nil
         underfilledHistoryEvaluationGeneration &+= 1
         isAwaitingSessionRows = true
-        tableView?.reloadData()
+        // updateNSView installs target rows synchronously in apply. Avoid
+        // an empty reload that tears down cells before their replacement is ready.
+        if !deferReloadUntilRowsArrive { tableView?.reloadData() }
         if let initialPosition, !initialPosition.followsLatest {
             prepareInitialPosition(initialPosition)
         } else {
@@ -214,6 +222,15 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         NotificationCenter.default.removeObserver(self)
     }
 
+    /// Called by the native page switcher before changing visibility. Pausing
+    /// is constant work: no row scan, diff, or SwiftUI publication.
+    func setPresentationActive(_ active: Bool) {
+        guard presentationActive != active else { return }
+        presentationActive = active
+        if !active { processClockTimer?.invalidate(); processClockTimer = nil }
+        else { synchronizeProcessClock(); scheduleImageGeometryCommit(); scheduleUnderfilledHistoryEvaluation() }
+    }
+
     func setProcessClockEnabled(_ enabled: Bool) {
         guard canAdvanceProcessClock != enabled else { return }
         canAdvanceProcessClock = enabled
@@ -224,7 +241,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         activeProcessClockRowIndex = rows.lastIndex(where: {
             $0.nativeStyle == .process && $0.processState == .running && $0.processStartedAt != nil
         })
-        let shouldTick = canAdvanceProcessClock && activeProcessClockRowIndex != nil
+        let shouldTick = presentationActive && canAdvanceProcessClock && activeProcessClockRowIndex != nil
         guard shouldTick else {
             processClockTimer?.invalidate()
             processClockTimer = nil
@@ -241,7 +258,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     var isProcessClockScheduled: Bool { processClockTimer != nil }
 
     private func refreshVisibleProcessElapsed(now: Date = Date()) {
-        guard canAdvanceProcessClock, let tableView,
+        guard presentationActive, canAdvanceProcessClock, let tableView,
               tableView.window != nil, !tableView.isHiddenOrHasHiddenAncestor else { return }
         let visible = tableView.rows(in: tableView.visibleRect)
         guard visible.location != NSNotFound, let index = activeProcessClockRowIndex,
@@ -270,6 +287,9 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
             firstLayoutScrollView.onLayout = { [weak self] in
                 self?.restoreInitialViewportSynchronouslyIfNeeded()
                 self?.reconcileLayout()
+                if let self {
+                    SessionSwitchTrace.shared.mark(.viewportLayout, sessionID: self.representedSessionID)
+                }
             }
             firstLayoutScrollView.onUserScrollWillBegin = { [weak self] in
                 self?.userScrollEventWillBegin()
@@ -324,8 +344,12 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     func updateBaseDirectory(_ nextBaseDirectory: String?) {
         let normalized = Self.normalizedBaseDirectory(nextBaseDirectory)
         guard normalized != baseDirectory else { return }
+        lastAppliedContentRevision = nil
         baseDirectory = normalized
-        for cell in cellsByKey.values {
+        // Cached cells retain their owning Session's link context. Updating
+        // another Session's host here defeats warm reuse and rewrites its links.
+        // A returning cell is reconciled by tableView(_:viewFor:row:).
+        for (key, cell) in cellsByKey where key.sessionID == representedSessionID {
             cell.updateLinkContext(baseDirectory: normalized)
         }
     }
@@ -396,6 +420,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         let usesSharedText = usesSharedCard(rowModel)
         if let cachedCell = cellsByKey[cacheKey],
            (cachedCell is AppKitSharedMessageTextCell) == usesSharedText {
+            SessionSwitchTrace.shared.recordCell(.hit, sessionID: representedSessionID, rowID: rowModel.id)
             configureImageGeometryCallback(cachedCell, row: rowModel)
             touchCell(cacheKey)
             cachedCell.updateCallbacks(
@@ -407,6 +432,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                 rowModel,
                 availableWidth: availableWidth
             ) {
+                SessionSwitchTrace.shared.recordCell(.hitReconfigured, sessionID: representedSessionID, rowID: rowModel.id)
                 ChatPerformanceRecorder.shared.increment(.appKitRowsConfigured)
                 cachedCell.setContent(rowModel, availableWidth: availableWidth,
                     baseDirectory: baseDirectory, onToggleExpansion: onToggleExpansion,
@@ -415,6 +441,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
             }
             return cachedCell
         }
+        SessionSwitchTrace.shared.recordCell(.miss, sessionID: representedSessionID, rowID: rowModel.id)
         let identifier = usesSharedText ? Self.sharedTextCellIdentifier : Self.nativeCellIdentifier
         let cell: NSTableCellView & AppKitChatRowRendering =
             (tableView.makeView(withIdentifier: identifier, owner: nil) as? (NSTableCellView & AppKitChatRowRendering)) ?? {
@@ -447,7 +474,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     }
 
     private func scheduleImageGeometryCommit() {
-        guard !imageGeometryCommitScheduled, !pendingImageGeometryRows.isEmpty else { return }
+        guard presentationActive, !imageGeometryCommitScheduled, !pendingImageGeometryRows.isEmpty else { return }
         imageGeometryCommitScheduled = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -457,7 +484,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     }
 
     private func commitImageGeometry() {
-        guard !isProcessingUserScrollEvent, let tableView, !pendingImageGeometryRows.isEmpty else { return }
+        guard presentationActive, !isProcessingUserScrollEvent, let tableView, !pendingImageGeometryRows.isEmpty else { return }
         let ids = pendingImageGeometryRows
         pendingImageGeometryRows.removeAll(keepingCapacity: true)
         let changed = IndexSet(rows.indices.filter { ids.contains(rows[$0].id) })
@@ -484,13 +511,22 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         let key = CellCacheKey(sessionID: representedSessionID, rowID: row.id,
                                revision: row.contentRevision)
         cellsByKey = cellsByKey.filter {
-            $0.value !== cell && !($0.key.sessionID == key.sessionID && $0.key.rowID == key.rowID)
+            let sameCell = $0.value === cell
+            let sameRow = $0.key.sessionID == key.sessionID && $0.key.rowID == key.rowID
+            if sameCell && $0.key.sessionID != key.sessionID {
+                SessionSwitchTrace.shared.recordCell(.crossSessionRebind, sessionID: key.sessionID, rowID: key.rowID)
+            }
+            if sameRow && $0.key.revision != key.revision {
+                SessionSwitchTrace.shared.recordCell(.revisionReplaced, sessionID: key.sessionID, rowID: key.rowID)
+            }
+            return !sameCell && !sameRow
         }
         cellRecency.removeAll { cellsByKey[$0] == nil }
         cellsByKey[key] = cell
         touchCell(key)
         while cellRecency.count > 96, let oldest = cellRecency.first {
             cellRecency.removeFirst()
+            SessionSwitchTrace.shared.recordCell(.capacityEvicted, sessionID: oldest.sessionID, rowID: oldest.rowID)
             cellsByKey[oldest] = nil
         }
     }
@@ -500,7 +536,13 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         cellRecency.append(key)
     }
 
-    func apply(rows nextRows: [AppKitChatTimelineRow], animated: Bool = false) {
+    func apply(rows nextRows: [AppKitChatTimelineRow], contentRevision: UInt64? = nil, animated: Bool = false) {
+        if let contentRevision, lastAppliedContentRevision == contentRevision,
+           lastAppliedContentSessionID == representedSessionID { return }
+        lastAppliedContentRevision = contentRevision
+        lastAppliedContentSessionID = representedSessionID
+        let trace = SessionSwitchTrace.shared.start(.timelineApply, sessionID: representedSessionID)
+        defer { SessionSwitchTrace.shared.finish(trace) }
         let nextRows = ConversationTimeSeparatorPolicy.applying(to: Self.uniquedRows(nextRows))
         hasExpandedProcessRows = nextRows.contains { $0.nativeStyle == .process && $0.isExpanded }
         defer { synchronizeProcessClock(); updateProcessCollapseButton() }
@@ -508,6 +550,19 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         guard let tableView else {
             rows = nextRows
             revisionsByID = Dictionary(uniqueKeysWithValues: nextRows.map { ($0.id, $0.contentRevision) })
+            return
+        }
+        if isAwaitingSessionRows {
+            // Install the data source before any width or viewport work can
+            // query it. The table may still contain the previous Session's rows.
+            isAwaitingSessionRows = false
+            rows = nextRows
+            revisionsByID = Dictionary(uniqueKeysWithValues: nextRows.map { ($0.id, $0.contentRevision) })
+            tableView.reloadData()
+            synchronizeTableWidth()
+            synchronizeDocumentHeight(in: tableView)
+            restoreInitialViewportSynchronouslyIfNeeded()
+            schedulePendingInitialViewportRestoreIfNeeded()
             return
         }
         let oldIDs = rows.map(\.id)
@@ -555,14 +610,6 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         rows = nextRows
         revisionsByID = Dictionary(uniqueKeysWithValues: nextRows.map { ($0.id, $0.contentRevision) })
 
-        if isAwaitingSessionRows {
-            isAwaitingSessionRows = false
-            tableView.reloadData()
-            synchronizeDocumentHeight(in: tableView)
-            restoreInitialViewportSynchronouslyIfNeeded()
-            schedulePendingInitialViewportRestoreIfNeeded()
-            return
-        }
 
         guard oldIDs == newIDs else {
             applyStructuralDifference(
@@ -777,7 +824,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         let generation = underfilledHistoryEvaluationGeneration
         DispatchQueue.main.async { [weak self] in
             guard let self,
-                  self.underfilledHistoryEvaluationGeneration == generation,
+                  self.presentationActive, self.underfilledHistoryEvaluationGeneration == generation,
                   self.hasMoreHistory,
                   self.underfilledHistoryRequestCount < 4,
                   let tableView = self.tableView,
@@ -931,7 +978,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         // also emit bounds changes; treating those as user intent was able
         // to prepend history after a tiny wheel delta and visibly jump the
         // reader toward the oldest message.
-        if nearTop && acceptsHistoryRequest
+        if presentationActive && nearTop && acceptsHistoryRequest
             && !nearTopTriggered && !suppressesNearTopTrigger {
             nearTopTriggered = true
             onNearTop()

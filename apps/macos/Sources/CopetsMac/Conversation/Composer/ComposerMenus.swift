@@ -5,27 +5,59 @@ import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Existing callers keep their catalog/command subscriptions here. A retained
+/// page uses the value-only menu surface directly.
 struct CodexModelMenu: View {
     @ObservedObject var modelCatalog: ProviderCatalogStore
     @EnvironmentObject private var backendClient: BackendClient
     @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     let maxWidth: CGFloat
+    let session: TaskSession?
+    var activity: ConversationDetailPresentationActivity? = nil
+    var body: some View {
+        SessionModelMenuSurface(models: modelCatalog.models(for: session?.external?.provider),
+            defaultModelID: modelCatalog.defaultModel(for: session?.external?.provider),
+            defaultReasoningLevel: modelCatalog.defaultReasoning(for: session?.external?.provider),
+            loadingModels: modelCatalog.isLoadingCodexModels, switchingModel: backendClient.isSwitchingModel,
+            switchingReasoning: backendClient.isSwitchingReasoning, backendClient: backendClient,
+            maxWidth: maxWidth, session: session, activity: activity)
+    }
+}
+
+struct SessionModelMenuSurface: View {
+    let models: [CodexModel]
+    let defaultModelID: String?
+    let defaultReasoningLevel: String?
+    let loadingModels: Bool
+    let switchingModel: Bool
+    let switchingReasoning: Bool
+    let backendClient: BackendClient
+    let maxWidth: CGFloat
+    let session: TaskSession?
+    var activity: ConversationDetailPresentationActivity? = nil
+    var renderInputs: SessionPageRenderInputs? = nil
+    private var canAct: Bool {
+        if let renderInputs { return renderInputs.actionSession(generation: renderInputs.activity.generation) != nil }
+        return (activity?.allows(generation: activity?.generation ?? 0) ?? true)
+            && session?.id != nil && backendClient.sessionSelectionController.selectedSessionID == session?.id
+            && backendClient.selectedSession?.external?.provider == session?.external?.provider
+    }
 
     var body: some View {
+        let _ = SessionSwitchTrace.shared.mark(.modelMenuBody, sessionID: session?.id ?? "")
         Menu {
-            if modelCatalog.isLoadingCodexModels {
+            if loadingModels {
                 Text(L10n("Loading models"))
-            } else if modelCatalog.codexModels.isEmpty {
+            } else if models.isEmpty {
                 Button {
-                    Task {
-                        await backendClient.loadModelsForSelectedSession(forceRefresh: true)
-                    }
+                    reloadModels()
                 } label: {
                     Label(L10n("Reload models"), systemImage: "arrow.clockwise")
                 }
             } else {
-                ForEach(modelCatalog.codexModels) { model in
+                ForEach(models) { model in
                     Button {
+                        guard canAct else { return }
                         backendClient.switchSelectedCodexModel(to: model)
                     } label: {
                         HStack {
@@ -50,6 +82,7 @@ struct CodexModelMenu: View {
                         } else {
                             ForEach(currentReasoningLevels, id: \.self) { reasoningLevel in
                                 Button {
+                                    guard canAct else { return }
                                     backendClient.switchSelectedCodexReasoning(to: reasoningLevel)
                                 } label: {
                                     HStack {
@@ -65,13 +98,11 @@ struct CodexModelMenu: View {
                     } label: {
                         Label(L10nFormat("Reasoning: %@", reasoningLabel(currentReasoningLevel)), systemImage: "brain")
                     }
-                    .disabled(currentReasoningLevels.isEmpty || backendClient.isSwitchingReasoning)
+                    .disabled(currentReasoningLevels.isEmpty || switchingReasoning)
                 }
 
                 Button {
-                    Task {
-                        await backendClient.loadModelsForSelectedSession(forceRefresh: true)
-                    }
+                    reloadModels()
                 } label: {
                     Label(L10n("Reload models"), systemImage: "arrow.clockwise")
                 }
@@ -80,8 +111,8 @@ struct CodexModelMenu: View {
             ComposerModelMenuLabel(
                 modelLabel: currentModelLabel,
                 reasoningShortLabel: reasoningShortLabel(currentReasoningLevel),
-                isBusy: backendClient.isSwitchingModel || backendClient.isSwitchingReasoning
-                    || modelCatalog.isLoadingCodexModels,
+                isBusy: switchingModel || switchingReasoning
+                    || loadingModels,
                 maxWidth: maxWidth,
                 showsSurface: false
             )
@@ -91,15 +122,24 @@ struct CodexModelMenu: View {
         .disabled(!SessionConfigurationMenuAvailability.isEnabled(
             canSwitchModel: supportsModelSwitch,
             canSwitchReasoning: supportsReasoningSwitch,
-            isSwitchingModel: backendClient.isSwitchingModel,
-            isSwitchingReasoning: backendClient.isSwitchingReasoning
+            isSwitchingModel: switchingModel,
+            isSwitchingReasoning: switchingReasoning
         ))
         .help(currentModelHelp)
     }
 
+    private func reloadModels() {
+        let generation = activity?.generation ?? 0
+        guard canAct else { return }
+        Task {
+            guard activity?.allows(generation: generation) ?? true, canAct else { return }
+            await backendClient.loadModelsForSelectedSession(forceRefresh: true)
+        }
+    }
+
     private var currentModelId: String {
-        backendClient.selectedCurrentModel
-            ?? modelCatalog.codexDefaultModel
+        session?.external?.currentModel
+            ?? defaultModelID
             ?? ""
     }
 
@@ -107,7 +147,7 @@ struct CodexModelMenu: View {
         guard !currentModelId.isEmpty else {
             return L10n("Model")
         }
-        return modelCatalog.codexModels.first(where: { $0.id == currentModelId })?.name ?? currentModelId
+        return models.first(where: { $0.id == currentModelId })?.name ?? currentModelId
     }
 
     private var currentModelHelp: String {
@@ -119,13 +159,13 @@ struct CodexModelMenu: View {
     }
 
     private var currentModel: CodexModel? {
-        modelCatalog.codexModels.first(where: { $0.id == currentModelId })
+        models.first(where: { $0.id == currentModelId })
     }
 
     private var currentReasoningLevel: String {
         SessionReasoningSelection.currentLevel(
-            sessionLevel: backendClient.selectedCurrentReasoningLevel,
-            providerDefaultLevel: modelCatalog.codexDefaultReasoningLevel,
+            sessionLevel: session?.external?.currentReasoningLevel,
+            providerDefaultLevel: defaultReasoningLevel,
             model: currentModel
         )
     }
@@ -133,25 +173,25 @@ struct CodexModelMenu: View {
     private var currentReasoningLevels: [String] {
         SessionReasoningSelection.availableLevels(
             modelID: currentModelId,
-            models: modelCatalog.codexModels,
+            models: models,
             supportsSwitch: supportsReasoningSwitch
         )
     }
 
     private var supportsReasoningSwitch: Bool {
-        backendClient.selectedSession?.actions?.switchReasoning.available
-            ?? backendClient.selectedSession?.capabilities?.canSwitchReasoning
+        session?.actions?.switchReasoning.available
+            ?? session?.capabilities?.canSwitchReasoning
             ?? false
     }
 
     private var supportsModelSwitch: Bool {
-        backendClient.selectedSession?.actions?.switchModel.available
-            ?? backendClient.selectedSession?.capabilities?.canSwitchModel
+        session?.actions?.switchModel.available
+            ?? session?.capabilities?.canSwitchModel
             ?? false
     }
 
     private var currentProvider: String {
-        backendClient.selectedSession?.external?.provider ?? "codex-pty"
+        session?.external?.provider ?? "codex-pty"
     }
 
     private func reasoningLabel(_ value: String) -> String {

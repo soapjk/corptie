@@ -39,29 +39,35 @@ final class ConsoleNativeSplitView: NSSplitView {
 
 /// AppKit owns the window-sized split. SwiftUI owns only each pane's content.
 /// The hosting controllers survive navigation-mode changes and divider drags.
+struct ConsolePaneContent<Content: View>: View {
+    let content: () -> Content
+
+    var body: some View { content() }
+}
+
 struct ConsoleWindowSplitView<Sidebar: View, Detail: View>: NSViewControllerRepresentable {
     let mode: ConsoleNavigationMode
     let isActive: Bool
-    let sidebar: Sidebar
-    let detail: Detail
+    let sidebar: () -> Sidebar
+    let detail: () -> Detail
 
     init(mode: ConsoleNavigationMode, isActive: Bool,
-         @ViewBuilder sidebar: () -> Sidebar, @ViewBuilder detail: () -> Detail) {
+         @ViewBuilder sidebar: @escaping () -> Sidebar, @ViewBuilder detail: @escaping () -> Detail) {
         self.mode = mode
         self.isActive = isActive
-        self.sidebar = sidebar()
-        self.detail = detail()
+        self.sidebar = sidebar
+        self.detail = detail
     }
 
-    func makeNSViewController(context: Context) -> ConsoleSplitController<Sidebar, Detail> {
-        ConsoleSplitController(mode: mode, sidebar: sidebar, detail: detail)
+    func makeNSViewController(context: Context) -> ConsoleSplitController<ConsolePaneContent<Sidebar>, ConsolePaneContent<Detail>> {
+        ConsoleSplitController(mode: mode, sidebar: ConsolePaneContent(content: sidebar), detail: ConsolePaneContent(content: detail))
     }
 
-    func updateNSViewController(_ controller: ConsoleSplitController<Sidebar, Detail>, context: Context) {
-        controller.update(mode: mode, isActive: isActive, sidebar: sidebar, detail: detail)
+    func updateNSViewController(_ controller: ConsoleSplitController<ConsolePaneContent<Sidebar>, ConsolePaneContent<Detail>>, context: Context) {
+        controller.update(mode: mode, isActive: isActive, sidebar: ConsolePaneContent(content: sidebar), detail: ConsolePaneContent(content: detail))
     }
 
-    func sizeThatFits(_ proposal: ProposedViewSize, nsViewController: ConsoleSplitController<Sidebar, Detail>, context: Context) -> CGSize? {
+    func sizeThatFits(_ proposal: ProposedViewSize, nsViewController: ConsoleSplitController<ConsolePaneContent<Sidebar>, ConsolePaneContent<Detail>>, context: Context) -> CGSize? {
         // This is a window-filling container, not content-sized. Avoid asking
         // Auto Layout to measure the entire hosted conversation for its ideal size.
         CGSize(width: proposal.width ?? 1000, height: proposal.height ?? 700)
@@ -101,7 +107,12 @@ final class ConsolePaneController<Content: View>: NSViewController {
 }
 
 @MainActor
-final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewController {
+protocol ConsoleSplitContentUpdating: AnyObject {
+    var contentUpdateCount: Int { get }
+}
+
+@MainActor
+final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewController, ConsoleSplitContentUpdating {
     private let sidebarController: ConsolePaneController<Sidebar>
     private let detailController: ConsolePaneController<Detail>
     private var mode: ConsoleNavigationMode
@@ -154,11 +165,17 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
     }
 
     func update(mode: ConsoleNavigationMode, isActive: Bool, sidebar: Sidebar, detail: Detail) {
+        let trace = SessionSwitchTrace.shared.start(.splitUpdate)
+        defer { SessionSwitchTrace.shared.finish(trace) }
         // Commit the transition to inactive once, then leave retained hidden
         // hosts alone. Reactivation always receives the latest root values.
         if isActive || self.isActive {
+            let sidebarTrace = SessionSwitchTrace.shared.start(.sidebarRoot)
             sidebarController.host.rootView = sidebar
+            SessionSwitchTrace.shared.finish(sidebarTrace)
+            let detailTrace = SessionSwitchTrace.shared.start(.detailRoot)
             detailController.host.rootView = detail
+            SessionSwitchTrace.shared.finish(detailTrace)
             contentUpdateCount += 1
         }
         self.isActive = isActive

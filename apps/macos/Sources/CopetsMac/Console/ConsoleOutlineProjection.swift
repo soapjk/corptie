@@ -22,7 +22,12 @@ final class ConsoleOutlineProjectionStore: ObservableObject {
     private(set) var computationCount = 0
 
     func value(for key: ConsoleOutlineProjectionKey, make: () -> ConsoleOutlineProjection) -> ConsoleOutlineProjection {
-        if self.key == key, let cached { return cached }
+        if self.key == key, let cached {
+            SessionSwitchTrace.shared.mark(.outlineHit)
+            return cached
+        }
+        let trace = SessionSwitchTrace.shared.start(.outlineBuild)
+        defer { SessionSwitchTrace.shared.finish(trace) }
         let result = make()
         self.key = key
         cached = result

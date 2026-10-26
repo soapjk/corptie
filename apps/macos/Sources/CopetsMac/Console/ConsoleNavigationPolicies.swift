@@ -201,6 +201,9 @@ struct ConsoleWorkOutlineHeader: View {
     let toggleExpanded: () -> Void
     let openChat: () -> Void
     let createTask: () -> Void
+    // Equal display values may retain actions only within the same Console
+    // lifetime. Actions in that scope must resolve current state when invoked.
+    var actionOwner: AnyObject = NSObject()
     var isActive = true
     @Environment(\.controlActiveState) private var controlActiveState
 
@@ -208,6 +211,11 @@ struct ConsoleWorkOutlineHeader: View {
     @FocusState private var isCreateTaskFocused: Bool
 
     var body: some View {
+        let _ = SessionSwitchTrace.shared.recordWorkHeader(workID: work.id, inputs: .init(
+            title: work.name, avatarPath: work.avatarPath, expanded: isExpanded,
+            selected: isSelected, working: isWorking, unread: hasUnread,
+            chatSelected: isChatSelected, chatRunning: isChatRunning,
+            unreadChat: hasUnreadChat, active: isActive))
         WorkOutlineHeaderRow(toggleExpanded: toggleExpanded) {
             Button(action: toggleExpanded) {
                 HStack(spacing: 7) {
@@ -262,6 +270,21 @@ struct ConsoleWorkOutlineHeader: View {
     private var accessibilityValue: String {
         let expandedValue = isExpanded ? L10n("Expanded group") : L10n("Collapsed group")
         return isWorking ? "\(expandedValue), \(L10n("Processing"))" : expandedValue
+    }
+}
+
+extension ConsoleWorkOutlineHeader: Equatable {
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        guard lhs.actionOwner === rhs.actionOwner else { return false }
+        return lhs.work == rhs.work
+            && lhs.isExpanded == rhs.isExpanded
+            && lhs.isSelected == rhs.isSelected
+            && lhs.isWorking == rhs.isWorking
+            && lhs.hasUnread == rhs.hasUnread
+            && lhs.isChatSelected == rhs.isChatSelected
+            && lhs.isChatRunning == rhs.isChatRunning
+            && lhs.hasUnreadChat == rhs.hasUnreadChat
+            && lhs.isActive == rhs.isActive
     }
 }
 
