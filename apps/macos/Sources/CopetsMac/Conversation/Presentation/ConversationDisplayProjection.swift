@@ -539,7 +539,9 @@ func isLowSignalDetailProcessItem(_ item: CodexThreadItem) -> Bool {
 }
 
 private func detailDisplaySignature(for visibleEntries: [ChatDisplayEntry], visibleMessageLimit: Int) -> String {
-    let entrySignatures = visibleEntries.map { entry in
+    let entrySignatures = visibleEntries.flatMap { entry -> [ChatDisplayEntry] in
+        entry.mediaItems.count > 1 ? entry.mediaItems.map { .init(kind: .message($0)) } : [entry]
+    }.map { entry in
         switch entry.kind {
         case .message(let item):
             return detailItemSignature(item)

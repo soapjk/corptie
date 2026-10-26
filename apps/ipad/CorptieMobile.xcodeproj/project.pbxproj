@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B12400000000000000000001 /* PadImageGallery.swift in Sources */ = {isa = PBXBuildFile; fileRef = B12400000000000000000002 /* PadImageGallery.swift */; };
 		043FEBA28BF0F3F1F5FDC27F /* PadMessageDelivery.swift in Sources */ = {isa = PBXBuildFile; fileRef = E613FBE0CD902F4F6F5D2616 /* PadMessageDelivery.swift */; };
 		09DBEDDD915E59DC06E1C90F /* ConversationNavigationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9B6D5D9E4A86E7BA5C3C033 /* ConversationNavigationTests.swift */; };
 		0A8B53732564361DE8A962A1 /* PadInspectorStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78421E23A339C48A496AB52C /* PadInspectorStore.swift */; };
@@ -76,6 +77,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		B12400000000000000000002 /* PadImageGallery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadImageGallery.swift; sourceTree = "<group>"; };
 		0146C8406CC84803BF91ADAF /* CorptieMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CorptieMobileApp.swift; sourceTree = "<group>"; };
 		04AE156806E8E27AB03042C1 /* PadMessageText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadMessageText.swift; sourceTree = "<group>"; };
 		1033DC7A5600D936A245B867 /* PadStandardTimelinePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadStandardTimelinePolicy.swift; sourceTree = "<group>"; };
@@ -207,6 +209,7 @@
 				7253672D0D9624B647B6853E /* PadKeyboardDismissal.swift */,
 				E613FBE0CD902F4F6F5D2616 /* PadMessageDelivery.swift */,
 				D7975CBE598087E4B97F86D1 /* PadMessageImages.swift */,
+				B12400000000000000000002 /* PadImageGallery.swift */,
 				7D77A56C019E63DC489BB0CD /* PadMessageLayout.swift */,
 				04AE156806E8E27AB03042C1 /* PadMessageText.swift */,
 				F9636027506A76DFBB61E514 /* PadNativeTimeline.swift */,
@@ -407,6 +410,7 @@
 				24D9855E3C5BC2CDF2F027DC /* PadKeyboardDismissal.swift in Sources */,
 				043FEBA28BF0F3F1F5FDC27F /* PadMessageDelivery.swift in Sources */,
 				FB16833C050FF8D4F9E14714 /* PadMessageImages.swift in Sources */,
+				B12400000000000000000001 /* PadImageGallery.swift in Sources */,
 				BF91B4FB6A026C062E31151C /* PadMessageLayout.swift in Sources */,
 				BFFC5DF36FA92512ABEC7DB1 /* PadMessageText.swift in Sources */,
 				C08351F38D135B907291A87F /* PadNativeTimeline.swift in Sources */,

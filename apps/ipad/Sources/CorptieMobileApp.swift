@@ -830,7 +830,7 @@ struct ConversationView: View {
         for entry in workspace.displayEntries {
             let messages: [ClientMessage]
             switch entry.kind {
-            case .message(let message): messages = [message]
+            case .message(let message): messages = entry.mediaItems.isEmpty ? [message] : entry.mediaItems
             case .process(_, let items): messages = items
             }
             let decoration = messages.map {
@@ -889,7 +889,7 @@ struct ConversationView: View {
                                       let plan = message.executionPlan {
                                 PadExecutionPlanTimelineCard(plan: plan, laneWidth: width)
                             } else {
-                                MobileMessageBubble(message: message, deliveryState: workspace.outgoingStates[message.id],
+                                MobileMessageBubble(message: message, groupedMessages: entry.mediaItems, deliveryState: workspace.outgoingStates[message.id],
                                     timeSeparatorText: workspace.timeSeparatorTextByMessageID[message.id],
                                     laneWidth: width, connection: connection, sessionID: sessionID,
                                     images: messageImages,
@@ -2324,6 +2324,7 @@ private struct PadExecutionPlanTimelineCard: View {
 
 private struct MobileMessageBubble: View {
     let message: ClientMessage
+    var groupedMessages: [ClientMessage] = []
     var deliveryState: String? = nil
     var timeSeparatorText: String? = nil
     let laneWidth: CGFloat
@@ -2358,7 +2359,6 @@ private struct MobileMessageBubble: View {
     }
     private var imageReferences: [ConversationMessageImageReference] {
         ConversationMessageImageReferenceCache.shared.references(messageID: message.id, text: rawDisplayText)
-            .filter { ConversationLocalResource(url: $0.url) != nil || ["http", "https"].contains($0.url.scheme?.lowercased() ?? "") }
     }
     private var displayText: String {
         if message.isStandaloneImage { return "" }
@@ -2371,7 +2371,9 @@ private struct MobileMessageBubble: View {
         return ConversationChartBlockCache.shared.locatedBlocks(
             messageID: message.id, authoritativeText: displayText)
     }
-    private var attachments: [ClientMessageImage] { message.images }
+    private var attachments: [ClientMessageImage] {
+        groupedMessages.isEmpty ? message.images : groupedMessages.flatMap(\.images)
+    }
     private var galleryResources: [ConversationMessageImageReference] {
         var seen = Set<String>()
         return imageReferences.filter { seen.insert($0.id).inserted }
@@ -2528,7 +2530,7 @@ private struct MobileMessageBubble: View {
     private func resourceThumbnail(_ resource: ConversationMessageImageReference) -> MessageImageThumbnail.State {
         let local = ConversationLocalResource(url: resource.url)
         return switch images.entry(sessionID: sessionID, managedPath: local?.path ?? resource.url.absoluteString,
-                           itemID: local == nil ? nil : message.id) {
+                           itemID: message.id) {
         case .loaded(let image): .loaded(Image(uiImage: image))
         case .missing: .missing
         case .loading, nil: .loading
@@ -2543,9 +2545,7 @@ private struct MobileMessageBubble: View {
                 if index < attachments.count {
                     let attachment = attachments[index]
                     Button {
-                        if images.entry(sessionID: sessionID, managedPath: attachment.managedPath) == .missing {
-                            images.retry(sessionID: sessionID, managedPath: attachment.managedPath, connection: connection)
-                        } else { showGallery(index: index) }
+                        showGallery(index: index)
                     } label: {
                         MessageImageThumbnail(state: thumbnailState(attachment), index: index,
                             size: frame.size, fits: true, extraCount: index == 3 ? max(0, count - 4) : 0)
@@ -2558,14 +2558,12 @@ private struct MobileMessageBubble: View {
                     let local = ConversationLocalResource(url: resource.url)
                     let path = local?.path ?? resource.url.absoluteString
                     Button {
-                        if images.entry(sessionID: sessionID, managedPath: path, itemID: local == nil ? nil : message.id) == .missing {
-                            images.retry(sessionID: sessionID, managedPath: path, connection: connection, itemID: local == nil ? nil : message.id)
-                        } else { showGallery(index: index) }
+                        showGallery(index: index)
                     } label: {
                         MessageImageThumbnail(state: resourceThumbnail(resource), index: index,
                             size: frame.size, fits: true, extraCount: index == 3 ? max(0, count - 4) : 0)
                     }.buttonStyle(.plain).offset(x: frame.minX, y: frame.minY)
-                        .onAppear { images.ensure(sessionID: sessionID, managedPath: path, connection: connection, itemID: local == nil ? nil : message.id) }
+                        .onAppear { images.ensure(sessionID: sessionID, managedPath: path, connection: connection, itemID: message.id) }
                 }
             }
         }
@@ -2577,7 +2575,7 @@ private struct MobileMessageBubble: View {
             + galleryResources.map { resource in
                 let local = ConversationLocalResource(url: resource.url)
                 return images.geometry(sessionID: sessionID, managedPath: local?.path ?? resource.url.absoluteString,
-                    itemID: local == nil ? nil : message.id)
+                    itemID: message.id)
             }
     }
 
@@ -2617,88 +2615,72 @@ private struct MobileImageGalleryPreview: Identifiable {
     let selected: Int
 }
 
-/// One original at a time, with native Quick Look zoom/rotation. Moving between
-/// images releases the previous temporary file instead of retaining an album
-/// of full-resolution UIImages alongside the scrolling thumbnail cache.
+/// A stable gallery owner survives rotation; originals and saves share the
+/// connection-scoped memory pipeline, with no preview files on disk.
 private struct MobileImageGalleryViewer: View {
     let connection: PadConnection
-    let sessionID: String
-    let itemID: String
-    let preview: MobileImageGalleryPreview
     @Environment(\.dismiss) private var dismiss
-    @State private var selection: Int
-    @State private var localURL: URL?
-    @State private var failed = false
+    @State private var gallery: PadImageGallerySession
     @State private var retry = 0
-
     init(connection: PadConnection, sessionID: String, itemID: String, preview: MobileImageGalleryPreview) {
-        self.connection = connection; self.sessionID = sessionID; self.itemID = itemID; self.preview = preview
-        _selection = State(initialValue: preview.selected)
+        self.connection = connection
+        let resources = preview.items.map { item -> ClientMessageImageResource in
+            switch item {
+            case .managed(let image):
+                return PadMessageImageStore.resource(sessionID: sessionID, path: image.managedPath, itemID: nil)
+            case .reference(let ref):
+                return PadMessageImageStore.resource(sessionID: sessionID,
+                    path: ConversationLocalResource(url: ref.url)?.path ?? ref.url.absoluteString, itemID: itemID)
+            }
+        }
+        _gallery = State(initialValue: PadImageGallerySession(resources: resources, selected: preview.selected))
     }
     var body: some View {
         NavigationStack {
             Group {
-                if let localURL { PadResourceQuickLook(url: localURL).id(localURL) }
-                else if failed {
+                if let image = gallery.image {
+                    PadZoomableImage(image: image)
+                        .contextMenu {
+                            Button { Task { await gallery.save() } } label: {
+                                Label("保存原图到相册", systemImage: "square.and.arrow.down")
+                            }.disabled(gallery.saving)
+                        }
+                } else if let failure = gallery.failure {
                     ContentUnavailableView {
                         Label("图片暂时无法打开", systemImage: "photo")
-                    } description: { Text("请检查连接，或确认图片仍然可用。") }
+                    } description: { Text(failure) }
                     actions: { Button("重试") { retry += 1 } }
-                } else { ProgressView("正在加载图片…") }
+                } else {
+                    VStack(spacing: 12) {
+                        if let fraction = gallery.progress?.fraction {
+                            ProgressView(value: fraction).frame(maxWidth: 220)
+                            Text(fraction, format: .percent.precision(.fractionLength(0))).monospacedDigit()
+                        } else { ProgressView("正在加载原图…") }
+                    }
+                }
             }
-            .navigationTitle(preview.items[selection].name)
+            .navigationTitle(gallery.resources[gallery.selection].name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
                 ToolbarItemGroup(placement: .bottomBar) {
-                    Button { selection -= 1 } label: { Image(systemName: "chevron.left") }.disabled(selection == 0)
+                    Button { gallery.selection -= 1 } label: { Image(systemName: "chevron.left") }
+                        .disabled(gallery.selection == 0)
                     Spacer()
-                    Text("\(selection + 1) / \(preview.items.count)").monospacedDigit()
+                    Text("\(gallery.selection + 1) / \(gallery.resources.count)").monospacedDigit()
                     Spacer()
-                    Button { selection += 1 } label: { Image(systemName: "chevron.right") }.disabled(selection == preview.items.count - 1)
+                    Button { Task { await gallery.save() } } label: { Image(systemName: "square.and.arrow.down") }
+                        .disabled(gallery.image == nil || gallery.saving).accessibilityLabel("保存原图到相册")
+                    Spacer()
+                    Button { gallery.selection += 1 } label: { Image(systemName: "chevron.right") }
+                        .disabled(gallery.selection == gallery.resources.count - 1)
                 }
             }
         }
-        .task(id: "\(selection):\(retry)") {
-            if let localURL { try? FileManager.default.removeItem(at: localURL.deletingLastPathComponent()) }
-            localURL = nil; failed = false
-            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("image-gallery-\(UUID())")
-            do {
-                let selected = preview.items[selection]
-                let bytes: Data
-                switch selected {
-                case .managed(let image):
-                    let api = ClientSessionAPI(transport: try await connection.transport())
-                    guard let payload = try await api.image(sessionId: sessionID, managedPath: image.managedPath) else {
-                        throw URLError(.fileDoesNotExist)
-                    }
-                    bytes = payload.data
-                case .reference(let reference):
-                    if let resource = ConversationLocalResource(url: reference.url) {
-                        let api = ClientSessionAPI(transport: try await connection.transport())
-                        bytes = try await api.resource(sessionId: sessionID, itemId: itemID, path: resource.path)
-                    } else {
-                        bytes = try await ClientRemoteImageDownload.read(reference.url)
-                    }
-                }
-                try Task.checkCancellation()
-                let url = try await Task.detached(priority: .userInitiated) {
-                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                    let source = CGImageSourceCreateWithData(bytes as CFData, nil)
-                    guard let source, let type = CGImageSourceGetType(source) as String? else { throw URLError(.cannotDecodeContentData) }
-                    let ext = UTType(type)?.preferredFilenameExtension ?? "png"
-                    let file = directory.appendingPathComponent("image.\(ext)")
-                    try bytes.write(to: file, options: [.atomic, .completeFileProtection])
-                    return file
-                }.value
-                try Task.checkCancellation()
-                localURL = url
-            } catch {
-                try? FileManager.default.removeItem(at: directory)
-                if !Task.isCancelled { failed = true }
-            }
-        }
-        .onDisappear { if let localURL { try? FileManager.default.removeItem(at: localURL.deletingLastPathComponent()) } }
+        .task(id: "\(connection.messageImageOwnerID):\(gallery.selection):\(retry)") { await gallery.load(connection: connection) }
+        .alert("保存图片", isPresented: Binding(get: { gallery.saveMessage != nil }, set: { if !$0 { gallery.saveMessage = nil } })) {
+            Button("好") { gallery.saveMessage = nil }
+        } message: { Text(gallery.saveMessage ?? "") }
         .accessibilityIdentifier("attachment-gallery-viewer")
     }
 }
@@ -2708,38 +2690,10 @@ private struct MobileImageGalleryViewer: View {
 struct PadAttachmentViewer: View {
     let connection: PadConnection
     let preview: PadAttachmentPreview
-    @Environment(\.dismiss) private var dismiss
-    @State private var image: UIImage?
-    @State private var failed = false
-
     var body: some View {
-        NavigationStack {
-            Group {
-                if let image {
-                    ScrollView([.horizontal, .vertical]) {
-                        Image(uiImage: image).resizable().aspectRatio(contentMode: .fit)
-                            .containerRelativeFrame([.horizontal, .vertical])
-                    }
-                } else if failed {
-                    ContentUnavailableView("图片不可用", systemImage: "exclamationmark.triangle",
-                        description: Text("主机上没有这张图片的托管副本。"))
-                } else {
-                    ProgressView()
-                }
-            }
-            .navigationTitle(preview.image.fileName ?? "附件")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
-            .task {
-                do {
-                    let api = ClientSessionAPI(transport: try await connection.transport())
-                    guard let payload = try await api.image(sessionId: preview.sessionID, managedPath: preview.image.managedPath),
-                          let decoded = UIImage(data: payload.data) else { failed = true; return }
-                    image = await decoded.byPreparingForDisplay() ?? decoded
-                } catch { failed = true }
-            }
-        }
-        .accessibilityIdentifier("attachment-viewer")
+        MobileImageGalleryViewer(connection: connection, sessionID: preview.sessionID, itemID: "",
+            preview: .init(items: [.managed(preview.image)], selected: 0))
+            .accessibilityIdentifier("attachment-viewer")
     }
 }
 

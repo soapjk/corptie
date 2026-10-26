@@ -64,7 +64,7 @@ struct AppKitChatTimelineRow: Identifiable {
     let isPendingInteraction: Bool
     let showsCollaborationSentStatus: Bool
     let messageStatus: UserMessageStatusPresentation?
-    let images: [ChatTimelineImage]
+    var images: [ChatTimelineImage]
     @MainActor var imageGeometries: [MessageImageGeometry?] { images.map(\.resolvedGeometry) }
 
     var showsMessageStatusBar: Bool {

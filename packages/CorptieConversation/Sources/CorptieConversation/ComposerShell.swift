@@ -272,6 +272,7 @@ public struct ConversationComposerChrome<Header: View, Content: View>: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, verticalPadding)
+        .frame(minWidth: 0, maxWidth: .infinity)
         .modifier(ConversationComposerGlassSurface())
     }
 }
@@ -308,7 +309,19 @@ public struct ConversationComposerEditorRow<Attachments: View, Editor: View, Sen
     }
 
     public var body: some View {
-        HStack(spacing: 8) {
+        row
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder private var row: some View {
+        #if os(macOS)
+        ComposerEditorRowLayout { rowContent }
+        #else
+        HStack(spacing: 8) { rowContent }
+        #endif
+    }
+
+    @ViewBuilder private var rowContent: some View {
             VStack(alignment: .leading, spacing: 0) {
                 if showsAttachments { attachments }
                 HStack(spacing: 2) {
@@ -328,10 +341,49 @@ public struct ConversationComposerEditorRow<Attachments: View, Editor: View, Sen
                     .allowsHitTesting(false)
             }
             if showsModel { model.fixedSize(horizontal: true, vertical: false) }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
+
+#if os(macOS)
+/// Repositions the same editor and model views; unlike switching two view
+/// trees, crossing the breakpoint cannot recreate NSTextView or lose its focus.
+private struct ComposerEditorRowLayout: Layout {
+    private let spacing: CGFloat = 8
+    private let minimumEditorWidth: CGFloat = 176
+
+    private func measure(width: CGFloat, subviews: Subviews)
+        -> (editor: CGSize, model: CGSize, stacked: Bool, total: CGSize) {
+        guard !subviews.isEmpty else { return (.zero, .zero, false, .zero) }
+        let model = subviews.count > 1 ? subviews[1].sizeThatFits(.unspecified) : .zero
+        let modelWidth = min(width, model.width)
+        let stacked = subviews.count > 1 && width < minimumEditorWidth + spacing + modelWidth
+        let editorWidth = subviews.count < 2 || stacked ? width : max(0, width - modelWidth - spacing)
+        let editor = subviews[0].sizeThatFits(.init(width: editorWidth, height: nil))
+        let height = stacked ? editor.height + spacing + model.height : max(editor.height, model.height)
+        return (CGSize(width: editorWidth, height: editor.height),
+                CGSize(width: modelWidth, height: model.height), stacked, CGSize(width: width, height: height))
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width.flatMap { $0.isFinite ? max(0, $0) : nil } ?? 384
+        return measure(width: width, subviews: subviews).total
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard !subviews.isEmpty else { return }
+        let plan = measure(width: max(0, bounds.width), subviews: subviews)
+        let editorY = plan.stacked ? bounds.minY : bounds.minY + (plan.total.height - plan.editor.height) / 2
+        subviews[0].place(at: CGPoint(x: bounds.minX, y: editorY), anchor: .topLeading,
+                          proposal: .init(width: plan.editor.width, height: plan.editor.height))
+        if subviews.count > 1 {
+            let modelY = plan.stacked ? bounds.minY + plan.editor.height + spacing
+                : bounds.minY + (plan.total.height - plan.model.height) / 2
+            subviews[1].place(at: CGPoint(x: bounds.maxX - plan.model.width, y: modelY), anchor: .topLeading,
+                              proposal: .init(width: plan.model.width, height: plan.model.height))
+        }
+    }
+}
+#endif
 
 /// 24pt tinted circle inside a 28pt slot: the send / more glyphs of the composer.
 public struct ComposerActionGlyph: View {

@@ -153,6 +153,7 @@ struct MessageComposer: View {
                 .accessibilityIdentifier("composer-image-import-error")
             }
         }
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         .background(
             GeometryReader { proxy in
                 Color.clear.preference(key: ComposerWidthPreferenceKey.self, value: proxy.size.width)
