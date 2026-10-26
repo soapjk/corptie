@@ -15,7 +15,7 @@ import CorptieConversation
 extension SessionPagePresenting { var settledSessionID: String? { nil } }
 
 /// Window-local presentation scheduling, not a second business selection authority.
-/// P0 deliberately uses an opening page; no complete-page cache is enabled yet.
+/// Presentation scheduling must not replace available content with a loading screen.
 @MainActor final class SessionPagePresentationState {
     weak var presenter: (any SessionPagePresenting)?
     private(set) var generation: UInt64 = 0

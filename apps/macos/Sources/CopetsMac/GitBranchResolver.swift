@@ -55,14 +55,37 @@ enum GitHeadState: Equatable {
 }
 
 enum GitBranchResolver {
+    // Small, memory-only display cache. Reading it never launches Git or
+    // touches disk; a fresh async lookup still runs for the active header.
+    @MainActor private static var recentHeads: [String: (head: GitHeadState, used: UInt64)] = [:]
+    @MainActor private static var accessSequence: UInt64 = 0
+
+    @MainActor
+    static func cachedHeadState(at workingDirectory: String) -> GitHeadState? {
+        let key = URL(fileURLWithPath: workingDirectory).standardizedFileURL.path
+        guard let value = recentHeads[key] else { return nil }
+        accessSequence &+= 1
+        recentHeads[key] = (value.head, accessSequence)
+        return value.head
+    }
+
+    @MainActor
     static func headState(at workingDirectory: String) async -> GitHeadState {
         let path = workingDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty else {
             return .missingWorktree
         }
-        return await Task.detached(priority: .utility) {
+        let result = await Task.detached(priority: .utility) {
             headStateSynchronously(at: path)
         }.value
+        let key = URL(fileURLWithPath: path).standardizedFileURL.path
+        accessSequence &+= 1
+        recentHeads[key] = (result, accessSequence)
+        if recentHeads.count > 24,
+           let oldest = recentHeads.min(by: { $0.value.used < $1.value.used })?.key {
+            recentHeads.removeValue(forKey: oldest)
+        }
+        return result
     }
 
     static func headStateSynchronously(at workingDirectory: String) -> GitHeadState {

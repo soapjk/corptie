@@ -115,7 +115,7 @@ private struct SessionPageLayoutStamp: Equatable {
         init(inputs: SessionPageRenderInputs, root: Root) {
             self.inputs = inputs; host = NSHostingController(rootView: root); host.sizingOptions = []
             let surface = SessionPageSurfaceView()
-            surface.wantsLayer = true; surface.isHidden = true
+            surface.wantsLayer = true; surface.isHidden = true; surface.alphaValue = 0
             surface.content = host.view; surface.addSubview(host.view)
             self.surface = surface
             surface.onCompletedLayout = { [weak self] size in
@@ -131,14 +131,13 @@ private struct SessionPageLayoutStamp: Equatable {
     private let root: (SessionPageRenderInputs) -> Root
     private var fallbackRoot: ConsolePaneContent<Fallback>
     private var fallbackHost: NSHostingController<ConsolePaneContent<Fallback>>?
-    private let openingPage = SessionOpeningPageView()
-    private let titleLabel = NSTextField(labelWithString: "")
     private let gate: SessionPresentationFrameGate
     private let contentGate: SessionPresentationFrameGate
     private let cleanupGate: SessionPresentationFrameGate
     private let readinessGate: SessionPresentationFrameGate
     private(set) var entries: [Entry] = []
     private(set) weak var current: Entry?
+    private(set) weak var visiblePage: Entry?
     private(set) var pendingSessionID: String?
     var settledSessionID: String? { pendingSessionID == nil && current?.inputs.hasValidBinding() == true ? current?.inputs.scope.sessionID : nil }
     private var selectedSessionID: String?
@@ -171,10 +170,8 @@ private struct SessionPageLayoutStamp: Equatable {
         let container = SessionPageContainerView()
         container.layoutChildren = { [weak self] bounds in
             guard let self else { return }
-            self.openingPage.frame = bounds
             self.fallbackHost?.view.frame = bounds
-            // Hidden pages keep their last layout. A changed window size uses
-            // the shell path and lays out the returning page after the gate.
+            // Hidden pages retain their layout until they are selected again.
             if let current = self.current, !current.surface.isHidden {
                 if current.surface.frame != bounds { current.surface.frame = bounds }
                 let inset = current.host.view.safeAreaInsets.top
@@ -188,21 +185,6 @@ private struct SessionPageLayoutStamp: Equatable {
         }
         container.onDraw = { [weak self] in self?.gate.nativeDrawPrepared() }
         view = container
-        openingPage.wantsLayer = true
-        openingPage.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-        openingPage.isHidden = true; view.addSubview(openingPage)
-        titleLabel.font = .systemFont(ofSize: 18, weight: .semibold)
-        titleLabel.maximumNumberOfLines = 2
-        titleLabel.setAccessibilityIdentifier("session-page-opening-title")
-        let notice = NSTextField(labelWithString: L10n("正在打开本地会话…"))
-        notice.textColor = .secondaryLabelColor
-        let stack = NSStackView(views: [titleLabel, notice])
-        stack.orientation = .vertical; stack.spacing = 12; stack.translatesAutoresizingMaskIntoConstraints = false
-        openingPage.addSubview(stack)
-        NSLayoutConstraint.activate([stack.centerXAnchor.constraint(equalTo: openingPage.centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: openingPage.centerYAnchor),
-            stack.widthAnchor.constraint(lessThanOrEqualTo: openingPage.widthAnchor)])
-        openingPage.onDraw = { [weak self] in self?.gate.nativeDrawPrepared() }
         for name in [NSWindow.didMiniaturizeNotification, NSWindow.willCloseNotification, NSWindow.didChangeOcclusionStateNotification] {
             observations.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
                 guard let window = notification.object as? NSWindow else { return }
@@ -240,6 +222,7 @@ private struct SessionPageLayoutStamp: Equatable {
         // Consume a refused IME/modal switch. Returning false here would let
         // the legacy caller perform the very selection AppKit refused.
         if window.attachedSheet != nil { return true }
+        cancelPendingPresentation()
         let previous = current
         previous?.inputs.suspendActions()
         guard previous?.inputs.finishEditingForSwitch() ?? true else { previous?.inputs.resume(); return true }
@@ -251,27 +234,20 @@ private struct SessionPageLayoutStamp: Equatable {
         pendingSessionID = sessionID
         // At most three value-key checks. No projection, new host, table bind,
         // root assignment, row apply or editor text reset on the warm path.
-        let layoutStamp = SessionPageLayoutStamp(view)
         let warm = entries.first {
-            $0.eligibleForWarmPresentation && $0.inputs.scope.sessionID == sessionID && $0.inputs.hasValidBinding()
-                && $0.layoutSize == view.bounds.size && $0.layoutStamp == layoutStamp
+            $0.inputs.scope.sessionID == sessionID && $0.inputs.hasValidBinding()
                 && $0.inputs.historicalThreadID == nil
         }
-        previous?.surface.isHidden = true
-        previous?.surface.setAccessibilityHidden(true)
-        fallbackHost?.view.isHidden = true
         if let warm {
-            current = warm; warm.surface.isHidden = false; warm.surface.setAccessibilityHidden(false)
-            openingPage.isHidden = true
+            current = warm
+            if warm.surface.frame != view.bounds { warm.surface.frame = view.bounds }
+            reveal(warm)
             SessionSwitchTrace.shared.mark(.pageHostReused, sessionID: sessionID)
-        } else {
-            titleLabel.stringValue = title; openingPage.frame = view.bounds
-            view.addSubview(openingPage, positioned: .above, relativeTo: nil)
-            openingPage.isHidden = false; openingPage.needsDisplay = true
         }
-        SessionSwitchTrace.shared.mark(.nativePageVisibilityCommitted, sessionID: sessionID)
+        // A cache miss keeps the old content visible and inert. Never replace
+        // resident messages with an empty opening screen.
         view.needsDisplay = true
-        let armed = gate.arm(view: view, afterNativeDraw: true, minimumRefreshIntervals: 3) { [weak self] outcome in
+        let armed = gate.arm(view: view, afterNativeDraw: warm != nil, minimumRefreshIntervals: warm == nil ? 1 : 3) { [weak self] outcome in
             guard let self, self.epoch == request else { return }
             self.entries.forEach { $0.inputs.freeze() }
             SessionSwitchTrace.shared.mark(outcome == .timedOut ? .presentationGateTimedOut : .presentationDeferredWorkAllowed, sessionID: sessionID)
@@ -307,14 +283,16 @@ private struct SessionPageLayoutStamp: Equatable {
         if let cached = alreadyVisible ?? entries.first(where: { $0.inputs.scope.sessionID == sessionID }) {
             entry = cached
         } else {
-            current = nil
-            trim(to: min(2, capacity - 1))
+            // Preserve the visible page until the replacement has rendered.
+            // Pressure mode may overlap two pages during this handoff; the
+            // hard three-page bound still holds before allocation.
+            trim(to: min(2, max(1, capacity - 1)))
             guard let inputs = makeInputs(sessionID), inputs.hasValidBinding() else { cancelPendingPresentation(); showFallback(); return }
             inputs.resume()
             entry = Entry(inputs: inputs, root: root(inputs))
             SessionSwitchTrace.shared.mark(.pageHostCreated, sessionID: sessionID)
             addChild(entry.host)
-            view.addSubview(entry.surface, positioned: .below, relativeTo: openingPage)
+            view.addSubview(entry.surface, positioned: .below, relativeTo: current?.surface)
             entries.append(entry)
         }
         current = entry; sequence &+= 1; entry.lastUsed = sequence
@@ -325,23 +303,33 @@ private struct SessionPageLayoutStamp: Equatable {
             entry.host.view.frame = entry.surface.bounds
         }
         entry.inputs.setConversationTopInset(entry.host.view.safeAreaInsets.top)
-        entry.surface.isHidden = false; entry.surface.setAccessibilityHidden(false)
-        fallbackHost?.view.isHidden = true
+        entry.surface.isHidden = false; entry.surface.setAccessibilityHidden(pendingSessionID != nil)
         if alreadyVisible != nil || pendingSessionID == nil {
-            openingPage.isHidden = true; pendingSessionID = nil; trim(to: capacity)
+            reveal(entry); pendingSessionID = nil; trim(to: capacity)
             prepareWarmReadiness(entry)
         } else {
             let armed = contentGate.arm(view: view) { [weak self] outcome in
                 guard let self, self.epoch == request else { return }
                 SessionSwitchTrace.shared.mark(outcome == .timedOut ? .presentationContentGateTimedOut : .pageContentUncovered, sessionID: sessionID)
-                self.openingPage.isHidden = true; self.pendingSessionID = nil; self.trim(to: self.capacity)
+                self.reveal(entry); self.pendingSessionID = nil; self.trim(to: self.capacity)
                 self.prepareWarmReadiness(entry)
             }
             if !armed {
-                openingPage.isHidden = true; pendingSessionID = nil; trim(to: capacity)
+                reveal(entry); pendingSessionID = nil; trim(to: capacity)
                 prepareWarmReadiness(entry)
             }
         }
+    }
+    private func reveal(_ entry: Entry) {
+        SessionSwitchTrace.shared.mark(.nativePageVisibilityCommitted, sessionID: entry.inputs.scope.sessionID)
+        visiblePage = entry
+        for other in entries {
+            let hidden = other !== entry
+            other.surface.isHidden = hidden
+            other.surface.alphaValue = hidden ? 0 : 1
+            other.surface.setAccessibilityHidden(hidden)
+        }
+        fallbackHost?.view.isHidden = true
     }
     private func prepareWarmReadiness(_ entry: Entry) {
         guard !entry.eligibleForWarmPresentation, !readinessGate.isArmed,
@@ -355,16 +343,17 @@ private struct SessionPageLayoutStamp: Equatable {
     }
     func cancelPendingPresentation() {
         epoch &+= 1; gate.cancel(); contentGate.cancel(); cleanupGate.cancel(); readinessGate.cancel()
-        pendingSessionID = nil; openingPage.isHidden = true
+        pendingSessionID = nil
+        if let visiblePage { current = visiblePage; reveal(visiblePage) }
     }
     private func showFallback() {
         cancelPendingPresentation()
         entries.forEach { $0.inputs.freeze(); $0.surface.isHidden = true; $0.surface.setAccessibilityHidden(true) }
-        current = nil
+        current = nil; visiblePage = nil
         if let fallbackHost { fallbackHost.rootView = fallbackRoot }
         else {
             let host = NSHostingController(rootView: fallbackRoot); host.sizingOptions = []
-            fallbackHost = host; addChild(host); view.addSubview(host.view, positioned: .below, relativeTo: openingPage)
+            fallbackHost = host; addChild(host); view.addSubview(host.view, positioned: .below, relativeTo: current?.surface)
         }
         fallbackHost?.view.frame = view.bounds; fallbackHost?.view.isHidden = false
     }
@@ -377,14 +366,14 @@ private struct SessionPageLayoutStamp: Equatable {
     private func dispose(_ entry: Entry) {
         entry.inputs.retire(); entry.surface.removeFromSuperview(); entry.host.removeFromParent()
         if current === entry { current = nil }
+        if visiblePage === entry { visiblePage = nil }
         entries.removeAll { $0 === entry }
         SessionSwitchTrace.shared.mark(.pageHostEvicted, sessionID: entry.inputs.scope.sessionID)
     }
     func disposeAll() { cancelPendingPresentation(); for entry in entries { dispose(entry) } }
 }
 
-/// Development P0: one stable legacy host and a native opening page. This
-/// verifies scheduling before introducing multiple retained heavy pages.
+/// One stable legacy host for the Development comparison path.
 struct SessionPageHostSwitcher<Content: View>: NSViewControllerRepresentable {
     let presentation: SessionPagePresentationState
     let selectedSessionID: String?
@@ -413,12 +402,7 @@ struct SessionPageHostSwitcher<Content: View>: NSViewControllerRepresentable {
 
 @MainActor final class SessionPageHostController<Content: View>: NSViewController, SessionPagePresenting {
     let host: NSHostingController<ConsolePaneContent<Content>>
-    private let openingPage = SessionOpeningPageView()
-    private let titleLabel = NSTextField(labelWithString: "")
-    private let activationGate = SessionPresentationFrameGate()
-    private let contentGate = SessionPresentationFrameGate()
     private(set) var pendingSessionID: String?
-    private var contentScheduled = false
     private var isActive = true
     private var observations: [NSObjectProtocol] = []
 
@@ -434,35 +418,10 @@ struct SessionPageHostSwitcher<Content: View>: NSViewControllerRepresentable {
         let container = SessionPageContainerView()
         container.layoutChildren = { [weak self] bounds in
             self?.host.view.frame = bounds
-            self?.openingPage.frame = bounds
         }
         view = container
         addChild(host)
         view.addSubview(host.view)
-        openingPage.wantsLayer = true
-        openingPage.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-        openingPage.isHidden = true
-        view.addSubview(openingPage)
-        openingPage.onDraw = { [weak self] in
-            guard let self, let sessionID = self.pendingSessionID, self.activationGate.isArmed else { return }
-            SessionSwitchTrace.shared.mark(.pageOpeningDrawPrepared, sessionID: sessionID)
-            self.activationGate.nativeDrawPrepared()
-        }
-        titleLabel.font = .systemFont(ofSize: 18, weight: .semibold)
-        titleLabel.maximumNumberOfLines = 2
-        titleLabel.setAccessibilityIdentifier("session-page-opening-title")
-        let notice = NSTextField(labelWithString: L10n("正在打开本地会话…"))
-        notice.textColor = .secondaryLabelColor
-        let stack = NSStackView(views: [titleLabel, notice])
-        stack.orientation = .vertical
-        stack.spacing = 12
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        openingPage.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.centerXAnchor.constraint(equalTo: openingPage.centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: openingPage.centerYAnchor),
-            stack.widthAnchor.constraint(lessThanOrEqualTo: openingPage.widthAnchor)
-        ])
         for name in [NSWindow.didMiniaturizeNotification, NSWindow.willCloseNotification, NSWindow.didChangeOcclusionStateNotification] {
             observations.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
                 guard let window = notification.object as? NSWindow else { return }
@@ -480,46 +439,23 @@ struct SessionPageHostSwitcher<Content: View>: NSViewControllerRepresentable {
         loadViewIfNeeded()
         guard isActive, let window = view.window, window.isVisible,
               window.occlusionState.contains(.visible), !view.isHiddenOrHasHiddenAncestor else { return false }
-        // Normal AppKit resignation commits the old editor's input to its own
-        // draft; never manually copy an unconfirmed IME string into another page.
+        if window.attachedSheet != nil { return true }
         if let responder = window.firstResponder as? NSView, responder.isDescendant(of: host.view),
-           !window.makeFirstResponder(nil) { return false }
+           !window.makeFirstResponder(nil) { return true }
+        // Returning false uses the ordinary direct selection path. There is
+        // no placeholder display prerequisite for showing local messages.
         cancelPendingPresentation()
-        pendingSessionID = sessionID
-        titleLabel.stringValue = title
-        openingPage.frame = view.bounds
-        openingPage.isHidden = false
-        openingPage.needsDisplay = true
-        host.view.setAccessibilityHidden(true)
-        SessionSwitchTrace.shared.mark(.nativePageVisibilityCommitted, sessionID: sessionID)
-        let armed = activationGate.arm(view: view, afterNativeDraw: true, completion: activate)
-        if !armed { cancelPendingPresentation() }
-        return armed
+        return false
     }
 
     func update(root: ConsolePaneContent<Content>, selectedSessionID: String?, isActive: Bool) {
         self.isActive = isActive
         guard isActive else { cancelPendingPresentation(); return }
-        if let pendingSessionID, selectedSessionID != pendingSessionID { return }
         host.rootView = root
-        guard let pendingSessionID, !contentScheduled else { return }
-        contentScheduled = true
-        // Keep the opening page covering the old transcript until the newly
-        // bound SwiftUI root has had its own opportunity to update and display.
-        contentGate.arm(view: view) { [weak self] outcome in
-            guard let self, self.pendingSessionID == pendingSessionID else { return }
-            SessionSwitchTrace.shared.mark(outcome == .timedOut ? .presentationContentGateTimedOut : .pageContentUncovered,
-                                           sessionID: pendingSessionID)
-            self.cancelPendingPresentation()
-        }
     }
 
-    func cancelPendingPresentation() {
-        activationGate.cancel(); contentGate.cancel()
-        pendingSessionID = nil; contentScheduled = false
-        openingPage.isHidden = true
-        host.view.setAccessibilityHidden(false)
-    }
+    func cancelPendingPresentation() { pendingSessionID = nil }
+
 }
 
 @MainActor private final class SessionPageSurfaceView: NSView {
@@ -540,13 +476,4 @@ struct SessionPageHostSwitcher<Content: View>: NSViewControllerRepresentable {
     override var fittingSize: NSSize { NSSize(width: 1000, height: 700) }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
     override func layout() { super.layout(); layoutChildren?(bounds) }
-}
-
-@MainActor private final class SessionOpeningPageView: NSView {
-    var onDraw: (() -> Void)?
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor.windowBackgroundColor.setFill()
-        dirtyRect.fill()
-        onDraw?()
-    }
 }

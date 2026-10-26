@@ -48,10 +48,33 @@ struct SessionConversationHeaderSurface: View {
     }
     @State private var workspaceGitHead: WorkspaceGitHead?
     private var gitHeadState: GitHeadState? {
-        workspaceGitHead?.path == workspacePath ? workspaceGitHead?.head : nil
+        guard let path = workspacePath else { return nil }
+        if workspaceGitHead?.path == path { return workspaceGitHead?.head }
+        if let cached = GitBranchResolver.cachedHeadState(at: path) { return cached }
+        // State Sync may already carry this exact routed worktree's HEAD.
+        // Never borrow metadata for an unrelated historical workspace.
+        if !showsHistoricalThread, let workspace = session?.external?.workspace,
+           workspace.path == path, let branch = workspace.branchName, !branch.isEmpty,
+           let oid = workspace.headOid, !oid.isEmpty {
+            return .branch(name: branch, oid: oid)
+        }
+        return nil
     }
 
-    private let displayedProjectStatus: ProjectWorktreeStatusResponse?
+    struct ProjectStatusSnapshot {
+        let serverID: String
+        let sessionID: String?
+        let workspacePath: String?
+        let status: ProjectWorktreeStatusResponse
+        func value(serverID: String, sessionID: String?, workspacePath: String?) -> ProjectWorktreeStatusResponse? {
+            self.serverID == serverID && self.sessionID == sessionID && self.workspacePath == workspacePath ? status : nil
+        }
+    }
+    @State private var lastProjectStatus: ProjectStatusSnapshot?
+    private let incomingProjectStatus: ProjectWorktreeStatusResponse?
+    private var displayedProjectStatus: ProjectWorktreeStatusResponse? {
+        incomingProjectStatus ?? lastProjectStatus?.value(serverID: backendClient.baseURL.absoluteString, sessionID: session?.id, workspacePath: workspacePath)
+    }
     private let showsHistoricalThread: Bool
     private let hasPendingScheduledWake: Bool
     private let providers: [AgentProviderDescriptor]
@@ -64,7 +87,7 @@ struct SessionConversationHeaderSurface: View {
          renderInputs: SessionPageRenderInputs? = nil) {
         self.session = session; self.historicalWorkspacePath = historicalWorkspacePath
         self.activity = renderInputs?.activity ?? activity; self.backendClient = backendClient
-        self.displayedProjectStatus = projectStatus; self.showsHistoricalThread = showsHistoricalThread
+        self.incomingProjectStatus = projectStatus; self.showsHistoricalThread = showsHistoricalThread
         self.hasPendingScheduledWake = hasPendingScheduledWake; self.providers = providers
         self.renderInputs = renderInputs
     }
@@ -72,6 +95,10 @@ struct SessionConversationHeaderSurface: View {
     var body: some View {
         let _ = SessionSwitchTrace.shared.mark(.headerBody, sessionID: session?.id ?? "")
         headerControls
+            .onChange(of: incomingProjectStatus, initial: true) { _, status in
+                guard let status else { return }
+                lastProjectStatus = ProjectStatusSnapshot(serverID: backendClient.baseURL.absoluteString, sessionID: session?.id, workspacePath: workspacePath, status: status)
+            }
             .task(id: isPresentationActive ? workspaceRouteIdentity : nil) {
                 guard isPresentationActive else { return }
                 await refreshGitBranch()
