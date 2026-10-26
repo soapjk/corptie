@@ -46,6 +46,20 @@ import CorptieClientCore
         XCTAssertEqual(count, 0)
     }
 
+    func testLegacyComparisonLeavesLocalContentVisibleWithoutOpeningScreen() {
+        _ = NSApplication.shared
+        let controller = SessionPageHostController(root: ConsolePaneContent { Text("Existing messages") })
+        controller.loadViewIfNeeded()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = controller.view; window.orderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        XCTAssertFalse(controller.presentOpeningPage(sessionID: "b", title: "B") { _ in XCTFail("No placeholder activation") })
+        XCTAssertFalse(controller.host.view.isHiddenOrHasHiddenAncestor)
+        XCTAssertEqual(controller.view.subviews, [controller.host.view])
+        XCTAssertNil(controller.pendingSessionID)
+    }
+
     func testNativeControllerKeepsOneHostAndRejectsOffscreenOpeningPage() {
         let controller = SessionPageHostController(root: ConsolePaneContent { Text("Fixture") })
         controller.loadViewIfNeeded()
@@ -264,7 +278,7 @@ import CorptieClientCore
         observed = controller
         controller.loadViewIfNeeded(); controller.view.frame = NSRect(x: 0, y: 0, width: 640, height: 400)
         controller.update(fallback: ConsolePaneContent { Text("None") }, selectedSessionID: "a", isActive: true)
-        let original = try XCTUnwrap(controller.current)
+        var original = try XCTUnwrap(controller.current)
         let window = NSWindow(contentRect: controller.view.bounds, styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = controller.view; window.orderFront(nil)
         defer { controller.disposeAll(); window.contentView = nil; window.close() }
@@ -277,10 +291,38 @@ import CorptieClientCore
         XCTAssertFalse(original.eligibleForWarmPresentation)
         await deliver(readiness)
         XCTAssertTrue(original.eligibleForWarmPresentation)
+        // Supersede B after it is built, while A still covers it. C must keep
+        // A visible and must never promote B when B's old gate fires.
+        controller.presentOpeningPage(sessionID: "b", title: "b") { _ in client.sessionSelectionController.select("b") }
+        await deliver(gate)
+        XCTAssertTrue(controller.visiblePage === original)
+        controller.presentOpeningPage(sessionID: "c", title: "c") { _ in client.sessionSelectionController.select("c") }
+        XCTAssertTrue(controller.current === original)
+        await deliver(content)
+        XCTAssertTrue(controller.visiblePage === original)
+        controller.cancelPendingPresentation()
+        // Discard the never-presented B from this preflight so allocation
+        // counts below continue to check the hard three-page bound.
+        controller.disposeAll()
+        controller.update(fallback: ConsolePaneContent { Text("None") }, selectedSessionID: "a", isActive: true)
+        await deliver(gate); await deliver(content); await deliver(readiness)
+        allocations = 1
+        original = try XCTUnwrap(controller.current)
         for id in ["b", "c"] {
             XCTAssertTrue(controller.presentOpeningPage(sessionID: id, title: id) { _ in client.sessionSelectionController.select(id) })
-            XCTAssertEqual(allocations, id == "b" ? 1 : 2, "Cold allocation must wait for the shell display opportunity")
-            await deliver(gate); await deliver(content)
+            let visible = try XCTUnwrap(controller.visiblePage)
+            XCTAssertFalse(visible.surface.isHidden, "Cold requests must retain the previous page")
+            XCTAssertEqual(allocations, id == "b" ? 1 : 2)
+            await deliver(gate)
+            XCTAssertTrue(controller.visiblePage === visible, "Preparation must not cover the last page")
+            XCTAssertFalse(visible.surface.isHidden)
+            XCTAssertNotEqual(controller.current?.inputs.scope.sessionID, visible.inputs.scope.sessionID)
+            XCTAssertEqual(controller.current?.surface.alphaValue, 0, "Staged content must not bleed through the old transparent page")
+            XCTAssertEqual(visible.surface.alphaValue, 1)
+            await deliver(content)
+            XCTAssertEqual(controller.current?.surface.alphaValue, 1)
+            XCTAssertEqual(controller.visiblePage?.inputs.scope.sessionID, id)
+            XCTAssertTrue(visible.surface.isHidden)
             XCTAssertFalse(controller.current?.eligibleForWarmPresentation ?? true)
             await deliver(readiness)
             XCTAssertTrue(controller.current?.eligibleForWarmPresentation ?? false)
@@ -304,6 +346,12 @@ import CorptieClientCore
         controller.view.setFrameSize(NSSize(width: oldBounds.width + 80, height: oldBounds.height))
         controller.view.needsLayout = true; controller.view.layoutSubtreeIfNeeded()
         XCTAssertFalse(original.eligibleForWarmPresentation)
+        // A layout-invalidated cached page is still real content. It must not
+        // be replaced by a loading screen merely because it needs relayout.
+        controller.presentOpeningPage(sessionID: "a", title: "a") { _ in client.sessionSelectionController.select("a") }
+        XCTAssertTrue(controller.visiblePage === original)
+        XCTAssertFalse(original.surface.isHidden)
+        await deliver(gate)
         controller.update(fallback: ConsolePaneContent { Text("None") }, selectedSessionID: "a", isActive: true)
         await deliver(readiness)
         XCTAssertTrue(original.eligibleForWarmPresentation)
