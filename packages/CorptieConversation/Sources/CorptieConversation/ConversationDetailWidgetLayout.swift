@@ -1,69 +1,99 @@
 import SwiftUI
 import CorptieClientCore
 
-/// Integer multiples of one square, including the gaps between occupied cells.
-enum DetailWidgetSize: String, CaseIterable, Sendable {
-    case small, medium, large, tall, extraLarge
-    var columns: Int { self == .small || self == .tall ? 1 : 2 }
-    var rows: Int {
-        switch self { case .small, .medium: 1; case .large, .tall: 2; case .extraLarge: 3 }
+/// Twelve-point vertical spans include the gap after a card. Width remains
+/// independent so compact heights don't shrink controls or force narrow text.
+struct DetailWidgetSize: Equatable, CaseIterable, Sendable {
+    let columns: Int
+    let rows: Int
+    private init(columns: Int, height: Int) {
+        self.columns = columns
+        rows = max(1, (height + 23) / 12)
+    }
+    var height: CGFloat { CGFloat(rows * 12 - 12) }
+    static let strip = DetailWidgetSize(columns: 2, height: 84)
+    static let small = DetailWidgetSize(columns: 1, height: 144)
+    static let medium = DetailWidgetSize(columns: 2, height: 144)
+    static let large = DetailWidgetSize(columns: 2, height: 300)
+    static let tall = DetailWidgetSize(columns: 1, height: 300)
+    static let extraLarge = DetailWidgetSize(columns: 2, height: 456)
+    static let allCases: [DetailWidgetSize] = [.strip, .small, .medium, .large, .tall, .extraLarge]
+    static func fitted(height: Int) -> Self {
+        Self(columns: 2, height: min(360, max(60, height)))
     }
 }
 
 public enum ConversationDetailWidgetMetrics {
-    public static let referenceUnit: CGFloat = 170
+    public static let referenceUnit: CGFloat = 144
     public static let spacing: CGFloat = 12
     public static let railWidth: CGFloat = referenceUnit * 2 + spacing + 24
 }
 
 enum DetailWidgetSizing {
-
-    /// Bounded metadata work only. Never measures text, reads a transcript, or
-    /// feeds view geometry back into observable presentation state.
+    /// Bounded estimates of the default visible preview only. No native text
+    /// measurement, geometry publication, transcript scanning or deferred work.
     static func preferredSize(for card: ClientDetailBusinessCard) -> DetailWidgetSize {
-        if card.loadState == "error" { return .medium }
+        if card.loadState == "error" { return .fitted(height: 96) }
+        let base = card.kind == "contextReferences" || card.actions.contains(where: { $0.operation == "editor.open" }) ? 68 : 54
+        let page = card.nextCursor != nil
         switch card.payload {
-        case .session: return .small
-        case .summary(let value): return textSize(value.text)
-        case .work(let value): return textSize(length: count(value.name) + count(value.description))
+        case .session(let value): return .fitted(height: value.workName.isEmpty ? 72 : 84)
+        case .summary(let value): return .fitted(height: base + textHeight(value.text))
+        case .work(let value): return .fitted(height: base + textHeight(value.name, lines: 2) + blockHeight(value.description))
         case .task(let value):
-            let definition = count(value.description) + count(value.acceptanceCriteria) + count(value.verificationCriteria)
-            let summary = count(value.summary.focus) + count(value.summary.progress)
-                + (value.summary.intervention == "required" ? count(value.summary.nextAction.isEmpty ? value.summary.reason : value.summary.nextAction) : 0)
-            let length = definition + summary + count(value.title)
-            return length > 1400 ? .extraLarge : length > 180 ? .large : .medium
-        case .provider: return .medium
+            let definition = blockHeight(value.description) + blockHeight(value.acceptanceCriteria) + blockHeight(value.verificationCriteria)
+            let height = base + textHeight(value.title, lines: 2) + 24 + definition + summaryHeight(value.summary)
+            return .fitted(height: height)
+        case .provider: return .small
         case .worktree(let value):
-            return value.tree?.dirty == true || (!value.blockedReason.isEmpty && value.blockedReason != "MAIN_WORKTREE") || value.job != nil ? .large : .medium
-        case .turn: return .small
+            let detailed = value.tree?.dirty == true || (!value.blockedReason.isEmpty && value.blockedReason != "MAIN_WORKTREE") || value.job != nil
+            return .fitted(height: detailed ? 216 : 144)
+        case .turn: return .fitted(height: 144)
         case .hits(let list), .memories(let list):
-            let text = list.items.prefix(9).reduce(0) { $0 + count($1.content) }
-            if list.hasMore || list.items.count > 8 || text > 1400 { return .extraLarge }
-            if list.items.count > 3 || text > 280 { return .large }
-            return list.items.count <= 1 && text <= 80 ? .small : .medium
+            let heights = list.items.prefix(6).map { row in
+                let controls = card.actions.contains { $0.target?.id == row.id && ($0.operation == "memory.update" || $0.operation == "memory.delete") }
+                return max(16, textHeight(row.content)) + (controls ? 30 : 0)
+            }
+            return listSize(heights, base: base, page: page)
         case .references(let list):
-            if list.hasMore || list.items.count > 8 { return .extraLarge }
-            if list.items.count <= 1 { return .small }
-            return list.items.count <= 4 && list.items.allSatisfy({ count($0.title) <= 24 }) ? .tall : .large
+            return listSize(list.items.prefix(6).map { textHeight($0.title, lines: 2) + 20 }, base: base, page: page)
         case .artifacts(let list):
-            if list.hasMore || list.items.count > 8 { return .extraLarge }
-            if list.items.count <= 1 { return .medium }
-            return list.items.count <= 3 && list.items.allSatisfy({ count($0.title) <= 24 && count($0.summary) <= 60 }) ? .tall : .large
-        case .focus(let list): return list.hasMore || list.items.count > 6 ? .extraLarge : .large
+            return listSize(list.items.prefix(6).map { max(16, textHeight($0.title, lines: 2)) + ($0.summary.isEmpty ? 0 : textHeight($0.summary) + 4) }, base: base, page: page)
+        case .focus(let list):
+            return listSize(list.items.prefix(6).map { textHeight($0.title, lines: 2) + summaryHeight($0.summary) }, base: base + 32, page: page)
         case .schedules(let list):
-            if list.hasMore || list.items.count > 6 { return .extraLarge }
-            if list.items.count <= 1 { return .small }
-            return list.items.count <= 3 ? .tall : .large
-        case .unsupported: return .medium
+            return listSize(list.items.prefix(6).map { textHeight($0.name, lines: 2) + 20 + ($0.nextRunAt != nil || $0.runAt != nil ? 20 : 0) }, base: base, page: page)
+        case .unsupported: return .fitted(height: 96)
         }
     }
 
-    private static func count(_ text: String) -> Int { text.utf16.prefix(1401).count }
-    private static func textSize(_ text: String) -> DetailWidgetSize {
-        textSize(length: count(text))
+    private static func listSize(_ heights: [Int], base: Int, page: Bool) -> DetailWidgetSize {
+        let rows = heights.isEmpty ? 16 : heights.reduce(0, +) + max(0, heights.count - 1) * 12
+        return .fitted(height: base + rows + (page ? 35 : 0))
     }
-    private static func textSize(length: Int) -> DetailWidgetSize {
-        switch length { case ...80: .small; case ...280: .medium; case ...1400: .large; default: .extraLarge }
+    private static func blockHeight(_ text: String) -> Int { text.isEmpty ? 0 : textHeight(text) + 7 }
+    private static func summaryHeight(_ summary: ClientDetailBusinessTaskSummary) -> Int {
+        guard summary.state == "ready" else { return 16 }
+        var height = 0
+        if !summary.focus.isEmpty { height += textHeight(summary.focus, lines: 4) + 4 }
+        if !summary.progress.isEmpty { height += textHeight(summary.progress, lines: 4) + 4 }
+        if summary.intervention == "required", summary.current != false {
+            height += blockHeight(summary.nextAction.isEmpty ? summary.reason : summary.nextAction)
+        }
+        return height
+    }
+    private static func textHeight(_ text: String, lines maximum: Int = 3) -> Int {
+        guard !text.isEmpty else { return 0 }
+        var lines = 1, width = 8 // allow for the inline stamp on the first line
+        for unit in text.utf16.prefix(160) {
+            if unit == 10 { lines += 1; width = 0 }
+            else {
+                width += unit < 256 ? 1 : 2
+                if width > 40 { lines += 1; width = unit < 256 ? 1 : 2 }
+            }
+            if lines >= maximum { return maximum * 16 }
+        }
+        return lines * 16
     }
 }
 
@@ -87,9 +117,9 @@ struct DetailWidgetPlacement: Equatable {
                 let cells = (row..<(row + widget.rows)).flatMap { r in (column..<(column + span)).map { r * columns + $0 } }
                 if column + span <= columns && cells.allSatisfy({ !occupied.contains($0) }) {
                     occupied.formUnion(cells)
-                    frames.append(CGRect(x: CGFloat(column) * (unit + gap), y: CGFloat(row) * (unit + gap),
+                    frames.append(CGRect(x: CGFloat(column) * (unit + gap), y: CGFloat(row) * gap,
                         width: CGFloat(span) * unit + CGFloat(span - 1) * gap,
-                        height: CGFloat(widget.rows) * unit + CGFloat(widget.rows - 1) * gap))
+                        height: widget.height))
                     cursor = position + span
                     break
                 }

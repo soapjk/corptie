@@ -9,22 +9,22 @@ import AppKit
 
 @MainActor struct DetailWidgetLayoutTests {
     @Test func referenceSizesComposeSquaresIncludingTheirGaps() {
-        let pair = DetailWidgetPlacement.make(width: 352, widgets: [.small, .small])
-        #expect(pair.frames == [CGRect(x: 0, y: 0, width: 170, height: 170), CGRect(x: 182, y: 0, width: 170, height: 170)])
-        let expected: [DetailWidgetSize: CGSize] = [
-            .small: CGSize(width: 170, height: 170), .medium: CGSize(width: 352, height: 170),
-            .large: CGSize(width: 352, height: 352), .tall: CGSize(width: 170, height: 352),
-            .extraLarge: CGSize(width: 352, height: 534)
+        let pair = DetailWidgetPlacement.make(width: 300, widgets: [.small, .small])
+        #expect(pair.frames == [CGRect(x: 0, y: 0, width: 144, height: 144), CGRect(x: 156, y: 0, width: 144, height: 144)])
+        let expected: [(DetailWidgetSize, CGSize)] = [
+            (.strip, CGSize(width: 300, height: 84)), (.small, CGSize(width: 144, height: 144)), (.medium, CGSize(width: 300, height: 144)),
+            (.large, CGSize(width: 300, height: 300)), (.tall, CGSize(width: 144, height: 300)),
+            (.extraLarge, CGSize(width: 300, height: 456))
         ]
         for size in DetailWidgetSize.allCases {
-            #expect(DetailWidgetPlacement.make(width: 352, widgets: [size]).frames[0].size == expected[size])
+            #expect(DetailWidgetPlacement.make(width: 300, widgets: [size]).frames[0].size == expected.first { $0.0 == size }?.1)
         }
-        #expect(ConversationDetailWidgetMetrics.railWidth == 376)
+        #expect(ConversationDetailWidgetMetrics.railWidth == 324)
     }
 
     @Test func mixedCardsKeepOrderAndNeverOverlapOrEscapeTheRail() {
-        let sizes: [DetailWidgetSize] = [.tall, .small, .small, .medium, .large, .small, .extraLarge]
-        for width in [240.0, 292, 320, 352, 480] {
+        let sizes: [DetailWidgetSize] = [.strip, .tall, .small, .small, .medium, .large, .small, .extraLarge]
+        for width in [1.0, 240, 292, 300, 352, 480] {
             let plan = DetailWidgetPlacement.make(width: width, widgets: sizes)
             #expect(plan.frames.count == sizes.count)
             for (index, frame) in plan.frames.enumerated() {
@@ -39,18 +39,104 @@ import AppKit
         #expect(DetailWidgetPlacement.make(width: 0, widgets: []).size.height == 0)
     }
 
-    @Test func contentGrowthAndPaginationSelectLargerSizesWithoutTextMeasurement() throws {
-        for (length, size) in [(30, DetailWidgetSize.small), (100, .medium), (400, .large), (1600, .extraLarge)] {
+    @Test func shortCardsUseTwelvePointHeightSteps() {
+        #expect(DetailWidgetSize.fitted(height: 1).height == 60)
+        #expect(DetailWidgetSize.fitted(height: 61).height == 72)
+        #expect(DetailWidgetSize.fitted(height: 73).height == 84)
+        let sizes = [60, 72, 84, 96, 108].map { DetailWidgetSize.fitted(height: $0) }
+        let plan = DetailWidgetPlacement.make(width: 300, widgets: sizes)
+        #expect(plan.frames.map(\.height) == [60, 72, 84, 96, 108])
+        for pair in zip(plan.frames, plan.frames.dropFirst()) {
+            #expect(pair.1.minY - pair.0.maxY == 12)
+        }
+    }
+
+    @Test func visiblePreviewGrowthAndPaginationAvoidOversizedCells() throws {
+        for (length, size) in [(30, DetailWidgetSize.fitted(height: 96)), (100, .fitted(height: 108)), (400, .fitted(height: 108)), (1600, .fitted(height: 108))] {
             let card = try decode(kind: "chatSummary", data: ["text": String(repeating: "文", count: length)])
             #expect(DetailWidgetSizing.preferredSize(for: card) == size)
         }
         let reference: [String: Any] = ["referenceId": "ref", "title": "引用", "targetType": "web", "status": "available", "enabled": true]
-        #expect(DetailWidgetSizing.preferredSize(for: try decode(kind: "contextReferences", data: ["items": [reference], "hasMore": false])) == .small)
-        #expect(DetailWidgetSizing.preferredSize(for: try decode(kind: "contextReferences", data: ["items": [reference, reference], "hasMore": false])) == .tall)
-        #expect(DetailWidgetSizing.preferredSize(for: try decode(kind: "contextReferences", data: ["items": [reference], "hasMore": true])) == .extraLarge)
+        #expect(DetailWidgetSizing.preferredSize(for: try decode(kind: "contextReferences", data: ["items": [reference], "hasMore": false])) == .fitted(height: 108))
+        #expect(DetailWidgetSizing.preferredSize(for: try decode(kind: "contextReferences", data: ["items": [reference, reference], "hasMore": false])) == .fitted(height: 156))
+        #expect(DetailWidgetSizing.preferredSize(for: try decode(kind: "contextReferences", data: ["items": [reference], "hasMore": true])) == .fitted(height: 108))
     }
 
     #if os(macOS)
+    @Test func firstCardStartsWithinFourPointsOfDetailViewport() async throws {
+        let size = DetailWidgetSize.fitted(height: 72)
+        let host = NSHostingView(rootView: ConversationDetailDashboard {
+            DetailWidgetLayout(sizes: [size]) {
+                ConversationDetailModuleCard(title: "详情", systemImage: "info.circle") { Text("短内容") }.detailWidget(size)
+            }
+        })
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 324, height: 400),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host; window.orderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(80))
+        func first<T: NSView>(_ view: NSView, as type: T.Type) -> T? {
+            if let match = view as? T { return match }
+            return view.subviews.compactMap { first($0, as: type) }.first
+        }
+        let outer = try #require(first(host, as: NSScrollView.self))
+        let card = try #require(first(host, as: DetailCardProbe.View.self))
+        let clip = outer.contentView
+        let frame = card.convert(card.bounds, to: clip)
+        let top = clip.isFlipped ? frame.minY - clip.bounds.minY : clip.bounds.maxY - frame.maxY
+        #expect(top >= 0 && top <= 4)
+    }
+
+    @Test func sessionProviderAndCollapsedContentUseCompactProfiles() throws {
+        let session = try decode(kind: "sessionInfo", data: ["sessionId": "session:1", "workName": "Work"])
+        #expect(DetailWidgetSizing.preferredSize(for: session) == .strip)
+        let provider = try decode(kind: "provider", data: ["providerId": "test", "name": "Provider", "model": "Model",
+            "reasoning": "Medium", "switching": false, "providers": []])
+        #expect(DetailWidgetSizing.preferredSize(for: provider) == .small)
+        let memory: [String: Any] = ["memoryId": "memory:1", "kind": "fact", "content": String(repeating: "隐藏正文", count: 5000),
+            "unavailable": false, "snapshotAtRecall": false]
+        for more in [false, true] {
+            let hit = try decode(kind: "memoryHits", data: ["items": [memory], "hasMore": more])
+            #expect(DetailWidgetSizing.preferredSize(for: hit) == .fitted(height: 108))
+            let artifact: [String: Any] = ["artifactId": "artifact:1", "title": "交付文档", "summary": "完成", "contentHash": "hash", "readAvailable": true]
+            let artifacts = try decode(kind: "artifacts", data: ["items": [artifact], "hasMore": more])
+            #expect(DetailWidgetSizing.preferredSize(for: artifacts) == .fitted(height: 96))
+        }
+        let summary: [String: Any] = ["state": "ready", "focus": "", "progress": "", "intervention": "none", "reason": "", "nextAction": ""]
+        var task: [String: Any] = ["taskId": "task:1", "title": "Task", "status": "active", "description": "短描述",
+            "acceptanceCriteria": "", "verificationCriteria": "", "resourceRevision": "1", "summary": summary]
+        #expect(DetailWidgetSizing.preferredSize(for: try decode(kind: "taskInfo", data: task)) == .fitted(height: 120))
+        task["description"] = String(repeating: "默认收起的长正文", count: 5000)
+        #expect(DetailWidgetSizing.preferredSize(for: try decode(kind: "taskInfo", data: task)) == .fitted(height: 156))
+        task["acceptanceCriteria"] = String(repeating: "验收", count: 5000)
+        task["verificationCriteria"] = String(repeating: "验证", count: 5000)
+        #expect(DetailWidgetSizing.preferredSize(for: try decode(kind: "taskInfo", data: task)) == .fitted(height: 264))
+    }
+
+    @Test func smallProviderShowsAllThreeControlsWithoutVerticalOverflow() async throws {
+        let selection = ClientDetailConfiguration.Selection(id: "test", title: "Example Model", choices: [], canSelect: false)
+        let host = NSHostingView(rootView: ConversationDetailDashboard {
+            DetailWidgetLayout(sizes: [.small]) {
+                ConversationDetailProviderCard(configuration: .init(provider: selection, model: selection, reasoning: selection),
+                    scope: "test", select: { _, _ in }, reload: {}).detailWidget(.small)
+            }
+        })
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 324, height: 400),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host; window.orderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        func scrolls(_ view: NSView) -> [NSScrollView] {
+            (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap(scrolls)
+        }
+        let outer = try #require(scrolls(host).first)
+        let inner = try #require(outer.documentView.flatMap { scrolls($0).first })
+        #expect(inner.bounds.size == CGSize(width: 144, height: 144))
+        #expect(try #require(inner.documentView).bounds.height <= inner.contentView.bounds.height + 1)
+    }
+
     @Test func nativeBusinessGridSettlesWhileReorderingResizingAndUpdatingContent() async throws {
         let repository = ClientDetailBusinessRepository()
         let scope = ClientDetailBusinessScope(serverID: "test", ownerID: "test", principalID: "test",
@@ -103,7 +189,7 @@ import AppKit
                 arrangement.move(["summary"], before: "references", cards: handle.store.orderedCards)
             }
             host.rootView = rail(arranging: revision.isMultiple(of: 2))
-            let width = [376.0, 264, 320, 376][revision % 4]
+            let width = [324.0, 264, 320, 324][revision % 4]
             window.setContentSize(CGSize(width: width, height: 700))
             host.layoutSubtreeIfNeeded()
             try await Task.sleep(for: .milliseconds(30))
@@ -125,7 +211,7 @@ import AppKit
     }
 
     @Test func hostedCardsHonorTheirCellsAndKeepOverflowScrollableAfterResize() async throws {
-        let sizes: [DetailWidgetSize] = [.small, .small, .medium, .large, .tall, .small, .extraLarge]
+        let sizes: [DetailWidgetSize] = [.strip, .small, .small, .medium, .large, .tall, .small, .extraLarge]
         let rows = ForEach(sizes.indices, id: \.self) { index in
                     ConversationDetailModuleCard(title: "组件 \(index)", systemImage: "square.grid.2x2") {
                         ForEach(0..<20) { row in Text("\(row) 记忆内容").font(.caption) }
@@ -152,7 +238,13 @@ import AppKit
         func scrolls(_ view: NSView) -> [NSScrollView] {
             (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap(scrolls)
         }
-        for width in [376.0, 320, 264, 376] {
+        // AppKit rounds native view frames to physical pixels; the shallow
+        // profile can have a fractional track height at intermediate widths.
+        func matchesCell(_ actual: CGSize, _ expected: CGSize) -> Bool {
+            let pixel = 1 / window.backingScaleFactor
+            return abs(actual.width - expected.width) < pixel && abs(actual.height - expected.height) < pixel
+        }
+        for width in [324.0, 320, 264, 324] {
             window.setContentSize(CGSize(width: width, height: 800))
             host.layoutSubtreeIfNeeded()
             try await Task.sleep(for: .milliseconds(40))
@@ -162,13 +254,13 @@ import AppKit
             // before checking the exact cells, including under concurrent tests.
             for _ in 0..<20 {
                 let found = cards(host)
-                if found.count == sizes.count && zip(found, plan.frames).allSatisfy({ $0.0.bounds.size == $0.1.size }) { break }
+                if found.count == sizes.count && zip(found, plan.frames).allSatisfy({ matchesCell($0.0.bounds.size, $0.1.size) }) { break }
                 host.layoutSubtreeIfNeeded()
                 try await Task.sleep(for: .milliseconds(10))
             }
             let found = cards(host)
             #expect(found.count == sizes.count)
-            for (index, card) in found.enumerated() { #expect(card.bounds.size == plan.frames[index].size) }
+            for (index, card) in found.enumerated() { #expect(matchesCell(card.bounds.size, plan.frames[index].size)) }
         }
         let inner = scrolls(host).flatMap { outer in outer.documentView.map(scrolls) ?? [] }
         #expect(!inner.isEmpty)
