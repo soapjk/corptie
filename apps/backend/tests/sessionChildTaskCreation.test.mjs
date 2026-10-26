@@ -7,7 +7,7 @@ import { join } from "node:path";
 import Ajv from "ajv";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { WorkApplicationService } from "../src/application/workApplicationService.mjs";
-import { SessionCollaborationService } from "../src/application/sessionCollaborationService.mjs";
+import { createSessionCollaborationComposition } from "../src/application/sessionCollaborationComposition.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import { collaborationDynamicTools, callCollaborationDynamicTool } from "../src/collaboration/collaborationDynamicTools.mjs";
 import { handleCollaborationHttpRequest } from "../src/collaboration/collaborationHttpApi.mjs";
@@ -50,6 +50,8 @@ async function fixture(t, providerId = "codex-app-server") {
     async start(command) {
       starts.push(command);
       const metadata = open(`child-${starts.length}`, command.taskId);
+      // Real Git and Sandbox coordinators publish ready with their binding.
+      store.setTaskCreationState(command.taskId, "ready");
       const session = store.getSession(metadata.sessionId), task = store.getTask(command.taskId);
       const proof = { status: "ready", session, task, receipt: { startupOperationId: `startup:${starts.length}`, taskId: task.id } };
       proofs.set(store.getLogicalSessionByLegacySessionId(session.id).logicalSessionId, proof);
@@ -57,15 +59,18 @@ async function fixture(t, providerId = "codex-app-server") {
     },
     getSessionBinding(id) { return proofs.get(id); }
   };
-  const service = new SessionCollaborationService({ store, workService, collaborationCore: core,
-    workSessionStartApplicationService: starter, defaultProviderId: providerId });
+  let startupService = null;
+  const service = createSessionCollaborationComposition({ store, workService, collaborationCore: core,
+    getWorkSessionStartApplicationService: () => startupService, defaultProviderId: providerId });
+  // Match server order: collaboration is constructed before startup service.
+  startupService = starter;
   const input = (patch = {}) => ({ title: "Child", agentId: agent.agentId, parentTaskId: root.id,
     expectedParentResourceVersion: store.getTask(root.id).resource_version, ...evidence(), idempotencyKey: "child:one", ...patch });
   return { store, core, workService, work, root, agent, service, source, open, evidence, starts, starter, proofs, input };
 }
 
 test("ordinary Worker creates and replays a child without platform administration on every Provider", async t => {
-  for (const providerId of ["codex-app-server", "claude-sdk"]) await t.test(providerId, async t => {
+  for (const providerId of ["codex-app-server", "claude-sdk", "openclacky"]) await t.test(providerId, async t => {
     const f = await fixture(t, providerId), input = f.input();
     assert.throws(() => resolvePlatformAdminSession(f.store, { actorId: f.agent.agentId, sessionId: f.source.sessionId }), { code: "PLATFORM_ADMIN_SESSION_REQUIRED" });
     const [created, concurrent] = await Promise.all([f.service.createTaskAndSession(f.source, f.agent.agentId, input), f.service.createTaskAndSession(f.source, f.agent.agentId, input)]);
@@ -73,6 +78,7 @@ test("ordinary Worker creates and replays a child without platform administratio
     assert.equal(created.task.id, concurrent.task.id);
     assert.equal(created.startupStatus, "ready");
     assert.equal(f.starts.length, 1);
+    assert.equal(f.starts[0].dispatchInitialTurn, false);
     f.store.updateTask(f.root.id, { description: "Parent_changed_after_creation" });
     const replay = await f.service.createTaskAndSession(f.source, f.agent.agentId, input);
     assert.equal(replay.task.id, created.task.id); assert.equal(f.starts.length, 1);
@@ -85,6 +91,39 @@ test("ordinary Worker creates and replays a child without platform administratio
     assert.equal(replay.task.creation_intent_json, undefined);
     await assert.rejects(f.service.createTaskAndSession(f.source, f.agent.agentId, { ...input, parentTaskId: null, expectedParentResourceVersion: undefined }), { code: "IDEMPOTENCY_CONFLICT" });
     await assert.rejects(f.service.createTaskAndSession(f.source, f.agent.agentId, { ...input, description: "Other" }), { code: "IDEMPOTENCY_CONFLICT" });
+  });
+});
+
+test("production collaboration composition fails closed on invalid proofs and recovers the same pair without restart", async t => {
+  for (const invalid of ["missing", "pending", "wrong-task", "wrong-session", "missing-reader"]) await t.test(invalid, async t => {
+    const f = await fixture(t), input = f.input(), reader = f.starter.getSessionBinding;
+    f.starter.getSessionBinding = invalid === "missing-reader" ? undefined : function (id) {
+      const proof = reader.call(this, id);
+      if (invalid === "missing") return undefined;
+      if (invalid === "pending") return { ...proof, status: "pending" };
+      if (invalid === "wrong-task") return { ...proof, task: { ...proof.task, id: "task:other" } };
+      return { ...proof, session: { ...proof.session, id: "provider:other" } };
+    };
+    let recovery;
+    await assert.rejects(f.service.createTaskAndSession(f.source, f.agent.agentId, input), error => {
+      recovery = error.creationRecovery;
+      return error.code === "START_REFERENCE_INVALID" && Boolean(recovery?.taskId);
+    });
+    const task = f.store.getTask(recovery.taskId), sessionId = task.current_session_id;
+    assert.ok(sessionId);
+    assert.equal(f.starts.length, 1);
+    assert.equal(f.starts[0].dispatchInitialTurn, false);
+    assert.equal(f.store.listTasks().length, 2);
+    f.starter.getSessionBinding = reader;
+    const replay = await f.service.createTaskAndSession(f.source, f.agent.agentId, input);
+    assert.equal(replay.task.id, task.id);
+    assert.equal(replay.task.current_session_id, sessionId);
+    assert.equal(replay.startupStatus, "ready");
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(f.starts.length, 1);
+    assert.equal(f.store.listTasks().length, 2);
+    const logicalId = f.store.getLogicalSessionByLegacySessionId(sessionId).logicalSessionId;
+    assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM message_deliveries WHERE session_id IN (?,?)", [sessionId, logicalId]).n, 0);
   });
 });
 

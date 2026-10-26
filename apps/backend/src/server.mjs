@@ -73,7 +73,7 @@ import { createPlatformOperationComposition, createWorkInitializationComposition
 import { createTaskWorktreeOperations } from "./application/taskWorktreeOperations.mjs";
 import { createProjectWorktreeOperations } from "./application/projectWorktreeOperations.mjs";
 import { PlatformConfirmationService } from "./application/platformConfirmationService.mjs";
-import { SessionCollaborationService } from "./application/sessionCollaborationService.mjs";
+import { createSessionCollaborationComposition } from "./application/sessionCollaborationComposition.mjs";
 import { SessionChannelService } from "./collaboration/sessionChannelService.mjs";
 import { loadStartupSessionInventory } from "./application/startupSessionInventory.mjs";
 import { createManagedProviderSessionProjection } from "./application/managedProviderSessionProjection.mjs";
@@ -1142,14 +1142,12 @@ workChatOperationService = new WorkChatOperationService({
   },
   defaultProviderId: agentProviderRegistry.defaultProviderId
 });
-sessionCollaborationService = new SessionCollaborationService({
+sessionCollaborationService = createSessionCollaborationComposition({
   store,
   workService,
   artifactService,
   collaborationCore,
-  workSessionStartApplicationService: {
-    start: (command) => workSessionStartApplicationService.start(command)
-  },
+  getWorkSessionStartApplicationService: () => workSessionStartApplicationService,
   defaultProviderId: agentProviderRegistry.defaultProviderId
 });
 const { setProviderRuntimeReadiness, decorateSessionForClient } = createSessionReadinessProjection({
