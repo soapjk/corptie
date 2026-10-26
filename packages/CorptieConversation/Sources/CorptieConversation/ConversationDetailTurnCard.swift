@@ -2,7 +2,11 @@ import SwiftUI
 import CorptieClientCore
 
 public struct ConversationDetailTurnCard: View {
-    let state: ClientDetailTurnState
+    private let commandState: ClientDetailTurnState
+    private let presentationState: ClientDetailTurnState?
+    private let activity: ConversationDetailPresentationActivity?
+    private var state: ClientDetailTurnState { presentationState ?? commandState }
+    private var active: Bool { activity?.isActive ?? true }
     let executionID: String
     let expectedSessionIDs: [String]
     let readSummary: @MainActor () async throws -> ClientTurnSummary
@@ -15,8 +19,10 @@ public struct ConversationDetailTurnCard: View {
     public init(state: ClientDetailTurnState, executionID: String, expectedSessionIDs: [String],
                 readSummary: @escaping @MainActor () async throws -> ClientTurnSummary,
                 readTrace: @escaping @MainActor (String, String?) async throws -> ClientTurnTrace,
-                liveSnapshot: ClientTurnSummary? = nil) {
-        self.state = state; self.executionID = executionID; self.expectedSessionIDs = expectedSessionIDs
+                liveSnapshot: ClientTurnSummary? = nil,
+                presentationState: ClientDetailTurnState? = nil,
+                activity: ConversationDetailPresentationActivity? = nil) {
+        self.commandState = state; self.presentationState = presentationState; self.activity = activity; self.executionID = executionID; self.expectedSessionIDs = expectedSessionIDs
         self.readSummary = readSummary; self.readTrace = readTrace
         self.liveSnapshot = liveSnapshot
     }
@@ -43,14 +49,14 @@ public struct ConversationDetailTurnCard: View {
             }, content: { summaryContent })
             if let error = state.error { Text(error).font(.caption).foregroundStyle(.secondary) }
         }
-        .task(id: executionID) { await load() }
+        .task(id: active ? executionID : nil) { guard active else { return }; await load() }
         .task(id: liveSnapshot) {
-            if let liveSnapshot, liveSnapshot.turnExecutionId == executionID {
-                try? state.apply(liveSnapshot, expectedSessionIDs: expectedSessionIDs, executionID: executionID)
+            if active, let liveSnapshot, liveSnapshot.turnExecutionId == executionID {
+                try? commandState.apply(liveSnapshot, expectedSessionIDs: expectedSessionIDs, executionID: executionID)
             }
         }
-        .task(id: "\(traceExpanded.wrappedValue):\(state.summary?.turnExecutionId ?? "")") {
-            if traceExpanded.wrappedValue { await state.loadTrace(using: readTrace) }
+        .task(id: "\(active):\(traceExpanded.wrappedValue):\(state.summary?.turnExecutionId ?? "")") {
+            if active && traceExpanded.wrappedValue { await loadTrace() }
         }
     }
     @ViewBuilder private var summaryContent: some View {
@@ -100,9 +106,9 @@ public struct ConversationDetailTurnCard: View {
                         }
                         if let cursor = trace.nextCursor {
                             if state.error != nil {
-                                Button("重试读取更多") { Task { await state.loadTrace(more: true, using: readTrace) } }.font(.caption)
+                                Button("重试读取更多") { Task { await loadTrace(more: true) } }.font(.caption)
                             } else {
-                                ProgressView().controlSize(.small).task(id: cursor) { await state.loadTrace(more: true, using: readTrace) }
+                                ProgressView().controlSize(.small).task(id: cursor) { await loadTrace(more: true) }
                             }
                         }
                     }
@@ -111,11 +117,28 @@ public struct ConversationDetailTurnCard: View {
                 if trace.windowClipped { Text("已达本次诊断窗口上限，未继续读取").font(.caption2).foregroundStyle(.secondary) }
             }
         } else {
-            Button("重试读取 Trace") { Task { await state.loadTrace(using: readTrace) } }.font(.caption)
+            Button("重试读取 Trace") { Task { await loadTrace() } }.font(.caption)
         }
     }
     private func load(force: Bool = false) async {
-        await state.loadSummary(executionID: executionID, expectedSessionIDs: expectedSessionIDs, force: force, using: readSummary)
+        let generation = activity?.generation ?? 0
+        guard activity?.allows(generation: generation) ?? true else { return }
+        await commandState.loadSummary(executionID: executionID, expectedSessionIDs: expectedSessionIDs, force: force) {
+            guard activity?.allows(generation: generation) ?? true else { throw CancellationError() }
+            let value = try await readSummary()
+            guard activity?.allows(generation: generation) ?? true else { throw CancellationError() }
+            return value
+        }
+    }
+    private func loadTrace(more: Bool = false) async {
+        let generation = activity?.generation ?? 0
+        guard activity?.allows(generation: generation) ?? true else { return }
+        await commandState.loadTrace(more: more) { id, cursor in
+            guard activity?.allows(generation: generation) ?? true else { throw CancellationError() }
+            let value = try await readTrace(id, cursor)
+            guard activity?.allows(generation: generation) ?? true else { throw CancellationError() }
+            return value
+        }
     }
     private func metric(_ label: String, _ value: Double?) -> some View {
         VStack(alignment: .leading, spacing: 3) {

@@ -387,6 +387,8 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
     func setContent(_ row: AppKitChatTimelineRow, availableWidth: CGFloat, baseDirectory: String? = nil,
                     onToggleExpansion: @escaping (String) -> Void,
                     onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in }) {
+        let trace = SessionSwitchTrace.shared.start(.cardContent, sessionID: row.sessionID)
+        defer { SessionSwitchTrace.shared.finish(trace) }
         precondition(MacSharedMessageTextCard.supports(row))
         self.row = row; self.baseDirectory = baseDirectory
         representedImageGeometries = row.imageGeometries
@@ -415,6 +417,8 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
 
     private func updateHost(needsLayout: Bool = true, resetTextSelection: Bool = false) {
         guard let row, let measuredLayout else { return }
+        let trace = SessionSwitchTrace.shared.start(.cardHost, sessionID: row.sessionID)
+        defer { SessionSwitchTrace.shared.finish(trace) }
         hostUpdateCount += 1
         let root = MacSharedMessageTextCard(row: row, layout: measuredLayout,
             processSummaryOverride: elapsedSummary, baseDirectory: baseDirectory,
@@ -423,8 +427,11 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
             performAction: { [weak self] action in self?.onAction(action) },
             selectText: { [weak self] in self?.beginTextSelection() }, contextMenu: menu,
             onImageGeometryChanged: { [weak self] in self?.onImageGeometryChanged?() })
-        if let host { host.rootView = root }
-        else {
+        if let host {
+            SessionSwitchTrace.shared.recordCell(.hostAssigned, sessionID: row.sessionID, rowID: row.id)
+            host.rootView = root
+        } else {
+            SessionSwitchTrace.shared.recordCell(.hostCreated, sessionID: row.sessionID, rowID: row.id)
             let host = NSHostingView(rootView: root)
             host.sizingOptions = [] // The cached native row height owns sizing.
             host.frame = bounds

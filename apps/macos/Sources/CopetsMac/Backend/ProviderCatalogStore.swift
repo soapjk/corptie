@@ -24,6 +24,9 @@ final class ProviderCatalogStore: ObservableObject {
     func defaultReasoning(for provider: String?) -> String? {
         matchesLoadedProvider(provider) ? codexDefaultReasoningLevel : nil
     }
+    func defaultModel(for provider: String?) -> String? {
+        matchesLoadedProvider(provider) ? codexDefaultModel : nil
+    }
     private func matchesLoadedProvider(_ provider: String?) -> Bool {
         guard let provider, let loadedModelProvider else { return false }
         if provider == loadedModelProvider { return true }

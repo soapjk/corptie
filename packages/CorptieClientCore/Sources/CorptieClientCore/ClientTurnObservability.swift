@@ -191,6 +191,14 @@ public struct ClientTurnTrace: Decodable, Equatable, Sendable {
 }
 
 @MainActor @Observable public final class ClientDetailTurnState {
+    public struct PresentationSnapshot: Equatable, Sendable {
+        public let summary: ClientTurnSummary?
+        public let trace: ClientTurnTrace?
+        public let slowestSpans: [ClientTurnTraceSpan]
+        public let loading: Bool
+        public let loadingTrace: Bool
+        public let error: String?
+    }
     public private(set) var summary: ClientTurnSummary?
     public private(set) var trace: ClientTurnTrace?
     public private(set) var slowestSpans: [ClientTurnTraceSpan] = []
@@ -205,6 +213,18 @@ public struct ClientTurnTrace: Decodable, Equatable, Sendable {
     @ObservationIgnored private var traceBytes = 0
     @ObservationIgnored private var traceCursors: [String] = []
     public init() {}
+    public func makePresentationSnapshot() -> PresentationSnapshot {
+        .init(summary: summary, trace: trace, slowestSpans: slowestSpans,
+              loading: loading, loadingTrace: loadingTrace, error: error)
+    }
+    public func applyPresentationSnapshot(_ value: PresentationSnapshot) {
+        if summary != value.summary { summary = value.summary }
+        if trace != value.trace { trace = value.trace }
+        if slowestSpans != value.slowestSpans { slowestSpans = value.slowestSpans }
+        if loading != value.loading { loading = value.loading }
+        if loadingTrace != value.loadingTrace { loadingTrace = value.loadingTrace }
+        if error != value.error { error = value.error }
+    }
     public func apply(_ summary: ClientTurnSummary, expectedSessionIDs: [String], executionID: String) throws {
         guard summary.isValid, expectedSessionIDs.contains(summary.sessionId), summary.turnExecutionId == executionID else { throw ClientDetailFailure.invalidGraph }
         if self.summary != summary { trace = nil; slowestSpans = []; traceBytes = 0; traceCursors = [] }

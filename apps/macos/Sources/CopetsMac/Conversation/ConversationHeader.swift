@@ -1,28 +1,83 @@
 import AppKit
+import Combine
 import CorptieClientCore
 import CorptieConversation
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Legacy observation stays outside the value-only header used by retained pages.
 struct DetailHeaderView: View {
+    let session: TaskSession?
+    var historicalWorkspacePath: String? = nil
+    var activity: ConversationDetailPresentationActivity? = nil
     @EnvironmentObject private var backendClient: BackendClient
     @ObservedObject private var entityClient = EntityAPIClient.shared
     @ObservedObject private var supplementaryData = BackendClient.shared.supplementaryDataController
+    @ObservedObject private var modelCatalog = BackendClient.shared.modelCatalog
     @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
+    var body: some View {
+        SessionConversationHeaderSurface(session: session, historicalWorkspacePath: historicalWorkspacePath,
+            activity: activity, backendClient: backendClient,
+            projectStatus: supplementaryData.selectedSessionID == session?.id ? supplementaryData.selectedProjectWorktreeStatus : nil,
+            showsHistoricalThread: backendClient.sessionSelectionController.selectedSessionID == session?.id && backendClient.viewingHistoricalThreadId != nil,
+            hasPendingScheduledWake: session?.taskId.flatMap { id in entityClient.tasks.first { $0.id == id } }?.hasPendingScheduledWake == true,
+            providers: modelCatalog.agentProviders)
+    }
+}
+
+struct SessionConversationHeaderSurface: View {
+    let session: TaskSession?
+    let historicalWorkspacePath: String?
+    var activity: ConversationDetailPresentationActivity? = nil
+    private var isPresentationActive: Bool { activity?.isActive ?? true }
+    private var canAct: Bool {
+        if let renderInputs { return renderInputs.actionSession(generation: renderInputs.activity.generation) != nil }
+        return (activity?.allows(generation: activity?.generation ?? 0) ?? true)
+            && session?.id != nil && backendClient.sessionSelectionController.selectedSessionID == session?.id
+    }
+    private let backendClient: BackendClient
     @Environment(\.isLiquidGlass) private var isLiquidGlass
     @Environment(\.scenePhase) private var scenePhase
     @State private var didCopySessionTitle = false
     @State private var sessionTitleCopyFeedbackTask: Task<Void, Never>?
     @State private var didCopyWorkspacePath = false
-    @State private var gitHeadState: GitHeadState?
+    private struct WorkspaceGitHead: Equatable {
+        let path: String
+        let head: GitHeadState?
+    }
+    @State private var workspaceGitHead: WorkspaceGitHead?
+    private var gitHeadState: GitHeadState? {
+        workspaceGitHead?.path == workspacePath ? workspaceGitHead?.head : nil
+    }
+
+    private let displayedProjectStatus: ProjectWorktreeStatusResponse?
+    private let showsHistoricalThread: Bool
+    private let hasPendingScheduledWake: Bool
+    private let providers: [AgentProviderDescriptor]
+    private let renderInputs: SessionPageRenderInputs?
+
+    init(session: TaskSession?, historicalWorkspacePath: String? = nil,
+         activity: ConversationDetailPresentationActivity? = nil, backendClient: BackendClient,
+         projectStatus: ProjectWorktreeStatusResponse?, showsHistoricalThread: Bool,
+         hasPendingScheduledWake: Bool, providers: [AgentProviderDescriptor],
+         renderInputs: SessionPageRenderInputs? = nil) {
+        self.session = session; self.historicalWorkspacePath = historicalWorkspacePath
+        self.activity = renderInputs?.activity ?? activity; self.backendClient = backendClient
+        self.displayedProjectStatus = projectStatus; self.showsHistoricalThread = showsHistoricalThread
+        self.hasPendingScheduledWake = hasPendingScheduledWake; self.providers = providers
+        self.renderInputs = renderInputs
+    }
 
     var body: some View {
+        let _ = SessionSwitchTrace.shared.mark(.headerBody, sessionID: session?.id ?? "")
         headerControls
-            .task(id: workspaceRouteIdentity) {
+            .task(id: isPresentationActive ? workspaceRouteIdentity : nil) {
+                guard isPresentationActive else { return }
                 await refreshGitBranch()
             }
-            .onChange(of: backendClient.gitHubPushPreparation) { _, preparation in
+            .onReceive(backendClient.gitHubPushController.$preparation.dropFirst()) { preparation in
+                guard canAct else { return }
                 if let preparation {
                     GitHubPushConfirmationWindowManager.shared.show(
                         preparation: preparation,
@@ -32,10 +87,15 @@ struct DetailHeaderView: View {
                     GitHubPushConfirmationWindowManager.shared.close()
                 }
             }
-            .onChange(of: backendClient.selectedSession?.id) { _, _ in
+            .onChange(of: session?.id) { _, _ in
                 sessionTitleCopyFeedbackTask?.cancel()
                 sessionTitleCopyFeedbackTask = nil
                 didCopySessionTitle = false
+            }
+            .onChange(of: isPresentationActive) { _, active in
+                guard !active else { return }
+                sessionTitleCopyFeedbackTask?.cancel(); sessionTitleCopyFeedbackTask = nil
+                didCopySessionTitle = false; didCopyWorkspacePath = false
             }
             .onDisappear {
                 sessionTitleCopyFeedbackTask?.cancel()
@@ -58,6 +118,7 @@ struct DetailHeaderView: View {
                 if isLiquidGlass {
                     Button {
                         withAnimation(.easeOut(duration: 0.16)) {
+                            guard canAct else { return }
                             backendClient.closeDetail()
                         }
                     } label: {
@@ -80,9 +141,9 @@ struct DetailHeaderView: View {
             .frame(maxWidth: .infinity)
 
             HStack(spacing: 10) {
-                if backendClient.selectedSession != nil {
+                if session != nil {
                     Button {
-                        guard let session = backendClient.selectedSession else { return }
+                        guard canAct, let session else { return }
                         DetachedChatWindowManager.shared.show(session: session)
                     } label: {
                         Image(systemName: "macwindow.on.rectangle")
@@ -143,7 +204,7 @@ struct DetailHeaderView: View {
                             .accessibilityAddTraits(.isHeader)
                             .accessibilityIdentifier("conversation-task-title")
                         if hasPendingScheduledWake {
-                            ConsoleScheduledWakeIcon(isActive: scenePhase == .active)
+                            ConsoleScheduledWakeIcon(isActive: scenePhase == .active && isPresentationActive)
                                 .accessibilityIdentifier("conversation-task-scheduled-wake")
                         }
                     }
@@ -165,23 +226,23 @@ struct DetailHeaderView: View {
                 }
             }
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                if backendClient.viewingHistoricalThreadId != nil {
+                if showsHistoricalThread {
                     Label(L10n("Read-only history"), systemImage: "clock.arrow.circlepath")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.orange)
-                } else if backendClient.selectedSession?.external?.workspace?.continuationState == "failed" {
+                } else if session?.external?.workspace?.continuationState == "failed" {
                     Label(L10n("Worktree continuation failed"), systemImage: "exclamationmark.triangle.fill")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.orange)
-                } else if backendClient.selectedSession?.external?.workspace?.transitionStrategy == "handoff" {
+                } else if session?.external?.workspace?.transitionStrategy == "handoff" {
                     Label(L10n("Context handoff"), systemImage: "arrow.triangle.branch")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(CorptiePalette.secondaryText)
                 }
             }
             HStack(alignment: .center, spacing: 6) {
-                if let selectedSession = backendClient.selectedSession {
-                    SessionProviderIdentity(session: selectedSession, prominentText: true)
+                if let selectedSession = session {
+                    SessionHeaderProviderIdentity(session: selectedSession, providers: providers)
                         .font(.system(size: 11, weight: .semibold))
                 }
                 if let cwd = workspacePath, !cwd.isEmpty {
@@ -215,7 +276,7 @@ struct DetailHeaderView: View {
                         .accessibilityLabel(gitHeadState.helpText ?? L10n("Manage project worktrees and service"))
                     }
                 }
-                if let status = supplementaryData.selectedProjectWorktreeStatus {
+                if let status = displayedProjectStatus {
                     ProjectServiceStatusDot(status: status.service)
                         .help(projectServiceStatusHelp(status))
                 }
@@ -233,17 +294,12 @@ struct DetailHeaderView: View {
     }
 
     private var selectedTitle: String? {
-        backendClient.selectedSession?.title
-    }
-
-    private var hasPendingScheduledWake: Bool {
-        guard let taskID = backendClient.selectedSession?.taskId else { return false }
-        return entityClient.tasks.first(where: { $0.id == taskID })?.hasPendingScheduledWake == true
+        session?.title
     }
 
     private var selectedSessionWorktree: ProjectWorktreeStatus? {
-        guard let sessionId = backendClient.selectedSession?.id,
-              let status = supplementaryData.selectedProjectWorktreeStatus else { return nil }
+        guard let sessionId = session?.id,
+              let status = displayedProjectStatus else { return nil }
         if let bound = status.project.worktrees.first(where: { worktree in
             worktree.sessions.contains(where: { $0.sessionId == sessionId })
         }) {
@@ -263,7 +319,7 @@ struct DetailHeaderView: View {
     }
 
     private var primaryHeaderAction: HeaderAction? {
-        if backendClient.viewingHistoricalThreadId != nil {
+        if showsHistoricalThread {
             return .returnToActiveThread
         }
         if canReconnectSelectedSession {
@@ -276,12 +332,12 @@ struct DetailHeaderView: View {
     }
 
     private var canReconnectSelectedSession: Bool {
-        backendClient.selectedSession?.canResumeNow == true
-            && backendClient.selectedSession?.isConnected == false
+        session?.canResumeNow == true
+            && session?.isConnected == false
     }
 
     private var shouldSuggestWorktreeManagement: Bool {
-        guard let project = supplementaryData.selectedProjectWorktreeStatus?.project else { return false }
+        guard let project = displayedProjectStatus?.project else { return false }
         return project.pendingWorktreeCount > 0 || project.worktrees.contains { worktree in
             worktree.availability != "available"
                 || worktree.dirty == true
@@ -295,6 +351,7 @@ struct DetailHeaderView: View {
         switch action {
         case .returnToActiveThread:
             Button {
+                guard canAct else { return }
                 backendClient.returnToActiveThread()
             } label: {
                 Label(L10n("Active thread"), systemImage: "arrow.forward.circle")
@@ -304,6 +361,7 @@ struct DetailHeaderView: View {
             .help(L10n("Return to the active workspace thread"))
         case .reconnect:
             Button {
+                guard canAct else { return }
                 backendClient.reconnectSelectedSession()
             } label: {
                 Image(systemName: "link")
@@ -313,7 +371,7 @@ struct DetailHeaderView: View {
             .buttonStyle(.plain)
             .help(L10n("Reconnect session"))
         case .manageWorktrees:
-            if let status = supplementaryData.selectedProjectWorktreeStatus {
+            if let status = displayedProjectStatus {
                 Button {
                     openWorktreeManagement()
                 } label: {
@@ -327,8 +385,9 @@ struct DetailHeaderView: View {
 
     @ViewBuilder
     private var headerActionMenu: some View {
-        if backendClient.viewingHistoricalThreadId != nil {
+        if showsHistoricalThread {
             Button {
+                guard canAct else { return }
                 backendClient.returnToActiveThread()
             } label: {
                 Label(L10n("Active thread"), systemImage: "arrow.forward.circle")
@@ -337,6 +396,7 @@ struct DetailHeaderView: View {
 
         if canReconnectSelectedSession {
             Button {
+                guard canAct else { return }
                 backendClient.reconnectSelectedSession()
             } label: {
                 Label(L10n("Reconnect session"), systemImage: "link")
@@ -348,7 +408,7 @@ struct DetailHeaderView: View {
         } label: {
             Label(L10n("Manage project worktrees and service"), systemImage: "arrow.triangle.branch")
         }
-        .disabled(supplementaryData.selectedProjectWorktreeStatus == nil)
+        .disabled(displayedProjectStatus == nil)
 
         Divider()
 
@@ -364,13 +424,14 @@ struct DetailHeaderView: View {
     }
 
     private func openWorktreeManagement() {
+        guard canAct else { return }
         AppDelegate.shared?.openWorktreeManagement(
             repositoryId: WorktreeNavigationTarget.preferredRepositoryId(
-                sessionRepositoryId: backendClient.selectedSession?.external?.workspace?.repositoryId,
-                loadedProjectRepositoryId: supplementaryData.selectedProjectWorktreeStatus?.project.repositoryId
+                sessionRepositoryId: session?.external?.workspace?.repositoryId,
+                loadedProjectRepositoryId: displayedProjectStatus?.project.repositoryId
             ),
             worktreeId: selectedSessionWorktree?.worktreeId
-                ?? backendClient.selectedSession?.external?.workspace?.id,
+                ?? session?.external?.workspace?.id,
             worktreePath: workspacePath
         )
     }
@@ -391,25 +452,25 @@ struct DetailHeaderView: View {
     }
 
     private var workspacePath: String? {
-        if backendClient.viewingHistoricalThreadId != nil {
-            let historicalPath = backendClient.selectedDetail?.cwd?
+        if showsHistoricalThread {
+            let historicalPath = historicalWorkspacePath?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if let historicalPath, !historicalPath.isEmpty {
                 return historicalPath
             }
         }
-        let routedPath = backendClient.selectedSession?.external?.workspace?.path?
+        let routedPath = session?.external?.workspace?.path?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if let routedPath, !routedPath.isEmpty {
             return routedPath
         }
-        let sessionPath = backendClient.selectedSession?.external?.cwd?
+        let sessionPath = session?.external?.cwd?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return sessionPath?.isEmpty == false ? sessionPath : nil
     }
 
     private var projectName: String? {
-        let projectPath = backendClient.selectedSession?.external?.workspace?.projectPath?
+        let projectPath = session?.external?.workspace?.projectPath?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let path = projectPath?.isEmpty == false ? projectPath : workspacePath
         guard let path, !path.isEmpty else { return nil }
@@ -417,29 +478,32 @@ struct DetailHeaderView: View {
     }
 
     private var workspaceRouteIdentity: String {
-        let version = backendClient.selectedSession?.external?.routingVersion ?? 0
+        let version = session?.external?.routingVersion ?? 0
         return "\(version):\(workspacePath ?? "")"
     }
 
     private func refreshGitBranch() async {
+        guard isPresentationActive, renderInputs?.acceptsPresentationUpdates ?? true else { return }
         guard let workspacePath else {
-            gitHeadState = nil
+            workspaceGitHead = nil
             return
         }
-        while !Task.isCancelled {
+        let generation = activity?.generation ?? 0
+        while isPresentationActive && (renderInputs?.acceptsPresentationUpdates ?? true) && !Task.isCancelled {
             let nextHeadState = await GitBranchResolver.headState(at: workspacePath)
-            guard !Task.isCancelled, workspacePath == self.workspacePath else {
+            guard !Task.isCancelled, activity?.allows(generation: generation) ?? true, workspacePath == self.workspacePath else {
                 return
             }
-            if gitHeadState != nextHeadState {
-                gitHeadState = nextHeadState
+            let next = WorkspaceGitHead(path: workspacePath, head: nextHeadState)
+            if workspaceGitHead != next {
+                workspaceGitHead = next
             }
             try? await Task.sleep(for: .seconds(3))
         }
     }
 
     private var canInterruptCurrentRun: Bool {
-        backendClient.selectedCanInterruptNow
+        session?.canInterruptNow == true
     }
 
     private func copyWorkspacePath() {
@@ -494,5 +558,22 @@ struct DetailHeaderView: View {
         if let url = components.url {
             NSWorkspace.shared.open(url)
         }
+    }
+}
+
+/// Provider branding rendered from the page's captured catalog, with no global observation.
+private struct SessionHeaderProviderIdentity: View {
+    let session: TaskSession
+    let providers: [AgentProviderDescriptor]
+    var body: some View {
+        HStack(spacing: 2) {
+            if let icon = ProviderBrandIcon.image(for: session.external?.provider ?? session.agent, providers: providers) {
+                Image(nsImage: icon).resizable().interpolation(.high).frame(width: 13, height: 13).accessibilityHidden(true)
+            } else {
+                Image(systemName: "cpu").foregroundStyle(session.accent.color).accessibilityHidden(true)
+            }
+            Text(sessionProviderIdentityLabel(providerIdentity: session.external?.provider,
+                legacyAgentLabel: session.agent, providers: providers)).foregroundStyle(Color.primary)
+        }.fixedSize(horizontal: true, vertical: false)
     }
 }

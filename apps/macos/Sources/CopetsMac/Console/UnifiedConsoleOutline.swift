@@ -71,7 +71,7 @@ extension UnifiedConsoleView {
                                 sessionRow(row)
                                     .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
                                     .background(outlineChildSelectionBackground(
-                                        selectionController.selectedSessionID == row.session.id
+                                        selectionController.presentationSessionID == row.session.id
                                     ))
                             }
                         }
@@ -115,7 +115,7 @@ extension UnifiedConsoleView {
                                         sessionRow(row)
                                             .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
                                             .background(outlineChildSelectionBackground(
-                                                selectionController.selectedSessionID == row.session.id
+                                                selectionController.presentationSessionID == row.session.id
                                             ))
                                     }
                                 }
@@ -263,7 +263,7 @@ extension UnifiedConsoleView {
             isSelected: selectedWorkId == work.id,
             isWorking: isWorking,
             hasUnread: hasUnread,
-            isChatSelected: selectionController.selectedSessionID == workChat?.id,
+            isChatSelected: selectionController.presentationSessionID == workChat?.id,
             isChatRunning: workChat?.executionTaskStatus == .running,
             hasUnreadChat: workChat.map(isSessionUnread) ?? false,
             toggleExpanded: {
@@ -276,12 +276,15 @@ extension UnifiedConsoleView {
                 }
             },
             openChat: {
-                guard let workChat else { return }
-                openWorkChat(for: work, session: workChat)
+                // Resolve at invocation: an equal header must not retain an
+                // old Work Chat binding when its display inputs stay the same.
+                guard let currentChat = workChatSession(for: work.id) else { return }
+                openWorkChat(for: work, session: currentChat)
             },
             createTask: { presentTaskCreation(for: work.id) },
+            actionOwner: outlineExpansionPreferences,
             isActive: sidebarState.isSelected
-        )
+        ).equatable()
     }
 
     @ViewBuilder

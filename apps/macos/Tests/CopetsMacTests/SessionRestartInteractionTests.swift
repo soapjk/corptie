@@ -19,12 +19,16 @@ struct SessionRestartInteractionTests {
     }
 
     @Test
-    func sessionHeaderUsesSelectedSessionTitle() throws {
+    func sessionHeaderUsesDisplayedSessionTitle() throws {
         let source = try contents(of: "Conversation/ConversationHeader.swift")
         let headerStart = try #require(source.range(of: "struct DetailHeaderView: View"))
         let header = source[headerStart.lowerBound...]
 
-        #expect(header.contains("backendClient.selectedSession?.title"))
+        #expect(header.contains("let session: TaskSession?"))
+        #expect(header.contains("session?.title"))
+        #expect(!header.contains("backendClient.selectedSession?.title"))
+        #expect(try contents(of: "Conversation/SessionConversationContent.swift")
+            .contains("DetailHeaderView(session: selectedSession, historicalWorkspacePath: displayedDetail?.cwd)"))
         #expect(header.contains("Text(selectedTitle)"))
         #expect(header.contains("copySessionTitle(selectedTitle)"))
     }
@@ -52,7 +56,7 @@ struct SessionRestartInteractionTests {
         #expect(row.contains("VStack(alignment: .center, spacing: 3)"))
         #expect(row.contains(".multilineTextAlignment(.center)"))
         #expect(row.contains(".platformGlassSurface(in: Capsule())"))
-        #expect(row.contains("SessionProviderIdentity(session: selectedSession, prominentText: true)"))
+        #expect(row.contains("SessionHeaderProviderIdentity(session: selectedSession, providers: providers)"))
         #expect(row.contains(".foregroundStyle(.primary)"))
         #expect(row.contains("if let cwd = workspacePath"))
         #expect(row.contains("gitHeadState.stampText"))
@@ -73,7 +77,7 @@ struct SessionRestartInteractionTests {
         let headerStart = try #require(source.range(of: "struct DetailHeaderView: View"))
         let menuEnd = try #require(source.range(of: ".accessibilityIdentifier(\"session.detail.actions\")"))
         let menuStart = try #require(source.range(
-            of: "if backendClient.selectedSession != nil {",
+            of: "if session != nil {",
             range: headerStart.upperBound..<menuEnd.lowerBound
         ))
         let menu = source[menuStart.lowerBound..<menuEnd.upperBound]

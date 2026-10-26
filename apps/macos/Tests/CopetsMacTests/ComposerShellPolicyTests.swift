@@ -33,6 +33,68 @@ final class ComposerShellPolicyTests: XCTestCase {
         XCTAssertEqual(heights.last, 30)
     }
 
+    @MainActor func testNativeHeightMeasurementSkipsUnchangedTextAndGeometryButTracksWidthAndFont() {
+        let draft = ComposerDraftBuffer(text: String(repeating: "word ", count: 40))
+        let controller = ComposerEditorController(draft: draft)
+        let input = ComposerInputTextView(controller: controller, placeholder: "", font: .systemFont(ofSize: 12), onSubmit: { _ in })
+        let coordinator = input.makeCoordinator()
+        let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 180, height: 500))
+        text.font = .systemFont(ofSize: 12); text.string = draft.text
+        coordinator.reportContentHeight(of: text)
+        XCTAssertEqual(coordinator.contentHeightMeasurementCount, 1)
+        for _ in 0..<200 { coordinator.reportContentHeight(of: text) }
+        XCTAssertEqual(coordinator.contentHeightMeasurementCount, 1)
+        text.setFrameSize(NSSize(width: 90, height: 500))
+        coordinator.reportContentHeight(of: text)
+        XCTAssertEqual(coordinator.contentHeightMeasurementCount, 2)
+        text.font = .systemFont(ofSize: 20)
+        coordinator.reportContentHeight(of: text)
+        XCTAssertEqual(coordinator.contentHeightMeasurementCount, 3)
+        controller.suspendPresentation(); text.string = "hidden change"
+        coordinator.reportContentHeight(of: text)
+        XCTAssertEqual(coordinator.contentHeightMeasurementCount, 3)
+        controller.resumePresentation(); coordinator.reportContentHeight(of: text)
+        XCTAssertEqual(coordinator.contentHeightMeasurementCount, 4)
+    }
+
+    @MainActor func testHiddenSubmissionFailureUpdatesOnlyItsDraftUntilSameNativeEditorResumes() throws {
+        let draft = ComposerDraftBuffer(text: "original")
+        let controller = ComposerEditorController(draft: draft)
+        let text = NSTextView(); text.string = draft.text; controller.attach(text)
+        let submission = try XCTUnwrap(controller.submission())
+        XCTAssertTrue(controller.clear(ifUnchangedSince: submission))
+        controller.suspendPresentation()
+        XCTAssertFalse(text.isEditable)
+        XCTAssertTrue(controller.restoreAfterFailedSubmission(submission))
+        XCTAssertEqual(draft.text, "original")
+        XCTAssertEqual(text.string, "", "Hidden native controls must not be reset by late failure")
+        controller.resumePresentation()
+        XCTAssertEqual(text.string, "original"); XCTAssertTrue(text.isEditable)
+        text.string = "still same editor"
+        XCTAssertEqual(controller.submission()?.text, "still same editor")
+    }
+
+    @MainActor func testSwitchCommitsOnlyOriginalEditorAndUnattachedMarkedTextBlocksSwitch() {
+        _ = NSApplication.shared
+        let original = ComposerDraftBuffer(text: "A"), other = ComposerDraftBuffer(text: "B")
+        let controller = ComposerEditorController(draft: original)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let text = NSTextView(frame: window.contentView!.bounds)
+        window.contentView?.addSubview(text); controller.attach(text)
+        window.makeFirstResponder(text); text.string = "A edited"
+        XCTAssertTrue(controller.finishEditingForSessionSwitch())
+        XCTAssertEqual(original.text, "A edited"); XCTAssertEqual(other.text, "B")
+        window.contentView = nil; window.close()
+        let marked = NSTextView()
+        marked.setMarkedText("拼音", selectedRange: NSRange(location: 2, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        controller.attach(marked)
+        XCTAssertTrue(marked.hasMarkedText())
+        XCTAssertFalse(controller.finishEditingForSessionSwitch())
+        XCTAssertEqual(original.text, "A edited"); XCTAssertEqual(other.text, "B")
+    }
+
     func testStopAndSendShareVisualSizeButRetainTouchTarget() throws {
         let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Sources/CopetsMac")

@@ -2336,6 +2336,32 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(returned.contentConfigurationCount, configurations)
     }
 
+    func testRetainedProjectionRevisionSkipsApplyButAcceptsNewRowsAndSessionIdentity() throws {
+        let harness = makeHarness(followsLatest: false, useSharedTextCards: false, height: 360)
+        defer { harness.window.contentView = nil; harness.window.close() }
+        let initial = [row(id: "retained-row", text: "Initial")]
+        SessionSwitchTrace.shared.begin(sessionID: "test-session")
+        defer { SessionSwitchTrace.shared.end(reason: "test-finished") }
+        harness.coordinator.apply(rows: initial, contentRevision: 1)
+        let before = SessionSwitchTrace.shared.snapshot?.metrics[.timelineApply]?.count ?? 0
+        XCTAssertGreaterThan(before, 0)
+        for _ in 0..<200 { harness.coordinator.apply(rows: initial, contentRevision: 1) }
+        XCTAssertEqual(SessionSwitchTrace.shared.snapshot?.metrics[.timelineApply]?.count, before)
+        harness.coordinator.apply(rows: [row(id: "retained-row", revision: 2, text: "Changed")], contentRevision: 2)
+        let changed = try XCTUnwrap(harness.coordinator.tableView(harness.tableView, viewFor: nil, row: 0))
+        XCTAssertEqual(try XCTUnwrap(textView(in: changed, identifier: "chat.timeline.body")).string, "Changed")
+        XCTAssertEqual(SessionSwitchTrace.shared.snapshot?.metrics[.timelineApply]?.count, before + 1)
+        harness.coordinator.switchSessionIfNeeded(to: "another", initialPosition: nil)
+        SessionSwitchTrace.shared.begin(sessionID: "another")
+        harness.coordinator.apply(rows: [row(id: "other-row", text: "Other Session")], contentRevision: 2)
+        let other = try XCTUnwrap(harness.coordinator.tableView(harness.tableView, viewFor: nil, row: 0))
+        XCTAssertEqual(try XCTUnwrap(textView(in: other, identifier: "chat.timeline.body")).string, "Other Session")
+        XCTAssertEqual(SessionSwitchTrace.shared.snapshot?.metrics[.timelineApply]?.count, 1)
+        harness.coordinator.updateBaseDirectory("/tmp/another-workspace")
+        harness.coordinator.apply(rows: [row(id: "other-row", text: "Other Session")], contentRevision: 2)
+        XCTAssertEqual(SessionSwitchTrace.shared.snapshot?.metrics[.timelineApply]?.count, 2)
+    }
+
     func testWarmSessionHostSwitchStaysWithinOneFrame() async {
         let rowsBySession = (0..<3).map { sessionIndex in
             (0..<40).map { index in

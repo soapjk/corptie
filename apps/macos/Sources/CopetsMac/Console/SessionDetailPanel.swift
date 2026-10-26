@@ -6,15 +6,21 @@ import AppKit
 import SwiftUI
 
 struct SessionDetailPanel: View {
-    @ObservedObject private var modelCatalog = BackendClient.shared.modelCatalog
-    @ObservedObject private var entityClient = EntityAPIClient.shared
+    private let modelCatalog = BackendClient.shared.modelCatalog
+    private let entityClient = EntityAPIClient.shared
     private let backendClient = BackendClient.shared
     let session: TaskSession
     var railWidth: CGFloat = 280
+    var activity: ConversationDetailPresentationActivity? = nil
+    private var isPresentationActive: Bool {
+        guard let activity else { return true }
+        return activity.allows(generation: activity.generation)
+    }
+    private func allows(_ generation: UInt64) -> Bool { activity?.allows(generation: generation) ?? true }
     @State private var contextReferenceAddMode: ContextReferenceAddMode?
     @State private var contextReferences: [SessionContextReference] = []
     @State private var isLoadingContextReferences = false
-    @State private var providerCatalogRevision = 0
+    @State private var displayValues = SessionDetailPanelValues()
     @State private var pendingProviderId: String?
     @State private var showProviderSwitchConfirmation = false
     @State private var isSwitchingProvider = false
@@ -41,6 +47,26 @@ struct SessionDetailPanel: View {
     let detailPresentation: ConversationDetailPresentationRepository
     @State private var nativeManagementExpanded = false
 
+    private func updateDisplayValues() {
+        let value = SessionDetailPanelValues(tasks: entityClient.tasks, works: entityClient.works,
+            agents: entityClient.agents, providers: modelCatalog.agentProviders,
+            models: modelCatalog.models(for: session.external?.provider),
+            defaultReasoning: modelCatalog.defaultReasoning(for: session.external?.provider),
+            isSwitchingModel: backendClient.isSwitchingModel, isSwitchingReasoning: backendClient.isSwitchingReasoning)
+        if displayValues != value { displayValues = value }
+    }
+    private func restoreOwnedReferences() {
+        let source = backendClient.supplementaryDataController
+        guard source.contextReferencesSessionID == session.id else { return }
+        let owned = source.selectedContextReferences.filter {
+            $0.ownerSessionId == session.id || $0.ownerSessionId == session.external?.logicalSessionId
+        }
+        if contextReferences != owned { contextReferences = owned }
+        if isLoadingContextReferences != source.isLoadingContextReferences {
+            isLoadingContextReferences = source.isLoadingContextReferences
+        }
+    }
+
     private var detailKind: ConversationDetailKind? {
         ConversationDetailKind.resolve(session.resolvedSessionKind)
     }
@@ -64,25 +90,51 @@ struct SessionDetailPanel: View {
         return formatter
     }()
 
+    /// Controlled Development experiment; normal launches always retain the
+    /// complete Detail surface. The placeholder preserves the message width.
+    private static let hidesContentForSwitchDiagnostics = CorptieAppEnvironment.isDevelopment
+        && ProcessInfo.processInfo.environment["CORPTIE_SWITCH_HIDE_DETAIL_FOR_DIAGNOSTICS"] == "1"
+
     var body: some View {
+        let _ = SessionSwitchTrace.shared.recordDetailPanel(sessionID: session.id)
+        if Self.hidesContentForSwitchDiagnostics {
+            Color.clear.frame(width: railWidth).frame(maxHeight: .infinity)
+                .accessibilityHidden(true)
+        } else {
+            liveDetailBody
+        }
+    }
+
+    private var liveDetailBody: some View {
         sessionCard
         .frame(width: railWidth)
-        .task(id: session.id) {
-            showsAllContextReferences = false
-            detailNativeSheet = nil
-            contextReferences = []
-            await backendClient.loadContextReferences(for: session)
+        .task(id: isPresentationActive ? session.id : nil) {
+            guard isPresentationActive else { return }
+            let generation = activity?.generation ?? 0
+            updateDisplayValues()
+            restoreOwnedReferences()
+            guard !Task.isCancelled, allows(generation) else { return }
             await loadProviderCatalogIfNeeded()
         }
         .onReceive(backendClient.supplementaryDataController.$selectedContextReferences) { references in
-            guard backendClient.selectedSession?.id == session.id else { return }
-            contextReferences = references.filter { $0.ownerSessionId == session.id || $0.ownerSessionId == session.external?.logicalSessionId }
+            guard isPresentationActive, backendClient.supplementaryDataController.contextReferencesSessionID == session.id else { return }
+            let owned = references.filter { $0.ownerSessionId == session.id || $0.ownerSessionId == session.external?.logicalSessionId }
+            if contextReferences != owned { contextReferences = owned }
         }
         .onReceive(backendClient.supplementaryDataController.$isLoadingContextReferences) { isLoading in
-            if backendClient.selectedSession?.id == session.id { isLoadingContextReferences = isLoading }
+            if isPresentationActive && backendClient.selectedSession?.id == session.id { isLoadingContextReferences = isLoading }
         }
-        .onReceive(modelCatalog.$agentProviders) { _ in
-            providerCatalogRevision &+= 1
+        .onReceive(modelCatalog.objectWillChange.receive(on: DispatchQueue.main)) { _ in
+            guard isPresentationActive else { return }
+            updateDisplayValues()
+        }
+        .onReceive(entityClient.sessionGroupingDidChange) { _ in
+            guard isPresentationActive else { return }
+            updateDisplayValues()
+        }
+        .onReceive(backendClient.sessionCommandController.objectWillChange.receive(on: DispatchQueue.main)) { _ in
+            guard isPresentationActive else { return }
+            updateDisplayValues()
         }
         .sheet(item: $contextReferenceAddMode) { mode in
             let generation = detailOpeningGeneration
@@ -129,6 +181,7 @@ struct SessionDetailPanel: View {
         .onChange(of: session.taskId) { _, _ in retireDetailDestination() }
         .onChange(of: session.workId) { _, _ in retireDetailDestination() }
         .onChange(of: session.external?.provider) { _, _ in retireDetailDestination() }
+        .onChange(of: isPresentationActive) { _, active in if !active { retireDetailDestination() } }
         .onDisappear { retireDetailDestination() }
         .alert(L10n("切换 Provider？"), isPresented: Binding(
             get: { showProviderSwitchConfirmation && detailNativeSheet == nil },
@@ -158,7 +211,7 @@ struct SessionDetailPanel: View {
                     ownerID: backendClient.detailBusinessOwnerID, principalID: "local-user", sessionID: session.id,
                     taskID: session.taskId, workID: session.workId),
                 presentationRepository: detailPresentation,
-                adapters: detailAdapters,
+                adapters: detailAdapters, activity: activity,
                 api: { [baseURL = CorptieAppEnvironment.backendBaseURL] in
                     ClientDetailAPI(transport: try BackendTransport(endpoint: BackendEndpoint(baseURL)), route: .desktop)
                 })
@@ -176,21 +229,32 @@ struct SessionDetailPanel: View {
         return items
     }
     private var detailAdapters: ConversationDetailAdapters {
-        let task = entityClient.tasks.first { $0.id == session.taskId }
-        let work = entityClient.works.first { $0.id == session.workId }
+        let task = displayValues.tasks.first { $0.id == session.taskId }
+        let work = displayValues.works.first { $0.id == session.workId }
         return ConversationDetailAdapters(configuration: detailConfiguration, selectConfiguration: selectDetailConfiguration,
             reloadConfiguration: {
+                guard isPresentationActive else { return }
                 await reloadProviderCatalog()
                 if backendClient.selectedSession?.id == session.id { await backendClient.loadModelsForSelectedSession(forceRefresh: true) }
             }, readTurnSummary: { execution in
+                let generation = activity?.generation ?? 0
+                guard isPresentationActive else { throw CancellationError() }
                 let value = try await TurnObservabilityClient.shared.latestSummary(sessionId: session.id)
-                guard value.turnExecutionId == execution else { throw ClientDetailFailure.invalidGraph }
+                guard allows(generation), value.turnExecutionId == execution else { throw ClientDetailFailure.invalidGraph }
                 return value
-            }, readTurnTrace: { try await TurnObservabilityClient.shared.rawTrace(turnExecutionId: $0, cursor: $1) },
+            }, readTurnTrace: { execution, cursor in
+                let generation = activity?.generation ?? 0
+                guard isPresentationActive else { throw CancellationError() }
+                let value = try await TurnObservabilityClient.shared.rawTrace(turnExecutionId: execution, cursor: cursor)
+                guard allows(generation) else { throw CancellationError() }
+                return value
+            },
             worktreeAPI: { expected in
-                ClientSessionWorktreeAPI(transport: try BackendTransport(endpoint: BackendEndpoint(CorptieAppEnvironment.backendBaseURL)),
+                guard isPresentationActive else { throw CancellationError() }
+                return ClientSessionWorktreeAPI(transport: try BackendTransport(endpoint: BackendEndpoint(CorptieAppEnvironment.backendBaseURL)),
                     route: .desktop, expectedWorktreeID: expected)
             }, onWorktreeJob: { job in
+                guard isPresentationActive else { return }
                 if job.status != "awaiting_confirmation" {
                     OperationNotificationManager.shared.track(jobID: job.id, resourceName: "Worktree")
                     if let notification = job.notification { OperationNotificationManager.shared.observe(notification) }
@@ -198,10 +262,12 @@ struct SessionDetailPanel: View {
             }, resident: .init(taskTitle: task?.title ?? "", workName: work?.name ?? "", workDescription: work?.description ?? ""),
             referenceManagement: .init(addKinds: ConversationReferenceAddKind.allCases, canAdd: canManageReferences,
                 add: beginAddingReference, operations: referenceOperations, perform: performReferenceOperation),
-            openArtifact: { AppTabRouter.shared.openResource($0) })
+            openArtifact: { guard isPresentationActive else { return }; AppTabRouter.shared.openResource($0) })
     }
     private var canManageReferences: Bool {
-        guard let current = backendClient.selectedSession else { return false }
+        guard isPresentationActive, activity?.allows(generation: activity?.generation ?? 0) ?? true,
+              let id = backendClient.sessionSelectionController.selectedSessionID,
+              let current = backendClient.appState.session(id) else { return false }
         return current.id == session.id && current.taskId == session.taskId && current.workId == session.workId && current.archived != true
     }
     private func beginAddingReference(_ kind: ConversationReferenceAddKind) {
@@ -240,13 +306,13 @@ struct SessionDetailPanel: View {
             case .localFile:
                 if let path = reference.locator { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
             case .work:
-                if let value = entityClient.works.first(where: { $0.id == reference.targetId }) { detailNativeSheet = .work(value) }
+                if let value = displayValues.works.first(where: { $0.id == reference.targetId }) { detailNativeSheet = .work(value) }
                 else { AppTabRouter.shared.navigationError = "Work 暂不可用，请先刷新资源列表" }
             case .task:
                 if let value = backendClient.appState.task(reference.targetId ?? "") { detailNativeSheet = .task(value) }
                 else { AppTabRouter.shared.navigationError = "Task 暂不可用，请先刷新资源列表" }
             case .agent:
-                if let value = entityClient.agents.first(where: { $0.agentId == reference.targetId }) { detailNativeSheet = .agent(value) }
+                if let value = displayValues.agents.first(where: { $0.agentId == reference.targetId }) { detailNativeSheet = .agent(value) }
                 else { AppTabRouter.shared.navigationError = "Agent 暂不可用，请先刷新资源列表" }
             case .session:
                 if let target = reference.targetId, let resolved = residentDetailSessionID(target) {
@@ -262,15 +328,15 @@ struct SessionDetailPanel: View {
         }
     }
     private var detailConfiguration: ClientDetailConfiguration {
-        let models = modelCatalog.models(for: session.external?.provider)
+        let models = displayValues.models
         let modelID = session.external?.currentModel ?? ""
         let current = models.first { $0.id == modelID }
         let levels = SessionReasoningSelection.availableLevels(modelID: modelID, models: models,
             supportsSwitch: session.canSwitchReasoningNow)
         let level = SessionReasoningSelection.currentLevel(sessionLevel: session.external?.currentReasoningLevel,
-            providerDefaultLevel: modelCatalog.defaultReasoning(for: session.external?.provider), model: current)
-        let selected = backendClient.selectedSession?.id == session.id
-        let providerID = modelCatalog.agentProviders.canonicalProviderId(for: session.external?.provider) ?? session.external?.provider ?? ""
+            providerDefaultLevel: displayValues.defaultReasoning, model: current)
+        let selected = isPresentationActive && backendClient.sessionSelectionController.selectedSessionID == session.id
+        let providerID = displayValues.providers.canonicalProviderId(for: session.external?.provider) ?? session.external?.provider ?? ""
         return ClientDetailConfiguration(
             provider: .init(id: providerID, title: currentProviderDisplayName,
                 choices: creatableProviders.map { .init(id: $0.id, title: $0.displayName,
@@ -279,11 +345,12 @@ struct SessionDetailPanel: View {
                 choices: models.map { .init(id: $0.id, title: $0.name) }, canSelect: selected && session.canSwitchModelNow),
             reasoning: .init(id: level, title: ComposerModelLabel.reasoningTitle(level),
                 choices: levels.map { .init(id: $0, title: ComposerModelLabel.reasoningTitle($0)) }, canSelect: selected && session.canSwitchReasoningNow),
-            busy: isSwitchingProvider || backendClient.isSwitchingModel || backendClient.isSwitchingReasoning || session.external?.providerSwitchInFlight == true,
+            busy: isSwitchingProvider || displayValues.isSwitchingModel || displayValues.isSwitchingReasoning || session.external?.providerSwitchInFlight == true,
             error: providerSwitchError)
     }
     private func selectDetailConfiguration(_ field: ClientDetailConfiguration.Field, _ id: String) async throws {
-        guard backendClient.selectedSession?.id == session.id,
+        let generation = activity?.generation ?? 0
+        guard isPresentationActive, canManageReferences, backendClient.selectedSession?.id == session.id,
               backendClient.selectedSession?.external?.provider == session.external?.provider else { throw ClientDetailConfigurationFailure.unavailable }
         switch field {
         case .provider:
@@ -296,6 +363,7 @@ struct SessionDetailPanel: View {
         case .model: try await backendClient.configureDetailModel(session: session, id: id)
         case .reasoning: try await backendClient.configureDetailReasoning(session: session, level: id)
         }
+        guard allows(generation), canManageReferences else { throw CancellationError() }
     }
     private var nativeDetailContent: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -328,7 +396,7 @@ struct SessionDetailPanel: View {
                 .id(session.id)
 
             if detailKind == .workDetail,
-               let work = entityClient.works.first(where: { $0.id == session.workId }) {
+               let work = displayValues.works.first(where: { $0.id == session.workId }) {
                 Button {
                     AppTabRouter.shared.openMemory(ownerType: "work", ownerId: work.id)
                 } label: {
@@ -349,7 +417,7 @@ struct SessionDetailPanel: View {
 
     private var nativeDetailNavigation: ConversationDetailActions {
         ConversationDetailActions(canPerform: { action in
-            guard action.available, action.kind == "navigation",
+            guard isPresentationActive, canManageReferences, action.available, action.kind == "navigation",
                   let target = action.target else { return false }
             if action.operation == "editor.open" {
                 if target.resourceType == "provider" { return session.external?.provider == target.id && !isSwitchingProvider }
@@ -359,14 +427,14 @@ struct SessionDetailPanel: View {
             }
             guard action.operation == "resource.open" else { return false }
             if target.resourceType == "task" {
-                return entityClient.tasks.first(where: { $0.id == target.id })?.currentSessionId != nil
+                return displayValues.tasks.first(where: { $0.id == target.id })?.currentSessionId != nil
             }
             if target.resourceType == "session" { return residentDetailSessionID(target.id) != nil }
             if target.resourceType == "artifact" { return true } // Host registers the exact destination; catalog reads reauthorize it.
             if target.resourceType == "reference" { return detailReferenceURL(target.id) != nil }
             return target.resourceType == "schedule"
         }, perform: { action, fields in
-            guard action.available, action.kind == "navigation",
+            guard isPresentationActive, canManageReferences, action.available, action.kind == "navigation",
                   let target = action.target else { return }
             if action.operation == "editor.open" {
                 if target.resourceType == "provider", session.external?.provider == target.id, !isSwitchingProvider {
@@ -377,10 +445,10 @@ struct SessionDetailPanel: View {
                         do {
                             _ = try await ClientSessionWorktreeAPI(transport: BackendTransport(endpoint: BackendEndpoint(CorptieAppEnvironment.backendBaseURL)),
                                 route: .desktop, expectedWorktreeID: expected).detail(sessionID: sessionID)
-                            guard token == detailOpeningGeneration, let current = backendClient.appState.session(sessionID),
+                            guard isPresentationActive, token == detailOpeningGeneration, let current = backendClient.appState.session(sessionID),
                                   current.archived != true, current.workId == session.workId, current.taskId == session.taskId else { return }
                             detailNativeSheet = .worktree(expected)
-                        } catch { if token == detailOpeningGeneration { providerSwitchError = L10n("Worktree 绑定已变化或无权读取") } }
+                        } catch { if isPresentationActive && token == detailOpeningGeneration { providerSwitchError = L10n("Worktree 绑定已变化或无权读取") } }
                     }
                 }
                 if target.resourceType == "task", target.id == session.taskId,
@@ -396,7 +464,7 @@ struct SessionDetailPanel: View {
                     AppTabRouter.shared.openSession(id, source: .userSelection)
                 }
             case "task":
-                if let id = entityClient.tasks.first(where: { $0.id == target.id })?.currentSessionId {
+                if let id = displayValues.tasks.first(where: { $0.id == target.id })?.currentSessionId {
                     AppTabRouter.shared.openTaskSession(taskId: target.id, sessionId: id, source: .userSelection)
                 }
             case "schedule": AppTabRouter.shared.openAutomation(target.id)
@@ -405,10 +473,10 @@ struct SessionDetailPanel: View {
                 Task {
                     do {
                         let detail = try await ClientResourceAPI(transport: CorptieAppEnvironment.backendTransport, route: .desktop).detail(target.id)
-                        guard token == detailOpeningGeneration else { return }
+                        guard isPresentationActive, token == detailOpeningGeneration else { return }
                         let pin = detail.references.first { ($0.taskId != nil && $0.taskId == session.taskId) || $0.sessionId == session.id }
                         AppTabRouter.shared.openResource(.init(id: target.id, version: pin?.version, hash: pin?.hash, workId: detail.resource.workId ?? ""))
-                    } catch { AppTabRouter.shared.navigationError = "资源打开失败，请在资源管理中重试" }
+                    } catch { if isPresentationActive && token == detailOpeningGeneration { AppTabRouter.shared.navigationError = "资源打开失败，请在资源管理中重试" } }
                 }
             case "reference": if let url = detailReferenceURL(target.id) { NSWorkspace.shared.open(url) }
             default: break
@@ -438,6 +506,8 @@ struct SessionDetailPanel: View {
         return destination.id
     }
     private func detailCoordinator(selected: ClientDetailAPI, canonicalSessionID: String) async throws -> ClientDetailActionCoordinator {
+        let generation = activity?.generation ?? 0
+        guard isPresentationActive, canManageReferences else { throw CancellationError() }
         let origin = CorptieAppEnvironment.backendBaseURL
         let scope = ClientDetailActionScope(serverID: origin.absoluteString, principalID: "local-user",
             sessionID: canonicalSessionID, accountID: "os-user:\(NSUserName())",
@@ -446,6 +516,7 @@ struct SessionDetailPanel: View {
         let directory = CorptieAppEnvironment.detailActionRecoveryDirectory
         let key = try await MacCredentialServices.store.cacheKey(purpose: "detail-action-recovery",
                                                                legacyDirectories: MacCredentialServices.legacyRecoveryDirectories)
+        guard !Task.isCancelled, allows(generation), canManageReferences else { throw CancellationError() }
         let journal = ClientDetailActionFileJournal(directory: directory, key: key)
         let transport = ClientDetailDynamicActionTransport(api: {
             ClientDetailActionAPI(transport: try BackendTransport(endpoint: BackendEndpoint(origin)), route: .desktop,
@@ -474,9 +545,9 @@ struct SessionDetailPanel: View {
 
     @ViewBuilder
     private var workDetailContent: some View {
-        if let work = entityClient.works.first(where: { $0.id == session.workId }) {
+        if let work = displayValues.works.first(where: { $0.id == session.workId }) {
             ConversationWorkOverviewCard(description: work.description)
-            let relevantTasks = entityClient.tasks.filter {
+            let relevantTasks = displayValues.tasks.filter {
                 $0.workId == work.id && $0.archived != true && $0.deletionStatus == nil
                     && $0.lifecycleState != "done"
             }.sorted {
@@ -713,13 +784,11 @@ struct SessionDetailPanel: View {
     }
 
     private var creatableProviders: [AgentProviderDescriptor] {
-        _ = providerCatalogRevision
-        return modelCatalog.agentProviders.filter { $0.supports("session.create") }
+        return displayValues.providers.filter { $0.supports("session.create") }
     }
 
     private var alternativeProviders: [AgentProviderDescriptor] {
-        _ = providerCatalogRevision
-        return modelCatalog.agentProviders.sessionProviderAlternatives(to: session.external?.provider)
+        return displayValues.providers.sessionProviderAlternatives(to: session.external?.provider)
     }
 
     private var providerValueRow: some View {
@@ -735,12 +804,12 @@ struct SessionDetailPanel: View {
 
     private var currentProviderDisplayName: String {
         guard let provider = session.external?.provider, !provider.isEmpty else { return L10n("未知") }
-        return backendClient.providerDisplayName(for: provider) ?? provider
+        return displayValues.providers.displayName(for: provider) ?? provider
     }
 
     private var pendingProviderDisplayName: String {
         guard let pendingProviderId else { return L10n("未知") }
-        return backendClient.providerDisplayName(for: pendingProviderId) ?? pendingProviderId
+        return displayValues.providers.displayName(for: pendingProviderId) ?? pendingProviderId
     }
 
     private var providerSwitchConfirmationMessage: String {
@@ -748,12 +817,15 @@ struct SessionDetailPanel: View {
     }
 
     private func performProviderSwitch() {
-        guard let target = pendingProviderId, session.canSwitchProviderNow else { return }
+        guard isPresentationActive, canManageReferences, let target = pendingProviderId, session.canSwitchProviderNow else { return }
         pendingProviderId = nil
         providerSwitchError = nil
         isSwitchingProvider = true
+        let generation = activity?.generation ?? 0
         Task {
+            guard allows(generation), canManageReferences else { isSwitchingProvider = false; return }
             let success = await backendClient.switchProvider(session: session, to: target)
+            guard allows(generation) else { isSwitchingProvider = false; return }
             isSwitchingProvider = false
             if !success {
                 providerSwitchError = backendClient.lastError ?? L10n("Provider 切换失败")
@@ -779,7 +851,6 @@ struct SessionDetailPanel: View {
     }
 
     private var runtimeFields: [(String, String)] {
-        _ = providerCatalogRevision
         var fields = [("Agent", agentDisplayName)]
         if let cwd = session.external?.cwd, !cwd.isEmpty {
             fields.append(("工作空间", compactPath(cwd)))
@@ -788,12 +859,12 @@ struct SessionDetailPanel: View {
     }
 
     private var agentDisplayName: String {
-        sessionAgentDisplayName(session: session, agents: entityClient.agents)
+        sessionAgentDisplayName(session: session, agents: displayValues.agents)
     }
 
     private var assistantAgent: Agent? {
         guard let agentId = session.agentId else { return nil }
-        return entityClient.agents.first { $0.agentId == agentId }
+        return displayValues.agents.first { $0.agentId == agentId }
     }
 
     private var friendlyUpdatedAt: String {
@@ -812,4 +883,17 @@ struct SessionDetailPanel: View {
         return "…/" + components.suffix(3).joined(separator: "/")
     }
 
+}
+
+/// Copy-on-write values scoped to this panel. Global publishers never directly
+/// invalidate its body; only an active panel publishes changed display values.
+private struct SessionDetailPanelValues: Equatable {
+    var tasks: [CorptieTask] = []
+    var works: [Work] = []
+    var agents: [Agent] = []
+    var providers: [AgentProviderDescriptor] = []
+    var models: [CodexModel] = []
+    var defaultReasoning: String?
+    var isSwitchingModel = false
+    var isSwitchingReasoning = false
 }

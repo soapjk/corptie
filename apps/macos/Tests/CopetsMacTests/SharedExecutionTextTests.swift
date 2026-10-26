@@ -467,7 +467,7 @@ final class SharedExecutionTextTests: XCTestCase {
         let later = ChatDisplayEntry(kind: .process(turnId: "turn:one", items: [
             try planItem(revision: 2, status: "completed")
         ]))
-        let conversation = SessionConversationContent(
+        let conversation = SessionConversationSurface(
             sessionId: "session:plan-revision",
             presentationCache: SessionPresentationCache(),
             composerDraftRepository: ComposerDraftRepository()

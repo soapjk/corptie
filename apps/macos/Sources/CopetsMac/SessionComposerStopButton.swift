@@ -9,13 +9,24 @@ struct SessionComposerStopButton: View {
     var compact = false
 
     var body: some View {
+        SessionComposerStopSurface(session: session, online: backendClient.isOnline, compact: compact) {
+            guard let session else { return }
+            backendClient.interrupt(session: session, surface: .sessionDetailComposerControl)
+        }
+    }
+}
+
+struct SessionComposerStopSurface: View {
+    let session: TaskSession?
+    let online: Bool
+    var compact = false
+    let interrupt: () -> Void
+    var body: some View {
         ZStack {
             if let session,
                session.executionTaskStatus == .running,
                session.canInterruptNow {
-                Button {
-                    backendClient.interrupt(session: session, surface: .sessionDetailComposerControl)
-                } label: {
+                Button(action: interrupt) {
                     Image(systemName: "stop.fill")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.red)
@@ -31,7 +42,7 @@ struct SessionComposerStopButton: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(!backendClient.isOnline)
+                .disabled(!online)
                 .help(L10n("Stop current run"))
                 .accessibilityLabel(L10n("Stop current run"))
                 .accessibilityIdentifier("conversation-stop")

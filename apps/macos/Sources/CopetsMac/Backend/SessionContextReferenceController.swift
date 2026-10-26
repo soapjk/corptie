@@ -9,6 +9,8 @@ final class SessionContextReferenceController {
     private let selectedSession: () -> TaskSession?
     private let reportError: (String?) -> Void
     private var loadGeneration = UUID()
+    private var pendingLoad: Task<[SessionContextReference], Error>?
+    private var pendingSession: TaskSession?
 
     init(
         api: any SessionContextReferenceServing,
@@ -22,21 +24,35 @@ final class SessionContextReferenceController {
         self.reportError = reportError
     }
 
-    func loadContextReferences(for session: TaskSession? = nil) async {
+    func loadContextReferences(for session: TaskSession? = nil, forceRefresh: Bool = false) async {
         if let session, selectedSession()?.id != session.id { return }
-        let generation = UUID(); loadGeneration = generation
         guard let target = session ?? selectedSession(),
               [.assistantChat, .workChat, .worker].contains(target.resolvedSessionKind) else {
+            state.contextReferencesSessionID = nil
             state.selectedContextReferences = []
             state.isLoadingContextReferences = false
             return
         }
         guard selectedSession()?.id == target.id else { return }
+        if !forceRefresh, pendingSession?.id == target.id, pendingSession?.taskId == target.taskId,
+           pendingSession?.workId == target.workId, let pendingLoad {
+            _ = try? await pendingLoad.value
+            return
+        }
+        let generation = UUID(); loadGeneration = generation
+        let request = Task { try await api.list(sessionID: target.id) }
+        pendingLoad = request; pendingSession = target
         state.isLoadingContextReferences = true
-        defer { if loadGeneration == generation { state.isLoadingContextReferences = false } }
+        defer {
+            if loadGeneration == generation {
+                pendingLoad = nil; pendingSession = nil
+                state.isLoadingContextReferences = false
+            }
+        }
         do {
-            let references = try await api.list(sessionID: target.id)
-            if !Task.isCancelled, loadGeneration == generation, selectedSession()?.id == target.id {
+            let references = try await request.value
+            if !Task.isCancelled, loadGeneration == generation, isCurrentOwner(target) {
+                state.contextReferencesSessionID = target.id
                 state.selectedContextReferences = references
                 reportError(nil)
             }
@@ -56,7 +72,7 @@ final class SessionContextReferenceController {
         guard isCurrentOwner(session), !Task.isCancelled else { return false }
         do {
             try await api.add(sessionID: session.id, type: type, targetID: targetId, locator: locator, displayName: displayName)
-            await loadContextReferences(for: session)
+            await loadContextReferences(for: session, forceRefresh: true)
             return true
         } catch {
             if isCurrentOwner(session) { reportError(error.localizedDescription) }
@@ -76,7 +92,7 @@ final class SessionContextReferenceController {
         guard let session = selectedSession(), owns(reference, session: session) else { return }
         do {
             try await api.refresh(sessionID: session.id, referenceID: reference.referenceId)
-            await loadContextReferences(for: session)
+            await loadContextReferences(for: session, forceRefresh: true)
         } catch {
             if isCurrentOwner(session) { reportError(error.localizedDescription) }
         }
@@ -86,7 +102,7 @@ final class SessionContextReferenceController {
         guard let session = selectedSession(), owns(reference, session: session) else { return }
         do {
             try await api.delete(sessionID: session.id, referenceID: reference.referenceId)
-            await loadContextReferences(for: session)
+            await loadContextReferences(for: session, forceRefresh: true)
         } catch {
             if isCurrentOwner(session) { reportError(error.localizedDescription) }
         }
@@ -96,7 +112,7 @@ final class SessionContextReferenceController {
         guard let session = selectedSession(), owns(reference, session: session) else { return }
         do {
             try await api.update(sessionID: session.id, referenceID: reference.referenceId, body: body)
-            await loadContextReferences(for: session)
+            await loadContextReferences(for: session, forceRefresh: true)
         } catch {
             if isCurrentOwner(session) { reportError(error.localizedDescription) }
         }

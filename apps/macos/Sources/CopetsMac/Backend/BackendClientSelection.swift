@@ -2,6 +2,9 @@ import Foundation
 
 extension BackendClient {
     func select(session: TaskSession, focusComposer: Bool = false) {
+        SessionSwitchTrace.shared.ensureSelection(sessionID: session.id)
+        let trace = SessionSwitchTrace.shared.start(.backendSelection, sessionID: session.id)
+        defer { SessionSwitchTrace.shared.finish(trace) }
         PerfStopwatch.event("会话切换.select", value: 1)
         coldTimelineLoadTask?.cancel()
         coldTimelineLoadTask = nil
@@ -10,6 +13,7 @@ extension BackendClient {
         viewingHistoricalThreadId = nil
         selectedHistoricalDetail = nil
         let generation = sessionSelectionController.select(session.id)
+        SessionSwitchTrace.shared.mark(.selectionCommitted, sessionID: session.id)
         if focusComposer && session.resolvedSessionKind == .worker {
             ComposerDraftRepository.requestUserFocus(for: session.id)
         }
@@ -19,12 +23,12 @@ extension BackendClient {
         selectedScheduledTasks = []
         scheduledTaskError = nil
         let cachedDetail = cachedDetail(for: session.id)
+        SessionSwitchTrace.shared.mark(cachedDetail == nil ? .detailCacheMiss : .detailCacheHit, sessionID: session.id)
         // Publish a cache hit in the same event turn as the row selection. If
         // this waits for the selection Task below, SwiftUI briefly enters the
         // empty/loading branch even though the messages are already resident.
         isLoadingDetail = cachedDetail == nil
         usageController.publishCachedUsage(for: session.id)
-        selectedContextReferences = []
         usageController.stopRefreshing()
         selectedProjectWorktreeStatus = nil
         selectedProjectIntegrationStatus = nil
@@ -39,6 +43,7 @@ extension BackendClient {
                   self.selectedSession?.id == session.id else {
                 return
             }
+            SessionSwitchTrace.shared.mark(.supplementaryStarted, sessionID: session.id)
             // State Sync already carries the Backend's binding-scoped
             // readiness cache. Re-probing a Session whose exact active
             // projection is ready makes the composer flash a client-created
@@ -59,7 +64,7 @@ extension BackendClient {
             // Timeline binding have committed. None can enter the click path.
             self.usageController.startRefreshing(for: session.id)
             self.startProjectStatusFallbackRefresh(for: session, refreshImmediately: true)
-            if session.resolvedSessionKind == .assistantChat || session.resolvedSessionKind == .workChat {
+            if [.assistantChat, .workChat, .worker].contains(session.resolvedSessionKind) {
                 // References are supplementary metadata. Do not put them in
                 // front of the message snapshot on the critical click path.
                 Task { [weak self] in await self?.loadContextReferences(for: session) }
