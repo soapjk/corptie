@@ -20,7 +20,13 @@ public struct ConversationDetailDashboard<Content: View>: View {
                 content
             }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 12)
+                #if os(macOS)
+                .padding(.top, 2)
+                #else
+                .padding(.top, 12)
+                #endif
                 #if os(macOS)
                 .background(DetailRailProbe(router: scrollRouter))
                 .environment(\.detailScrollRouter, scrollRouter)
@@ -28,9 +34,6 @@ public struct ConversationDetailDashboard<Content: View>: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(WorkbenchCanvasSurface.color)
-        #if os(macOS)
-        .contentMargins(.top, 40, for: .scrollContent)
-        #endif
     }
 }
 
@@ -81,7 +84,7 @@ public struct ConversationDetailModuleSurface: ViewModifier {
                     // An ideal-height override makes nested lazy layout keep
                     // invalidating as paged content and scrollbars change.
                     content.frame(maxWidth: .infinity, alignment: .topLeading)
-                        .padding(widgetSize.columns == 1 ? 12 : 16)
+                        .padding(widgetSize.columns == 1 || widgetSize == .strip ? 12 : 16)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
