@@ -74,6 +74,8 @@ function memoryFixture({
     });
   }
   const store = {
+    selectAll: () => [],
+    readTaskDeliveryParticipation: () => ({byTaskId:new Map(),byParentTaskId:new Map()}),
     listGitRepositories: () => [{ id: repository.id, path: "/repo/.git", name: "repo" }],
     getGitRepository: (id) => id === repository.id ? repository : null,
     listGitWorktrees: () => worktrees,

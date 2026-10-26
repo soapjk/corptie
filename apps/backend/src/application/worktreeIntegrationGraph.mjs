@@ -30,7 +30,7 @@ export class WorktreeIntegrationGraph {
     this.acceptance = new TaskIntegrationAcceptanceService({ store });
   }
 
-  async build(inspection, requestedIds) {
+  async build(inspection, requestedIds, {onNotice=()=>{}}={}) {
     const decorated = await this.hierarchy.decorateInspection(inspection);
     const byId = new Map(decorated.worktrees.map(tree => [tree.worktreeId, tree]));
     const main = byId.get(inspection.mainWorktreeId);
@@ -49,7 +49,7 @@ export class WorktreeIntegrationGraph {
       if (root.task.lifecycle_state === "done") throw fail("TASK_PARENT_UNAVAILABLE", "Reopen the completed parent before changing its integration code, or use its existing accepted publication action.");
       const parent = byId.get(root.binding.worktree_id);
       if (!parent || root.binding.repository_id !== inspection.repositoryId) throw fail("TASK_PARENT_INVALID", "The parent Worktree is unavailable.");
-      const children = this.store.selectAll("SELECT id,work_id FROM tasks WHERE parent_task_id=? AND COALESCE(deletion_status,'')<>'deleted' ORDER BY id", [root.task.id]);
+      const children = this.hierarchy.deliveryChildren(root.task.id);
       const bindings = [root];
       for (const child of children) {
         const delivery = this.hierarchy.resolveTaskDelivery(child.id, { allowAdoption: false });
@@ -84,6 +84,7 @@ export class WorktreeIntegrationGraph {
         sourceWorktreeIds: [group.parentWorktreeId], targetWorktreeId: main.worktreeId });
     }
     if (ordinary.length) add({ kind: "merge", sourceWorktreeIds: ordinary, targetWorktreeId: main.worktreeId });
+    for(const notice of decorated.deliveryNotices ?? []) if(included.has(notice.parentWorktreeId)) onNotice(notice);
     return { version: 1, mainWorktreeId: main.worktreeId, requestedWorktreeIds: requested, includedWorktreeIds: [...included].sort(),
       addedWorktreeIds: [...included].filter(id => !requested.includes(id)).sort(),
       groups: [...groups.values()], steps };
@@ -91,11 +92,19 @@ export class WorktreeIntegrationGraph {
 
   assertFresh(graph) {
     if (graph.version !== 1) throw fail("TASK_HIERARCHY_CHANGED", "Unsupported integration graph version.");
+    const grouped=new Set(graph.groups.flatMap(group=>group.bindings.map(item=>item.worktreeId)));
+    const ordinary=graph.includedWorktreeIds.filter(id=>!grouped.has(id));
+    if(ordinary.length) {
+      const tasks=this.store.selectAll(`SELECT task_id FROM task_delivery_worktrees WHERE worktree_id IN (${ordinary.map(()=>"?").join(",")})`,ordinary);
+      const participation=this.store.readTaskDeliveryParticipation({parentTaskIds:tasks.map(row=>row.task_id)});
+      if([...participation.byTaskId.values()].some(child=>child.participates))
+        throw fail("TASK_HIERARCHY_CHANGED","A previously empty failed child now participates in delivery. Review a new plan.");
+    }
     for (const group of graph.groups) {
       const root = this.store.getTask(group.rootTaskId);
       if (!root || root.parent_task_id || root.archived || root.deletion_status || root.lifecycle_state === "done"
         || root.hierarchy_revision !== group.scope.expectedHierarchyRevision) throw fail("TASK_HIERARCHY_CHANGED", "The reviewed task hierarchy changed. Preserve progress and review a new plan.");
-      const children = this.store.selectAll("SELECT id FROM tasks WHERE parent_task_id=? AND COALESCE(deletion_status,'')<>'deleted' ORDER BY id", [root.id]);
+      const children = this.hierarchy.deliveryChildren(root.id);
       if (JSON.stringify(children.map(child => child.id)) !== JSON.stringify(group.bindings.slice(1).map(child => child.taskId))) throw fail("TASK_HIERARCHY_CHANGED", "The reviewed child tasks changed.");
       for (const item of group.bindings) {
         const binding = this.store.getTaskDeliveryBinding(item.taskId);

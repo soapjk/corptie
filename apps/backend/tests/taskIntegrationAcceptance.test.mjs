@@ -11,6 +11,81 @@ import { TaskIntegrationAcceptanceService } from "../src/application/taskIntegra
 import { TaskWorktreeHierarchyService } from "../src/application/taskWorktreeHierarchyService.mjs";
 import { GitWorkspaceManager } from "../src/runtime/gitWorkspaceManager.mjs";
 import { WorktreeIntegrationJobService } from "../src/application/worktreeIntegrationJobService.mjs";
+import { WorktreeIntegrationGraph } from "../src/application/worktreeIntegrationGraph.mjs";
+
+test("empty failed child is absent from summaries, decoration, graph, scope and acceptance",async t=>{
+  const f=await fixture(t);
+  const failed=f.store.createTask({workId:f.parent.work_id,title:"Failed_empty",parentTaskId:f.parent.id},{},
+    {expectedParentResourceVersion:f.store.getTask(f.parent.id).resource_version});
+  f.store.db.run("UPDATE tasks SET creation_state='failed' WHERE id=?",[failed.id]);
+  // Production regression: startup failed while checking the parent's base,
+  // before any child workspace allocation, and only released its Task claim.
+  const agent=f.store.createAgent({name:"Failed_startup",role:"independentContributor"});
+  const now=new Date().toISOString();
+  f.store.db.run(`INSERT INTO work_session_startup_operations
+    (startup_operation_id,work_id,task_id,assignee_agent_id,expected_task_version,provider_id,repository_id,
+      source_session_id,idempotency_key,request_fingerprint,state,correlation_id,allocated_at,updated_at,
+      error_stage,compensation_state,compensation_result_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ["startup:empty-child",f.parent.work_id,failed.id,agent.agentId,1,"provider:test","repository:integration",
+    "session:source","empty-child","fixture-fingerprint","failed_compensated","fixture",now,now,
+    "worktree_preparation","completed",JSON.stringify({status:"completed",completedSteps:["task_claim_released"],failedStep:null})]);
+  const graph=new WorktreeIntegrationGraph({store:f.store,hierarchy:f.hierarchy});
+  const inspection={...await f.inspect(),mainWorktreeId:"worktree:main"};
+  const notices=[];
+  const built=await graph.build(inspection,[f.parentTree.worktreeId],{onNotice:notice=>notices.push(notice)});
+  assert.equal(built.groups[0].childWorktreeIds.length,2);
+  assert.equal(notices[0].taskId,failed.id);
+  const jobs=integrationJobs(f);
+  const candidate=await jobs.createCandidate("repository:integration",{operationType:"integrate",sourceWorktreeIds:[f.parentTree.worktreeId],targetWorktreeId:"worktree:main"});
+  assert.equal(candidate.notices[0].taskId,failed.id);
+  assert.equal(Object.hasOwn(candidate.plan,"notices"),false);
+  f.store.db.run("UPDATE work_session_startup_operations SET worktree_base_context_json='{}' WHERE startup_operation_id='startup:empty-child'");
+  assert.equal(f.store.readTaskDeliveryParticipation({taskIds:[failed.id]}).byTaskId.get(failed.id).participation,"uncertain");
+  f.store.db.run("UPDATE work_session_startup_operations SET worktree_base_context_json=NULL WHERE startup_operation_id='startup:empty-child'");
+  f.store.db.run("UPDATE git_worktrees SET created_by_startup_operation_id='startup:empty-child' WHERE worktree_id=?",[f.parentTree.worktreeId]);
+  assert.equal(f.store.readTaskDeliveryParticipation({taskIds:[failed.id]}).byTaskId.get(failed.id).participation,"required");
+  f.store.db.run("UPDATE git_worktrees SET created_by_startup_operation_id=NULL WHERE worktree_id=?",[f.parentTree.worktreeId]);
+  assert.equal(f.store.hierarchySummaries([f.parent.id]).get(f.parent.id).childCount,2);
+  const assessment=await f.acceptance.graph(f.parent.id,{requireIncluded:false});
+  assert.equal(assessment.children.length,2);
+  graph.assertFresh(built);
+  f.store.upsertSession({id:"session:failed-child-history",title:"History",provider:"provider:test",status:"complete",workId:f.parent.work_id,taskId:failed.id});
+  assert.throws(()=>graph.assertFresh(built),{code:"TASK_HIERARCHY_CHANGED"});
+  const strict=new TaskWorktreeHierarchyService({store:f.store});
+  assert.throws(()=>strict.resolveTaskDelivery(failed.id,{allowAdoption:false}),cause=>{
+    assert.equal(cause.diagnosis.taskId,failed.id);
+    assert.equal(cause.diagnosis.parentTaskId,f.parent.id);
+    return cause.code==="PARENT_WORKTREE_REQUIRED";
+  });
+  const resolve=f.hierarchy.resolveTaskDelivery;
+  f.hierarchy.resolveTaskDelivery=(id,options)=>id===failed.id ? strict.resolveTaskDelivery(id,options) : resolve(id,options);
+  await assert.rejects(()=>jobs.createCandidate("repository:integration",{operationType:"integrate",sourceWorktreeIds:[f.parentTree.worktreeId],targetWorktreeId:"worktree:main"}),
+    cause=>cause.code==="PARENT_WORKTREE_REQUIRED" && cause.diagnosis.taskId===failed.id);
+});
+
+test("a parent with only an empty failed child uses ordinary merge and rejects revival",async t=>{
+  const f=await fixture(t);
+  for(const child of f.children) {
+    f.store.db.run("DELETE FROM task_delivery_worktrees WHERE task_id=?",[child.id]);
+    f.store.db.run("UPDATE tasks SET creation_state='failed' WHERE id=?",[child.id]);
+  }
+  const inspection={...await f.inspect(),mainWorktreeId:"worktree:main"};
+  const graph=new WorktreeIntegrationGraph({store:f.store,hierarchy:f.hierarchy});
+  const notices=[];
+  const built=await graph.build(inspection,[f.parentTree.worktreeId],{onNotice:notice=>notices.push(notice)});
+  assert.equal(built.groups.length,0);
+  assert.deepEqual(built.steps.map(step=>step.kind),["merge"]);
+  assert.equal(notices.length,2);
+  assert.equal(f.acceptance.required(f.store.getTask(f.parent.id)),false);
+  f.store.assertStandaloneWorktreeMutation({worktreeIds:[f.parentTree.worktreeId]});
+  graph.assertFresh(built);
+  f.store.db.run("UPDATE tasks SET creation_state='ready' WHERE id=?",[f.children[0].id]);
+  assert.throws(()=>graph.assertFresh(built),{code:"TASK_HIERARCHY_CHANGED"});
+  assert.throws(()=>f.store.assertStandaloneWorktreeMutation({worktreeIds:[f.parentTree.worktreeId]}),{code:"TASK_HIERARCHY_SCOPE_REQUIRED"});
+  const plan={orchestration:built,reservedWorktreeIds:[f.parentTree.worktreeId],writeWorktreeIds:[f.parentTree.worktreeId]};
+  const job=f.store.createWorktreeIntegrationJob({repositoryId:"repository:integration",status:"running",planFingerprint:"fixture:ordinary",details:{plan}});
+  assert.throws(()=>f.store.assertStandaloneWorktreeMutation({worktreeIds:[f.parentTree.worktreeId],jobId:job.id}),{code:"TASK_HIERARCHY_SCOPE_REQUIRED"});
+});
 
 const exec = promisify(execFile);
 const git = async (path, args) => (await exec("git", ["-C", path, ...args], {

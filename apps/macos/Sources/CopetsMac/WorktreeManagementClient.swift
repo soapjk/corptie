@@ -718,7 +718,8 @@ final class WorktreeManagementClient: ObservableObject {
                 candidate: nil,
                 refreshDiff: nil,
                 preparationError: message,
-                wasRefreshed: false
+                wasRefreshed: false,
+                diagnosis: (error as? WorktreeManagementClientError)?.diagnosis
             ))
             errorMessage = nil
         }
@@ -1106,7 +1107,8 @@ final class WorktreeManagementClient: ObservableObject {
                 message: envelope?.error ?? "HTTP \(http.statusCode)",
                 code: envelope?.code,
                 candidate: envelope?.candidate,
-                candidateDiff: envelope?.diff
+                candidateDiff: envelope?.diff,
+                diagnosis: envelope?.diagnosis
             )
         }
         return try decoder.decode(Response.self, from: data)
@@ -1146,6 +1148,7 @@ private struct WorktreeManagementErrorEnvelope: Decodable {
     let code: String?
     let candidate: WorktreeIntegrationCandidate?
     let diff: WorktreeIntegrationCandidateDiff?
+    let diagnosis: WorktreeDeliveryDiagnosis?
 }
 
 private struct WorktreeManagementClientError: LocalizedError {
@@ -1153,5 +1156,6 @@ private struct WorktreeManagementClientError: LocalizedError {
     let code: String?
     var candidate: WorktreeIntegrationCandidate? = nil
     var candidateDiff: WorktreeIntegrationCandidateDiff? = nil
+    var diagnosis: WorktreeDeliveryDiagnosis? = nil
     var errorDescription: String? { code.map { "\(message) (\($0))" } ?? message }
 }

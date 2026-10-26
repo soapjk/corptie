@@ -108,6 +108,18 @@ test("candidate refresh errors retain the fresh candidate and deterministic diff
   );
 });
 
+test("candidate errors identify the blocked task without exposing startup or Provider payloads",async()=>{
+  const f=fixture();
+  f.dependencies.worktreeIntegrationJobService.createCandidate=async()=>{
+    throw Object.assign(new Error("Task Child has no proven delivery"),{statusCode:409,code:"PARENT_WORKTREE_REQUIRED",
+      diagnosis:{taskId:"task:child",parentTaskId:"task:parent",worktreeId:null,reason:"DELIVERY_BINDING_MISSING",
+        allocation_json:"private",providerContext:{secret:true}}});
+  };
+  const result=await f.dispatch("/worktree-management/repositories/r/integration-candidates","POST").response;
+  assert.equal(result.status,409);
+  assert.deepEqual(result.body.diagnosis,{taskId:"task:child",parentTaskId:"task:parent",worktreeId:null,reason:"DELIVERY_BINDING_MISSING"});
+});
+
 test("new candidate routes contain malformed repository URL encoding", async () => {
   for (const route of ["integration-candidates", "integration-jobs"]) {
     const f = fixture();

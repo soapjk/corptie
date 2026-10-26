@@ -154,7 +154,7 @@ const domainDelegates = Object.freeze({
     "removeTaskDependency", "listTaskDependencies", "listTaskDependents"
   ],
   taskHierarchyRepository: [
-    "assertParentForCreate", "bumpHierarchyRevision", "hasTaskChildren", "hierarchySummaries",
+    "assertParentForCreate", "bumpHierarchyRevision", "hasTaskChildren", "readTaskDeliveryParticipation", "hierarchySummaries",
     "listTaskHierarchyPage", "getTaskDeliveryBinding", "bindTaskDeliveryWorktree",
     "assertStandaloneWorktreeMutation", "taskHierarchyAncestors"
   ],

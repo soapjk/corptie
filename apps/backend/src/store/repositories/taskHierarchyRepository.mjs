@@ -5,6 +5,33 @@ export function taskHierarchyError(code, message = code, statusCode = 409) {
   return Object.assign(new Error(message), { code, statusCode });
 }
 
+// Only a fully observed, empty failure can leave the delivery dependency set.
+// Compensation alone is not proof that an allocation never existed.
+export function startupHasNoDeliveryResources(operation, isChild) {
+  // A child must freeze its parent base BEFORE invoking workspace allocation.
+  // A compensated failure before that boundary cannot own a delivery. Do not
+  // extend this inference to roots (which have no parent-base boundary).
+  if(!isChild || operation.state!=="failed_compensated" || operation.error_stage!=="worktree_preparation"
+    || operation.compensation_state!=="completed" || operation.worktree_base_context_json!=null
+    || ["worktree_id","allocation_json","logical_session_id","legacy_session_id","provider_binding_id",
+      "binding_generation","worktree_prepared_at","session_bound_at","provider_bound_at","ready_at"]
+      .some(key=>operation[key]!=null) || operation.initial_turn_state==="accepted") return false;
+  try {
+    const result=JSON.parse(operation.compensation_result_json);
+    return result?.status==="completed" && result.failedStep===null
+      && Array.isArray(result.completedSteps) && result.completedSteps.length===1 && result.completedSteps[0]==="task_claim_released";
+  } catch { return false; }
+}
+
+export function classifyTaskDeliveryParticipation(record) {
+  if (record.deletion_status === "deleted") return "excluded_deleted";
+  if (record.creation_state === "ready" || record.current_session_id || record.has_delivery
+    || record.has_session || record.has_startup_binding || record.has_receipt || record.has_allocation) return "required";
+  if ((record.has_startup && !record.startups_proven_empty) || record.has_workspace_request) return "uncertain";
+  if (record.creation_state === "failed" && record.evidence_complete === true) return "ignored_failed";
+  return "pending";
+}
+
 // Owns no connection. All mutations participate in the Store transaction.
 export class TaskHierarchyRepository {
   constructor(ports) { Object.assign(this, ports); }
@@ -34,8 +61,61 @@ export class TaskHierarchyRepository {
   }
 
   hasTaskChildren(taskId) {
-    return Boolean(this.selectOne(`SELECT 1 FROM tasks WHERE parent_task_id=? AND COALESCE(deletion_status,'')<>'deleted'
-      AND (creation_state<>'failed' OR current_session_id IS NOT NULL) LIMIT 1`, [taskId]));
+    return (this.readTaskDeliveryParticipation({parentTaskIds:[taskId]}).byParentTaskId.get(taskId) ?? []).some(row=>row.participates);
+  }
+
+  readTaskDeliveryParticipation({taskIds=[],parentTaskIds=[]}={}) {
+    const byTaskId=new Map(),byParentTaskId=new Map();
+    for (const [column,values] of [["id",taskIds],["parent_task_id",parentTaskIds]]) {
+      const ids=[...new Set(values.filter(Boolean))];
+      for(let offset=0;offset<ids.length;offset+=400) {
+        const batch=ids.slice(offset,offset+400);
+        const rows=this.selectAll(`SELECT t.id,t.parent_task_id,t.work_id,t.title,t.revision,t.creation_state,
+          t.deletion_status,t.current_session_id,t.lifecycle_state,d.worktree_id,d.binding_revision,w.head_oid,
+          d.task_id IS NOT NULL AS has_delivery
+          FROM tasks t LEFT JOIN task_delivery_worktrees d ON d.task_id=t.id
+          LEFT JOIN git_worktrees w ON w.worktree_id=d.worktree_id
+          WHERE t.${column} IN (${batch.map(()=>"?").join(",")}) ORDER BY t.id`,batch);
+        // Ready and bound Tasks already participate. Only unresolved failures
+        // need historical evidence; batch those reads instead of scanning the
+        // Session/startup tables once for every card on the page.
+        const unresolved=rows.filter(row=>row.creation_state==="failed" && row.deletion_status!=="deleted"
+          && !row.current_session_id && !row.has_delivery);
+        for(let start=0;start<unresolved.length;start+=100) {
+          const pending=unresolved.slice(start,start+100),taskIds=pending.map(row=>row.id);
+          const placeholders=taskIds.map(()=>"?").join(",");
+          const evidence=this.selectAll(`SELECT task_id,'has_session' AS kind FROM sessions WHERE task_id IN (${placeholders})
+            UNION SELECT task_id,'has_startup' FROM work_session_startup_operations WHERE task_id IN (${placeholders})
+            UNION SELECT task_id,'has_startup_binding' FROM work_session_startup_bindings WHERE task_id IN (${placeholders})
+            UNION SELECT o.task_id,'has_receipt' FROM work_session_startup_receipts r JOIN work_session_startup_operations o
+              ON o.startup_operation_id=r.startup_operation_id WHERE o.task_id IN (${placeholders})
+            UNION SELECT task_id,'has_allocation' FROM work_session_startup_operations WHERE task_id IN (${placeholders})
+              AND (worktree_id IS NOT NULL OR logical_session_id IS NOT NULL OR legacy_session_id IS NOT NULL OR allocation_json IS NOT NULL)
+            UNION SELECT o.task_id,'has_allocation' FROM git_worktrees w JOIN work_session_startup_operations o
+              ON o.startup_operation_id=w.created_by_startup_operation_id WHERE o.task_id IN (${placeholders})
+            UNION SELECT task_id,'has_allocation' FROM execution_spaces WHERE task_id IN (${placeholders})
+            UNION SELECT task_id,'has_workspace_request' FROM workspace_creation_requests WHERE task_id IN (${placeholders})`,
+          Array.from({length:8},()=>taskIds).flat());
+          const byId=new Map(pending.map(row=>[row.id,row]));
+          for(const item of evidence) byId.get(item.task_id)[item.kind]=true;
+          const operations=this.selectAll(`SELECT * FROM work_session_startup_operations WHERE task_id IN (${placeholders})`,taskIds);
+          for(const row of pending) row.startups_proven_empty=true;
+          for(const operation of operations) {
+            const row=byId.get(operation.task_id);
+            if(!startupHasNoDeliveryResources(operation,Boolean(row.parent_task_id))) row.startups_proven_empty=false;
+          }
+        }
+        for(const row of rows) {
+          const participation=classifyTaskDeliveryParticipation({...row,evidence_complete:true});
+          byTaskId.set(row.id,{...row,participation,participates:!["ignored_failed","excluded_deleted"].includes(participation)});
+        }
+      }
+    }
+    for(const row of [...byTaskId.values()].sort((a,b)=>a.id<b.id ? -1 : a.id>b.id ? 1 : 0)) {
+      const children=byParentTaskId.get(row.parent_task_id) ?? [];
+      children.push(row);byParentTaskId.set(row.parent_task_id,children);
+    }
+    return {byTaskId,byParentTaskId};
   }
 
   taskHierarchyAncestors(tasks) {
@@ -63,11 +143,14 @@ export class TaskHierarchyRepository {
       ...(ids.length ? [`w.worktree_id IN (${ids.map(()=>"?").join(",")})`] : []),
       ...(locations.length ? [`(w.path IN (${locations.map(()=>"?").join(",")}) OR w.canonical_path IN (${locations.map(()=>"?").join(",")}))`] : [])
     ];
-    const member = this.selectOne(`SELECT t.id FROM task_delivery_worktrees d
+    const members = this.selectAll(`SELECT t.id,t.parent_task_id FROM task_delivery_worktrees d
       JOIN tasks t ON t.id=d.task_id JOIN git_worktrees w ON w.worktree_id=d.worktree_id
       WHERE (${predicates.join(" OR ")}) AND (t.parent_task_id IS NOT NULL
-        OR EXISTS (SELECT 1 FROM tasks c WHERE c.parent_task_id=t.id AND COALESCE(c.deletion_status,'')<>'deleted')) LIMIT 1`,
+        OR EXISTS (SELECT 1 FROM tasks c WHERE c.parent_task_id=t.id AND COALESCE(c.deletion_status,'')<>'deleted'))`,
     [...ids,...locations,...locations]);
+    const participation=this.readTaskDeliveryParticipation({parentTaskIds:members.filter(row=>!row.parent_task_id).map(row=>row.id)});
+    const protectedMembers=members.filter(row=>row.parent_task_id || (participation.byParentTaskId.get(row.id) ?? []).some(child=>child.participates));
+    const member=protectedMembers[0];
     if (member) {
       const job=jobId && this.selectOne("SELECT * FROM worktree_integration_jobs WHERE id=?",[jobId]);
       const plan=job?.details_json ? JSON.parse(job.details_json).plan : null;
@@ -81,14 +164,17 @@ export class TaskHierarchyRepository {
         const graphMembers=this.selectAll(`SELECT worktree_id,path,canonical_path FROM git_worktrees w WHERE ${predicates.join(" OR ")}`,[...ids,...locations,...locations]);
         const rootsFresh=graph.groups.every(group=>{
           const task=this.getTask(group.rootTaskId);
+          const children=(this.readTaskDeliveryParticipation({parentTaskIds:[group.rootTaskId]}).byParentTaskId.get(group.rootTaskId) ?? []).filter(child=>child.participates);
           return task && !task.archived && !task.deletion_status && task.lifecycle_state!=="done" && task.hierarchy_revision===group.scope.expectedHierarchyRevision
+            && JSON.stringify(children.map(child=>child.id))===JSON.stringify(group.bindings.slice(1).map(child=>child.taskId))
             && group.bindings.every(item=>{
               const binding=this.getTaskDeliveryBinding(item.taskId),child=this.getTask(item.taskId);
               return binding?.worktree_id===item.worktreeId && binding.binding_revision===item.bindingRevision
                 && child?.work_id===task.work_id && (child.parent_task_id ?? null)===item.parentTaskId;
             });
         });
-        if(rootsFresh && graphMembers.length && graphMembers.every(tree=>reserved.has(tree.worktree_id))
+        const covered=protectedMembers.every(row=>graph.groups.some(group=>group.bindings.some(item=>item.taskId===row.id)));
+        if(rootsFresh && covered && graphMembers.length && graphMembers.every(tree=>reserved.has(tree.worktree_id))
           && ids.every(id=>graphMembers.some(tree=>tree.worktree_id===id && writable.has(id)))
           && paths.every(path=>graphMembers.some(tree=>(tree.path===path || tree.canonical_path===path) && writable.has(tree.worktree_id)))
           && readPaths.every(path=>graphMembers.some(tree=>tree.path===path || tree.canonical_path===path))) return;
@@ -121,24 +207,18 @@ export class TaskHierarchyRepository {
         JOIN tasks t ON t.id=a.task_id LEFT JOIN task_delivery_worktrees d ON d.task_id=t.id
         LEFT JOIN git_worktrees w ON w.worktree_id=d.worktree_id
         WHERE t.id IN (${placeholders}) AND a.receipt_id=json_extract(CASE WHEN json_valid(t.acceptance_assessment_json) THEN t.acceptance_assessment_json ELSE '{}' END,'$.integrationReceiptId')`,batch).map(row=>[row.task_id,row]));
-      const childrenByParent=new Map();
-      for(const child of this.selectAll(`SELECT t.id,t.parent_task_id,t.revision,d.worktree_id,d.binding_revision,w.head_oid
-        FROM tasks t LEFT JOIN task_delivery_worktrees d ON d.task_id=t.id LEFT JOIN git_worktrees w ON w.worktree_id=d.worktree_id
-        WHERE t.parent_task_id IN (${placeholders}) AND COALESCE(t.deletion_status,'')<>'deleted' AND t.creation_state='ready' ORDER BY t.id`,batch)) {
-        const children=childrenByParent.get(child.parent_task_id) ?? [];
-        children.push(child);childrenByParent.set(child.parent_task_id,children);
-      }
+      const childrenByParent=new Map([...this.readTaskDeliveryParticipation({parentTaskIds:batch}).byParentTaskId]
+        .map(([id,children])=>[id,children.filter(child=>child.participates)]));
       const rows = this.selectAll(`SELECT t.*, p.hierarchy_revision AS root_revision,
         p.work_id AS parent_work_id, p.parent_task_id AS grandparent_task_id,
-        d.worktree_id AS delivery_worktree_id, d.binding_revision,
-        COALESCE(c.child_count,0) AS child_count, COALESCE(c.completed_count,0) AS completed_count
+        d.worktree_id AS delivery_worktree_id, d.binding_revision
         FROM tasks t LEFT JOIN tasks p ON p.id=t.parent_task_id
         LEFT JOIN task_delivery_worktrees d ON d.task_id=t.id
-        LEFT JOIN (SELECT parent_task_id,COUNT(*) AS child_count,
-          SUM(CASE WHEN lifecycle_state='done' THEN 1 ELSE 0 END) AS completed_count
-          FROM tasks WHERE parent_task_id IN (${placeholders}) AND ${active} GROUP BY parent_task_id) c ON c.parent_task_id=t.id
-        WHERE t.id IN (${placeholders})`, [...batch,...batch]);
+        WHERE t.id IN (${placeholders})`, batch);
       for (const row of rows) {
+        const participatingChildren=childrenByParent.get(row.id) ?? [];
+        row.child_count=participatingChildren.length;
+        row.completed_count=participatingChildren.filter(child=>child.lifecycle_state==="done").length;
         let acceptance={state:row.child_count ? "not_recorded" : "not_applicable",receiptId:null,testedHeadOid:null,reason:null};
         const receipt=receipts.get(row.id);
         if(receipt && row.child_count) {

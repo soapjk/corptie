@@ -18,7 +18,7 @@ export class TaskIntegrationAcceptanceService {
     const task=this.store.getTask(taskId);
     if (!task || task.parent_task_id || !this.required(task)) throw fail("TASK_INTEGRATION_NOT_APPLICABLE");
     const root=this.delivery.resolveTaskDelivery(taskId,{allowAdoption:false});
-    const rows=this.store.selectAll("SELECT * FROM tasks WHERE parent_task_id=? AND COALESCE(deletion_status,'')<>'deleted' ORDER BY id",[taskId]);
+    const rows=this.delivery.deliveryChildren(taskId);
     const path=root.inventory.canonicalPath || root.inventory.path;
     await this.delivery.assertClean(root.inventory);
     const parentHeadOid=await this.scalar(path,["rev-parse","HEAD"]);
@@ -28,7 +28,7 @@ export class TaskIntegrationAcceptanceService {
       if(child.work_id!==task.work_id) throw fail("TASK_PARENT_INVALID");
       let item;
       try { item=this.delivery.resolveTaskDelivery(child.id,{allowAdoption:false}); }
-      catch (cause) { if(requireIncluded) throw fail("CHILDREN_NOT_INTEGRATED"); children.push({taskId:child.id,worktreeId:null,sourceHeadOid:null,includedInParent:false});continue; }
+      catch (cause) { if(requireIncluded) throw Object.assign(fail("CHILDREN_NOT_INTEGRATED",cause.message),{diagnosis:cause.diagnosis}); children.push({taskId:child.id,worktreeId:null,sourceHeadOid:null,includedInParent:false});continue; }
       if(item.binding.repository_id!==root.binding.repository_id) throw fail("TASK_PARENT_INVALID");
       const sourceHeadOid=await this.scalar(item.inventory.canonicalPath || item.inventory.path,["rev-parse","HEAD"]);
       const includedInParent=await this.git(path,["merge-base","--is-ancestor",sourceHeadOid,parentHeadOid]).then(()=>true,cause=>{if(cause.code===1)return false;throw cause;});
@@ -38,6 +38,8 @@ export class TaskIntegrationAcceptanceService {
         taskRevision:child.revision,bindingRevision:item.binding.binding_revision});
     }
     const current=this.store.getTask(taskId);
+    if(JSON.stringify(this.delivery.deliveryChildren(taskId).map(child=>child.id))!==JSON.stringify(rows.map(child=>child.id)))
+      throw fail("INTEGRATION_ACCEPTANCE_STALE");
     const binding=this.store.getTaskDeliveryBinding(taskId);
     if (!current || current.resource_version!==task.resource_version || current.revision!==task.revision
       || current.hierarchy_revision!==task.hierarchy_revision || binding?.binding_revision!==root.binding.binding_revision) throw fail("INTEGRATION_ACCEPTANCE_STALE");
