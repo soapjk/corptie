@@ -132,7 +132,7 @@ final class PadMessageImageStore {
 
     /// Idempotent per (scope, session, path): safe to call from every card appearance.
     func ensure(sessionID: String, managedPath: String, connection: PadConnection, itemID: String? = nil) {
-        let currentScope = "\(connection.serverID)|\(connection.deviceID ?? "")|\(connection.address)"
+        let currentScope = connection.messageImageOwnerID
         if currentScope != scope {
             scope = currentScope
             for task in inflight.values { task.cancel() }
@@ -154,20 +154,21 @@ final class PadMessageImageStore {
         }
         pending.append((key, {
                 do {
-                    if let url = URL(string: managedPath), ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
-                        let data = try await ClientRemoteImageDownload.read(url)
-                        return await self.decodeAndRemember(data, key: key)
-                    }
-                    let api = ClientSessionAPI(transport: try await connection.transport())
-                    if let itemID {
-                        let data = try await api.resource(sessionId: sessionID, itemId: itemID, path: managedPath)
-                        return await self.decodeAndRemember(data, key: key)
-                    }
-                    guard let payload = try await api.image(sessionId: sessionID, managedPath: managedPath) else { return nil }
-                    return await self.decodeAndRemember(payload.data, key: key)
+                    let resource = Self.resource(sessionID: sessionID, path: managedPath, itemID: itemID)
+                    let data = try await connection.messageImageData(resource)
+                    return await self.decodeAndRemember(data, key: key)
                 } catch { return nil }
         }))
         drain()
+    }
+
+    static func resource(sessionID: String, path: String, itemID: String?) -> ClientMessageImageResource {
+        let source: ClientMessageImageResource.Source
+        if let url = URL(string: path), ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+            source = .publicRemote(url: url)
+        } else if itemID != nil { source = .messageReference(destination: path) }
+        else { source = .managed(path: path) }
+        return .init(sessionID: sessionID, sourceItemID: itemID ?? "", source: source)
     }
 
     private func drain() {

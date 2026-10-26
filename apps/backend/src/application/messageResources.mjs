@@ -15,34 +15,52 @@ const unavailable = () => Object.assign(new Error("Message resource is unavailab
  * No text substring matching and no caller-supplied directory authority.
  */
 export function messageResourceLinks(text) {
-  return [...String(text ?? "").matchAll(/!?\[[^\]\n]*\]\(\s*(?:<([^>\n]+)>|([^\s)]+))\s*\)/g)]
-    .slice(0, 64).map(match => match[1] ?? match[2]);
+  const links = [];
+  let fence = null;
+  for (const line of String(text ?? "").split("\n")) {
+    const marker = line.trimStart().match(/^(`{3,}|~{3,})/)?.[1]?.[0];
+    if (marker) { if (fence === marker) fence = null; else if (!fence) fence = marker; continue; }
+    if (fence) continue;
+    for (const match of line.matchAll(/!?\[[^\]\n]*\]\(\s*(?:<([^>\n]+)>|([^\s)]+))(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/g)) {
+      links.push(match[1] ?? match[2]);
+      if (links.length === 64) return links;
+    }
+  }
+  return links;
 }
 
 function localPath(value) {
   if (value.startsWith("file:")) {
     try { return fileURLToPath(value); } catch { throw unavailable(); }
   }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) throw unavailable();
   try { return decodeURIComponent(value); } catch { throw unavailable(); }
 }
 
 /** Read-only, Session-scoped legacy resource resolution. Never expose arbitrary host paths. */
-export async function readMessageResource({ store, environmentRoot, reference, itemId, path }) {
+export async function resolveMessageResource({ store, environmentRoot, ownedImageRoot, reference, itemId, path }) {
   if (typeof itemId !== "string" || !itemId || itemId.length > 512
       || typeof path !== "string" || !path || path.length > 4096) throw unavailable();
   // Timeline rows use the durable Session key resolved by SessionBindingRepository,
   // not its logical routing identifier.
   const sessionId = reference.sessionId ?? reference.logicalSessionId;
   const item = store?.getSessionItem(sessionId, itemId);
-  if (!item || !["agentMessage", "userMessage"].includes(item.type)) throw unavailable();
-  const requested = localPath(path);
-  if (!isAbsolute(requested) || !messageResourceLinks(item.text).some(link => {
-    try { return localPath(link) === requested; } catch { return false; }
+  if (!item || !["agentMessage", "userMessage", "imageView"].includes(item.type)) throw unavailable();
+  const session = reference.metadata?.session ?? store.getSession(sessionId);
+  function absolute(value) {
+    const decoded = localPath(value);
+    if (isAbsolute(decoded)) return resolve(decoded);
+    if (!session?.cwd || !isAbsolute(session.cwd)) throw unavailable();
+    return resolve(session.cwd, decoded);
+  }
+  const requested = absolute(path);
+  const links = item.type === "imageView" ? [String(item.text ?? "").trim()] : messageResourceLinks(item.text);
+  if (!links.some(link => {
+    try { return absolute(link) === requested; } catch { return false; }
   })) throw unavailable();
   const mimeType = types[extname(requested).toLowerCase()];
   if (!mimeType) throw unavailable();
-  const session = reference.metadata?.session ?? store.getSession(sessionId);
-  const roots = [environmentRoot && resolve(environmentRoot, "tmp"), session?.cwd].filter(Boolean);
+  const roots = [environmentRoot && resolve(environmentRoot, "tmp"), session?.cwd, ownedImageRoot].filter(Boolean);
   const candidate = await realpath(requested).catch(() => { throw unavailable(); });
   let permitted = false;
   for (const root of roots) {
@@ -57,6 +75,11 @@ export async function readMessageResource({ store, environmentRoot, reference, i
     }
   }
   if (!permitted) throw unavailable();
+  return { candidate, mimeType };
+}
+
+export async function readMessageResource(options) {
+  const { candidate, mimeType } = await resolveMessageResource(options);
   const handle = await open(candidate, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => { throw unavailable(); });
   try {
     const info = await handle.stat();

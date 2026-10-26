@@ -16,6 +16,13 @@ struct ConversationNativeRowBuilder {
         _ entry: ChatDisplayEntry,
         expandedTurnIds: Set<String>
     ) -> AppKitChatTimelineRow {
+        if entry.mediaItems.count > 1 {
+            let rows = entry.mediaItems.map { nativeAppKitRow(.init(kind: .message($0)), expandedTurnIds: expandedTurnIds) }
+            var row = rows[0]
+            row.images = rows.flatMap(\.images)
+            row.contentRevision = rows.reduce(0) { $0 &+ $1.contentRevision }
+            return row
+        }
         let text: String
         let rawStatusText: String
         let copyText: String
@@ -84,8 +91,8 @@ struct ConversationNativeRowBuilder {
                 guard !existingImageURLs.contains(reference.url) else { return nil }
                 return ChatTimelineImage(
                     managedPath: "markdown:\(reference.url.absoluteString)",
-                    displayURL: reference.url,
-                    originalPath: reference.url.isFileURL ? reference.url.path : nil
+                    displayURL: messageResourceURL(itemID: item.id, destination: reference.url.absoluteString),
+                    originalPath: nil
                 )
             })
             text = ClickableMessageText.markdown(
@@ -229,6 +236,15 @@ struct ConversationNativeRowBuilder {
             }
         }
         return row
+    }
+
+    private func messageResourceURL(itemID: String, destination: String) -> URL? {
+        if let url = URL(string: destination), ["http", "https"].contains(url.scheme?.lowercased() ?? "") { return url }
+        guard let base = imageURL(""), var parts = URLComponents(url: base, resolvingAgainstBaseURL: false),
+              parts.path.hasSuffix("/images") else { return nil }
+        parts.path = String(parts.path.dropLast("images".count)) + "resources"
+        parts.queryItems = [.init(name: "itemId", value: itemID), .init(name: "path", value: destination)]
+        return parts.url
     }
 
     private func userInputCopyText(_ request: ConversationUserInput) -> String {

@@ -4,6 +4,7 @@ import Network
 import OSLog
 import CorptieClientCore
 import CorptieClientSecurity
+import CorptieConversation
 
 /// AuthenticationServices may invoke its completion on an XPC queue. Keep that
 /// callback nonisolated, then deliver exactly once to UI state on the main actor.
@@ -37,10 +38,13 @@ final class CloudSignInCallbackBridge: @unchecked Sendable {
 
 @MainActor @Observable
 final class PadConnection {
+    let messageImageRepository = ConversationImageRepository()
+    private(set) var messageImageOwnerID = UUID().uuidString
     let detailBusinessRepository = ClientDetailBusinessRepository()
     private var detailBusinessOwnerID = UUID().uuidString
     private func retireDetailBusinessOwner() {
         detailBusinessRepository.invalidateAll(); detailBusinessOwnerID = UUID().uuidString
+        messageImageRepository.invalidate(); messageImageOwnerID = UUID().uuidString
     }
     func businessDisplayScope(sessionID: String, taskID: String?, workID: String?) -> ClientDetailBusinessScope {
         let principal = cloudTargetMacID != nil ? cloudCredential?.identity.id.uuidString : credentials?.deviceId
@@ -92,8 +96,12 @@ final class PadConnection {
         let refreshExpiresAt: Double
         let cloudValidatedAt: Double
     }
-    var address = UserDefaults.standard.string(forKey: "serverAddress") ?? ""
-    var serverID = UserDefaults.standard.string(forKey: "serverID") ?? ""
+    var address = UserDefaults.standard.string(forKey: "serverAddress") ?? "" {
+        didSet { if oldValue != address { retireDetailBusinessOwner() } }
+    }
+    var serverID = UserDefaults.standard.string(forKey: "serverID") ?? "" {
+        didSet { if oldValue != serverID { retireDetailBusinessOwner() } }
+    }
     var pairingID = ""
     var secret = ""
     var claim: DevicePairingClaim?

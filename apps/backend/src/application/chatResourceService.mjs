@@ -9,7 +9,8 @@ export const CHAT_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
 
 export class ChatResourceService {
   async readMessageResource(reference, itemId, path) {
-    return readMessageResource({ store: this.store, environmentRoot: this.environmentRoot, reference, itemId, path });
+    return readMessageResource({ store: this.store, environmentRoot: this.environmentRoot,
+      ownedImageRoot: this.#safePath(this.#relativeDirectory(reference)), reference, itemId, path });
   }
   constructor(options = {}) {
     this.store = options.store ?? null;

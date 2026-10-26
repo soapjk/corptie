@@ -624,21 +624,16 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             button.tag = index
             button.target = self
             button.action = #selector(openImage(_:))
-            button.toolTip = attachment.originalPath == nil
-                ? "Open image"
-                : "Reveal original image in Finder"
+            button.toolTip = "Open image gallery"
             button.setAccessibilityLabel("Attached image \(index + 1)")
             button.image = NSImage(systemSymbolName: "photo", accessibilityDescription: nil)
             gallery.addSubview(button)
             if index == 3, images.count > 4 {
-                let more = NSTextField(labelWithString: "+\(images.count - 4)")
-                more.font = .systemFont(ofSize: 22, weight: .bold)
-                more.textColor = .white
-                more.backgroundColor = NSColor.black.withAlphaComponent(0.55)
-                more.drawsBackground = true
-                more.alignment = .center
-                more.frame = CGRect(x: 0, y: 0, width: frames[index].width, height: 30)
-                button.addSubview(more)
+                button.imagePosition = .imageOverlaps
+                button.attributedTitle = NSAttributedString(string: "+\(images.count - 4)", attributes: [
+                    .font: NSFont.systemFont(ofSize: 22, weight: .bold), .foregroundColor: NSColor.white,
+                    .backgroundColor: NSColor.black.withAlphaComponent(0.55)
+                ])
             }
             guard let url = attachment.displayURL else { continue }
             ChatTimelineImageLoader.shared.load(url) { [weak self, weak button] image in
@@ -672,16 +667,6 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         // The represented row is reconfigured atomically, so the visible button
         // index always maps to the current row's attachment.
         guard sender.tag < representedImages.count else { return }
-        let image = representedImages[sender.tag]
-        if failedImageIndices.contains(sender.tag), let url = image.displayURL {
-            let rowID = representedRowID
-            let index = sender.tag
-            ChatTimelineImageLoader.shared.load(url) { [weak self, weak sender] image in
-                guard self?.representedRowID == rowID else { return }
-                if let image { sender?.image = image; self?.failedImageIndices.remove(index) }
-            }
-            return
-        }
         ChatImageGalleryViewer.shared.show(representedImages, selected: sender.tag)
         return
     }

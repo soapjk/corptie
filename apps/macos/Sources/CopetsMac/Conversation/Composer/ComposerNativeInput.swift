@@ -46,6 +46,8 @@ struct ComposerInputTextView: NSViewRepresentable {
         scrollView.borderType = .noBorder
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        scrollView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        scrollView.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let textView = ComposerSubmitTextView()
         context.coordinator.beginProgrammaticUpdate(textView)
@@ -75,6 +77,15 @@ struct ComposerInputTextView: NSViewRepresentable {
         context.coordinator.attach(textView)
         context.coordinator.endProgrammaticUpdate()
         return scrollView
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
+        // The containing row owns the width. Never let AppKit's document or
+        // previous fitting width widen this bridge during a live window resize.
+        guard let width = proposal.width, width.isFinite else { return nil }
+        let height = proposal.height ?? ComposerShellMetrics.minimumInputHeight
+        return CGSize(width: max(0, width),
+                      height: height.isFinite ? max(0, height) : ComposerShellMetrics.minimumInputHeight)
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {

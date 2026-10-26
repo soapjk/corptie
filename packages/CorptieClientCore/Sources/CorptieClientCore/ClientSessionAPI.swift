@@ -478,7 +478,7 @@ public struct ClientSessionAPI: Sendable {
         "client:" + SHA256.hash(data: Data("\(deviceID):\(requestID)".utf8)).map { String(format: "%02x", $0) }.joined()
     }
     private struct Version: Decodable { let schemaVersion: Int }
-    private let transport: BackendTransport
+    let transport: BackendTransport
     public init(transport: BackendTransport) { self.transport = transport }
     public func messages(sessionId: String, before: String? = nil) async throws -> ClientMessagePage {
         let query = [URLQueryItem(name: "limit", value: "40")] + (before.map { [URLQueryItem(name: "before", value: $0)] } ?? [])

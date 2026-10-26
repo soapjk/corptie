@@ -35,7 +35,10 @@ public struct ConversationEntry<Item: ConversationTimelineItem>: Identifiable, S
     }
 
     public let kind: Kind
-    public init(kind: Kind) { self.kind = kind }
+    /// Consecutive materialized images in one turn retain their original items.
+    /// The first message remains the stable row/scroll identity.
+    public let mediaItems: [Item]
+    public init(kind: Kind, mediaItems: [Item] = []) { self.kind = kind; self.mediaItems = mediaItems }
 
     public var id: String {
         switch kind {
@@ -366,10 +369,20 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
     }
 
     for (index, item) in items.enumerated() {
+        if item.isStandaloneImage {
+            let hasMoreProcessItems = lastProcessIndex.map { $0 > index } ?? false
+            flushProcessBuffer(isLastInTurn: !hasMoreProcessItems)
+            if index > 0, items[index - 1].isStandaloneImage,
+               let previous = entries.popLast(), case .message(let first) = previous.kind {
+                entries.append(.init(kind: .message(first), mediaItems:
+                    (previous.mediaItems.isEmpty ? [first] : previous.mediaItems) + [item]))
+            } else { entries.append(.init(kind: .message(item), mediaItems: [item])) }
+            continue
+        }
         if isDetailProcessItem(item) {
             processBuffer.append(item)
         } else if item.type == "agentMessage" {
-            if item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            if item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !item.timelineHasImages,
                ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole) == .agentMessage {
                 continue
             }

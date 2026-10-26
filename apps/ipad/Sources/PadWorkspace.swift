@@ -796,7 +796,7 @@ final class PadWorkspace {
                                           _ rhs: ConversationEntry<ClientMessage>?) -> Bool {
         switch (lhs?.kind, rhs?.kind) {
         case (nil, nil): true
-        case (.message(let left)?, .message(let right)?): left == right
+        case (.message(let left)?, .message(let right)?): left == right && lhs?.mediaItems == rhs?.mediaItems
         case (.process(let leftID, let left)?, .process(let rightID, let right)?):
             leftID == rightID && left == right
         default: false

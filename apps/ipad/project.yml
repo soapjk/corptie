@@ -33,6 +33,7 @@ targets:
             CFBundleURLSchemes: [corptie]
         NSLocalNetworkUsageDescription: 连接你指定的 Mac，浏览并操作 Corptie 会话。
         NSCameraUsageDescription: 扫描 Mac 上的 Corptie 配对二维码，自动填写连接信息并申请配对。
+        NSPhotoLibraryAddUsageDescription: 仅在您选择保存图片时，将消息原图添加到相册。
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

@@ -60,6 +60,27 @@ public struct BackendByteStream: AsyncSequence, Sendable {
         if let bytes { return AsyncIterator(bytes: bytes.makeAsyncIterator()) }
         return AsyncIterator(chunks: chunks!.makeAsyncIterator())
     }
+
+    fileprivate func collectImage(total: Int64?, progress: @escaping @Sendable (ClientImageProgress) -> Void) async throws -> Data {
+        guard let chunks else { return try await ClientImageDataCollector.collect(self, total: total, progress: progress) }
+        guard total == nil || total! <= ClientImageDataCollector.maximum else { throw URLError(.dataLengthExceedsMaximum) }
+        var data = Data(), last = ContinuousClock.now
+        if let total { data.reserveCapacity(Int(total)) }
+        progress(.init(received: 0, total: total))
+        for try await chunk in chunks {
+            try Task.checkCancellation()
+            guard chunk.count <= ClientImageDataCollector.maximum - data.count else { throw URLError(.dataLengthExceedsMaximum) }
+            data.append(chunk)
+            if last.duration(to: .now) >= .milliseconds(100) {
+                last = .now
+                progress(.init(received: Int64(data.count), total: total))
+            }
+        }
+        try Task.checkCancellation()
+        guard !data.isEmpty else { throw URLError(.zeroByteResource) }
+        progress(.init(received: Int64(data.count), total: total))
+        return data
+    }
 }
 
 /// Explicit endpoint ownership: no global URLSession overrides or automatic mutation retries.
@@ -181,6 +202,28 @@ public final class BackendTransport: Sendable {
             continuation.onTermination = { _ in task.cancel() }
         }
         return (BackendByteStream(stream), http)
+    }
+
+    /// Images retain relay chunks and native URLSession AsyncBytes directly.
+    /// Do not pass a multi-megabyte body through the SSE per-byte stream adapter.
+    public func imageData(for request: URLRequest,
+        progress: @escaping @Sendable (ClientImageProgress) -> Void = { _ in }) async throws -> Data {
+        let prepared = try prepare(request)
+        func length(_ response: HTTPURLResponse) -> Int64? {
+            let encoding = response.value(forHTTPHeaderField: "Content-Encoding")?.lowercased()
+            return response.expectedContentLength > 0 && (encoding == nil || encoding == "identity")
+                ? response.expectedContentLength : nil
+        }
+        if let byteHandler {
+            let (stream, response) = try await byteHandler(prepared)
+            try await Self.requireByteSuccess(stream, response: response)
+            return try await stream.collectImage(total: length(response), progress: progress)
+        }
+        guard let session else { throw ClientConnectionError.invalidResponse }
+        let (stream, response) = try await session.bytes(for: prepared)
+        guard let response = response as? HTTPURLResponse else { throw ClientConnectionError.invalidResponse }
+        try await Self.requireByteSuccess(stream, response: response)
+        return try await ClientImageDataCollector.collect(stream, total: length(response), progress: progress)
     }
 
     // Relay GETs use the streaming path too. Preserve their structured error
