@@ -1863,3 +1863,7 @@
 "Added dependencies: %@" = "额外纳入的依赖：%@";
 "Waiting for Parent Acceptance" = "等待父任务集成验收";
 "Executing Integration Steps" = "正在执行合并步骤";
+"Excluded failed task with no delivery resources: %@" = "已排除无交付资源的失败任务：%@";
+"Recover this task's startup or delivery binding before retrying. No resources were modified." = "请先恢复该任务的启动状态或交付绑定，再重试。未修改任何资源。";
+"Open Task Session" = "打开任务会话";
+"Return to Worktree Selection" = "返回选择 Worktree";

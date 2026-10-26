@@ -307,8 +307,26 @@ struct WorktreeIntegrationCandidate: Identifiable, Decodable, Equatable, Sendabl
     let plan: WorktreeIntegrationPlan
     let progress: WorktreeIntegrationProgress
     let noWorkRequired: Bool
+    var notices: [WorktreeDeliveryNotice]? = nil
 
     var reviewIdentity: String { "\(id):\(planFingerprint)" }
+}
+
+struct WorktreeDeliveryNotice: Decodable, Equatable, Sendable, Identifiable {
+    let taskId: String
+    let taskTitle: String?
+    let reason: String
+    var id: String { taskId }
+}
+
+struct WorktreeDeliveryDiagnosis: Decodable, Equatable, Sendable {
+    let taskId: String
+    let parentTaskId: String?
+    let worktreeId: String?
+    let taskTitle: String?
+    let sessionId: String?
+    let reason: String
+    let recovery: String?
 }
 
 struct WorktreeIntegrationCandidateReviewState: Equatable, Sendable {
@@ -316,6 +334,7 @@ struct WorktreeIntegrationCandidateReviewState: Equatable, Sendable {
     let refreshDiff: WorktreeIntegrationCandidateDiff?
     let preparationError: String?
     let wasRefreshed: Bool
+    var diagnosis: WorktreeDeliveryDiagnosis? = nil
 
     static let empty = WorktreeIntegrationCandidateReviewState(
         candidate: nil,

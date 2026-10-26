@@ -7,6 +7,48 @@ import { validateTaskInput } from "../src/domain/workTaskValidation.mjs";
 import { handleEntityHttpRequest } from "../src/application/entityHttpApi.mjs";
 import { ClientDeviceGateway } from "../src/application/clientDeviceGateway.mjs";
 import { TaskCompletionService } from "../src/application/taskCompletionService.mjs";
+import { classifyTaskDeliveryParticipation, startupHasNoDeliveryResources } from "../src/store/repositories/taskHierarchyRepository.mjs";
+
+test("only a compensated child failure before parent-base capture proves no allocation",()=>{
+  const operation={state:"failed_compensated",error_stage:"worktree_preparation",compensation_state:"completed",
+    compensation_result_json:JSON.stringify({status:"completed",completedSteps:["task_claim_released"],failedStep:null})};
+  assert.equal(startupHasNoDeliveryResources(operation,true),true);
+  assert.equal(startupHasNoDeliveryResources(operation,false),false);
+  for(const field of ["worktree_id","allocation_json","logical_session_id","legacy_session_id","provider_binding_id",
+    "binding_generation","worktree_prepared_at","session_bound_at","provider_bound_at","ready_at","worktree_base_context_json"])
+    assert.equal(startupHasNoDeliveryResources({...operation,[field]:"evidence"},true),false,field);
+  for(const patch of [{state:"allocated"},{state:"failed_manual_cleanup"},{error_stage:"session_creation"},
+    {compensation_state:"manual_required"},{compensation_result_json:"invalid"},{initial_turn_state:"accepted"}])
+    assert.equal(startupHasNoDeliveryResources({...operation,...patch},true),false);
+});
+
+test("delivery classification excludes only fully observed empty failures",()=>{
+  const empty={creation_state:"failed",evidence_complete:true};
+  assert.equal(classifyTaskDeliveryParticipation(empty),"ignored_failed");
+  assert.equal(classifyTaskDeliveryParticipation({creation_state:"failed"}),"pending");
+  for(const field of ["has_delivery","has_session","has_startup_binding","has_receipt","has_allocation","current_session_id"])
+    assert.equal(classifyTaskDeliveryParticipation({...empty,[field]:1}),"required",field);
+  for(const field of ["has_startup","has_workspace_request"])
+    assert.equal(classifyTaskDeliveryParticipation({...empty,[field]:1}),"uncertain",field);
+  assert.equal(classifyTaskDeliveryParticipation({...empty,creation_state:"ready"}),"required");
+  assert.equal(classifyTaskDeliveryParticipation({...empty,creation_state:"pending"}),"pending");
+  assert.equal(classifyTaskDeliveryParticipation({...empty,deletion_status:"deleted",has_delivery:1}),"excluded_deleted");
+});
+
+test("repository counts share delivery participation and retain failed tasks with historical Sessions",async t=>{
+  const f=await fixture(t),child=f.child();
+  f.store.db.run("UPDATE tasks SET creation_state='failed' WHERE id=?",[child.id]);
+  const read=()=>f.store.readTaskDeliveryParticipation({taskIds:[child.id],parentTaskIds:[f.root.id]});
+  assert.equal(read().byTaskId.get(child.id).participation,"ignored_failed");
+  assert.equal(read().byParentTaskId.get(f.root.id).length,1);
+  assert.equal(f.store.hasTaskChildren(f.root.id),false);
+  assert.equal(f.store.hierarchySummaries([f.root.id]).get(f.root.id).childCount,0);
+  f.store.upsertSession({id:"session:historical-child",title:"History",provider:"provider:test",status:"complete",workId:f.work.id,taskId:child.id});
+  assert.equal(read().byTaskId.get(child.id).participation,"required");
+  assert.equal(f.store.hasTaskChildren(f.root.id),true);
+  assert.equal(f.store.hierarchySummaries([f.root.id]).get(f.root.id).childCount,1);
+  assert.equal(f.store.getTask(child.id).creation_state,"failed");
+});
 
 async function fixture(t) {
   const store = new CorptieStore({dbPath:":memory:",configPath:"/unused-task-hierarchy",manageProcessEnvironment:false});

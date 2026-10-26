@@ -4,6 +4,23 @@ import Testing
 
 @Suite(.serialized)
 struct WorktreeIntegrationCandidateTests {
+    @Test func deliveryNoticesDecodeWithoutChangingLegacyCandidateContract() throws {
+        let decoder = JSONDecoder()
+        let legacy = try decoder.decode(WorktreeIntegrationCandidateEnvelope.self, from: Data(Self.candidateEnvelope.utf8))
+        #expect(legacy.candidate.notices == nil)
+        var object = try #require(JSONSerialization.jsonObject(with: Data(Self.candidateEnvelope.utf8)) as? [String: Any])
+        var candidate = try #require(object["candidate"] as? [String: Any])
+        candidate["notices"] = [["taskId": "task:failed", "taskTitle": "Failed", "reason": "FAILED_TASK_WITHOUT_DELIVERY_RESOURCES"]]
+        object["candidate"] = candidate
+        let decoded = try decoder.decode(WorktreeIntegrationCandidateEnvelope.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(decoded.candidate.notices?.first?.taskId == "task:failed")
+        let diagnosis = try decoder.decode(WorktreeDeliveryDiagnosis.self, from: Data("""
+        {"taskId":"task:child","parentTaskId":"task:parent","worktreeId":null,"reason":"DELIVERY_BINDING_MISSING"}
+        """.utf8))
+        #expect(diagnosis.taskId == "task:child")
+        #expect(diagnosis.sessionId == nil)
+    }
+
     @MainActor
     @Test func prepareUsesCandidateEndpointWithoutCancelingExistingJob() async throws {
         let recorder = CandidateRequestRecorder()
@@ -152,6 +169,25 @@ struct WorktreeIntegrationCandidateTests {
         #expect(recorder.candidateBodies[1]["operationType"] as? String == "converge")
         #expect(recorder.candidateBodies[1]["sourceWorktreeIds"] as? [String] == ["wt:feature"])
         #expect(recorder.candidateBodies[1]["targetWorktreeId"] as? String == "wt:main")
+    }
+
+    @MainActor
+    @Test func blockedDeliveryDiagnosisSurvivesHTTPAndClearsAfterRecovery() async throws {
+        let recorder = CandidateRequestRecorder(candidateResponses: [
+            (409, """
+            {"error":"Child delivery is unavailable","code":"PARENT_WORKTREE_REQUIRED","diagnosis":{"taskId":"task:child","parentTaskId":"task:parent","taskTitle":"Child","sessionId":"session:child","reason":"DELIVERY_BINDING_MISSING"}}
+            """),
+            (200, Self.candidateEnvelope)
+        ])
+        let client = makeClient(recorder)
+        client.selection.repositoryId = "repository:one"
+        await client.prepareFreshPlan()
+        #expect(client.candidateReview.diagnosis?.taskId == "task:child")
+        #expect(client.candidateReview.diagnosis?.sessionId == "session:child")
+        #expect(client.candidatePreparationError?.contains("Child delivery") == true)
+        await client.retryCandidatePreparation()
+        #expect(client.candidateReview.diagnosis == nil)
+        #expect(client.candidate != nil)
     }
 
     @MainActor

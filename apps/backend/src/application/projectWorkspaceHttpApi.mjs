@@ -313,6 +313,10 @@ function worktreeErrorBody(error) {
   return {
     error: error.message,
     code: error.code,
+    ...(error.diagnosis ? {diagnosis:Object.fromEntries(
+      ["taskId","parentTaskId","worktreeId","taskTitle","sessionId","reason","recovery"]
+        .filter(key=>typeof error.diagnosis[key]==="string" || error.diagnosis[key]===null)
+        .map(key=>[key,error.diagnosis[key]]))} : {}),
     ...(typeof error.retryable === "boolean" ? { retryable: error.retryable } : {}),
     ...(error.candidate ? { candidate: error.candidate } : {}),
     ...(error.diff ? { diff: error.diff } : {})

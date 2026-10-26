@@ -450,7 +450,8 @@ export class WorktreeIntegrationJobService {
     const inspection = this.#associate(await this.inspectRepository(repository.id, inspectionOptions));
     inspection.repositoryId = repository.id;
     if (options.targetWorktreeId !== inspection.mainWorktreeId) throw new WorktreeIntegrationJobError("INVALID_INTEGRATION_TARGET", "Hierarchical integration must target main.", 409);
-    const graph = await this.integrationGraph.build(inspection, options.sourceWorktreeIds);
+    const notices=[];
+    const graph = await this.integrationGraph.build(inspection, options.sourceWorktreeIds, {onNotice:notice=>notices.push(notice)});
     const selected = new Set([inspection.mainWorktreeId, ...graph.includedWorktreeIds]);
     // Reuse the existing item/protection builder, but only for the confirmed
     // closure. Unselected Worktrees must not enter validation or risk checks.
@@ -479,7 +480,7 @@ export class WorktreeIntegrationJobService {
       inventoryVersion: fingerprint(planValidationSnapshot(scopedInspection)), validationSnapshot: planValidationSnapshot(scopedInspection),
       mergeOrder: graph.includedWorktreeIds, blockingRisks, items, orchestration: graph,
       reservedWorktreeIds: [...selected], writeWorktreeIds: [...selected] };
-    return { plan, planFingerprint: fingerprint(plan), noWorkRequired: graph.steps.length === 0 };
+    return { plan, planFingerprint: fingerprint(plan), noWorkRequired: graph.steps.length === 0, notices };
   }
 
   async #buildBranchOperationPlan(repository, operation, inspectionOptions = {}) {
@@ -789,7 +790,8 @@ export class WorktreeIntegrationJobService {
       ttlMs: this.candidateTtlMs,
       plan: built.plan,
       progress: progressFor(built.plan.items),
-      noWorkRequired: built.noWorkRequired
+      noWorkRequired: built.noWorkRequired,
+      notices: built.notices ?? []
     };
     this.integrationCandidates.set(candidate.id, {
       repositoryId,

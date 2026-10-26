@@ -16,6 +16,19 @@ export class TaskWorktreeHierarchyService {
   constructor({ store, execGit = runGit }) { this.store = store; this.git = execGit; }
   async scalar(path, args) { return gitScalarOutput(await this.git(path, args)); }
 
+  deliveryChildren(taskId) {
+    return (this.store.readTaskDeliveryParticipation({parentTaskIds:[taskId]}).byParentTaskId.get(taskId) ?? [])
+      .filter(child=>child.participates);
+  }
+
+  deliveryFailure(task, binding, reason) {
+    return Object.assign(error("PARENT_WORKTREE_REQUIRED", `Task ${task.title || task.id} (${task.id}) has no proven available delivery Worktree: ${reason}.`), {
+      diagnosis:{taskId:task.id,parentTaskId:task.parent_task_id ?? null,worktreeId:binding?.worktree_id ?? null,
+        taskTitle:task.title,sessionId:task.current_session_id ?? null,reason,
+        recovery:"Return to task selection. Recover this task's startup or delivery binding before retrying; no resources were modified."}
+    });
+  }
+
   async resolveOperationScope(repositoryId, input, inspection) {
     const scope=input.taskScope;
     const ids=[...input.sourceWorktreeIds,input.targetWorktreeId];
@@ -26,7 +39,8 @@ export class TaskWorktreeHierarchyService {
       || input.sourceWorktreeIds.length>100 || new Set(input.sourceWorktreeIds).size!==input.sourceWorktreeIds.length
       || input.sourceWorktreeIds.includes(input.targetWorktreeId)) throw error("TASK_HIERARCHY_CHANGED");
     const root=this.resolveTaskDelivery(scope.rootTaskId);
-    if(this.store.selectOne("SELECT 1 FROM tasks WHERE parent_task_id=? AND work_id<>? AND COALESCE(deletion_status,'')<>'deleted' LIMIT 1",[root.task.id,root.task.work_id])) throw error("TASK_PARENT_INVALID");
+    const participatingChildren=this.deliveryChildren(root.task.id);
+    if(participatingChildren.some(child=>child.work_id!==root.task.work_id)) throw error("TASK_PARENT_INVALID");
     if(scope.action!=="promote_parent" && (root.task.archived || root.task.lifecycle_state==="done" || root.task.deletion_status)) throw error("TASK_PARENT_UNAVAILABLE");
     if(root.task.parent_task_id || root.binding.repository_id!==repositoryId) throw error("TASK_PARENT_INVALID");
     if(root.task.hierarchy_revision!==scope.expectedHierarchyRevision) throw error("TASK_HIERARCHY_CHANGED");
@@ -38,8 +52,7 @@ export class TaskWorktreeHierarchyService {
     const main=inspection.worktrees.find(w=>w.isMain);
     const targetId=childOperation ? root.binding.worktree_id : main?.worktreeId;
     if(input.targetWorktreeId!==targetId) throw error("CHILD_TARGET_NOT_PARENT");
-    const children=this.store.selectAll(`SELECT t.id,d.worktree_id,d.binding_revision FROM tasks t
-      LEFT JOIN task_delivery_worktrees d ON d.task_id=t.id WHERE t.parent_task_id=? AND COALESCE(t.deletion_status,'')<>'deleted' ORDER BY t.id`,[root.task.id]);
+    const children=participatingChildren.map(({id,worktree_id,binding_revision})=>({id,worktree_id,binding_revision}));
     if(childOperation) {
       const childIds=new Set(children.map(c=>c.worktree_id));
       if(input.sourceWorktreeIds.some(id=>!childIds.has(id))) throw error("CHILD_TARGET_NOT_PARENT");
@@ -83,8 +96,7 @@ export class TaskWorktreeHierarchyService {
     this.assertIdle(plan.reservedWorktreeIds ?? [],this.store.getWorktreeIntegrationJob?.(jobId)?.status==="awaiting_confirmation");
     if(root.task.hierarchy_revision!==scope.expectedHierarchyRevision) throw error("TASK_HIERARCHY_CHANGED");
     if(root.binding.binding_revision!==scope.expectedBindingRevision) throw error("TASK_DELIVERY_BINDING_CHANGED");
-    const children=this.store.selectAll(`SELECT t.id,d.worktree_id,d.binding_revision FROM tasks t
-      LEFT JOIN task_delivery_worktrees d ON d.task_id=t.id WHERE t.parent_task_id=? AND COALESCE(t.deletion_status,'')<>'deleted' ORDER BY t.id`,[root.task.id]);
+    const children=this.deliveryChildren(root.task.id).map(({id,worktree_id,binding_revision})=>({id,worktree_id,binding_revision}));
     if(hierarchyDigest([root.task.id,root.task.hierarchy_revision,root.binding,children])!==plan.hierarchyDigest) throw error("TASK_DELIVERY_BINDING_CHANGED");
     if(scope.action!=="promote_parent" && (root.task.archived || root.task.lifecycle_state==="done" || root.task.deletion_status)) throw error("TASK_PARENT_UNAVAILABLE");
     // A synchronization writes children (or the root during sync_main), never
@@ -115,9 +127,14 @@ export class TaskWorktreeHierarchyService {
     }
     const main=inspection.worktrees.find(w=>w.isMain);
     const trees=new Map(inspection.worktrees.map(w=>[w.worktreeId,w]));
-    const counts=new Map(this.store.selectAll(`SELECT t.parent_task_id,COUNT(*) AS count FROM tasks t
-      JOIN task_delivery_worktrees p ON p.task_id=t.parent_task_id WHERE p.repository_id=? AND COALESCE(t.deletion_status,'')<>'deleted' GROUP BY t.parent_task_id`,
-    [inspection.repositoryId ?? inspection.repository?.id ?? inspection.worktrees[0]?.repositoryId]).map(row=>[row.parent_task_id,row.count]));
+    const participation=this.store.readTaskDeliveryParticipation({parentTaskIds:rows.map(task=>task.id)});
+    const counts=new Map([...participation.byParentTaskId].flatMap(([id,children])=>{
+      const count=children.filter(child=>child.participates).length;
+      return count ? [[id,count]] : [];
+    }));
+    const deliveryNotices=[...participation.byTaskId.values()].filter(child=>child.participation==="ignored_failed")
+      .map(child=>({taskId:child.id,parentTaskId:child.parent_task_id,parentWorktreeId:bindings.get(child.parent_task_id)?.worktree_id,
+        taskTitle:child.title,reason:"FAILED_TASK_WITHOUT_DELIVERY_RESOURCES"}));
     const result=[];
     for(const tree of inspection.worktrees) {
       const task=byTree.get(tree.worktreeId),parent=task?.parent_task_id ? bindings.get(task.parent_task_id) : null;
@@ -155,22 +172,24 @@ export class TaskWorktreeHierarchyService {
       integratedCounts.set(id,(integratedCounts.get(id) ?? 0)+1);
     }
     for(const tree of result) if(tree.hierarchy?.role==="parent") tree.hierarchy.integratedChildCount=integratedCounts.get(tree.hierarchy.taskId) ?? 0;
-    return {...inspection,taskHierarchyCapabilities:{version:1,maxDepth:1,createChild:true,worktreeOperations:true,integrationAcceptance:true},worktrees:result};
+    return {...inspection,deliveryNotices,taskHierarchyCapabilities:{version:1,maxDepth:1,createChild:true,worktreeOperations:true,integrationAcceptance:true},worktrees:result};
   }
 
   resolveTaskDelivery(taskId,{allowAdoption=true}={}) {
     const task = this.store.getTask(taskId);
     if (!task) throw error("TASK_PARENT_UNAVAILABLE");
     let binding = this.store.getTaskDeliveryBinding(taskId);
+    if(task.creation_state!=="ready") throw this.deliveryFailure(task,binding,
+      task.creation_state==="failed" ? "FAILED_TASK_WITH_DELIVERY_EVIDENCE" : "TASK_STARTUP_INCOMPLETE");
     if (!binding) {
-      if(!allowAdoption) throw error("PARENT_WORKTREE_REQUIRED");
+      if(!allowAdoption) throw this.deliveryFailure(task,binding,"DELIVERY_BINDING_MISSING");
       // Legacy adoption requires exactly one proven ready allocation. Never
       // infer ownership from a Session's latest cwd or Git association order.
       const proofs = this.store.selectAll(`SELECT o.startup_operation_id,o.repository_id,o.worktree_id
         FROM work_session_startup_operations o JOIN work_session_startup_receipts r
           ON r.startup_operation_id=o.startup_operation_id
         WHERE o.task_id=? AND o.state='ready'`, [taskId]);
-      if (proofs.length !== 1) throw error("PARENT_WORKTREE_REQUIRED");
+      if (proofs.length !== 1) throw this.deliveryFailure(task,binding,"STARTUP_PROOF_MISSING_OR_AMBIGUOUS");
       const proof = proofs[0];
       binding = this.store.runInTransaction(() => this.store.bindTaskDeliveryWorktree({taskId,
         repositoryId:proof.repository_id,worktreeId:proof.worktree_id,startupOperationId:proof.startup_operation_id}));
@@ -183,7 +202,8 @@ export class TaskWorktreeHierarchyService {
       || inventory.repositoryId !== binding.repository_id || !proof || proof.task_id !== taskId
       || proof.worktree_id !== inventory.worktreeId || proof.repository_id !== binding.repository_id
       || this.store.getTaskWorkspaceContext(task)?.repository?.id !== binding.repository_id) {
-      throw error("PARENT_WORKTREE_REQUIRED");
+      throw this.deliveryFailure(task,binding,!inventory || inventory.availability!=="available"
+        ? "WORKTREE_UNAVAILABLE" : !proof ? "STARTUP_PROOF_MISSING" : "DELIVERY_PROOF_MISMATCH");
     }
     return { task, binding, inventory };
   }

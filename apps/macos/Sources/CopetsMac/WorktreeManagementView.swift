@@ -2308,6 +2308,7 @@ private struct WorktreeBatchOperationFlowSheet: View {
 private struct WorktreeIntegrationFlowSheet: View {
     @ObservedObject var client: WorktreeManagementClient
     @Binding var isPresented: Bool
+    @EnvironmentObject private var router: AppTabRouter
 
     var body: some View {
         Group {
@@ -2338,8 +2339,23 @@ private struct WorktreeIntegrationFlowSheet: View {
                         systemImage: "exclamationmark.triangle",
                         description: Text(preparationError)
                     )
+                    if let diagnosis = client.candidateReview.diagnosis {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(diagnosis.taskTitle ?? diagnosis.taskId).font(.headline)
+                            Text(diagnosis.taskId).font(.caption).textSelection(.enabled)
+                            Text(L10n("Recover this task's startup or delivery binding before retrying. No resources were modified."))
+                                .font(.caption).foregroundStyle(.secondary)
+                            if let sessionId = diagnosis.sessionId {
+                                Button(L10n("Open Task Session")) {
+                                    isPresented = false
+                                    router.openTaskSession(taskId: diagnosis.taskId, sessionId: sessionId, source: .userSelection)
+                                }
+                            }
+                        }
+                        .padding(.horizontal)
+                    }
                     HStack {
-                        Button(L10n("Close")) { isPresented = false }
+                        Button(L10n("Return to Worktree Selection")) { isPresented = false }
                             .keyboardShortcut(.cancelAction)
                         Button(L10n("Retry")) {
                             Task { await client.retryCandidatePreparation() }
@@ -2347,7 +2363,7 @@ private struct WorktreeIntegrationFlowSheet: View {
                         .buttonStyle(.borderedProminent)
                     }
                 }
-                .frame(width: 520, height: 300)
+                .frame(width: 520, height: client.candidateReview.diagnosis == nil ? 300 : 420)
                 .accessibilityIdentifier("worktree.integrate.preparation-failed")
             } else {
                 VStack(spacing: 18) {
@@ -2368,6 +2384,18 @@ private struct WorktreeIntegrationFlowSheet: View {
     }
 }
 
+private struct WorktreeDeliveryNotices: View {
+    let notices: [WorktreeDeliveryNotice]
+
+    var body: some View {
+        ForEach(notices) { notice in
+            Label(L10nFormat("Excluded failed task with no delivery resources: %@", notice.taskTitle ?? notice.taskId), systemImage: "info.circle")
+                .font(.caption).foregroundStyle(.secondary)
+                .help(notice.taskId)
+        }
+    }
+}
+
 private struct WorktreeIntegrationNoWorkReview: View {
     let candidate: WorktreeIntegrationCandidate
     @ObservedObject var client: WorktreeManagementClient
@@ -2375,6 +2403,7 @@ private struct WorktreeIntegrationNoWorkReview: View {
 
     var body: some View {
         VStack(spacing: 18) {
+            WorktreeDeliveryNotices(notices: candidate.notices ?? [])
             ContentUnavailableView(
                 L10n("No Worktree changes require integration."),
                 systemImage: "checkmark.circle",
@@ -2440,6 +2469,7 @@ private struct WorktreeIntegrationPlanReview: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
+                    WorktreeDeliveryNotices(notices: candidate.notices ?? [])
                     preflightStatus
                     if let graph = candidate.plan.orchestration {
                         Text(L10n("Review the complete dependency scope. Selecting a child also includes its parent and siblings; the parent's other changes will enter main after acceptance."))
