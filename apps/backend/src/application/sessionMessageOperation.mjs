@@ -195,7 +195,9 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
   } catch (error) {
     // A failed Provider dispatch makes the last-known-ready proof suspect. The
     // next dispatch performs one real probe before retrying this Binding.
-    sessionBindingReadinessProbe.invalidateBinding(reference);
+    if (error.stage !== "context_assembly" && error.stage !== "context_delivery") {
+      sessionBindingReadinessProbe.invalidateBinding(reference);
+    }
     if (delivery) {
       const status = providerDeliveryFailureStatus(error);
       store.updateMessageDelivery(deliveryId, {

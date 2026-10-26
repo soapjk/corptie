@@ -8,7 +8,11 @@
 #   make package    — 打包正式版安装包（PKG + DMG）
 # 全部脚本在 scripts/ 下，详见 scripts/README.md。
 
-.PHONY: dev restart build test backend-dev backend-prod production package check-production help
+.PHONY: dev restart build test backend-dev backend-prod production package check-production help mobile
+export DEVICE TEAM
+
+mobile: ## 检查真机、编译签名、安装启动（可选 DEVICE=设备名或UDID TEAM=团队ID）
+	node scripts/run-mobile.mjs
 
 dev: ## 一键启动 Development（后端 + app）
 	./scripts/run-development.sh

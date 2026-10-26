@@ -37,6 +37,34 @@ function fixture(overrides = {}) {
   return { operation, calls };
 }
 
+test("local context failures settle unsent deliveries without invalidating healthy Provider bindings", async () => {
+  for (const stage of ["context_assembly", "context_delivery", "provider_dispatch"]) {
+    const updates = [];
+    let invalidations = 0;
+    const failure = Object.assign(new Error("Message was not sent to the model: context limit"), {
+      code: "SESSION_CONTEXT_BUDGET_EXCEEDED", dispatchState: "not_sent", stage
+    });
+    const { operation, calls } = fixture({
+      store: {
+        getLogicalSession: () => ({}), listUnsettledSessionTurns: () => [],
+        getMessageDelivery: () => ({ status: "queued", attemptCount: 0 }),
+        updateMessageDelivery: (id, patch) => updates.push({ id, ...patch })
+      },
+      sessionBindingReadinessProbe: {
+        verify: async () => ({ ready: true }),
+        invalidateBinding: () => { invalidations += 1; }
+      },
+      sessionApplicationService: { sendMessage: async () => { throw failure; } }
+    });
+    await assert.rejects(operation.sendUnifiedSessionMessage("session", "?",
+      { type: "desktop", deliveryId: "delivery" }, { fromAgentWorkQueue: true }), error => error === failure);
+    assert.equal(invalidations, stage === "provider_dispatch" ? 1 : 0);
+    assert.equal(updates.at(-1).status, "failed");
+    assert.match(updates.at(-1).lastError, /not sent to the model/);
+    assert.equal(calls.length, 0); // No SessionRunStarted or response watchdog.
+  }
+});
+
 test("ordinary text verifies readiness before admission to the existing queue", async () => {
   const { operation, calls } = fixture();
   assert.deepEqual(await operation.sendUnifiedSessionMessage("session", "hello"), {

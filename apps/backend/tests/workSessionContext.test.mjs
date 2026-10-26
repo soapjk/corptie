@@ -360,7 +360,7 @@ test("Worker Turn preserves selected Work and Session identities ahead of option
   assert.equal(merged.contextBudget.memoryContextOmitted, true);
   assert.throws(() => mergeWorkerSessionContexts({
     baseContext: workerContext(), mentionContext: { prompt: "x".repeat(64_000) }
-  }), { code: "WORK_SESSION_CONTEXT_INCOMPLETE" });
+  }), { code: "SESSION_CONTEXT_BUDGET_EXCEEDED" });
 });
 
 test("required pinned Artifacts are non-truncatable and incomplete core context fails closed", () => {
@@ -372,7 +372,7 @@ test("required pinned Artifacts are non-truncatable and incomplete core context 
     session: { id: "session:strict", sessionKind: "worker", taskId: task.id, workId: task.work_id },
     task,
     artifactIndex: { items: [{ artifactId: "artifact:required", required: true, pinnedVersion: 2, contentHash: "b".repeat(64) }] }
-  }), (error) => error.code === "WORK_SESSION_CONTEXT_INCOMPLETE"
+  }), (error) => error.code === "SESSION_CONTEXT_BUDGET_EXCEEDED"
     && error.statusCode === 409
     && Number.isInteger(error.details.requiredUtf8Bytes)
     && error.message.includes(String(error.details.requiredUtf8Bytes))
@@ -391,4 +391,78 @@ test("non-Worker Sessions do not receive Task authority context", () => {
     session: { id: "session:chat", sessionKind: "assistantChat" },
     task: null
   }), null);
+});
+
+test("20,887-byte multilingual required context permits both a continuation and a direct user turn", () => {
+  const core = "中".repeat(4_665); // 13,995 UTF-8 bytes, not character count.
+  const baseContext = { prompt: core, corePrompt: core };
+  const requiredContexts = [
+    { contextKey: "global-preferences", prompt: "p".repeat(2_749) },
+    { contextKey: "skill-routing", prompt: "s".repeat(1_660) },
+    { contextKey: "presentation", prompt: "v".repeat(1_935) }
+  ];
+  const continuation = mergeWorkerSessionContexts({ baseContext, requiredContexts });
+  const direct = mergeWorkerSessionContexts({ baseContext, requiredContexts,
+    directUserIntentContext: { prompt: "e".repeat(540) },
+    memoryContext: { prompt: "optional recall" } });
+  assert.equal(Buffer.byteLength(continuation.prompt), 20_345);
+  assert.equal(Buffer.byteLength(direct.prompt), 20_887);
+  assert.equal(direct.contextBudget.memoryContextOmitted, true);
+  assert.equal(direct.contextBudget.sectionBytes["session-binding"], 13_995);
+  assert.equal(direct.contextBudget.sectionBytes["direct-user-evidence"], 540);
+  for (const context of [continuation, direct]) {
+    assert.ok(context.contextBudget.finalTurnUtf8Bytes + context.contextBudget.reservedUtf8Bytes
+      <= WORKER_SESSION_CONTEXT_LIMITS.turnMaxUtf8Bytes);
+    assert.ok(context.prompt.includes(core));
+    for (const required of requiredContexts) assert.ok(context.prompt.includes(required.prompt));
+  }
+});
+
+test("optional recall cannot consume the next user turn's evidence reservation", () => {
+  const baseContext = { prompt: "binding", corePrompt: "binding" };
+  const memoryContext = { prompt: "r".repeat(19_000) };
+  const continuation = mergeWorkerSessionContexts({ baseContext, memoryContext });
+  const direct = mergeWorkerSessionContexts({ baseContext, memoryContext,
+    directUserIntentContext: { prompt: "e".repeat(540) } });
+  assert.equal(continuation.contextBudget.memoryContextOmitted, true);
+  assert.equal(direct.contextBudget.memoryContextOmitted, true);
+  const fitting = mergeWorkerSessionContexts({ baseContext,
+    memoryContext: { prompt: "r".repeat(18_000) } });
+  assert.equal(fitting.contextBudget.memoryContextOmitted, false);
+  assert.ok(Buffer.byteLength(fitting.prompt) + fitting.contextBudget.reservedUtf8Bytes
+    <= WORKER_SESSION_CONTEXT_LIMITS.turnTargetUtf8Bytes);
+});
+
+test("complete selected paths can cross the soft target without consuming the evidence reserve", () => {
+  const referenceContext = { atomic: true, prompt: JSON.stringify({ absolutePath: "/tmp/中文报告.docx" }) };
+  const result = mergeWorkerSessionContexts({
+    baseContext: { prompt: "b".repeat(21_000) }, referenceContext,
+    memoryContext: { prompt: "optional memory" }
+  });
+  assert.ok(result.prompt.includes(referenceContext.prompt));
+  assert.equal(result.contextBudget.referenceContextTruncated, false);
+  assert.equal(result.contextBudget.memoryContextOmitted, true);
+  assert.ok(result.contextBudget.finalTurnUtf8Bytes + result.contextBudget.reservedUtf8Bytes <= 32_768);
+});
+
+test("required budget boundaries include reservation and disclose byte counts without content", () => {
+  const maximum = WORKER_SESSION_CONTEXT_LIMITS.turnMaxUtf8Bytes;
+  const reserve = WORKER_SESSION_CONTEXT_LIMITS.userEvidenceReserveUtf8Bytes;
+  const core = "b".repeat(maximum - reserve);
+  assert.equal(mergeWorkerSessionContexts({ baseContext: { prompt: core } }).prompt, core);
+  assert.throws(() => mergeWorkerSessionContexts({ baseContext: { prompt: core + "界" } }), error => {
+    assert.equal(error.code, "SESSION_CONTEXT_BUDGET_EXCEEDED");
+    assert.equal(error.dispatchState, "not_sent");
+    assert.equal(error.stage, "context_assembly");
+    assert.equal(error.details.requiredUtf8Bytes, maximum - reserve + 3);
+    assert.equal(error.details.reservedUtf8Bytes, reserve);
+    assert.equal(error.details.sectionBytes["session-binding"], maximum - reserve + 3);
+    assert.match(error.message, /Message was not sent to the model/);
+    assert.doesNotMatch(JSON.stringify(error.details), /bbb|界/);
+    return true;
+  });
+  for (const maxContextBytes of [0, -1, NaN, 1.5]) {
+    assert.throws(() => mergeWorkerSessionContexts({ baseContext: { prompt: "small" }, maxContextBytes }),
+      { code: "WORK_SESSION_CONTEXT_BUDGET_INVALID" });
+  }
 });

@@ -8,6 +8,7 @@ import { createCodexAppServerProvider } from "../src/agent-provider/providers/co
 import { createClaudeAgentSdkProvider } from "../src/agent-provider/providers/claudeAgentSdkProvider.mjs";
 import { createOpenClackyProvider } from "../src/agent-provider/providers/openClackyProvider.mjs";
 import { mapCodexProviderNotification, mapClaudeProviderEvent } from "../src/application/providerEventEnvelope.mjs";
+import { mergeWorkerSessionContexts } from "../src/application/workSessionContext.mjs";
 
 const reference = { sessionId: "s", requestedSessionId: "s", logicalSessionId: "logical:s", bindingId: "b",
   providerSessionId: "thread:s", providerId: "provider", routingVersion: 1 };
@@ -90,8 +91,13 @@ for (const kind of ["codex", "claude", "openclacky"]) {
       ? createCodexAppServerProvider({ send }, { capabilities: [C.CONVERSATION_SEND] })
       : kind === "claude" ? createClaudeAgentSdkProvider({ send }) : createOpenClackyProvider({ send });
     let active = { ...reference, providerId: provider.descriptor.id };
+    let currentContext = context();
+    let overBudget = false;
     const service = new SessionApplicationService({ registry: new AgentProviderRegistry([provider]),
-      resolveSessionReference: () => active, resolveMessageContext: () => context() });
+      resolveSessionReference: () => active, resolveMessageContext: () => {
+        if (overBudget) return mergeWorkerSessionContexts({ baseContext: { prompt: "x".repeat(40_000) } });
+        return currentContext;
+      } });
     service.ensureActiveBindingToolsReady = async () => ({ reference: active });
     await service.sendMessage("s", "first");
     await service.sendMessage("s", "next");
@@ -109,6 +115,23 @@ for (const kind of ["codex", "claude", "openclacky"]) {
     active = { ...active, bindingId: "replacement" };
     await service.sendMessage("s", "new binding");
     assert.match(captured.at(-1), /BINDING_RULE/);
+    currentContext = mergeWorkerSessionContexts({
+      baseContext: { prompt: "中".repeat(4_665) },
+      requiredContexts: [{ contextKey: "preferences", prompt: "p".repeat(6_348) }],
+      directUserIntentContext: { prompt: "CURRENT_USER_EVIDENCE" }
+    });
+    await service.sendMessage("s", "large complete user turn");
+    assert.ok(Buffer.byteLength(captured.at(-1)) > 20_480);
+    assert.match(captured.at(-1), /CURRENT_USER_EVIDENCE/);
+    service.invalidateSessionContext("s");
+    await service.sendMessage("s", "full baseline after reset");
+    assert.ok(captured.at(-1).includes("中".repeat(4_665)));
+    const count = captured.length;
+    overBudget = true;
+    await assert.rejects(service.sendMessage("s", "unsent"), error =>
+      error.code === "SESSION_CONTEXT_BUDGET_EXCEEDED"
+      && error.stage === "context_assembly" && error.dispatchState === "not_sent");
+    assert.equal(captured.length, count);
   });
 }
 
@@ -122,4 +145,31 @@ test("native compaction notifications reach the shared invalidation boundary", (
   const claude = mapClaudeProviderEvent({ binding: reference,
     event: { type: "execution.notice", item: { id: "compact", type: "contextCompaction" } } });
   assert.equal(claude.payload.item.type, "contextCompaction");
+});
+
+test("canonical overflow is rejected even for a cached delta or non-append Provider", () => {
+  const cache = new SessionContextDelivery();
+  const source = context();
+  cache.prepare(reference, source, policy).commit();
+  const invalid = { ...source, contextBudget: { maxTurnUtf8Bytes: 100 } };
+  for (const deliveryPolicy of [policy, undefined, { mode: "replace" }]) {
+    assert.throws(() => cache.prepare(reference, invalid, deliveryPolicy), error =>
+      error.code === "SESSION_CONTEXT_BUDGET_EXCEEDED"
+      && error.dispatchState === "not_sent" && error.stage === "context_delivery");
+  }
+});
+
+test("update markers fall back to a validated complete baseline when wire bytes overflow", () => {
+  const cache = new SessionContextDelivery();
+  const source = context({ binding: "binding" });
+  const budgeted = { ...source, contextBudget: { maxTurnUtf8Bytes: Buffer.byteLength(source.prompt) } };
+  cache.prepare(reference, budgeted, policy).commit();
+  const changed = context({ binding: "binding", artifact: "ARTIFACT_TWO" });
+  const result = cache.prepare(reference, { ...changed, contextBudget: budgeted.contextBudget }, policy);
+  assert.equal(result.context.contextDelivery.mode, "full");
+  assert.equal(result.context.prompt, changed.prompt);
+  assert.ok(Buffer.byteLength(result.context.prompt) <= budgeted.contextBudget.maxTurnUtf8Bytes);
+  result.commit();
+  cache.invalidate("s");
+  assert.equal(cache.prepare(reference, budgeted, policy).context.contextDelivery.mode, "full");
 });

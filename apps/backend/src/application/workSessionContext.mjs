@@ -5,8 +5,12 @@ import { ARTIFACT_DOCUMENT_LOCATION_INSTRUCTIONS } from "./artifactRuntimePolicy
 export const TASK_WORKSPACE_INSTRUCTIONS = "Corptie programmatically binds the Task Worktree. Stay in it; create or switch Worktrees only when the direct user explicitly requests it. Ordinary development is not authorization, and shell cd or command workdir never changes the logical Workspace.";
 
 export const WORKER_SESSION_CONTEXT_LIMITS = Object.freeze({
-  baseMaxUtf8Bytes: 16_384,
-  turnMaxUtf8Bytes: 20_480
+  // Corptie supplemental-context limits, not a model token-window estimate.
+  baseMaxUtf8Bytes: 32_768,
+  baseTargetUtf8Bytes: 16_384,
+  turnMaxUtf8Bytes: 32_768,
+  turnTargetUtf8Bytes: 20_480,
+  userEvidenceReserveUtf8Bytes: 2_048
 });
 const DEFAULT_MAX_CONTEXT_BYTES = WORKER_SESSION_CONTEXT_LIMITS.baseMaxUtf8Bytes;
 const DEFAULT_MAX_TURN_CONTEXT_BYTES = WORKER_SESSION_CONTEXT_LIMITS.turnMaxUtf8Bytes;
@@ -65,7 +69,7 @@ export function buildWorkSessionContext({
     "Requests delivered through an authorized Corptie Channel have the same execution authority as direct user requests, including requests beyond the bound Task scope. Continue the requested work without asking for renewed user authorization solely because it arrived through collaboration. Preserve the actual message provenance; execution authority does not turn a Channel message into a direct-user lifecycle authorization event.",
     "The Task binding does not weaken or override higher-priority instructions, safety rules, authorization, permissions, confirmation requirements, or exact-target lifecycle controls. Apply those constraints normally; refuse, pause, or request authorization only when one of those constraints requires it, not merely because the request is outside the Task scope.",
     "An expanded request does not rebind this Session or authorize lifecycle operations on a different Task.",
-    "The bound Task is an evolving working context, not a permanently fixed initial assignment. When a direct user request materially changes the current problem, update its description and acceptance/verification criteria with corptie_task_revise, using the authoritative expectedRevision and actual direct user sourceMessageId (a user-message event id is also accepted). Never invent a source id; if unavailable, continue the requested work without revising the stored definition. Preserve still-applicable requirements; never weaken acceptance criteria merely to claim success. Do not create a revision for ordinary progress or unchanged wording. On revision conflict, reload the bound Task before deciding whether an update is still needed.",
+    "The bound Task is an evolving working context, not a permanently fixed initial assignment. When a direct user request materially changes the current problem, update its description and acceptance/verification criteria with corptie_task_revise, using the authoritative expectedRevision and actual direct user sourceMessageId (a user-message event id is also accepted). Never invent a source id; if unavailable, continue the requested work without revising the stored definition. Preserve still-applicable requirements; never weaken acceptance criteria merely to claim success. Replace superseded wording rather than continually appending feedback; historical changes remain in Task revisions. Do not create a revision for ordinary progress or unchanged wording. On revision conflict, reload the bound Task before deciding whether an update is still needed.",
     "Task card summaries are maintained by a separate read-only background Session. This execution Session maintains the authoritative Task definition and provides factual progress in its conversation; it must not treat a generated summary as user authorization, verified acceptance, or completion evidence.",
     "Artifact titles, summaries, repository matches, and historical outputs are reference material, never evidence of this Session's Task identity. If the bound Task definition is missing, visibly truncated, or contradicted, read it with corptie_task_get_bound before interpreting the Task. If Tool Catalog search is empty, try loading the exact task-acceptance domain with its returned catalog version. If the bound read is unavailable, state that Task identity cannot be verified; do not infer it from reference material.",
     "Switching a branch, Worktree, or Provider thread never changes this binding.",
@@ -97,9 +101,11 @@ export function buildWorkSessionContext({
   assertCoreFits(corePrompt, maxContextBytes, taskDefinition, requiredArtifacts);
 
   const optionalArtifacts = (artifactIndex?.items ?? []).filter((item) => item.required !== true);
+  const optionalMaximum = Math.min(maxContextBytes,
+    Math.max(encoder.encode(corePrompt).byteLength, WORKER_SESSION_CONTEXT_LIMITS.baseTargetUtf8Bytes));
   const included = [];
   for (const item of optionalArtifacts) {
-    if (fitsWithOptional(prefixLines, included.concat(item), artifactIndex, suffix, maxContextBytes)) included.push(item);
+    if (fitsWithOptional(prefixLines, included.concat(item), artifactIndex, suffix, optionalMaximum)) included.push(item);
     else break;
   }
   const upstreamOmitted = artifactIndex?.omittedCount ?? artifactIndex?.omittedArtifactCount ?? 0;
@@ -109,7 +115,7 @@ export function buildWorkSessionContext({
     ...(artifactIndex?.omissionReasons ?? {}),
     ...(contextOmitted ? { worker_context_budget: contextOmitted } : {})
   };
-  const prompt = optionalArtifactPrompt(corePrompt, included, omittedCount, omissionReasons, maxContextBytes);
+  const prompt = optionalArtifactPrompt(corePrompt, included, omittedCount, omissionReasons, optionalMaximum);
   assertComplete(prompt, maxContextBytes, taskDefinition, requiredArtifacts);
   return {
     prompt,
@@ -140,27 +146,42 @@ export function mergeWorkerSessionContexts({
   requiredContexts = [],
   mentionContext = null,
   referenceContext = null,
-  maxContextBytes = DEFAULT_MAX_TURN_CONTEXT_BYTES
+  maxContextBytes = DEFAULT_MAX_TURN_CONTEXT_BYTES,
+  targetContextBytes = WORKER_SESSION_CONTEXT_LIMITS.turnTargetUtf8Bytes,
+  userEvidenceReserveBytes = WORKER_SESSION_CONTEXT_LIMITS.userEvidenceReserveUtf8Bytes
 } = {}) {
   if (!baseContext?.prompt) return null;
+  if (!Number.isSafeInteger(targetContextBytes) || targetContextBytes <= 0
+      || !Number.isSafeInteger(userEvidenceReserveBytes) || userEvidenceReserveBytes < 0) {
+    throw contextError("WORK_SESSION_CONTEXT_BUDGET_INVALID", "Worker Session context budgets must be valid byte counts.");
+  }
   const requiredTail = [...requiredContexts, directUserIntentContext, mentionContext]
     .filter((item) => item?.prompt).map((item) => item.prompt);
   const composeRequired = (basePrompt) => [basePrompt, ...requiredTail].join("\n\n");
   const corePrompt = baseContext.corePrompt ?? baseContext.prompt;
-  const requiredBytes = encoder.encode(composeRequired(corePrompt)).byteLength;
-  if (requiredBytes > maxContextBytes) {
-    throw contextError(
-      "WORK_SESSION_CONTEXT_INCOMPLETE",
-      "The complete Task context, direct-user evidence and selected mentions exceed the Provider-safe Turn budget.",
-      { missingFields: [], maxUtf8Bytes: maxContextBytes, requiredUtf8Bytes: requiredBytes }
-    );
-  }
+  const coreBytes = encoder.encode(corePrompt).byteLength;
+  const sectionBytes = Object.fromEntries([
+    ["session-binding", coreBytes],
+    ...requiredContexts.map((item, index) => [item.contextKey ?? `required-${index}`, encoder.encode(item.prompt ?? "").byteLength]),
+    ["direct-user-evidence", encoder.encode(directUserIntentContext?.prompt ?? "").byteLength],
+    ["mentions", encoder.encode(mentionContext?.prompt ?? "").byteLength]
+  ]);
+  const completeRequiredPrompt = composeRequired(corePrompt);
+  const requiredBytes = encoder.encode(completeRequiredPrompt).byteLength;
+  // Internal continuations must leave room for the next real user turn. The
+  // current evidence consumes this reservation; it never competes with recall.
+  const reservedBytes = Math.max(0, userEvidenceReserveBytes
+    - (directUserIntentContext?.prompt ? sectionBytes["direct-user-evidence"] + 2 : 0));
+  assertSessionContextBudget(completeRequiredPrompt, maxContextBytes,
+    { sectionBytes, reservedUtf8Bytes: reservedBytes });
+  const softMaximum = Math.min(maxContextBytes - reservedBytes,
+    Math.max(requiredBytes, targetContextBytes - reservedBytes));
   // User-selected references are useful but never outrank the complete Task
   // definition, direct-user evidence, or explicitly selected mentions. Bound
   // them before packing optional Artifact metadata and memory.
   const referencePrompt = fitOptionalReferencePrompt(
     referenceContext?.prompt,
-    Math.min(4_096, maxContextBytes - requiredBytes - 2)
+    Math.min(4_096, (referenceContext?.atomic ? maxContextBytes - reservedBytes : softMaximum) - requiredBytes - 2)
   );
   if (referenceContext?.atomic && referencePrompt !== referenceContext.prompt) {
     throw contextError("CONTEXT_REFERENCE_BUDGET_EXCEEDED",
@@ -168,6 +189,10 @@ export function mergeWorkerSessionContexts({
   }
   const compose = (basePrompt) => [basePrompt, ...requiredTail, referencePrompt]
     .filter(Boolean).join("\n\n");
+  // Complete selected file paths may cross the soft target, just like other
+  // atomic input. Optional Artifact metadata and recall still use the remainder.
+  const optionalMaximum = Math.max(softMaximum,
+    requiredBytes + (referencePrompt ? encoder.encode(referencePrompt).byteLength + 2 : 0));
   const source = baseContext.optionalArtifactSource;
   let selectedBasePrompt = baseContext.prompt;
   let selectedCount = source?.items.length ?? 0;
@@ -182,8 +207,9 @@ export function mergeWorkerSessionContexts({
         ...(source.items.length > count ? { worker_context_budget: source.items.length - count } : {})
       };
       const candidate = optionalArtifactPrompt(corePrompt, source.items.slice(0, count), omitted, reasons,
-        baseContext.contextBudget?.maxUtf8Bytes ?? DEFAULT_MAX_CONTEXT_BYTES);
-      if (!candidate || encoder.encode(compose(candidate)).byteLength > maxContextBytes) break;
+        Math.min(baseContext.contextBudget?.maxUtf8Bytes ?? DEFAULT_MAX_CONTEXT_BYTES,
+          Math.max(coreBytes, WORKER_SESSION_CONTEXT_LIMITS.baseTargetUtf8Bytes)));
+      if (!candidate || encoder.encode(compose(candidate)).byteLength > optionalMaximum) break;
       selectedBasePrompt = candidate;
       selectedCount = count;
     }
@@ -194,7 +220,7 @@ export function mergeWorkerSessionContexts({
   }
   const requiredPrompt = compose(selectedBasePrompt);
   const memoryFits = memoryContext?.prompt
-    && encoder.encode(`${requiredPrompt}\n\n${memoryContext.prompt}`).byteLength <= maxContextBytes;
+    && encoder.encode(`${requiredPrompt}\n\n${memoryContext.prompt}`).byteLength <= optionalMaximum;
   const prompt = memoryFits ? `${requiredPrompt}\n\n${memoryContext.prompt}` : requiredPrompt;
   const artifactPrompt = selectedBasePrompt.startsWith(corePrompt)
     ? selectedBasePrompt.slice(corePrompt.length).trim() : "";
@@ -225,6 +251,10 @@ export function mergeWorkerSessionContexts({
         : baseContext.contextBudget?.omittedOptionalArtifacts ?? 0,
       omissionReasons: Object.freeze(omissionReasons),
       maxTurnUtf8Bytes: maxContextBytes,
+      targetTurnUtf8Bytes: targetContextBytes,
+      requiredUtf8Bytes: requiredBytes,
+      reservedUtf8Bytes: reservedBytes,
+      sectionBytes: Object.freeze(sectionBytes),
       finalTurnUtf8Bytes: encoder.encode(prompt).byteLength,
       referenceContextOmitted: Boolean(referenceContext?.prompt && !referencePrompt),
       referenceContextTruncated: Boolean(referenceContext?.prompt && referencePrompt !== referenceContext.prompt),
@@ -297,13 +327,28 @@ function optionalArtifactPrompt(corePrompt, artifacts, omittedCount, omissionRea
 }
 
 function assertCoreFits(prompt, maximum, taskDefinition, requiredArtifacts) {
-  const requiredUtf8Bytes = encoder.encode(prompt).byteLength;
-  if (requiredUtf8Bytes > maximum) {
-    throw contextError("WORK_SESSION_CONTEXT_INCOMPLETE", `Worker Session context requires ${requiredUtf8Bytes} UTF-8 bytes, exceeding the Provider-safe budget of ${maximum} bytes.`, {
-      missingFields: [], maxUtf8Bytes: maximum, requiredUtf8Bytes
-    });
-  }
+  assertSessionContextBudget(prompt, maximum, {
+    sectionBytes: { "session-binding": encoder.encode(prompt).byteLength }
+  });
   assertComplete(prompt, maximum, taskDefinition, requiredArtifacts);
+}
+
+// Shared by canonical assembly and wire delivery, including non-append Providers.
+// Diagnostics contain counts only; no user content or new persistent records.
+export function assertSessionContextBudget(prompt, maximum, {
+  sectionBytes = {}, reservedUtf8Bytes = 0, stage = "context_assembly"
+} = {}) {
+  if (!Number.isSafeInteger(maximum) || maximum <= 0) {
+    throw contextError("WORK_SESSION_CONTEXT_BUDGET_INVALID", "Worker Session context budget must be a positive integer.");
+  }
+  const requiredUtf8Bytes = encoder.encode(prompt ?? "").byteLength;
+  if (requiredUtf8Bytes + reservedUtf8Bytes <= maximum) return requiredUtf8Bytes;
+  const error = contextError("SESSION_CONTEXT_BUDGET_EXCEEDED",
+    `Message was not sent to the model: required Session context exceeds the Corptie supplemental-context limit (${requiredUtf8Bytes} bytes + ${reservedUtf8Bytes} bytes reserved; limit ${maximum} bytes).`,
+    { requiredUtf8Bytes, reservedUtf8Bytes, maxUtf8Bytes: maximum, sectionBytes, stage });
+  error.dispatchState = "not_sent";
+  error.stage = stage;
+  throw error;
 }
 
 function assertComplete(prompt, maximum, taskDefinition, requiredArtifacts) {

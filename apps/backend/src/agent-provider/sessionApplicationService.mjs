@@ -707,7 +707,18 @@ export class SessionApplicationService {
     try {
       await this.assertMessageDispatchAllowed?.(prepared, context);
       sessionContext = this.resolveMessageContext
-        ? await this.resolveMessageContext(prepared, { ...context, message })
+        ? await Promise.resolve().then(() => this.resolveMessageContext(prepared, { ...context, message })).catch((error) => {
+          // Context assembly is local; its failure says nothing about Provider health.
+          const failure = withDispatchStateNotSent(error);
+          failure.stage = "context_assembly";
+          if (failure.code === "SESSION_CONTEXT_BUDGET_EXCEEDED") {
+            console.warn(`[session-context-budget] ${JSON.stringify({
+              sessionId: prepared.sessionId, providerId: prepared.providerId,
+              code: failure.code, ...failure.details
+            })}`);
+          }
+          throw failure;
+        })
         : null;
       dispatchReference = await this.referenceFor(prepared.requestedSessionId);
       assertSameBinding(prepared, dispatchReference);
