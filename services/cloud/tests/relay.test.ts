@@ -1,3 +1,4 @@
+import { loadDownloadCatalog } from "../src/downloads.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -10,6 +11,7 @@ import { CloudDeviceService, createTestDeviceInput } from "../src/devices.js";
 import { uuidToBytes } from "../src/relay.js";
 
 const config: CloudConfig = {
+  downloads: loadDownloadCatalog({}),
   host: "127.0.0.1",
   port: 0,
   databasePath: ":memory:",
