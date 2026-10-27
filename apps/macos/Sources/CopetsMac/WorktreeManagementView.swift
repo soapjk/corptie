@@ -68,6 +68,42 @@ enum WorktreeAutomaticLoadPolicy {
     }
 }
 
+private struct WorktreeCommitPolicyFileList: View {
+    let files: [WorktreeCommitPolicyFile]
+    @Binding var decisions: [String: WorktreeCommitPolicyAction]
+    let isMutating: Bool
+
+    var body: some View {
+        List(files) { file in
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(file.path).font(.body.monospaced()).textSelection(.enabled).lineLimit(2).help(file.path)
+                    if let action = file.appliedAction.flatMap(WorktreeCommitPolicyAction.init(rawValue:)) {
+                        Label(L10nFormat("Applied: %@", action.title), systemImage: "checkmark.circle.fill")
+                            .font(.caption).foregroundStyle(.green)
+                    }
+                }
+                Spacer(minLength: 8)
+                Picker(L10n("Action"), selection: Binding(
+                    get: { file.appliedAction.flatMap(WorktreeCommitPolicyAction.init(rawValue:)) ?? decisions[file.path] },
+                    set: { decisions[file.path] = $0 }
+                )) {
+                    Text(L10n("Choose Action")).tag(Optional<WorktreeCommitPolicyAction>.none)
+                    ForEach(WorktreeCommitPolicyAction.allCases) { action in
+                        Text(action.title).tag(Optional(action))
+                            .disabled(!file.supportedActions.contains(action.rawValue))
+                    }
+                }
+                .pickerStyle(.menu).labelsHidden().frame(width: 160, alignment: .trailing)
+                .disabled(file.appliedAction != nil || isMutating)
+                .accessibilityLabel(L10nFormat("Action for %@", file.path))
+            }
+            .padding(.vertical, 3)
+        }
+        .frame(minHeight: 120, maxHeight: 250)
+    }
+}
+
 private struct WorktreeCommitPolicyResolutionSheet: View {
     @ObservedObject var client: WorktreeManagementClient
     @Binding var isPresented: Bool
@@ -89,46 +125,7 @@ private struct WorktreeCommitPolicyResolutionSheet: View {
             }
 
             if let blocker = client.job?.commitPolicyBlocker {
-                List(blocker.files) { file in
-                    HStack(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(file.path)
-                                .font(.body.monospaced())
-                                .textSelection(.enabled)
-                                .lineLimit(2)
-                            if let appliedAction = file.appliedAction,
-                               let action = WorktreeCommitPolicyAction(rawValue: appliedAction) {
-                                Label(
-                                    String(format: L10n("Applied: %@"), action.title),
-                                    systemImage: "checkmark.circle.fill"
-                                )
-                                .font(.caption)
-                                .foregroundStyle(.green)
-                            }
-                        }
-                        Spacer(minLength: 8)
-                        Picker(
-                            L10n("Action"),
-                            selection: Binding(
-                                get: { selectedAction(for: file) },
-                                set: { decisions[file.path] = $0 }
-                            )
-                        ) {
-                            Text(L10n("Choose Action"))
-                                .tag(Optional<WorktreeCommitPolicyAction>.none)
-                            ForEach(WorktreeCommitPolicyAction.allCases) { action in
-                                Text(action.title).tag(Optional(action))
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .labelsHidden()
-                        .frame(width: 160, alignment: .trailing)
-                        .disabled(file.appliedAction != nil || client.isMutating)
-                        .accessibilityLabel(String(format: L10n("Action for %@"), file.path))
-                    }
-                    .padding(.vertical, 3)
-                }
-                .frame(minHeight: 150, maxHeight: 320)
+                WorktreeCommitPolicyFileList(files: blocker.files, decisions: $decisions, isMutating: client.isMutating)
             }
 
             Text(L10n("Choose one action for each file. Converting creates an Artifact and removes the Worktree file; allowing Git tracking records exact-version approval. No action pushes to a remote."))
@@ -1675,6 +1672,10 @@ private struct IndividualWorktreeOperationView: View {
     @State private var neverRemindPrivateFiles = false
     @State private var isPreparing = true
     @State private var isAutoFilling = false
+    @State private var markdownDecisions: [String: WorktreeCommitPolicyAction] = [:]
+    @State private var artifactWorkId: String?
+    @State private var submissionError: String?
+    @State private var requiresReview = false
 
     init(
         worktree: ManagedWorktree,
@@ -1766,16 +1767,38 @@ private struct IndividualWorktreeOperationView: View {
                 }
             }
 
-            Text(L10n("Operations run in the displayed order. No remote push or deletion is performed."))
+            if worktree.isMain, let blocker = preparation?.commitPolicyBlocker, !blocker.files.isEmpty {
+                Text(L10n("Document commit needs confirmation")).font(.headline)
+                WorktreeCommitPolicyFileList(files: blocker.files, decisions: $markdownDecisions, isMutating: client.isMutating)
+                if let owners = blocker.artifactOwners, owners.count > 1 {
+                    Picker(L10n("Artifact Work"), selection: $artifactWorkId) {
+                        Text(L10n("Choose…")).tag(String?.none)
+                        ForEach(owners) { owner in Text(owner.title).tag(Optional(owner.workId)) }
+                    }
+                } else if blocker.artifactOwners?.isEmpty == true {
+                    Text(L10n("No Work owns this repository. Artifact conversion and tracking approval are unavailable."))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Text(L10n("Delete removes the local file. Convert saves an Artifact before removing it. Allow Git Tracking authorizes only this exact file version."))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let error = submissionError {
+                Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+                if requiresReview || preparation == nil {
+                    Button(L10n("Review Latest Changes")) { Task { await reloadPreparation() } }
+                        .disabled(client.isMutating || isPreparing)
+                }
+            }
+            Text(L10n(worktree.isMain ? "This commits all current changes in this Worktree. No remote push is performed." : "Operations run in the displayed order. No remote push or deletion is performed."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             Spacer()
             HStack {
-                Button(L10n("Cancel"), action: onClose).keyboardShortcut(.cancelAction)
+                Button(L10n("Close"), action: onClose).keyboardShortcut(.cancelAction).disabled(client.isMutating)
                 Spacer()
-                Button(L10n(worktree.isMain ? "Commit Changes" : "Execute")) {
-                    executeAndDismiss()
+                Button(L10n(client.isMutating ? "Processing and committing…" : worktree.isMain ? (preparation?.commitPolicyBlocker == nil ? "Commit Changes" : "Handle Files and Commit") : "Execute")) {
+                    executeOperation()
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
@@ -1784,10 +1807,10 @@ private struct IndividualWorktreeOperationView: View {
             }
         }
         .padding(20)
-        .frame(width: 480, height: worktree.dirty == true ? 520 : 370)
+        .frame(width: preparation?.commitPolicyBlocker == nil ? 480 : 680, height: preparation?.commitPolicyBlocker == nil ? (worktree.dirty == true ? 520 : 370) : 760)
+        .interactiveDismissDisabled(client.isMutating)
         .task {
-            preparation = await client.prepareIndividualOperation(for: worktree)
-            isPreparing = false
+            await reloadPreparation()
         }
         .onChange(of: synchronizeWithMain) { _, selected in
             if selected, (worktree.dirty == true || worktree.mergedIntoMain != true) {
@@ -1806,11 +1829,20 @@ private struct IndividualWorktreeOperationView: View {
     }
 
     private var canExecute: Bool {
-        guard !isPreparing, !isAutoFilling, !client.isMutating else { return false }
+        guard !isPreparing, !isAutoFilling, !client.isMutating, preparation != nil, !requiresReview else { return false }
         if worktree.isMain {
             guard worktree.dirty == true,
                   !commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
             if preparation?.protection?.requiresDecision == true, privateFilesDecision == nil { return false }
+            if let blocker = preparation?.commitPolicyBlocker {
+                guard blocker.files.allSatisfy({ file in
+                    if file.appliedAction != nil { return true }
+                    guard let action = markdownDecisions[file.path] else { return false }
+                    return file.supportedActions.contains(action.rawValue)
+                }) else { return false }
+                let needsOwner = blocker.files.contains { ["artifact", "track"].contains($0.appliedAction ?? markdownDecisions[$0.path]?.rawValue ?? "") }
+                if needsOwner, (blocker.artifactOwners?.count ?? 0) > 1, artifactWorkId == nil { return false }
+            }
             return true
         }
         guard mergeIntoMain || synchronizeWithMain || restartService else { return false }
@@ -1834,24 +1866,51 @@ private struct IndividualWorktreeOperationView: View {
         }
     }
 
-    private func executeAndDismiss() {
+    private func reloadPreparation() async {
+        isPreparing = true
+        let previous = preparation?.commitPolicyBlocker
+        preparation = await client.prepareIndividualOperation(for: worktree)
+        submissionError = client.individualPreparationError
+        requiresReview = preparation == nil
+        if let files = preparation?.commitPolicyBlocker?.files {
+            markdownDecisions = markdownDecisions.filter { path, _ in
+                files.contains { file in file.path == path && previous?.files.first(where: { $0.path == path })?.contentHash == file.contentHash }
+            }
+        } else { markdownDecisions.removeAll() }
+        isPreparing = false
+    }
+
+    private func executeOperation() {
         let merge = mergeIntoMain
         let synchronize = synchronizeWithMain
         let restart = restartService
         let message = commitMessage.isEmpty ? nil : commitMessage
         let protectedFilesDecision = privateFilesDecision
         let neverRemind = neverRemindPrivateFiles
-        onClose()
         Task {
             if worktree.isMain, let message {
-                _ = await client.commitMainWorktreeChanges(
+                let decisions = Dictionary(uniqueKeysWithValues: (preparation?.commitPolicyBlocker?.files ?? []).compactMap { file in
+                    (file.appliedAction.flatMap(WorktreeCommitPolicyAction.init(rawValue:)) ?? markdownDecisions[file.path]).map { (file.path, $0) }
+                })
+                let outcome = await client.commitMainWorktreeChanges(
                     worktree: worktree,
                     commitMessage: message,
                     privateFilesDecision: protectedFilesDecision,
-                    neverRemindPrivateFiles: neverRemind
+                    neverRemindPrivateFiles: neverRemind,
+                    reviewId: preparation?.reviewId,
+                    decisions: decisions,
+                    artifactWorkId: artifactWorkId
                 )
+                switch outcome {
+                case .completed: onClose()
+                case let .blocked(blocker, reviewId, message, needsReview):
+                    preparation = IndividualWorktreeOperationPreparation(protection: preparation?.protection, reviewId: reviewId, commitPolicyBlocker: blocker)
+                    submissionError = message; requiresReview = needsReview
+                case let .failed(message, needsReview):
+                    submissionError = message; requiresReview = needsReview
+                }
             } else {
-                _ = await client.executeIndividualOperation(
+                if await client.executeIndividualOperation(
                     worktree: worktree,
                     mergeIntoMain: merge,
                     synchronizeWithMain: synchronize,
@@ -1859,7 +1918,7 @@ private struct IndividualWorktreeOperationView: View {
                     commitMessage: message,
                     privateFilesDecision: protectedFilesDecision,
                     neverRemindPrivateFiles: neverRemind
-                )
+                ) { onClose() }
             }
         }
     }

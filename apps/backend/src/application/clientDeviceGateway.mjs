@@ -664,6 +664,7 @@ export class ClientDeviceGateway {
         code: error.code ?? "DEVICE_SERVICE_ERROR",
         ...(status < 500 ? { error: error.message } : {}),
         ...(typeof error.retryable === "boolean" ? { retryable: error.retryable } : {}),
+        ...(status < 500 && error.commitPolicyBlocker ? {commitPolicyBlocker:error.commitPolicyBlocker,commitReviewId:error.commitReviewId} : {}),
         ...(error.code === "PLAN_REFRESH_REQUIRED" ? {
           candidate: error.candidate,
           diff: error.diff

@@ -1863,6 +1863,15 @@
 "Added dependencies: %@" = "额外纳入的依赖：%@";
 "Waiting for Parent Acceptance" = "等待父任务集成验收";
 "Executing Integration Steps" = "正在执行合并步骤";
+"Artifact Work" = "Artifact 所属 Work";
+"No Work owns this repository. Artifact conversion and tracking approval are unavailable." = "此仓库没有可用的 Work 归属，暂不能转为 Artifact 或授权 Git 追踪。";
+"Delete removes the local file. Convert saves an Artifact before removing it. Allow Git Tracking authorizes only this exact file version." = "删除会移除本地文件；转为 Artifact 会先保存再移除源文件；允许 Git 追踪仅授权当前文件的精确版本。";
+"Review Latest Changes" = "重新审阅当前修改";
+"This commits all current changes in this Worktree. No remote push is performed." = "这会提交当前 Worktree 中的全部修改，不会推送到远程。";
+"Processing and committing…" = "正在处理文件并提交…";
+"Handle Files and Commit" = "处理文件并提交";
+"No changes to commit" = "没有需要提交的修改";
+"The commit result could not be verified. Review Git history before retrying." = "无法确认提交结果，请先检查 Git 历史，再决定是否重试。";
 "Excluded failed task with no delivery resources: %@" = "已排除无交付资源的失败任务：%@";
 "Recover this task's startup or delivery binding before retrying. No resources were modified." = "请先恢复该任务的启动状态或交付绑定，再重试。未修改任何资源。";
 "Open Task Session" = "打开任务会话";

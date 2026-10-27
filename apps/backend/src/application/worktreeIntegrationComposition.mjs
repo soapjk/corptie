@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { basename, resolve } from "node:path";
+import { resolve } from "node:path";
+import { createMarkdownArtifactDecision } from "./markdownCommitPolicyService.mjs";
 import { ProjectWorktreeIntegrationService } from "./projectWorktreeIntegrationService.mjs";
 import { WorktreeIntegrationJobService } from "./worktreeIntegrationJobService.mjs";
 import { integrationTrackingTargets } from "./worktreeIntegrationGraph.mjs";
@@ -64,68 +65,9 @@ export function createWorktreeIntegrationServices({
   admitReliableSessionMessage, prepareConflictSession, emitEvent, presentTaskForClient,
   authorizeAutomaticFollow
 }) {
-  const applyArtifactDecision = async (input, { removeSource, allowTracking }) => {
-    const binding = commitPolicyArtifactBinding(store, input.item);
-    const file = await gitWorkspaces.readIntegrationMarkdownFile({
-      path: input.item.path,
-      relativePath: input.relativePath,
-      expectedContentHash: input.expectedContentHash
-    });
-    const identity = createHash("sha256").update([
-      input.jobId, input.blockerId, input.relativePath, input.expectedContentHash,
-      allowTracking ? "track" : "artifact"
-    ].join("\0")).digest("hex");
-    const artifact = await artifactService.create({
-      kind: "local_user",
-      actorId: "user:local-macos",
-      workId: binding.workId
-    }, {
-      artifactId: `artifact:worktree-markdown:${identity}`,
-      title: basename(input.relativePath),
-      summary: `Captured from Worktree Markdown decision for ${input.relativePath}.`,
-      content: file.content,
-      mimeType: "text/markdown",
-      visibility: binding.taskId ? "task_private" : "work_private",
-      scope: binding.taskId ? "task" : "work",
-      ...(binding.taskId ? { boundTaskId: binding.taskId } : {}),
-      kind: "document",
-      categoryPath: "worktree-markdown",
-      tags: ["worktree", "markdown"],
-      sourceEventId: input.decisionId
-    });
-    if (allowTracking) {
-      await artifactService.promoteExistingRepositoryFileFromUserDecision({
-        kind: "local_user",
-        actorId: "user:local-macos",
-        workId: binding.workId
-      }, artifact.artifactId, {
-        repositoryPath: file.repositoryRoot,
-        path: file.relativePath,
-        version: artifact.currentVersion,
-        contentHash: file.contentHash,
-        decisionId: input.decisionId
-      });
-      const job = store.getWorktreeIntegrationJob?.(input.jobId);
-      for (const targetPath of await integrationTrackingTargets(job, file.repositoryRoot)) {
-        await artifactService.promoteExistingRepositoryFileFromUserDecision({ kind: "local_user", actorId: "user:local-macos", workId: binding.workId }, artifact.artifactId, {
-          repositoryPath: targetPath, sourceRepositoryPath: file.repositoryRoot, integrationJobId: input.jobId,
-          path: file.relativePath, version: artifact.currentVersion, contentHash: file.contentHash,
-          decisionId: `${input.decisionId}:target:${targetPath}`
-        });
-      }
-    }
-    if (removeSource) {
-      await gitWorkspaces.deleteIntegrationMarkdownFile({
-        repositoryId: input.repositoryId,
-        jobId: input.jobId,
-        decisionId: input.decisionId,
-        path: input.item.path,
-        relativePath: input.relativePath,
-        expectedContentHash: input.expectedContentHash
-      });
-    }
-    return { artifactId: artifact.artifactId, version: artifact.currentVersion };
-  };
+  const applyArtifactDecision = createMarkdownArtifactDecision({store,gitWorkspaces,artifactService,
+    resolveOwner:input=>commitPolicyArtifactBinding(store,input.item),
+    trackingTargets:(input,path)=>integrationTrackingTargets(store.getWorktreeIntegrationJob?.(input.jobId),path)});
   const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService({
     store,
     inspectProject: async (projectId, options = {}) => {
@@ -221,6 +163,9 @@ export function createWorktreeIntegrationServices({
       return gitWorkspaces.integrationInspectionForProject(path, repositoryId, options);
     },
     inspectCommitProtection: (path) => gitCommitProtection.inspect(path),
+    assertRepositoryWritable:repositoryId=>{
+      if(gitWorkspaces.directCommitRepositories?.has(repositoryId)) throw Object.assign(new Error("A standalone commit is running. Wait for it to finish before integrating."),{code:"REPOSITORY_BUSY",statusCode:409});
+    },
     inspectCommitPolicyFiles: (input) => gitWorkspaces.inspectIntegrationMarkdownFiles(input),
     ignoreCommitPolicyFile: (input) => gitWorkspaces.ignoreIntegrationMarkdownFile(input),
     deleteCommitPolicyFile: (input) => gitWorkspaces.deleteIntegrationMarkdownFile(input),

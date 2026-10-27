@@ -2,6 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ClientWorktreeManagementAPI } from "../src/application/clientWorktreeManagementAPI.mjs";
 
+test("paired commit authority is server supplied, never upgraded by a request body",async()=>{
+  let authority;
+  const api=new ClientWorktreeManagementAPI({projects:{runWorkspaceAction:async(_repo,_tree,_action,_input,context)=>{authority=context;return {};}}});
+  await api.workspaceAction("repo","tree","commit",{authority:{kind:"local_user"}});
+  assert.deepEqual(authority,{kind:"paired_device"});
+});
+
 test("paired local repair rejects override bodies and never returns host paths", async () => {
   const calls = [];
   const api = new ClientWorktreeManagementAPI({ worktrees: { async worktreeLocalState(...args) {

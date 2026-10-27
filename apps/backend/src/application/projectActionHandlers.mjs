@@ -3,7 +3,7 @@
 export function createProjectActionHandlers({
   store, gitWorkspaces, projectToolsets, gitCommitProtection, gitHubPushes,
   rebuildAndRestartProjectService, generateUnownedWorktreeCommitMessage,
-  resolveProjectCommitProtection
+  resolveProjectCommitProtection, markdownCommitPolicy
 }) {
   function resolveProjectContext(projectId) {
     const repository = store.getGitRepository(projectId);
@@ -41,7 +41,7 @@ export function createProjectActionHandlers({
     return projectToolsets.run(project.mainPath, "stop");
   }
 
-  async function performProjectWorkspaceAction(project, workspaceId, action, input = {}) {
+  async function performProjectWorkspaceAction(project, workspaceId, action, input = {}, authority = {kind:"local_user"}) {
     if (!["commit-prepare", "commit-message", "commit", "merge", "synchronize", "delete", "restart", "push"].includes(action)) {
       const error = new Error(`Unsupported workspace action: ${action}`);
       error.code = "INVALID_PROJECT_ACTION";
@@ -60,7 +60,11 @@ export function createProjectActionHandlers({
     }
     if (action === "commit-prepare") {
       if (workspace.dirty !== true) throw new Error("The selected workspace has no uncommitted changes.");
-      return gitCommitProtection.inspect(workspace.path);
+      const protection=await gitCommitProtection.inspect(workspace.path);
+      if(!markdownCommitPolicy) return protection;
+      // Keep legacy protection fields for older paired clients while newer
+      // clients consume the versioned, combined preparation contract.
+      return {...protection,...await markdownCommitPolicy.inspectCommitPolicy({project,workspace,authority}),protection};
     }
     if (action === "commit-message") {
       if (workspace.dirty !== true) throw new Error("The selected workspace has no uncommitted changes.");
@@ -95,6 +99,8 @@ export function createProjectActionHandlers({
     if (action === "push") {
       return gitHubPushes.pushBranch({ workingDirectory: workspace.path });
     }
+    if(action==="commit" && markdownCommitPolicy) return markdownCommitPolicy.commit({project,workspace,authority},input,
+      ()=>resolveProjectCommitProtection(workspace,input));
     await resolveProjectCommitProtection(workspace, input);
     if (action === "commit") {
       return gitWorkspaces.commitWorktreeChangesForProject({

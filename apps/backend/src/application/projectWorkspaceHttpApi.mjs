@@ -258,8 +258,7 @@ export function handleProjectWorkspaceHttpRequest({
         sendJson(response, 200, result);
       })
       .catch((error) => sendJson(response, errorStatus(error, unifiedErrorStatus(error)), {
-        error: error.message,
-        code: error.code,
+        ...worktreeErrorBody(error),
         unmergedCommitCount: error.unmergedCommitCount,
         branchName: error.branchName
       }));
@@ -313,6 +312,8 @@ function worktreeErrorBody(error) {
   return {
     error: error.message,
     code: error.code,
+    ...(error.commitPolicyBlocker ? {commitPolicyBlocker:error.commitPolicyBlocker} : {}),
+    ...(error.commitReviewId ? {commitReviewId:error.commitReviewId} : {}),
     ...(error.diagnosis ? {diagnosis:Object.fromEntries(
       ["taskId","parentTaskId","worktreeId","taskTitle","sessionId","reason","recovery"]
         .filter(key=>typeof error.diagnosis[key]==="string" || error.diagnosis[key]===null)
