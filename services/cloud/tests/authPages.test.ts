@@ -19,7 +19,7 @@ test("account pages are small same-origin pages with strict browser protections"
   assert.doesNotMatch(html, /邀请码/);
   assert.match(html, /aria-live="polite"/);
   assert.match(html, /autocomplete="current-password"/);
-  assert.match(html, /<script src="\/auth\/assets\/auth\.js" defer><\/script>/);
+  assert.match(html, /<script src="\/auth\/assets\/auth\.js\?v=development" defer><\/script>/);
   assert.doesNotMatch(html, /<script[^>]*>[^<]+<\/script>/);
 });
 

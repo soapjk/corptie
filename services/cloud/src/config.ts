@@ -1,3 +1,4 @@
+import { loadDownloadCatalog, type DownloadCatalog } from "./downloads.js";
 import { z } from "zod";
 
 const csv = z.string().transform((value, context) => {
@@ -49,6 +50,7 @@ export type CloudMailConfig = { mode: "capture" } | {
 };
 
 export interface CloudConfig {
+  downloads: DownloadCatalog;
   host: string;
   port: number;
   databasePath: string;
@@ -102,6 +104,7 @@ export function loadCloudConfig(environment: NodeJS.ProcessEnv): CloudConfig {
   }
 
   return {
+    downloads: loadDownloadCatalog(environment),
     host: parsed.CORPTIE_CLOUD_HOST,
     port: parsed.CORPTIE_CLOUD_PORT,
     databasePath: parsed.CORPTIE_CLOUD_DATABASE_PATH,

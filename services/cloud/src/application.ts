@@ -1,3 +1,4 @@
+import { createWebsiteHandler } from "./websitePages.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { DatabaseSync } from "node:sqlite";
 import type { AddressInfo } from "node:net";
@@ -58,6 +59,11 @@ class AccountNotFoundError extends Error {
 }
 
 export function createCloudApplication(dependencies: ApplicationDependencies) {
+  const website = createWebsiteHandler({
+    baseURL: dependencies.config.publicBaseUrl, version: dependencies.config.version,
+    downloads: dependencies.config.downloads, publicRegistration: dependencies.config.publicRegistration,
+    environment: dependencies.config.environment
+  });
   const devices = new CloudDeviceService(dependencies.database, dependencies.now);
   const invitations = new InvitationService(
     dependencies.database,
@@ -76,7 +82,7 @@ export function createCloudApplication(dependencies: ApplicationDependencies) {
   const server = createServer(async (incoming, outgoing) => {
     try {
       const request = await toWebRequest(incoming, dependencies.config);
-      const response = await dispatch(request, dependencies, devices, invitations, oauthClients, relay);
+      const response = await dispatch(request, dependencies, devices, invitations, oauthClients, relay, website);
       await sendWebResponse(outgoing, response);
     } catch (error) {
       await sendWebResponse(outgoing, errorResponse(error));
@@ -117,7 +123,8 @@ async function dispatch(
   devices: CloudDeviceService,
   invitations: InvitationService,
   oauthClients: NativeOAuthClientRegistry,
-  relay: RelayHub
+  relay: RelayHub,
+  website: ReturnType<typeof createWebsiteHandler>
 ): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === "/healthz" && request.method === "GET") {
@@ -132,9 +139,13 @@ async function dispatch(
   }
   const authPage = await authPageResponse(request, {
     verifyOAuthPageQuery: dependencies.verifyOAuthPageQuery ?? (async () => false),
-    publicRegistration: dependencies.config.publicRegistration
+    publicRegistration: dependencies.config.publicRegistration,
+    assetVersion: dependencies.config.version,
+    cacheControl: dependencies.config.environment === "production" ? "public, max-age=3600" : "no-store"
   });
   if (authPage) return authPage;
+  const websitePage = await website(request);
+  if (websitePage) return websitePage;
 
   if (url.pathname === "/v1/admin/invitations" && request.method === "POST") {
     if (!invitations.authorizeAdminToken(request.headers.get("authorization"))) {

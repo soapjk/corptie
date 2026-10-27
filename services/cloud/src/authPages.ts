@@ -1,3 +1,5 @@
+import { asset, escapeHtml, renderDocument, securityHeaders } from "./websiteHtml.js";
+
 const AUTH_CSS = `
 :root { color-scheme: light dark; font: 16px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 * { box-sizing: border-box; }
@@ -39,19 +41,7 @@ function setStatus(message, isError = false) {
 }
 
 async function post(path, body) {
-  const response = await fetch(path, {
-    method: "POST",
-    credentials: "same-origin",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body)
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(payload.message || "请求未完成，请稍后重试。");
-    error.code = payload.code;
-    throw error;
-  }
-  return payload;
+  return CorptieWeb.requestJson(path, { method: "POST", body });
 }
 
 async function submit(event) {
@@ -67,11 +57,15 @@ async function submit(event) {
     const oauthQuery = root.dataset.oauthQuery || undefined;
     if (page === "sign-in") {
       const payload = await post("/api/auth/sign-in/email", {
-        email: data.get("email"), password: data.get("password"), oauth_query: oauthQuery
+        email: data.get("email"), password: data.get("password"),
+        ...(oauthQuery ? { oauth_query: oauthQuery } : { callbackURL: window.location.origin + "/account" })
       });
-      const destination = payload.redirect_uri || payload.url;
-      if (destination) window.location.assign(destination);
-      else setStatus("登录成功，可以返回 Corptie。");
+      if (!oauthQuery) { window.location.replace("/account"); }
+      else {
+        const destination = payload.redirect_uri || payload.url;
+        if (destination) window.location.assign(destination);
+        else setStatus("登录成功，可以返回 Corptie。");
+      }
     } else if (page === "consent") {
       const accepted = submitter?.value !== "deny";
       const payload = await post("/api/auth/oauth2/consent", {
@@ -124,14 +118,19 @@ if (form) form.addEventListener("submit", submit);
 export interface AuthPageDependencies {
   verifyOAuthPageQuery: (query: string) => Promise<boolean>;
   publicRegistration?: boolean;
+  assetVersion?: string;
+  cacheControl?: string;
 }
 
 export async function authPageResponse(request: Request, dependencies: AuthPageDependencies): Promise<Response | null> {
   const url = new URL(request.url);
   if (request.method !== "GET") return null;
-  if (url.pathname === "/auth/assets/auth.css") return asset(AUTH_CSS, "text/css; charset=utf-8");
-  if (url.pathname === "/auth/assets/auth.js") return asset(AUTH_JS, "text/javascript; charset=utf-8");
+  if (url.pathname === "/auth/assets/auth.css") return asset(AUTH_CSS, "text/css; charset=utf-8", dependencies.cacheControl);
+  if (url.pathname === "/auth/assets/auth.js") return asset(AUTH_JS, "text/javascript; charset=utf-8", dependencies.cacheControl);
 
+  const page = (...args: Parameters<typeof renderAuthPage>) => renderAuthPage(
+    args[0], args[1], args[2], args[3], { ...args[4], assetVersion: dependencies.assetVersion ?? "development" }
+  );
   const query = url.searchParams.toString();
   if (url.pathname === "/auth/sign-in") {
     if (query && !await dependencies.verifyOAuthPageQuery(query)) return invalidOAuthRequest();
@@ -203,12 +202,12 @@ export async function authPageResponse(request: Request, dependencies: AuthPageD
   return null;
 }
 
-function page(
+function renderAuthPage(
   title: string,
   introduction: string,
   pageName: string,
   content: string,
-  data: { oauthQuery?: string; scope?: string; token?: string } = {}
+  data: { oauthQuery?: string; scope?: string; token?: string; assetVersion?: string } = {}
 ): Response {
   const attributes = [
     `data-page="${escapeHtml(pageName)}"`,
@@ -216,8 +215,11 @@ function page(
     data.scope ? `data-scope="${escapeHtml(data.scope)}"` : "",
     data.token ? `data-token="${escapeHtml(data.token)}"` : ""
   ].filter(Boolean).join(" ");
-  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>${escapeHtml(title)} · Corptie</title><link rel="stylesheet" href="/auth/assets/auth.css"><script src="/auth/assets/auth.js" defer></script></head><body><main ${attributes}><div class="brand" aria-label="Corptie"><span class="brand-mark" aria-hidden="true">C</span><span>Corptie</span></div><section class="panel"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(introduction)}</p>${content}<p class="status" data-status role="status" aria-live="polite"></p></section><p class="footnote">安全登录由 Corptie Cloud 提供</p></main></body></html>`;
-  return new Response(html, { headers: securityHeaders("text/html; charset=utf-8") });
+  return renderDocument({
+    title, description: introduction, noIndex: true, styles: ["/auth/assets/auth.css"],
+    scripts: ["/assets/web-http.js", "/auth/assets/auth.js"], assetVersion: data.assetVersion ?? "development",
+    body: `<main ${attributes}><div class="brand" aria-label="Corptie"><span class="brand-mark" aria-hidden="true">C</span><span>Corptie</span></div><section class="panel"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(introduction)}</p>${content}<p class="status" data-status role="status" aria-live="polite"></p></section><nav class="links" aria-label="网站导航"><a href="/">官网首页</a><a href="/download">下载</a><a href="/account">我的账号</a></nav><p class="footnote">安全登录由 Corptie Cloud 提供</p></main>`
+  });
 }
 
 function invalidOAuthRequest(): Response {
@@ -230,27 +232,6 @@ function signUpPath(query: string): string {
 
 function signInPath(query: string): string {
   return query ? `/auth/sign-in?${escapeHtml(query)}` : "/auth/sign-in";
-}
-
-function asset(body: string, contentType: string): Response {
-  return new Response(body, { headers: securityHeaders(contentType, "public, max-age=3600") });
-}
-
-function securityHeaders(contentType: string, cacheControl = "no-store"): HeadersInit {
-  return {
-    "cache-control": cacheControl,
-    "content-type": contentType,
-    "content-security-policy": "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-    "referrer-policy": "no-referrer",
-    "x-content-type-options": "nosniff",
-    "x-frame-options": "DENY"
-  };
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;"
-  })[character] ?? character);
 }
 
 function scopeLabel(scope: string): string {

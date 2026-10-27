@@ -1,3 +1,4 @@
+import { loadDownloadCatalog } from "../src/downloads.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createServer } from "node:net";
@@ -9,6 +10,7 @@ import { openCloudDatabase } from "../src/database.js";
 import { CloudMailer } from "../src/mail.js";
 
 const config: CloudConfig = {
+  downloads: loadDownloadCatalog({}),
   host: "127.0.0.1",
   port: 4310,
   databasePath: ":memory:",

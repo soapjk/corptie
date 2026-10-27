@@ -1,3 +1,4 @@
+import { loadDownloadCatalog } from "../src/downloads.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createCloudApplication } from "../src/application.js";
@@ -8,6 +9,7 @@ import { createTestDeviceInput } from "../src/devices.js";
 import { CloudDeviceService } from "../src/devices.js";
 
 const config: CloudConfig = {
+  downloads: loadDownloadCatalog({}),
   host: "127.0.0.1",
   port: 0,
   databasePath: ":memory:",
@@ -26,6 +28,48 @@ const config: CloudConfig = {
   environment: "test",
   mail: { mode: "capture" }
 };
+
+test("website routes reuse real browser Cookies and preserve account and device isolation", async () => {
+  const database = openCloudDatabase(":memory:");
+  const cloudAuth = createCloudAuth(config, database);
+  const application = createCloudApplication({ config, database, ...cloudAuth });
+  try {
+    const user = await cloudAuth.provisionInvitedUser({ email: "website@example.test", name: "Website User", password: "a-long-test-password-123" });
+    database.prepare('UPDATE "user" SET emailVerified = 1 WHERE id = ?').run(user.id);
+    const address = await application.listen();
+    const base = `http://127.0.0.1:${address.port}`;
+    for (const path of ["/", "/download", "/account"]) {
+      const page = await fetch(base + path);
+      assert.equal(page.status, 200);
+      assert.match(page.headers.get("content-type")!, /text\/html/);
+    }
+    const loggedIn = await fetch(base + "/api/auth/sign-in/email", {
+      method: "POST", headers: { "content-type": "application/json", origin: config.publicBaseUrl },
+      body: JSON.stringify({ email: "website@example.test", password: "a-long-test-password-123", callbackURL: config.publicBaseUrl + "/account" })
+    });
+    assert.equal(loggedIn.status, 200, await loggedIn.text());
+    const cookie = loggedIn.headers.getSetCookie().map(value => value.split(";")[0]).join("; ");
+    assert.ok(cookie);
+    const current = await fetch(base + "/api/auth/get-session", { headers: { cookie } });
+    const session = await current.json() as { user: { id: string; name: string }; session: { id: string } };
+    assert.equal(session.user.id, user.id); assert.equal(session.user.name, "Website User");
+    const service = new CloudDeviceService(database);
+    const own = service.register(user.id, session.session.id, createTestDeviceInput());
+    service.register("account:other", "session:other", createTestDeviceInput());
+    const devices = await fetch(base + "/v1/devices", { headers: { cookie } });
+    assert.equal(devices.status, 200);
+    const inventory = await devices.json() as { devices: { id: string }[] };
+    assert.deepEqual(inventory.devices.map(device => device.id), [own.id]);
+    const anonymous = await fetch(base + "/v1/devices"); assert.equal(anonymous.status, 401);
+    const authUnknown = await fetch(base + "/api/auth/unknown"); assert.equal(authUnknown.status, 404);
+    const apiUnknown = await fetch(base + "/v1/unknown"); assert.equal(apiUnknown.status, 404);
+    const signedInvalid = await fetch(base + "/auth/sign-in?client_id=native&sig=invalid"); assert.equal(signedInvalid.status, 400);
+    const signedOut = await fetch(base + "/api/auth/sign-out", { method: "POST", headers: { cookie, origin: config.publicBaseUrl, "content-type": "application/json" }, body: "{}" });
+    assert.equal(signedOut.status, 200);
+    assert.equal(await (await fetch(base + "/api/auth/get-session", { headers: { cookie } })).json(), null);
+    assert.equal(service.getForAccount(user.id, own.id)!.revokedAt, null, "website sign-out does not mutate device authorization records");
+  } finally { await application.close(); database.close(); }
+});
 
 test("HTTP control plane keeps device inventory isolated by authenticated account", async () => {
   const database = openCloudDatabase(":memory:");
