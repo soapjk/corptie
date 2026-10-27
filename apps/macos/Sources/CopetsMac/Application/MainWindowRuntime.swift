@@ -31,6 +31,19 @@ enum MainWindowActivationPolicy {
     }
 }
 
+@MainActor
+enum MainWindowForegrounding {
+    /// An explicit menu/Dock request must also order the window while another
+    /// application is active. Activation is asynchronous; ordinary ordering
+    /// alone can leave the window behind the previously active application.
+    static func present(_ window: NSWindow, activate: () -> Void) {
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+        activate()
+    }
+}
+
 enum MainWindowInitialLayout {
     static let idealContentSize = NSSize(width: 1_480, height: 900)
     static let minimumContentSize = NSSize(width: 1000, height: 620)
