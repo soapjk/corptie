@@ -253,13 +253,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                   ) else { return }
             self.presentMainWindowAfterActivation()
         }
-        // Reconcile list state on foregrounding and replace any stream that was
-        // silently stalled while the app was inactive.
-        AppStateSyncController.shared.recoverAfterActivation()
-        Task {
-            await backendClient.refreshSelectedUsage()
+        // Queue recovery after native window restoration, rather than putting
+        // foreground model invalidation ahead of the queued ordering request.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, NSApp.isActive else { return }
+            AppStateSyncController.shared.recoverAfterActivation()
+            Task { await self.backendClient.refreshSelectedUsage() }
+            self.backendClient.applicationDidBecomeActive()
         }
-        backendClient.applicationDidBecomeActive()
     }
 
     func applicationDidResignActive(_ notification: Notification) {
@@ -417,16 +418,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc private func openWarRoom() {
         // An explicit Dock reopen/menu request ends launch-only suppression.
         suppressAutomaticWindowPresentation = false
-        NSApp.activate(ignoringOtherApps: true)
-        // 控制台前置时，收起辅助的液态玻璃悬浮窗
-        panelController?.hide()
 
         if let warRoomWindow {
-            if warRoomWindow.isMiniaturized {
-                warRoomWindow.deminiaturize(nil)
-            }
             applyMainWindowLevel(to: warRoomWindow)
-            warRoomWindow.makeKeyAndOrderFront(nil)
+            MainWindowForegrounding.present(warRoomWindow) {
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            panelController?.hideAfterMainWindowForegrounding()
             return
         }
 
@@ -462,8 +460,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.preservesContentDuringLiveResize = true
         window.contentView = hostingView
         applyMainWindowLevel(to: window)
-        window.makeKeyAndOrderFront(nil)
         warRoomWindow = window
+        MainWindowForegrounding.present(window) {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        panelController?.hideAfterMainWindowForegrounding()
     }
 
     func setMainWindowPinned(_ isPinned: Bool) {

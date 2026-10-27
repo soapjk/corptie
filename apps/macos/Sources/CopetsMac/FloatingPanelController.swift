@@ -224,6 +224,19 @@ final class FloatingPanelController: NSObject {
         focusState.isFocused = false
     }
 
+    func hideAfterMainWindowForegrounding() {
+        // Native ordering first. Suspending SwiftUI can traverse the entire
+        // transcript and synchronously lay out its removal.
+        panel.orderOut(nil)
+        focusState.isFocused = false
+        let generation = presentationGeneration
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.panel.isVisible,
+                  self.presentationGeneration == generation else { return }
+            self.suspendPresentation()
+        }
+    }
+
     @objc private func closePanelButtonPressed() {
         hide()
     }

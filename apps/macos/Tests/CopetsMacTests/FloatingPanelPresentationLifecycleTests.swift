@@ -82,6 +82,28 @@ final class FloatingPanelPresentationLifecycleTests: XCTestCase {
         XCTAssertTrue(descendants(window.contentView).compactMap { $0 as? NSTableView }.isEmpty)
     }
 
+    func testDeferredMainWindowCleanupDoesNotSuspendReopenedPanel() throws {
+        let client = BackendClient()
+        let id = seed(client, "foreground")
+        let (controller, window) = try panel(client)
+        defer { controller.hide(); window.close() }
+        client.sessionSelectionController.select(id)
+        controller.show()
+        let first = try XCTUnwrap(waitForEditor(window))
+        first.insertText("keep foreground draft", replacementRange: NSRange(location: 0, length: first.string.utf16.count))
+        controller.hideAfterMainWindowForegrounding()
+        XCTAssertFalse(window.isVisible)
+        controller.show()
+        pump(window)
+        XCTAssertTrue(window.isVisible)
+        XCTAssertTrue(editor(window) === first)
+        XCTAssertEqual(editor(window)?.string, "keep foreground draft")
+        controller.hideAfterMainWindowForegrounding()
+        pump(window)
+        XCTAssertFalse(window.isVisible)
+        XCTAssertNil(editor(window))
+    }
+
     func testShowMountsLatestSelectionAndRetainsPerSessionDrafts() throws {
         let client = BackendClient()
         let one = seed(client, "one"), two = seed(client, "two")
