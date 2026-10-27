@@ -3,6 +3,7 @@ import { inspectGitWorkspace } from "../utils/gitWorktreeInventory.mjs";
 import { ensureProjectLocalState, inspectProjectLocalState, rollbackProjectLocalState, verifyProjectLocalState } from "../runtime/projectLocalStateDirectory.mjs";
 import { TaskWorktreeHierarchyService } from "./taskWorktreeHierarchyService.mjs";
 import { WorktreeIntegrationGraph } from "./worktreeIntegrationGraph.mjs";
+import { MARKDOWN_COMMIT_ACTIONS, validateDecisions } from "./markdownCommitPolicyService.mjs";
 
 const ACTIVE_JOB_STATUSES = Object.freeze([
   "queued", "running", "paused", "cancellation_requested", "replanning"
@@ -29,6 +30,7 @@ export class WorktreeIntegrationJobError extends Error {
 export class WorktreeIntegrationJobService {
   constructor(options = {}) {
     this.store = options.store;
+    this.assertRepositoryWritable=options.assertRepositoryWritable ?? (()=>{});
     this.hierarchy = new TaskWorktreeHierarchyService({store:this.store});
     this.integrationGraph = new WorktreeIntegrationGraph({ store: this.store, hierarchy: this.hierarchy });
     this.inspectRepository = options.inspectRepository;
@@ -825,6 +827,7 @@ export class WorktreeIntegrationJobService {
   }
 
   #assertNoActiveJob(repositoryId, ignoreJobId = null, includeAwaitingConfirmation = false) {
+    this.assertRepositoryWritable(repositoryId);
     const activeStatuses = includeAwaitingConfirmation
       ? ["awaiting_confirmation", ...ACTIVE_JOB_STATUSES]
       : ACTIVE_JOB_STATUSES;
@@ -1172,37 +1175,12 @@ export class WorktreeIntegrationJobService {
         409
       );
     }
-    const entries = Array.isArray(input.decisions) ? input.decisions : [];
-    const decisions = new Map(entries.map((entry) => [entry?.path, entry?.action]));
-    if (entries.length !== blocker.files.length || decisions.size !== blocker.files.length
-      || blocker.files.some((file) => !decisions.has(file.path))) {
-      throw new WorktreeIntegrationJobError(
-        "COMMIT_POLICY_DECISION_INCOMPLETE",
-        "Choose an action for every blocked Markdown file.",
-        400
-      );
-    }
+    // Historical persisted supportedActions were UI hints, not an authority
+    // boundary. Keep the existing integration contract's four canonical actions.
+    const decisions = validateDecisions(blocker.files,input.decisions??[],{supportedActions:MARKDOWN_COMMIT_ACTIONS});
     const item = job.details.plan.items.find((candidate) => candidate.worktreeId === blocker.worktreeId);
     if (!item) throw new WorktreeIntegrationJobError("WORKTREE_NOT_FOUND", "The blocked Worktree no longer exists.", 404);
     const decisionItem = { ...item, path: blocker.decisionPath ?? item.path };
-    const supportedActions = new Set(["ignore", "delete", "artifact", "track"]);
-    for (const file of blocker.files) {
-      const action = decisions.get(file.path);
-      if (!supportedActions.has(action)) {
-        throw new WorktreeIntegrationJobError(
-          "COMMIT_POLICY_ACTION_UNSUPPORTED",
-          `Unsupported Markdown action for ${file.path}: ${action ?? "missing"}.`,
-          400
-        );
-      }
-      if (file.appliedAction && file.appliedAction !== action) {
-        throw new WorktreeIntegrationJobError(
-          "COMMIT_POLICY_DECISION_CHANGED",
-          `${file.path} was already handled as ${file.appliedAction}; its action cannot be changed.`,
-          409
-        );
-      }
-    }
     const pendingFiles = blocker.files.filter((file) => !file.appliedAction);
     if (pendingFiles.length > 0) {
       const inspected = await this.inspectCommitPolicyFiles({
@@ -2103,6 +2081,7 @@ export class WorktreeIntegrationJobService {
   }
 
   async #assertIntegrationScopeFresh(job) {
+    this.assertRepositoryWritable(job.repositoryId);
     const graph = job.details.plan.orchestration;
     if (!graph) return this.hierarchy.assertOperationFresh(job.details.plan, job.id);
     this.integrationGraph.assertFresh(graph);
@@ -3371,6 +3350,8 @@ export function presentJob(job) {
   const availableActions = integrationJobAvailableActions({ ...presented, commitPolicyResidue });
   return {
     ...presented,
+    ...(presented.commitPolicyBlocker ? {commitPolicyBlocker:{...presented.commitPolicyBlocker,
+      files:presented.commitPolicyBlocker.files.map(file=>({...file,supportedActions:[...MARKDOWN_COMMIT_ACTIONS]}))}} : {}),
     ...(details.graphExecution ? { graphExecution: { phase: details.graphExecution.phase, index: details.graphExecution.index,
       acceptanceSessionId: details.graphExecution.steps[details.graphExecution.index]?.kind === "acceptance"
         ? details.graphExecution.reviewedItems.find(item => item.worktreeId === details.graphExecution.steps[details.graphExecution.index].targetWorktreeId)?.associations?.find(item => item.taskId === details.graphExecution.steps[details.graphExecution.index].rootTaskId)?.sessionId

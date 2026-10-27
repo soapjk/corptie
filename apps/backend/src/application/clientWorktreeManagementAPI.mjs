@@ -77,7 +77,7 @@ export class ClientWorktreeManagementAPI {
     repositoryId = validId(repositoryId, "INVALID_REPOSITORY_ID");
     worktreeId = validId(worktreeId, "INVALID_WORKTREE_ID");
     if (!WORKSPACE_ACTIONS.has(action)) throw deviceError("ROUTE_NOT_AVAILABLE", 404);
-    const result = await this.projects.runWorkspaceAction(repositoryId, worktreeId, action, input);
+    const result = await this.projects.runWorkspaceAction(repositoryId, worktreeId, action, input, {kind:"paired_device"});
     this.emit("ProjectWorkspaceChanged", { projectId: repositoryId, workspaceId: worktreeId, action, result });
     return result;
   }

@@ -13,6 +13,7 @@ final class WorktreeManagementClient: ObservableObject {
     @Published private(set) var jobPollingGeneration: UInt = 0
     // Candidate review changes only at direct prepare/confirm boundaries; it is never polled.
     @Published private(set) var candidateReview = WorktreeIntegrationCandidateReviewState.empty
+    @Published private(set) var individualPreparationError: String?
     @Published var selection = WorktreeManagementSelection()
     @Published private(set) var isLoading = false
     @Published private(set) var isMutating = false
@@ -408,22 +409,22 @@ final class WorktreeManagementClient: ObservableObject {
         for worktree: ManagedWorktree
     ) async -> IndividualWorktreeOperationPreparation? {
         guard let repositoryId = selection.repositoryId else { return nil }
+        individualPreparationError = nil
         guard worktree.dirty == true else {
             return IndividualWorktreeOperationPreparation(protection: nil)
         }
         isMutating = true
         defer { isMutating = false }
         do {
-            let protection: ProjectWorkspaceActionEnvelope<GitCommitProtectionStatus> = try await post(
+            let preparation: ProjectWorkspaceActionEnvelope<WorktreeCommitPreparation> = try await post(
                 "projects/\(repositoryId)/workspaces/\(worktree.worktreeId)/actions/commit-prepare",
                 body: [:]
             )
             errorMessage = nil
-            return IndividualWorktreeOperationPreparation(
-                protection: protection.result
-            )
+            return preparation.result.value
         } catch {
-            errorMessage = error.localizedDescription
+            individualPreparationError = error.localizedDescription
+            errorMessage = nil
             return nil
         }
     }
@@ -502,11 +503,14 @@ final class WorktreeManagementClient: ObservableObject {
         worktree: ManagedWorktree,
         commitMessage: String,
         privateFilesDecision: String?,
-        neverRemindPrivateFiles: Bool
-    ) async -> Bool {
+        neverRemindPrivateFiles: Bool,
+        reviewId: String? = nil,
+        decisions: [String: WorktreeCommitPolicyAction] = [:],
+        artifactWorkId: String? = nil
+    ) async -> IndividualWorktreeCommitOutcome {
         guard let repositoryId = selection.repositoryId,
               worktree.isMain,
-              worktree.dirty == true else { return false }
+              worktree.dirty == true else { return .failed(L10n("No uncommitted files"), requiresReview: true) }
         operationNotice = nil
         isMutating = true
         defer { isMutating = false }
@@ -516,21 +520,32 @@ final class WorktreeManagementClient: ObservableObject {
                 "neverRemindPrivateFiles": neverRemindPrivateFiles
             ]
             if let privateFilesDecision { body["privateFilesDecision"] = privateFilesDecision }
-            let _: WorktreeActionAcknowledgement = try await post(
+            if let reviewId { body["reviewId"] = reviewId }
+            if !decisions.isEmpty { body["decisions"] = decisions.keys.sorted().map { ["path": $0, "action": decisions[$0]!.rawValue] } }
+            if let artifactWorkId { body["artifactWorkId"] = artifactWorkId }
+            let envelope: ProjectWorkspaceActionEnvelope<WorktreeCommitResult> = try await post(
                 "projects/\(repositoryId)/workspaces/\(worktree.worktreeId)/actions/commit",
                 body: body
             )
-            operationNoticeTitle = "Changes committed"
+            guard envelope.result.committed == true || envelope.result.noChanges == true else {
+                return .failed(L10n("The commit result could not be verified. Review Git history before retrying."), requiresReview: true)
+            }
+            operationNoticeTitle = envelope.result.noChanges == true ? "No changes to commit" : "Changes committed"
             operationNotice = L10nFormat(
                 "Committed changes in %@.",
                 worktree.branchName ?? "main"
             )
             errorMessage = nil
-            await loadRepository(repositoryId)
-            return true
+            await loadRepository(repositoryId, force: true)
+            return .completed
         } catch {
-            errorMessage = error.localizedDescription
-            return false
+            errorMessage = nil
+            let clientError = error as? WorktreeManagementClientError
+            let requiresReview = ["COMMIT_REVIEW_CHANGED", "COMMIT_REVIEW_EXPIRED", "COMMIT_REQUEST_CHANGED", "COMMIT_REVIEW_SCOPE_MISMATCH", "COMMIT_OUTCOME_UNKNOWN", "COMMIT_POLICY_STAGED_CONTENT_CHANGED"].contains(clientError?.code ?? "")
+            if let blocker = clientError?.commitPolicyBlocker {
+                return .blocked(blocker, reviewId: clientError?.commitReviewId, message: error.localizedDescription, requiresReview: requiresReview)
+            }
+            return .failed(error.localizedDescription, requiresReview: requiresReview)
         }
     }
 
@@ -1108,7 +1123,9 @@ final class WorktreeManagementClient: ObservableObject {
                 code: envelope?.code,
                 candidate: envelope?.candidate,
                 candidateDiff: envelope?.diff,
-                diagnosis: envelope?.diagnosis
+                diagnosis: envelope?.diagnosis,
+                commitPolicyBlocker: envelope?.commitPolicyBlocker,
+                commitReviewId: envelope?.commitReviewId
             )
         }
         return try decoder.decode(Response.self, from: data)
@@ -1149,6 +1166,8 @@ private struct WorktreeManagementErrorEnvelope: Decodable {
     let candidate: WorktreeIntegrationCandidate?
     let diff: WorktreeIntegrationCandidateDiff?
     let diagnosis: WorktreeDeliveryDiagnosis?
+    let commitPolicyBlocker: WorktreeCommitPolicyBlocker?
+    let commitReviewId: String?
 }
 
 private struct WorktreeManagementClientError: LocalizedError {
@@ -1157,5 +1176,7 @@ private struct WorktreeManagementClientError: LocalizedError {
     var candidate: WorktreeIntegrationCandidate? = nil
     var candidateDiff: WorktreeIntegrationCandidateDiff? = nil
     var diagnosis: WorktreeDeliveryDiagnosis? = nil
+    var commitPolicyBlocker: WorktreeCommitPolicyBlocker? = nil
+    var commitReviewId: String? = nil
     var errorDescription: String? { code.map { "\(message) (\($0))" } ?? message }
 }

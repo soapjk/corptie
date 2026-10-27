@@ -81,11 +81,11 @@ export class ProjectApplicationService {
     };
   }
 
-  async runWorkspaceAction(projectId, workspaceId, action, input = {}) {
+  async runWorkspaceAction(projectId, workspaceId, action, input = {}, authority) {
     const project = await this.requireProject(projectId);
     const normalizedWorkspaceId = typeof workspaceId === "string" ? workspaceId.trim() : "";
     if (!normalizedWorkspaceId) throw new TypeError("A workspaceId is required.");
-    const result = await this.performWorkspaceAction(project, normalizedWorkspaceId, action, input);
+    const result = await this.performWorkspaceAction(project, normalizedWorkspaceId, action, input, authority);
     return {
       projectId: project.id,
       workspaceId: normalizedWorkspaceId,

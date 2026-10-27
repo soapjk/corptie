@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createProjectActionHandlers } from "../src/application/projectActionHandlers.mjs";
 
-function fixture() {
+function fixture(overrides={}) {
   const calls = [];
   const workspace = { worktreeId: "tree", path: "/tree", availability: "available", dirty: true };
   const record = (name) => async (...args) => { calls.push([name, ...args]); return { ok: true }; };
@@ -22,7 +22,8 @@ function fixture() {
     gitHubPushes: { pushBranch: record("push") },
     rebuildAndRestartProjectService: record("restart"),
     generateUnownedWorktreeCommitMessage: async () => "message",
-    resolveProjectCommitProtection: record("protection")
+    resolveProjectCommitProtection: record("protection"),
+    ...overrides
   });
   return { calls, handlers, workspace, project: { id: "project", mainPath: "/main" } };
 }
@@ -32,6 +33,20 @@ test("project context resolves the available main worktree canonical path", () =
   assert.deepEqual(f.handlers.resolveProjectContext("project"), {
     id: "project", mainPath: "/canonical", mainWorkspaceId: "main"
   });
+});
+
+test("commit preparation and commit share the Markdown policy service without routing through a merge Job",async()=>{
+  const calls=[];
+  const f=fixture({markdownCommitPolicy:{
+    inspectCommitPolicy:async context=>{calls.push(["inspect",context]);return {schemaVersion:2,reviewId:"review:one",commitPolicyBlocker:{files:[]}};},
+    commit:async(context,input,protection)=>{calls.push(["commit",context,input]);await protection();return {committed:true};}
+  }});
+  const prepared=await f.handlers.performProjectWorkspaceAction(f.project,"tree","commit-prepare");
+  assert.equal(prepared.schemaVersion,2);assert.equal(prepared.reviewId,"review:one");assert.ok(prepared.protection);
+  const authority={kind:"paired_device"};
+  await f.handlers.performProjectWorkspaceAction(f.project,"tree","commit",{commitMessage:"mine",reviewId:"review:one"},authority);
+  assert.deepEqual(calls[1][1].authority,authority);
+  assert.deepEqual(f.calls.map(([name])=>name),["inspect","protectionInspect","inspect","protection"]);
 });
 
 test("project-level initialization cannot bypass authenticated Work Session setup", async () => {

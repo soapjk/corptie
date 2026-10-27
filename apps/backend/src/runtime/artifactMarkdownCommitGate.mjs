@@ -5,6 +5,21 @@ import { promisify } from "node:util";
 
 const run = promisify(execFile);
 
+// Shared by the real index gate and read-only, prospective commit review.
+// readBytes is lazy: ordinary source files and existing documents are not read.
+export async function inspectArtifactDocumentEntry({path,mode,objectId=null,repositoryPath,headPaths,readBytes}, verifyPromotion) {
+  if (path.split("/").some(part=>part.normalize("NFC").toLowerCase()===".corptie"))
+    return {violation:{path,code:"GIT_CORPTIE_CONTENT_FORBIDDEN"}};
+  const markdown=/\.md$/i.test(path);
+  if (!(markdown || /\.(?:pdf|docx?|pptx?|xlsx?|odt|odp|ods|rtf|epub)$/i.test(path)) || headPaths.has(path)) return null;
+  if (!["100644","100755"].includes(mode)) return {violation:{path,code:markdown ? "GIT_MARKDOWN_NOT_REGULAR" : "GIT_DOCUMENT_NOT_REGULAR"}};
+  const bytes=await readBytes();
+  const contentHash=createHash("sha256").update(bytes).digest("hex");
+  const fixed={repositoryPath,path,contentHash,objectId};
+  return await verifyPromotion(fixed)===true ? {verified:fixed}
+    : {violation:{path,code:markdown ? "GIT_MARKDOWN_PROMOTION_REQUIRED" : "GIT_DOCUMENT_PROMOTION_REQUIRED"},contentHash,byteLength:bytes.byteLength};
+}
+
 // The resolver is supplied by the trusted Artifact service, never by tool
 // arguments or repository-local JSON. It must validate durable promotion and
 // direct-user authorization evidence for this exact repository/path/hash.
@@ -28,18 +43,9 @@ export async function inspectArtifactMarkdownCommit(cwd, { verifyPromotion = asy
     const [mode, objectId, stage] = entry.slice(0, tab).split(" ");
     const path = entry.slice(tab + 1);
     if (tab < 0 || stage !== "0") { violations.push({ path, code: "GIT_INDEX_UNMERGED" }); continue; }
-    if (path.split("/").some(part => part.normalize("NFC").toLowerCase() === ".corptie")) {
-      violations.push({ path, code: "GIT_CORPTIE_CONTENT_FORBIDDEN" }); continue;
-    }
-    const markdown = /\.md$/i.test(path);
-    const document = markdown || /\.(?:pdf|docx?|pptx?|xlsx?|odt|odp|ods|rtf|epub)$/i.test(path);
-    if (!document || headPaths.has(path)) continue;
-    if (!["100644", "100755"].includes(mode)) { violations.push({ path, code: markdown ? "GIT_MARKDOWN_NOT_REGULAR" : "GIT_DOCUMENT_NOT_REGULAR" }); continue; }
-    const bytes = await git("cat-file", "blob", objectId);
-    const contentHash = createHash("sha256").update(bytes).digest("hex");
-    const fixed = { repositoryPath, path, contentHash, objectId };
-    if (await verifyPromotion(fixed) !== true) violations.push({ path, code: markdown ? "GIT_MARKDOWN_PROMOTION_REQUIRED" : "GIT_DOCUMENT_PROMOTION_REQUIRED" });
-    else verified.push(fixed);
+    const result=await inspectArtifactDocumentEntry({path,mode,objectId,repositoryPath,headPaths,readBytes:()=>git("cat-file","blob",objectId)},verifyPromotion);
+    if(result?.violation) violations.push(result.violation);
+    if(result?.verified) verified.push(result.verified);
   }
   // A concurrent git add must not turn a previously checked receipt into
   // evidence for a different index. The caller must check again at commit.

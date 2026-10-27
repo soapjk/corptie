@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdir, readFile, realpath, unlink, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, readFile, realpath, unlink, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { inspectArtifactDocumentEntry } from "./artifactMarkdownCommitGate.mjs";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { createGitWorkspaceSnapshot, inspectGitWorkspace } from "../utils/gitWorktreeInventory.mjs";
@@ -43,10 +45,17 @@ function artifactMarkdownPolicyError(error) {
 function safeRepositoryRelativePath(value) {
   const path = String(value ?? "");
   if (!path || path.startsWith("/") || path.includes("\\") || /[\0\r\n]/u.test(path)
-    || path.split("/").some((part) => !part || part === "." || part === "..")) {
+    || path.split("/").some((part) => !part || part === "." || part === ".." || [".git",".corptie"].includes(part.normalize("NFC").toLowerCase()))) {
     throw integrationGitError("COMMIT_POLICY_PATH_INVALID", "The Markdown path is invalid.");
   }
   return path;
+}
+
+async function assertRegularRepositoryFile(root,relativePath) {
+  const absolute=resolve(root,safeRepositoryRelativePath(relativePath));
+  if(!pathContains(root,absolute) || !((await lstat(absolute)).isFile()) || await realpath(absolute)!==absolute)
+    throw integrationGitError("COMMIT_POLICY_PATH_INVALID","The Markdown path must be a regular file inside this Worktree, without symlink components.");
+  return absolute;
 }
 
 function gitignoreExactRule(path) {
@@ -72,6 +81,7 @@ async function canonicalFuturePath(path) {
 export class GitWorkspaceManager {
   constructor(options) {
     this.store = options.store;
+    this.directCommitRepositories = new Set();
     this.transitions = options.transitions;
     this.execFile = options.execFile ?? execFileAsync;
     this.inspectionConcurrency = options.inspectionConcurrency ?? 8;
@@ -694,6 +704,7 @@ export class GitWorkspaceManager {
     if (!pathContains(repositoryRoot, absolute)) {
       throw integrationGitError("COMMIT_POLICY_PATH_INVALID", "The Markdown path is outside the repository.");
     }
+    await assertRegularRepositoryFile(repositoryRoot,relativePath);
     const bytes = await readFile(absolute);
     const contentHash = createHash("sha256").update(bytes).digest("hex");
     if (contentHash !== input.expectedContentHash) {
@@ -704,9 +715,13 @@ export class GitWorkspaceManager {
       throw integrationGitError("COMMIT_POLICY_FILE_TRACKED", `${relativePath} is already tracked and cannot be ignored by this action.`);
     }
     const ignorePath = resolve(repositoryRoot, ".gitignore");
+    try {await assertRegularRepositoryFile(repositoryRoot,".gitignore");} catch(error) {if(error.code!=="ENOENT") throw error;}
     let current = "";
     try { current = await readFile(ignorePath, "utf8"); }
     catch (error) { if (error?.code !== "ENOENT") throw error; }
+    if(Object.hasOwn(input,"expectedIgnoreContentHash") && input.expectedIgnoreContentHash!==
+      (await lstat(ignorePath).catch(error=>{if(error.code!=="ENOENT")throw error;return null;}) ? createHash("sha256").update(current).digest("hex") : null))
+      throw integrationGitError("COMMIT_REVIEW_CHANGED",".gitignore changed after review.");
     const rule = gitignoreExactRule(relativePath);
     const existing = new Set(current.split(/\r?\n/u));
     if (!existing.has(rule)) {
@@ -714,7 +729,10 @@ export class GitWorkspaceManager {
       await writeFile(ignorePath, `${current}${separator}${rule}\n`, "utf8");
     }
     if (tracked) await this.runGit(repositoryRoot, ["rm", "--cached", "--", relativePath]);
-    else await this.runGit(repositoryRoot, ["reset", "--quiet", "HEAD", "--", relativePath]).catch(() => {});
+    else if(await this.gitSucceeds(repositoryRoot,["ls-files","--error-unmatch","--",relativePath])) {
+      if(await this.gitSucceeds(repositoryRoot,["rev-parse","--verify","HEAD"])) await this.runGit(repositoryRoot,["reset","--quiet","HEAD","--",relativePath]);
+      else await this.runGit(repositoryRoot,["rm","--cached","--",relativePath]);
+    }
     // The ignore rule is part of the user's integration decision. Stage it
     // immediately so a resumed merge cannot commit the source changes while
     // leaving its policy side effect behind as a dirty main Worktree.
@@ -730,6 +748,7 @@ export class GitWorkspaceManager {
     if (!pathContains(repositoryRoot, absolute)) {
       throw integrationGitError("COMMIT_POLICY_PATH_INVALID", "The Markdown path is outside the repository.");
     }
+    await assertRegularRepositoryFile(repositoryRoot,relativePath);
     const bytes = await readFile(absolute);
     const contentHash = createHash("sha256").update(bytes).digest("hex");
     if (contentHash !== input.expectedContentHash) {
@@ -741,7 +760,10 @@ export class GitWorkspaceManager {
     }
     if (tracked) await this.runGit(repositoryRoot, ["rm", "--", relativePath]);
     else {
-      await this.runGit(repositoryRoot, ["reset", "--quiet", "HEAD", "--", relativePath]).catch(() => {});
+      if(await this.gitSucceeds(repositoryRoot,["ls-files","--error-unmatch","--",relativePath])) {
+        if(await this.gitSucceeds(repositoryRoot,["rev-parse","--verify","HEAD"])) await this.runGit(repositoryRoot,["reset","--quiet","HEAD","--",relativePath]);
+        else await this.runGit(repositoryRoot,["rm","--cached","--",relativePath]);
+      }
       await unlink(absolute);
     }
     this.invalidateInspectionCache(input.repositoryId, "commit_policy_delete");
@@ -831,6 +853,7 @@ export class GitWorkspaceManager {
     if (!pathContains(repositoryRoot, absolute)) {
       throw integrationGitError("COMMIT_POLICY_PATH_INVALID", "The Markdown path is outside the repository.");
     }
+    await assertRegularRepositoryFile(repositoryRoot,relativePath);
     const content = await readFile(absolute);
     const contentHash = createHash("sha256").update(content).digest("hex");
     if (contentHash !== input.expectedContentHash) {
@@ -846,6 +869,7 @@ export class GitWorkspaceManager {
       const relativePath = safeRepositoryRelativePath(value);
       const absolute = resolve(repositoryRoot, relativePath);
       if (!pathContains(repositoryRoot, absolute)) continue;
+      await assertRegularRepositoryFile(repositoryRoot,relativePath);
       const bytes = await readFile(absolute);
       files.push({
         path: relativePath,
@@ -854,6 +878,54 @@ export class GitWorkspaceManager {
       });
     }
     return files;
+  }
+
+  async inspectWorktreeCommitPolicy({path,repositoryId,verifyPromotion=async()=>false}) {
+    const root=await realpath(path);
+    if((await realpath((await this.gitOutput(root,["rev-parse","--show-toplevel"])).trim()))!==root)
+      throw integrationGitError("COMMIT_POLICY_PATH_INVALID","Expected the exact Worktree root.");
+    if(repositoryId) {
+      const repository=this.store.getGitRepository(repositoryId);
+      const common=await realpath(resolve(root,(await this.gitOutput(root,["rev-parse","--git-common-dir"])).trim()));
+      if(!repository || common!==await realpath(repository.commonGitDirCanonicalPath))
+        throw integrationGitError("COMMIT_REVIEW_SCOPE_MISMATCH","The Worktree no longer belongs to the reviewed repository.");
+    }
+    const headOid=await this.gitSucceeds(root,["rev-parse","--verify","HEAD"]) ? (await this.gitOutput(root,["rev-parse","--verify","HEAD"])).trim() : null;
+    const headRef=(await this.gitOutput(root,["symbolic-ref","--quiet","HEAD"]).catch(()=>"")).trim();
+    const status=await this.gitOutput(root,["status","--porcelain=v1","-z","--untracked-files=all"]);
+    const index=await this.gitOutput(root,["ls-files","--stage","-z"]);
+    const headPaths=new Set(headOid ? (await this.gitOutput(root,["ls-tree","-r","--name-only","-z",headOid])).split("\0").filter(Boolean) : []);
+    const changed=(await this.gitOutput(root,headOid ? ["diff","--name-only","-z",headOid,"--"] : ["ls-files","--cached","-z"])).split("\0").filter(Boolean);
+    const untracked=(await this.gitOutput(root,["ls-files","--others","--exclude-standard","-z"])).split("\0").filter(Boolean);
+    const paths=[...new Set([...changed,...untracked])].sort();
+    const files=[],violations=[],versions=[];
+    for(const value of paths) {
+      const relativePath=safeRepositoryRelativePath(value),absolute=resolve(root,relativePath);
+      let stat;
+      try {stat=await lstat(absolute);} catch(error) {if(error.code!=="ENOENT")throw error;versions.push([relativePath,"deleted"]);continue;}
+      const mode=stat.isSymbolicLink() ? "120000" : stat.isFile() ? (stat.mode & 0o111 ? "100755" : "100644") : "160000";
+      let contentHash=null;
+      if(stat.isFile()) {
+        if(await realpath(absolute)!==absolute) throw integrationGitError("COMMIT_POLICY_PATH_INVALID",`${relativePath} has symlink path components.`);
+        const digest=createHash("sha256");
+        for await(const chunk of createReadStream(absolute)) digest.update(chunk);
+        contentHash=digest.digest("hex");
+      }
+      versions.push([relativePath,mode,contentHash ?? stat.mtimeMs]);
+      const result=await inspectArtifactDocumentEntry({path:relativePath,mode,repositoryPath:root,headPaths,readBytes:()=>readFile(absolute)},verifyPromotion);
+      if(result?.violation) {
+        if(result.violation.code==="GIT_MARKDOWN_PROMOTION_REQUIRED") files.push({...result.violation,contentHash:result.contentHash,byteLength:result.byteLength,supportedActions:["ignore","delete","artifact","track"]});
+        else violations.push(result.violation);
+      }
+    }
+    if(status!==await this.gitOutput(root,["status","--porcelain=v1","-z","--untracked-files=all"]) || index!==await this.gitOutput(root,["ls-files","--stage","-z"]))
+      throw integrationGitError("COMMIT_REVIEW_CHANGED","The Worktree changed during review. Review again.");
+    let ignoreContentHash=null;
+    try {await assertRegularRepositoryFile(root,".gitignore");ignoreContentHash=createHash("sha256").update(await readFile(resolve(root,".gitignore"))).digest("hex");}
+    catch(error) {if(error.code!=="ENOENT")throw error;}
+    return {repositoryRoot:root,headOid,headRef,files,violations,versions,indexEntries:index.split("\0").filter(Boolean),ignoreContentHash,
+      contentState:createHash("sha256").update(JSON.stringify([headOid,headRef,versions])).digest("hex"),
+      state:createHash("sha256").update(JSON.stringify([headOid,headRef,status,index,versions,ignoreContentHash])).digest("hex")};
   }
 
   async mergeIntegrationSource(input) {
@@ -1841,9 +1913,12 @@ export class GitWorkspaceManager {
     if (!status.trim()) throw new Error("The selected worktree has no uncommitted changes.");
     const commitMessage = requiredCommitMessage(input.commitMessage);
     try {
+      await input.beforeStage?.();
       await this.runGit(source.path, ["add", "--all"]);
+      await input.beforeCommit?.();
       await this.runGit(source.path, ["commit", "-m", commitMessage]);
     } catch (error) {
+      if(error?.code?.startsWith("COMMIT_REVIEW_")) throw error;
       const policyError = artifactMarkdownPolicyError(error);
       if (policyError) throw policyError;
       throw new Error(safeGitError(error, "Could not commit the worktree changes"));

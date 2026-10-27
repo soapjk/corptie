@@ -58,6 +58,7 @@ import { createSessionMessageOperation } from "./application/sessionMessageOpera
 import { SessionStateDiagnostics } from "./application/sessionStateDiagnostics.mjs";
 import { ProjectApplicationService } from "./application/projectApplicationService.mjs";
 import { createWorktreeIntegrationServices } from "./application/worktreeIntegrationComposition.mjs";
+import { MarkdownCommitPolicyService } from "./application/markdownCommitPolicyService.mjs";
 import { BackgroundAgentService } from "./application/backgroundAgentService.mjs";
 import { FoundationModelSettings } from "./application/foundationModelSettings.mjs";
 import { taskCollaborationEdges } from "./application/taskCollaborationEdges.mjs";
@@ -1448,6 +1449,7 @@ const projectWorktreeStatusReader = createProjectWorktreeStatusReader({
 });
 const { resolveProjectContext, performProjectDevelopmentServiceAction, performProjectWorkspaceAction } = createProjectActionHandlers({
   store, gitWorkspaces, projectToolsets, gitCommitProtection, gitHubPushes,
+  markdownCommitPolicy: new MarkdownCommitPolicyService({store,gitWorkspaces,artifactService}),
   rebuildAndRestartProjectService, generateUnownedWorktreeCommitMessage,
   resolveProjectCommitProtection: (...args) => resolveProjectCommitProtection(...args)
 });

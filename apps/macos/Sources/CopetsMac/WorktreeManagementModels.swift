@@ -550,6 +550,13 @@ struct WorktreeCommitPolicyBlocker: Identifiable, Decodable, Equatable, Sendable
     let branchName: String?
     let checkedAt: String
     let files: [WorktreeCommitPolicyFile]
+    var artifactOwners: [WorktreeCommitArtifactOwner]? = nil
+}
+
+struct WorktreeCommitArtifactOwner: Identifiable, Decodable, Equatable, Sendable {
+    let workId: String
+    let title: String
+    var id: String { workId }
 }
 
 struct WorktreeCommitPolicyFile: Identifiable, Decodable, Equatable, Sendable {
@@ -856,4 +863,34 @@ struct WorktreeManagementSelection: Equatable {
 
 struct IndividualWorktreeOperationPreparation: Equatable, Sendable {
     let protection: GitCommitProtectionStatus?
+    var reviewId: String? = nil
+    var commitPolicyBlocker: WorktreeCommitPolicyBlocker? = nil
+}
+
+struct WorktreeCommitPreparation: Decodable, Sendable {
+    let value: IndividualWorktreeOperationPreparation
+    private enum CodingKeys: String, CodingKey { case schemaVersion, protection, reviewId, commitPolicyBlocker }
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if try container.decodeIfPresent(Int.self, forKey: .schemaVersion) == 2 {
+            value = IndividualWorktreeOperationPreparation(
+                protection: try container.decodeIfPresent(GitCommitProtectionStatus.self, forKey: .protection),
+                reviewId: try container.decodeIfPresent(String.self, forKey: .reviewId),
+                commitPolicyBlocker: try container.decodeIfPresent(WorktreeCommitPolicyBlocker.self, forKey: .commitPolicyBlocker))
+        } else {
+            value = IndividualWorktreeOperationPreparation(protection: try GitCommitProtectionStatus(from: decoder))
+        }
+    }
+}
+
+struct WorktreeCommitResult: Decodable, Sendable {
+    let committed: Bool?
+    let noChanges: Bool?
+    let headOid: String?
+}
+
+enum IndividualWorktreeCommitOutcome: Sendable {
+    case completed
+    case blocked(WorktreeCommitPolicyBlocker, reviewId: String?, message: String, requiresReview: Bool)
+    case failed(String, requiresReview: Bool)
 }

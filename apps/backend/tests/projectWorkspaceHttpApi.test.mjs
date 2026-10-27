@@ -108,6 +108,15 @@ test("candidate refresh errors retain the fresh candidate and deterministic diff
   );
 });
 
+test("direct workspace commits retain the actionable Markdown blocker",async()=>{
+  const f=fixture(),blocker={id:"review:one",version:1,worktreeId:"tree",checkedAt:"now",files:[{path:"one.md",supportedActions:["ignore","delete","artifact","track"]}]};
+  f.dependencies.projectApplicationService.runWorkspaceAction=async()=>{
+    throw Object.assign(new Error("Choose file actions"),{statusCode:409,code:"GIT_ARTIFACT_POLICY_REJECTED",commitPolicyBlocker:blocker,commitReviewId:"review:one"});
+  };
+  const response=await f.dispatch("/projects/p/workspaces/tree/actions/commit","POST").response;
+  assert.equal(response.status,409);assert.deepEqual(response.body.commitPolicyBlocker,blocker);assert.equal(response.body.commitReviewId,"review:one");
+});
+
 test("candidate errors identify the blocked task without exposing startup or Provider payloads",async()=>{
   const f=fixture();
   f.dependencies.worktreeIntegrationJobService.createCandidate=async()=>{
