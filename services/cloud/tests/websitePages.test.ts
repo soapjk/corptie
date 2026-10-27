@@ -7,7 +7,7 @@ const options = { baseURL: "https://cloud.example.test", version: "release-1", d
 
 test("public pages, HEAD and private account shell are isolated from API routing", async () => {
   const handle = createWebsiteHandler(options);
-  for (const path of ["/", "/download", "/account", "/assets/site.css", "/assets/web-http.js", "/assets/account.js", "/robots.txt", "/sitemap.xml"]) {
+  for (const path of ["/", "/download", "/account", "/assets/theme.css", "/assets/site.css", "/assets/web-http.js", "/assets/account.js", "/robots.txt", "/sitemap.xml"]) {
     const get = await handle(new Request(options.baseURL + path));
     const head = await handle(new Request(options.baseURL + path, { method: "HEAD" }));
     assert.equal(get?.status, 200, path); assert.equal(head?.status, 200, path);
@@ -42,7 +42,7 @@ test("release availability, registration switch and metadata accurately describe
 
 test("public document and browser asset budget stays below 80 KiB without background fetching", async () => {
   const handle = createWebsiteHandler(options); let bytes = 0;
-  for (const path of ["/", "/download", "/account", "/assets/site.css", "/assets/web-http.js", "/assets/account.js"]) {
+  for (const path of ["/", "/download", "/account", "/assets/theme.css", "/assets/site.css", "/assets/web-http.js", "/assets/account.js"]) {
     bytes += (await (await handle(new Request(options.baseURL + path)))!.arrayBuffer()).byteLength;
   }
   assert.ok(bytes < 80 * 1024, `website bytes ${bytes}`);
