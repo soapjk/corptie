@@ -1,32 +1,23 @@
-import { asset, escapeHtml, renderDocument, securityHeaders } from "./websiteHtml.js";
+import { asset, escapeHtml, renderDocument, renderSiteHeader, renderSiteFooter, securityHeaders } from "./websiteHtml.js";
 
 const AUTH_CSS = `
-:root { color-scheme: light dark; font: 16px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-* { box-sizing: border-box; }
-body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: color-mix(in srgb, Canvas 96%, Highlight 4%); color: CanvasText; }
-main { width: min(100%, 440px); }
-.brand { display: flex; align-items: center; gap: 10px; margin: 0 0 18px; font-weight: 700; letter-spacing: -.01em; }
-.brand-mark { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; background: Highlight; color: HighlightText; font-size: 14px; }
-.panel { padding: 28px; border: 1px solid color-mix(in srgb, CanvasText 12%, Canvas); border-radius: 18px; background: Canvas; box-shadow: 0 16px 50px color-mix(in srgb, CanvasText 10%, transparent); }
+body.auth-page { min-height: 100vh; display: flex; flex-direction: column; }
+.auth-page main { width: min(440px, calc(100% - 32px)); margin: auto; padding: 56px 0; }
+.auth-page .panel { padding: 28px; }
 h1 { margin: 0 0 8px; font-size: clamp(1.65rem, 5vw, 2rem); line-height: 1.2; letter-spacing: -0.03em; }
-p { margin: 0 0 24px; color: color-mix(in srgb, CanvasText 68%, Canvas); overflow-wrap: anywhere; }
+p { margin: 0 0 24px; color: var(--muted); overflow-wrap: anywhere; }
 form { display: grid; gap: 16px; }
 label { display: grid; gap: 7px; font-weight: 600; }
 input { width: 100%; min-height: 46px; padding: 10px 12px; border: 1px solid color-mix(in srgb, CanvasText 22%, Canvas); border-radius: 10px; background: Canvas; color: CanvasText; font: inherit; }
-input:focus-visible, button:focus-visible, a:focus-visible { outline: 3px solid Highlight; outline-offset: 2px; }
-button { min-height: 46px; border: 0; border-radius: 10px; padding: 10px 16px; background: Highlight; color: HighlightText; font: inherit; font-weight: 700; cursor: pointer; }
+form button, .actions button { background: var(--text); color: var(--bg); }
 button.secondary { border: 1px solid color-mix(in srgb, CanvasText 25%, Canvas); background: Canvas; color: CanvasText; }
-button:disabled { cursor: wait; opacity: .65; }
 .actions { display: grid; gap: 10px; }
-.links { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 24px; }
-a { color: LinkText; }
 .status { min-height: 24px; margin: 18px 0 0; color: CanvasText; }
 .status[data-error="true"] { color: #b42318; }
 ul { display: grid; gap: 8px; margin: 0 0 24px; padding: 0; list-style: none; }
 li { padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, CanvasText 6%, Canvas); }
-.footnote { margin: 18px 0 0; font-size: .82rem; text-align: center; }
 @media (prefers-color-scheme: dark) { .status[data-error="true"] { color: #ffb4ab; } }
-@media (max-width: 480px) { body { padding: 16px; align-items: start; } main { margin-top: 8vh; } .panel { padding: 22px; border-radius: 15px; } }
+@media (max-width: 480px) { .auth-page main { padding: 40px 0; } .auth-page .panel { padding: 22px; } }
 `;
 
 const AUTH_JS = `
@@ -216,9 +207,9 @@ function renderAuthPage(
     data.token ? `data-token="${escapeHtml(data.token)}"` : ""
   ].filter(Boolean).join(" ");
   return renderDocument({
-    title, description: introduction, noIndex: true, styles: ["/auth/assets/auth.css"],
+    title, description: introduction, noIndex: true, page: "auth", styles: ["/assets/theme.css", "/auth/assets/auth.css"],
     scripts: ["/assets/web-http.js", "/auth/assets/auth.js"], assetVersion: data.assetVersion ?? "development",
-    body: `<main ${attributes}><div class="brand" aria-label="Corptie"><span class="brand-mark" aria-hidden="true">C</span><span>Corptie</span></div><section class="panel"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(introduction)}</p>${content}<p class="status" data-status role="status" aria-live="polite"></p></section><nav class="links" aria-label="网站导航"><a href="/">官网首页</a><a href="/download">下载</a><a href="/account">我的账号</a></nav><p class="footnote">安全登录由 Corptie Cloud 提供</p></main>`
+    body: `${renderSiteHeader({ compact: true })}<main id="main" ${attributes}><section class="panel"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(introduction)}</p>${content}<p class="status" data-status role="status" aria-live="polite"></p></section></main>${renderSiteFooter({ compact: true })}`
   });
 }
 

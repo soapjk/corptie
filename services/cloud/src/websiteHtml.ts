@@ -22,10 +22,19 @@ export function asset(body: string, contentType: string, cacheControl = "public,
 export function renderDocument(options: {
   title: string; description: string; body: string; styles: readonly string[];
   scripts?: readonly string[]; canonicalURL?: string; noIndex?: boolean;
-  cacheControl?: string; assetVersion?: string;
+  cacheControl?: string; assetVersion?: string; page?: "site" | "auth";
 }): Response {
   const version = options.assetVersion ? `?v=${encodeURIComponent(options.assetVersion)}` : "";
   const canonical = options.canonicalURL ? `<link rel="canonical" href="${escapeHtml(options.canonicalURL)}"><meta property="og:url" content="${escapeHtml(options.canonicalURL)}">` : "";
-  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>${escapeHtml(options.title)} · Corptie</title><meta name="description" content="${escapeHtml(options.description)}"><meta property="og:title" content="${escapeHtml(options.title)} · Corptie"><meta property="og:description" content="${escapeHtml(options.description)}"><meta property="og:type" content="website">${canonical}${options.noIndex ? '<meta name="robots" content="noindex, nofollow">' : ""}${options.styles.map(path => `<link rel="stylesheet" href="${escapeHtml(path + version)}">`).join("")}${(options.scripts ?? []).map(path => `<script src="${escapeHtml(path + version)}" defer></script>`).join("")}</head><body>${options.body}</body></html>`;
+  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>${escapeHtml(options.title)} · Corptie</title><meta name="description" content="${escapeHtml(options.description)}"><meta property="og:title" content="${escapeHtml(options.title)} · Corptie"><meta property="og:description" content="${escapeHtml(options.description)}"><meta property="og:type" content="website">${canonical}${options.noIndex ? '<meta name="robots" content="noindex, nofollow">' : ""}${options.styles.map(path => `<link rel="stylesheet" href="${escapeHtml(path + version)}">`).join("")}${(options.scripts ?? []).map(path => `<script src="${escapeHtml(path + version)}" defer></script>`).join("")}</head><body class="${options.page === "auth" ? "auth-page" : "site-page"}">${options.body}</body></html>`;
   return new Response(html, { headers: securityHeaders("text/html; charset=utf-8", options.cacheControl ?? "no-store") });
+}
+
+export function renderSiteHeader(options: { current?: "home" | "download" | "account"; compact?: boolean } = {}): string {
+  const link = (path: string, label: string, current: boolean) => `<a href="${path}"${current ? ' aria-current="page"' : ""}>${label}</a>`;
+  return `<a class="skip" href="#main">跳到主要内容</a><header class="site-header"><div class="wrap nav-shell"><a class="brand" href="/" aria-label="Corptie 首页"><span class="brand-symbol" aria-hidden="true">C</span>Corptie</a><nav aria-label="主导航">${options.compact ? "" : '<a href="/#features">功能</a><a href="/#workflow">工作流程</a>'}${link("/download", "下载", options.current === "download")}${link("/account", "我的账号", options.current === "account")}</nav></div></header>`;
+}
+
+export function renderSiteFooter(options: { compact?: boolean } = {}): string {
+  return `<footer class="site-footer"><div class="wrap"><span>${options.compact ? "安全登录由 Corptie Cloud 提供" : "Corptie · 将项目、任务与执行连接起来"}</span><nav aria-label="页脚导航"><a href="/">首页</a><a href="/download">下载</a></nav></div></footer>`;
 }
