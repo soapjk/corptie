@@ -154,14 +154,14 @@ import AppKit
             readTurnTrace: { _, _ in throw ClientDetailConfigurationFailure.unavailable },
             worktreeAPI: { _ in throw ClientDetailConfigurationFailure.unavailable }, onWorktreeJob: { _ in }, resident: .init())
         let context = ClientDetailContext(sessionKind: "assistantChat", taskID: nil, workID: nil)
-        func rail(arranging: Bool) -> some View {
+        func rail() -> some View {
             ConversationDetailDashboard {
                 ConversationNativeBusinessDetail(store: handle.store, api: nil, actions: nil, context: context,
-                    adapters: adapters, handle: handle, arrangement: arrangement, arranging: arranging,
+                    adapters: adapters, handle: handle, arrangement: arrangement,
                     refresh: {}, canCommand: { _, _ in false }, perform: { _, _, _ in Issue.record("Layout dispatched a command") })
             }
         }
-        let host = NSHostingView(rootView: rail(arranging: false))
+        let host = NSHostingView(rootView: rail())
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 376, height: 700),
             styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -188,7 +188,7 @@ import AppKit
             } else {
                 arrangement.move(["summary"], before: "references", cards: handle.store.orderedCards)
             }
-            host.rootView = rail(arranging: revision.isMultiple(of: 2))
+            host.rootView = rail()
             let width = [324.0, 264, 320, 324][revision % 4]
             window.setContentSize(CGSize(width: width, height: 700))
             host.layoutSubtreeIfNeeded()
@@ -219,12 +219,7 @@ import AppKit
                     }.detailWidget(sizes[index])
         }
         let host = NSHostingView(rootView: ConversationDetailDashboard {
-            if #available(macOS 27.0, *) {
-                DetailWidgetLayout(sizes: sizes) { rows.reorderable() }
-                    .reorderContainer(for: Int.self, itemID: \.self, isEnabled: true) { _ in }
-            } else {
-                DetailWidgetLayout(sizes: sizes) { rows }
-            }
+            DetailWidgetLayout(sizes: sizes) { rows }
         })
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 376, height: 800), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false

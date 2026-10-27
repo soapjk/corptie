@@ -32,6 +32,41 @@ resolved="$(CORPTIE_APP_SIGNING_IDENTITY="Apple Development: Example (TEAMID)" \
   corptie_resolve_macos_signing_identity)"
 [[ "${resolved}" == "Apple Development: Example (TEAMID)" ]]
 
+# Exercise discovery without depending on the machine's keychain. Renewed
+# certificates with the same subject must resolve to an exact fingerprint.
+security() { printf '%s\n' "${TEST_SIGNING_IDENTITIES}"; }
+first_identity='  1) AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA "Apple Development: Example (TEAMID)"'
+second_identity='  2) BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB "Apple Development: Example (TEAMID)"'
+TEST_SIGNING_IDENTITIES='     0 valid identities found'
+[[ "$(CORPTIE_APP_SIGNING_IDENTITY= corptie_resolve_macos_signing_identity)" == '-' ]]
+TEST_SIGNING_IDENTITIES="${first_identity}"
+[[ "$(CORPTIE_APP_SIGNING_IDENTITY= corptie_resolve_macos_signing_identity)" == 'Apple Development: Example (TEAMID)' ]]
+TEST_SIGNING_IDENTITIES="${first_identity}"$'\n'"${second_identity}"
+[[ "$(CORPTIE_APP_SIGNING_IDENTITY= corptie_resolve_macos_signing_identity)" == 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' ]]
+TEST_SIGNING_IDENTITIES="${first_identity}"$'\n''  2) BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB "Apple Development: Other (OTHERTEAM)"'
+[[ "$(CORPTIE_APP_SIGNING_IDENTITY= corptie_resolve_macos_signing_identity)" == '-' ]]
+[[ "$(CORPTIE_APP_SIGNING_IDENTITY=explicit-fingerprint corptie_resolve_macos_signing_identity)" == 'explicit-fingerprint' ]]
+unset -f security
+
+# A fingerprint must read the selected certificate, even with duplicate names.
+certificate_dir="$(mktemp -d /tmp/corptie-signing-test-XXXXXX)"
+trap 'rm -rf "${certificate_dir}"' EXIT
+for team in FIRSTTEAM SECONDTEAM; do
+  openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+    -subj "/CN=Apple Development: Example/OU=${team}" \
+    -keyout "${certificate_dir}/${team}.key" \
+    -out "${certificate_dir}/${team}.pem" >/dev/null 2>&1
+done
+security() { cat "${certificate_dir}/FIRSTTEAM.pem" "${certificate_dir}/SECONDTEAM.pem"; }
+fingerprint="$(openssl x509 -in "${certificate_dir}/SECONDTEAM.pem" -noout -fingerprint -sha1 | cut -d= -f2 | tr -d :)"
+[[ "$(corptie_macos_signing_team "${fingerprint}")" == SECONDTEAM ]]
+[[ "$(corptie_macos_signing_team 'Apple Development: Example')" == FIRSTTEAM ]]
+if corptie_macos_signing_team '0000000000000000000000000000000000000000'; then
+  echo "expected an unknown signing fingerprint to fail" >&2
+  exit 1
+fi
+unset -f security
+
 # Local production installation must not depend on Apple's online timestamp
 # service. The package remains identity-signed with the hardened runtime.
 grep -Fq 'SIGN_FLAGS+=(--options runtime --timestamp=none)' "${PACKAGE_SCRIPT}"

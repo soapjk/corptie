@@ -37,7 +37,7 @@ corptie_validate_macos_signing_config "${APP_SIGNING_IDENTITY}"
 CLOUD_KEYCHAIN_ENABLED=false
 PROFILE_PATH=""
 if [[ "${APP_SIGNING_IDENTITY}" != "-" ]]; then
-  SIGNING_TEAM="$(security find-certificate -c "${APP_SIGNING_IDENTITY}" -p 2>/dev/null | openssl x509 -noout -subject -nameopt RFC2253 2>/dev/null | sed -n 's/.*OU=\([^,]*\).*/\1/p')"
+  SIGNING_TEAM="$(corptie_macos_signing_team "${APP_SIGNING_IDENTITY}")"
   if [[ -z "${SIGNING_TEAM}" ]]; then
     echo "Error: unable to read the signing identity team ID." >&2
     exit 68

@@ -52,7 +52,7 @@ import AppKit
             return ConversationDetailDashboard {
                 ConversationNativeBusinessDetail(store: handle.store, api: fixtureAPI, actions: nil,
                     context: .init(sessionKind: "task", taskID: scope.taskID, workID: scope.workID),
-                    adapters: adapters, handle: handle, arrangement: retained.arrangement, arranging: false,
+                    adapters: adapters, handle: handle, arrangement: retained.arrangement,
                     refresh: {}, canCommand: { _, _ in false }, perform: { _, _, _ in })
                     .environment(\.detailPresentation, retained)
             }

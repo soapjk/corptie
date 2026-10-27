@@ -183,6 +183,10 @@ public struct ConversationDetailCardSurface: ViewModifier {
 
 /// Shared Detail rail content. Ownership, requests and navigation stay in the host.
 public struct ConversationInspectorSection<Content: View, HeaderActions: View>: View {
+    @Environment(\.detailCardDrag) private var cardDrag
+    #if os(macOS)
+    @Environment(\.detailCardReorderController) private var cardReorder
+    #endif
     private let title: String
     private let systemImage: String
     private let headerActions: HeaderActions
@@ -198,16 +202,30 @@ public struct ConversationInspectorSection<Content: View, HeaderActions: View>: 
     public var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .top, spacing: 6) {
-                Label(title, systemImage: systemImage)
-                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityAddTraits(.isHeader)
+                if let cardDrag {
+                    #if os(macOS)
+                    if let cardReorder {
+                        titleLabel.modifier(DetailCardReorderHandle(controller: cardReorder, id: cardDrag.cardID))
+                            .help("拖动标题调整卡片顺序，按 Escape 取消")
+                    } else { titleLabel }
+                    #else
+                    titleLabel.contentShape(Rectangle()).draggable(cardDrag)
+                        .accessibilityHint("长按或拖动标题调整卡片顺序")
+                    #endif
+                } else { titleLabel }
                 HStack(spacing: 2) { headerActions }
                     .fixedSize(horizontal: true, vertical: false)
             }
             content
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var titleLabel: some View {
+        Label(title, systemImage: systemImage)
+            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            .lineLimit(1).truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityAddTraits(.isHeader)
     }
 }
 

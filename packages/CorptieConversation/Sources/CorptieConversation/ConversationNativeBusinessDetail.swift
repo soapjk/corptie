@@ -11,47 +11,71 @@ struct ConversationNativeBusinessDetail: View {
     let adapters: ConversationDetailAdapters
     let handle: ClientDetailBusinessHandle
     let arrangement: ConversationDetailCardArrangement
-    let arranging: Bool
     let refresh: @MainActor () async -> Void
     var renderState: ConversationDetailRenderState? = nil
     var activity: ConversationDetailPresentationActivity? = nil
     let canCommand: (String, ClientDetailAction) -> Bool
     let perform: (String, ClientDetailAction, [String: ClientInspectorValue]) -> Void
+    #if os(macOS)
+    @State private var cardReorder = DetailCardReorderController()
+    #endif
     private var cards: [ClientDetailBusinessCardState] {
         arrangement.ordered(ClientDetailCardPolicy.orderedCards(in: store, context: context))
     }
-    var body: some View {
-        if #available(macOS 27.0, iOS 27.0, *) {
-            DetailWidgetLayout(sizes: cards.map { DetailWidgetSizing.preferredSize(for: $0.card) }) {
-                rows.reorderable()
-            }
-            .reorderContainer(for: ClientDetailBusinessCardState.self, isEnabled: arranging) { difference in
-                guard arranging else { return }
-                let destination: String?
-                switch difference.destination.position {
-                case .before(let id): destination = id
-                case .end: destination = nil
-                @unknown default: return
-                }
-                arrangement.move(difference.sources, before: destination, cards: cards)
-            }
-            .environment(\.detailArranging, arranging)
-        } else {
-            DetailWidgetLayout(sizes: cards.map { DetailWidgetSizing.preferredSize(for: $0.card) }) { rows }
-        }
+    private var canReorder: Bool {
+        store.isCurrent && !handle.retired && (activity?.allows(generation: activity?.generation ?? 0) ?? true)
     }
-    private var rows: ForEach<[ClientDetailBusinessCardState], String, some View> {
-        ForEach(cards) { state in
-            Group {
-                if state.card.loadState == "error" {
-                    NativeBusinessCard(state: state, api: api, store: store, commandStore: operationStore, activity: activity, actions: actions, references: adapters.referenceManagement, openArtifact: adapters.openArtifact, workID: context.workID,
-                        canCommand: { canCommand(state.id, $0) }, perform: { perform(state.id, $0, $1) }, retry: { Task { await refresh() } })
-                        .environment(\.detailSectionPrefix, state.id)
-                } else {
-                    sharedCard(state).environment(\.detailSectionPrefix, state.id)
+    private var reorderScope: [String] {
+        let scope = handle.scope
+        return [scope.serverID, scope.ownerID, scope.principalID, scope.sessionID, scope.taskID ?? "", scope.workID ?? ""]
+    }
+    var body: some View {
+        let snapshot = cards
+        #if os(macOS)
+        let input = DetailCardReorderController.Input(scope: reorderScope, enabled: canReorder,
+            items: snapshot.map { .init(id: $0.id, size: DetailWidgetSizing.preferredSize(for: $0.card)) })
+        let generation = activity?.generation ?? 0
+        let states = Dictionary(uniqueKeysWithValues: snapshot.map { ($0.id, $0) })
+        grid(cardReorder.displayOrder(snapshot.map(\.id)).compactMap { states[$0] })
+            .environment(\.detailCardReorderController, cardReorder)
+            .background(DetailCardReorderContainerProbe(controller: cardReorder))
+            .overlay(alignment: .topLeading) { DetailCardReorderOverlay(preview: cardReorder.preview) }
+            .coordinateSpace(name: ObjectIdentifier(cardReorder))
+            .onChange(of: input, initial: true) { _, value in
+                cardReorder.synchronize(value) { [store, handle, activity, arrangement, context] source, destination in
+                    guard store.isCurrent, !handle.retired, activity?.allows(generation: generation) ?? true else { return }
+                    let current = arrangement.ordered(ClientDetailCardPolicy.orderedCards(in: store, context: context))
+                    arrangement.move([source], before: destination, cards: current)
                 }
             }
-            .detailWidget(DetailWidgetSizing.preferredSize(for: state.card))
+            .onDisappear { cardReorder.cancel() }
+        #else
+        grid(snapshot)
+        #endif
+    }
+
+    private func grid(_ snapshot: [ClientDetailBusinessCardState]) -> some View {
+        DetailWidgetLayout(sizes: snapshot.map { DetailWidgetSizing.preferredSize(for: $0.card) }) {
+            ForEach(snapshot) { state in
+                Group {
+                    if state.card.loadState == "error" {
+                        NativeBusinessCard(state: state, api: api, store: store, commandStore: operationStore, activity: activity, actions: actions, references: adapters.referenceManagement, openArtifact: adapters.openArtifact, workID: context.workID,
+                            canCommand: { canCommand(state.id, $0) }, perform: { perform(state.id, $0, $1) }, retry: { Task { await refresh() } })
+                            .environment(\.detailSectionPrefix, state.id)
+                    } else {
+                        sharedCard(state).environment(\.detailSectionPrefix, state.id)
+                    }
+                }
+                #if os(macOS)
+                .opacity(cardReorder.draft?.source == state.id ? 0 : 1)
+                #endif
+                .detailWidget(DetailWidgetSizing.preferredSize(for: state.card))
+                .environment(\.detailCardDrag, canReorder ? .init(scope: reorderScope, cardID: state.id) : nil)
+                .modifier(ConversationDetailCardDropTarget(enabled: canReorder) { payload, after in
+                    guard canReorder else { return false }
+                    return arrangement.move(payload, in: reorderScope, relativeTo: state.id, after: after, cards: cards)
+                })
+            }
         }
     }
     @ViewBuilder private func sharedCard(_ state: ClientDetailBusinessCardState) -> some View {

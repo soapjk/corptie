@@ -79,7 +79,7 @@ public struct ConversationServerDetail: View {
                             Text("正在校验上次详情，操作暂不可用").font(.caption).foregroundStyle(.secondary)
                         }
                         ConversationNativeBusinessDetail(store: displayStore, commandStore: store, api: selected, actions: displayStore.isCurrent && isPresentationActive ? actions : nil, context: context,
-                            adapters: adapters, handle: handle, arrangement: presentation.arrangement, arranging: false, refresh: refresh,
+                            adapters: adapters, handle: handle, arrangement: presentation.arrangement, refresh: refresh,
                             renderState: activity == nil ? nil : renderState, activity: activity,
                             canCommand: { cardID, action in isPresentationActive && !displayRetired && displayStore.isCurrent && runtime.canPerform(cardID: cardID, action: action) },
                             perform: { cardID, action, fields in

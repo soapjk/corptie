@@ -16,17 +16,60 @@ corptie_resolve_macos_signing_identity() {
     return 0
   fi
 
-  local identities=()
-  while IFS= read -r identity; do
-    [[ -n "${identity}" ]] && identities+=("${identity}")
+  local identities=() hashes=() hash identity
+  while IFS=$'\t' read -r hash identity; do
+    if [[ -n "${hash}" && -n "${identity}" ]]; then
+      hashes+=("${hash}")
+      identities+=("${identity}")
+    fi
   done < <(security find-identity -v -p codesigning 2>/dev/null \
-    | sed -n 's/^[[:space:]]*[0-9][0-9]*) [A-F0-9]* "\(Apple Development:.*\)"$/\1/p')
+    | sed -n $'s/^[[:space:]]*[0-9][0-9]*) \\([A-F0-9]*\\) "\\(Apple Development:.*\\)"$/\\1\t\\2/p')
 
   if [[ ${#identities[@]} -eq 1 ]]; then
     printf '%s\n' "${identities[0]}"
     return 0
   fi
+  if [[ ${#identities[@]} -gt 1 ]]; then
+    # Certificate renewal can leave multiple valid certificates for the same
+    # developer. Use an exact fingerprint to avoid both ambiguous name lookup
+    # and an ad-hoc fallback that changes the app's privacy identity.
+    for identity in "${identities[@]}"; do
+      if [[ "${identity}" != "${identities[0]}" ]]; then
+        printf '%s\n' '-'
+        return 0
+      fi
+    done
+    printf '%s\n' "${hashes[0]}"
+    return 0
+  fi
   printf '%s\n' '-'
+}
+
+corptie_macos_signing_team() {
+  local identity="$1"
+  # find-certificate -c accepts a name, not the SHA-1 fingerprint returned
+  # when renewed certificates share a name. Match the exact public certificate.
+  security find-certificate -a -p | node -e '
+    const { X509Certificate } = require("node:crypto");
+    const identity = process.argv[1];
+    let input = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", chunk => input += chunk);
+    process.stdin.on("end", () => {
+      for (const pem of input.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) ?? []) {
+        const certificate = new X509Certificate(pem);
+        const subject = certificate.toLegacyObject().subject;
+        const matches = /^[a-f0-9]{40}$/i.test(identity)
+          ? certificate.fingerprint.replaceAll(":", "").toUpperCase() === identity.toUpperCase()
+          : subject.CN === identity;
+        if (matches && typeof subject.OU === "string" && subject.OU) {
+          process.stdout.write(subject.OU);
+          return;
+        }
+      }
+      process.exitCode = 68;
+    });
+  ' "${identity}"
 }
 
 corptie_verify_signed_bundle_identity() {

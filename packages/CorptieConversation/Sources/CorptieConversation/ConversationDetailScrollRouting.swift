@@ -190,8 +190,13 @@ struct DetailRailProbe: NSViewRepresentable {
 struct DetailCardProbe: NSViewRepresentable {
     let router: DetailScrollRouter
     let id: UUID
+    var reordering: DetailCardReorderController? = nil
+    var cardID: String? = nil
     func makeNSView(context: Context) -> View { View(router: router, id: id) }
-    func updateNSView(_ view: View, context: Context) { router.scheduleRefresh() }
+    func updateNSView(_ view: View, context: Context) {
+        router.scheduleRefresh()
+        if let cardID { reordering?.register(view, id: cardID) }
+    }
     static func dismantleNSView(_ view: View, coordinator: ()) { view.router.unregister(view) }
     final class View: NSView {
         let router: DetailScrollRouter
@@ -224,11 +229,13 @@ struct DetailCardProbe: NSViewRepresentable {
 
 struct DetailCardScrollActivation: ViewModifier {
     @Environment(\.detailScrollRouter) private var router
+    @Environment(\.detailCardReorderController) private var reordering
+    @Environment(\.detailCardDrag) private var cardDrag
     @State private var id = UUID()
     func body(content: Content) -> some View {
         if let router {
             content
-                .overlay { DetailCardProbe(router: router, id: id).accessibilityHidden(true) }
+                .overlay { DetailCardProbe(router: router, id: id, reordering: reordering, cardID: cardDrag?.cardID).accessibilityHidden(true) }
                 .accessibilityAction(named: Text("激活卡片滚动")) { router.activate(id) }
         } else { content }
     }
