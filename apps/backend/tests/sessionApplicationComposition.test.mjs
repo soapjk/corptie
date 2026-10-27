@@ -82,6 +82,7 @@ function fixture() {
   const service = createSessionApplicationComposition({
     store: {
       getSession: () => session,
+      runInTransaction: (operation) => operation(),
       rerouteUnsentMessageDelivery: (...args) => calls.push(["reroute", ...args]),
       renameSession: (_id, title) => ({ ...session, title }),
       deleteLogicalSessionByLegacySessionId: (id) => calls.push(["delete-logical", id]),

@@ -502,6 +502,11 @@ export class SessionApplicationService {
         reference,
         context
       );
+      if (providerResult === false) {
+        throw Object.assign(new Error("The Provider did not delete the Session."), {
+          code: "PROVIDER_SESSION_DELETE_REJECTED", statusCode: 409
+        });
+      }
     } catch (error) {
       if (!removeLocalBindingOnProviderFailure) throw error;
       providerError = error;
@@ -511,7 +516,7 @@ export class SessionApplicationService {
     }
     return {
       ok: true,
-      deleted: providerError !== null || providerResult !== false,
+      deleted: true,
       sessionId: reference.sessionId,
       logicalSessionId: reference.logicalSessionId,
       providerId: reference.providerId,

@@ -1157,6 +1157,31 @@ test("Provider deletion and product binding removal remain separate lifecycle st
   assert.deepEqual(calls, ["provider-delete", "product-binding-delete"]);
 });
 
+test("explicit Provider refusal preserves ordinary Sessions while Task deletion reports incomplete Provider cleanup", async () => {
+  const removed = [];
+  let outcome = false;
+  const provider = new CallbackAgentProvider({ id: "delete-refusal", displayName: "Delete refusal", transport: "fake",
+    capabilities: [AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE] }, {
+    deleteSession: async () => { if (outcome instanceof Error) throw outcome; return outcome; }
+  });
+  const service = new SessionApplicationService({ registry: new AgentProviderRegistry([provider]),
+    resolveSessionReference: async () => ({ sessionId: "legacy:refusal", logicalSessionId: "logical:refusal",
+      providerId: "delete-refusal", providerSessionId: "native:refusal" }),
+    removeSessionBinding: async input => removed.push(input)
+  });
+  await assert.rejects(service.deleteSession("logical:refusal"), { code: "PROVIDER_SESSION_DELETE_REJECTED" });
+  assert.equal(removed.length, 0);
+  outcome = Object.assign(new Error("Timed out"), { code: "PROVIDER_REQUEST_TIMEOUT" });
+  await assert.rejects(service.deleteSession("logical:refusal"), error => error === outcome);
+  assert.equal(removed.length, 0);
+  outcome = false;
+  const forced = await service.deleteSessionForTaskDeletion("logical:refusal");
+  assert.equal(forced.deleted, true);
+  assert.equal(forced.providerDeleted, false);
+  assert.equal(forced.providerErrorCode, "PROVIDER_SESSION_DELETE_REJECTED");
+  assert.equal(removed.length, 1);
+});
+
 test("Session recovery rebuilds and passes the Provider-neutral Tool Host attachment", async () => {
   const calls = [];
   const provider = new CallbackAgentProvider({
