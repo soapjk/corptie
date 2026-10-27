@@ -75,7 +75,8 @@ test("mutation HTTP dispatch preserves title reservation release and delete opti
   }
   assert.equal((await dispatch("/sessions/public%2Fid", "PATCH", { title: " title " })).status, 200);
   assert.deepEqual(calls.map(([name]) => name), ["reserve", "rename", "event", "release"]);
-  assert.deepEqual(calls[1], ["rename", "public/id", "title", { source: "http" }]);
+  // Normalization belongs to the real application service, not this HTTP mock.
+  assert.deepEqual(calls[1], ["rename", "public/id", " title ", { source: "http" }]);
   calls.length = 0;
   failRename = true;
   assert.equal((await dispatch("/sessions/public", "PATCH", { title: "title" })).status, 400);
@@ -86,4 +87,20 @@ test("mutation HTTP dispatch preserves title reservation release and delete opti
   assert.equal((await dispatch("/sessions/public?mergeWorktree=true", "DELETE")).status, 200);
   assert.deepEqual(calls, [["delete", "public", { mergeWorktree: true }]]);
   assert.equal((await dispatch("/sessions/public/deletion-plan", "GET")).status, 200);
+});
+
+test("delete HTTP errors are not reported as successful deletion", async () => {
+  for (const code of ["PROVIDER_REQUEST_TIMEOUT", "PROVIDER_SESSION_DELETE_REJECTED", "LOCAL_DELETE_FAILED"]) {
+    const result = await new Promise(resolve => {
+      handleSessionMutationHttpRequest({
+        request: { method: "DELETE" }, response: {}, url: new URL("http://localhost/sessions/exact-session"),
+        deleteSession: async () => { throw Object.assign(new Error("Delete failed"), { code, statusCode: 409 }); },
+        sendJson: (_response, status, body) => resolve({ status, body }),
+        unifiedErrorStatus: error => error.statusCode
+      });
+    });
+    assert.equal(result.status, 409);
+    assert.equal(result.body.code, code);
+    assert.equal(result.body.ok, undefined);
+  }
 });

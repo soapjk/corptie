@@ -259,10 +259,15 @@ export function createSessionApplicationComposition({
     },
     persistModelSelection: (input) => persistSessionModelSelection(store, input),
     removeSessionBinding: async ({ reference }) => {
-      collaborationCore.detachSession(reference.sessionId);
-      collaborationCore.detachSession(reference.providerSessionId);
-      store.deleteLogicalSessionByLegacySessionId(reference.sessionId);
-      store.deleteSession(reference.sessionId);
+      // All local ownership, routing and list/timeline tombstones form one
+      // commit. A late write failure must not strand a live Session behind a
+      // deleted logical route (or publish intermediate list invalidations).
+      store.runInTransaction(() => {
+        collaborationCore.detachSession(reference.sessionId);
+        collaborationCore.detachSession(reference.providerSessionId);
+        store.deleteLogicalSessionByLegacySessionId(reference.sessionId);
+        store.deleteSession(reference.sessionId);
+      });
       emitEvent("SessionDeleted", {
         sessionId: reference.sessionId,
         logicalSessionId: reference.logicalSessionId,
