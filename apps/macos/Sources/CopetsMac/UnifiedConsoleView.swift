@@ -157,6 +157,7 @@ struct UnifiedConsoleView: View {
         .environmentObject(backendClient)
         .environmentObject(layoutState)
         .environment(\.isLiquidGlass, false)
+        .modifier(ConversationSkinHost())
         .onAppear {
             PerfStopwatch.event("UnifiedConsoleView·onAppear", value: 1)
             selectDevelopmentPreviewAtStartupIfAvailable(backendClient.sessions)
@@ -1200,6 +1201,7 @@ struct UnifiedConsoleView: View {
                 )
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
                 }
+                .modifier(ConversationColumnSurface(.transcript))
 
                 if Self.usesResidentDetailHosts {
                     SessionDetailHostSwitcher(session: session,

@@ -574,12 +574,8 @@ struct CanvasGroupCardModifier: ViewModifier {
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
-        .background(CorptiePalette.workCardSurface, in: RoundedRectangle(cornerRadius: 12))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(Color.accentColor.opacity(0.30), lineWidth: 1)
-                .allowsHitTesting(false)
-        }
+        .modifier(ConversationSkinSurface(role: .project, radius: 12,
+            legacyFill: CorptiePalette.workCardSurface, legacyBorder: Color.accentColor.opacity(0.30)))
         .contentShape(Rectangle())
         // Apply to the whole card, including Task buttons. The nonzero distance
         // leaves ordinary clicks intact; a recognized drag takes precedence.

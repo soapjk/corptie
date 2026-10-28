@@ -412,6 +412,7 @@ private struct LiquidGlassCardBackground: View {
 }
 
 private struct StandardSessionCardSurface: ViewModifier {
+    @Environment(\.conversationSkin) private var skin
     @Environment(\.isLiquidGlass) private var isLiquidGlass
     private let cornerRadius: CGFloat = 18
     private let glassStrength: Double = 0.55
@@ -427,12 +428,16 @@ private struct StandardSessionCardSurface: ViewModifier {
     func body(content: Content) -> some View {
         if isLiquidGlass {
             content
-                .background(
-                    LiquidGlassCardBackground(cornerRadius: cornerRadius, fillOpacity: fillOpacity)
-                )
+                .background {
+                    if skin == .classic {
+                        LiquidGlassCardBackground(cornerRadius: cornerRadius, fillOpacity: fillOpacity)
+                    }
+                }
                 .overlay {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .strokeBorder(Color.white.opacity(strokeOpacity), lineWidth: 1)
+                    if skin == .classic {
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .strokeBorder(Color.white.opacity(strokeOpacity), lineWidth: 1)
+                    }
                 }
         } else {
             // 原生（Sessions Tab）：去掉卡片外壳，退回普通行

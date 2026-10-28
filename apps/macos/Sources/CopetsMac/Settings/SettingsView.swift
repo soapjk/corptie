@@ -366,7 +366,7 @@ struct SettingsView: View {
         case .provider:
             providerSettingsTab
         case .appearance:
-            LocalWallpaperSettingsView()
+            AppearanceSettingsView()
         case .notifications:
             NotificationSettingsView()
         case .devices:

@@ -77,6 +77,7 @@ struct FloatingRootView: View {
                     }
             }
         }
+        .modifier(ConversationSkinHost())
     }
 
     private var activeContent: some View {

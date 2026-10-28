@@ -440,6 +440,7 @@ private struct DetachedChatWindowView: View {
         .environmentObject(backendClient)
         .environmentObject(layoutState)
         .environment(\.isLiquidGlass, false)
+        .modifier(ConversationSkinHost())
         .onAppear {
             layoutState.canRenderDetailMessages = true
         }

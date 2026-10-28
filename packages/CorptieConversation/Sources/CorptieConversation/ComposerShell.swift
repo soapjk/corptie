@@ -279,7 +279,7 @@ public struct ConversationComposerChrome<Header: View, Content: View>: View {
 
 private struct ConversationComposerGlassSurface: ViewModifier {
     func body(content: Content) -> some View {
-        content.modifier(ConversationFunctionalGlassSurface(cornerRadius: 20))
+        content.modifier(ConversationFunctionalGlassSurface(cornerRadius: 20, adaptsToSkin: true))
     }
 }
 

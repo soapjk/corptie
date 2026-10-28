@@ -7,16 +7,19 @@ public enum PlatformGlassVariant: Sendable {
 
 /// Functional glass is reserved for navigation and floating input chrome.
 public struct ConversationFunctionalGlassSurface: ViewModifier {
+    @Environment(\.conversationSkin) private var skin
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     private let cornerRadius: CGFloat
     private let tint: Color?
     private let fallback: Color?
+    private let adaptsToSkin: Bool
 
     public init(cornerRadius: CGFloat, tint: Color? = nil,
-                fallback: Color? = nil) {
+                fallback: Color? = nil, adaptsToSkin: Bool = false) {
         self.cornerRadius = cornerRadius
         self.tint = tint
         self.fallback = fallback
+        self.adaptsToSkin = adaptsToSkin
     }
 
     public static func usesNativeGlass(supported: Bool, reduceTransparency: Bool) -> Bool {
@@ -25,20 +28,23 @@ public struct ConversationFunctionalGlassSurface: ViewModifier {
 
     @ViewBuilder public func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        let flat = adaptsToSkin && skin == .codexFlat
         Group {
             if #available(iOS 26.0, macOS 26.0, *),
                Self.usesNativeGlass(supported: true, reduceTransparency: reduceTransparency) {
-                content.platformGlassSurface(in: shape, tint: tint)
+                content.platformGlassSurface(in: shape, tint: tint, enabled: !flat)
             } else {
                 content.background {
-                    shape.fill(fallback ?? WorkbenchCanvasSurface.defaultColor)
-                    if fallback == nil, let tint { shape.fill(tint) }
+                    shape.fill(flat ? WorkbenchCanvasSurface.defaultColor : (fallback ?? WorkbenchCanvasSurface.defaultColor))
+                    if !flat, fallback == nil, let tint { shape.fill(tint) }
                 }
                     .overlay(shape.strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5)
                         .allowsHitTesting(false))
             }
         }
-        .shadow(color: .black.opacity(0.06), radius: 4, y: 1.5)
+        .background { if flat { shape.fill(WorkbenchCanvasSurface.defaultColor) } }
+        .overlay { if flat { shape.strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5).allowsHitTesting(false) } }
+        .shadow(color: .black.opacity(flat ? 0.02 : 0.06), radius: 4, y: 1.5)
     }
 }
 
@@ -51,10 +57,11 @@ public extension View {
         tint: Color? = nil,
         interactive: Bool = false,
         fallbackUsesMaterial: Bool = true,
-        variant: PlatformGlassVariant = .regular
+        variant: PlatformGlassVariant = .regular,
+        enabled: Bool = true
     ) -> some View {
         if #available(iOS 26.0, macOS 26.0, *) {
-            let glass: Glass = variant == .clear ? .clear : .regular
+            let glass: Glass = enabled ? (variant == .clear ? .clear : .regular) : .identity
             if let tint {
                 glassEffect(glass.tint(tint).interactive(interactive), in: shape)
             } else {

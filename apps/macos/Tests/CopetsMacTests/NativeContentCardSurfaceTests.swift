@@ -1,5 +1,6 @@
 import AppKit
 import XCTest
+import CorptieConversation
 @testable import CorptieMac
 
 @MainActor
@@ -41,4 +42,29 @@ final class NativeContentCardSurfaceTests: XCTestCase {
         card.refreshAppearance(reduceTransparency: false, increasedContrast: false)
         XCTAssertEqual(try XCTUnwrap(card.layer?.backgroundColor).alpha, 0.28, accuracy: 0.001)
     }
+    func testSkinRoundTripRetainsClassicPaintAndViewGeometry() throws {
+        let card = NativeContentCardSurface(frame: NSRect(x: 0, y: 0, width: 320, height: 80))
+        card.appearance = try XCTUnwrap(NSAppearance(named: .aqua))
+        card.configure(tint: .systemBlue)
+        card.refreshAppearance(reduceTransparency: false, increasedContrast: false)
+        let original = try XCTUnwrap(card.layer?.backgroundColor)
+        let background = try XCTUnwrap(card.subviews.first)
+        let frame = card.frame
+        for _ in 0..<20 {
+            card.updateSkin(.codexFlat, role: .assistant)
+            XCTAssertEqual(card.layer?.backgroundColor?.alpha, 0)
+            XCTAssertEqual(card.layer?.borderWidth, 0)
+            card.updateSkin(.classic, role: .assistant)
+            card.refreshAppearance(reduceTransparency: false, increasedContrast: false)
+            XCTAssertEqual(card.layer?.backgroundColor, original)
+        }
+        XCTAssertEqual(card.frame, frame)
+        XCTAssertEqual(card.subviews.count, 1)
+        XCTAssertTrue(card.subviews.first === background)
+        card.updateSkin(.codexFlat, role: .user)
+        card.refreshAppearance(reduceTransparency: true, increasedContrast: true)
+        XCTAssertGreaterThan(try XCTUnwrap(card.layer?.backgroundColor).alpha, 0)
+        XCTAssertEqual(card.layer?.borderWidth, 1)
+    }
+
 }

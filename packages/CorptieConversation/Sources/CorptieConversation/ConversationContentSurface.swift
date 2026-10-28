@@ -38,6 +38,7 @@ public enum ConversationContentSurfacePolicy {
 }
 
 public struct ConversationContentSurface: ViewModifier {
+    @Environment(\.conversationSkin) private var skin
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.colorScheme) private var colorScheme
@@ -47,19 +48,22 @@ public struct ConversationContentSurface: ViewModifier {
     private let tintOpacity: Double
     private let isMessage: Bool
     private let isPanel: Bool
+    private let role: ConversationSurfaceRole?
 
     public init(cornerRadius: CGFloat, tint: Color? = nil, fallback: Color? = nil,
-                tintOpacity: Double = ConversationContentSurfacePolicy.tintOpacity, isMessage: Bool = false, isPanel: Bool = false) {
+                tintOpacity: Double = ConversationContentSurfacePolicy.tintOpacity, isMessage: Bool = false, isPanel: Bool = false, role: ConversationSurfaceRole? = nil) {
         self.cornerRadius = cornerRadius
         self.tint = tint
         self.fallback = fallback
         self.tintOpacity = tintOpacity
         self.isMessage = isMessage
         self.isPanel = isPanel
+        self.role = role
     }
 
     public func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        let style = skin.surface(for: role ?? (isPanel ? .inspector : .structured))
         let increasedContrast = contrast == .increased
         #if os(iOS)
         let withMaterial = ConversationContentSurfacePolicy.usesMessageMaterial(isMessage: isMessage,
@@ -74,23 +78,29 @@ public struct ConversationContentSurface: ViewModifier {
         let usesSemanticBackground = tintOpacity == ConversationContentSurfacePolicy.tintOpacity
         let base = fallback ?? (usesSemanticBackground ? tint : nil) ?? WorkbenchCanvasSurface.defaultColor
         content.background {
-            #if os(iOS)
-            if withMaterial && !ConversationContentSurfacePolicy.suppressMessageMaterialForProfiling {
-                shape.fill(.regularMaterial.opacity(ConversationContentSurfacePolicy.messageMaterialOpacity))
-            }
-            #endif
-            if withPanelMaterial {
-                shape.fill(.thinMaterial.opacity(ConversationContentSurfacePolicy.panelMaterialOpacity))
-            }
-            shape.fill(base.opacity(opacity))
-            if !usesSemanticBackground, let tint {
-                shape.fill(tint.opacity(tintOpacity))
+            if style == .legacy {
+                #if os(iOS)
+                if withMaterial && !ConversationContentSurfacePolicy.suppressMessageMaterialForProfiling {
+                    shape.fill(.regularMaterial.opacity(ConversationContentSurfacePolicy.messageMaterialOpacity))
+                }
+                #endif
+                if withPanelMaterial {
+                    shape.fill(.thinMaterial.opacity(ConversationContentSurfacePolicy.panelMaterialOpacity))
+                }
+                shape.fill(base.opacity(opacity))
+                if !usesSemanticBackground, let tint {
+                    shape.fill(tint.opacity(tintOpacity))
+                }
+            } else if style == .bubble || style == .neutral {
+                shape.fill(Color.primary.opacity(0.06))
             }
         }
         .overlay {
-            shape.strokeBorder(Color.primary.opacity(increasedContrast ? 0.40 : 0.10),
-                lineWidth: ConversationContentSurfacePolicy.borderWidth(increasedContrast: increasedContrast))
-                .allowsHitTesting(false)
+            if style == .legacy || style == .neutral || (style == .bubble && increasedContrast) {
+                shape.strokeBorder(Color.primary.opacity(increasedContrast ? 0.40 : 0.10),
+                    lineWidth: ConversationContentSurfacePolicy.borderWidth(increasedContrast: increasedContrast))
+                    .allowsHitTesting(false)
+            }
         }
     }
 }

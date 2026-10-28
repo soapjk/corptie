@@ -4,6 +4,7 @@ import CorptieConversation
 import CorptieClientCore
 
 struct AppKitChatTimelineView: NSViewRepresentable {
+    @Environment(\.conversationSkin) private var skin
     let sessionID: String
     let rows: [AppKitChatTimelineRow]
     let scrollToBottomRevision: Int
@@ -54,6 +55,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             renderInputs.resumeNativePresentation = { [weak coordinator] in coordinator?.setPresentationActive(true) }
             coordinator.setPresentationActive(renderInputs.acceptsPresentationUpdates)
         }
+        coordinator.updateSkin(skin)
         return coordinator
     }
 
@@ -151,6 +153,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             initialPosition: initialPosition,
             deferReloadUntilRowsArrive: true
         )
+        context.coordinator.updateSkin(skin)
         context.coordinator.updateBaseDirectory(baseDirectory)
         context.coordinator.updateProcessCollapseLocalization()
         context.coordinator.setProcessClockEnabled(canAdvanceProcessClock)
