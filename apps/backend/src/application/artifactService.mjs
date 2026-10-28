@@ -12,6 +12,10 @@ import { authorizeArtifactPromotion } from "./artifactPromotionAuthorization.mjs
 import { ensureArtifactCommitHook } from "../runtime/artifactCommitHook.mjs";
 import { inspectGitWorkspace } from "../utils/gitWorktreeInventory.mjs";
 import { integrationTrackingTargets } from "./worktreeIntegrationGraph.mjs";
+import {
+  artifactStorageDirectorySnapshots, ensureArtifactStorageParent, resolveArtifactVersionStorageKey,
+  restoreArtifactStorageDirectories, safeArtifactStoragePath
+} from "./artifactStorageLayout.mjs";
 
 export const ARTIFACT_VISIBILITIES = Object.freeze([
   "work_private", "task_private", "session_private", "repository_tracked"
@@ -58,11 +62,12 @@ export class ArtifactService {
 
   async runStartupMaintenance() {
     const recovered = await this.recoverContentOperations();
-    const renamed = await this.migrateStoredFilenames();
+    // Layout migration is explicit and bounded; never move production content
+    // during startup or as a side effect of reading a version.
     const lastOrphanAudit = this.store.getRuntimeState?.(ARTIFACT_ORPHAN_AUDIT_STATE_KEY);
     const orphanAuditDue = !lastOrphanAudit?.completedAt
       || Date.now() - Date.parse(lastOrphanAudit.completedAt) >= ARTIFACT_ORPHAN_AUDIT_INTERVAL_MS;
-    const orphaned = orphanAuditDue ? await this.auditOrphanedContent() : [];
+    const orphaned = orphanAuditDue ? await this.auditOrphanedContent({ includeHierarchy: false }) : [];
     if (orphanAuditDue) {
       this.store.setRuntimeState?.(ARTIFACT_ORPHAN_AUDIT_STATE_KEY, { completedAt: this.clock() });
     }
@@ -84,7 +89,7 @@ export class ArtifactService {
       this.store.reconcileArtifactTurnReadUsage?.(this.clock());
       this.store.setRuntimeState?.(ARTIFACT_USAGE_RECONCILIATION_STATE_KEY, { completedAt: this.clock() });
     }
-    return [...recovered, ...renamed, ...orphaned];
+    return [...recovered, ...orphaned];
   }
 
   async rebuildSearchIndex() {
@@ -500,7 +505,9 @@ export class ArtifactService {
       return this.present(created);
     }
     const buffer = contentBuffer(input.content);
-    const prepared = await this.#prepareContent(artifactId, 1, buffer, input.title, input.mimeType ?? "text/markdown");
+    const prepared = await this.#prepareContent(artifactId, 1, buffer, input.title, input.mimeType ?? "text/markdown", {
+      artifactId, workId: context.workId, scope, title: input.title, ...binding
+    });
     try {
       this.store.runInTransaction(() => {
         this.store.createArtifactMetadata({
@@ -592,7 +599,9 @@ export class ArtifactService {
     const createdAt = this.clock();
     const workerActorId = context.sessionId;
     const workerAuditContext = { ...context, actorId: workerActorId };
-    const prepared = await this.#prepareContent(artifactId, 1, buffer, title, mimeType);
+    const prepared = await this.#prepareContent(artifactId, 1, buffer, title, mimeType, {
+      artifactId, workId: context.workId, scope: "task", boundTaskId: context.taskId, title
+    });
     try {
       this.store.runInTransaction(() => {
         // The Task can be completed/unbound while content is prepared. Check
@@ -1110,7 +1119,7 @@ export class ArtifactService {
     return revoked;
   }
 
-  transferOwnership(contextInput, artifactId, input = {}) {
+  async transferOwnership(contextInput, artifactId, input = {}) {
     const context = this.context(contextInput);
     const sessionId = context.sessionId ?? `local-actor:${context.actorId}`;
     const key = requiredText(input.idempotencyKey, "idempotencyKey");
@@ -1133,27 +1142,47 @@ export class ArtifactService {
     // Transfer is a write to both ownership scopes, not a way for a read-only
     // caller to claim an Artifact or inject it into someone else's namespace.
     this.#assertCanManageArtifact(context, next);
+    const moved = [];
     let receipt;
-    this.store.runInTransaction(() => {
-      const currentContext = this.context(contextInput);
-      const current = this.#sameWorkArtifact(currentContext, artifactId);
-      this.#assertCanManageArtifact(currentContext, current);
-      if (current.resourceVersion !== input.expectedResourceVersion) throw artifactError("ARTIFACT_RESOURCE_VERSION_CONFLICT", "Artifact changed before ownership commit.", 409);
-      const updated = this.store.updateArtifact(artifactId, { scope, visibility: next.visibility,
-        boundTaskId: next.boundTaskId, boundSessionId: next.boundSessionId, updatedAt: this.clock() });
-      if (scope === "task" && context.kind === "worker") this.createReference(contextInput, artifactId, {
-        taskId: next.boundTaskId, relation: "implementation_spec", versionPolicy: "fixed", version: updated.currentVersion
+    try {
+      for (const version of this.store.listArtifactVersions(artifactId)) {
+        if (!version.storageKey) continue;
+        const target = resolveArtifactVersionStorageKey(this.store, next, version.version, basename(version.storageKey));
+        if (dirname(target) !== dirname(version.storageKey)) {
+          moved.push({ version, prepared: await this.#prepareRenamedVersion(next, version, artifact.title) });
+        }
+      }
+      this.store.runInTransaction(() => {
+        const currentContext = this.context(contextInput);
+        const current = this.#sameWorkArtifact(currentContext, artifactId);
+        this.#assertCanManageArtifact(currentContext, current);
+        if (current.resourceVersion !== input.expectedResourceVersion) throw artifactError("ARTIFACT_RESOURCE_VERSION_CONFLICT", "Artifact changed before ownership commit.", 409);
+        this.#validateBinding(currentContext.workId, next.visibility, next);
+        this.#assertCanManageArtifact(currentContext, next);
+        for (const { version, prepared } of moved) {
+          this.store.relocateArtifactVersion(artifactId, version.version, version.storageKey, prepared.storageKey);
+          this.store.updateArtifactContentOperation(prepared.operationId, "completed");
+        }
+        const updated = this.store.updateArtifact(artifactId, { scope, visibility: next.visibility,
+          boundTaskId: next.boundTaskId, boundSessionId: next.boundSessionId, updatedAt: this.clock() });
+        if (scope === "task" && context.kind === "worker") this.createReference(contextInput, artifactId, {
+          taskId: next.boundTaskId, relation: "implementation_spec", versionPolicy: "fixed", version: updated.currentVersion
+        });
+        this.#indexArtifact(updated);
+        this.#audit(currentContext, artifactId, "artifact.ownership_changed", {
+          idempotencyKey: key, from: { scope: artifact.scope, taskId: artifact.boundTaskId, sessionId: artifact.boundSessionId },
+          to: { scope, taskId: next.boundTaskId, sessionId: next.boundSessionId }
+        });
+        receipt = { artifactId, scope, workId: updated.workId, taskId: updated.boundTaskId,
+          sessionId: updated.boundSessionId, resourceVersion: updated.resourceVersion,
+          auditAction: "artifact.ownership_changed", idempotencyKey: key, idempotentReplay: false };
+        this.store.db.run("INSERT INTO artifact_ownership_operations VALUES (?, ?, ?, ?)", [sessionId, key, requestHash, JSON.stringify(receipt)]);
       });
-      this.#indexArtifact(updated);
-      this.#audit(currentContext, artifactId, "artifact.ownership_changed", {
-        idempotencyKey: key, from: { scope: artifact.scope, taskId: artifact.boundTaskId, sessionId: artifact.boundSessionId },
-        to: { scope, taskId: next.boundTaskId, sessionId: next.boundSessionId }
-      });
-      receipt = { artifactId, scope, workId: updated.workId, taskId: updated.boundTaskId,
-        sessionId: updated.boundSessionId, resourceVersion: updated.resourceVersion,
-        auditAction: "artifact.ownership_changed", idempotencyKey: key, idempotentReplay: false };
-      this.store.db.run("INSERT INTO artifact_ownership_operations VALUES (?, ?, ?, ?)", [sessionId, key, requestHash, JSON.stringify(receipt)]);
-    });
+    } catch (error) {
+      for (const { prepared } of moved) await this.#rollbackPrepared(prepared, error);
+      throw error;
+    }
+    for (const { version } of moved) await this.#retireStoredFile(version.storageKey);
     return receipt;
   }
 
@@ -1173,36 +1202,18 @@ export class ArtifactService {
       throw artifactError("ARTIFACT_INVALID_INPUT", "At least one Artifact metadata field is required.", 400);
     }
     next.updatedAt = this.clock();
-    const renamed = [];
     let updated;
-    try {
-      if (next.title && next.title !== artifact.title) {
-        for (const version of this.store.listArtifactVersions(artifactId)) {
-          if (!version.storageKey) continue;
-          const prepared = await this.#prepareRenamedVersion(artifact, version, next.title);
-          renamed.push({ version, prepared });
-        }
+    this.store.runInTransaction(() => {
+      const current = this.#sameWorkArtifact(this.context(contextInput), artifactId);
+      this.#assertCanManageArtifact(this.context(contextInput), current);
+      if (current.resourceVersion !== artifact.resourceVersion) {
+        throw artifactError("ARTIFACT_RESOURCE_VERSION_CONFLICT", "Artifact changed during metadata update.", 409);
       }
-      this.store.runInTransaction(() => {
-        const current = this.#sameWorkArtifact(this.context(contextInput), artifactId);
-        this.#assertCanManageArtifact(this.context(contextInput), current);
-        if (current.resourceVersion !== artifact.resourceVersion) {
-          throw artifactError("ARTIFACT_RESOURCE_VERSION_CONFLICT", "Artifact changed during metadata update.", 409);
-        }
-        for (const { version, prepared } of renamed) {
-          this.store.relocateArtifactVersion(artifactId, version.version, version.storageKey, prepared.storageKey);
-          this.store.updateArtifactContentOperation(prepared.operationId, "completed");
-        }
-        updated = this.store.updateArtifact(artifact.artifactId, next);
-        this.#audit(context, artifact.artifactId, "artifact.metadata_updated", {
-          changedFields: Object.keys(next).filter((key) => key !== "updatedAt")
-        });
+      updated = this.store.updateArtifact(artifact.artifactId, next);
+      this.#audit(context, artifact.artifactId, "artifact.metadata_updated", {
+        changedFields: Object.keys(next).filter((key) => key !== "updatedAt")
       });
-    } catch (error) {
-      for (const { prepared } of renamed) await this.#rollbackPrepared(prepared, error);
-      throw error;
-    }
-    for (const { version } of renamed) await this.#retireStoredFile(version.storageKey);
+    });
     this.#indexArtifact(updated);
     return this.#presentForContext(context, updated);
   }
@@ -1217,7 +1228,7 @@ export class ArtifactService {
     return this.#presentForContext(context, updated);
   }
 
-  changeVisibility(contextInput, artifactId, visibilityValue, { confirmed = false } = {}) {
+  async changeVisibility(contextInput, artifactId, visibilityValue, { confirmed = false } = {}) {
     const context = this.context(contextInput);
     const artifact = this.#sameWorkArtifact(context, artifactId);
     this.#assertCanManageArtifact(context, artifact);
@@ -1229,6 +1240,14 @@ export class ArtifactService {
       throw artifactError("ARTIFACT_VISIBILITY_TRANSITION_FORBIDDEN", "Repository-tracked registration cannot be converted to or from private content.", 409);
     }
     this.#validateBinding(context.workId, visibility, artifact);
+    if (artifactScope(visibility) !== artifact.scope) {
+      await this.transferOwnership(contextInput, artifactId, {
+        idempotencyKey: `visibility:${artifact.resourceVersion}:${visibility}`,
+        expectedResourceVersion: artifact.resourceVersion, scope: artifactScope(visibility),
+        taskId: artifact.boundTaskId, sessionId: artifact.boundSessionId
+      });
+      return this.present(this.store.getArtifact(artifactId));
+    }
     const updated = this.store.updateArtifact(artifact.artifactId, {
       visibility, scope: artifactScope(visibility), updatedAt: this.clock()
     });
@@ -1257,7 +1276,7 @@ export class ArtifactService {
     return this.present(updated);
   }
 
-  disposeBoundArtifactsForTaskDeletion(contextInput, taskIdValue, disposition) {
+  async disposeBoundArtifactsForTaskDeletion(contextInput, taskIdValue, disposition) {
     const context = this.context(contextInput);
     const taskId = requiredText(taskIdValue, "taskId");
     const task = this.store.getTask(taskId);
@@ -1281,7 +1300,12 @@ export class ArtifactService {
             visibility: "work_private", scope: "work",
             boundTaskId: null, boundSessionId: null, updatedAt: this.clock()
           };
-      const next = this.store.updateArtifact(artifact.artifactId, patch);
+      if (disposition === "work") await this.transferOwnership(contextInput, artifact.artifactId, {
+        scope: "work", expectedResourceVersion: artifact.resourceVersion,
+        idempotencyKey: `task-deletion:${taskId}:${artifact.resourceVersion}`
+      });
+      const next = disposition === "work" ? this.store.getArtifact(artifact.artifactId)
+        : this.store.updateArtifact(artifact.artifactId, patch);
       this.#indexArtifact(next);
       this.#audit(context, artifact.artifactId,
         disposition === "delete" ? "artifact.revoked" : "artifact.moved_to_work",
@@ -1632,7 +1656,8 @@ export class ArtifactService {
     const artifacts = this.store.listArtifactsByWork(context.workId, { includeRevoked: true });
     const manifest = {
       format: "corptie-work-artifact-backup-v1", workId: context.workId,
-      environment: this.store.settings().environment, createdAt: this.clock(), artifacts: []
+      environment: this.store.settings().environment, createdAt: this.clock(), artifacts: [],
+      storageDirectories: artifactStorageDirectorySnapshots(this.store, artifacts)
     };
     try {
       for (const artifact of artifacts) {
@@ -1650,7 +1675,8 @@ export class ArtifactService {
             await mkdir(dirname(output), { recursive: true, mode: 0o700 });
             await writeFile(output, buffer, { mode: 0o600, flag: "wx" });
           }
-          backupVersions.push({ ...version, storageKey: null, backupPath: relativePath });
+          backupVersions.push({ ...version, storageKey: null, backupPath: relativePath,
+            storedFilename: version.storageKey ? basename(version.storageKey) : null });
         }
         manifest.artifacts.push({
           artifact, versions: backupVersions,
@@ -1680,6 +1706,9 @@ export class ArtifactService {
     const verified = [];
     for (const entry of manifest.artifacts ?? []) {
       if (entry.artifact?.workId !== context.workId) throw artifactError("ARTIFACT_CROSS_WORK_FORBIDDEN", "Backup contains a cross-Work Artifact.", 403);
+      const existing = this.store.getArtifact(entry.artifact.artifactId);
+      if (existing && existing.workId !== context.workId) throw artifactError("ARTIFACT_CROSS_WORK_FORBIDDEN", "Stable Artifact ID already belongs to another Work.", 403);
+      this.#validateBinding(context.workId, entry.artifact.visibility, entry.artifact);
       for (const version of entry.versions ?? []) {
         if (!version.backupPath) continue;
         const path = resolve(source, version.backupPath);
@@ -1691,6 +1720,7 @@ export class ArtifactService {
         verified.push({ artifactId: entry.artifact.artifactId, version: version.version, buffer });
       }
     }
+    restoreArtifactStorageDirectories(this.store, manifest.storageDirectories, (manifest.artifacts ?? []).map(entry => entry.artifact));
     let restoredArtifacts = 0;
     for (const entry of manifest.artifacts ?? []) {
       const artifact = entry.artifact;
@@ -1699,7 +1729,9 @@ export class ArtifactService {
       if (!current) {
         this.store.createArtifactMetadata({
           artifactId: artifact.artifactId, workId: context.workId, title: artifact.title,
-          summary: artifact.summary, visibility: artifact.visibility, boundTaskId: artifact.boundTaskId,
+          summary: artifact.summary, visibility: artifact.visibility, scope: artifact.scope,
+          kind: artifact.kind, categoryPath: artifact.categoryPath, tags: artifact.tags,
+          aliases: artifact.aliases, keywords: artifact.keywords, boundTaskId: artifact.boundTaskId,
           boundSessionId: artifact.boundSessionId, repositoryLocator: artifact.repositoryLocator,
           sourceSessionId: artifact.sourceSessionId, sourceEventId: artifact.sourceEventId,
           actorId: context.actorId, createdAt: artifact.createdAt ?? this.clock()
@@ -1707,10 +1739,15 @@ export class ArtifactService {
         restoredArtifacts += 1;
         current = this.store.getArtifact(artifact.artifactId);
       }
-      for (const version of entry.versions ?? []) {
+      // A backup lists newest first. Restore superseded revisions before their
+      // successors so immutable-version foreign keys remain valid in a new Store.
+      for (const version of [...(entry.versions ?? [])].sort((a, b) => a.version - b.version)) {
         const item = verified.find((candidate) => candidate.artifactId === artifact.artifactId && candidate.version === version.version);
         const existingVersion = this.store.getArtifactVersion(artifact.artifactId, version.version);
         if (existingVersion) {
+          if (existingVersion.contentHash !== version.contentHash || existingVersion.byteLength !== version.byteLength) {
+            throw artifactError("ARTIFACT_INTEGRITY_FAILED", "Backup conflicts with an existing immutable revision.", 409);
+          }
           if (item && existingVersion.storageKey) {
             let intact = false;
             try {
@@ -1722,7 +1759,7 @@ export class ArtifactService {
           continue;
         }
         let prepared = null;
-        if (item) prepared = await this.#prepareContent(artifact.artifactId, version.version, item.buffer, artifact.title, version.mimeType);
+        if (item) prepared = await this.#prepareContent(artifact.artifactId, version.version, item.buffer, version.storedFilename ?? artifact.title, version.mimeType);
         try {
           this.store.createArtifactVersion({
             artifactId: artifact.artifactId, version: version.version, contentHash: version.contentHash,
@@ -1769,25 +1806,37 @@ export class ArtifactService {
   async recoverContentOperations() {
     const recovered = [];
     for (const operation of this.store.listIncompleteArtifactContentOperations()) {
+      try {
       const version = this.store.getArtifactVersion(operation.artifact_id, Number(operation.version));
       const storageKey = relative(this.contentRoot, operation.final_path);
       const finalPath = this.#safeStoragePath(storageKey);
+      const tempPath = this.#safeStoragePath(relative(this.contentRoot, operation.temp_path));
       if (version?.storageKey === storageKey) {
-        await unlink(operation.temp_path).catch(() => {});
+        const buffer = await readFile(finalPath);
+        if (buffer.byteLength !== version.byteLength || sha256(buffer) !== version.contentHash) {
+          recovered.push({ operationId: operation.operation_id, action: "integrity_failed", errorCode: "ARTIFACT_INTEGRITY_FAILED" });
+          continue;
+        }
+        await unlink(tempPath).catch(() => {});
         this.store.updateArtifactContentOperation(operation.operation_id, "completed");
         recovered.push({ operationId: operation.operation_id, action: "completed_existing_metadata" });
         continue;
       }
-      await unlink(operation.temp_path).catch(() => {});
+      await unlink(tempPath).catch(() => {});
       const referenced = this.store.selectOne(`SELECT 1 FROM artifact_versions WHERE storage_key = ?`, [storageKey]);
       if (!referenced) await unlink(finalPath).catch(() => {});
       this.store.updateArtifactContentOperation(operation.operation_id, "rolled_back", "ARTIFACT_RECOVERED_ORPHAN");
       recovered.push({ operationId: operation.operation_id, action: "rolled_back_orphan" });
+      } catch (error) {
+        // Retain unreadable or unsafe paths for inspection; one damaged object
+        // must not prevent unrelated Artifacts or the backend from starting.
+        recovered.push({ operationId: operation.operation_id, action: "recovery_failed", errorCode: error.code ?? "ARTIFACT_RECOVERY_FAILED" });
+      }
     }
     return recovered;
   }
 
-  async auditOrphanedContent() {
+  async auditOrphanedContent({ includeHierarchy = true } = {}) {
     const objectsRoot = join(this.contentRoot, "objects");
     const detected = [];
     for (const prefix of await readdir(objectsRoot, { withFileTypes: true })) {
@@ -1830,18 +1879,58 @@ export class ArtifactService {
       });
       detected.push({ action: "orphan_content_detected", storageKey, contentHash, byteLength: buffer.length });
     }
+    if (includeHierarchy) {
+      const walk = async (key, depth = 0) => {
+        if (depth > 16) return;
+        const entries = await readdir(this.#safeStoragePath(key), { withFileTypes: true }).catch(error => {
+          if (error.code === "ENOENT") return [];
+          throw error;
+        });
+        for (const entry of entries) {
+          const child = join(key, entry.name);
+          if (entry.isDirectory()) { await walk(child, depth + 1); continue; }
+          if (!entry.isFile()) continue; // Do not follow symlinks or remove unknown files.
+          if (this.store.selectOne("SELECT 1 FROM artifact_versions WHERE storage_key = ?", [child])) continue;
+          const path = this.#safeStoragePath(child);
+          if (this.store.selectOne("SELECT 1 FROM artifact_content_operations WHERE final_path = ? AND status IN ('prepared', 'file_committed')", [path])) continue;
+          const buffer = await readFile(path);
+          const contentHash = sha256(buffer);
+          this.store.appendArtifactStorageAudit({
+            auditId: `artifact_storage_audit:${this.idFactory()}`, action: "orphan_content_detected",
+            storageKey: child, contentHash, byteLength: buffer.length,
+            details: { retained: true, path }, createdAt: this.clock()
+          });
+          detected.push({ action: "orphan_content_detected", storageKey: child, contentHash, byteLength: buffer.length });
+        }
+      };
+      for (const key of ["works", "sessions"]) await walk(key);
+    }
     return detected;
   }
 
-  async migrateStoredFilenames() {
+  async migrateStorageLayout({ limit = 100, after = null } = {}) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw artifactError("ARTIFACT_INVALID_INPUT", "Migration batch must contain 1 to 500 versions.", 400);
+    if (after && (typeof after.artifactId !== "string" || !Number.isSafeInteger(after.version))) throw artifactError("ARTIFACT_INVALID_INPUT", "Invalid migration cursor.", 400);
     const results = [];
-    for (const row of this.store.selectAll(
-      "SELECT artifact_id, version FROM artifact_versions WHERE storage_key IS NOT NULL ORDER BY artifact_id, version"
-    )) {
+    const rows = this.store.selectAll(
+      `SELECT artifact_id, version FROM artifact_versions WHERE storage_key IS NOT NULL
+       ${after ? "AND (artifact_id > ? OR (artifact_id = ? AND version > ?))" : ""}
+       ORDER BY artifact_id, version LIMIT ?`,
+      [...(after ? [after.artifactId, after.artifactId, after.version] : []), limit]
+    );
+    for (const row of rows) {
       const artifact = this.store.getArtifact(row.artifact_id);
       const version = this.store.getArtifactVersion(row.artifact_id, Number(row.version));
       try {
-        const named = await this.#ensureStoredFilename(artifact, version);
+        if (!artifact || !version?.storageKey) continue;
+        const desired = resolveArtifactVersionStorageKey(this.store, artifact, version.version, basename(version.storageKey));
+        if (dirname(desired) === dirname(version.storageKey)) continue;
+        const key = `${artifact.artifactId}:${version.version}`;
+        if (this.namingOperations.has(key)) { await this.namingOperations.get(key); continue; }
+        const operation = this.#renameStoredVersion(artifact, version);
+        this.namingOperations.set(key, operation);
+        let named;
+        try { named = await operation; } finally { this.namingOperations.delete(key); }
         if (named.storageKey !== version.storageKey) results.push({
           action: "filename_migrated", artifactId: row.artifact_id, version: named.version
         });
@@ -1849,21 +1938,21 @@ export class ArtifactService {
         // A missing or externally changed file must not prevent the entire Store
         // from starting. Keep its original record and report the failed migration.
         results.push({ action: "filename_migration_failed", artifactId: row.artifact_id,
-          version: version.version, errorCode: error.code ?? "ARTIFACT_STORAGE_MIGRATION_FAILED" });
+          version: Number(row.version), errorCode: error.code ?? "ARTIFACT_STORAGE_MIGRATION_FAILED" });
       }
     }
-    return results;
+    const last = rows.at(-1);
+    return { results, done: rows.length < limit,
+      nextCursor: last ? { artifactId: last.artifact_id, version: Number(last.version) } : null };
+  }
+
+  async migrateStoredFilenames(options) {
+    return (await this.migrateStorageLayout(options)).results;
   }
 
   async #ensureStoredFilename(artifact, version) {
-    const filename = artifactSuggestedFilename(artifact.title, version.mimeType);
-    if (dirname(version.storageKey) === "files" && matchesArtifactFilename(basename(version.storageKey), filename)) return version;
-    const key = `${artifact.artifactId}:${version.version}`;
-    if (this.namingOperations.has(key)) return this.namingOperations.get(key);
-    const operation = this.#renameStoredVersion(artifact, version);
-    this.namingOperations.set(key, operation);
-    try { return await operation; }
-    finally { this.namingOperations.delete(key); }
+    // Reading is location-neutral. Neither legacy keys nor title changes cause writes.
+    return version;
   }
 
   async #prepareRenamedVersion(artifact, version, title) {
@@ -1872,13 +1961,23 @@ export class ArtifactService {
     if (content.byteLength !== version.byteLength || sha256(content) !== version.contentHash) {
       throw artifactError("ARTIFACT_INTEGRITY_FAILED", "Artifact filename migration failed content verification.", 409);
     }
-    return this.#prepareContent(artifact.artifactId, version.version, content, title, version.mimeType);
+    const prepared = await this.#prepareContent(artifact.artifactId, version.version, content, title, version.mimeType, artifact);
+    try {
+      const destination = await readFile(this.#safeStoragePath(prepared.storageKey));
+      if (destination.byteLength !== version.byteLength || sha256(destination) !== version.contentHash) {
+        throw artifactError("ARTIFACT_INTEGRITY_FAILED", "Destination content failed migration verification.", 409);
+      }
+      return prepared;
+    } catch (error) { await this.#rollbackPrepared(prepared, error); throw error; }
   }
 
   async #renameStoredVersion(artifact, version) {
     const prepared = await this.#prepareRenamedVersion(artifact, version, artifact.title);
     try {
       this.store.runInTransaction(() => {
+        if (this.store.getArtifact(artifact.artifactId)?.resourceVersion !== artifact.resourceVersion) {
+          throw artifactError("ARTIFACT_RESOURCE_VERSION_CONFLICT", "Artifact changed during storage migration.", 409);
+        }
         this.store.relocateArtifactVersion(artifact.artifactId, version.version, version.storageKey, prepared.storageKey);
         this.store.updateArtifactContentOperation(prepared.operationId, "completed");
         this.store.appendArtifactStorageAudit({
@@ -2129,23 +2228,21 @@ export class ArtifactService {
     return affected;
   }
 
-  async #prepareContent(artifactId, version, buffer, title, mimeType) {
+  async #prepareContent(artifactId, version, buffer, title, mimeType, ownership = null) {
     const hash = sha256(buffer);
-    const directory = join(this.contentRoot, "files");
-    await mkdir(directory, { recursive: true, mode: 0o700 });
-    if (await realpath(directory) !== join(await realpath(this.contentRoot), "files")) {
-      throw artifactError("ARTIFACT_STORAGE_KEY_INVALID", "Artifact files directory must not be a symbolic link.", 409);
-    }
+    const artifact = ownership ?? this.store.getArtifact(artifactId);
+    if (!artifact) throw artifactError("ARTIFACT_NOT_FOUND", "Artifact ownership is required before preparing content.", 404);
     const filename = artifactSuggestedFilename(title, mimeType);
-    const extension = extname(filename);
+    const extension = /\.tar\.(?:gz|bz2|xz|zst)$/iu.exec(filename)?.[0] ?? extname(filename);
     const stem = filename.slice(0, -extension.length);
-    for (let number = 1; ; number += 1) {
-      const storageKey = join("files", number === 1 ? filename : `${stem}_${number}${extension}`);
-      const finalPath = this.#safeStoragePath(storageKey);
+    const desired = resolveArtifactVersionStorageKey(this.store, artifact, version, filename);
+    for (let number = 1; number <= 1000; number += 1) {
+      const storageKey = join(dirname(desired), number === 1 ? filename : `${stem}_${number}${extension}`);
+      const finalPath = await ensureArtifactStorageParent(this.contentRoot, storageKey);
       // Reserve existing names even when a user has deleted their file.
       if (this.store.selectOne("SELECT 1 FROM artifact_versions WHERE storage_key = ?", [storageKey])) continue;
       const operationId = `artifact_content_operation:${this.idFactory()}`;
-      const tempPath = join(this.contentRoot, "tmp", `${operationId.replaceAll(":", "-")}.tmp`);
+      const tempPath = await ensureArtifactStorageParent(this.contentRoot, join("tmp", `${operationId.replaceAll(":", "-")}.tmp`));
       this.store.createArtifactContentOperation({ operationId, artifactId, version, contentHash: hash, tempPath, finalPath, createdAt: this.clock() });
       const prepared = { operationId, hash, storageKey, finalPath, tempPath, createdFinal: false };
       try {
@@ -2169,6 +2266,7 @@ export class ArtifactService {
         throw error;
       }
     }
+    throw artifactError("ARTIFACT_STORAGE_COLLISION", "Too many occupied paths in this Artifact version.", 409);
   }
 
   async #rollbackPrepared(prepared, error) {
@@ -2181,15 +2279,18 @@ export class ArtifactService {
   }
 
   async #restoreExistingContent(version, buffer) {
-    const finalPath = this.#safeStoragePath(version.storageKey);
+    if (buffer.byteLength !== version.byteLength || sha256(buffer) !== version.contentHash) {
+      throw artifactError("ARTIFACT_INTEGRITY_FAILED", "Backup bytes do not match the existing immutable revision.", 409);
+    }
+    const finalPath = await ensureArtifactStorageParent(this.contentRoot, version.storageKey);
     const operationId = `artifact_content_operation:${this.idFactory()}`;
-    const tempPath = join(this.contentRoot, "tmp", `${operationId.replaceAll(":", "-")}.restore.tmp`);
+    const tempPath = await ensureArtifactStorageParent(this.contentRoot, join("tmp", `${operationId.replaceAll(":", "-")}.restore.tmp`));
     this.store.createArtifactContentOperation({
       operationId, artifactId: version.artifactId, version: version.version,
       contentHash: version.contentHash, tempPath, finalPath, createdAt: this.clock()
     });
     try {
-      await mkdir(dirname(finalPath), { recursive: true, mode: 0o700 });
+      this.#safeStoragePath(version.storageKey);
       await writeFile(tempPath, buffer, { mode: 0o600, flag: "wx" });
       const handle = await open(tempPath, "r+");
       try { await handle.sync(); } finally { await handle.close(); }
@@ -2203,10 +2304,7 @@ export class ArtifactService {
   }
 
   #safeStoragePath(storageKey) {
-    const path = resolve(this.contentRoot, storageKey);
-    const root = `${resolve(this.contentRoot)}/`;
-    if (!path.startsWith(root)) throw artifactError("ARTIFACT_STORAGE_KEY_INVALID", "Artifact storage key escaped private storage.", 500);
-    return path;
+    return safeArtifactStoragePath(this.contentRoot, storageKey);
   }
 
   #pinnedReadContext(contextInput) {
@@ -2360,13 +2458,6 @@ function artifactSuggestedFilename(title, mimeType) {
   return `${stem || "Artifact"}${extension}`;
 }
 
-function matchesArtifactFilename(actual, expected) {
-  if (actual === expected) return true;
-  const extension = extname(expected);
-  if (extname(actual) !== extension) return false;
-  const collision = /^(.*)_(\d+)$/u.exec(actual.slice(0, -extension.length));
-  return collision?.[1] === expected.slice(0, -extension.length) && Number(collision[2]) >= 2;
-}
 function contentBuffer(value) {
   if (Buffer.isBuffer(value)) return value;
   if (typeof value !== "string") throw artifactError("ARTIFACT_CONTENT_REQUIRED", "Artifact content is required.", 400);
