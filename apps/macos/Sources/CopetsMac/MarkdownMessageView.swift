@@ -140,6 +140,7 @@ struct MessageLinkTarget: Equatable {
         case file
         case directory
         case revealOnly
+        case artifact(id: String)
     }
 
     let kind: Kind
@@ -149,6 +150,7 @@ struct MessageLinkTarget: Equatable {
 enum MessageLinkResolutionError: Error, Equatable {
     case emptyTarget
     case unsupportedScheme(String)
+    case invalidArtifactLink
     case remoteFileHost(String)
     case missingBaseDirectory(String)
     case missingFile(String)
@@ -160,6 +162,8 @@ enum MessageLinkResolutionError: Error, Equatable {
             return L10n("The link target is empty.")
         case .unsupportedScheme(let scheme):
             return L10nFormat("This link type is not supported: %@", scheme)
+        case .invalidArtifactLink:
+            return "Artifact 链接无效"
         case .remoteFileHost(let host):
             return L10nFormat("Remote file links are not supported: %@", host)
         case .missingBaseDirectory(let path):
@@ -177,12 +181,34 @@ enum MessageLinkResolver {
     private static let allowedWebSchemes: Set<String> = ["http", "https", "mailto"]
     private static let revealOnlyExtensions: Set<String> = ["app", "command", "dmg", "pkg"]
 
+    /// Artifact identities are opaque colon-separated identifiers, not file
+    /// paths or server URLs. Decode once and retain the complete identity,
+    /// including the historical worker-work namespace. Authorization belongs
+    /// to the existing resource API, never to this syntax check.
+    static func resolveArtifactID(_ url: URL) -> Result<String, MessageLinkResolutionError> {
+        guard url.scheme?.lowercased() == "artifact",
+              url.host == nil, url.query == nil, url.fragment == nil,
+              let separator = url.absoluteString.firstIndex(of: ":"),
+              let identifier = String(url.absoluteString[url.absoluteString.index(after: separator)...])
+                .removingPercentEncoding,
+              !identifier.isEmpty,
+              identifier.split(separator: ":", omittingEmptySubsequences: false).allSatisfy({ !$0.isEmpty }),
+              identifier.utf8.allSatisfy({ byte in
+                  (65...90).contains(byte) || (97...122).contains(byte)
+                      || (48...57).contains(byte) || byte == 45 || byte == 95 || byte == 58
+              }) else { return .failure(.invalidArtifactLink) }
+        return .success("artifact:" + identifier)
+    }
+
     static func resolve(
         _ url: URL,
         baseDirectory: String?,
         fileManager: FileManager = .default
     ) -> Result<MessageLinkTarget, MessageLinkResolutionError> {
         let scheme = url.scheme?.lowercased()
+        if scheme == "artifact" {
+            return resolveArtifactID(url).map { MessageLinkTarget(kind: .artifact(id: $0), url: url) }
+        }
         if let scheme, !scheme.isEmpty, scheme != "file" {
             guard allowedWebSchemes.contains(scheme) else {
                 return .failure(.unsupportedScheme(scheme))
@@ -371,6 +397,9 @@ enum MessageLinkOpener {
         case .success(let target):
             let didOpen: Bool
             switch target.kind {
+            case .artifact(let id):
+                AppTabRouter.shared.openResource(.init(id: id))
+                didOpen = true
             case .web, .file, .directory:
                 didOpen = NSWorkspace.shared.open(target.url)
             case .revealOnly:
@@ -390,8 +419,11 @@ enum MessageLinkOpener {
         guard case .success(let target) = MessageLinkResolver.resolve(
             url,
             baseDirectory: baseDirectory
-        ), target.kind != .web else { return nil }
-        return target.url
+        ) else { return nil }
+        switch target.kind {
+        case .file, .directory, .revealOnly: return target.url
+        case .web, .artifact: return nil
+        }
     }
 
     @MainActor
