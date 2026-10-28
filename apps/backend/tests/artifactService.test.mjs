@@ -8,6 +8,7 @@ import { performance } from "node:perf_hooks";
 
 import { ArtifactService, readVerifiedArtifactPage } from "../src/application/artifactService.mjs";
 import { ArtifactReadCoordinator } from "../src/application/artifactReadCoordinator.mjs";
+import { resolveArtifactStorageContainer, safeArtifactStoragePath } from "../src/application/artifactStorageLayout.mjs";
 import { inspectArtifactMarkdownCommit } from "../src/runtime/artifactMarkdownCommitGate.mjs";
 import { artifactDynamicTools, callArtifactDynamicTool } from "../src/application/artifactDynamicTools.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
@@ -52,6 +53,138 @@ const workerContext = (f) => ({ actorId: f.worker.agentId, sessionId: "session:w
 const peerContext = (f) => ({ actorId: f.peer.agentId, sessionId: "session:peer", workId: "work:one", taskId: "task:peer" });
 const outsiderContext = (f) => ({ actorId: f.outsider.agentId, sessionId: "session:outsider", workId: "work:two", taskId: "task:two" });
 const localUserContext = { kind: "local_user", actorId: "user:local-macos", workId: "work:one" };
+
+test("storage routes declared ownership through Work, Task and Session containers, not the creator", async () => {
+  const f = await fixture();
+  try {
+    const work = await f.service.create(workerContext(f), { title: "共享", scope: "work", content: "work", idempotencyKey: "layout:work" });
+    const task = await f.service.create(workerContext(f), { title: "方案", content: "task", idempotencyKey: "layout:task" });
+    const privateTask = await f.service.create(localUserContext, { title: "私有", scope: "session", visibility: "session_private", boundSessionId: "session:worker", content: "session" });
+    const workChat = await f.service.create(localUserContext, { title: "讨论", scope: "session", visibility: "session_private", boundSessionId: "session:manager", content: "discussion" });
+    f.store.upsertSession({ id: "session:solo", title: "独立会话", provider: "codex-app-server", sessionKind: "assistantChat", status: "idle" });
+    const solo = await f.service.create({ ...localUserContext, workId: null }, { title: "独立", scope: "session", visibility: "session_private", boundSessionId: "session:solo", content: "solo" });
+    assert.match(work.versions[0].storageKey, /^works\/One--w_one\/artifacts\//u);
+    assert.match(task.versions[0].storageKey, /^works\/One--w_one\/tasks\/One--t_one\/artifacts\//u);
+    assert.match(privateTask.versions[0].storageKey, /^works\/One--w_one\/tasks\/One--t_one\/sessions\/[^/]+--s_work\/artifacts\//u);
+    assert.match(workChat.versions[0].storageKey, /^works\/One--w_one\/sessions\/[^/]+--s_mana\/artifacts\//u);
+    assert.match(solo.versions[0].storageKey, /^sessions\/独立会话--s_solo\/artifacts\//u);
+    const before = task.versions[0].storageKey;
+    f.store.db.run("UPDATE works SET name='重命名Work' WHERE id='work:one'");
+    f.store.db.run("UPDATE tasks SET title='重命名Task' WHERE id='task:one'");
+    const restarted = new ArtifactService({ store: f.store, contentRoot: f.service.contentRoot });
+    await restarted.initialize({ performMaintenance: false });
+    const published = await restarted.publishVersion(localUserContext, task.artifactId, { content: "task v2" });
+    const next = published.artifact.versions.find(v => v.version === 2).storageKey;
+    assert.equal(dirname(dirname(dirname(next))), dirname(dirname(dirname(before))));
+    assert.match(next, /\/versions\/v000002\/方案.md$/u);
+    const archive = await f.service.create(managerContext(f), { title: "archive.tar.gz", mimeType: "application/gzip", content: "compressed" });
+    assert.equal(basename(archive.versions[0].storageKey), "archive.tar.gz");
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("short directory key collisions extend only the new identity and survive metadata renaming", async () => {
+  const f = await fixture();
+  try {
+    const a = await f.service.create(managerContext(f), { artifactId: "artifact:abcd1111", title: "同名", content: "a" });
+    const b = await f.service.create(managerContext(f), { artifactId: "artifact:abcd2222", title: "同名", content: "b" });
+    assert.match(a.versions[0].storageKey, /同名--a_abcd\//u);
+    assert.match(b.versions[0].storageKey, /同名--a_abcd2\//u);
+    await f.service.updateMetadata(managerContext(f), a.artifactId, { title: "改名" });
+    const current = f.store.getArtifact(a.artifactId);
+    assert.ok(a.versions[0].storageKey.startsWith(resolveArtifactStorageContainer(f.store, current)));
+    assert.equal(f.store.getArtifactVersion(a.artifactId, 1).storageKey, a.versions[0].storageKey);
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("explicit migration is bounded, resumable, idempotent and retains corrupted legacy bytes", async () => {
+  const f = await fixture();
+  try {
+    const artifacts = [];
+    for (let index = 0; index < 3; index++) {
+      const artifact = await f.service.create(managerContext(f), { title: `Batch${index}`, content: `body${index}` });
+      artifacts.push({ artifact, key: await moveToLegacyObject(f, artifact) });
+    }
+    await writeFile(join(f.service.contentRoot, artifacts[2].key), "tampered");
+    let after = null;
+    const results = [];
+    do {
+      const batch = await f.service.migrateStorageLayout({ limit: 1, after });
+      assert.ok(batch.results.length <= 1);
+      results.push(...batch.results);
+      after = batch.done ? null : batch.nextCursor;
+    } while (after);
+    assert.equal(results.filter(r => r.action === "filename_migrated").length, 2);
+    assert.equal(results.filter(r => r.errorCode === "ARTIFACT_INTEGRITY_FAILED").length, 1);
+    assert.equal(f.store.getArtifactVersion(artifacts[2].artifact.artifactId, 1).storageKey, artifacts[2].key);
+    assert.equal(await readFile(join(f.service.contentRoot, artifacts[2].key), "utf8"), "tampered");
+    assert.equal((await f.service.migrateStorageLayout()).results.filter(r => r.action === "filename_migrated").length, 0);
+    await assert.rejects(f.service.migrateStorageLayout({ limit: 501 }), { code: "ARTIFACT_INVALID_INPUT" });
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("ownership relocation rolls back every destination when a later version fails to commit", async () => {
+  const f = await fixture();
+  try {
+    const artifact = await f.service.create(workerContext(f), { title: "Transfer", content: "v1", idempotencyKey: "move:create" });
+    await f.service.publishVersion(localUserContext, artifact.artifactId, { content: "v2" });
+    const before = f.store.listArtifactVersions(artifact.artifactId);
+    const metadata = f.store.getArtifact(artifact.artifactId);
+    const relocate = f.store.relocateArtifactVersion.bind(f.store);
+    let calls = 0;
+    f.store.relocateArtifactVersion = (...args) => {
+      if (++calls === 2) throw Object.assign(new Error("injected"), { code: "INJECTED" });
+      return relocate(...args);
+    };
+    await assert.rejects(f.service.transferOwnership(workerContext(f), artifact.artifactId, {
+      scope: "work", expectedResourceVersion: metadata.resourceVersion, idempotencyKey: "move:fail"
+    }), { code: "INJECTED" });
+    assert.deepEqual(f.store.listArtifactVersions(artifact.artifactId), before);
+    assert.equal(f.store.getArtifact(artifact.artifactId).scope, "task");
+    assert.equal(f.store.listIncompleteArtifactContentOperations().length, 0);
+    for (const version of before) assert.equal((await readFile(join(f.service.contentRoot, version.storageKey))).byteLength, version.byteLength);
+    f.store.relocateArtifactVersion = relocate;
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("hierarchical storage rejects symlink ancestors for new writes, reads and migration", async () => {
+  const f = await fixture();
+  try {
+    const artifact = await f.service.create(managerContext(f), { title: "Safe", content: "safe" });
+    const directory = dirname(join(f.service.contentRoot, artifact.versions[0].storageKey));
+    const moved = join(f.directory, "external-version");
+    await rename(directory, moved);
+    await symlink(moved, directory);
+    assert.throws(() => safeArtifactStoragePath(f.service.contentRoot, artifact.versions[0].storageKey), { code: "ARTIFACT_STORAGE_KEY_INVALID" });
+    await assert.rejects(f.service.localFile(managerContext(f), artifact.artifactId, pinnedReadOptions(artifact)), { code: "ARTIFACT_STORAGE_KEY_INVALID" });
+    await unlink(directory);
+    await rename(moved, directory);
+    const works = join(f.service.contentRoot, "works");
+    const movedWorks = join(f.directory, "external-works");
+    await rename(works, movedWorks);
+    await symlink(movedWorks, works);
+    await assert.rejects(f.service.create(managerContext(f), { title: "Blocked", content: "new" }), { code: "ARTIFACT_STORAGE_KEY_INVALID" });
+    assert.equal(await readFile(join(movedWorks, artifact.versions[0].storageKey.slice("works/".length)), "utf8"), "safe");
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("hierarchical orphan audit retains unknown files and excludes in-flight content", async () => {
+  const f = await fixture();
+  try {
+    const artifact = await f.service.create(managerContext(f), { title: "Audit", content: "body" });
+    const root = dirname(join(f.service.contentRoot, artifact.versions[0].storageKey));
+    const orphan = join(root, "orphan.bin");
+    const inflight = join(root, "inflight.bin");
+    await writeFile(orphan, "orphan");
+    await writeFile(inflight, "inflight");
+    f.store.createArtifactContentOperation({ operationId: "op:inflight", artifactId: artifact.artifactId, version: 2,
+      contentHash: "a".repeat(64), tempPath: join(f.service.contentRoot, "tmp", "inflight.tmp"), finalPath: inflight, createdAt: new Date().toISOString() });
+    const audited = await f.service.auditOrphanedContent();
+    assert.deepEqual(audited.map(row => basename(row.storageKey)), ["orphan.bin"]);
+    assert.equal(await readFile(orphan, "utf8"), "orphan");
+    assert.equal(await readFile(inflight, "utf8"), "inflight");
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
 let artifactReadTurn = 0;
 function pinnedReadOptions(artifact, reference = null, options = {}) {
   const selectedReference = reference ?? artifact.references?.find((candidate) => !candidate.revokedAt);
@@ -387,19 +520,21 @@ test("ownership transfer preserves immutable content and requires write access t
     }), { code: "ARTIFACT_WRITE_FORBIDDEN" });
     await assert.rejects(() => f.service.publishAndRepin(managerContext(f), id, { taskId: "task:one", content: "forbidden" }), { code: "ARTIFACT_WRITE_FORBIDDEN" });
     const input = { scope: "work", expectedResourceVersion: f.store.getArtifact(id).resourceVersion, idempotencyKey: "ownership:share" };
-    assert.throws(() => f.service.transferOwnership(peerContext(f), id, input), { code: "ARTIFACT_READ_ONLY" });
-    assert.throws(() => f.service.transferOwnership(managerContext(f), id, input), { code: "ARTIFACT_WRITE_FORBIDDEN" });
-    const shared = f.service.transferOwnership(workerContext(f), id, input);
+    await assert.rejects(() => f.service.transferOwnership(peerContext(f), id, input), { code: "ARTIFACT_READ_ONLY" });
+    await assert.rejects(() => f.service.transferOwnership(managerContext(f), id, input), { code: "ARTIFACT_WRITE_FORBIDDEN" });
+    const shared = await f.service.transferOwnership(workerContext(f), id, input);
     assert.equal(shared.scope, "work");
-    assert.equal(f.service.transferOwnership(workerContext(f), id, input).idempotentReplay, true);
-    assert.throws(() => f.service.transferOwnership(workerContext(f), id, { ...input, scope: "task" }), { code: "ARTIFACT_IDEMPOTENCY_CONFLICT" });
-    assert.throws(() => f.service.transferOwnership(workerContext(f), id, { ...input, idempotencyKey: "stale" }), { code: "ARTIFACT_RESOURCE_VERSION_CONFLICT" });
+    assert.equal((await f.service.transferOwnership(workerContext(f), id, input)).idempotentReplay, true);
+    await assert.rejects(() => f.service.transferOwnership(workerContext(f), id, { ...input, scope: "task" }), { code: "ARTIFACT_IDEMPOTENCY_CONFLICT" });
+    await assert.rejects(() => f.service.transferOwnership(workerContext(f), id, { ...input, idempotencyKey: "stale" }), { code: "ARTIFACT_RESOURCE_VERSION_CONFLICT" });
     await f.service.updateMetadata(peerContext(f), id, { title: "Shared edit" });
     const back = { scope: "task", expectedResourceVersion: f.store.getArtifact(id).resourceVersion, idempotencyKey: "ownership:private" };
-    assert.throws(() => f.service.transferOwnership(workerContext(f), id, { ...back, taskId: "task:peer" }), { code: "ARTIFACT_READ_ONLY" });
-    assert.equal(f.service.transferOwnership(workerContext(f), id, back).taskId, "task:one");
+    await assert.rejects(() => f.service.transferOwnership(workerContext(f), id, { ...back, taskId: "task:peer" }), { code: "ARTIFACT_READ_ONLY" });
+    assert.equal((await f.service.transferOwnership(workerContext(f), id, back)).taskId, "task:one");
     await assert.rejects(() => f.service.updateMetadata(peerContext(f), id, { title: "Denied" }), { code: "ARTIFACT_READ_ONLY" });
-    assert.deepEqual(f.store.getArtifactVersion(id, 1), { ...version, storageKey: "files/Shared edit.md" });
+    const transferred = f.store.getArtifactVersion(id, 1);
+    assert.deepEqual({ ...transferred, storageKey: version.storageKey }, version);
+    assert.match(transferred.storageKey, /\/tasks\/One--t_one\/artifacts\/Ownership--a_/u);
     assert.equal(f.store.listArtifactAudit("work:one", id).filter(row => row.action === "artifact.ownership_changed").length, 2);
   } finally { f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
@@ -411,7 +546,7 @@ test("Task deletion can revoke, promote, or retain bound Artifacts explicitly", 
       title: "Delete with Task", content: "delete", visibility: "task_private",
       boundTaskId: "task:one", idempotencyKey: "task-delete-artifact-delete"
     });
-    f.service.disposeBoundArtifactsForTaskDeletion(localUserContext, "task:one", "delete");
+    await f.service.disposeBoundArtifactsForTaskDeletion(localUserContext, "task:one", "delete");
     assert.equal(f.store.getArtifact(revoked.artifactId).status, "revoked");
     assert.equal(f.store.getArtifact(revoked.artifactId).boundTaskId, null);
 
@@ -419,7 +554,7 @@ test("Task deletion can revoke, promote, or retain bound Artifacts explicitly", 
       title: "Promote with Task", content: "promote", visibility: "task_private",
       boundTaskId: "task:one", idempotencyKey: "task-delete-artifact-promote"
     });
-    f.service.disposeBoundArtifactsForTaskDeletion(localUserContext, "task:one", "work");
+    await f.service.disposeBoundArtifactsForTaskDeletion(localUserContext, "task:one", "work");
     const promotedRecord = f.store.getArtifact(promoted.artifactId);
     assert.equal(promotedRecord.visibility, "work_private");
     assert.equal(promotedRecord.scope, "work");
@@ -429,7 +564,7 @@ test("Task deletion can revoke, promote, or retain bound Artifacts explicitly", 
       title: "Retain with Task", content: "retain", visibility: "task_private",
       boundTaskId: "task:one", idempotencyKey: "task-delete-artifact-retain"
     });
-    f.service.disposeBoundArtifactsForTaskDeletion(localUserContext, "task:one", "retain");
+    await f.service.disposeBoundArtifactsForTaskDeletion(localUserContext, "task:one", "retain");
     assert.equal(f.store.getArtifact(retained.artifactId).boundTaskId, "task:one");
     assert.equal(f.store.getArtifact(retained.artifactId).status, "active");
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
@@ -441,7 +576,7 @@ test("Work private content is hashed, atomically stored outside repositories, pa
     const artifact = await f.service.create(managerContext(f), { title: "Implementation", summary: "Private design", visibility: "work_private", content: "secret specification" });
     assert.equal(artifact.currentVersion, 1);
     assert.equal(artifact.versions[0].contentHash.length, 64);
-    assert.equal(artifact.versions[0].storageKey, "files/Implementation.md");
+    assert.match(artifact.versions[0].storageKey, /^works\/One--w_one\/artifacts\/Implementation--a_[^/]+\/versions\/v000001\/Implementation.md$/u);
     const stored = await readFile(join(f.directory, "data", "artifacts", artifact.versions[0].storageKey), "utf8");
     assert.equal(stored, "secret specification");
     const reference = f.service.createReference(managerContext(f), artifact.artifactId, {
@@ -517,7 +652,7 @@ test("local file lookup reuses the stored Artifact object without reading or mat
     const localOptions = {
       version: 1, contentHash: artifact.versions[0].contentHash, referenceId: reference.referenceId
     };
-    const objectsDirectory = join(f.directory, "data", "artifacts", "files");
+    const objectsDirectory = dirname(join(f.service.contentRoot, artifact.versions[0].storageKey));
     const before = await readdir(objectsDirectory);
 
     const receipt = await f.service.localFile(managerContext(f), artifact.artifactId, localOptions);
@@ -574,7 +709,8 @@ test("actual Artifact filenames retain Unicode titles and complete extensions ac
     for (const [mimeType, extension] of formats) {
       const artifact = await f.service.create(managerContext(f), { title: "可直接打开的文档", content: Buffer.from([0, 255, 42]), mimeType });
       const version = artifact.versions[0];
-      assert.equal(version.storageKey, `files/可直接打开的文档.${extension}`);
+      assert.equal(basename(version.storageKey), `可直接打开的文档.${extension}`);
+      assert.match(version.storageKey, /\/versions\/v000001\//u);
       assert.deepEqual(await readFile(join(f.service.contentRoot, version.storageKey)), Buffer.from([0, 255, 42]));
       const reference = f.service.createReference(managerContext(f), artifact.artifactId, { taskId: "task:one", relation: "handoff" });
       const receipt = await f.service.localFile(managerContext(f), artifact.artifactId, pinnedReadOptions(artifact, reference));
@@ -584,7 +720,7 @@ test("actual Artifact filenames retain Unicode titles and complete extensions ac
     const source = join(f.directory, "原始文件.docx");
     await writeFile(source, Buffer.from([80, 75, 3, 4]));
     const imported = await f.service.importLocalFile(managerContext(f), { path: source });
-    assert.equal(imported.artifact.versions[0].storageKey, "files/原始文件.docx");
+    assert.equal(basename(imported.artifact.versions[0].storageKey), "原始文件.docx");
     assert.equal(imported.artifact.versions[0].mimeType, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
@@ -597,7 +733,8 @@ test("concurrent equal titles and equal content get distinct normal files and pr
     })));
     const keys = artifacts.map(a => a.versions[0].storageKey);
     assert.equal(new Set(keys).size, 8);
-    assert.deepEqual([...keys].sort(), Array.from({ length: 8 }, (_, i) => `files/共同文档${i === 0 ? "" : `_${i + 1}`}.html`).sort());
+    assert.ok(keys.every(key => basename(key) === "共同文档.html"));
+    assert.equal(new Set(keys.map(dirname)).size, 8);
     const published = await f.service.publishVersion(managerContext(f), artifacts[0].artifactId, { content: "<p>version 2</p>", mimeType: "text/html" });
     assert.equal(new Set(published.artifact.versions.map(v => v.storageKey)).size, 2);
     for (const key of keys) assert.equal(await readFile(join(f.service.contentRoot, key), "utf8"), "<p>same bytes</p>");
@@ -617,14 +754,16 @@ test("filenames replace Chinese punctuation and parentheses with underscores and
       assert.doesNotMatch(name.replace(/[._-]/gu, ""), /\p{P}/u);
       assert.ok(name.endsWith(".html"));
     }
-    assert.ok(second.versions[0].storageKey.endsWith("_2.html"));
+    assert.equal(basename(second.versions[0].storageKey), basename(first.versions[0].storageKey));
     const old = await f.service.create(managerContext(f), { title: "Legacy", content: "same", mimeType: "text/html" });
     const oldKey = "files/Legacy (2).html";
+    await mkdir(dirname(join(f.service.contentRoot, oldKey)), { recursive: true });
     await rename(join(f.service.contentRoot, old.versions[0].storageKey), join(f.service.contentRoot, oldKey));
     f.store.relocateArtifactVersion(old.artifactId, 1, old.versions[0].storageKey, oldKey);
     assert.equal((await f.service.migrateStoredFilenames()).filter(r => r.action === "filename_migrated").length, 1);
     const migrated = f.store.getArtifactVersion(old.artifactId, 1);
-    assert.equal(migrated.storageKey, "files/Legacy.html");
+    assert.equal(basename(migrated.storageKey), "Legacy.html");
+    assert.match(migrated.storageKey, /\/versions\/v000001\//u);
     assert.equal(migrated.contentHash, old.versions[0].contentHash);
     assert.deepEqual(await f.service.migrateStoredFilenames(), []);
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
@@ -639,7 +778,7 @@ async function moveToLegacyObject(f, artifact) {
   return key;
 }
 
-test("startup migrates shared legacy hash objects without changing hashes, pins or content and is restart-idempotent", async () => {
+test("startup and reads preserve shared legacy objects; explicit migration preserves hashes and pins", async () => {
   const f = await fixture();
   try {
     const a = await f.service.create(managerContext(f), { title: "迁移文档", content: "original" });
@@ -649,20 +788,22 @@ test("startup migrates shared legacy hash objects without changing hashes, pins 
     await unlink(join(f.service.contentRoot, b.versions[0].storageKey));
     f.store.relocateArtifactVersion(b.artifactId, 1, b.versions[0].storageKey, oldKey);
     const restarted = new ArtifactService({ store: f.store, contentRoot: f.service.contentRoot });
-    const migrated = await restarted.initialize();
+    assert.equal((await restarted.initialize()).filter(r => r.action === "filename_migrated").length, 0);
+    assert.equal(f.store.getArtifactVersion(a.artifactId, 1).storageKey, oldKey);
+    const migrated = await restarted.migrateStoredFilenames();
     assert.equal(migrated.filter(r => r.action === "filename_migrated").length, 2);
-    assert.equal(f.store.getArtifactVersion(a.artifactId, 1).storageKey, "files/迁移文档.md");
-    assert.equal(f.store.getArtifactVersion(b.artifactId, 1).storageKey, "files/其他文档.md");
+    assert.equal(basename(f.store.getArtifactVersion(a.artifactId, 1).storageKey), "迁移文档.md");
+    assert.equal(basename(f.store.getArtifactVersion(b.artifactId, 1).storageKey), "其他文档.md");
     await assert.rejects(readFile(join(f.service.contentRoot, oldKey)), { code: "ENOENT" });
     assert.equal(f.store.getArtifactReference(pin.referenceId).pinnedHash, a.versions[0].contentHash);
     assert.equal((await restarted.get(managerContext(f), a.artifactId, pinnedReadOptions(a, pin))).content, "original");
-    const before = await readdir(join(f.service.contentRoot, "files"));
+    const before = f.store.listArtifactVersions(a.artifactId);
     assert.deepEqual(await restarted.migrateStoredFilenames(), []);
-    assert.deepEqual(await readdir(join(f.service.contentRoot, "files")), before);
+    assert.deepEqual(f.store.listArtifactVersions(a.artifactId), before);
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
-test("failed filename migration preserves the original file and record; on-demand lookup can retry", async () => {
+test("failed migration preserves original content; reads never move it and explicit retry succeeds", async () => {
   const f = await fixture();
   try {
     const artifact = await f.service.create(managerContext(f), { title: "Retry", content: "original" });
@@ -673,12 +814,13 @@ test("failed filename migration preserves the original file and record; on-deman
     assert.equal((await f.service.migrateStoredFilenames())[0].errorCode, "INJECTED");
     assert.equal(f.store.getArtifactVersion(artifact.artifactId, 1).storageKey, oldKey);
     assert.equal(await readFile(join(f.service.contentRoot, oldKey), "utf8"), "original");
-    assert.deepEqual(await readdir(join(f.service.contentRoot, "files")), []);
+    assert.equal(f.store.listIncompleteArtifactContentOperations().length, 0);
     f.store.relocateArtifactVersion = relocate;
     const [one, two] = await Promise.all([1, 2].map(() => f.service.localFile(managerContext(f), artifact.artifactId, pinnedReadOptions(artifact, reference))));
     assert.equal(one.path, two.path);
-    assert.equal(basename(one.path), "Retry.md");
-    assert.deepEqual(await readdir(join(f.service.contentRoot, "files")), ["Retry.md"]);
+    assert.equal(one.path, join(f.service.contentRoot, oldKey));
+    assert.equal((await f.service.migrateStoredFilenames())[0].action, "filename_migrated");
+    assert.equal(basename(f.store.getArtifactVersion(artifact.artifactId, 1).storageKey), "Retry.md");
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
@@ -687,6 +829,7 @@ test("named-file recovery removes a pre-commit migration orphan even when the ol
   try {
     const artifact = await f.service.create(managerContext(f), { title: "Committed", content: "original" });
     const orphan = join(f.service.contentRoot, "files", "Uncommitted.md");
+    await mkdir(dirname(orphan), { recursive: true });
     await writeFile(orphan, "original");
     f.store.createArtifactContentOperation({ operationId: "op:migration", artifactId: artifact.artifactId,
       version: 1, contentHash: artifact.versions[0].contentHash, tempPath: join(f.service.contentRoot, "tmp", "missing.tmp"),
@@ -697,26 +840,18 @@ test("named-file recovery removes a pre-commit migration orphan even when the ol
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
-test("renaming an Artifact updates its real version filenames atomically and rolls back on storage failure", async () => {
+test("renaming an Artifact changes metadata only and leaves immutable version paths untouched", async () => {
   const f = await fixture();
   try {
     const artifact = await f.service.create(managerContext(f), { title: "旧名称", content: "v1", mimeType: "text/html" });
     await f.service.publishVersion(managerContext(f), artifact.artifactId, { content: "v2", mimeType: "text/html" });
     const before = f.store.listArtifactVersions(artifact.artifactId);
     const relocate = f.store.relocateArtifactVersion.bind(f.store);
-    let calls = 0;
-    f.store.relocateArtifactVersion = (...args) => {
-      if (++calls === 2) throw Object.assign(new Error("injected"), { code: "INJECTED" });
-      return relocate(...args);
-    };
-    await assert.rejects(() => f.service.updateMetadata(managerContext(f), artifact.artifactId, { title: "新名称" }), { code: "INJECTED" });
-    assert.equal(f.store.getArtifact(artifact.artifactId).title, "旧名称");
-    assert.deepEqual(f.store.listArtifactVersions(artifact.artifactId), before);
-    assert.deepEqual((await readdir(join(f.service.contentRoot, "files"))).sort(), ["旧名称_2.html", "旧名称.html"].sort());
-    f.store.relocateArtifactVersion = relocate;
+    f.store.relocateArtifactVersion = () => { throw new Error("Title edits must not relocate content"); };
     const updated = await f.service.updateMetadata(managerContext(f), artifact.artifactId, { title: "新名称" });
     assert.equal(updated.title, "新名称");
-    assert.deepEqual((await readdir(join(f.service.contentRoot, "files"))).sort(), ["新名称_2.html", "新名称.html"].sort());
+    assert.deepEqual(f.store.listArtifactVersions(artifact.artifactId), before);
+    f.store.relocateArtifactVersion = relocate;
     assert.equal((await f.service.verifyIntegrity(artifact.artifactId)).ok, true);
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
@@ -729,14 +864,15 @@ test("filenames stay bounded and inside private storage; symlink collisions neve
     await writeFile(outside, "keep");
     await symlink(outside, join(f.service.contentRoot, "files", "Report.html"));
     const artifact = await f.service.create(managerContext(f), { title: "../../Report", content: "<p>new</p>", mimeType: "text/html" });
-    assert.equal(artifact.versions[0].storageKey, "files/Report_2.html");
+    assert.equal(basename(artifact.versions[0].storageKey), "Report.html");
+    assert.ok(!artifact.versions[0].storageKey.startsWith("files/"));
     assert.equal(await readFile(outside, "utf8"), "keep");
     const long = await f.service.create(managerContext(f), { title: "中".repeat(200), content: "long", mimeType: "text/html" });
     assert.ok(Buffer.byteLength(basename(long.versions[0].storageKey)) <= 200);
     const dotted = await f.service.create(managerContext(f), { title: "报告v1.2", content: "pdf", mimeType: "application/pdf" });
-    assert.equal(dotted.versions[0].storageKey, "files/报告v1.2.pdf");
+    assert.equal(basename(dotted.versions[0].storageKey), "报告v1.2.pdf");
     const custom = await f.service.create(managerContext(f), { title: "Drawing.custom", content: "custom", mimeType: "application/x-custom" });
-    assert.equal(custom.versions[0].storageKey, "files/Drawing.custom");
+    assert.equal(basename(custom.versions[0].storageKey), "Drawing.custom");
     const longSuffix = await f.service.create(managerContext(f), { title: `Unknown.${"x".repeat(300)}`, content: "unknown", mimeType: "application/x-custom" });
     assert.ok(Buffer.byteLength(basename(longSuffix.versions[0].storageKey)) <= 200);
     assert.ok(longSuffix.versions[0].storageKey.endsWith(".bin"));
@@ -777,8 +913,8 @@ test("Sessions read project Artifacts across Work and private ownership without 
     const trackedReference = f.service.createReference(managerContext(f), repositoryTracked.artifactId, { taskId: "task:one", relation: "research_evidence" });
     assert.equal((await f.service.get(workerContext(f), repositoryTracked.artifactId, pinnedReadOptions(repositoryTracked, trackedReference))).content, null);
 
-    assert.throws(() => f.service.changeVisibility(managerContext(f), artifact.artifactId, "task_private", { confirmed: true }), { code: "ARTIFACT_TASK_REQUIRED" });
-    assert.throws(() => f.service.changeVisibility(managerContext(f), artifact.artifactId, "repository_tracked", { confirmed: true }), { code: "ARTIFACT_VISIBILITY_TRANSITION_FORBIDDEN" });
+    await assert.rejects(() => f.service.changeVisibility(managerContext(f), artifact.artifactId, "task_private", { confirmed: true }), { code: "ARTIFACT_TASK_REQUIRED" });
+    await assert.rejects(() => f.service.changeVisibility(managerContext(f), artifact.artifactId, "repository_tracked", { confirmed: true }), { code: "ARTIFACT_VISIBILITY_TRANSITION_FORBIDDEN" });
     assert.equal((await f.service.get(outsiderContext(f), artifact.artifactId, pinnedReadOptions(artifact))).content, "security requirement");
     await assert.rejects(() => f.service.updateMetadata(outsiderContext(f), artifact.artifactId, { title: "forbidden" }), { code: "ARTIFACT_CROSS_WORK_FORBIDDEN" });
     assert.ok(f.service.list(outsiderContext(f)).some(item => item.artifactId === artifact.artifactId && item.access.read && !item.access.write));
@@ -1366,7 +1502,8 @@ test("Worker Artifact Reference failure rolls back metadata, version, audit, ide
     for (const table of ["artifacts", "artifact_versions", "artifact_references", "artifact_audit_events", "artifact_worker_create_operations"]) {
       assert.equal(f.store.selectOne(`SELECT COUNT(*) AS count FROM ${table}`).count, 0, table);
     }
-    assert.deepEqual(await readdir(join(f.service.contentRoot, "files")), []);
+    const failedOperation = f.store.selectOne("SELECT final_path FROM artifact_content_operations");
+    await assert.rejects(readFile(failedOperation.final_path), { code: "ENOENT" });
     assert.equal(f.store.selectOne("SELECT status FROM artifact_content_operations").status, "rolled_back");
     const retried = await f.service.create(workerContext(f), {
       title: "Atomic failure", content: "must fully roll back", idempotencyKey: "retry-after-failure"
@@ -1445,7 +1582,8 @@ test("metadata failure rolls back an unreferenced content object and records a r
     f.store.createArtifactVersion = () => { const error = new Error("injected database failure"); error.code = "INJECTED_DB_FAILURE"; throw error; };
     await assert.rejects(() => f.service.create(managerContext(f), { title: "Failure", visibility: "work_private", content: "must roll back" }), { code: "INJECTED_DB_FAILURE" });
     f.store.createArtifactVersion = original;
-    assert.deepEqual(await readdir(join(f.service.contentRoot, "files")), []);
+    const failedOperation = f.store.selectOne("SELECT final_path FROM artifact_content_operations");
+    await assert.rejects(readFile(failedOperation.final_path), { code: "ENOENT" });
     assert.equal(f.store.selectOne("SELECT status FROM artifact_content_operations").status, "rolled_back");
     assert.equal(f.store.listArtifactsByWork("work:one", { includeRevoked: true }).length, 0);
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
@@ -1565,5 +1703,44 @@ test("verified backup restores corrupted content and rejects cross-Work restore"
     assert.equal(restored.verifiedContentObjects, 1);
     assert.equal(await readFile(storedPath, "utf8"), "verified backup content");
     await assert.rejects(() => f.service.restoreWork({ kind: "local_user", actorId: "local", workId: "work:two" }, { sourcePath: backupPath, confirmed: true }), { code: "ARTIFACT_CROSS_WORK_FORBIDDEN" });
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("backup restores original directory snapshots, immutable versions and references into a fresh store", async () => {
+  const source = await fixture();
+  const destination = await fixture();
+  try {
+    const artifact = await source.service.create(managerContext(source), { artifactId: "artifact:abcd1111", title: "Original", content: "v1" });
+    await source.service.publishVersion(managerContext(source), artifact.artifactId, { content: "v2" });
+    await source.service.updateMetadata(managerContext(source), artifact.artifactId, { title: "Renamed" });
+    const pin = source.service.createReference(managerContext(source), artifact.artifactId, { taskId: "task:one", relation: "handoff", version: 1 });
+    const backupPath = join(source.directory, "directory-backup");
+    await source.service.backupWork(managerContext(source), { destinationPath: backupPath, confirmed: true });
+    const restored = await destination.service.restoreWork(managerContext(destination), { sourcePath: backupPath, confirmed: true });
+    assert.equal(restored.restoredArtifacts, 1);
+    assert.equal(destination.store.getArtifact(artifact.artifactId).title, "Renamed");
+    assert.deepEqual(destination.store.listArtifactVersions(artifact.artifactId), source.store.listArtifactVersions(artifact.artifactId));
+    assert.equal(destination.store.getArtifactReference(pin.referenceId).pinnedHash, pin.pinnedHash);
+    assert.equal((await destination.service.verifyIntegrity(artifact.artifactId)).ok, true);
+    const published = await destination.service.publishVersion(managerContext(destination), artifact.artifactId, { content: "v3" });
+    assert.match(published.artifact.versions.find(v => v.version === 3).storageKey, /Original--a_abcd\/versions\/v000003\/Renamed.md$/u);
+  } finally {
+    await source.store.close(); await destination.store.close();
+    await rm(source.directory, { recursive: true, force: true }); await rm(destination.directory, { recursive: true, force: true });
+  }
+});
+
+test("restore rejects unsafe directory identities without modifying existing files", async () => {
+  const f = await fixture();
+  try {
+    const artifact = await f.service.create(managerContext(f), { title: "Backup", content: "original" });
+    const backupPath = join(f.directory, "unsafe-backup");
+    await f.service.backupWork(managerContext(f), { destinationPath: backupPath, confirmed: true });
+    const manifestPath = join(backupPath, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.storageDirectories[0].directory_name = "../escape";
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    await assert.rejects(f.service.restoreWork(managerContext(f), { sourcePath: backupPath, confirmed: true }), { code: "ARTIFACT_STORAGE_KEY_INVALID" });
+    assert.equal(await readFile(join(f.service.contentRoot, artifact.versions[0].storageKey), "utf8"), "original");
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });

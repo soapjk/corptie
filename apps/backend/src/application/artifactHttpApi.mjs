@@ -114,7 +114,7 @@ export function handleArtifactHttpRequest({ request, response, url, service, req
       }
       if (request.method === "PATCH") {
         const input = await readJson(request);
-        if (input.visibility) return sendJson(response, 200, service.changeVisibility(context, artifactId, input.visibility, { confirmed: input.confirmed === true }));
+        if (input.visibility) return sendJson(response, 200, await service.changeVisibility(context, artifactId, input.visibility, { confirmed: input.confirmed === true }));
         if (input.status === "superseded") return sendJson(response, 200, service.supersede(context, artifactId));
         if (input.status === "revoked") return sendJson(response, 200, service.revokeArtifact(context, artifactId, input.reason));
         throw httpError("ARTIFACT_INVALID_INPUT", "A supported visibility or status change is required.", 400);

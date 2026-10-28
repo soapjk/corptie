@@ -1,5 +1,14 @@
 // Schema text is ordered by migrations/index.mjs; execution remains owned by CorptieStore.
-export const artifactSchemaSql = `      CREATE TABLE IF NOT EXISTS artifact_patch_operations (
+export const artifactSchemaSql = `
+      CREATE TABLE IF NOT EXISTS artifact_storage_directories (
+        entity_kind TEXT NOT NULL CHECK (entity_kind IN ('work', 'task', 'session', 'artifact')),
+        entity_id TEXT NOT NULL,
+        directory_key TEXT NOT NULL,
+        directory_name TEXT NOT NULL,
+        PRIMARY KEY(entity_kind, entity_id),
+        UNIQUE(entity_kind, directory_key)
+      );
+      CREATE TABLE IF NOT EXISTS artifact_patch_operations (
         session_id TEXT NOT NULL,
         idempotency_key TEXT NOT NULL,
         request_hash TEXT NOT NULL,
