@@ -13,6 +13,72 @@ final class MessageTextCardMigrationTests: XCTestCase {
             showsHeader: header, contextTimestamp: "12:34")
     }
 
+    func testSkinSwitchPreservesHostedTextIdentitySelectionAndMeasurements() throws {
+        _ = NSApplication.shared
+        let model = row("Shared selectable text", revision: 1)
+        let layout = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 480)
+        let cell = AppKitSharedMessageTextCell(identifier: .init("skin-reuse"))
+        cell.frame = NSRect(x: 0, y: 0, width: 480, height: layout.rowHeight)
+        let window = NSWindow(contentRect: cell.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = cell
+        cell.setContent(model, availableWidth: 480, onToggleExpansion: { _ in })
+        cell.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.01))
+        func leaves(_ view: NSView) -> [NativeTimelineTextView] {
+            (view as? NativeTimelineTextView).map { [$0] } ?? view.subviews.flatMap(leaves)
+        }
+        let text = try XCTUnwrap(leaves(cell).first)
+        text.setSelectedRange(NSRange(location: 0, length: 6))
+        let frame = cell.frame
+        let configured = cell.contentConfigurationCount
+        let widthUpdates = cell.widthLayoutUpdateCount
+        for skin in [ConversationSkin.codexFlat, .classic, .codexFlat] {
+            cell.updateAppearance(skin: skin)
+            cell.layoutSubtreeIfNeeded()
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.01))
+            XCTAssertTrue(leaves(cell).first === text)
+            XCTAssertEqual(text.selectedRange(), NSRange(location: 0, length: 6))
+            XCTAssertEqual(cell.frame, frame)
+            XCTAssertEqual(cell.contentConfigurationCount, configured)
+            XCTAssertEqual(cell.widthLayoutUpdateCount, widthUpdates)
+            XCTAssertEqual(NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 480).rowHeight, layout.rowHeight)
+        }
+        window.contentView = nil
+    }
+
+    func testCoordinatorRefreshesVisibleAndRetainedCellsWithoutRebindingContent() throws {
+        _ = NSApplication.shared
+        let rows = (0..<100).map { row("Message \($0)", id: "skin-\($0)") }
+        let table = AppKitChatTimelineView.makeTableView()
+        let scroll = AppKitChatTimelineView.makeScrollView(tableView: table)
+        let coordinator = AppKitChatTimelineView.Coordinator(followsLatest: .constant(false),
+            useSharedTextCards: true, onToggleExpansion: { _ in })
+        coordinator.attach(tableView: table, scrollView: scroll)
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 480, height: 400),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = scroll
+        window.layoutIfNeeded()
+        coordinator.apply(rows: rows)
+        scroll.layoutSubtreeIfNeeded()
+        let retained = try XCTUnwrap(coordinator.tableView(table, viewFor: table.tableColumns.first, row: 90) as? AppKitSharedMessageTextCell)
+        let configured = retained.contentConfigurationCount
+        coordinator.updateSkin(.codexFlat)
+        let rebound = try XCTUnwrap(coordinator.tableView(table, viewFor: table.tableColumns.first, row: 90) as? AppKitSharedMessageTextCell)
+        XCTAssertTrue(retained === rebound)
+        let host = try XCTUnwrap(rebound.subviews.first as? NSHostingView<MacSharedMessageTextCard>)
+        XCTAssertEqual(host.rootView.skin, .codexFlat)
+        XCTAssertEqual(rebound.contentConfigurationCount, configured)
+        let fresh = try XCTUnwrap(coordinator.tableView(table, viewFor: table.tableColumns.first, row: 80) as? AppKitSharedMessageTextCell)
+        XCTAssertEqual((fresh.subviews.first as? NSHostingView<MacSharedMessageTextCard>)?.rootView.skin, .codexFlat)
+        XCTAssertEqual(fresh.hostUpdateCount, 1, "New rows should build only their final skin")
+        coordinator.updateSkin(.classic)
+        let restored = try XCTUnwrap(coordinator.tableView(table, viewFor: table.tableColumns.first, row: 90) as? AppKitSharedMessageTextCell)
+        XCTAssertTrue(restored === retained)
+        XCTAssertEqual((restored.subviews.first as? NSHostingView<MacSharedMessageTextCard>)?.rootView.skin, .classic)
+        XCTAssertEqual(restored.contentConfigurationCount, configured)
+        window.contentView = nil
+    }
+
     func testEligibilityDoesNotDropUnmigratedContent() {
         XCTAssertTrue(MacSharedMessageTextCard.supports(row("hello")))
         XCTAssertFalse(MacSharedMessageTextCard.supports(row("hello", header: true)))

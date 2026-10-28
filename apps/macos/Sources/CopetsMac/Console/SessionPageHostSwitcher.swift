@@ -78,11 +78,13 @@ struct ResidentSessionPageRoot: View {
             // Keep the legacy conversation viewport without changing the
             // Detail rail's native scroll insets or adding another observer.
             .padding(.top, -inputs.conversationTopInset)
+            .modifier(ConversationColumnSurface(.transcript))
             SessionDetailPanel(session: inputs.session, railWidth: ConversationDetailWidgetMetrics.railWidth,
                 activity: inputs.activity, detailPresentation: detailPresentation)
                 .frame(maxHeight: .infinity)
         }
         .padding(MainWindowPageLayoutMetrics.outerPadding)
+        .modifier(ConversationSkinHost())
         .environmentObject(layout)
         .environmentObject(backend)
     }

@@ -5,6 +5,8 @@ import CorptieConversation
 @MainActor
 final class NativeContentCardSurface: NSView {
     private let tintView = NSView()
+    private var skin = ConversationSkin.classic
+    private var role = ConversationSurfaceRole.structured
     private var tint: NSColor = .clear
     private var tintOpacity: CGFloat = CGFloat(ConversationContentSurfacePolicy.tintOpacity)
     private var radius: CGFloat = 14
@@ -43,6 +45,12 @@ final class NativeContentCardSurface: NSView {
         refreshAppearance()
     }
 
+    func updateSkin(_ skin: ConversationSkin, role: ConversationSurfaceRole) {
+        guard self.skin != skin || self.role != role else { return }
+        self.skin = skin; self.role = role
+        refreshAppearance()
+    }
+
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         refreshAppearance()
@@ -53,6 +61,17 @@ final class NativeContentCardSurface: NSView {
         let contrast = increasedContrast ?? NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
         effectiveAppearance.performAsCurrentDrawingAppearance {
             let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            let style = skin.surface(for: role)
+            if style != .legacy {
+                tintView.isHidden = true
+                layer?.backgroundColor = style == .plain ? NSColor.clear.cgColor
+                    : NSColor.labelColor.withAlphaComponent(0.06).cgColor
+                layer?.borderColor = NSColor.separatorColor.cgColor
+                layer?.borderWidth = style == .neutral || (style == .bubble && contrast) ? (contrast ? 1 : 0.5) : 0
+                layer?.shadowOpacity = 0
+                layer?.cornerRadius = radius
+                return
+            }
             let opacity = ConversationContentSurfacePolicy.backgroundOpacity(dark: dark,
                 reduceTransparency: opaque, increasedContrast: contrast, isMessage: isMessage)
             let semantic = tintOpacity == CGFloat(ConversationContentSurfacePolicy.tintOpacity)

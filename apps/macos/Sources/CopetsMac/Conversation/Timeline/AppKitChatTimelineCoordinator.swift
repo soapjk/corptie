@@ -8,6 +8,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     static let columnIdentifier = NSUserInterfaceItemIdentifier("chat.timeline.column")
     private static let nativeCellIdentifier = NSUserInterfaceItemIdentifier("chat.timeline.native.cell")
     private static let sharedTextCellIdentifier = NSUserInterfaceItemIdentifier("chat.timeline.shared-text.cell")
+    private var skin = ConversationSkin.classic
     private let useSharedTextCards: Bool
     private let useSharedProcessCards: Bool
 
@@ -408,6 +409,19 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
             && MacSharedMessageTextCard.supports(row)
     }
 
+    /// A skin changes paint only: retain row heights, selection, editor and viewport.
+    func updateSkin(_ next: ConversationSkin) {
+        guard skin != next else { return }
+        skin = next
+        guard let tableView, let scrollView else { return }
+        let visible = tableView.rows(in: scrollView.contentView.bounds)
+        guard visible.location != NSNotFound, visible.length > 0 else { return }
+        for row in visible.location..<NSMaxRange(visible) {
+            (tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? AppKitChatRowRendering)?
+                .updateAppearance(skin: next)
+        }
+    }
+
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard rows.indices.contains(row) else { return nil }
         let rowModel = rows[row]
@@ -439,6 +453,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                     onAction: onAction)
                 cacheCell(cachedCell, for: rowModel)
             }
+            cachedCell.updateAppearance(skin: skin)
             return cachedCell
         }
         SessionSwitchTrace.shared.recordCell(.miss, sessionID: representedSessionID, rowID: rowModel.id)
@@ -451,6 +466,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
             }()
         ChatPerformanceRecorder.shared.increment(.appKitRowsConfigured)
         configureImageGeometryCallback(cell, row: rowModel)
+        cell.updateAppearance(skin: skin)
         cell.setContent(
             rowModel,
             availableWidth: availableWidth,

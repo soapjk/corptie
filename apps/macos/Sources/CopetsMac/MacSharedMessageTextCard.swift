@@ -5,6 +5,7 @@ import CorptieClientCore
 /// Production adapter. It deliberately keeps the
 /// existing attributed-text cache, measured sizes and custom TextKit view.
 struct MacSharedMessageTextCard: View {
+    var skin: ConversationSkin = .classic
     let row: AppKitChatTimelineRow
     let layout: NativeTimelineLayoutCache.Layout
     var processSummaryOverride: ProcessCardSummary? = nil
@@ -58,6 +59,7 @@ struct MacSharedMessageTextCard: View {
             .padding(.horizontal, 2)
             .padding(.vertical, MessageCardMetrics.rowInset)
         }
+        .environment(\.conversationSkin, skin)
     }
 
     private func userInputCard(_ request: ConversationUserInput) -> some View {
@@ -77,7 +79,7 @@ struct MacSharedMessageTextCard: View {
         .padding(14)
         .frame(width: layout.cardWidth, alignment: .topLeading)
         .modifier(ConversationContentSurface(cornerRadius: 14, tint: .orange,
-            tintOpacity: row.userInputStatus == "pending" ? 0.06 : 0.025, isMessage: true))
+            tintOpacity: row.userInputStatus == "pending" ? 0.06 : 0.025, isMessage: true, role: .interaction))
         .overlay {
             RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(Color.orange.opacity(row.userInputStatus == "pending" ? 0.38 : 0.16), lineWidth: 1)
@@ -91,11 +93,8 @@ struct MacSharedMessageTextCard: View {
             }
             .padding(14)
             .frame(width: layout.cardWidth, alignment: .topLeading)
-            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
-            .overlay {
-                RoundedRectangle(cornerRadius: 14)
-                    .strokeBorder(Color.secondary.opacity(0.2), lineWidth: 1)
-            }
+            .modifier(ConversationSkinSurface(role: .plan, radius: 14,
+                legacyFill: Color.secondary.opacity(0.06), legacyBorder: Color.secondary.opacity(0.2)))
     }
 
     private var processCard: some View {
@@ -316,11 +315,8 @@ private struct MacProcessBlockView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
-        .background(tint.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(tint.opacity(0.16), lineWidth: 1)
-        }
+        .modifier(ConversationSkinSurface(role: .structured, radius: 8,
+            legacyFill: tint.opacity(0.045), legacyBorder: tint.opacity(0.16)))
         .frame(width: cardWidth - 20, height: block.height)
         .popover(isPresented: $showsFull) {
             ScrollView {
@@ -337,6 +333,7 @@ private struct MacProcessBlockView: View {
 
 @MainActor
 protocol AppKitChatRowRendering: AnyObject {
+    func updateAppearance(skin: ConversationSkin)
     func updateCallbacks(onToggleExpansion: @escaping (String) -> Void,
                          onAction: @escaping (AppKitChatTimelineRow.Action) -> Void)
     func updateLinkContext(baseDirectory: String?)
@@ -353,6 +350,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
     private var representedImageGeometries: [MessageImageGeometry?] = []
     private var messageGlow: NativeMessageStatusGlow?
     private var host: NSHostingView<MacSharedMessageTextCard>?
+    private var skin = ConversationSkin.classic
     private var row: AppKitChatTimelineRow?
     private var measuredLayout: NativeTimelineLayoutCache.Layout?
     private var baseDirectory: String?
@@ -371,6 +369,12 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         clipsToBounds = false
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func updateAppearance(skin: ConversationSkin) {
+        guard self.skin != skin else { return }
+        self.skin = skin
+        updateHost(needsLayout: false)
+    }
 
     func updateCallbacks(onToggleExpansion: @escaping (String) -> Void,
                          onAction: @escaping (AppKitChatTimelineRow.Action) -> Void) {
@@ -420,7 +424,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         let trace = SessionSwitchTrace.shared.start(.cardHost, sessionID: row.sessionID)
         defer { SessionSwitchTrace.shared.finish(trace) }
         hostUpdateCount += 1
-        let root = MacSharedMessageTextCard(row: row, layout: measuredLayout,
+        let root = MacSharedMessageTextCard(skin: skin, row: row, layout: measuredLayout,
             processSummaryOverride: elapsedSummary, baseDirectory: baseDirectory,
             copy: { [weak self] in self?.copyRepresentedMessage() },
             toggle: { [weak self] in self?.toggleRepresentedProcess() },

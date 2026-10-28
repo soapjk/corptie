@@ -9,6 +9,8 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private var representedImageGeometries: [MessageImageGeometry?] = []
     private var representedImageLayout = MessageImageGalleryLayout.layout(geometries: [], width: 0)
     private let cardView = NativeContentCardSurface(frame: .zero)
+    private var skin = ConversationSkin.classic
+    private var surfaceRole = ConversationSurfaceRole.structured
     private var messageGlow: NativeMessageStatusGlow?
     private let timeSeparatorLabel = NSTextField(labelWithString: "")
     private let titleLabel = NSTextField(labelWithString: "")
@@ -295,6 +297,12 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         self.onAction = onAction
     }
 
+    func updateAppearance(skin: ConversationSkin) {
+        guard self.skin != skin else { return }
+        self.skin = skin
+        cardView.updateSkin(skin, role: surfaceRole)
+    }
+
     func setContent(
         _ row: AppKitChatTimelineRow,
         availableWidth: CGFloat,
@@ -470,6 +478,9 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
                     radius: row.isExpanded ? 12 : 10, isMessage: false)
             }
         }
+        surfaceRole = row.isPendingInteraction || row.isCollaboration ? .interaction
+            : row.nativeStyle == .user ? .user : row.nativeStyle == .process ? .process : .assistant
+        cardView.updateSkin(skin, role: surfaceRole)
         processSeparator.layer?.backgroundColor = NSColor.separatorColor.cgColor
         needsLayout = true
     }

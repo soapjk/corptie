@@ -235,7 +235,7 @@ public struct MessageTextCard<Content: View>: View {
                 .padding(MessageCardMetrics.contentInset)
                 .frame(width: cardWidth, height: cardHeight, alignment: .leading)
                 .modifier(ConversationContentSurface(cornerRadius: 14,
-                    tint: background, fallback: background, isMessage: true))
+                    tint: background, fallback: background, isMessage: true, role: role == .user ? .user : .assistant))
                 .accessibilityIdentifier("message-card-\(messageID)")
                 .background {
                     if rendersStatusGlow, let status {

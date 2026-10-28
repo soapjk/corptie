@@ -102,6 +102,10 @@ struct SessionDetailPanel: View {
                 .accessibilityHidden(true)
         } else {
             liveDetailBody
+                // Detail cards, including nested surfaces, retain their existing appearance.
+                .environment(\.conversationSkin, .classic)
+                .modifier(ConversationColumnSurface(.inspector))
+                .modifier(ConversationSkinHost())
         }
     }
 
