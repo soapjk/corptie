@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import Foundation
 import XCTest
 import CorptieClientCore
@@ -396,6 +397,35 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         let completedRow = builder().nativeAppKitRow(submitted, expandedTurnIds: [])
         XCTAssertEqual(completedRow.userInput?.selectedOptions?["route"], ["B"])
         XCTAssertNotEqual(row.contentRevision, completedRow.contentRevision)
+    }
+
+    func testQuestionRowHeightMatchesRenderedFormWithoutTrailingBlankSpace() throws {
+        _ = NSApplication.shared
+        for status in ["pending", "submitted", "cancelled"] {
+            for width: CGFloat in [320, 900] {
+                let input: [String: Any] = ["schemaVersion": 1, "isBlocking": true, "canCancel": true,
+                    "selectedOptions": ["route": ["A"]], "submittedAnswers": ["route": ["A"]],
+                    "questions": [["id": "route", "header": "Route", "question": "Choose how to proceed",
+                        "isOther": true, "isSecret": false, "options": [
+                            ["label": "A", "description": "A short description"],
+                            ["label": "B", "description": String(repeating: "Long wrapped description. ", count: 8)]]]]]
+                let row = builder().nativeAppKitRow(.init(kind: .message(try item([
+                    "type": "userInput", "status": status, "userInput": input]))), expandedTurnIds: [])
+                for skin in [ConversationSkin.classic, .codexFlat] {
+                    let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: width,
+                        typography: skin.typography(for: .assistant))
+                    let host = NSHostingView(rootView: MacSharedMessageTextCard(skin: skin, row: row, layout: layout)
+                        .frame(width: width).fixedSize(horizontal: false, vertical: true))
+                    host.frame = .init(x: 0, y: 0, width: width, height: layout.rowHeight)
+                    host.layoutSubtreeIfNeeded()
+                    XCTAssertEqual(layout.rowHeight, ceil(host.fittingSize.height), accuracy: 1,
+                        "Question row reserves unused space: status=\(status), width=\(width), skin=\(skin)")
+                    XCTAssertEqual(layout.rowHeight, layout.cardHeight + 2 * layout.typography.rowInset)
+                    XCTAssertEqual(NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: width,
+                        typography: skin.typography(for: .assistant)).rowHeight, layout.rowHeight)
+                }
+            }
+        }
     }
 
     func testSubmittedTextAnswerExpandsCardInsteadOfBeingClipped() throws {

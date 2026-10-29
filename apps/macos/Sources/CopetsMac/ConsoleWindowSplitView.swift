@@ -61,21 +61,56 @@ extension EnvironmentValues {
 }
 
 struct ConsoleDetailColumnVisibility: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let isVisible: Bool
+    @State private var reservesWidth: Bool
+    @State private var isPresented: Bool
+
+    init(isVisible: Bool) {
+        self.isVisible = isVisible
+        _reservesWidth = State(initialValue: isVisible)
+        _isPresented = State(initialValue: isVisible)
+    }
+
     func body(content: Content) -> some View {
-        content.frame(width: isVisible ? ConversationDetailWidgetMetrics.railWidth : 0)
+        content.frame(width: ConversationDetailWidgetMetrics.railWidth)
+            .offset(x: isPresented ? 0 : ConversationDetailWidgetMetrics.railWidth)
+            .opacity(isPresented ? 1 : 0)
+            // Animate only the fixed-width rail. The chat viewport changes width
+            // once, outside this animation, so TextKit does not reflow every frame.
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: isPresented)
+            .padding(.leading, MainWindowPageLayoutMetrics.columnSpacing)
+            .frame(width: reservesWidth
+                ? ConversationDetailWidgetMetrics.railWidth + MainWindowPageLayoutMetrics.columnSpacing : 0,
+                alignment: .leading)
             .clipped().allowsHitTesting(isVisible).disabled(!isVisible).accessibilityHidden(!isVisible)
+            .task(id: isVisible) {
+                if reduceMotion {
+                    reservesWidth = isVisible
+                    isPresented = isVisible
+                } else if isVisible {
+                    reservesWidth = true
+                    isPresented = true
+                } else {
+                    isPresented = false
+                    do { try await Task.sleep(for: .milliseconds(180)) }
+                    catch { return }
+                    guard !Task.isCancelled else { return }
+                    reservesWidth = false
+                }
+            }
     }
 }
 
 struct ConsoleDetailColumnBackground: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var isVisible = true
     func body(content: Content) -> some View {
         content.background(alignment: .trailing) {
-            if isVisible {
-                ConversationColumnBackground(.inspector)
-                    .frame(width: ConversationDetailWidgetMetrics.railWidth + MainWindowPageLayoutMetrics.outerPadding)
-            }
+            ConversationColumnBackground(.inspector)
+                .frame(width: ConversationDetailWidgetMetrics.railWidth + MainWindowPageLayoutMetrics.outerPadding)
+                .opacity(isVisible ? 1 : 0)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: isVisible)
         }
     }
 }

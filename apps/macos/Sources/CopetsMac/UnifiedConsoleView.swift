@@ -1186,7 +1186,7 @@ struct UnifiedConsoleView: View {
            SessionCategory(session: session) == selectedCategory,
            navigationMode == .taskCards || selectedCategory != .worker
                 || isArchivedWorkerSession(session) == isShowingWorkerArchive {
-            HStack(spacing: showsDetailColumn ? MainWindowPageLayoutMetrics.columnSpacing : 0) {
+            HStack(spacing: 0) {
                 // All navigation modes share the full conversation surface.
                 // Keep details present without replacing the editor or timeline.
                 VStack(spacing: 6) {
