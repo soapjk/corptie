@@ -8,6 +8,7 @@ final class NativeMessageStatusGlow: NSView {
     static let pulseKey = "message.status.pulse"
     private var status: UserMessageStatusPresentation?
     private var pathSize: CGSize = .zero
+    private let exteriorMask = CAShapeLayer()
     private(set) var pathUpdateCount = 0
     private static let instances = NSHashTable<NativeMessageStatusGlow>.weakObjects()
     private static let observers: [NSObjectProtocol] = {
@@ -43,6 +44,9 @@ final class NativeMessageStatusGlow: NSView {
         layer?.masksToBounds = false
         layer?.shadowRadius = 4
         layer?.shadowOffset = .zero
+        exteriorMask.fillRule = .evenOdd
+        exteriorMask.fillColor = NSColor.black.cgColor
+        layer?.mask = exteriorMask
         _ = Self.observers
     }
 
@@ -65,9 +69,16 @@ final class NativeMessageStatusGlow: NSView {
         pathSize = bounds.size
         pathUpdateCount += 1
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        // Explicit geometry, rather than the alpha of text/images, determines
-        // the rounded halo. It extends outside this view without a mask.
+        // Keep the shadow outside the card even when its background is translucent.
+        // This static mask includes the shadow's overflow and only changes on resize.
         layer?.shadowPath = CGPath(roundedRect: bounds, cornerWidth: 14, cornerHeight: 14, transform: nil)
+        let overflow: CGFloat = 16
+        exteriorMask.frame = bounds.insetBy(dx: -overflow, dy: -overflow)
+        let exterior = CGMutablePath()
+        exterior.addRect(CGRect(origin: .zero, size: exteriorMask.frame.size))
+        exterior.addRoundedRect(in: CGRect(origin: CGPoint(x: overflow, y: overflow), size: bounds.size),
+                                cornerWidth: 14, cornerHeight: 14)
+        exteriorMask.path = exterior
         CATransaction.commit()
     }
 

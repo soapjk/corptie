@@ -43,6 +43,16 @@ final class NativeMessageStatusGlowTests: XCTestCase {
         let layer = try XCTUnwrap(glow.layer)
         XCTAssertFalse(layer.masksToBounds)
         XCTAssertEqual(layer.shadowPath?.boundingBox, glow.bounds)
+        let mask = try XCTUnwrap(layer.mask as? CAShapeLayer)
+        XCTAssertEqual(mask.fillRule, .evenOdd)
+        let maskPath = try XCTUnwrap(mask.path)
+        func isMaskedIn(_ point: CGPoint) -> Bool {
+            maskPath.contains(CGPoint(x: point.x - mask.frame.minX, y: point.y - mask.frame.minY),
+                              using: .evenOdd)
+        }
+        XCTAssertFalse(isMaskedIn(CGPoint(x: 60, y: 22)), "The card center must receive no status color")
+        XCTAssertFalse(isMaskedIn(CGPoint(x: 60, y: 1)), "The card interior near its edge must stay clear")
+        XCTAssertTrue(isMaskedIn(CGPoint(x: 60, y: -2)), "The outer halo must remain visible")
         guard let device = MTLCreateSystemDefaultDevice() else { throw XCTSkip("Metal unavailable") }
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
             width: 160, height: 84, mipmapped: false)
@@ -82,6 +92,8 @@ final class NativeMessageStatusGlowTests: XCTestCase {
         }
         XCTAssertGreaterThan(alpha(80, 18), 2,
                              "The halo must paint beyond the card, not stop at its rectangular bounds")
+        XCTAssertEqual(alpha(80, 42), 0, "The shadow must not tint a translucent card's center")
+        XCTAssertEqual(alpha(80, 22), 0, "The shadow must not tint the card interior near its edge")
         XCTAssertLessThan(alpha(18, 18), alpha(80, 18))
     }
 
