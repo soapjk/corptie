@@ -26,7 +26,7 @@ const foundationalDelegates = Object.freeze({
     "rebindActiveWorkspacePath", "getProviderThreadBinding",
     "getAgentSessionBinding", "getAgentSessionBindingByProviderSession",
     "listProviderThreadBindings", "listActiveProviderSessionIds",
-    "hasUnsettledSessionRuntimeWork", "recordProviderThreadBinding",
+    "hasUnsettledSessionRuntimeWork", "getSessionRuntimeBlocker", "recordProviderThreadBinding",
     "assertLogicalSessionRoute", "retireLogicalSessionWorkspace",
     "restoreLogicalSessionWorkspace", "assertLogicalWorkSessionBinding"
   ],
@@ -114,7 +114,7 @@ const foundationalDelegates = Object.freeze({
   ],
   messageDeliveryRepository: [
     "getMessageDelivery", "getMessageDeliveryForMessage",
-    "getMessageDeliveryForProviderTurn", "updateMessageDelivery",
+    "getMessageDeliveryForProviderTurn", "updateMessageDelivery", "settleMessageDeliveryFromTurn",
     "rerouteUnsentMessageDelivery"
   ],
   feishuRepository: [

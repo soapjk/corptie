@@ -355,23 +355,32 @@ export class SessionRouteRepository {
   }
 
   hasUnsettledSessionRuntimeWork(sessionId) {
+    return this.getSessionRuntimeBlocker(sessionId, { includeCount: false }) !== null;
+  }
+
+  getSessionRuntimeBlocker(sessionId, { includeCount = true } = {}) {
     const id = requiredText(sessionId, "sessionId");
     const activeTurn = this.selectOne(
-      `SELECT 1 AS active FROM session_turns
+      `SELECT execution_status FROM session_turns
        WHERE session_id=? AND execution_status IN ('running','blocked') LIMIT 1`,
       [id]
     );
+    if (activeTurn) return { reason: activeTurn.execution_status === "blocked" ? "WAITING_APPROVAL" : "ACTIVE_TURN" };
     const activeDelivery = this.selectOne(
       `SELECT 1 AS active FROM message_deliveries
        WHERE session_id=? AND status IN ('queued','dispatching','accepted','processing','delivery_unknown') LIMIT 1`,
       [id]
     );
+    if (activeDelivery) return { reason: "UNSETTLED_DELIVERY", ...(includeCount ? { count: Number(this.selectOne(
+      `SELECT COUNT(*) AS count FROM message_deliveries
+       WHERE session_id=? AND status IN ('queued','dispatching','accepted','processing','delivery_unknown')`, [id]
+    ).count) } : {}) };
     const activeWork = this.selectOne(
       `SELECT 1 AS active FROM agent_operations
        WHERE session_id=? AND status IN ('queued','running') LIMIT 1`,
       [id]
     );
-    return Boolean(activeTurn || activeDelivery || activeWork);
+    return activeWork ? { reason: "BACKGROUND_OPERATION" } : null;
   }
 
 

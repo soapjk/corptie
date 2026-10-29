@@ -3,6 +3,17 @@ import Observation
 import CorptieClientCore
 
 enum PadWorktreeFailure {
+    private static let busyTranslations = [
+        "A participating workspace": "参与集成的工作区",
+        "A participating workspace has unfinished Session or Git work. Wait for it to finish, then generate a new integration plan.": "参与集成的工作区仍有未结束的会话或 Git 操作。请处理完成后重新生成集成计划。",
+        "Integration blocked: %@ is still running. Wait for it to finish, then generate a new plan.": "无法开始集成：“%@”仍在执行。请等待结束后重新生成计划。",
+        "Integration blocked: %@ is waiting for input or approval. Resolve it, then generate a new plan.": "无法开始集成：“%@”正在等待输入或审批。请处理后重新生成计划。",
+        "Integration blocked: %@ has %@ unfinished message deliveries. Wait for processing to finish, then generate a new plan.": "无法开始集成：“%@”仍有 %@ 条未结束的消息投递。请等待处理完成后重新生成计划。",
+        "Integration blocked: %@ has unfinished message deliveries. Wait for processing to finish, then generate a new plan.": "无法开始集成：“%@”仍有未结束的消息投递。请等待处理完成后重新生成计划。",
+        "Integration blocked: %@ has unfinished background work. Wait for it to finish, then generate a new plan.": "无法开始集成：“%@”仍有未结束的后台操作。请等待结束后重新生成计划。",
+        "Integration blocked by another Git integration job (%@). Review that job before retrying.": "另一个 Git 集成任务（%@）阻止了本次操作。请先查看并处理该任务。",
+    ]
+
     static func describe(_ error: Error, stage: String, mutation: Bool = false) -> String {
         if let failure = error as? ClientServiceFailure {
             let reasons = ["BRANCH_OPERATION_INVALID": "操作类型不受支持，请更新客户端。",
@@ -15,7 +26,8 @@ enum PadWorktreeFailure {
                 "WORKTREE_NOT_FOUND": "所选 Worktree 已不存在，请重新读取仓库。",
                 "ROUTE_NOT_AVAILABLE": "Mac 服务端不支持此接口。",
                 "INVALID_CREDENTIAL": "设备连接授权已失效，请重新连接。"]
-            let reason = reasons[failure.code] ?? "服务端返回错误。"
+            let reason = ClientWorktreeBusyContext.failureMessage(code: failure.code, context: failure.busyContext,
+                localize: { busyTranslations[$0] ?? $0 }) ?? reasons[failure.code] ?? "服务端返回错误。"
             let uncertain = mutation && failure.statusCode >= 500 ? "\n执行结果可能未确认，请先核对状态，不要重复提交。" : ""
             return "\(stage)：\(reason)\n\(failure.code) · HTTP \(failure.statusCode)\(uncertain)"
         }

@@ -584,6 +584,40 @@ function event(type, overrides = {}) {
   };
 }
 
+test("late Provider items preserve terminal Delivery, failure and user message state across Providers", async () => {
+  for (const providerId of ["codex-app-server", "claude-agent-sdk", "openclacky"]) {
+    for (const status of ["completed", "failed", "cancelled"]) {
+      const { directory, store, projector } = await fixture();
+      const route = { ...binding, providerId };
+      const project = (type, overrides = {}) => projector.project({
+        binding: route, event: event(type, { providerId, ...overrides })
+      });
+      try {
+        store.createUserMessageDelivery({ deliveryId: "delivery:late", messageId: "message:late",
+          sessionId: route.sessionId, binding: route, agentId: "agent:one", text: "run once" });
+        store.updateMessageDelivery("delivery:late", { status: "dispatching" });
+        project("turn.started");
+        project(`turn.${status}`, { payload: { error: { message: "original failure" } } });
+        const revision = store.sessionTimelineRevision(route.sessionId);
+        for (const type of ["tool.completed", "assistant.message.completed", "approval.requested", "interaction.resolved", "turn.started"]) {
+          project(type, { receivedAt: "2026-08-26T10:06:00.000Z", payload: { item: {
+            id: `late:${type}`, turnId: "turn:one", type: "toolCall", title: "Late item",
+            text: "late content", status: "completed", turnStatus: "inProgress"
+          } } });
+          assert.equal(store.getMessageDelivery("delivery:late").status, status, `${providerId}: ${type}`);
+          assert.equal(store.getSessionItem(route.sessionId, "message:late").status, status);
+          assert.equal(store.getSessionTurn(route.sessionId, route.bindingId, "turn:one").execution_status, status);
+        }
+        assert.ok(store.sessionTimelineRevision(route.sessionId) > revision, "late content still projects");
+        assert.equal(store.getMessageDelivery("delivery:late").lastError, status === "failed" ? "original failure" : null);
+      } finally {
+        await store.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  }
+});
+
 test("turn completion settles only its run and preserves the final reply as a separate presentation item", async () => {
   const { directory, store, projector } = await fixture();
   try {

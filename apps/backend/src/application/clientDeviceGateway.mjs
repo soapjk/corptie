@@ -13,6 +13,7 @@ import { handleDetailActionHttp } from "./detailActionHttpAdapter.mjs";
 import { ClientResourceAPI } from "./clientResourceAPI.mjs";
 import { readTaskHierarchyPage } from "./taskHierarchyService.mjs";
 import { TaskIntegrationAcceptanceService } from "./taskIntegrationAcceptanceService.mjs";
+import { worktreeErrorBody } from "./projectWorkspaceHttpApi.mjs";
 
 export const reply = (response, status, body) => {
   response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store",
@@ -663,6 +664,7 @@ export class ClientDeviceGateway {
       reply(response, status, {
         code: error.code ?? "DEVICE_SERVICE_ERROR",
         ...(status < 500 ? { error: error.message } : {}),
+        ...(status < 500 && error.busyContext ? {busyContext:worktreeErrorBody(error).busyContext} : {}),
         ...(typeof error.retryable === "boolean" ? { retryable: error.retryable } : {}),
         ...(status < 500 && error.commitPolicyBlocker ? {commitPolicyBlocker:error.commitPolicyBlocker,commitReviewId:error.commitReviewId} : {}),
         ...(error.code === "PLAN_REFRESH_REQUIRED" ? {

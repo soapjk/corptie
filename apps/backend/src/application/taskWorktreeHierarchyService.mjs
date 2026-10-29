@@ -86,7 +86,18 @@ export class TaskWorktreeHierarchyService {
   assertIdle(ids,includeQueued=false) {
     for(const id of ids) for(const logical of this.store.listLogicalSessionsByWorkspaceId?.(id) ?? []) {
       const session=this.store.getSession(logical.legacySessionId);
-      if(sessionHasActiveRun(session) || includeQueued && this.store.hasUnsettledSessionRuntimeWork?.(logical.legacySessionId)) throw error("TASK_HIERARCHY_BUSY");
+      const blocker=sessionHasActiveRun(session)
+        ? {reason:session.status==="blocked" ? "WAITING_APPROVAL" : "ACTIVE_TURN"}
+        : includeQueued ? this.store.getSessionRuntimeBlocker(logical.legacySessionId) : null;
+      if(blocker) {
+        const title=session?.title || logical.title || logical.legacySessionId || id;
+        const reason={ACTIVE_TURN:"is still running",WAITING_APPROVAL:"is waiting for input or approval",
+          UNSETTLED_DELIVERY:`has unfinished message deliveries (${blocker.count ?? "unknown"})`,
+          BACKGROUND_OPERATION:"has unfinished background work"}[blocker.reason];
+        throw Object.assign(error("TASK_HIERARCHY_BUSY", `Session "${title}" ${reason}. Finish that work before retrying integration.`), {
+          busyContext:{worktreeId:id,sessionId:logical.logicalSessionId ?? logical.legacySessionId,sessionTitle:title,...blocker}
+        });
+      }
     }
   }
 

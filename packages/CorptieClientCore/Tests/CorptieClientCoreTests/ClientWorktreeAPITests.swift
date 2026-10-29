@@ -3,6 +3,39 @@ import Testing
 @testable import CorptieClientCore
 
 @Suite(.serialized) struct ClientWorktreeAPITests {
+    @Test func busyErrorsPreserveOptionalContextAndLegacyCompatibility() async throws {
+        for rich in [false, true] {
+            let context = rich ? #","busyContext":{"worktreeId":"tree","sessionId":"session","sessionTitle":"Busy Session","reason":"UNSETTLED_DELIVERY","count":3}"# : ""
+            let data = Data((#"{"code":"TASK_HIERARCHY_BUSY","error":"TASK_HIERARCHY_BUSY""# + context + "}").utf8)
+            let endpoint = try BackendEndpoint(URL(string: "http://127.0.0.1:1234")!)
+            let transport = BackendTransport(endpoint: endpoint, data: { request in
+                (data, HTTPURLResponse(url: request.url!, statusCode: 409, httpVersion: nil, headerFields: nil)!)
+            }, bytes: { _ in throw URLError(.unsupportedURL) })
+            do {
+                _ = try await ClientWorktreeAPI(transport: transport).preparePlan(repositoryId: "repo")
+                Issue.record("expected busy failure")
+            } catch let failure as ClientServiceFailure {
+                #expect(failure.statusCode == 409)
+                #expect(failure.message == nil)
+                #expect(failure.busyContext?.count == (rich ? 3 : nil))
+                let message = try #require(ClientWorktreeBusyContext.failureMessage(code: failure.code, context: failure.busyContext, localize: { $0 }))
+                #expect(!message.contains("TASK_HIERARCHY_BUSY"))
+                if rich { #expect(message.contains("Busy Session")); #expect(message.contains("3")) }
+            }
+        }
+        #expect(ClientWorktreeBusyContext.failureMessage(code: "UNRELATED", context: nil, localize: { $0 }) == nil)
+    }
+
+    @Test func busyReasonDescriptionsHaveSafeFallbacks() throws {
+        for reason in ["ACTIVE_TURN", "WAITING_APPROVAL", "UNSETTLED_DELIVERY", "BACKGROUND_OPERATION", "INTEGRATION_JOB", "FUTURE_REASON"] {
+            let data = Data("{\"reason\":\"\(reason)\"}".utf8)
+            let context = try JSONDecoder().decode(ClientWorktreeBusyContext.self, from: data)
+            let message = ClientWorktreeBusyContext.failureMessage(code: "TASK_HIERARCHY_BUSY", context: context, localize: { $0 })
+            #expect(message?.isEmpty == false)
+            #expect(message?.contains("%@") == false)
+        }
+    }
+
     @Test func integrationPlanUsesBackendOperationNamesAndOrderedSourcesOnWire() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [WorktreeProtocol.self]

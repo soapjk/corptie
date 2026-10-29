@@ -1,5 +1,43 @@
 import Foundation
 
+public struct ClientWorktreeBusyContext: Decodable, Equatable, Sendable {
+    public let worktreeId: String?
+    public let sessionId: String?
+    public let sessionTitle: String?
+    public let reason: String
+    public let count: Int?
+    public let jobId: String?
+    public let status: String?
+    public let phase: String?
+
+    public static func failureMessage(code: String, context: Self?, localize: (String) -> String) -> String? {
+        guard code == "TASK_HIERARCHY_BUSY" else { return nil }
+        let fallback = "A participating workspace has unfinished Session or Git work. Wait for it to finish, then generate a new integration plan."
+        guard let context else { return localize(fallback) }
+        let name = [context.sessionTitle, context.sessionId, context.worktreeId]
+            .compactMap { $0 }.first { !$0.isEmpty } ?? localize("A participating workspace")
+        let template: String
+        switch context.reason {
+        case "ACTIVE_TURN":
+            template = "Integration blocked: %@ is still running. Wait for it to finish, then generate a new plan."
+        case "WAITING_APPROVAL":
+            template = "Integration blocked: %@ is waiting for input or approval. Resolve it, then generate a new plan."
+        case "UNSETTLED_DELIVERY":
+            if let count = context.count, count > 0 {
+                return String(format: localize("Integration blocked: %@ has %@ unfinished message deliveries. Wait for processing to finish, then generate a new plan."), name, String(count))
+            }
+            template = "Integration blocked: %@ has unfinished message deliveries. Wait for processing to finish, then generate a new plan."
+        case "BACKGROUND_OPERATION":
+            template = "Integration blocked: %@ has unfinished background work. Wait for it to finish, then generate a new plan."
+        case "INTEGRATION_JOB":
+            return String(format: localize("Integration blocked by another Git integration job (%@). Review that job before retrying."), context.jobId ?? "—")
+        default:
+            return localize(fallback)
+        }
+        return String(format: localize(template), name)
+    }
+}
+
 public struct ClientManagedRepository: Identifiable, Decodable, Equatable, Sendable {
     public let id: String
     public let path: String

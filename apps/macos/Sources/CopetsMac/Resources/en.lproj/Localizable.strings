@@ -1568,3 +1568,12 @@
 "Ask me about Corptie, or tell me what you'd like to work on." = "Ask me about Corptie, or tell me what you'd like to work on.";
 
 "Describe a goal, ask a question, or share something to explore." = "Describe a goal, ask a question, or share something to explore.";
+
+"A participating workspace" = "A participating workspace";
+"A participating workspace has unfinished Session or Git work. Wait for it to finish, then generate a new integration plan." = "A participating workspace has unfinished Session or Git work. Wait for it to finish, then generate a new integration plan.";
+"Integration blocked: %@ is still running. Wait for it to finish, then generate a new plan." = "Integration blocked: %@ is still running. Wait for it to finish, then generate a new plan.";
+"Integration blocked: %@ is waiting for input or approval. Resolve it, then generate a new plan." = "Integration blocked: %@ is waiting for input or approval. Resolve it, then generate a new plan.";
+"Integration blocked: %@ has %@ unfinished message deliveries. Wait for processing to finish, then generate a new plan." = "Integration blocked: %@ has %@ unfinished message deliveries. Wait for processing to finish, then generate a new plan.";
+"Integration blocked: %@ has unfinished message deliveries. Wait for processing to finish, then generate a new plan." = "Integration blocked: %@ has unfinished message deliveries. Wait for processing to finish, then generate a new plan.";
+"Integration blocked: %@ has unfinished background work. Wait for it to finish, then generate a new plan." = "Integration blocked: %@ has unfinished background work. Wait for it to finish, then generate a new plan.";
+"Integration blocked by another Git integration job (%@). Review that job before retrying." = "Integration blocked by another Git integration job (%@). Review that job before retrying.";

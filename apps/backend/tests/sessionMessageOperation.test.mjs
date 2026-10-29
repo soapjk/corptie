@@ -168,3 +168,37 @@ test("dispatch acceptance arms both monitors without native events for every Pro
     }
   }
 });
+
+
+test("a late dispatch acknowledgement settles against the durable Turn for every Provider", async () => {
+  for (const providerId of [CODEX_APP_SERVER_PROVIDER_ID, CLAUDE_AGENT_SDK_PROVIDER_ID, OPENCLACKY_PROVIDER_ID]) {
+    for (const status of ["completed", "failed", "cancelled"]) {
+      let turn;
+      let delivery = {deliveryId:"delivery",bindingId:"binding",attemptCount:0,status:"queued"};
+      let settlements = 0;
+      const binding = {sessionId:"session",logicalSessionId:"logical",providerId,
+        providerSessionId:"native",bindingId:"binding",routingVersion:2};
+      const {operation} = fixture({
+        requireSessionReference:()=>({...binding,metadata:{session:{id:"session",status:"complete"}}}),
+        store:{getLogicalSession:()=>({}),listUnsettledSessionTurns:()=>[],
+          getMessageDelivery:()=>delivery,getAgentSessionBinding:()=>binding,
+          getSessionTurn:()=>turn,upsertSessionTurn:()=>assert.fail("terminal Turn already exists"),
+          updateMessageDelivery:(_id,patch)=>{delivery={...delivery,...patch};},
+          settleMessageDeliveryFromTurn:id=>{
+            assert.equal(id,"delivery");
+            assert.equal(delivery.providerTurnId,"turn");
+            assert.equal(delivery.bindingId,binding.bindingId);
+            settlements++;
+            delivery={...delivery,status:turn.execution_status,lastError:status==="failed" ? "original failure" : null};
+            return delivery;
+          }},
+        sessionApplicationService:{sendMessage:async()=>{turn={execution_status:status};return {turnId:"turn"};}},
+        providerTurnResponseWatchdog:{watch:()=>assert.fail("terminal Turn must not be watched")}
+      });
+      await operation.sendUnifiedSessionMessage("session","hello",{type:"desktop",deliveryId:"delivery"},{fromAgentWorkQueue:true});
+      assert.equal(settlements,1);
+      assert.equal(delivery.status,status);
+      assert.equal(delivery.lastError,status==="failed" ? "original failure" : null);
+    }
+  }
+});

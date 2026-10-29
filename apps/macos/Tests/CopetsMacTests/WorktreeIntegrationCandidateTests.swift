@@ -4,6 +4,25 @@ import Testing
 
 @Suite(.serialized)
 struct WorktreeIntegrationCandidateTests {
+    @MainActor
+    @Test func busyPreparationExplainsTheBlockingSessionWithoutRetrying() async throws {
+        for rich in [false, true] {
+            let context = rich ? #","busyContext":{"sessionTitle":"Busy Session","reason":"UNSETTLED_DELIVERY","count":3}"# : ""
+            let recorder = CandidateRequestRecorder(candidateResponses: [(409,
+                #"{"error":"TASK_HIERARCHY_BUSY","code":"TASK_HIERARCHY_BUSY""# + context + "}")])
+            let client = makeClient(recorder)
+            client.selection.repositoryId = "repository:one"
+            await client.prepareFreshPlan()
+            let message = try #require(client.candidateReview.preparationError)
+            #expect(message.components(separatedBy: "TASK_HIERARCHY_BUSY").count == 2)
+            #expect(message.count > "TASK_HIERARCHY_BUSY".count + 10)
+            if rich { #expect(message.contains("Busy Session")); #expect(message.contains("3")) }
+            #expect(recorder.candidateBodies.count == 1)
+            #expect(recorder.startBodies.isEmpty)
+            #expect(!client.isPreparingPlan)
+        }
+    }
+
     @Test func deliveryNoticesDecodeWithoutChangingLegacyCandidateContract() throws {
         let decoder = JSONDecoder()
         let legacy = try decoder.decode(WorktreeIntegrationCandidateEnvelope.self, from: Data(Self.candidateEnvelope.utf8))

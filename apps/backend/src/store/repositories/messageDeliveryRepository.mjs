@@ -2,6 +2,8 @@ import { createdAtFromOrNow } from "../../utils/timestamps.mjs";
 import { parseJson } from "../storedJson.mjs";
 import { requiredText } from "../validation.mjs";
 
+const terminalStatuses = new Set(["completed", "failed", "cancelled"]);
+
 export class MessageDeliveryRepository {
   constructor({ getDatabase, selectAll, selectOne, runInTransaction, notifyTimelineDirty }) {
     this.getDatabase = getDatabase;
@@ -104,8 +106,18 @@ export class MessageDeliveryRepository {
     return this.runInTransaction(() => {
       const current = this.getMessageDelivery(deliveryId);
       if (!current) return null;
+      // Late lifecycle items and command acknowledgements may supplement the
+      // correlation, but cannot reopen a settled Delivery or erase its failure.
+      if (terminalStatuses.has(current.status)) {
+        patch = { ...patch, status: current.status, lastError: current.lastError,
+          attemptCount: current.attemptCount, lastAttemptAt: current.lastAttemptAt,
+          providerTurnId: current.providerTurnId ?? patch.providerTurnId ?? null,
+          providerAcknowledgedAt: current.providerAcknowledgedAt ?? patch.providerAcknowledgedAt ?? null };
+      }
       const value = (key, fallback) => Object.hasOwn(patch, key) ? patch[key] : fallback;
       const status = value("status", current.status);
+      if (["status", "attemptCount", "providerTurnId", "lastAttemptAt", "providerAcknowledgedAt", "lastError"]
+        .every(key => value(key, current[key]) === current[key])) return current;
       const updatedAt = value("updatedAt", createdAtFromOrNow());
       this.db.run(
         `UPDATE message_deliveries SET
@@ -144,6 +156,22 @@ export class MessageDeliveryRepository {
         quickMessagesChanged: ["failed", "cancelled"].includes(current.status) !== ["failed", "cancelled"].includes(status)
       });
       return this.getMessageDelivery(deliveryId);
+    });
+  }
+
+  settleMessageDeliveryFromTurn(deliveryId) {
+    return this.runInTransaction(() => {
+      const delivery = this.getMessageDelivery(deliveryId);
+      if (!delivery?.providerTurnId) return delivery;
+      const turn = this.selectOne(`SELECT execution_status, failure_json FROM session_turns
+        WHERE session_id=? AND binding_id=? AND turn_id=?`,
+      [delivery.sessionId, delivery.bindingId, delivery.providerTurnId]);
+      if (!terminalStatuses.has(turn?.execution_status)) return delivery;
+      return this.updateMessageDelivery(deliveryId, {
+        status: turn.execution_status,
+        lastError: turn.execution_status === "failed"
+          ? parseJson(turn.failure_json, {})?.message ?? "Provider turn failed." : null
+      });
     });
   }
 
