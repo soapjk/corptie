@@ -123,6 +123,29 @@ private struct NativeBusinessCard: View {
     @State private var locator = ""
     @State private var displayName = ""
     @State private var artifactSelection: NativeArtifactSelection?
+    private struct PageTailVisibility: Equatable, Sendable {
+        var cursor: String?
+        var nearViewport = false
+    }
+    @State private var pageTailVisibility = PageTailVisibility()
+    @State private var automaticPageConsumed = false
+    @State private var automaticPageTask: Task<Void, Never>?
+    @State private var runningAutomaticRequest: AutomaticPageRequest?
+    private struct AutomaticPageRequest: Equatable {
+        let sessionID: String?
+        let generation: String?
+        let activityGeneration: UInt64
+        let revision: String
+        let cursor: String
+    }
+    private var automaticPageRequest: AutomaticPageRequest? {
+        guard card.kind == "memoryHits", pageTailVisibility.nearViewport, !automaticPageConsumed,
+              state.pageError == nil, store.isCurrent, api != nil,
+              activity?.isActive ?? true, let cursor = card.nextCursor,
+              pageTailVisibility.cursor == cursor else { return nil }
+        return .init(sessionID: store.sessionID, generation: store.generation,
+                     activityGeneration: activity?.generation ?? 0, revision: card.revision, cursor: cursor)
+    }
     private var card: ClientDetailBusinessCard { state.card }
     var body: some View {
         ConversationDetailModuleCard(title: title, systemImage: symbol) {
@@ -175,6 +198,51 @@ private struct NativeBusinessCard: View {
         }
         .onChange(of: store.generation) { _, _ in artifactSelection = nil }
         .onChange(of: store.error) { _, value in if value != nil { artifactSelection = nil } }
+        // Keep request ownership outside the lazy tail: realizing/recycling a
+        // prefetched row must not start and cancel network tasks.
+        .onChange(of: automaticPageRequest, initial: true) { _, request in startAutomaticPage(request) }
+        .onChange(of: pageTailVisibility.nearViewport) { _, near in
+            if !near, runningAutomaticRequest == nil { automaticPageConsumed = false }
+        }
+        .onChange(of: activity?.generation) { _, _ in resetAutomaticPage() }
+        .onChange(of: store.generation) { _, _ in resetAutomaticPage() }
+        .onChange(of: store.sessionID) { _, _ in resetAutomaticPage() }
+        .onChange(of: card.revision) { _, _ in resetAutomaticPage() }
+        .onChange(of: store.isCurrent) { _, current in if !current { cancelAutomaticPage() } }
+        .onChange(of: state.loading) { _, loading in if !loading { startAutomaticPage(automaticPageRequest) } }
+        .onDisappear { cancelAutomaticPage() }
+    }
+    private func cancelAutomaticPage() {
+        automaticPageTask?.cancel(); automaticPageTask = nil; runningAutomaticRequest = nil
+    }
+    private func resetAutomaticPage() {
+        // SwiftUI may deliver the request and activity changes in either
+        // order. Never cancel a request already started for the new scope.
+        if let running = runningAutomaticRequest {
+            if running.sessionID == store.sessionID, running.generation == store.generation,
+               running.activityGeneration == (activity?.generation ?? 0), running.revision == card.revision,
+               activity?.isActive ?? true { return }
+            cancelAutomaticPage()
+        }
+        automaticPageConsumed = false
+        startAutomaticPage(automaticPageRequest)
+    }
+    private func startAutomaticPage(_ request: AutomaticPageRequest?) {
+        guard let request, let api, runningAutomaticRequest == nil,
+              operationStore.orderedCards.first(where: { $0.id == state.id })?.loading == false,
+              activity?.allows(generation: request.activityGeneration) ?? true else { return }
+        runningAutomaticRequest = request
+        automaticPageConsumed = true
+        automaticPageTask = Task { @MainActor in
+            // Leaving the threshold during a read must not cancel and resend
+            // the cursor. Only card/Session lifetime changes cancel ownership.
+            await operationStore.loadMore(cardID: state.id, api: api)
+            guard runningAutomaticRequest == request else { return }
+            runningAutomaticRequest = nil; automaticPageTask = nil
+            // One read per approach to the bottom, including when SwiftUI
+            // anchors the appended tail in place or evicts rows at the cap.
+            if !pageTailVisibility.nearViewport { automaticPageConsumed = false }
+        }
     }
     @ViewBuilder private var content: some View {
         switch card.payload {
@@ -345,6 +413,26 @@ private struct NativeBusinessCard: View {
                 Text(message).font(.caption).foregroundStyle(.secondary)
                 Button("重试加载") { if let api { Task { guard activity?.allows(generation: activity?.generation ?? 0) ?? true else { return }; await operationStore.loadMore(cardID: state.id, api: api, retry: true) } } }.font(.caption).disabled(state.loading || api == nil || !store.isCurrent)
             }
+        } else if card.kind == "memoryHits", card.nextCursor != nil {
+            let cursor = card.nextCursor
+            // Geometry is reduced to one local Boolean. It never changes card
+            // measurements or publishes a scroll offset to the dashboard.
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("正在加载…").font(.caption).foregroundStyle(.secondary)
+            }
+            .opacity(state.loading ? 1 : 0)
+            .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+            .accessibilityHidden(!state.loading)
+            .onGeometryChange(for: PageTailVisibility.self) { proxy in
+                let marker = CGRect(origin: .zero, size: proxy.size)
+                guard let viewport = proxy.bounds(of: .scrollView), viewport.height > 0,
+                      viewport.insetBy(dx: 0, dy: -64).intersects(marker) else { return .init(cursor: cursor) }
+                // Also respect the outer rail, so a card below its viewport
+                // cannot prefetch merely because its own content is short.
+                return .init(cursor: cursor,
+                    nearViewport: proxy.bounds(of: .named("conversation.detail.rail"))?.intersects(marker) ?? true)
+            } action: { pageTailVisibility = $0 }
         } else if card.nextCursor != nil {
             // A task on a lazy tail can repeatedly appear/cancel at the viewport
             // boundary, invalidating layout even when loadMore returns early.
