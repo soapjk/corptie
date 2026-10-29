@@ -15,31 +15,40 @@ private typealias MathColor = UIColor
 /// its bounds with TextKit so measurement and drawing use identical geometry.
 @MainActor
 enum MessageMathRenderer {
-    private static let cache: NSCache<NSString, MathImage> = {
-        let value = NSCache<NSString, MathImage>()
+    private final class Rendered {
+        let image: MathImage
+        let typography: ConversationTypography
+        init(_ image: MathImage, _ typography: ConversationTypography) { self.image = image; self.typography = typography }
+    }
+    private final class Failure {
+        let typography: ConversationTypography
+        init(_ typography: ConversationTypography) { self.typography = typography }
+    }
+    private static let cache: NSCache<NSString, Rendered> = {
+        let value = NSCache<NSString, Rendered>()
         value.countLimit = 128
         value.totalCostLimit = 12 * 1024 * 1024
         return value
     }()
-    private static let failures: NSCache<NSString, NSNumber> = {
-        let value = NSCache<NSString, NSNumber>()
+    private static let failures: NSCache<NSString, Failure> = {
+        let value = NSCache<NSString, Failure>()
         value.countLimit = 128
         value.totalCostLimit = 256 * 1024
         return value
     }()
 
-    static func attributed(_ formula: MessageMath.Formula, user: Bool) -> NSAttributedString? {
+    static func attributed(_ formula: MessageMath.Formula, user: Bool, typography: ConversationTypography = .classic) -> NSAttributedString? {
         let key = "v2|\(user)|\(formula.display)|\(formula.latex)" as NSString
-        if failures.object(forKey: key) != nil { return nil }
+        if failures.object(forKey: key)?.typography == typography { return nil }
         let image: MathImage
-        if let cached = cache.object(forKey: key) { image = cached }
+        if let cached = cache.object(forKey: key), cached.typography == typography { image = cached.image }
         else {
-            guard let rendered = render(formula, user: user) else {
-                failures.setObject(1, forKey: key, cost: key.length * 2 + 64)
+            guard let rendered = render(formula, user: user, typography: typography) else {
+                failures.setObject(Failure(typography), forKey: key, cost: key.length * 2 + 64)
                 return nil
             }
             image = rendered
-            cache.setObject(image, forKey: key, cost: Int(image.size.width * image.size.height * 32) + 1024)
+            cache.setObject(Rendered(image, typography), forKey: key, cost: Int(image.size.width * image.size.height * 32) + 1024)
         }
         let attachment = MessageMathAttachment(image: image, source: formula.source, display: formula.display)
         let value = NSMutableAttributedString(attachment: attachment)
@@ -51,7 +60,7 @@ enum MessageMathRenderer {
         return value
     }
 
-    private static func render(_ formula: MessageMath.Formula, user: Bool) -> MathImage? {
+    private static func render(_ formula: MessageMath.Formula, user: Bool, typography: ConversationTypography) -> MathImage? {
         // Bound parser recursion and bitmap allocation for untrusted/streaming text.
         guard formula.latex.utf16.count <= 8192 else { return nil }
         var depth = 0
@@ -76,7 +85,7 @@ enum MessageMathRenderer {
             }
         }
         let latex = boxed ? String(trimmed.dropFirst(7).dropLast()) : trimmed
-        let fontSize: CGFloat = formula.display ? 15 : 12
+        let fontSize: CGFloat = typography.isReading ? (formula.display ? 20 : typography.bodySize(for: user ? .user : .agent)) : (formula.display ? 15 : 12)
         guard let prepared = MessageMathTextAdapter.prepare(latex) else { return nil }
         let measuringLabel = label(prepared: prepared, fontSize: fontSize, display: formula.display, color: .black)
         let measured = measuredSize(measuringLabel)

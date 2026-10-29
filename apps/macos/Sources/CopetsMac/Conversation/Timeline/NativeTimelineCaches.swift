@@ -6,13 +6,13 @@ import CorptieClientCore
 @MainActor
 enum NativeMarkdownAttributedText {
     static func make(text: String, style: AppKitChatTimelineRow.NativeStyle,
-                     boundary: MessageTextBoundary = .both) -> NSAttributedString {
+                     boundary: MessageTextBoundary = .both, typography: ConversationTypography = .classic) -> NSAttributedString {
         let sharedStyle: MessageMarkdown.Style = switch style {
         case .user: .user
         case .agent: .agent
         case .process: .process
         }
-        return MessageMarkdown.make(text: text, style: sharedStyle, boundary: boundary)
+        return MessageMarkdown.make(text: text, style: sharedStyle, boundary: boundary, typography: typography)
     }
 }
 
@@ -58,7 +58,8 @@ final class NativeMarkdownTextCache {
     }
 
     static let shared = NativeMarkdownTextCache()
-    private var values: [Key: NSAttributedString] = [:]
+    private struct Entry { let typography: ConversationTypography; let value: NSAttributedString }
+    private var values: [Key: Entry] = [:]
     private var accessByKey: [Key: UInt64] = [:]
     private var accessSequence: UInt64 = 0
     private let limit = 1_000
@@ -66,20 +67,21 @@ final class NativeMarkdownTextCache {
     private var estimatedBytes = 0
 
     func value(text: String, style: AppKitChatTimelineRow.NativeStyle,
-               boundary: MessageTextBoundary = .both) -> NSAttributedString {
+               boundary: MessageTextBoundary = .both, typography: ConversationTypography = .classic) -> NSAttributedString {
         let key = Key(text: text, style: style, boundary: boundary)
-        if let cached = values[key] {
+        if let cached = values[key], cached.typography == typography {
             touch(key)
-            return cached
+            return cached.value
         }
-        let attributed = NativeMarkdownAttributedText.make(text: text, style: style, boundary: boundary)
-        values[key] = attributed
+        if let old = values[key] { estimatedBytes -= estimatedByteCount(for: key, value: old.value) }
+        let attributed = NativeMarkdownAttributedText.make(text: text, style: style, boundary: boundary, typography: typography)
+        values[key] = Entry(typography: typography, value: attributed)
         touch(key)
         estimatedBytes += estimatedByteCount(for: key, value: attributed)
         while values.count > limit || estimatedBytes > byteLimit,
               let oldest = accessByKey.min(by: { $0.value < $1.value })?.key {
             if let removed = values.removeValue(forKey: oldest) {
-                estimatedBytes = max(0, estimatedBytes - estimatedByteCount(for: oldest, value: removed))
+                estimatedBytes = max(0, estimatedBytes - estimatedByteCount(for: oldest, value: removed.value))
             }
             accessByKey[oldest] = nil
         }
@@ -298,6 +300,7 @@ final class NativeTimelineLayoutCache {
     }
 
     struct Layout {
+        var typography: ConversationTypography = .classic
         var imageLayout = MessageImageGalleryLayout.layout(geometries: [], width: 0)
         enum RichBlock {
             case markdown(id: String, NSAttributedString, CGFloat)
@@ -388,7 +391,8 @@ final class NativeTimelineLayoutCache {
     private let byteLimit = 64 * 1_024 * 1_024
     private let chartHeightLimit = 128
 
-    func layout(for row: AppKitChatTimelineRow, columnWidth: CGFloat) -> Layout {
+    func layout(for row: AppKitChatTimelineRow, columnWidth: CGFloat, typography requested: ConversationTypography = .classic) -> Layout {
+        let typography = row.readingTypography(requested)
         let normalizedWidth = max(120, columnWidth)
         let key = Key(
             text: row.nativeText,
@@ -420,10 +424,11 @@ final class NativeTimelineLayoutCache {
             userInputStatus: row.userInputStatus,
             executionPlan: row.executionPlan
         )
-        if let cached = values[key] {
+        if let cached = values[key], cached.typography == typography {
             touch(key)
             return cached
         }
+        if let old = values[key] { estimatedBytes -= layoutCost(key, old) }
 
         if let request = row.userInput {
             let cardWidth = min(560, max(120, normalizedWidth - 8))
@@ -462,7 +467,7 @@ final class NativeTimelineLayoutCache {
             case .markdown: false
             }
         }
-        let cardWidth = ChatBubbleWidthPolicy.cardWidth(for: row, availableWidth: normalizedWidth)
+        let cardWidth = ChatBubbleWidthPolicy.cardWidth(for: row, availableWidth: normalizedWidth, typography: typography)
         let textWidth = max(20, cardWidth - ChatBubbleWidthPolicy.horizontalPadding)
         let processBlocks: [Layout.ProcessBlock] = row.nativeStyle == .process && row.isExpanded
             ? row.processSteps.map { step in
@@ -487,21 +492,21 @@ final class NativeTimelineLayoutCache {
                     textHeight: height, hasOverflow: structured?.hasOverflow ?? presentation?.hasOverflow ?? false)
             } : []
         let attributed = !processBlocks.isEmpty || hasRichBlock ? NSAttributedString(string: "")
-            : NativeMarkdownTextCache.shared.value(text: row.nativeText, style: row.nativeStyle)
+            : NativeMarkdownTextCache.shared.value(text: row.nativeText, style: row.nativeStyle, typography: typography)
         let richBlocks: [Layout.RichBlock] = hasRichBlock ? chartCandidates.enumerated().map { index, block in
             let boundary = MessageTextBoundary.fragment(index: index, count: chartCandidates.count)
             switch block.content {
             case .markdown(let text):
-                let value = NativeMarkdownTextCache.shared.value(text: text, style: row.nativeStyle, boundary: boundary)
+                let value = NativeMarkdownTextCache.shared.value(text: text, style: row.nativeStyle, boundary: boundary, typography: typography)
                 return .markdown(id: block.id, value, NativeTextKitLayout.height(of: value, width: textWidth))
             case .chart(let spec, _):
                 return .chart(id: block.id, spec, chartHeight(spec, width: textWidth))
             case .table(let table):
                 return .table(id: block.id, table,
-                    .measured(table, width: textWidth, style: row.nativeStyle == .user ? .user : .agent))
+                    .measured(table, width: textWidth, style: row.nativeStyle == .user ? .user : .agent, typography: typography))
             case .invalidChart(let original, let reason):
                 let value = NativeMarkdownTextCache.shared.value(
-                    text: "> \(reason)\n\n\(original)", style: row.nativeStyle, boundary: boundary)
+                    text: "> \(reason)\n\n\(original)", style: row.nativeStyle, boundary: boundary, typography: typography)
                 return .markdown(id: block.id, value, NativeTextKitLayout.height(of: value, width: textWidth))
             }
         } : []
@@ -564,7 +569,7 @@ final class NativeTimelineLayoutCache {
                 let actionHeight: CGFloat = row.actions.isEmpty ? 0 : 34
                 cardHeight = MessageCardMetrics.cardHeight(contentHeight:
                     sourceHeight + textHeight + imageHeight + imageSpacing + actionHeight)
-                rowHeight = MessageCardMetrics.rowHeight(cardHeight: cardHeight, separatorHeight: row.timeSeparatorHeight)
+                rowHeight = MessageCardMetrics.rowHeight(cardHeight: cardHeight, separatorHeight: row.timeSeparatorHeight, typography: typography)
             } else {
                 let footerHeight: CGFloat = row.processCount == nil ? 0 : 24
                 let actionHeight: CGFloat = row.actions.isEmpty ? 0 : 34
@@ -578,7 +583,7 @@ final class NativeTimelineLayoutCache {
                     row.showsHeader ? 54 : (row.images.isEmpty ? 30 : 20),
                     textHeight + verticalChrome + footerHeight + actionHeight + sentStatusHeight + messageStatusBarHeight
                 ) + (row.images.isEmpty ? 0 : imageLayout.size.height + (textHeight > 0 ? MessageCardMetrics.contentSpacing : 0))
-                rowHeight = MessageCardMetrics.rowHeight(cardHeight: cardHeight, separatorHeight: row.timeSeparatorHeight)
+                rowHeight = MessageCardMetrics.rowHeight(cardHeight: cardHeight, separatorHeight: row.timeSeparatorHeight, typography: typography)
             }
         }
         var layout = Layout(
@@ -591,11 +596,11 @@ final class NativeTimelineLayoutCache {
             rowHeight: rowHeight,
             cardHeight: cardHeight
         )
+        layout.typography = typography
         layout.imageLayout = imageLayout
         values[key] = layout
         touch(key)
-        estimatedBytes += (key.estimatedTextLength * 8) + attributed.length * 8
-            + processBlocks.reduce(0) { $0 + $1.attributedText.length * 8 } + 192
+        estimatedBytes += layoutCost(key, layout)
         evictIfNeeded()
         return layout
     }
@@ -693,6 +698,11 @@ final class NativeTimelineLayoutCache {
     private func touch(_ key: Key) {
         accessSequence &+= 1
         accessByKey[key] = accessSequence
+    }
+
+    private func layoutCost(_ key: Key, _ value: Layout) -> Int {
+        key.estimatedTextLength * 8 + value.attributedText.length * 8
+            + value.processBlocks.reduce(0) { $0 + $1.attributedText.length * 8 } + 192
     }
 
     private func evictIfNeeded() {

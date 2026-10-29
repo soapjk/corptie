@@ -4,6 +4,40 @@ import CorptieConversation
 
 @MainActor
 final class ChatBubbleWidthPolicyTests: XCTestCase {
+    func testReadingLayoutCacheReplacesOldMetricsAndRestoresClassicExactly() {
+        let text = "模型回复 English **bold**\n\n" + String(repeating: "Wrapped 中文 text ", count: 40)
+        let row = AppKitChatTimelineRow(id: "reading-cache", contentRevision: 1, nativeText: text,
+            copyText: text, nativeStyle: .agent, title: "", metadata: "", expandableTurnId: nil, isExpanded: false)
+        for width: CGFloat in [320, 900] {
+            let classic = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: width)
+            let reading = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: width, typography: .codexReading)
+            XCTAssertEqual((reading.attributedText.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize, 16)
+            XCTAssertGreaterThan(reading.rowHeight, classic.rowHeight)
+            XCTAssertEqual(reading.textHeight, NativeTextKitLayout.height(of: reading.attributedText, width: reading.cardWidth - 20))
+            XCTAssertEqual(reading.rowHeight, reading.cardHeight + 12)
+            let restored = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: width)
+            XCTAssertEqual(restored.rowHeight, classic.rowHeight)
+            XCTAssertTrue(restored.attributedText.isEqual(to: classic.attributedText))
+        }
+    }
+
+    func testAssistantRepliesUseWideLaneInMeasuredTimelineLayout() {
+        let long = String(repeating: "Model response content ", count: 100)
+        for text in [long, "```swift\nprint(\"Hello\")\n```", "| A | B |\n|---|---|\n| one | two |"] {
+            let row = AppKitChatTimelineRow(id: "wide-reply-\(text)", contentRevision: 1,
+                nativeText: text, copyText: text, nativeStyle: .agent, title: "", metadata: "",
+                expandableTurnId: nil, isExpanded: false)
+            for (lane, expected) in [(CGFloat(1000), CGFloat(800)), (600, 596), (320, 316)] {
+                let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: lane)
+                XCTAssertEqual(layout.cardWidth, expected)
+                XCTAssertGreaterThan(layout.rowHeight, 0)
+            }
+        }
+        XCTAssertLessThan(ChatBubbleWidthPolicy.preferredWidth(text: "Hi", style: .agent,
+            title: "", metadata: ""), 60)
+        XCTAssertEqual(preferredWidth(text: long, availableWidth: 1000), 480)
+    }
+
     func testShortUserMessageHugsBodyInsteadOfMaximumWidth() {
         let width = preferredWidth(text: "Hi")
 
@@ -74,7 +108,7 @@ final class ChatBubbleWidthPolicyTests: XCTestCase {
             for: process, columnWidth: 900).cardWidth, ChatBubbleWidthPolicy.maximumWidth)
     }
 
-    /// The AppKit wrapper only measures; the clamp the iPad applies is the shared one.
+    /// User messages retain the shared default clamp and attachment floor.
     func testSharedPolicyMatchesDesktopClampAndAttachmentFloor() {
         XCTAssertEqual(ChatBubbleWidthPolicy.maximumWidth, MessageBubbleWidthPolicy.maximumWidth)
         XCTAssertEqual(ChatBubbleWidthPolicy.minimumWidth, MessageBubbleWidthPolicy.minimumWidth)

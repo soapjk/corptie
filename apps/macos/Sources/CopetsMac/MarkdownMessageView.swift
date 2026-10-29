@@ -15,6 +15,7 @@ struct MarkdownMessageView: View {
     var fillWidth = true
     /// 当 `fillWidth == false` 时气泡收缩到的最大宽度（对应 Rudder `max-w-[72ch]`）。
     var maxContentWidth: CGFloat? = nil
+    var typography: ConversationTypography = .classic
 
     @ViewBuilder
     var body: some View {
@@ -32,8 +33,8 @@ struct MarkdownMessageView: View {
             baseDirectory: baseDirectory
         )
         let content = Markdown(preparedContent)
-            .markdownTheme(.corptieMessage)
-            .font(.system(size: fontSize, weight: fontWeight))
+            .markdownTheme(.corptieMessage(typography: typography))
+            .font(.system(size: typography.isReading ? typography.bodySize : fontSize, weight: typography.isReading ? .regular : fontWeight))
             .foregroundStyle(foregroundColor)
             .fixedSize(horizontal: false, vertical: true)
             .environment(\.openURL, OpenURLAction { url in
@@ -572,42 +573,42 @@ final class ClickableMessageTextCache {
 
 private extension Theme {
     @MainActor
-    static let corptieMessage = Theme.gitHub
+    static func corptieMessage(typography: ConversationTypography) -> Theme { Theme.gitHub
         .text {
-            FontSize(11)
+            FontSize(typography.isReading ? typography.bodySize : 11)
         }
         .heading1 { configuration in
-            compactHeading(configuration, size: 1.45, top: 8, bottom: 5)
+            compactHeading(configuration, size: typography.isReading ? typography.headingSize(level: 1) / typography.bodySize : 1.45, top: typography.isReading ? 14 : 8, bottom: typography.isReading ? 10 : 5)
         }
         .heading2 { configuration in
-            compactHeading(configuration, size: 1.3, top: 7, bottom: 4)
+            compactHeading(configuration, size: typography.isReading ? typography.headingSize(level: 2) / typography.bodySize : 1.3, top: typography.isReading ? 14 : 7, bottom: typography.isReading ? 10 : 4)
         }
         .heading3 { configuration in
-            compactHeading(configuration, size: 1.18, top: 6, bottom: 4)
+            compactHeading(configuration, size: typography.isReading ? typography.headingSize(level: 3) / typography.bodySize : 1.18, top: typography.isReading ? 14 : 6, bottom: typography.isReading ? 10 : 4)
         }
         .heading4 { configuration in
-            compactHeading(configuration, size: 1.08, top: 5, bottom: 3)
+            compactHeading(configuration, size: typography.isReading ? typography.headingSize(level: 4) / typography.bodySize : 1.08, top: typography.isReading ? 14 : 5, bottom: typography.isReading ? 10 : 3)
         }
         .heading5 { configuration in
-            compactHeading(configuration, size: 1, top: 5, bottom: 3)
+            compactHeading(configuration, size: typography.isReading ? typography.headingSize(level: 5) / typography.bodySize : 1, top: typography.isReading ? 14 : 5, bottom: typography.isReading ? 10 : 3)
         }
         .heading6 { configuration in
-            compactHeading(configuration, size: 0.95, top: 5, bottom: 3)
+            compactHeading(configuration, size: typography.isReading ? typography.headingSize(level: 6) / typography.bodySize : 0.95, top: typography.isReading ? 14 : 5, bottom: typography.isReading ? 10 : 3)
         }
         .paragraph { configuration in
             configuration.label
                 .fixedSize(horizontal: false, vertical: true)
-                .relativeLineSpacing(.em(0.18))
-                .markdownMargin(top: 0, bottom: 7)
+                .relativeLineSpacing(.em(typography.isReading ? 0.25 : 0.18))
+                .markdownMargin(top: 0, bottom: typography.isReading ? 10 : 7)
         }
         .codeBlock { configuration in
             ScrollView(.horizontal) {
                 configuration.label
                     .fixedSize(horizontal: false, vertical: true)
-                    .relativeLineSpacing(.em(0.18))
+                    .relativeLineSpacing(.em(typography.isReading ? 0.25 : 0.18))
                     .markdownTextStyle {
                         FontFamilyVariant(.monospaced)
-                        FontSize(.em(0.9))
+                        FontSize(.em(typography.isReading ? typography.codeSize / typography.bodySize : 0.9))
                     }
                     .padding(9)
             }
@@ -619,6 +620,8 @@ private extension Theme {
             configuration.label
                 .markdownMargin(top: .em(0.12))
         }
+
+    }
 
     @MainActor
     static func compactHeading(

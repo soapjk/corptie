@@ -11,6 +11,7 @@ private typealias TableFont = UIFont
 /// measurement. No GeometryReader, cell-size preferences, or per-frame work.
 @MainActor
 public final class ConversationMarkdownTableLayout {
+    private let typography: ConversationTypography
     public let cells: [[NSAttributedString]]
     public let columnWidths: [CGFloat]
     public let rowHeights: [CGFloat]
@@ -22,10 +23,12 @@ public final class ConversationMarkdownTableLayout {
     public static let verticalInset: CGFloat = 6
 
     @MainActor private final class CellMeasurement {
+        let typography: ConversationTypography
         let text: NSAttributedString
         let naturalWidth: CGFloat
         var heights: [CGFloat: CGFloat] = [:]
-        init(_ text: NSAttributedString) {
+        init(_ text: NSAttributedString, typography: ConversationTypography) {
+            self.typography = typography
             self.text = text
             #if os(macOS)
             naturalWidth = ceil(text.boundingRect(with: CGSize(width: 10_000, height: 10_000),
@@ -61,11 +64,11 @@ public final class ConversationMarkdownTableLayout {
     }()
 
     public static func measured(_ table: ConversationMarkdownTable, width: CGFloat,
-                                style: MessageMarkdown.Style = .agent) -> ConversationMarkdownTableLayout {
+                                style: MessageMarkdown.Style = .agent, typography: ConversationTypography = .classic) -> ConversationMarkdownTableLayout {
         let normalized = width.isFinite ? max(20, floor(width)) : 320
         let key = "\(style):\(normalized):\(table.originalText)" as NSString
-        if let value = cache.object(forKey: key) { return value }
-        let value = ConversationMarkdownTableLayout(table, width: normalized, style: style)
+        if let value = cache.object(forKey: key), value.typography == typography { return value }
+        let value = ConversationMarkdownTableLayout(table, width: normalized, style: style, typography: typography)
         let cost = table.originalText.utf16.count * 8 + value.cells.reduce(0) {
             $0 + $1.reduce(0) { $0 + $1.length * 16 + 128 }
         }
@@ -73,7 +76,8 @@ public final class ConversationMarkdownTableLayout {
         return value
     }
 
-    private init(_ table: ConversationMarkdownTable, width: CGFloat, style: MessageMarkdown.Style) {
+    private init(_ table: ConversationMarkdownTable, width: CGFloat, style: MessageMarkdown.Style, typography: ConversationTypography) {
+        self.typography = typography
         viewportWidth = width
         guard !table.exceedsDisplayBudget else {
             cells = []; columnWidths = []; rowHeights = [44]; textHeights = []; return
@@ -82,9 +86,9 @@ public final class ConversationMarkdownTableLayout {
             values.enumerated().map { column, cell in
                 let alignment = table.alignments.indices.contains(column) ? table.alignments[column] : .left
                 let key = "\(style):\(row == 0):\(alignment.rawValue):\(cell.markdown)" as NSString
-                if let cached = Self.cellCache.object(forKey: key) { return cached }
+                if let cached = Self.cellCache.object(forKey: key), cached.typography == typography { return cached }
                 let value = NSMutableAttributedString(attributedString:
-                    MessageMarkdown.make(text: cell.markdown, style: style))
+                    MessageMarkdown.make(text: cell.markdown, style: style, typography: typography.table))
                 let range = NSRange(location: 0, length: value.length)
                 value.enumerateAttribute(.paragraphStyle, in: range) { attribute, range, _ in
                     let paragraph = (attribute as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle
@@ -96,16 +100,24 @@ public final class ConversationMarkdownTableLayout {
                     value.enumerateAttribute(.font, in: range) { attribute, range, _ in
                         guard let font = attribute as? TableFont else { return }
                         #if os(macOS)
-                        let bold = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
+                        let bold = typography.isReading
+                            ? (font.fontDescriptor.symbolicTraits.contains(.monoSpace)
+                                ? NSFont.monospacedSystemFont(ofSize: font.pointSize, weight: .semibold)
+                                : NSFont.systemFont(ofSize: font.pointSize, weight: .semibold))
+                            : NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
                         #else
                         let descriptor = font.fontDescriptor.withSymbolicTraits(
                             font.fontDescriptor.symbolicTraits.union(.traitBold)) ?? font.fontDescriptor
-                        let bold = UIFont(descriptor: descriptor, size: font.pointSize)
+                        let bold = typography.isReading
+                            ? (font.fontDescriptor.symbolicTraits.contains(.traitMonoSpace)
+                                ? UIFont.monospacedSystemFont(ofSize: font.pointSize, weight: .semibold)
+                                : UIFont.systemFont(ofSize: font.pointSize, weight: .semibold))
+                            : UIFont(descriptor: descriptor, size: font.pointSize)
                         #endif
                         value.addAttribute(.font, value: bold, range: range)
                     }
                 }
-                let measured = CellMeasurement(value.copy() as! NSAttributedString)
+                let measured = CellMeasurement(value.copy() as! NSAttributedString, typography: typography)
                 Self.cellCache.setObject(measured, forKey: key, cost: cell.markdown.utf16.count * 8 + value.length * 16 + 256)
                 return measured
             }

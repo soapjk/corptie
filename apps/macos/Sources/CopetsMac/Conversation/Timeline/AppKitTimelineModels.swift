@@ -221,11 +221,20 @@ enum AppKitChatRowReusePolicy {
     }
 }
 
-/// Deterministic width contract for native AppKit timeline rows.
 @MainActor
+extension AppKitChatTimelineRow {
+    func readingTypography(_ requested: ConversationTypography) -> ConversationTypography {
+        guard nativeStyle != .process, !isWorkspaceCard, !isCollaboration,
+              collaborationRoute == nil, userInput == nil, executionPlan == nil else { return .classic }
+        return requested
+    }
+}
+
 /// AppKit measurement on top of the shared `MessageBubbleWidthPolicy` clamp.
+@MainActor
 enum ChatBubbleWidthPolicy {
     static let maximumWidth = MessageBubbleWidthPolicy.maximumWidth
+    static let assistantMaximumWidth: CGFloat = 800
     static let minimumWidth = MessageBubbleWidthPolicy.minimumWidth
     static let horizontalPadding = MessageBubbleWidthPolicy.horizontalPadding
     static let collapsedProcessWidth = MessageBubbleWidthPolicy.collapsedProcessWidth
@@ -236,13 +245,15 @@ enum ChatBubbleWidthPolicy {
         title: String,
         metadata: String,
         processWidth: CGFloat = 0,
-        availableWidth: CGFloat = maximumWidth
+        availableWidth: CGFloat = assistantMaximumWidth,
+        typography: ConversationTypography = .classic
     ) -> CGFloat {
+        let widthCeiling = style == .agent ? assistantMaximumWidth : maximumWidth
         let bodyWidth: CGFloat
         if MessageBubbleWidthPolicy.requiresFullWidthLayout(text) {
-            bodyWidth = MessageBubbleWidthPolicy.fullWidthBody
+            bodyWidth = widthCeiling - horizontalPadding
         } else {
-            let attributed = NativeMarkdownTextCache.shared.value(text: text, style: style)
+            let attributed = NativeMarkdownTextCache.shared.value(text: text, style: style, typography: typography)
             bodyWidth = ceil(attributed.boundingRect(
                 with: NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude),
                 options: [.usesLineFragmentOrigin, .usesFontLeading]
@@ -256,10 +267,10 @@ enum ChatBubbleWidthPolicy {
         ]).width)
         let headerWidth = titleWidth + metadataWidth + 12
         return MessageBubbleWidthPolicy.preferredWidth(bodyWidth: bodyWidth, headerWidth: headerWidth,
-            processWidth: processWidth, availableWidth: availableWidth)
+            processWidth: processWidth, availableWidth: availableWidth, widthCeiling: widthCeiling)
     }
 
-    static func cardWidth(for row: AppKitChatTimelineRow, availableWidth: CGFloat) -> CGFloat {
+    static func cardWidth(for row: AppKitChatTimelineRow, availableWidth: CGFloat, typography: ConversationTypography = .classic) -> CGFloat {
         if row.isWorkspaceCard {
             return WorkspaceMessageCardLayout.cardWidth(in: availableWidth)
         }
@@ -303,10 +314,11 @@ enum ChatBubbleWidthPolicy {
             title: row.showsHeader ? row.title : "",
             metadata: row.showsHeader ? row.metadata : "",
             processWidth: row.processCount == nil ? 0 : collapsedProcessWidth,
-            availableWidth: fullAvailableWidth
+            availableWidth: fullAvailableWidth,
+            typography: typography
         )
-        return row.images.isEmpty ? preferred : MessageImageGalleryLayout.cardWidth(
-            bodyWidth: max(0, preferred - horizontalPadding), geometries: row.imageGeometries, laneWidth: availableWidth)
+        return row.images.isEmpty ? preferred : max(preferred, MessageImageGalleryLayout.cardWidth(
+            bodyWidth: max(0, preferred - horizontalPadding), geometries: row.imageGeometries, laneWidth: availableWidth))
     }
 }
 

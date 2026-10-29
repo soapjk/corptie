@@ -13,7 +13,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
             showsHeader: header, contextTimestamp: "12:34")
     }
 
-    func testSkinSwitchPreservesHostedTextIdentitySelectionAndMeasurements() throws {
+    func testSkinSwitchPreservesHostedTextIdentitySelectionAndReflowsTypography() throws {
         _ = NSApplication.shared
         let model = row("Shared selectable text", revision: 1)
         let layout = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 480)
@@ -41,7 +41,12 @@ final class MessageTextCardMigrationTests: XCTestCase {
             XCTAssertEqual(cell.frame, frame)
             XCTAssertEqual(cell.contentConfigurationCount, configured)
             XCTAssertEqual(cell.widthLayoutUpdateCount, widthUpdates)
-            XCTAssertEqual(NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 480).rowHeight, layout.rowHeight)
+            let expected = skin == .classic ? CGFloat(11) : 16
+            XCTAssertEqual((text.textStorage?.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize, expected)
+            let measured = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 480,
+                typography: skin.typography(for: .assistant))
+            if skin == .classic { XCTAssertEqual(measured.rowHeight, layout.rowHeight) }
+            else { XCTAssertGreaterThan(measured.rowHeight, layout.rowHeight) }
         }
         window.contentView = nil
     }
@@ -321,6 +326,14 @@ final class MessageTextCardMigrationTests: XCTestCase {
     }
 
     func testRealThousandRowListScrollPerformanceAndReuse() throws {
+        try thousandRowListScrollPerformanceAndReuse(skin: .classic)
+    }
+
+    func testReadingThousandRowListScrollPerformanceAndReuse() throws {
+        try thousandRowListScrollPerformanceAndReuse(skin: .codexFlat)
+    }
+
+    private func thousandRowListScrollPerformanceAndReuse(skin: ConversationSkin) throws {
         guard ProcessInfo.processInfo.environment["CORPTIE_CARD_BENCHMARK"] == "1" else {
             throw XCTSkip("Opt-in real-list performance gate")
         }
@@ -331,6 +344,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
             let scroll = AppKitChatTimelineView.makeScrollView(tableView: table)
             let coordinator = AppKitChatTimelineView.Coordinator(followsLatest: .constant(false),
                 useSharedTextCards: shared, onToggleExpansion: { _ in })
+            coordinator.updateSkin(skin)
             coordinator.attach(tableView: table, scrollView: scroll)
             let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 480, height: 600),
                 styleMask: [.borderless], backing: .buffered, defer: false)
@@ -341,6 +355,25 @@ final class MessageTextCardMigrationTests: XCTestCase {
             return (window, table, coordinator)
         }
         let native = harness(shared: false), shared = harness(shared: true)
+        // Measure first reflow of all currently loaded rows separately from
+        // cached scrolling. Both renderers see the same cold profile change.
+        func coldReflow(_ target: (NSWindow, NSTableView, AppKitChatTimelineView.Coordinator)) -> Double {
+            let opposite: ConversationSkin = skin == .classic ? .codexFlat : .classic
+            for row in rows {
+                _ = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 480,
+                    typography: skin.typography(for: .assistant))
+            }
+            let start = ProcessInfo.processInfo.systemUptime
+            target.2.updateSkin(opposite)
+            target.0.contentView?.layoutSubtreeIfNeeded()
+            let elapsed = (ProcessInfo.processInfo.systemUptime - start) * 1_000
+            target.2.updateSkin(skin)
+            target.0.contentView?.layoutSubtreeIfNeeded()
+            return elapsed
+        }
+        let nativeCold = coldReflow(native), sharedCold = coldReflow(shared)
+        print("MESSAGE_TYPOGRAPHY_COLD from=\(skin) rows=1000 native_ms=\(nativeCold) shared_ms=\(sharedCold)")
+        XCTAssertLessThanOrEqual(sharedCold, nativeCold * 1.5 + 1, "Same renderer overhead budget as scrolling")
         var nativeTimes: [Double] = [], sharedTimes: [Double] = []
         var sharedCells = Set<ObjectIdentifier>()
         for iteration in 0..<80 {
@@ -364,7 +397,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
             RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.001))
         }
         nativeTimes.sort(); sharedTimes.sort()
-        print("MESSAGE_TEXT_LIST n=60 native_p50=\(nativeTimes[30]) native_p95=\(nativeTimes[57]) shared_p50=\(sharedTimes[30]) shared_p95=\(sharedTimes[57]) observed_shared_cells=\(sharedCells.count)")
+        print("MESSAGE_TEXT_LIST skin=\(skin) n=60 native_p50=\(nativeTimes[30]) native_p95=\(nativeTimes[57]) shared_p50=\(sharedTimes[30]) shared_p95=\(sharedTimes[57]) observed_shared_cells=\(sharedCells.count)")
         XCTAssertLessThan(sharedCells.count, 150, "Do not materialize all 1000 rows")
         XCTAssertLessThanOrEqual(sharedTimes[57], nativeTimes[57] * 1.5 + 1)
         native.0.orderOut(nil); shared.0.orderOut(nil)

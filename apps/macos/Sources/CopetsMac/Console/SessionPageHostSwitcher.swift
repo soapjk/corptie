@@ -84,6 +84,7 @@ struct ResidentSessionPageRoot: View {
                 .frame(maxHeight: .infinity)
         }
         .padding(MainWindowPageLayoutMetrics.outerPadding)
+        .modifier(ConsoleDetailColumnBackground())
         .modifier(ConversationSkinHost())
         .environmentObject(layout)
         .environmentObject(backend)

@@ -1218,6 +1218,7 @@ struct UnifiedConsoleView: View {
                 }
             }
             .padding(MainWindowPageLayoutMetrics.outerPadding)
+            .modifier(ConsoleDetailColumnBackground())
         } else if let task = selectedTask {
             HStack(spacing: MainWindowPageLayoutMetrics.columnSpacing) {
                 VStack(spacing: 12) {
@@ -1250,6 +1251,7 @@ struct UnifiedConsoleView: View {
                     .frame(maxHeight: .infinity)
             }
             .padding(MainWindowPageLayoutMetrics.outerPadding)
+            .modifier(ConsoleDetailColumnBackground())
         } else {
             ContentUnavailableView(
                 L10n("Select a Session"),

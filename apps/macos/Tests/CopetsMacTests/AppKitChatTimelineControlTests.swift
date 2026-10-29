@@ -2,10 +2,81 @@ import AppKit
 import SwiftUI
 import XCTest
 import CorptieClientCore
+import CorptieConversation
 @testable import CorptieMac
 
 @MainActor
 final class AppKitChatTimelineControlTests: XCTestCase {
+    func testReadingTypographyPreservesCharacterAnchorAndSearchIntent() async throws {
+        for shared in [false, true] {
+            let harness = makeHarness(followsLatest: false, useSharedTextCards: shared, height: 240)
+            let long = String(repeating: "Reading 中文 😀 text with stable character anchors. ", count: 140)
+            let rows = (0..<24).map { row(id: "reading-\($0)", text: $0 == 10 ? long : "Message \($0)", showsHeader: false) }
+            harness.coordinator.apply(rows: rows)
+            await settleMainQueue()
+            harness.coordinator.restore(position: .init(rowID: "reading-10", offset: 400, absoluteScrollY: 0, followsLatest: false))
+            await settleMainQueue()
+            harness.tableView.layoutSubtreeIfNeeded()
+            func leaves(_ view: NSView) -> [NativeTimelineTextView] {
+                (view as? NativeTimelineTextView).map { [$0] } ?? view.subviews.flatMap(leaves)
+            }
+            let cell = try XCTUnwrap(harness.tableView.view(atColumn: 0, row: 10, makeIfNecessary: true))
+            let text = try XCTUnwrap(leaves(cell).first)
+            let manager = try XCTUnwrap(text.layoutManager)
+            let container = try XCTUnwrap(text.textContainer)
+            manager.ensureLayout(for: container)
+            let top = harness.tableView.convert(text.bounds, from: text).minY
+            let point = NSPoint(x: 0, y: harness.scrollView.contentView.bounds.minY - top)
+            let glyph = manager.glyphIndex(for: point, in: container)
+            let character = manager.characterIndexForGlyph(at: glyph)
+            func characterY() -> CGFloat {
+                manager.ensureLayout(for: container)
+                let rect = manager.lineFragmentRect(forGlyphAt: manager.glyphIndexForCharacter(at: character), effectiveRange: nil)
+                return harness.tableView.convert(rect.origin, from: text).y - harness.scrollView.contentView.bounds.minY
+            }
+            text.setSelectedRange(NSRange(location: 10, length: 12))
+            let originalY = characterY()
+            let classicHeight = harness.tableView.rect(ofRow: 10).height
+            for skin in [ConversationSkin.codexFlat, .classic] {
+                harness.coordinator.updateSkin(skin)
+                await settleMainQueue()
+                harness.tableView.layoutSubtreeIfNeeded()
+                XCTAssertTrue(leaves(cell).first === text)
+                XCTAssertEqual(text.selectedRange(), NSRange(location: 10, length: 12))
+                XCTAssertEqual(characterY(), originalY, accuracy: 3, "shared=\(shared)")
+                if skin == .codexFlat { XCTAssertGreaterThan(harness.tableView.rect(ofRow: 10).height, classicHeight) }
+                else { XCTAssertEqual(harness.tableView.rect(ofRow: 10).height, classicHeight) }
+            }
+            harness.coordinator.updateSkin(.codexFlat)
+            harness.coordinator.applySearchTarget(rowID: "reading-20", revision: 1)
+            await settleMainQueue()
+            XCTAssertEqual(harness.tableView.selectedRow, 20)
+            XCTAssertEqual(harness.scrollView.contentView.bounds.minY,
+                harness.tableView.rect(ofRow: 20).minY - 10, accuracy: 1)
+        }
+    }
+
+    func testHiddenReadingTypographyDefersReflowAndLatestStillFollows() async throws {
+        let harness = makeHarness(followsLatest: true, height: 240)
+        let rows = (0..<60).map { row(id: "hidden-reading-\($0)", text: "中文 Reading response \($0)", showsHeader: false) }
+        harness.coordinator.apply(rows: rows)
+        harness.coordinator.scrollToBottom()
+        await settleMainQueue()
+        let before = harness.tableView.rect(ofRow: 59).height
+        harness.coordinator.setPresentationActive(false)
+        harness.coordinator.updateSkin(.codexFlat)
+        XCTAssertEqual(harness.tableView.rect(ofRow: 59).height, before)
+        harness.coordinator.setPresentationActive(true)
+        await settleMainQueue()
+        XCTAssertGreaterThan(harness.tableView.rect(ofRow: 59).height, before)
+        XCTAssertTrue(isNearBottom(harness))
+        var streamed = rows
+        streamed[59] = row(id: rows[59].id, revision: 1, text: String(repeating: "streaming 中文 ", count: 100), showsHeader: false)
+        harness.coordinator.apply(rows: streamed)
+        await settleMainQueue()
+        XCTAssertTrue(isNearBottom(harness))
+    }
+
     func testCollapsedExecutionSummaryNeverWrapsOrAddsHeight() throws {
         let row = AppKitChatTimelineRow(
             id: "single-line-process", contentRevision: 1, nativeText: "details", copyText: "details",

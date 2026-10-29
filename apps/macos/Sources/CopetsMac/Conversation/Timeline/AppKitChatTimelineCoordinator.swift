@@ -9,6 +9,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     private static let nativeCellIdentifier = NSUserInterfaceItemIdentifier("chat.timeline.native.cell")
     private static let sharedTextCellIdentifier = NSUserInterfaceItemIdentifier("chat.timeline.shared-text.cell")
     private var skin = ConversationSkin.classic
+    private var needsTypographyReflow = false
     private let useSharedTextCards: Bool
     private let useSharedProcessCards: Bool
 
@@ -229,7 +230,10 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         guard presentationActive != active else { return }
         presentationActive = active
         if !active { processClockTimer?.invalidate(); processClockTimer = nil }
-        else { synchronizeProcessClock(); scheduleImageGeometryCommit(); scheduleUnderfilledHistoryEvaluation() }
+        else {
+            if needsTypographyReflow { reflowForTypography() }
+            synchronizeProcessClock(); scheduleImageGeometryCommit(); scheduleUnderfilledHistoryEvaluation()
+        }
     }
 
     func setProcessClockEnabled(_ enabled: Bool) {
@@ -394,7 +398,8 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
 
         let height = NativeTimelineLayoutCache.shared.layout(
             for: item,
-            columnWidth: measurementWidth
+            columnWidth: measurementWidth,
+            typography: skin.typography(for: item.nativeStyle == .user ? .user : .assistant)
         ).rowHeight
         if heightCache.count >= 20_000 {
             heightCache.removeAll(keepingCapacity: true)
@@ -409,17 +414,97 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
             && MacSharedMessageTextCard.supports(row)
     }
 
-    /// A skin changes paint only: retain row heights, selection, editor and viewport.
+    /// Reuse the existing width reflow transaction for reading metrics too.
     func updateSkin(_ next: ConversationSkin) {
         guard skin != next else { return }
         skin = next
-        guard let tableView, let scrollView else { return }
-        let visible = tableView.rows(in: scrollView.contentView.bounds)
-        guard visible.location != NSNotFound, visible.length > 0 else { return }
-        for row in visible.location..<NSMaxRange(visible) {
-            (tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? AppKitChatRowRendering)?
-                .updateAppearance(skin: next)
+        needsTypographyReflow = tableView != nil && !rows.isEmpty
+        if needsTypographyReflow && presentationActive { reflowForTypography() }
+    }
+
+    private struct TypographyAnchor {
+        let rowID: String
+        let fragment: Int
+        let character: Int
+        let viewportY: CGFloat
+    }
+
+    // Keep the exact character through repeated toggles. Re-capturing a new
+    // line's first glyph each time would accumulate a line of rounding drift.
+    private var typographyReadingAnchor: (anchor: TypographyAnchor, generation: Int, width: CGFloat)?
+
+    private func textViews(in view: NSView) -> [NSTextView] {
+        if let text = view as? NativeTimelineTextView { return [text] }
+        return view.subviews.flatMap { textViews(in: $0) }
+    }
+
+    private func captureTypographyAnchor() -> TypographyAnchor? {
+        guard !followsLatest, let tableView, let scrollView,
+              let anchor = visibleAnchor(in: tableView),
+              let index = rows.firstIndex(where: { $0.id == anchor.id }),
+              let cell = tableView.view(atColumn: 0, row: index, makeIfNecessary: false) else { return nil }
+        let viewportY = scrollView.contentView.bounds.minY
+        let leaves = textViews(in: cell)
+        for (fragment, text) in leaves.enumerated() {
+            let frame = tableView.convert(text.bounds, from: text)
+            guard frame.maxY >= viewportY, text.string.utf16.count > 0,
+                  let manager = text.layoutManager, let container = text.textContainer else { continue }
+            manager.ensureLayout(for: container)
+            let point = NSPoint(x: 0, y: max(0, viewportY - frame.minY))
+            let glyph = manager.glyphIndex(for: point, in: container)
+            guard glyph < manager.numberOfGlyphs else { continue }
+            let rect = manager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            return TypographyAnchor(rowID: anchor.id, fragment: fragment,
+                character: manager.characterIndexForGlyph(at: glyph),
+                viewportY: tableView.convert(rect.origin, from: text).y - viewportY)
         }
+        return nil
+    }
+
+    @discardableResult
+    private func restoreTypographyAnchor(_ anchor: TypographyAnchor) -> Bool {
+        guard !followsLatest, let tableView,
+              let index = rows.firstIndex(where: { $0.id == anchor.rowID }),
+              let cell = tableView.view(atColumn: 0, row: index, makeIfNecessary: true) else { return false }
+        cell.layoutSubtreeIfNeeded()
+        let leaves = textViews(in: cell)
+        guard leaves.indices.contains(anchor.fragment) else { return false }
+        let text = leaves[anchor.fragment]
+        guard anchor.character < text.string.utf16.count,
+              let manager = text.layoutManager, let container = text.textContainer else { return false }
+        manager.ensureLayout(for: container)
+        let glyph = manager.glyphIndexForCharacter(at: anchor.character)
+        guard glyph < manager.numberOfGlyphs else { return false }
+        let rect = manager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let y = tableView.convert(rect.origin, from: text).y - anchor.viewportY
+        // The width transaction queued a pixel anchor. Replace it with the
+        // more precise character anchor; enqueueCorrection otherwise retains
+        // the first pre-mutation anchor through consecutive updates.
+        guard !isProcessingUserScrollEvent else { return false }
+        pendingCorrection = nil
+        return restore(anchor: (anchor.rowID, y - tableView.rect(ofRow: index).minY), in: tableView)
+    }
+
+    private func reflowForTypography() {
+        guard let tableView, let scrollView else { return }
+        needsTypographyReflow = false
+        let width = tableView.tableColumns.first?.width ?? tableView.bounds.width
+        let anchor: TypographyAnchor?
+        if let saved = typographyReadingAnchor, saved.generation == scrollCommandGeneration,
+           saved.width == width, rows.contains(where: { $0.id == saved.anchor.rowID }), !followsLatest {
+            anchor = saved.anchor
+        } else { anchor = captureTypographyAnchor() }
+        typographyReadingAnchor = anchor.map { ($0, scrollCommandGeneration, width) }
+        heightCache.removeAll(keepingCapacity: true)
+        let visible = tableView.rows(in: scrollView.contentView.bounds)
+        if visible.location != NSNotFound {
+            for row in visible.location..<min(rows.count, NSMaxRange(visible)) {
+                (tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? AppKitChatRowRendering)?
+                    .updateAppearance(skin: skin)
+            }
+        }
+        performExactWidthReflow()
+        if let anchor { _ = restoreTypographyAnchor(anchor) }
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -442,6 +527,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                 onAction: onAction
             )
             cachedCell.updateLinkContext(baseDirectory: baseDirectory)
+            cachedCell.updateAppearance(skin: skin)
             if !cachedCell.updateLayoutIfContentUnchanged(
                 rowModel,
                 availableWidth: availableWidth
@@ -453,7 +539,6 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                     onAction: onAction)
                 cacheCell(cachedCell, for: rowModel)
             }
-            cachedCell.updateAppearance(skin: skin)
             return cachedCell
         }
         SessionSwitchTrace.shared.recordCell(.miss, sessionID: representedSessionID, rowID: rowModel.id)
