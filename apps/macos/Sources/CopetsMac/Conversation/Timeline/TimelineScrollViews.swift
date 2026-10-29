@@ -4,6 +4,17 @@ import CorptieConversation
 import CorptieClientCore
 
 final class FirstLayoutRestoringScrollView: NSScrollView {
+    var forcesOverlayScrollers = false {
+        didSet {
+            if forcesOverlayScrollers { scrollerStyle = .overlay }
+        }
+    }
+
+    override var scrollerStyle: NSScroller.Style {
+        get { super.scrollerStyle }
+        set { super.scrollerStyle = forcesOverlayScrollers ? .overlay : newValue }
+    }
+
     var onLayout: (() -> Void)?
     var onUserScrollWillBegin: (() -> Void)?
     var onUserScrollDidEnd: (() -> Void)?

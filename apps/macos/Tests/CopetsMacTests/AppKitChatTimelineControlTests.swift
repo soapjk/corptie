@@ -1099,6 +1099,28 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         }
     }
 
+    func testCompactTimelineUsesFullWidthAcrossResizeAndScrollerVisibility() async {
+        let harness = makeHarness(followsLatest: true)
+        harness.coordinator.setReservesVerticalScrollerGutter(false)
+        // Simulate AppKit restoring the system preference while tiling.
+        harness.scrollView.scrollerStyle = .legacy
+        XCTAssertEqual(harness.scrollView.scrollerStyle, .overlay)
+        for width: CGFloat in [220, 560, 800] {
+            harness.window.setContentSize(NSSize(width: width, height: 320))
+            for count in [1, 40, 1] {
+                harness.coordinator.apply(rows: (0..<count).map {
+                    row(id: "message-\($0)", text: "A user message that wraps in a narrow floating window", nativeStyle: .user)
+                })
+                harness.window.layoutIfNeeded()
+                NotificationCenter.default.post(name: NSView.frameDidChangeNotification, object: harness.scrollView)
+                await settleMainQueue()
+                XCTAssertEqual(harness.tableView.tableColumns[0].width, harness.scrollView.bounds.width, accuracy: 1)
+                XCTAssertEqual(harness.scrollView.scrollerStyle, .overlay)
+                XCTAssertEqual(harness.scrollView.contentView.bounds.width, harness.scrollView.bounds.width, accuracy: 1)
+            }
+        }
+    }
+
     func testUnbrokenModelTextWrapsInsideTheCardBoundary() throws {
         let harness = makeHarness(followsLatest: false, height: 320)
         let token = String(repeating: "https://example.com/very-long-path-without-breaks-0123456789", count: 12)

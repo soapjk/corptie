@@ -30,6 +30,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     /// Extend the native scrollable document for chrome overlaid on this viewport.
     /// The full-height clip view lets earlier rows pass beneath the glass.
     var bottomClearance: CGFloat = 0
+    var reservesVerticalScrollerGutter = true
 
     nonisolated static func rowIndex(forTurnID turnID: String, in rows: [AppKitChatTimelineRow]) -> Int? {
         rows.firstIndex(where: {
@@ -75,6 +76,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         let tableView = Self.makeTableView()
         let scrollView = Self.makeScrollView(tableView: tableView)
 
+        context.coordinator.setReservesVerticalScrollerGutter(reservesVerticalScrollerGutter)
         context.coordinator.attach(tableView: tableView, scrollView: scrollView)
         context.coordinator.setProcessClockEnabled(canAdvanceProcessClock)
         if let initialPosition, !initialPosition.followsLatest {
@@ -153,6 +155,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             initialPosition: initialPosition,
             deferReloadUntilRowsArrive: true
         )
+        context.coordinator.setReservesVerticalScrollerGutter(reservesVerticalScrollerGutter)
         context.coordinator.updateSkin(skin)
         context.coordinator.updateBaseDirectory(baseDirectory)
         context.coordinator.updateProcessCollapseLocalization()
