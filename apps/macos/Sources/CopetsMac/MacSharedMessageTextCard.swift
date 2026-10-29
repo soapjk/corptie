@@ -79,7 +79,6 @@ struct MacSharedMessageTextCard: View {
             Group {
                 if let input = row.userInput { userInputCard(input) }
                 else if let plan = row.executionPlan { executionPlanCard(plan) }
-                else if let activity = row.replyActivity { replyActivityHeader(activity) }
                 else if row.nativeStyle == .process { processCard }
                 else { messageCard }
             }
@@ -124,29 +123,6 @@ struct MacSharedMessageTextCard: View {
             .frame(width: layout.cardWidth, alignment: .topLeading)
             .modifier(ConversationSkinSurface(role: .plan, radius: 14,
                 legacyFill: Color.secondary.opacity(0.06), legacyBorder: Color.secondary.opacity(0.2)))
-    }
-
-    private func replyActivityHeader(_ activity: ConversationReplyActivity) -> some View {
-        Button(action: toggle) {
-            HStack(spacing: 8) {
-                Image(systemName: "text.bubble").foregroundStyle(.secondary)
-                Text(row.title).foregroundStyle(.primary)
-                Image(systemName: activity.isExpanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
-            }
-            .font(.system(size: 10.5, weight: .medium))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 10)
-            .frame(height: 30)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .modifier(ConversationSkinSurface(role: .process, radius: 10,
-            legacyFill: Color.secondary.opacity(0.06), legacyBorder: Color.secondary.opacity(0.16)))
-        .frame(width: layout.cardWidth, height: layout.cardHeight, alignment: .topLeading)
-        .accessibilityLabel(row.title)
-        .accessibilityValue(L10n(activity.isExpanded ? "已展开" : "已收起"))
-        .accessibilityIdentifier("chat.timeline.reply-activity")
     }
 
     private var processCard: some View {
@@ -468,7 +444,6 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
     func updateLayoutIfContentUnchanged(_ row: AppKitChatTimelineRow, availableWidth: CGFloat) -> Bool {
         guard self.row?.id == row.id, self.row?.contentRevision == row.contentRevision,
               self.row?.replyIdentity == row.replyIdentity,
-              self.row?.replyActivity == row.replyActivity,
               representedImageGeometries == row.imageGeometries else { return false }
         guard measuredWidth != availableWidth || measuredLayout?.typography != row.readingTypography(skin.typography(for: row.nativeStyle == .user ? .user : .assistant)) else { return true }
         measuredWidth = availableWidth

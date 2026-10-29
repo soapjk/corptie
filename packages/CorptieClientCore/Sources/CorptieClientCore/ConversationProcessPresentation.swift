@@ -48,9 +48,9 @@ public struct ConversationProcessPresentation: Sendable {
             return chinese ? "处理中\(currentStep)… · \(steps)" : "Working\(currentStep)… · \(steps)"
         case .completed:
             if let displayedDuration, !displayedDuration.isEmpty {
-                return chinese ? "已处理 \(displayedDuration) · \(steps)" : "Processed for \(displayedDuration) · \(steps)"
+                return chinese ? "已完成 \(displayedDuration) · \(steps)" : "Completed in \(displayedDuration) · \(steps)"
             }
-            return chinese ? "已处理 · \(steps)" : "Completed · \(steps)"
+            return chinese ? "已完成 · \(steps)" : "Completed · \(steps)"
         case .failed:
             if let displayedDuration, !displayedDuration.isEmpty {
                 return chinese ? "处理失败，耗时 \(displayedDuration) · \(steps)"
