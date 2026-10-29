@@ -1118,12 +1118,17 @@ final class WorktreeManagementClient: ObservableObject {
         let (data, response) = try await session.data(for: request)
         if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
             let envelope = try? decoder.decode(WorktreeManagementErrorEnvelope.self, from: data)
+            let code = envelope?.code
+            let message = code.flatMap {
+                ClientWorktreeBusyContext.failureMessage(code: $0, context: envelope?.busyContext, localize: L10n)
+            } ?? envelope?.error ?? "HTTP \(http.statusCode)"
             throw WorktreeManagementClientError(
-                message: envelope?.error ?? "HTTP \(http.statusCode)",
-                code: envelope?.code,
+                message: message,
+                code: code,
                 candidate: envelope?.candidate,
                 candidateDiff: envelope?.diff,
                 diagnosis: envelope?.diagnosis,
+                busyContext: envelope?.busyContext,
                 commitPolicyBlocker: envelope?.commitPolicyBlocker,
                 commitReviewId: envelope?.commitReviewId
             )
@@ -1166,6 +1171,7 @@ private struct WorktreeManagementErrorEnvelope: Decodable {
     let candidate: WorktreeIntegrationCandidate?
     let diff: WorktreeIntegrationCandidateDiff?
     let diagnosis: WorktreeDeliveryDiagnosis?
+    let busyContext: ClientWorktreeBusyContext?
     let commitPolicyBlocker: WorktreeCommitPolicyBlocker?
     let commitReviewId: String?
 }
@@ -1176,6 +1182,7 @@ private struct WorktreeManagementClientError: LocalizedError {
     var candidate: WorktreeIntegrationCandidate? = nil
     var candidateDiff: WorktreeIntegrationCandidateDiff? = nil
     var diagnosis: WorktreeDeliveryDiagnosis? = nil
+    var busyContext: ClientWorktreeBusyContext? = nil
     var commitPolicyBlocker: WorktreeCommitPolicyBlocker? = nil
     var commitReviewId: String? = nil
     var errorDescription: String? { code.map { "\(message) (\($0))" } ?? message }

@@ -194,3 +194,22 @@ test("invalid bodies prevent destructive dispatch and synchronous job errors are
   assert.equal(f.dispatch("/projects/p", "DELETE").handled, false);
   assert.equal(f.dispatch("/worktree-management/jobs/j/unknown", "POST").handled, false);
 });
+
+
+test("integration busy errors expose only public diagnosis on preparation, confirmation and retry", async () => {
+  const routes = [["createCandidate","/worktree-management/repositories/repo/integration-candidates"],
+    ["startCandidate","/worktree-management/repositories/repo/integration-jobs"],
+    ["preflight","/worktree-management/repositories/repo/integration-plans"],
+    ["confirm","/worktree-management/jobs/job/confirm"],["retry","/worktree-management/jobs/job/retry"]];
+  for(const [method,path] of routes) {
+    const f=fixture();
+    f.dependencies.worktreeIntegrationJobService[method]=async()=>{
+      throw Object.assign(new Error("busy"),{code:"TASK_HIERARCHY_BUSY",statusCode:409,
+        busyContext:{worktreeId:"tree",sessionId:"session",sessionTitle:"Busy",reason:"UNSETTLED_DELIVERY",count:3,
+          rawPayload:{secret:"private"},messageText:"private",path:"/private"}});
+    };
+    const result=await f.dispatch(path,"POST",{}).response;
+    assert.equal(result.status,409);
+    assert.deepEqual(result.body.busyContext,{worktreeId:"tree",sessionId:"session",sessionTitle:"Busy",reason:"UNSETTLED_DELIVERY",count:3});
+  }
+});

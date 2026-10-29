@@ -19,6 +19,18 @@ struct PadWorktreeTests {
         return (store, connection)
     }
 
+    @Test func busyFailureNamesTheBlockingSessionAndRetainsLegacyFallback() throws {
+        let context = try JSONDecoder().decode(ClientWorktreeBusyContext.self, from: Data(#"{"sessionTitle":"Busy Session","reason":"UNSETTLED_DELIVERY","count":3}"#.utf8))
+        let message = PadWorktreeFailure.describe(ClientServiceFailure(statusCode: 409,
+            code: "TASK_HIERARCHY_BUSY", busyContext: context), stage: "准备合并")
+        #expect(message.contains("Busy Session"))
+        #expect(message.contains("3 条"))
+        #expect(message.contains("未结束的消息投递"))
+        let legacy = PadWorktreeFailure.describe(ClientServiceFailure(statusCode: 409,
+            code: "TASK_HIERARCHY_BUSY"), stage: "准备合并")
+        #expect(legacy.contains("会话或 Git 操作"))
+    }
+
     @Test func simultaneousPlanRequestsOnlySendOnce() async throws {
         let (store, connection) = try fixture()
         let first = Task { await store.preparePlan(operation: .merge, sources: ["source"], target: "main", connection: connection) }

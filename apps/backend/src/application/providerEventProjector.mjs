@@ -219,15 +219,12 @@ export class ProviderEventProjector {
         event.turnId
       );
       if (delivery) {
-        const deliveryStatus = terminalOutcome
-          ? terminalOutcome.status
-          : "processing";
-        this.store.updateMessageDelivery(delivery.deliveryId, {
-          status: deliveryStatus,
-          lastError: terminalOutcome?.status === "failed"
-            ? terminalOutcome.failure?.message ?? "Provider turn failed."
-            : null
-        });
+        // The persisted Turn owns execution state. Its terminal guard may
+        // reject a late item's running projection even though content changed.
+        const settled = this.store.settleMessageDeliveryFromTurn(delivery.deliveryId);
+        if (!["completed", "failed", "cancelled"].includes(settled?.status)) {
+          this.store.updateMessageDelivery(delivery.deliveryId, { status: "processing", lastError: null });
+        }
       }
     }
 

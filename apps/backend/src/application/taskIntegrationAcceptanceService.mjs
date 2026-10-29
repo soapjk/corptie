@@ -109,7 +109,11 @@ export class TaskIntegrationAcceptanceService {
   }
   assertNoGitJob(repositoryId, ownJobId=null) {
     const job=this.store.getLatestWorktreeIntegrationJob?.(repositoryId);
-    if(job && job.id!==ownJobId && ["queued","running","paused","cancellation_requested","replanning"].includes(job.status)) throw fail("TASK_HIERARCHY_BUSY");
+    if(job && job.id!==ownJobId && ["queued","running","paused","cancellation_requested","replanning"].includes(job.status)) {
+      throw Object.assign(fail("TASK_HIERARCHY_BUSY"), {
+        busyContext:{reason:"INTEGRATION_JOB",jobId:job.id,status:job.status,phase:job.phase}
+      });
+    }
   }
   waitingAcceptanceJob(repositoryId,taskId) {
     const job=this.store.getLatestWorktreeIntegrationJob?.(repositoryId);

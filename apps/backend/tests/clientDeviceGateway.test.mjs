@@ -480,6 +480,19 @@ test("real TLS route boundary and authenticated local approval", async () => {
       retryable: false
     });
     assert.equal(blockedStart.status, 409);
+    gateway.worktreeAPI.startCandidate = async () => {
+      throw Object.assign(new Error("busy"),{code:"TASK_HIERARCHY_BUSY",statusCode:409,
+        busyContext:{sessionTitle:"Busy Session",reason:"UNSETTLED_DELIVERY",count:3,rawPayload:"secret"}});
+    };
+    const busyStart=await call(repositoryJobsPath,{token:creds.accessToken,method:"POST",value:{idempotencyKey:"start:busy"}});
+    assert.equal(busyStart.status,409);
+    assert.deepEqual(busyStart.body.busyContext,{sessionTitle:"Busy Session",reason:"UNSETTLED_DELIVERY",count:3});
+    gateway.worktreeAPI.startCandidate=async()=>{throw Object.assign(new Error("private"),{statusCode:500,
+      busyContext:{sessionTitle:"secret",reason:"UNSETTLED_DELIVERY"}});};
+    const internal=await call(repositoryJobsPath,{token:creds.accessToken,method:"POST",value:{idempotencyKey:"start:internal"}});
+    assert.equal(internal.status,500);
+    assert.equal(internal.body.busyContext,undefined);
+
     assert.equal((await call(messagesPath, { token: creds.accessToken })).body.sessionId, "session:test");
     const readReceiptPath = "/client/v1/sessions/session%3Atest/read-receipt";
     assert.equal((await call(readReceiptPath, { method: "POST", value: { throughSequence: 7 } })).status, 401);

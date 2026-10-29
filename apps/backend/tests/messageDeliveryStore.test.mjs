@@ -276,3 +276,39 @@ test("an unsent Delivery can move atomically to a recovered Provider binding", a
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+
+test("terminal Deliveries preserve outcomes and exact Turn correlation on replay", async () => {
+  const { directory, store } = await fixture();
+  try {
+    for (const status of ["completed", "failed", "cancelled"]) {
+      const id = `delivery:${status}`;
+      store.createUserMessageDelivery({ deliveryId: id, messageId: `message:${status}`,
+        sessionId: "session:one", binding, agentId: "agent:one", text: "terminal" });
+      store.updateMessageDelivery(id, { status: "processing", providerTurnId: `turn:${status}` });
+      // A different binding's Turn must never settle this Delivery.
+      store.upsertSessionTurn({sessionId:"session:one",bindingId:"binding:other",routingVersion:4,
+        turnId:`turn:${status}`,executionStatus:status});
+      assert.equal(store.settleMessageDeliveryFromTurn(id).status, "processing");
+      store.upsertSessionTurn({sessionId:"session:one",bindingId:binding.bindingId,routingVersion:4,
+        turnId:`turn:${status}`,executionStatus:status,failure:status === "failed" ? {message:"original failure"} : null});
+      assert.equal(store.settleMessageDeliveryFromTurn(id).status, status);
+      const settled = store.getMessageDelivery(id);
+      const revision = store.sessionTimelineRevision("session:one");
+      for (const next of ["accepted", "processing", "completed", "failed", "cancelled"]) {
+        store.updateMessageDelivery(id, {status:next,lastError:"late error"});
+        assert.deepEqual(store.getMessageDelivery(id), settled);
+      }
+      store.updateMessageDelivery(id, {status:"dispatching",attemptCount:99,lastAttemptAt:"late",
+        providerTurnId:"turn:other",lastError:null});
+      assert.deepEqual(store.getMessageDelivery(id), settled, "late acknowledgements cannot overwrite correlation or audit");
+      store.settleMessageDeliveryFromTurn(id);
+      assert.equal(store.sessionTimelineRevision("session:one"), revision);
+      assert.equal(store.getSessionItem("session:one", `message:${status}`).status, status);
+      assert.equal(settled.lastError, status === "failed" ? "original failure" : null);
+    }
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

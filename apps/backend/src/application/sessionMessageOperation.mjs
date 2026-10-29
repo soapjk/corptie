@@ -261,6 +261,7 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
       providerAcknowledgedAt: now(),
       lastError: null
     });
+    store.settleMessageDeliveryFromTurn(deliveryId);
   }
   logSessionMessageLatency(latencyTrace, "provider_dispatch_completed", {
     providerId: reference.providerId,

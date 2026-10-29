@@ -125,9 +125,7 @@ export function handleProjectWorkspaceHttpRequest({
     readJson(request)
       .then((input) => worktreeIntegrationJobService.preflight(repositoryId, input))
       .then((result) => sendJson(response, 201, { job: result }))
-      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
-        error: error.message, code: error.code
-      }));
+      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), worktreeErrorBody(error)));
     return true;
   }
   if (request.method === "POST" && worktreeManagementCleanupMatch) {
@@ -193,9 +191,7 @@ export function handleProjectWorkspaceHttpRequest({
             ? worktreeIntegrationJobService.resolveConflictWithAgent(jobId)
             : worktreeIntegrationJobService.retry(jobId))
       .then((result) => sendJson(response, 202, { job: result }))
-      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
-        error: error.message, code: error.code
-      }));
+      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), worktreeErrorBody(error)));
     return true;
   }
   if (request.method === "GET" && projectWorkIntegrationsMatch) {
@@ -308,10 +304,14 @@ function decodeRouteId(value, code) {
   }
 }
 
-function worktreeErrorBody(error) {
+export function worktreeErrorBody(error) {
   return {
     error: error.message,
     code: error.code,
+    ...(error.busyContext ? {busyContext:Object.fromEntries(
+      ["worktreeId","sessionId","sessionTitle","reason","jobId","status","phase","count"]
+        .filter(key=>typeof error.busyContext[key]==="string" || key==="count" && Number.isSafeInteger(error.busyContext[key]) && error.busyContext[key]>0)
+        .map(key=>[key,error.busyContext[key]]))} : {}),
     ...(error.commitPolicyBlocker ? {commitPolicyBlocker:error.commitPolicyBlocker} : {}),
     ...(error.commitReviewId ? {commitReviewId:error.commitReviewId} : {}),
     ...(error.diagnosis ? {diagnosis:Object.fromEntries(
