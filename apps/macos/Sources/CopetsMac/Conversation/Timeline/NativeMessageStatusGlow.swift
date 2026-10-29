@@ -1,6 +1,5 @@
 import AppKit
 import QuartzCore
-import SwiftUI
 import CorptieClientCore
 
 /// Paint-only decoration. Its frame never participates in row measurement.
@@ -44,9 +43,6 @@ final class NativeMessageStatusGlow: NSView {
         layer?.masksToBounds = false
         layer?.shadowRadius = 4
         layer?.shadowOffset = .zero
-        layer?.shadowOpacity = 1
-        layer?.cornerRadius = 14
-        layer?.cornerCurve = .continuous
         _ = Self.observers
     }
 
@@ -69,9 +65,9 @@ final class NativeMessageStatusGlow: NSView {
         pathSize = bounds.size
         pathUpdateCount += 1
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        // Match the card's continuous corner geometry. The opaque card above
-        // covers this filled background; only its soft outer shadow is visible.
-        layer?.shadowPath = RoundedRectangle(cornerRadius: 14, style: .continuous).path(in: bounds).cgPath
+        // Explicit geometry, rather than the alpha of text/images, determines
+        // the rounded halo. It extends outside this view without a mask.
+        layer?.shadowPath = CGPath(roundedRect: bounds, cornerWidth: 14, cornerHeight: 14, transform: nil)
         CATransaction.commit()
     }
 
@@ -107,7 +103,6 @@ final class NativeMessageStatusGlow: NSView {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             CATransaction.begin(); CATransaction.setDisableActions(true)
             layer?.shadowColor = color.cgColor
-            layer?.backgroundColor = color.cgColor
             CATransaction.commit()
         }
     }
@@ -123,11 +118,11 @@ final class NativeMessageStatusGlow: NSView {
         let running = isVisible && !reduceMotion && appActive && status?.lightPulses == true
         let opacity: Float = status?.light == .off || status == nil ? 0 : 0.65
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        if layer.opacity != opacity { layer.opacity = opacity }
+        if layer.shadowOpacity != opacity { layer.shadowOpacity = opacity }
         CATransaction.commit()
         if running {
             guard layer.animation(forKey: Self.pulseKey) == nil else { return }
-            let animation = CABasicAnimation(keyPath: "opacity")
+            let animation = CABasicAnimation(keyPath: "shadowOpacity")
             animation.fromValue = 0.25
             animation.toValue = 0.85
             animation.duration = 1.2

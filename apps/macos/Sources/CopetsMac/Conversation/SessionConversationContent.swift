@@ -1172,6 +1172,16 @@ struct SessionConversationSurface: View {
         previousRows: [AppKitChatTimelineRow],
         nextEntries: [ChatDisplayEntry]
     ) -> [AppKitChatTimelineRow] {
+        nativeRowBuilder.applyingReplyIdentity(to: reuseCachedAppKitRows(
+            previousEntries: previousEntries, previousRows: previousRows, nextEntries: nextEntries),
+            entries: nextEntries)
+    }
+
+    private func reuseCachedAppKitRows(
+        previousEntries: [ChatDisplayEntry],
+        previousRows: [AppKitChatTimelineRow],
+        nextEntries: [ChatDisplayEntry]
+    ) -> [AppKitChatTimelineRow] {
         guard previousEntries.count == previousRows.count else {
             return nextEntries.map { appKitRow($0) }
         }

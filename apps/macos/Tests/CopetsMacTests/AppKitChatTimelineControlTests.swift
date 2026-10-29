@@ -7,6 +7,26 @@ import CorptieConversation
 
 @MainActor
 final class AppKitChatTimelineControlTests: XCTestCase {
+    func testReplyIdentityMovesDuringPrependWithoutChangingContentRevision() throws {
+        let harness = makeHarness(followsLatest: false, useSharedTextCards: false)
+        let identity = ConversationReplyIdentity(agentID: "agent:one", name: "Developer", avatarPath: nil)
+        var answer = row(id: "identity-answer", text: "Answer", showsHeader: false)
+        answer.replyIdentity = identity
+        harness.coordinator.apply(rows: [answer])
+        let originalHeight = harness.coordinator.tableView(harness.tableView, heightOfRow: 0)
+        let cell = try XCTUnwrap(harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true))
+        XCTAssertTrue(cell.subviews.contains { $0 is NSHostingView<MacReplyIdentityHeader> })
+        var earlier = row(id: "identity-earlier", text: "Earlier commentary", showsHeader: false)
+        earlier.replyIdentity = identity
+        answer.replyIdentity = nil
+        harness.coordinator.apply(rows: [earlier, answer])
+        XCTAssertEqual(harness.coordinator.tableView(harness.tableView, heightOfRow: 1), originalHeight - 36)
+        let surviving = try XCTUnwrap(harness.tableView.view(atColumn: 0, row: 1, makeIfNecessary: true))
+        XCTAssertFalse(surviving.subviews.contains { $0 is NSHostingView<MacReplyIdentityHeader> })
+        let inserted = try XCTUnwrap(harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true))
+        XCTAssertTrue(inserted.subviews.contains { $0 is NSHostingView<MacReplyIdentityHeader> })
+    }
+
     func testReadingTypographyPreservesCharacterAnchorAndSearchIntent() async throws {
         for shared in [false, true] {
             let harness = makeHarness(followsLatest: false, useSharedTextCards: shared, height: 240)

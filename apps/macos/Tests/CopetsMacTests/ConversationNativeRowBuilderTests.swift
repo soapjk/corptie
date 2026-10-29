@@ -67,7 +67,26 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         XCTAssertNotNil(rows[0].replyIdentity)
         XCTAssertNil(rows[1].replyIdentity)
         XCTAssertEqual(initial[0].id, rows[1].id)
-        XCTAssertNotEqual(initial[0].contentRevision, rows[1].contentRevision)
+        XCTAssertEqual(initial[0].contentRevision, rows[1].contentRevision)
+        XCTAssertNotEqual(initial[0].replyIdentity, rows[1].replyIdentity)
+    }
+
+    func testReplyIdentitySurvivesStreamingTailReplacementAndReusedPrefix() throws {
+        var projection = builder()
+        projection.replyIdentity = .init(agentID: "agent:one", name: "Developer", avatarPath: nil)
+        let first = ChatDisplayEntry(kind: .message(try item(["id": "first", "text": "Partial"])))
+        let initial = projection.applyingReplyIdentity(to: [projection.nativeAppKitRow(first, expandedTurnIds: [])], entries: [first])
+        let streamed = ChatDisplayEntry(kind: .message(try item(["id": "first", "text": "Complete answer"])))
+        let rebuilt = projection.applyingReplyIdentity(to: [projection.nativeAppKitRow(streamed, expandedTurnIds: [])], entries: [streamed])
+        XCTAssertEqual(rebuilt[0].replyIdentity, initial[0].replyIdentity)
+        let final = ChatDisplayEntry(kind: .message(try item(["id": "final"])))
+        let entries = [streamed, final]
+        let appended = projection.applyingReplyIdentity(to: rebuilt + [projection.nativeAppKitRow(final, expandedTurnIds: [])], entries: entries)
+        let repeated = projection.applyingReplyIdentity(to: appended, entries: entries)
+        XCTAssertEqual(repeated.map(\.replyIdentity), [projection.replyIdentity, nil])
+        XCTAssertEqual(repeated.map(\.contentRevision), appended.map(\.contentRevision))
+        projection.replyIdentity = nil
+        XCTAssertTrue(projection.applyingReplyIdentity(to: repeated, entries: entries).allSatisfy { $0.replyIdentity == nil })
     }
 
     func testCommentaryAndFinalRepliesKeepIdentityButUseDifferentCardRoles() throws {

@@ -7,7 +7,8 @@ final class ChatBubbleWidthPolicyTests: XCTestCase {
     func testReadingLayoutCacheReplacesOldMetricsAndRestoresClassicExactly() {
         let text = "模型回复 English **bold**\n\n" + String(repeating: "Wrapped 中文 text ", count: 40)
         let row = AppKitChatTimelineRow(id: "reading-cache", contentRevision: 1, nativeText: text,
-            copyText: text, nativeStyle: .agent, title: "", metadata: "", expandableTurnId: nil, isExpanded: false)
+            copyText: text, nativeStyle: .agent, title: "", metadata: "", expandableTurnId: nil, isExpanded: false,
+            showsHeader: false)
         for width: CGFloat in [320, 900] {
             let classic = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: width)
             let reading = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: width, typography: .codexReading)
@@ -26,16 +27,18 @@ final class ChatBubbleWidthPolicyTests: XCTestCase {
         for text in [long, "```swift\nprint(\"Hello\")\n```", "| A | B |\n|---|---|\n| one | two |"] {
             let row = AppKitChatTimelineRow(id: "wide-reply-\(text)", contentRevision: 1,
                 nativeText: text, copyText: text, nativeStyle: .agent, title: "", metadata: "",
-                expandableTurnId: nil, isExpanded: false)
-            for (lane, expected) in [(CGFloat(1000), CGFloat(800)), (600, 596), (320, 316)] {
-                let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: lane)
-                XCTAssertEqual(layout.cardWidth, expected)
-                XCTAssertGreaterThan(layout.rowHeight, 0)
+                expandableTurnId: nil, isExpanded: false, showsHeader: false)
+            for (lane, expected) in [(CGFloat(2400), CGFloat(2396)), (1600, 1596), (1000, 996), (600, 596), (320, 316)] {
+                for typography: ConversationTypography in [.classic, .codexReading] {
+                    let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: lane, typography: typography)
+                    XCTAssertEqual(layout.cardWidth, expected)
+                    XCTAssertGreaterThan(layout.rowHeight, 0)
+                }
             }
         }
         XCTAssertLessThan(ChatBubbleWidthPolicy.preferredWidth(text: "Hi", style: .agent,
             title: "", metadata: ""), 60)
-        XCTAssertEqual(preferredWidth(text: long, availableWidth: 1000), 480)
+        XCTAssertEqual(preferredWidth(text: long, availableWidth: 1000), 640)
     }
 
     func testShortUserMessageHugsBodyInsteadOfMaximumWidth() {
