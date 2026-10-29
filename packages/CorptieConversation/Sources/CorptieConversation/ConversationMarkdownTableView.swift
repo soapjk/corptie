@@ -180,6 +180,35 @@ public struct ConversationMarkdownTableView: View {
         self.selectText = selectText
     }
 
+    private var tableContent: some View {
+        VStack(spacing: 0) {
+            ForEach(layout.cells.indices, id: \.self) { row in
+                HStack(alignment: .top, spacing: 0) {
+                    ForEach(layout.cells[row].indices, id: \.self) { column in
+                        TableNativeText(text: layout.cells[row][column],
+                            size: CGSize(width: layout.columnWidths[column] - 16,
+                                         height: layout.textHeights[row][column]),
+                            allowsSelection: allowsSelection, openLink: openLink)
+                            .frame(width: layout.columnWidths[column] - 16,
+                                   height: layout.textHeights[row][column])
+                            .padding(.horizontal, 8).padding(.vertical, 6)
+                            .frame(width: layout.columnWidths[column], height: layout.rowHeights[row],
+                                   alignment: .topLeading)
+                            .background(row == 0 ? Color.primary.opacity(0.06) : .clear)
+                            .overlay(alignment: .trailing) {
+                                Rectangle().fill(Color.primary.opacity(0.12)).frame(width: 0.5)
+                            }
+                            .accessibilityLabel("\(row == 0 ? "表头" : "第\(row)行")，\(table.rows[0][column].plainText)：\(table.rows[row][column].plainText)")
+                    }
+                }
+                .overlay(alignment: .bottom) {
+                    Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 0.5)
+                }
+            }
+        }
+        .frame(width: layout.contentWidth)
+    }
+
     public var body: some View {
         Group {
             if table.exceedsDisplayBudget {
@@ -187,33 +216,13 @@ public struct ConversationMarkdownTableView: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .frame(width: layout.viewportWidth, height: layout.height, alignment: .leading)
             } else {
-                ScrollView(.horizontal) {
-                    VStack(spacing: 0) {
-                        ForEach(layout.cells.indices, id: \.self) { row in
-                            HStack(alignment: .top, spacing: 0) {
-                                ForEach(layout.cells[row].indices, id: \.self) { column in
-                                    TableNativeText(text: layout.cells[row][column],
-                                        size: CGSize(width: layout.columnWidths[column] - 16,
-                                                     height: layout.textHeights[row][column]),
-                                        allowsSelection: allowsSelection, openLink: openLink)
-                                        .frame(width: layout.columnWidths[column] - 16,
-                                               height: layout.textHeights[row][column])
-                                        .padding(.horizontal, 8).padding(.vertical, 6)
-                                        .frame(width: layout.columnWidths[column], height: layout.rowHeights[row],
-                                               alignment: .topLeading)
-                                        .background(row == 0 ? Color.primary.opacity(0.06) : .clear)
-                                        .overlay(alignment: .trailing) {
-                                            Rectangle().fill(Color.primary.opacity(0.12)).frame(width: 0.5)
-                                        }
-                                        .accessibilityLabel("\(row == 0 ? "表头" : "第\(row)行")，\(table.rows[0][column].plainText)：\(table.rows[row][column].plainText)")
-                                }
-                            }
-                            .overlay(alignment: .bottom) {
-                                Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 0.5)
-                            }
-                        }
-                    }
-                    .frame(width: layout.contentWidth)
+                Group {
+                #if os(macOS)
+                ClickActivatedTableScroll(content: tableContent,
+                    contentSize: CGSize(width: layout.contentWidth, height: layout.height))
+                #else
+                ScrollView(.horizontal) { tableContent }
+                #endif
                 }
                 .frame(width: layout.viewportWidth, height: layout.height, alignment: .topLeading)
             }
@@ -233,6 +242,56 @@ public struct ConversationMarkdownTableView: View {
         .accessibilityIdentifier("message-markdown-table")
     }
 }
+
+#if os(macOS)
+/// Native focus is the activation state, so clicking another table or the
+/// transcript automatically gives the wheel back without global event monitors.
+final class ClickActivatedTableScrollView: NSScrollView {
+    override var acceptsFirstResponder: Bool { true }
+    override func becomeFirstResponder() -> Bool { true }
+    var handlesTableScroll: Bool {
+        guard let responder = window?.firstResponder else { return false }
+        return responder === self || (responder as? NSView)?.isDescendant(of: self) == true
+    }
+    func activateScrolling() { window?.makeFirstResponder(self) }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let target = super.hitTest(point)
+        if target != nil, NSApp.currentEvent?.type == .leftMouseDown { activateScrolling() }
+        return target
+    }
+    override func scrollWheel(with event: NSEvent) {
+        if handlesTableScroll { super.scrollWheel(with: event) }
+        else { enclosingScrollView?.scrollWheel(with: event) }
+    }
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 { window?.makeFirstResponder(enclosingScrollView) }
+        else { super.keyDown(with: event) }
+    }
+}
+
+private struct ClickActivatedTableScroll<Content: View>: NSViewRepresentable {
+    let content: Content
+    let contentSize: CGSize
+    func makeNSView(context: Context) -> ClickActivatedTableScrollView {
+        let scroll = ClickActivatedTableScrollView()
+        scroll.drawsBackground = false
+        scroll.hasHorizontalScroller = true
+        scroll.hasVerticalScroller = false
+        scroll.autohidesScrollers = true
+        scroll.scrollerStyle = .overlay
+        scroll.verticalScrollElasticity = .none
+        let host = NSHostingView(rootView: content)
+        host.sizingOptions = []
+        scroll.documentView = host
+        return scroll
+    }
+    func updateNSView(_ scroll: ClickActivatedTableScrollView, context: Context) {
+        guard let host = scroll.documentView as? NSHostingView<Content> else { return }
+        host.rootView = content
+        if host.frame.size != contentSize { host.setFrameSize(contentSize) }
+    }
+}
+#endif
 
 #if os(macOS)
 private struct TableNativeText: NSViewRepresentable {

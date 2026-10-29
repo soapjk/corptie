@@ -16,9 +16,6 @@ public enum ConversationContentSurfacePolicy {
     public static let messageMaterialOpacity = 0.80
     public static let panelMaterialOpacity = 0.60
 
-    /// Opaque equivalent of the Codex user bubble, independent of status colors below it.
-    public static func userBubbleWhite(dark: Bool) -> Double { dark ? 0.17 : 0.94 }
-
     public static func usesPanelMaterial(isPanel: Bool, reduceTransparency: Bool, increasedContrast: Bool) -> Bool {
         isPanel && !reduceTransparency && !increasedContrast
     }
@@ -95,8 +92,6 @@ public struct ConversationContentSurface: ViewModifier {
                 if !usesSemanticBackground, let tint {
                     shape.fill(tint.opacity(tintOpacity))
                 }
-            } else if style == .bubble && opaqueUser {
-                shape.fill(Color(white: ConversationContentSurfacePolicy.userBubbleWhite(dark: colorScheme == .dark)))
             } else if style == .bubble || style == .neutral {
                 shape.fill(Color.primary.opacity(0.06))
             }

@@ -16,7 +16,15 @@ final class NativeContentCardSurfaceTests: XCTestCase {
                     card.refreshAppearance(reduceTransparency: false, increasedContrast: contrast)
                     XCTAssertEqual(card.layer?.backgroundColor?.alpha, 1)
                     XCTAssertEqual(card.alphaValue, 1)
-                    XCTAssertEqual(card.layer?.borderWidth, skin == .codexFlat && !contrast ? 0 : (contrast ? 1 : 0.5))
+                    let background = card.layer?.backgroundColor
+                    let border = card.layer?.borderColor
+                    let frame = card.frame
+                    card.updateSkin(skin == .classic ? .codexFlat : .classic, role: .user)
+                    card.refreshAppearance(reduceTransparency: false, increasedContrast: contrast)
+                    XCTAssertEqual(card.layer?.backgroundColor, background)
+                    XCTAssertEqual(card.layer?.borderColor, border)
+                    XCTAssertEqual(card.frame, frame)
+                    XCTAssertEqual(card.layer?.borderWidth, contrast ? 1 : 0.5)
                 }
             }
         }

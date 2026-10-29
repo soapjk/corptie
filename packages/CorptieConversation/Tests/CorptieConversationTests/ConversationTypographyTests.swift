@@ -5,6 +5,26 @@ import Testing
 
 @Suite("Reading typography") @MainActor
 struct ConversationTypographyTests {
+    @Test func modelStrongEmphasisToleratesInnerWhitespaceInBothSkins() throws {
+        for typography in [ConversationTypography.classic, .codexReading] {
+            for body in ["文字", "English words", "文字 `code`"] {
+                let rendered = MessageMarkdown.make(text: "前文 ** \(body) ** 后文", style: .agent, typography: typography)
+                #expect(!rendered.string.contains("**"))
+                let range = (rendered.string as NSString).range(of: body.hasPrefix("文字") ? "文字" : "English")
+                let font = try #require(rendered.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont)
+                #expect(NSFontManager.shared.traits(of: font).contains(.boldFontMask))
+            }
+            let partial = MessageMarkdown.make(text: "** 文字", style: .agent, typography: typography)
+            #expect(partial.string.contains("**"))
+            let code = MessageMarkdown.make(text: "`** 文字 **`", style: .agent, typography: typography)
+            #expect(code.string == "** 文字 **")
+            let escaped = MessageMarkdown.make(text: #"\*\* 文字 \*\*"#, style: .agent, typography: typography)
+            #expect(escaped.string == "** 文字 **")
+            let fenced = MessageMarkdown.make(text: "```\n** 文字 **\n```", style: .agent, typography: typography)
+            #expect(fenced.string == "** 文字 **")
+        }
+    }
+
     @Test func classicRemainsDefaultAndFunctionalSurfacesStayCompact() {
         let text = "Hello **world**\n\nNext paragraph"
         let original = MessageMarkdown.make(text: text, style: .agent)

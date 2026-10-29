@@ -115,7 +115,8 @@ public enum MessageMarkdown {
 
     private static func makeMarkdown(text: String, style: Style, rendersMath: Bool = true, typography: ConversationTypography = .classic) -> NSAttributedString {
         let baseFont: MessageFont = switch style {
-        case .user, .agent: .systemFont(ofSize: typography.bodySize(for: style), weight: typography.isReading ? .regular : .medium)
+        case .user: .systemFont(ofSize: typography.bodySize(for: style), weight: typography.isReading ? .regular : .medium)
+        case .agent: .systemFont(ofSize: typography.bodySize(for: style), weight: typography.isReading ? .light : .medium)
         case .process: .systemFont(ofSize: 10.5, weight: .semibold)
         }
         let color = style == .user ? MessageTextCardPalette.userNativeForeground : secondaryText
@@ -152,6 +153,7 @@ public enum MessageMarkdown {
             hasRenderedLine = true
             previousWasBlank = line.isEmpty && !inCodeFence
             previousWasCode = inCodeFence
+            let displayLine = style == .agent && !inCodeFence ? repairedStrongEmphasis(sourceLine) : sourceLine
             if inCodeFence {
                 attributed.append(blockLine(
                     sourceLine,
@@ -162,7 +164,7 @@ public enum MessageMarkdown {
                     tailIndent: -8,
                     typography: typography
                 ))
-            } else if let heading = heading(in: sourceLine) {
+            } else if let heading = heading(in: displayLine) {
                 attributed.append(blockLine(
                     heading.text,
                     baseFont: .systemFont(
@@ -174,7 +176,7 @@ public enum MessageMarkdown {
                     paragraphSpacing: 4,
                     rendersMath: rendersMath, typography: typography
                 ))
-            } else if let listItem = unorderedListItem(in: sourceLine) {
+            } else if let listItem = unorderedListItem(in: displayLine) {
                 attributed.append(blockLine(
                     "\(String(repeating: "  ", count: listItem.depth))•  \(listItem.text)",
                     baseFont: baseFont,
@@ -183,7 +185,7 @@ public enum MessageMarkdown {
                     firstLineHeadIndent: CGFloat(listItem.depth * 14),
                     rendersMath: rendersMath, typography: typography
                 ))
-            } else if let listItem = orderedListItem(in: sourceLine) {
+            } else if let listItem = orderedListItem(in: displayLine) {
                 attributed.append(blockLine(
                     "\(String(repeating: "  ", count: listItem.depth))\(listItem.ordinal).  \(listItem.text)",
                     baseFont: baseFont,
@@ -192,7 +194,7 @@ public enum MessageMarkdown {
                     firstLineHeadIndent: CGFloat(listItem.depth * 14),
                     rendersMath: rendersMath, typography: typography
                 ))
-            } else if let quote = blockQuote(in: sourceLine) {
+            } else if let quote = blockQuote(in: displayLine) {
                 attributed.append(blockLine(
                     "│  \(quote)",
                     baseFont: baseFont,
@@ -204,10 +206,65 @@ public enum MessageMarkdown {
             } else if isThematicBreak(sourceLine) {
                 attributed.append(blockLine("────────", baseFont: baseFont, color: separatorColor, typography: typography))
             } else {
-                attributed.append(blockLine(sourceLine, baseFont: baseFont, color: color, rendersMath: rendersMath, typography: typography))
+                attributed.append(blockLine(displayLine, baseFont: baseFont, color: color, rendersMath: rendersMath, typography: typography))
             }
         }
         return attributed
+    }
+
+    /// Tolerate whitespace inside a model's strong-emphasis delimiters without
+    /// rewriting source payloads, escaped stars, or stars in inline code/URLs.
+    private static func repairedStrongEmphasis(_ text: String) -> String {
+        var index = text.startIndex
+        var copied = text.startIndex
+        var opening: Range<String.Index>?
+        var codeTicks: Int?
+        var destinationDepth = 0
+        var result = ""
+        while index < text.endIndex {
+            let character = text[index]
+            if character == "\\" {
+                index = text.index(after: index)
+                if index < text.endIndex { index = text.index(after: index) }
+                continue
+            }
+            if character == "`" {
+                let start = index
+                while index < text.endIndex, text[index] == "`" { index = text.index(after: index) }
+                let count = text.distance(from: start, to: index)
+                if codeTicks == count { codeTicks = nil }
+                else if codeTicks == nil { codeTicks = count }
+                continue
+            }
+            if codeTicks != nil { index = text.index(after: index); continue }
+            if destinationDepth > 0 {
+                if character == "(" { destinationDepth += 1 }
+                if character == ")" { destinationDepth -= 1 }
+                index = text.index(after: index)
+                continue
+            }
+            if text[index...].hasPrefix("](") {
+                destinationDepth = 1
+                index = text.index(index, offsetBy: 2)
+                continue
+            }
+            guard character == "*" else { index = text.index(after: index); continue }
+            let start = index
+            while index < text.endIndex, text[index] == "*" { index = text.index(after: index) }
+            guard text.distance(from: start, to: index) == 2 else { continue }
+            if let previous = opening {
+                let body = String(text[previous.upperBound..<start])
+                let trimmed = body.trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty, trimmed != body {
+                    result += text[copied..<previous.lowerBound] + "**" + trimmed + "**"
+                    copied = index
+                }
+                opening = nil
+            } else { opening = start..<index }
+        }
+        guard copied != text.startIndex else { return text }
+        result += text[copied...]
+        return result
     }
 
     private static func blockLine(
