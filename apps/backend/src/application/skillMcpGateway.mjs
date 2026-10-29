@@ -3,7 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { toolDiscoveryContract } from "./toolDiscoveryContracts.mjs";
+import { toolDiscoveryContract, rankDiscoveryCandidates } from "./toolDiscoveryContracts.mjs";
 import { restrictedMcpFetch } from "./restrictedMcpFetch.mjs";
 
 // Keeps Skill MCP processes behind Corptie's authenticated, Session-scoped MCP
@@ -41,9 +41,6 @@ export class SkillMcpGateway {
     const toolLimit = Number.isSafeInteger(input.toolLimit) && input.toolLimit > 0
       ? input.toolLimit
       : 20;
-    const query = searchableText(input.intent);
-    const queryTerms = searchTerms(query);
-    const hintTerms = searchTerms(input.domainHint);
     const grouped = new Map();
     for (const [name, target] of entry.tools) {
       const values = grouped.get(target.serverName) ?? [];
@@ -51,20 +48,20 @@ export class SkillMcpGateway {
       grouped.set(target.serverName, values);
     }
     const domains = [];
+    const domainScores = new Map();
     for (const [serverName, tools] of grouped) {
       const domainId = serverName.startsWith("standalone_")
         ? `mcp:${serverName}` : `skill-mcp:${serverName}`;
+      if (input.exactDomainId && input.exactDomainId !== domainId) continue;
       const serverLabel = tools[0]?.target?.serverLabel ?? serverName;
-      const domainText = searchableText(`${domainId} ${serverName} ${serverLabel}`);
-      if (hintTerms.length > 0 && !hintTerms.every((term) => domainText.includes(term))) continue;
-      const ranked = tools.map(({ name, target }) => {
-        const haystack = searchableText(`${name} ${target.definition.description ?? ""} ${serverName} ${serverLabel}`);
-        const matches = queryTerms.filter((term) => haystack.includes(term)).length;
-        return { name, target, score: haystack.includes(query) ? matches + 2 : matches };
-      }).filter(({ score }) => queryTerms.length === 0 || score > 0)
-        .sort((left, right) => right.score - left.score || left.name.localeCompare(right.name));
-      if (queryTerms.length > 0 && ranked.length === 0) continue;
-      const recommendedTool = recommendedToolName(ranked.map(({ name }) => name));
+      const defaultTool = recommendedToolName(tools.map(({ name }) => name));
+      const ranked = rankDiscoveryCandidates(tools.map(({ name, target }) => ({
+        name, target, domainId, definition: target.definition,
+        aliases: [serverName, serverLabel, domainId], preferred: name === defaultTool
+      })), input);
+      if (ranked.length === 0) continue;
+      const recommendedTool = ranked[0].name;
+      domainScores.set(domainId, ranked[0].score);
       const profile = { aliases: Object.freeze([serverName, serverLabel, domainId, `mcp ${serverLabel}`]), recommendedTool };
       domains.push(Object.freeze({
         domainId,
@@ -88,7 +85,7 @@ export class SkillMcpGateway {
     }
     return Object.freeze({
       catalogVersion: entry.catalogVersion,
-      domains: Object.freeze(domains),
+      domains: Object.freeze(domains.sort((a, b) => domainScores.get(b.domainId) - domainScores.get(a.domainId))),
       unavailableServers: entry.unavailableServers
     });
   }
@@ -100,7 +97,7 @@ export class SkillMcpGateway {
     const result = await this.search({
       ...input,
       intent: "",
-      domainHint: String(domainId).replace(/^(?:skill-mcp|mcp):/, ""),
+      exactDomainId: domainId,
       toolLimit: Number.MAX_SAFE_INTEGER
     });
     return result.domains.find((domain) => domain.domainId === domainId) ?? null;
@@ -381,14 +378,6 @@ function sha256(value) {
 
 function qualifiedSkillToolName(serverName, remoteName) {
   return `skill_${sha256(serverName).slice(0, 20)}__${remoteName}`;
-}
-
-function searchableText(value) {
-  return String(value ?? "").trim().toLocaleLowerCase();
-}
-
-function searchTerms(value) {
-  return searchableText(value).split(/[^\p{L}\p{N}_:-]+/u).filter(Boolean);
 }
 
 function recommendedToolName(names) {

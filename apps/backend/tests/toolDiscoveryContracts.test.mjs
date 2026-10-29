@@ -11,6 +11,27 @@ import { projectCodeDynamicTools } from "../src/project-code/projectCodeDynamicT
 import { workspaceDynamicTools } from "../src/runtime/workspaceDynamicTools.mjs";
 import { platformDynamicTools } from "../src/application/platformDynamicTools.mjs";
 import { workChatDynamicTools } from "../src/application/workChatDynamicTools.mjs";
+import { buildCapabilityMap, parseDiscoveryIntent, rankDiscoveryCandidates } from "../src/application/toolDiscoveryContracts.mjs";
+
+test("discovery intent distinguishes negated scheduling and bounds capability text", () => {
+  assert.equal(parseDiscoveryIntent("创建独立Task并指定Agent").operation, "task-create");
+  assert.equal(parseDiscoveryIntent("新建工作任务 非定时任务").operation, "task-create");
+  assert.equal(parseDiscoveryIntent("明天提醒我").operation, "automation");
+  assert.equal(parseDiscoveryIntent("给 @automation工具维护 发送协作消息").operation, "channel");
+  const map = buildCapabilityMap(Array.from({ length: 200 }, (_, i) => ({ domainId: `domain:${i}<bad>`, aliases: ["x".repeat(200)] })));
+  assert.ok(Buffer.byteLength(map) <= 3000);
+  assert.doesNotMatch(map, /[<>]/);
+});
+
+test("shared ranker keeps exact canonical/alias names above misleading hints", () => {
+  const candidates = [
+    { name: "tool_one", domainId: "one", definition: { description: "lookup" }, toolAliases: ["old_lookup"] },
+    { name: "tool_two", domainId: "two", definition: { description: "lookup" } }
+  ];
+  assert.equal(rankDiscoveryCandidates(candidates, { intent: "tool_one", domainHint: "two" })[0].name, "tool_one");
+  assert.equal(rankDiscoveryCandidates(candidates, { intent: "old_lookup", domainHint: "two" })[0].name, "tool_one");
+  assert.deepEqual(rankDiscoveryCandidates(candidates, { intent: "unrelated", domainHint: "one" }), []);
+});
 
 const domains = {
   artifacts: artifactDynamicTools,

@@ -17,6 +17,55 @@ import { artifactDynamicTools, authorizeArtifactDynamicTool } from "../src/appli
 import { platformDynamicTools } from "../src/application/platformDynamicTools.mjs";
 import { taskAcceptanceDynamicTools } from "../src/application/taskAcceptanceDynamicTools.mjs";
 
+test("discovery recovery is bounded, authorized and never turns catalog failure into no-match", async () => {
+  let fail = false;
+  const catalog = new HostToolCatalog([
+    { id: "memory", tools: memoryDynamicTools, execute: () => null },
+    { id: "platform", tools: platformDynamicTools, authorizeDiscover: () => false, execute: () => null }
+  ]);
+  const service = new ToolHostService({ registry: {}, catalog, coordinator: {
+    search: async () => { if (fail) throw Object.assign(new Error("offline"), { code: "CATALOG_OFFLINE" });
+      return { domains: [], catalogVersion: "test" }; }
+  } });
+  const input = { actorId: "agent:one", metadata: { sessionId: "session:one", logicalSessionId: "logical:one", providerBindingId: "binding:one" },
+    tool: "corptie_tool_catalog_search", arguments: { intent: "zzzzzz", domain_hint: "wrong" } };
+  const result = await service.execute(input);
+  assert.equal(result.search.outcome, "no_match");
+  assert.equal(result.search.hintDisposition, "unrecognized");
+  assert.equal(result.search.recovery.omitDomainHint, true);
+  assert.doesNotMatch(result.search.capabilityMap, /platform:/);
+  assert.match(result.search.capabilityMap, /memory:/);
+  assert.ok(Buffer.byteLength(result.search.capabilityMap) <= 4096);
+  fail = true;
+  await assert.rejects(service.execute(input), { code: "CATALOG_OFFLINE" });
+});
+
+test("combined search ranks exact MCP names ahead of Host results and preserves whole contracts", async () => {
+  const host = { domainId: "memory", recommendedTool: "corptie_memory_search", aliases: ["memory"], toolCount: 1,
+    tools: [{ canonicalName: "corptie_memory_search", description: "look up target", inputSchema: { type: "object" } }] };
+  const mcp = { domainId: "mcp:target", recommendedTool: "target", toolCount: 1,
+    invocation: { expectedCatalogVersion: "mcp-version" },
+    tools: [{ canonicalName: "target", inputSchema: { type: "object", properties: { id: { type: "string" } } } }] };
+  const service = new ToolHostService({ registry: {}, catalog: new HostToolCatalog([]),
+    coordinator: { search: async () => ({ domains: [host] }) },
+    skillMcpGateway: { search: async () => ({ domains: [mcp] }) } });
+  const result = await service.execute({ metadata: { logicalSessionId: "logical:one", providerBindingId: "binding:one" },
+    tool: "corptie_tool_catalog_search", arguments: { intent: "target", domain_hint: "memory" } });
+  assert.equal(result.domains[0].domainId, "mcp:target");
+  assert.deepEqual(result.domains[0].tools[0].inputSchema, mcp.tools[0].inputSchema);
+  assert.equal(result.domains[0].invocation.expectedCatalogVersion, "mcp-version");
+});
+
+test("combined search preserves an exact canonical alias returned by Host discovery", async () => {
+  const domain = { domainId: "memory", recommendedTool: "canonical_lookup", toolCount: 1,
+    tools: [{ canonicalName: "canonical_lookup", aliases: ["old_lookup"], inputSchema: { type: "object" } }] };
+  const service = new ToolHostService({ registry: {}, catalog: new HostToolCatalog([]),
+    coordinator: { search: async () => ({ domains: [domain] }) } });
+  const result = await service.execute({ metadata: { logicalSessionId: "logical:one", providerBindingId: "binding:one" },
+    tool: "corptie_tool_catalog_search", arguments: { intent: "old_lookup", domain_hint: "wrong" } });
+  assert.equal(result.domains[0].recommendedTool, "canonical_lookup");
+});
+
 function preparedGenerationRecord() {
   return {
     logicalSessionId: "logical:prepared", providerBindingId: "binding:prepared",

@@ -168,6 +168,13 @@ export function createSessionApplicationComposition({
       // contain only this turn's Corptie product context and never replay chat
       // history from either Provider or session_items.
       const directUserIntentContext = buildDirectUserMessageEvidence(store, reference, messageContext);
+      const discoveryContext = toolHostService?.discoveryContext({
+        actorId: session?.agentId,
+        metadata: { purpose: "session", sessionKind: session?.sessionKind ?? "legacy",
+          sessionId: session?.id, workId: session?.workId ?? null, taskId: session?.taskId ?? null,
+          logicalSessionId: reference.logicalSessionId, providerId: reference.providerId,
+          providerBindingId: reference.bindingId }
+      });
       const skillRoutingContext = { ...skillMcpTurnContext(
         mcpAssignmentRevisionForAgent(session?.agentId),
         session?.agentId ? await resolveAssignedCapabilities(session.agentId) : []
@@ -177,7 +184,7 @@ export function createSessionApplicationComposition({
       const presentationContext = { contextKey: "presentation", contextReusable: true,
         prompt: `<corptie_message_presentation>\n${CHART_PRESENTATION_INSTRUCTIONS}\n</corptie_message_presentation>` };
       if (globalPreferenceContext) globalPreferenceContext.contextKey = "global-preferences";
-      const contexts = [baseContext, globalPreferenceContext, skillRoutingContext,
+      const contexts = [baseContext, globalPreferenceContext, discoveryContext, skillRoutingContext,
         presentationContext, mentionContext, directUserIntentContext, memoryContext]
         .filter((item) => item?.prompt);
       const recordInjection = (globalIncluded, recallIncluded) => {
@@ -199,7 +206,7 @@ export function createSessionApplicationComposition({
           memoryContext,
           mentionContext,
           referenceContext,
-          requiredContexts: [globalPreferenceContext, skillRoutingContext, presentationContext].filter(Boolean)
+          requiredContexts: [globalPreferenceContext, discoveryContext, skillRoutingContext, presentationContext].filter(Boolean)
         });
         recordInjection(Boolean(result), Boolean(result.memoryRecall));
         return { ...result, globalPreferenceRecall: globalPreferences };
@@ -212,6 +219,7 @@ export function createSessionApplicationComposition({
         contextSections: [
           ...(baseContext?.contextSections ?? [{ id: "base-context", prompt: baseContext?.prompt ?? "", reusable: true }]),
           { id: "global-preferences", prompt: globalPreferenceContext?.prompt ?? "", reusable: false },
+          { id: "tool-discovery", prompt: discoveryContext?.prompt ?? "", reusable: true },
           { id: "skill-routing", prompt: skillRoutingContext.prompt, reusable: true },
           { id: "presentation", prompt: presentationContext.prompt, reusable: true },
           { id: "mentions", prompt: mentionContext?.prompt ?? "", reusable: false },

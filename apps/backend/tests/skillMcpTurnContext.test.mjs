@@ -7,7 +7,7 @@ test("assigned Skill MCP guidance requires fixed-gateway discovery before failur
   assert.match(context.prompt, /corptie_tool_catalog_search/);
   assert.match(context.prompt, /corptie_tool_call/);
   assert.match(context.prompt, /no new Session or Provider binding replacement is required/);
-  assert.match(skillMcpTurnContext("none").prompt, /ALL_TOOLS/);
+  assert.match(skillMcpTurnContext("none").prompt, /shared Corptie discovery map/);
   assert.match(context.prompt, /domain invocation.expectedCatalogVersion/);
   assert.match(context.prompt, /Never blindly retry a write/);
 });

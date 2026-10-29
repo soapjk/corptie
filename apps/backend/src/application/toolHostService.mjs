@@ -8,6 +8,7 @@ import {
 } from "./hostToolCatalog.mjs";
 import { buildToolExposurePlan } from "./toolExposurePlan.mjs";
 import { matchesToolMaterializationGeneration } from "./toolHostMaterializationCoordinator.mjs";
+import { buildCapabilityMap, normalizeDiscoveryText, rankDiscoveryCandidates, domainDiscoveryProfile } from "./toolDiscoveryContracts.mjs";
 
 export class ToolHostService {
   constructor(options = {}) {
@@ -33,6 +34,18 @@ export class ToolHostService {
       throw toolError("TOOL_MATERIALIZATION_OUTCOME_UNKNOWN", "The authoritative Tool materialization Port is unavailable.");
     }
     return this.materializationPort.assertCanonicalToolApplied(logicalSessionId, canonicalName);
+  }
+
+  discoveryContext(input = {}) {
+    const domains = [...this.catalog.domains(input)].map(([domainId, entries]) => ({
+      domainId, canonicalToolNames: entries.map(entry => entry.canonicalName),
+      aliases: domainDiscoveryProfile(domainId).aliases
+    }));
+    const map = buildCapabilityMap(domains);
+    return {
+      contextKey: "tool-discovery", contextReusable: true,
+      prompt: `<corptie_tool_discovery>\nThe native tool list, including ALL_TOOLS, is not the complete capability inventory. Search corptie_tool_catalog_search with the user's intent or exact tool name; domain_hint is an optional ranking hint, never a hard filter.\n${map}\nThis map describes discoverable capabilities, not loaded tools, execution permission or successful connection. Follow the returned invocation contract and each domain's expectedCatalogVersion. Empty search means no match, not missing capability or denied permission: use recovery guidance or retry once with the exact tool name and no hint. Report unresolved discovery as unknown; do not ask the user to perform the operation manually solely because search failed. Task creation still requires explicit current-user authorization and authentic source evidence. Do not blindly retry an uncertain write.\n</corptie_tool_discovery>`
+    };
   }
 
   async prepareSession(providerId, context = {}, options = {}) {
@@ -177,9 +190,41 @@ export class ToolHostService {
           ? this.skillMcpGateway.search({ ...input, ...searchInput })
           : { domains: [] }
       ]);
+      const matched = [...host.domains, ...skill.domains];
+      const ranked = rankDiscoveryCandidates(matched.map((domain) => {
+        const selected = domain.tools.find(tool => tool.canonicalName === domain.recommendedTool) ?? domain.tools[0];
+        return { domain, domainId: domain.domainId, aliases: domain.aliases,
+          name: selected?.canonicalName ?? domain.domainId,
+          toolAliases: selected?.aliases,
+          definition: { description: selected?.description, inputSchema: selected?.inputSchema } };
+      }), searchInput);
+      // Bound whole contracts, never truncate a Schema or lose the top match.
+      const domains = [];
+      let responseBytes = 0;
+      for (const { domain } of ranked) {
+        if (domains.length >= 12) break;
+        const tools = [];
+        for (const tool of domain.tools) {
+          const bytes = Buffer.byteLength(JSON.stringify(tool));
+          if (tools.length && responseBytes + bytes > 65_536) break;
+          if (domains.length && !tools.length && responseBytes + bytes > 65_536) break;
+          tools.push(tool); responseBytes += bytes;
+        }
+        if (tools.length) domains.push({ ...domain, tools });
+      }
+      const hint = normalizeDiscoveryText(searchInput.domainHint);
+      const hintRecognized = !hint || domains.some((domain) =>
+        normalizeDiscoveryText(`${domain.domainId} ${(domain.aliases ?? []).join(" ")}`).includes(hint));
       return {
         ...host,
-        domains: [...host.domains, ...skill.domains],
+        domains,
+        search: {
+          outcome: domains.length ? "matched" : skill.unavailableServers?.length ? "unavailable" : "no_match",
+          truncated: domains.length < matched.length || domains.some(domain => domain.tools.length < domain.toolCount),
+          hintDisposition: !hint ? "absent" : hintRecognized ? "ranking_only" : "unrecognized",
+          ...(domains.length ? {} : { capabilityMap: this.discoveryContext(input).prompt,
+            recovery: { action: "search_again", omitDomainHint: true } })
+        },
         ...(skill.unavailableServers?.length ? { mcpUnavailableServers: skill.unavailableServers } : {})
       };
     }

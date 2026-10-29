@@ -10,7 +10,8 @@ const DOMAIN_PROFILES = Object.freeze({
   collaboration: profile(
     [
       "collaboration", "channel", "peer session", "peer message", "send message", "@session",
-      "task collaboration", "协作", "频道", "会话协作", "发送消息", "发消息", "@会话名"
+      "task collaboration", "create task", "task management", "tasks", "collaboration-tasks",
+      "创建任务", "新建任务", "创建Task", "新建Task", "子任务", "协作", "频道", "会话协作", "发送消息", "发消息", "@会话名"
     ],
     "corptie_collaboration_channel_open"
   ),
@@ -72,6 +73,9 @@ const COMPATIBILITY = Object.freeze({
 });
 
 const EXAMPLE_OVERRIDES = Object.freeze({
+  corptie_artifact_materialize: Object.freeze({
+    artifact_id: "artifact:example", version: 1, content_hash: "0".repeat(64), path: "artifacts/example.md"
+  }),
   corptie_automations_create: Object.freeze({
     name: "One-time reminder",
     schedule_type: "after",
@@ -126,6 +130,84 @@ function profile(aliases, recommendedTool) {
   return Object.freeze({ aliases: Object.freeze([...new Set(aliases)]), recommendedTool });
 }
 
+// Discovery metadata is code-owned and shared by Host/MCP search and turn context.
+// It is not an execution grant or a second tool registry.
+const CAPABILITY_SUMMARIES = Object.freeze({
+  collaboration: "普通 Task/子任务与伴随 Worker Session；会话 Channel 通信。不是 Automation。",
+  "task-acceptance": "读取、修订和验收绑定 Task；不创建新 Task。",
+  "scheduled-tasks": "Automation：定时、提醒、监控进程退出；不是普通 Task。",
+  artifacts: "管理文档 Artifact 与安全物化；不等于 Git 追踪授权。",
+  workspace: "仓库、Workspace、Worktree；不改变 Task 绑定。"
+});
+
+export function normalizeDiscoveryText(value) {
+  return String(value ?? "").normalize("NFKC").toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+
+export function parseDiscoveryIntent(intent) {
+  const text = normalizeDiscoveryText(intent);
+  const excludesAutomation = /(?:非|不要|不是|不需要)\s*(?:定时|计划|自动化)|\b(?:not|non)\s+(?:scheduled|automation)/u.test(text);
+  const positive = text.replace(/(?:非|不要|不是|不需要)\s*(?:定时任务|计划任务|定时|计划|自动化)|\b(?:not|non)\s+(?:scheduled\s+tasks?|automation)/gu, " ");
+  const automation = !excludesAutomation && /automation|scheduled|remind|schedule|process exit|进程.*(?:退出|结束)|提醒|定时|计划任务|自动化/u.test(positive);
+  const create = /\b(?:create|new)\b|创建|新建/u.test(text);
+  const task = /tasks?|任务/u.test(text);
+  const channel = /channel|send message|发消息|发送.*消息|会话.*消息/u.test(text);
+  const stopwords = new Set(["the", "for", "with", "and", "current", "call", "tool", "in", "to", "a", "an", "of"]);
+  return { text, terms: [...new Set(positive.split(/\s+/u).filter((term) => term.length > 1 && !stopwords.has(term)))],
+    excludesAutomation, operation: channel ? "channel" : automation ? "automation" : create && task ? "task-create" : null };
+}
+
+export function rankDiscoveryCandidates(candidates, { intent = "", domainHint = "" } = {}) {
+  const query = parseDiscoveryIntent(intent);
+  const hint = normalizeDiscoveryText(domainHint);
+  const ranked = candidates.map((candidate) => {
+    const { name, definition = {}, domainId, aliases = [], preferred = false } = candidate;
+    const normalizedName = normalizeDiscoveryText(name);
+    const domainText = normalizeDiscoveryText(`${domainId} ${aliases.join(" ")}`);
+    const parameters = Object.entries(definition.inputSchema?.properties ?? {})
+      .map(([key, property]) => `${key} ${property.description ?? ""}`).join(" ");
+    const haystack = normalizeDiscoveryText(`${name} ${definition.description ?? ""} ${parameters} ${domainText}`);
+    const exact = Boolean(query.text && normalizedName === query.text);
+    const aliasExact = query.text && (candidate.toolAliases ?? []).some((alias) => normalizeDiscoveryText(alias) === query.text);
+    let score = exact ? 10_000 : aliasExact ? 5_000 : query.terms.filter((term) => haystack.includes(term)).length;
+    if (!exact && aliases.some((alias) => {
+      const text = normalizeDiscoveryText(alias);
+      return text && query.text.includes(text);
+    })) score += 1;
+    if (!exact && !aliasExact) {
+      if (query.operation === "task-create" && name === "corptie_collaboration_tasks_create") score += 100;
+      if (query.operation === "channel" && name === "corptie_collaboration_channel_open") score += 100;
+      if (query.operation === "automation" && name === "corptie_automations_create") score += 100;
+      if ((query.excludesAutomation || query.operation === "task-create") && domainId === "scheduled-tasks") score = 0;
+    }
+    const hintMatched = Boolean(hint && (domainText.includes(hint) || normalizeDiscoveryText(domainId) === hint));
+    // A hint can rank relevant tools, never hide an exact name or create relevance.
+    if (score > 0 || !query.text) score += (hintMatched ? 0.5 : 0) + (preferred ? 0.25 : 0);
+    return { ...candidate, score, exact, aliasExact: Boolean(aliasExact), hintMatched };
+  }).filter(({ score }) => !query.text || score > 0)
+    .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+  return ranked.some(candidate => candidate.exact || candidate.aliasExact)
+    ? ranked.filter(candidate => candidate.exact || candidate.aliasExact) : ranked;
+}
+
+export function buildCapabilityMap(domainDescriptors = []) {
+  const lines = [];
+  let bytes = 0;
+  for (const domain of [...domainDescriptors].sort((a, b) => a.domainId.localeCompare(b.domainId))) {
+    const summary = domain.domainId === "collaboration" && domain.canonicalToolNames
+      && !domain.canonicalToolNames.includes("corptie_collaboration_tasks_create")
+      ? "会话 Channel 通信；当前目录未声明 Task 创建入口。"
+      : CAPABILITY_SUMMARIES[domain.domainId] ?? (domain.aliases ?? []).slice(0, 3).join(" / ");
+    const line = `${domain.domainId}: ${summary}`.replace(/[\u0000-\u001f\u007f<>]/g, " ");
+    const size = Buffer.byteLength(line + "\n");
+    if (bytes + size > 3_000) break;
+    lines.push(line);
+    bytes += size;
+  }
+  return lines.join("\n");
+}
+
 function sideEffect(name) {
   return !READ_OPERATIONS.test(name.replace(/^corptie_/, ""));
 }
@@ -159,7 +241,8 @@ function exampleForSchema(schema, propertyName = null) {
   }
   if (type === "integer" || type === "number") return Math.max(schema.minimum ?? 1, 1);
   if (type === "boolean") return true;
-  return exampleString(propertyName, schema);
+  const value = exampleString(propertyName, schema);
+  return value.padEnd(schema.minLength ?? 0, "x").slice(0, schema.maxLength ?? Infinity);
 }
 
 function addRequired(target, schema) {
