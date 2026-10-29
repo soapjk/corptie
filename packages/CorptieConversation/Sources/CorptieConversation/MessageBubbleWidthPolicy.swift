@@ -10,9 +10,10 @@ public enum MessageBubbleWidthPolicy {
     /// scaled fonts, icons, spacing and padding, instead of estimating glyphs.
     public static func processCardLayoutWidth(naturalWidth: CGFloat, expanded: Bool, laneWidth: CGFloat) -> CGFloat {
         let available = max(0, laneWidth - 4)
-        return expanded ? min(available, maximumWidth) : min(available, max(minimumWidth, naturalWidth))
+        return expanded ? min(available, maximumProcessWidth) : min(available, max(minimumWidth, naturalWidth))
     }
-    public static let maximumWidth: CGFloat = 480
+    public static let maximumWidth: CGFloat = 640
+    public static let maximumProcessWidth: CGFloat = 480
     /// A plain message only needs room for its body and card padding.
     public static let minimumWidth: CGFloat = 40
     public static let horizontalPadding: CGFloat = 20
@@ -72,7 +73,7 @@ public enum MessageBubbleWidthPolicy {
         laneWidth: CGFloat
     ) -> CGFloat {
         let fullAvailable = fullAvailableWidth(laneWidth: laneWidth)
-        guard !expanded else { return min(fullAvailable, maximumWidth) }
+        guard !expanded else { return min(fullAvailable, maximumProcessWidth) }
         let progressWidth = progressLabelWidth > 0 ? progressLabelWidth + 8 : 0
         let headerWidth = summaryWidth + progressWidth + 58
         let secondaryRowWidth = secondaryWidth > 0 ? secondaryWidth + 40 : 0

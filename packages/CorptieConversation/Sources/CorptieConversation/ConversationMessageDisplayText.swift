@@ -4,11 +4,15 @@ import Foundation
 /// authoritative stored payload; `presentationText` is the backend's explicit
 /// client-facing projection when it is nonempty.
 public enum ConversationMessageDisplayText {
-    public static func resolve(text: String, presentationText: String?, title: String?, type: String) -> String {
+    public static func resolve(text: String, presentationText: String?, title: String?, type: String,
+                               hasImages: Bool = false) -> String {
         let presented = presentationText?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let presented, !presented.isEmpty { return presented }
         let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !raw.isEmpty { return raw }
+        // An image-only user message already has visible content. Its internal
+        // role/title is metadata, not a caption supplied by the user.
+        if type == "userMessage" && hasImages { return "" }
         if let title, !title.isEmpty { return title }
         return type
     }

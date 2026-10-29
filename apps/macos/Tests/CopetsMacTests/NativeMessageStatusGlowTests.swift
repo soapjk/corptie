@@ -1,6 +1,8 @@
 import AppKit
 import QuartzCore
 import Metal
+import SwiftUI
+import CorptieConversation
 import XCTest
 import CorptieClientCore
 @testable import CorptieMac
@@ -20,7 +22,7 @@ final class NativeMessageStatusGlowTests: XCTestCase {
         XCTAssertEqual(glow.pathUpdateCount, count)
         glow.updateAnimation(isVisible: true, reduceMotion: false, appActive: true)
         let animation = try XCTUnwrap(glow.layer?.animation(forKey: NativeMessageStatusGlow.pulseKey) as? CABasicAnimation)
-        XCTAssertEqual(animation.keyPath, "shadowOpacity")
+        XCTAssertEqual(animation.keyPath, "opacity")
         XCTAssertEqual(glow.layer?.animationKeys(), [NativeMessageStatusGlow.pulseKey])
         for conditions in [(false, false, true), (true, true, true), (true, false, false)] {
             glow.updateAnimation(isVisible: conditions.0, reduceMotion: conditions.1, appActive: conditions.2)
@@ -29,9 +31,9 @@ final class NativeMessageStatusGlowTests: XCTestCase {
         glow.configure(try status("queued"))
         glow.updateAnimation(isVisible: true, reduceMotion: false, appActive: true)
         XCTAssertNil(glow.layer?.animationKeys())
-        XCTAssertGreaterThan(glow.layer?.shadowOpacity ?? 0, 0)
+        XCTAssertGreaterThan(glow.layer?.opacity ?? 0, 0)
         glow.configure(try status("cancelled"))
-        XCTAssertEqual(glow.layer?.shadowOpacity, 0)
+        XCTAssertEqual(glow.layer?.opacity, 0)
         XCTAssertNil(glow.hitTest(.zero))
     }
 
@@ -43,16 +45,12 @@ final class NativeMessageStatusGlowTests: XCTestCase {
         let layer = try XCTUnwrap(glow.layer)
         XCTAssertFalse(layer.masksToBounds)
         XCTAssertEqual(layer.shadowPath?.boundingBox, glow.bounds)
-        let mask = try XCTUnwrap(layer.mask as? CAShapeLayer)
-        XCTAssertEqual(mask.fillRule, .evenOdd)
-        let maskPath = try XCTUnwrap(mask.path)
-        func isMaskedIn(_ point: CGPoint) -> Bool {
-            maskPath.contains(CGPoint(x: point.x - mask.frame.minX, y: point.y - mask.frame.minY),
-                              using: .evenOdd)
-        }
-        XCTAssertFalse(isMaskedIn(CGPoint(x: 60, y: 22)), "The card center must receive no status color")
-        XCTAssertFalse(isMaskedIn(CGPoint(x: 60, y: 1)), "The card interior near its edge must stay clear")
-        XCTAssertTrue(isMaskedIn(CGPoint(x: 60, y: -2)), "The outer halo must remain visible")
+        XCTAssertNil(layer.mask, "The opaque card covers the background without a second cutout edge")
+        XCTAssertEqual(layer.cornerCurve, .continuous)
+        XCTAssertEqual(layer.cornerRadius, 14)
+        XCTAssertEqual(layer.backgroundColor?.alpha, 1)
+        let cardPath = RoundedRectangle(cornerRadius: 14, style: .continuous).path(in: glow.bounds).cgPath
+        XCTAssertEqual(layer.shadowPath, cardPath)
         guard let device = MTLCreateSystemDefaultDevice() else { throw XCTSkip("Metal unavailable") }
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
             width: 160, height: 84, mipmapped: false)
@@ -63,6 +61,14 @@ final class NativeMessageStatusGlowTests: XCTestCase {
         root.frame = NSRect(x: 0, y: 0, width: 160, height: 84)
         root.addSublayer(layer)
         layer.frame = glow.frame
+        let card = NativeContentCardSurface(frame: glow.frame)
+        card.configure(tint: MessageTextCardPalette.userNativeBackground)
+        card.updateSkin(.codexFlat, role: .user)
+        card.appearance = try XCTUnwrap(NSAppearance(named: .aqua))
+        card.refreshAppearance()
+        let cardLayer = try XCTUnwrap(card.layer)
+        root.addSublayer(cardLayer)
+        cardLayer.frame = glow.frame
         let control = CALayer()
         control.frame = NSRect(x: 150, y: 74, width: 10, height: 10)
         control.backgroundColor = NSColor.white.cgColor
@@ -92,8 +98,10 @@ final class NativeMessageStatusGlowTests: XCTestCase {
         }
         XCTAssertGreaterThan(alpha(80, 18), 2,
                              "The halo must paint beyond the card, not stop at its rectangular bounds")
-        XCTAssertEqual(alpha(80, 42), 0, "The shadow must not tint a translucent card's center")
-        XCTAssertEqual(alpha(80, 22), 0, "The shadow must not tint the card interior near its edge")
+        XCTAssertEqual(alpha(80, 42), 255, "The card center must be opaque")
+        XCTAssertEqual(alpha(80, 22), 255, "The card interior near its edge must be opaque")
+        let center = (42 * 160 + 80) * 4
+        XCTAssertEqual(pixels[center], pixels[center + 2], "The red status background must not tint the gray card")
         XCTAssertLessThan(alpha(18, 18), alpha(80, 18))
     }
 
@@ -126,7 +134,7 @@ final class NativeMessageStatusGlowTests: XCTestCase {
         let glow = try XCTUnwrap(cell.subviews.compactMap { $0 as? NativeMessageStatusGlow }.first)
         XCTAssertEqual(cell.subviews.count, 2, "The glow must be a sibling, not inside the hosting clip")
         XCTAssertEqual(glow.frame.width, measured.cardWidth)
-        XCTAssertEqual(glow.frame.height, measured.rowHeight - 2)
+        XCTAssertEqual(glow.frame.height, measured.cardHeight)
         XCTAssertEqual(glow.frame.maxX, 398)
         let plain = AppKitChatTimelineRow(id: "glow-user", contentRevision: 2,
             nativeText: "Hello", copyText: "Hello", nativeStyle: .user,

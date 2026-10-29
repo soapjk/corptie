@@ -134,6 +134,7 @@ public struct MessageTextCard<Content: View>: View {
     @Environment(\.colorScheme) private var colorScheme
     public enum Role: Sendable { case user, agent, commentary }
     private let role: Role
+    private let surfaceRole: ConversationSurfaceRole?
     private let messageID: String
     private let timestamp: String
     private let showsActions: Bool
@@ -141,6 +142,7 @@ public struct MessageTextCard<Content: View>: View {
     private let cardWidth: CGFloat?
     private let cardHeight: CGFloat?
     private let status: UserMessageStatusPresentation?
+    private let scrollsContent: Bool
     private let rendersStatusGlow: Bool
     private let copy: () -> Void
     private let contextMenu: MessageTextCardMenuConfiguration?
@@ -152,12 +154,15 @@ public struct MessageTextCard<Content: View>: View {
     public init(messageID: String, role: Role, timestamp: String, showsActions: Bool,
                 actionsAlwaysVisible: Bool, cardWidth: CGFloat? = nil, cardHeight: CGFloat? = nil,
                 status: UserMessageStatusPresentation? = nil, rendersStatusGlow: Bool = true,
+                surfaceRole: ConversationSurfaceRole? = nil, scrollsContent: Bool = false,
                 copy: @escaping () -> Void, @ViewBuilder content: @escaping () -> Content) {
         self.messageID = messageID; self.role = role; self.timestamp = timestamp; self.showsActions = showsActions
         self.actionsAlwaysVisible = actionsAlwaysVisible
         self.cardWidth = cardWidth; self.cardHeight = cardHeight
         self.status = status
         self.rendersStatusGlow = rendersStatusGlow
+        self.surfaceRole = surfaceRole
+        self.scrollsContent = scrollsContent
         self.copy = copy
         self.contextMenu = nil
         self.content = { _ in content() }
@@ -168,7 +173,7 @@ public struct MessageTextCard<Content: View>: View {
     /// user explicitly chooses the menu's text-selection action.
     public init(messageID: String, role: Role, timestamp: String, showsActions: Bool,
                 actionsAlwaysVisible: Bool, cardWidth: CGFloat? = nil, cardHeight: CGFloat? = nil,
-                status: UserMessageStatusPresentation? = nil,
+                status: UserMessageStatusPresentation? = nil, surfaceRole: ConversationSurfaceRole? = nil, scrollsContent: Bool = false,
                 contextMenu: MessageTextCardMenuConfiguration,
                 copy: @escaping () -> Void,
                 @ViewBuilder content: @escaping (Binding<Bool>) -> Content) {
@@ -178,6 +183,8 @@ public struct MessageTextCard<Content: View>: View {
         self.status = status
         self.contextMenu = contextMenu
         self.rendersStatusGlow = true
+        self.surfaceRole = surfaceRole
+        self.scrollsContent = scrollsContent
         self.copy = copy
         self.content = content
     }
@@ -229,13 +236,40 @@ public struct MessageTextCard<Content: View>: View {
         }
     }
 
+    @ViewBuilder
+    private var fittedContent: some View {
+        if role == .user && cardHeight == nil {
+            // Intrinsic hosts measure through their existing text cache; only
+            // overflowing cards need the second, scrollable presentation.
+            ViewThatFits(in: .vertical) {
+                content($selectingText).fixedSize(horizontal: false, vertical: true)
+                scrollableContent
+            }
+            .frame(maxHeight: MessageCardMetrics.maximumUserCardHeight - MessageCardMetrics.contentInset * 2)
+        } else if scrollsContent {
+            scrollableContent
+        } else {
+            content($selectingText)
+        }
+    }
+
+    private var scrollableContent: some View {
+        ScrollView(.vertical) {
+            content($selectingText).frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .scrollIndicators(.automatic)
+        .accessibilityIdentifier("chat.timeline.user-message-scroll")
+        .id(messageID)
+    }
+
     private var cardBody: some View {
         VStack(alignment: role == .user ? .trailing : .leading, spacing: 2) {
-            content($selectingText)
+            fittedContent
                 .padding(MessageCardMetrics.contentInset)
                 .frame(width: cardWidth, height: cardHeight, alignment: .leading)
                 .modifier(ConversationContentSurface(cornerRadius: 14,
-                    tint: background, fallback: background, isMessage: true, role: role == .user ? .user : .assistant))
+                    tint: background, fallback: background, isMessage: true,
+                    role: surfaceRole ?? (role == .user ? .user : .assistant)))
                 .accessibilityIdentifier("message-card-\(messageID)")
                 .background {
                     if rendersStatusGlow, let status {
@@ -345,8 +379,8 @@ public struct MessageStatusGlow: View {
     }
     public var body: some View {
         RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .stroke(color, lineWidth: 5)
-            .blur(radius: 4)
+            .fill(color)
+            .shadow(color: color, radius: 4)
             .opacity(active ? (bright ? 0.85 : 0.25) : 0.65)
             .allowsHitTesting(false)
             .accessibilityHidden(true)

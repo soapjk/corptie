@@ -65,6 +65,7 @@ final class NativeContentCardSurface: NSView {
             if style != .legacy {
                 tintView.isHidden = true
                 layer?.backgroundColor = style == .plain ? NSColor.clear.cgColor
+                    : style == .bubble ? NSColor(white: ConversationContentSurfacePolicy.userBubbleWhite(dark: dark), alpha: 1).cgColor
                     : NSColor.labelColor.withAlphaComponent(0.06).cgColor
                 layer?.borderColor = NSColor.separatorColor.cgColor
                 layer?.borderWidth = style == .neutral || (style == .bubble && contrast) ? (contrast ? 1 : 0.5) : 0
@@ -76,7 +77,7 @@ final class NativeContentCardSurface: NSView {
                 reduceTransparency: opaque, increasedContrast: contrast, isMessage: isMessage)
             let semantic = tintOpacity == CGFloat(ConversationContentSurfacePolicy.tintOpacity)
             let base = semantic ? tint : NSColor.textBackgroundColor
-            layer?.backgroundColor = base.withAlphaComponent(opacity).cgColor
+            layer?.backgroundColor = base.withAlphaComponent(isMessage && role == .user ? 1 : opacity).cgColor
             tintView.isHidden = semantic
             tintView.layer?.backgroundColor = tint.withAlphaComponent(tintOpacity).cgColor
             layer?.borderColor = NSColor.separatorColor.cgColor

@@ -3,6 +3,7 @@ import Foundation
 /// Geometry shared by the measured AppKit and intrinsic SwiftUI message cards.
 /// Row breathing room belongs outside the painted card, never inside its padding.
 public enum MessageCardMetrics {
+    public static let maximumUserCardHeight: CGFloat = 360
     public static let contentInset: CGFloat = 10
     public static let rowInset: CGFloat = 1
     public static let contentSpacing: CGFloat = 8

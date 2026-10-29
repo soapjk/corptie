@@ -584,6 +584,9 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         let oldIDs = rows.map(\.id)
         let newIDs = nextRows.map(\.id)
         let oldRevisions = revisionsByID
+        let oldReplyIdentities = rows.map(\.replyIdentity)
+        let replyIdentityChanged = rows.first(where: { $0.replyIdentity != nil })?.replyIdentity
+            != nextRows.first(where: { $0.replyIdentity != nil })?.replyIdentity
         // Preserve reader intent across the entire mutation, including
         // geometry feedback before a coalesced correction has committed.
         let followedLatestBeforeUpdate = followsLatest
@@ -632,6 +635,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                 from: oldIDs,
                 to: newIDs,
                 oldRevisions: oldRevisions,
+                replyIdentityChanged: replyIdentityChanged,
                 in: tableView
             )
             synchronizeDocumentHeight(in: tableView)
@@ -679,6 +683,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
 
         let changed = IndexSet(nextRows.indices.filter { index in
             oldRevisions[nextRows[index].id] != nextRows[index].contentRevision
+                || oldReplyIdentities[index] != nextRows[index].replyIdentity
         })
         guard !changed.isEmpty else { return }
         heightCache = heightCache.filter { key, _ in
@@ -721,6 +726,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         from oldIDs: [String],
         to newIDs: [String],
         oldRevisions: [String: Int],
+        replyIdentityChanged: Bool,
         in tableView: NSTableView
     ) {
         let difference = newIDs.difference(from: oldIDs)
@@ -748,7 +754,8 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
 
         let changedSurvivors = IndexSet(newIDs.indices.filter { index in
             !insertions.contains(index)
-                && oldRevisions[newIDs[index]] != rows[index].contentRevision
+                && (oldRevisions[newIDs[index]] != rows[index].contentRevision
+                    || (replyIdentityChanged && rows[index].replyIdentity != nil))
         })
         if !changedSurvivors.isEmpty {
             tableView.reloadData(
@@ -1051,9 +1058,9 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                 let rowRect = tableView.rect(ofRow: index)
                 return ProcessCollapseCandidate(id: row.id,
                     frame: CGRect(x: rowRect.minX + 2,
-                                  y: rowRect.minY + row.timeSeparatorHeight,
+                                  y: rowRect.minY + row.timeSeparatorHeight + row.replyIdentityHeight,
                                   width: cardWidth,
-                                  height: max(0, rowRect.height - row.timeSeparatorHeight)),
+                                  height: max(0, rowRect.height - row.timeSeparatorHeight - row.replyIdentityHeight)),
                     headerHeight: row.processCurrentStepTitle == nil ? 32 : 48)
             }
         guard let placement = ProcessCollapsePlacementPolicy.placement(

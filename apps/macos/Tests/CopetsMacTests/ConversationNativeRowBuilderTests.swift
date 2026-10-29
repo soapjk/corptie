@@ -7,6 +7,53 @@ import CorptieConversation
 
 @MainActor
 final class ConversationNativeRowBuilderTests: XCTestCase {
+    func testAgentIdentityAppearsOncePerReplyAndSkipsSpecialMessages() throws {
+        var projection = builder()
+        let identity = ConversationReplyIdentity(agentID: "agent:one", name: "Developer", avatarPath: nil)
+        projection.replyIdentity = identity
+        let entries: [ChatDisplayEntry] = [
+            .init(kind: .message(try item(["id": "u1", "type": "userMessage", "presentationRole": NSNull()]))),
+            .init(kind: .message(try item(["id": "event", "type": "automationEvent", "presentationRole": "automation"]))),
+            .init(kind: .process(turnId: "turn:one", items: [try item(["id": "tool", "type": "mcpToolCall", "presentationRole": NSNull()])])),
+            .init(kind: .message(try item(["id": "comment", "presentationRole": "commentary"]))),
+            .init(kind: .message(try item(["id": "system", "presentationRole": "system_event"]))),
+            .init(kind: .message(try item(["id": "final"]))),
+            .init(kind: .message(try item(["id": "u2", "turnId": "turn:two", "type": "userMessage", "presentationRole": NSNull()]))),
+            .init(kind: .message(try item(["id": "reply2", "turnId": "turn:two"]))),
+        ]
+        let base = entries.map { projection.nativeAppKitRow($0, expandedTurnIds: []) }
+        let rows = projection.applyingReplyIdentity(to: base, entries: entries)
+        XCTAssertEqual(rows.indices.filter { rows[$0].replyIdentity != nil }, [2, 7])
+        XCTAssertEqual(rows[2].replyIdentity, identity)
+        XCTAssertEqual(rows.map(\.id), base.map(\.id))
+        for index in [2, 7] {
+            let original = NativeTimelineLayoutCache.shared.layout(for: base[index], columnWidth: 640)
+            let decorated = NativeTimelineLayoutCache.shared.layout(for: rows[index], columnWidth: 640)
+            XCTAssertEqual(decorated.rowHeight, original.rowHeight + 36)
+            XCTAssertEqual(decorated.cardHeight, original.cardHeight)
+            XCTAssertEqual(decorated.cardWidth, original.cardWidth)
+            XCTAssertTrue(decorated.attributedText === original.attributedText)
+        }
+        let expandedBase = entries.map { projection.nativeAppKitRow($0, expandedTurnIds: ["turn:one"]) }
+        let expanded = projection.applyingReplyIdentity(to: expandedBase, entries: entries)
+        XCTAssertEqual(expanded.indices.filter { expanded[$0].replyIdentity != nil }, [2, 7])
+    }
+
+    func testReplyIdentityMovesToEarlierContentWhenHistoryIsPrepended() throws {
+        var projection = builder()
+        projection.replyIdentity = .init(agentID: "agent:one", name: "Developer", avatarPath: nil)
+        let final = ChatDisplayEntry(kind: .message(try item(["id": "final"])))
+        let earlier = ChatDisplayEntry(kind: .message(try item(["id": "earlier", "presentationRole": "commentary"])))
+        let initial = projection.applyingReplyIdentity(to: [projection.nativeAppKitRow(final, expandedTurnIds: [])], entries: [final])
+        let entries = [earlier, final]
+        let rows = projection.applyingReplyIdentity(to: entries.map { projection.nativeAppKitRow($0, expandedTurnIds: []) }, entries: entries)
+        XCTAssertNotNil(initial[0].replyIdentity)
+        XCTAssertNotNil(rows[0].replyIdentity)
+        XCTAssertNil(rows[1].replyIdentity)
+        XCTAssertEqual(initial[0].id, rows[1].id)
+        XCTAssertNotEqual(initial[0].contentRevision, rows[1].contentRevision)
+    }
+
     func testCommentaryAndFinalRepliesKeepIdentityButUseDifferentCardRoles() throws {
         let commentary = builder().nativeAppKitRow(ChatDisplayEntry(kind: .message(try item([
             "presentationRole": "commentary"]))), expandedTurnIds: [])

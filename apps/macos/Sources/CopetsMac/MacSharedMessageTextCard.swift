@@ -2,6 +2,30 @@ import SwiftUI
 import CorptieConversation
 import CorptieClientCore
 
+/// Value-only identity; timeline rows never subscribe to the global Agent store.
+struct MacReplyIdentityHeader: View {
+    let identity: ConversationReplyIdentity
+    var body: some View {
+        HStack(spacing: 8) {
+            Group {
+                if let path = identity.avatarPath, !path.isEmpty {
+                    AnimatedAvatarImage(path: path, animates: false)
+                } else {
+                    DefaultInitialAvatarView(familySeed: identity.name, variationSeed: identity.agentID,
+                        initials: DefaultAvatarInitials.make(from: identity.name), size: 24)
+                }
+            }
+            .frame(width: 24, height: 24)
+            .clipShape(Circle())
+            .accessibilityHidden(true)
+            Text(identity.name).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, minHeight: 28, maxHeight: 28, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("chat.timeline.reply-identity")
+    }
+}
+
 /// Production adapter. It deliberately keeps the
 /// existing attributed-text cache, measured sizes and custom TextKit view.
 struct MacSharedMessageTextCard: View {
@@ -27,7 +51,7 @@ struct MacSharedMessageTextCard: View {
             && (row.actions.isEmpty || (row.nativeStyle == .agent
                 && (row.nativeText.contains("```corptie-chart") || row.nativeText.contains("|"))))
             && !row.showsCollaborationSentStatus
-            && (row.images.isEmpty || (row.nativeStyle == .agent
+            && (row.images.isEmpty || (row.nativeStyle == .user) || (row.nativeStyle == .agent
                 && (row.nativeText.contains("```corptie-chart") || row.nativeText.contains("|"))))
             && row.rawStatusText.isEmpty)
     }
@@ -47,6 +71,10 @@ struct MacSharedMessageTextCard: View {
                     .frame(maxWidth: .infinity, minHeight: 28, maxHeight: 28)
                     .accessibilityLabel(L10nFormat("Time: %@", timeSeparatorText))
                     .accessibilityIdentifier("chat.timeline.time-separator")
+            }
+            if let identity = row.replyIdentity {
+                MacReplyIdentityHeader(identity: identity)
+                    .padding(.horizontal, 12).padding(.bottom, 8)
             }
             Group {
                 if let input = row.userInput { userInputCard(input) }
@@ -126,7 +154,7 @@ struct MacSharedMessageTextCard: View {
                 }
             }
         }
-        .frame(width: layout.cardWidth, height: layout.rowHeight - 2, alignment: .topLeading)
+        .frame(width: layout.cardWidth, height: layout.rowHeight - row.replyIdentityHeight - 2, alignment: .topLeading)
     }
 
     private var messageCard: some View {
@@ -134,7 +162,8 @@ struct MacSharedMessageTextCard: View {
             timestamp: "", showsActions: false,
             actionsAlwaysVisible: false, cardWidth: layout.cardWidth,
             cardHeight: layout.cardHeight,
-            status: presentedMessageStatus, rendersStatusGlow: false, copy: copy) {
+            status: presentedMessageStatus, rendersStatusGlow: false,
+            surfaceRole: row.contentSurfaceRole, scrollsContent: layout.scrollsUserContent, copy: copy) {
             VStack(alignment: .leading, spacing: 0) {
                 if let source = row.scheduledMessageSource {
                     Label(source, systemImage: "clock").font(.system(size: 10, weight: .medium))
@@ -409,6 +438,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
     @discardableResult
     func updateLayoutIfContentUnchanged(_ row: AppKitChatTimelineRow, availableWidth: CGFloat) -> Bool {
         guard self.row?.id == row.id, self.row?.contentRevision == row.contentRevision,
+              self.row?.replyIdentity == row.replyIdentity,
               representedImageGeometries == row.imageGeometries else { return false }
         guard measuredWidth != availableWidth else { return true }
         measuredWidth = availableWidth
@@ -474,9 +504,9 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         if host?.frame != bounds { host?.frame = bounds }
         if let measuredLayout, let row {
             let size = NSSize(width: measuredLayout.cardWidth,
-                              height: measuredLayout.rowHeight - row.timeSeparatorHeight - 2)
+                              height: measuredLayout.cardHeight)
             messageGlow?.frame = NSRect(x: bounds.width - size.width - 2,
-                y: isFlipped ? row.timeSeparatorHeight + 1 : bounds.height - row.timeSeparatorHeight - 1 - size.height,
+                y: isFlipped ? row.timeSeparatorHeight + row.replyIdentityHeight + 1 : bounds.height - row.timeSeparatorHeight - row.replyIdentityHeight - 1 - size.height,
                 width: size.width, height: size.height)
         }
         super.layout()

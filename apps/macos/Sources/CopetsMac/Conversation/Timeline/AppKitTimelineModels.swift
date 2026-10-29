@@ -3,7 +3,15 @@ import SwiftUI
 import CorptieConversation
 import CorptieClientCore
 
+struct ConversationReplyIdentity: Equatable {
+    let agentID: String
+    let name: String
+    let avatarPath: String?
+}
+
 struct AppKitChatTimelineRow: Identifiable {
+    var replyIdentity: ConversationReplyIdentity? = nil
+    var replyIdentityHeight: CGFloat { replyIdentity == nil ? 0 : 36 }
     var forkItemID: String? = nil
     var queuedMessageTaskID: String? = nil
     var deletableMessageID: String? = nil
@@ -74,6 +82,15 @@ struct AppKitChatTimelineRow: Identifiable {
     }
 
     var timeSeparatorHeight: CGFloat { timeSeparatorText == nil ? 0 : 28 }
+
+    /// Source-labelled events retain a surface in flat skins. Ordinary replies
+    /// and execution traces keep their existing reading presentation.
+    var contentSurfaceRole: ConversationSurfaceRole {
+        if isPendingInteraction || isCollaboration || collaborationRoute != nil { return .interaction }
+        if nativeStyle == .user { return .user }
+        if nativeStyle == .process { return .process }
+        return showsHeader || scheduledMessageSource != nil ? .interaction : .assistant
+    }
 
     init(
         id: String,

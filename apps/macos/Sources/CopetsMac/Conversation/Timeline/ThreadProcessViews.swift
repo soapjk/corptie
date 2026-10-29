@@ -72,7 +72,7 @@ private struct ThreadProcessGroupView: View {
 
     private var processContentWidth: CGFloat {
         isExpanded
-            ? ChatBubbleWidthPolicy.maximumWidth
+            ? MessageBubbleWidthPolicy.maximumProcessWidth
             : ChatBubbleWidthPolicy.collapsedProcessWidth + ChatBubbleWidthPolicy.horizontalPadding
     }
 

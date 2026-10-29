@@ -75,6 +75,8 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private var hasVisibleMessageStatus = false
     private var messageStatusDetail = ""
     private var representedRowID: String?
+    private var replyHeader: NSHostingView<MacReplyIdentityHeader>?
+    private var representedReplyIdentity: ConversationReplyIdentity?
     private var representedContentRevision: Int?
     private var representedProcessRow: AppKitChatTimelineRow?
     private var representedImages: [ChatTimelineImage] = []
@@ -323,6 +325,26 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         imageStack.arrangedSubviews.forEach { imageStack.removeArrangedSubview($0); $0.removeFromSuperview() }
         label.endTextSelection()
         representedRowID = row.id
+        representedReplyIdentity = row.replyIdentity
+        if let identity = row.replyIdentity {
+            if let replyHeader { replyHeader.rootView = MacReplyIdentityHeader(identity: identity) }
+            else {
+                let header = NSHostingView(rootView: MacReplyIdentityHeader(identity: identity))
+                header.sizingOptions = []
+                header.translatesAutoresizingMaskIntoConstraints = false
+                addSubview(header)
+                NSLayoutConstraint.activate([
+                    header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+                    header.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+                    header.bottomAnchor.constraint(equalTo: cardView.topAnchor, constant: -8),
+                    header.heightAnchor.constraint(equalToConstant: 28)
+                ])
+                replyHeader = header
+            }
+        } else {
+            replyHeader?.removeFromSuperview()
+            replyHeader = nil
+        }
         representedContentRevision = row.contentRevision
         representedProcessRow = row.nativeStyle == .process ? row : nil
         contentConfigurationCount += 1
@@ -381,7 +403,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         messageActionBar.alphaValue = 1
         timeSeparatorLabel.stringValue = row.timeSeparatorText ?? ""
         timeSeparatorLabel.isHidden = row.timeSeparatorText == nil
-        cardTopConstraint.constant = row.timeSeparatorText == nil ? 1 : 29
+        cardTopConstraint.constant = row.timeSeparatorHeight + row.replyIdentityHeight + 1
         cardLeadingConstraint.isActive = row.nativeStyle != .user
         cardTrailingConstraint.isActive = row.nativeStyle == .user
         let hasProcess = row.processCount != nil
@@ -478,8 +500,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
                     radius: row.isExpanded ? 12 : 10, isMessage: false)
             }
         }
-        surfaceRole = row.isPendingInteraction || row.isCollaboration ? .interaction
-            : row.nativeStyle == .user ? .user : row.nativeStyle == .process ? .process : .assistant
+        surfaceRole = row.contentSurfaceRole
         cardView.updateSkin(skin, role: surfaceRole)
         processSeparator.layer?.backgroundColor = NSColor.separatorColor.cgColor
         needsLayout = true
@@ -549,6 +570,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     ) -> Bool {
         guard representedRowID == row.id,
               representedContentRevision == row.contentRevision,
+              representedReplyIdentity == row.replyIdentity,
               representedImageGeometries == row.imageGeometries else { return false }
         let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth)
         if layout.imageLayout.size.width < representedImageLayout.size.width { resizeImages(layout.imageLayout) }
