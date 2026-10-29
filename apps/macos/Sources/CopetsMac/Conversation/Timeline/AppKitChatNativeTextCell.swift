@@ -360,7 +360,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         rawStatusTextView.string = row.rawStatusText
         apply(layout: layout)
         titleLabel.stringValue = row.title
-        titleLabel.font = .systemFont(ofSize: 11, weight: .bold)
+        titleLabel.font = .systemFont(ofSize: 13, weight: .bold)
         metadataLabel.stringValue = row.metadata
         metadataLabel.font = .systemFont(ofSize: 10, weight: .semibold)
         metadataLabel.textColor = NativeTimelineCardPalette.mutedText

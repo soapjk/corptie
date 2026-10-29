@@ -2237,7 +2237,10 @@ private struct PadSpecialEventCard: View {
                 }
             }
             if !isSystemEvent && message.automationRunId == nil && !bodyText.isEmpty {
-                PadMessageText(text: bodyText, fromUser: false, isTextSelectionEnabled: .constant(true))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(words.text("触发消息", "Trigger message")).font(.caption.weight(.semibold))
+                    Text(bodyText).font(.caption).textSelection(.enabled)
+                }
             }
             if let reason = message.systemEventReason {
                 LabeledContent(words.reasonLabel, value: words.reason(reason)).font(.caption).textSelection(.enabled)
