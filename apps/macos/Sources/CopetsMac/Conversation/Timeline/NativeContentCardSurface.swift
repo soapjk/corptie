@@ -65,7 +65,6 @@ final class NativeContentCardSurface: NSView {
             if style != .legacy {
                 tintView.isHidden = true
                 layer?.backgroundColor = style == .plain ? NSColor.clear.cgColor
-                    : style == .bubble ? NSColor(white: ConversationContentSurfacePolicy.userBubbleWhite(dark: dark), alpha: 1).cgColor
                     : NSColor.labelColor.withAlphaComponent(0.06).cgColor
                 layer?.borderColor = NSColor.separatorColor.cgColor
                 layer?.borderWidth = style == .neutral || (style == .bubble && contrast) ? (contrast ? 1 : 0.5) : 0

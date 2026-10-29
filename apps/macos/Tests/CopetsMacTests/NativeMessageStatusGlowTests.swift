@@ -100,8 +100,6 @@ final class NativeMessageStatusGlowTests: XCTestCase {
                              "The halo must paint beyond the card, not stop at its rectangular bounds")
         XCTAssertEqual(alpha(80, 42), 255, "The card center must be opaque")
         XCTAssertEqual(alpha(80, 22), 255, "The card interior near its edge must be opaque")
-        let center = (42 * 160 + 80) * 4
-        XCTAssertEqual(pixels[center], pixels[center + 2], "The red status background must not tint the gray card")
         XCTAssertLessThan(alpha(18, 18), alpha(80, 18))
     }
 

@@ -21,7 +21,7 @@ struct ConversationSkinTests {
         #expect(skin.surface(for: .assistant) == .plain)
         #expect(skin.surface(for: .process) == .plain)
         #expect(skin.surface(for: .plan) == .plain)
-        #expect(skin.surface(for: .user) == .bubble)
+        #expect(skin.surface(for: .user) == ConversationSkin.classic.surface(for: .user))
         #expect(skin.surface(for: .structured) == .neutral)
         #expect(skin.surface(for: .interaction) == .legacy)
     }

@@ -6,6 +6,40 @@ import AppKit
 #endif
 @testable import CorptieConversation
 
+#if os(macOS)
+@MainActor private final class TableWheelForwardingProbe: NSScrollView {
+    var wheelEvents = 0
+    override var acceptsFirstResponder: Bool { true }
+    override func scrollWheel(with event: NSEvent) { wheelEvents += 1 }
+}
+
+@Test @MainActor func tableWheelRequiresClickFocusAndReturnsToTranscriptAfterFocusLeaves() throws {
+    _ = NSApplication.shared
+    let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 400, height: 300),
+                          styleMask: [.borderless], backing: .buffered, defer: false)
+    let outer = TableWheelForwardingProbe(frame: window.contentLayoutRect)
+    let document = NSView(frame: CGRect(x: 0, y: 0, width: 400, height: 600))
+    let table = ClickActivatedTableScrollView(frame: CGRect(x: 0, y: 0, width: 300, height: 100))
+    table.documentView = NSView(frame: CGRect(x: 0, y: 0, width: 800, height: 100))
+    document.addSubview(table)
+    outer.documentView = document
+    window.contentView = outer
+    defer { window.contentView = nil }
+    let cgEvent = try #require(CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
+        wheelCount: 2, wheel1: 12, wheel2: 8, wheel3: 0))
+    let event = try #require(NSEvent(cgEvent: cgEvent))
+    #expect(!table.handlesTableScroll)
+    table.scrollWheel(with: event)
+    #expect(outer.wheelEvents == 1)
+    table.activateScrolling()
+    #expect(table.handlesTableScroll)
+    #expect(window.makeFirstResponder(outer))
+    #expect(!table.handlesTableScroll)
+    table.scrollWheel(with: event)
+    #expect(outer.wheelEvents == 2)
+}
+#endif
+
 private func tables(_ text: String) -> [ConversationMarkdownTable] {
     ConversationMarkdownTables.parse(text).compactMap {
         if case .table(let value) = $0.content { return value }; return nil
