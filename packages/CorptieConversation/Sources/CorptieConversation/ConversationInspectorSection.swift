@@ -32,6 +32,7 @@ public struct ConversationDetailDashboard<Content: View>: View {
                 .environment(\.detailScrollRouter, scrollRouter)
                 #endif
         }
+        .coordinateSpace(name: "conversation.detail.rail")
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(WorkbenchCanvasSurface.color)
     }

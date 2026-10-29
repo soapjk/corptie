@@ -179,6 +179,12 @@ import Observation
             contentChanged?()
         } catch {
             guard current == token, cards[cardID] === state else { return }
+            if Task.isCancelled {
+                // A viewport or Session change cancelled this read, rather
+                // than failing it. Allow the same cursor on a later visit.
+                state.requestedCursors.remove(cursor)
+                return
+            }
             if let failure = error as? ClientServiceFailure, [401, 403, 404].contains(failure.statusCode) {
                 fail("访问已失效，请重新连接", disposition: .accessRevoked); return
             }

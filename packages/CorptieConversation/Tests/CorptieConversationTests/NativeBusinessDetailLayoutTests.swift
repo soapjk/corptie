@@ -51,7 +51,7 @@ import AppKit
             let retained = presentation.entry(for: scope)
             return ConversationDetailDashboard {
                 ConversationNativeBusinessDetail(store: handle.store, api: fixtureAPI, actions: nil,
-                    context: .init(sessionKind: "task", taskID: scope.taskID, workID: scope.workID),
+                    context: .init(sessionKind: "worker", taskID: scope.taskID, workID: scope.workID),
                     adapters: adapters, handle: handle, arrangement: retained.arrangement,
                     refresh: {}, canCommand: { _, _ in false }, perform: { _, _, _ in })
                     .environment(\.detailPresentation, retained)
@@ -64,7 +64,7 @@ import AppKit
         window.orderFront(nil)
         defer { window.contentView = nil; window.close() }
         func scrolls(_ view: NSView) -> [NSScrollView] {
-            (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap(scrolls)
+            ((view as? NSScrollView).map { [$0] } ?? []) + view.subviews.flatMap(scrolls)
         }
         for revision in 0..<6 {
             host.rootView = try rail(revision)
@@ -88,13 +88,16 @@ import AppKit
             }
             host.layoutSubtreeIfNeeded()
             try await Task.sleep(for: .milliseconds(120))
-            // Offscreen appearance and viewport changes must never launch page
-            // tasks. Loading is an explicit action on the stable card surface.
-            #expect(await reads.total() == 0)
+            // Visible hit tails page automatically; failures must settle instead
+            // of retrying on every layout pass. Other collections stay manual.
+            let before = await reads.total()
+            #expect(before > 0 && before <= 7)
+            try await Task.sleep(for: .milliseconds(150))
+            #expect(await reads.total() == before)
             let handle = repository.entry(for: .init(serverID: "fixture", ownerID: "window", principalID: "owner",
                 sessionID: "session-0", taskID: "task-0", workID: "work"))
-            await handle.store.loadMore(cardID: "memoryHits", api: try #require(fixtureAPI), retry: true)
-            #expect(await reads.total() == 1)
+            await handle.store.loadMore(cardID: "memoryResources", api: try #require(fixtureAPI), retry: true)
+            #expect(await reads.total() == before + 1)
         }
     }
 }

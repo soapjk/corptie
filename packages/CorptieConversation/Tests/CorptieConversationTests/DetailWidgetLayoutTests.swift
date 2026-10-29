@@ -243,19 +243,28 @@ import AppKit
             window.setContentSize(CGSize(width: width, height: 800))
             host.layoutSubtreeIfNeeded()
             try await Task.sleep(for: .milliseconds(40))
-            let plan = DetailWidgetPlacement.make(width: width - 24, widgets: sizes)
+            // The native viewport can reserve a legacy scroller gutter during
+            // resize. Cells must honor its actual proposal, not window width.
+            func currentPlan() -> DetailWidgetPlacement {
+                DetailWidgetPlacement.make(width: (scrolls(host).first?.documentView?.bounds.width ?? host.bounds.width) - 24, widgets: sizes)
+            }
             // The router switches AppKit's initial legacy scroller to overlay
             // on the next main-queue pass. Wait for that width change to settle
             // before checking the exact cells, including under concurrent tests.
             for _ in 0..<20 {
                 let found = cards(host)
+                let plan = currentPlan()
                 if found.count == sizes.count && zip(found, plan.frames).allSatisfy({ matchesCell($0.0.bounds.size, $0.1.size) }) { break }
                 host.layoutSubtreeIfNeeded()
                 try await Task.sleep(for: .milliseconds(10))
             }
             let found = cards(host)
+            let plan = currentPlan()
             #expect(found.count == sizes.count)
-            for (index, card) in found.enumerated() { #expect(matchesCell(card.bounds.size, plan.frames[index].size)) }
+            for (index, card) in found.enumerated() {
+                let actual = card.bounds.size, expected = plan.frames[index].size
+                #expect(matchesCell(actual, expected), "requested=\(width) host=\(host.bounds.width) actual=\(actual.width)x\(actual.height) expected=\(expected.width)x\(expected.height)")
+            }
         }
         let inner = scrolls(host).flatMap { outer in outer.documentView.map(scrolls) ?? [] }
         #expect(!inner.isEmpty)
