@@ -98,15 +98,14 @@ struct ConsoleWindowSplitViewTests {
     }
 
     @Test
-    func workOutlineDefaultsToSharedIPadColumnWidth() throws {
+    func workOutlineDefaultsToCompactColumnWidth() throws {
         let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/CopetsMac/ConsoleWindowSplitView.swift"),
             encoding: .utf8)
-        #expect(PlatformWorkOutlineLayout.columnWidth == 312)
-        #expect(source.contains("PlatformWorkOutlineLayout.columnWidth"))
+        #expect(source.contains("mode == .taskCards ? 540 : 284"))
         #expect(source.contains("console.nativeSidebar.listWidth.v2"))
     }
 }

@@ -9,7 +9,14 @@ struct ConversationReplyIdentity: Equatable {
     let avatarPath: String?
 }
 
+struct ConversationReplyActivity: Equatable {
+    let isExpanded: Bool
+    let commentaryCount: Int
+    let processCount: Int
+}
+
 struct AppKitChatTimelineRow: Identifiable {
+    var replyActivity: ConversationReplyActivity? = nil
     var replyIdentity: ConversationReplyIdentity? = nil
     var replyIdentityHeight: CGFloat { replyIdentity == nil ? 0 : 36 }
     var forkItemID: String? = nil
@@ -160,6 +167,7 @@ struct AppKitChatTimelineRow: Identifiable {
 
     func processSummaryText(now: Date = Date(), advancing: Bool = false, includesCurrentStep: Bool = true,
                             languageCode: String? = nil) -> String {
+        if replyActivity != nil { return title }
         let duration = advancing && processState == .running
             ? processStartedAt.flatMap { ConversationProcessPresentation.durationText(
                 startedAt: $0, endingAt: now, showSeconds: true) }

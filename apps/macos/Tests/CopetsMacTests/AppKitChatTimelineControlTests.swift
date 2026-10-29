@@ -7,6 +7,34 @@ import CorptieConversation
 
 @MainActor
 final class AppKitChatTimelineControlTests: XCTestCase {
+    func testOuterReplyActivityReusesHeaderAndPreservesInnerExpansion() throws {
+        let harness = makeHarness(followsLatest: false, useSharedTextCards: true)
+        var header = AppKitChatTimelineRow(id: "reply-activity:middle", contentRevision: 1,
+            nativeText: "", copyText: "", nativeStyle: .process, title: "Reply activity", metadata: "",
+            expandableTurnId: "reply-activity:middle", isExpanded: false, processCount: 0, showsHeader: false)
+        header.replyActivity = .init(isExpanded: false, commentaryCount: 1, processCount: 1)
+        let final = row(id: "activity-final", text: "Final answer", showsHeader: false)
+        harness.coordinator.apply(rows: [header, final])
+        let cell = try XCTUnwrap(harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitSharedMessageTextCell)
+        let updates = cell.hostUpdateCount
+        let height = harness.coordinator.tableView(harness.tableView, heightOfRow: 0)
+        let middle = row(id: "activity-middle", text: "Intermediate reply", showsHeader: false)
+        let inner = AppKitChatTimelineRow(id: "activity-process", contentRevision: 1,
+            nativeText: "", copyText: "", nativeStyle: .process, title: "", metadata: "",
+            expandableTurnId: "turn:one", isExpanded: false, processCount: 1, showsHeader: false)
+        header.replyActivity = .init(isExpanded: true, commentaryCount: 1, processCount: 1)
+        harness.coordinator.apply(rows: [header, middle, inner, final])
+        let expandedCell = try XCTUnwrap(harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitSharedMessageTextCell)
+        XCTAssertTrue(cell === expandedCell)
+        XCTAssertGreaterThan(cell.hostUpdateCount, updates)
+        XCTAssertEqual(harness.tableView.numberOfRows, 4)
+        XCTAssertEqual(harness.coordinator.tableView(harness.tableView, heightOfRow: 0), height)
+        header.replyActivity = .init(isExpanded: false, commentaryCount: 1, processCount: 1)
+        harness.coordinator.apply(rows: [header, final])
+        XCTAssertEqual(harness.tableView.numberOfRows, 2)
+        XCTAssertEqual(harness.coordinator.tableView(harness.tableView, heightOfRow: 0), height)
+    }
+
     func testReplyIdentityMovesDuringPrependWithoutChangingContentRevision() throws {
         let harness = makeHarness(followsLatest: false, useSharedTextCards: false)
         let identity = ConversationReplyIdentity(agentID: "agent:one", name: "Developer", avatarPath: nil)

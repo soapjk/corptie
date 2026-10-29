@@ -52,7 +52,7 @@ struct SessionRestartInteractionTests {
 
         #expect(source.contains("GlassEffectContainer(spacing: 6)"))
         #expect(row.contains("headerIdentityCapsule"))
-        #expect(row.components(separatedBy: ".frame(width: 66, alignment:").count - 1 == 2)
+        #expect(row.components(separatedBy: ".frame(width: detailColumnVisibility == nil ? 66 : 104, alignment:").count - 1 == 2)
         #expect(row.contains("VStack(alignment: .center, spacing: 3)"))
         #expect(row.contains(".multilineTextAlignment(.center)"))
         #expect(row.contains(".platformGlassSurface(in: Capsule())"))
@@ -66,6 +66,8 @@ struct SessionRestartInteractionTests {
         #expect(row.components(separatedBy: ".platformGlassSurface(in: Circle(), interactive: true)").count - 1 >= 2)
         #expect(row.contains(".accessibilityIdentifier(\"session.detail.detach\")"))
         #expect(row.contains(".accessibilityIdentifier(\"session.detail.actions\")"))
+        #expect(row.contains(".accessibilityIdentifier(\"session.detail.toggle-column\")"))
+        #expect(row.contains("visibility.wrappedValue.toggle()"))
         let menu = try #require(row.range(of: "Menu {"))
         let menuGlass = try #require(row.range(of: ".platformGlassSurface(in: Circle(), interactive: true)", range: menu.upperBound..<row.endIndex))
         #expect(menu.upperBound < menuGlass.lowerBound)

@@ -1885,3 +1885,8 @@
 "Integration blocked: %@ has unfinished message deliveries. Wait for processing to finish, then generate a new plan." = "无法开始集成：“%@”仍有未结束的消息投递。请等待处理完成后重新生成计划。";
 "Integration blocked: %@ has unfinished background work. Wait for it to finish, then generate a new plan." = "无法开始集成：“%@”仍有未结束的后台操作。请等待结束后重新生成计划。";
 "Integration blocked by another Git integration job (%@). Review that job before retrying." = "另一个 Git 集成任务（%@）阻止了本次操作。请先查看并处理该任务。";
+
+"Hide Detail" = "隐藏 Detail 列";
+"Show Detail" = "显示 Detail 列";
+
+"回复过程 · %lld 项" = "回复过程 · %lld 项";

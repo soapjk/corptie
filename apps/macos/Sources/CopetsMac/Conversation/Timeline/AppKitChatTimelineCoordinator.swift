@@ -410,7 +410,8 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
 
 
     private func usesSharedCard(_ row: AppKitChatTimelineRow) -> Bool {
-        (row.userInput != nil || row.executionPlan != nil || (row.nativeStyle == .process ? useSharedProcessCards : useSharedTextCards))
+        if row.replyActivity != nil { return true }
+        return (row.userInput != nil || row.executionPlan != nil || (row.nativeStyle == .process ? useSharedProcessCards : useSharedTextCards))
             && MacSharedMessageTextCard.supports(row)
     }
 
@@ -523,7 +524,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
             configureImageGeometryCallback(cachedCell, row: rowModel)
             touchCell(cacheKey)
             cachedCell.updateCallbacks(
-                onToggleExpansion: onToggleExpansion,
+                onToggleExpansion: rowExpansionHandler,
                 onAction: onAction
             )
             cachedCell.updateLinkContext(baseDirectory: baseDirectory)
@@ -535,7 +536,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                 SessionSwitchTrace.shared.recordCell(.hitReconfigured, sessionID: representedSessionID, rowID: rowModel.id)
                 ChatPerformanceRecorder.shared.increment(.appKitRowsConfigured)
                 cachedCell.setContent(rowModel, availableWidth: availableWidth,
-                    baseDirectory: baseDirectory, onToggleExpansion: onToggleExpansion,
+                    baseDirectory: baseDirectory, onToggleExpansion: rowExpansionHandler,
                     onAction: onAction)
                 cacheCell(cachedCell, for: rowModel)
             }
@@ -556,7 +557,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
             rowModel,
             availableWidth: availableWidth,
             baseDirectory: baseDirectory,
-            onToggleExpansion: onToggleExpansion,
+            onToggleExpansion: rowExpansionHandler,
             onAction: onAction
         )
         cacheCell(cell, for: rowModel)
@@ -596,7 +597,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         for index in changed {
             if let cell = tableView.view(atColumn: 0, row: index, makeIfNecessary: false) as? (NSTableCellView & AppKitChatRowRendering) {
                 cell.setContent(rows[index], availableWidth: width, baseDirectory: baseDirectory,
-                    onToggleExpansion: onToggleExpansion, onAction: onAction)
+                    onToggleExpansion: rowExpansionHandler, onAction: onAction)
             }
         }
         tableView.noteHeightOfRows(withIndexesChanged: changed)
@@ -670,6 +671,10 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         let newIDs = nextRows.map(\.id)
         let oldRevisions = revisionsByID
         let oldReplyIdentities = rows.map(\.replyIdentity)
+        let oldReplyActivities = rows.map(\.replyActivity)
+        let oldReplyActivitiesByID = Dictionary(uniqueKeysWithValues: rows.compactMap { row in
+            row.replyActivity.map { (row.id, $0) }
+        })
         let oldReplyIdentitiesByID = Dictionary(uniqueKeysWithValues: rows.compactMap { row in
             row.replyIdentity.map { (row.id, $0) }
         })
@@ -722,6 +727,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                 to: newIDs,
                 oldRevisions: oldRevisions,
                 oldReplyIdentities: oldReplyIdentitiesByID,
+                oldReplyActivities: oldReplyActivitiesByID,
                 in: tableView
             )
             synchronizeDocumentHeight(in: tableView)
@@ -770,6 +776,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         let changed = IndexSet(nextRows.indices.filter { index in
             oldRevisions[nextRows[index].id] != nextRows[index].contentRevision
                 || oldReplyIdentities[index] != nextRows[index].replyIdentity
+                || oldReplyActivities[index] != nextRows[index].replyActivity
         })
         guard !changed.isEmpty else { return }
         heightCache = heightCache.filter { key, _ in
@@ -787,7 +794,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                     nextRows[row],
                     availableWidth: tableView.tableColumns.first?.width ?? tableView.bounds.width,
                     baseDirectory: baseDirectory,
-                    onToggleExpansion: onToggleExpansion,
+                    onToggleExpansion: rowExpansionHandler,
                     onAction: onAction
                 )
                 cacheCell(nativeCell, for: nextRows[row])
@@ -813,6 +820,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         to newIDs: [String],
         oldRevisions: [String: Int],
         oldReplyIdentities: [String: ConversationReplyIdentity],
+        oldReplyActivities: [String: ConversationReplyActivity],
         in tableView: NSTableView
     ) {
         let difference = newIDs.difference(from: oldIDs)
@@ -841,7 +849,8 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         let changedSurvivors = IndexSet(newIDs.indices.filter { index in
             !insertions.contains(index)
                 && (oldRevisions[newIDs[index]] != rows[index].contentRevision
-                    || oldReplyIdentities[newIDs[index]] != rows[index].replyIdentity)
+                    || oldReplyIdentities[newIDs[index]] != rows[index].replyIdentity
+                    || oldReplyActivities[newIDs[index]] != rows[index].replyActivity)
         })
         if !changedSurvivors.isEmpty {
             heightCache = heightCache.filter { key, _ in
@@ -1106,6 +1115,21 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         viewportDidScroll()
     }
 
+    private var rowExpansionHandler: (String) -> Void {
+        { [weak self] id in
+            guard let self else { return }
+            if self.rows.contains(where: { $0.id == id && $0.replyActivity != nil }) {
+                // Keep the disclosure header visible when its child rows are
+                // inserted/removed, even if the viewport was following latest.
+                self.claimViewportIntent()
+                self.followsLatest = false
+                if self.followsLatestBinding.wrappedValue { self.followsLatestBinding.wrappedValue = false }
+                self.pendingProcessCollapseRowID = id
+            }
+            self.onToggleExpansion(id)
+        }
+    }
+
     @objc private func collapseVisibleProcess() {
         guard let rowID = visibleProcessCollapseRowID,
               let turnID = rows.first(where: { $0.id == rowID })?.expandableTurnId else { return }
@@ -1289,7 +1313,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                                 rows[row],
                                 availableWidth: measurementWidth,
                                 baseDirectory: baseDirectory,
-                                onToggleExpansion: onToggleExpansion,
+                                onToggleExpansion: rowExpansionHandler,
                                 onAction: onAction
                             )
                             cacheCell(nativeCell, for: rows[row])
@@ -1341,7 +1365,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                             rows[row],
                             availableWidth: exactWidth,
                             baseDirectory: baseDirectory,
-                            onToggleExpansion: onToggleExpansion,
+                            onToggleExpansion: rowExpansionHandler,
                             onAction: onAction
                         )
                         cacheCell(nativeCell, for: rows[row])
