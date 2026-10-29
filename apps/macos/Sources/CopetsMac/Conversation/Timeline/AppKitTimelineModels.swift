@@ -241,7 +241,7 @@ enum AppKitChatRowReusePolicy {
 @MainActor
 extension AppKitChatTimelineRow {
     func readingTypography(_ requested: ConversationTypography) -> ConversationTypography {
-        guard nativeStyle != .process, !isWorkspaceCard, !isCollaboration,
+        guard contentSurfaceRole != .interaction, nativeStyle != .process, !isWorkspaceCard, !isCollaboration,
               collaborationRoute == nil, userInput == nil, executionPlan == nil else { return .classic }
         return requested
     }

@@ -7,6 +7,22 @@ import CorptieConversation
 
 @MainActor
 final class ConversationNativeRowBuilderTests: XCTestCase {
+    func testSpecialReplyCardsKeepTheSameTypographyAndMeasurementsAcrossSkins() throws {
+        for fields: [String: Any] in [
+            ["id": "automation", "type": "automationEvent", "presentationRole": "automation"],
+            ["id": "system", "presentationRole": "system_event"],
+        ] {
+            let model = builder().nativeAppKitRow(.init(kind: .message(try item(fields))), expandedTurnIds: [])
+            XCTAssertEqual(model.contentSurfaceRole, .interaction)
+            let classic = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 640, typography: .classic)
+            let codex = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 640, typography: .codexReading)
+            XCTAssertEqual(codex.typography, .classic)
+            XCTAssertEqual(codex.rowHeight, classic.rowHeight)
+            XCTAssertEqual(codex.cardWidth, classic.cardWidth)
+            XCTAssertTrue(codex.attributedText === classic.attributedText)
+        }
+    }
+
     func testAgentIdentityAppearsOncePerReplyAndSkipsSpecialMessages() throws {
         var projection = builder()
         let identity = ConversationReplyIdentity(agentID: "agent:one", name: "Developer", avatarPath: nil)

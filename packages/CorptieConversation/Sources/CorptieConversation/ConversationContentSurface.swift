@@ -63,7 +63,8 @@ public struct ConversationContentSurface: ViewModifier {
 
     public func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        let style = skin.surface(for: role ?? (isPanel ? .inspector : .structured))
+        let resolvedRole = role ?? (isPanel ? .inspector : .structured)
+        let style = skin.surface(for: resolvedRole)
         let increasedContrast = contrast == .increased
         let opaqueUser = isMessage && role == .user
         #if os(iOS)
@@ -78,7 +79,7 @@ public struct ConversationContentSurface: ViewModifier {
             reduceTransparency: reduceTransparency, increasedContrast: increasedContrast, isMessage: isMessage, withMaterial: withMaterial, isPanel: isPanel)
         let usesSemanticBackground = tintOpacity == ConversationContentSurfacePolicy.tintOpacity
         let base = fallback ?? (usesSemanticBackground ? tint : nil) ?? WorkbenchCanvasSurface.defaultColor
-        content.background {
+        content.environment(\.conversationSkin, resolvedRole.usesSharedReplyCard ? .classic : skin).background {
             if style == .legacy {
                 #if os(iOS)
                 if withMaterial && !ConversationContentSurfacePolicy.suppressMessageMaterialForProfiling {

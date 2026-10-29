@@ -586,9 +586,9 @@ final class NativeTimelineLayoutCache {
                 // Replaces the ordinary 6pt title-to-body gap with
                 // 8pt + 92pt summary + 10pt, for a net 104pt addition.
                 let collaborationRouteHeight: CGFloat = row.collaborationRoute == nil ? 0 : 104
-                let verticalChrome: CGFloat = (row.showsHeader ? 39 : 20) + collaborationRouteHeight
+                let verticalChrome: CGFloat = (row.showsHeader ? 42 : 20) + collaborationRouteHeight
                 cardHeight = max(
-                    row.showsHeader ? 54 : (row.images.isEmpty ? 30 : 20),
+                    row.showsHeader ? 57 : (row.images.isEmpty ? 30 : 20),
                     textHeight + verticalChrome + footerHeight + actionHeight + sentStatusHeight + messageStatusBarHeight
                 ) + (row.images.isEmpty ? 0 : imageLayout.size.height + (textHeight > 0 ? MessageCardMetrics.contentSpacing : 0))
                 rowHeight = MessageCardMetrics.rowHeight(cardHeight: cardHeight, separatorHeight: row.timeSeparatorHeight, typography: typography)

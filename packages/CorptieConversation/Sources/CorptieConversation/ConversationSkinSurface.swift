@@ -21,7 +21,7 @@ public struct ConversationSkinSurface: ViewModifier {
     public func body(content: Content) -> some View {
         let style = skin.surface(for: role)
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        content.background {
+        content.environment(\.conversationSkin, role.usesSharedReplyCard ? .classic : skin).background {
             if style == .legacy { shape.fill(legacyFill) }
             else if style == .bubble || style == .neutral { shape.fill(Color.primary.opacity(0.06)) }
         }.overlay {
