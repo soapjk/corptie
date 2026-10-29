@@ -334,11 +334,7 @@ struct AgentCard: View {
         VStack(alignment: .leading, spacing: 12) {
             // 顶部：头像 + 名字/角色 + 状态点
             HStack(alignment: .top, spacing: 10) {
-                Text(avatarInitial)
-                    .font(.title3.bold())
-                    .foregroundStyle(.white)
-                    .frame(width: 40, height: 40)
-                    .background(avatarColor, in: Circle())
+                avatar
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(agent.name)
@@ -404,12 +400,21 @@ struct AgentCard: View {
         )
     }
 
-    private var avatarInitial: String {
-        String(agent.name.prefix(1)).uppercased()
-    }
-
-    private var avatarColor: Color {
-        agent.isPlatformAssistant ? .accentColor : .blue
+    private var avatar: some View {
+        Group {
+            if let avatarPath = agent.avatarPath, !avatarPath.isEmpty {
+                AnimatedAvatarImage(path: avatarPath)
+            } else {
+                DefaultInitialAvatarView(
+                    familySeed: agent.name,
+                    variationSeed: agent.agentId,
+                    initials: DefaultAvatarInitials.make(from: agent.name),
+                    size: 40
+                )
+            }
+        }
+        .frame(width: 40, height: 40)
+        .clipShape(Circle())
     }
 
     private var kindLabel: String {
