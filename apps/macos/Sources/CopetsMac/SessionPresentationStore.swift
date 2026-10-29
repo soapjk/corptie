@@ -30,6 +30,7 @@ struct PreparedRowsContext: Equatable {
     let forkUnavailableReason: String?
     var replyIdentity: ConversationReplyIdentity? = nil
     var processReplyCompleted: [Bool] = []
+    var processReplyStates: [ConversationProcessState?] = []
 }
 
 @MainActor

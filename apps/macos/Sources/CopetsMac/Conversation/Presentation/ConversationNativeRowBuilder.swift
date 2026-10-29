@@ -81,6 +81,7 @@ struct ConversationNativeRowBuilder {
         let showsCollaborationSentStatus: Bool
         let messageStatus: UserMessageStatusPresentation?
         var images: [ChatTimelineImage] = []
+        var scheduledTrigger: ScheduledTriggerPresentation?
         switch entry.kind {
         case .message(let item):
             messageStatus = item.type == "userMessage" ? UserMessageStatusPresentation(
@@ -103,6 +104,10 @@ struct ConversationNativeRowBuilder {
             )
             let specialEvent = nativeAutomationCardPresentation(for: item)
                 ?? nativeSystemEventCardPresentation(for: item)
+            if let specialEvent, specialEvent.detailsMarkdown != nil {
+                let id = ScheduledTriggerPresentation.expansionID(for: item.id)
+                scheduledTrigger = .init(text: specialEvent.messageText, isExpanded: expandedTurnIds.contains(id), expansionID: id)
+            }
             style = collaboration == nil && specialEvent == nil && item.type == "userMessage" ? .user : .agent
             copyText = item.type == "userInput" && item.userInput?.schemaVersion == 1
                 ? item.userInput.map(userInputCopyText) ?? ChatTimelineRowRouting.copyText(for: item)
@@ -110,7 +115,7 @@ struct ConversationNativeRowBuilder {
                     ?? ChatTimelineRowRouting.copyText(for: item)
             let supplementalText = nativeTimelineSupplementalText(for: item)
             let displayedText = nativeTimelineText(for: item)
-            let presentedText = collaboration?.bodyMarkdown ?? specialEvent?.bodyMarkdown ?? (supplementalText.isEmpty
+            let presentedText = collaboration?.bodyMarkdown ?? specialEvent?.detailsMarkdown ?? specialEvent?.bodyMarkdown ?? (supplementalText.isEmpty
                 ? displayedText
                 : "\(displayedText)\n\n\(supplementalText)")
             let existingImageURLs = Set(images.compactMap(\.displayURL))
@@ -146,7 +151,7 @@ struct ConversationNativeRowBuilder {
             messageDate = isOrdinaryMessage
                 ? item.createdAt.flatMap(ISO8601DateFormatter.corptieThreadItemDate(from:))
                 : nil
-            expandableTurnId = nil
+            expandableTurnId = scheduledTrigger?.expansionID
             isExpanded = false
             processCount = nil
             processDuration = nil
@@ -192,9 +197,16 @@ struct ConversationNativeRowBuilder {
             isExpanded = expanded
             processCount = items.count
             processDuration = executionProcessDurationText(for: items)
-            processStartedAt = entry.processReplyCompleted || items.contains(where: { $0.processEndedAt != nil })
-                ? nil : ConversationProcessPresentation.startedAt(for: items)
-            processState = entry.processReplyCompleted ? .completed : projectedProcessState(for: items)
+            processState = entry.processReplyState
+                ?? (entry.processReplyCompleted ? .completed : projectedProcessState(for: items))
+            processStartedAt = processState == .running ? ConversationProcessPresentation.startedAt(for: items) : nil
+            if entry.processReplyState != nil, let start = ConversationProcessPresentation.startedAt(for: items) {
+                // Segment end times do not stop the aggregate reply clock.
+                let end = processState == .running ? Date() : items.flatMap { [$0.processEndedAt, $0.createdAt] }
+                    .compactMap { $0.flatMap(ISO8601DateFormatter.corptieThreadItemDate(from:)) }.max()
+                processDuration = end.flatMap { ConversationProcessPresentation.durationText(
+                    startedAt: start, endingAt: $0, showSeconds: processState == .running) }
+            }
             if processState == .running, let last = items.last {
                 if last.type == "executionPlan", let plan = processPlan {
                     processCurrentStepTitle = plan.steps.first(where: { $0.status == "inProgress" })?.text
@@ -242,6 +254,7 @@ struct ConversationNativeRowBuilder {
             images: images
         )
         row.forkItemID = forkItemID(for: entry)
+        row.scheduledTrigger = scheduledTrigger
         if case .message(let item) = entry.kind, item.messageOrigin == "scheduled_task" {
             row.scheduledMessageSource = ConversationEventText(languageCode: AppLanguageController.shared.languageCode)
                 .messageSource(name: item.automationName)
@@ -257,6 +270,9 @@ struct ConversationNativeRowBuilder {
         if row.nativeStyle == .process { row.processLanguageCode = AppLanguageController.shared.languageCode }
         row.forkUnavailableReason = forkUnavailableReason(for: entry)
         if case .message(let item) = entry.kind {
+            row.showsReplyActions = item.type == "agentMessage" && item.presentationRole == "final_answer"
+                && item.messageOrigin != "scheduled_task"
+                && ["complete", "completed", "interrupted", "cancelled", "canceled", "failed"].contains(item.turnStatus)
             row.isCommentary = ConversationPresentationKind.isCommentary(
                 type: item.type, presentationRole: item.presentationRole)
             if item.type == "userInput", item.userInput?.schemaVersion == 1 {
@@ -426,8 +442,10 @@ struct ConversationNativeRowBuilder {
         switch entry.kind {
         case .message(let item):
             hasher.combine(itemSignature(item))
+            hasher.combine(expandedTurnIds.contains(ScheduledTriggerPresentation.expansionID(for: item.id)))
         case .process(let turnId, let items):
             hasher.combine(entry.processReplyCompleted)
+            hasher.combine(entry.processReplyState)
             hasher.combine(AppLanguageController.shared.languageCode)
             hasher.combine(turnId)
             hasher.combine(expandedTurnIds.contains(turnId))

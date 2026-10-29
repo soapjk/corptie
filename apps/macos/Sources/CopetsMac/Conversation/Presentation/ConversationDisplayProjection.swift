@@ -288,6 +288,14 @@ struct NativeSpecialEventCardPresentation: Equatable {
     let metadata: String
     let bodyMarkdown: String
     let messageText: String
+    var detailsMarkdown: String? = nil
+}
+
+struct ScheduledTriggerPresentation: Equatable {
+    let text: String
+    let isExpanded: Bool
+    let expansionID: String
+    static func expansionID(for itemID: String) -> String { "scheduled-trigger:" + itemID }
 }
 
 @MainActor
@@ -434,7 +442,8 @@ func nativeAutomationCardPresentation(for item: CodexThreadItem) -> NativeSpecia
     let eventType = item.automationEventType ?? ""
     let name = nonEmptyPresentationValue(item.automationName)
         ?? ConversationEventText(languageCode: AppLanguageController.shared.languageCode).automationTitle
-    let message = nonEmptyPresentationValue(item.presentationText) ?? nonEmptyPresentationValue(item.text) ?? ""
+    let message = [item.presentationText, item.text].compactMap { $0 }
+        .first { nonEmptyPresentationValue($0) != nil } ?? ""
     let words = ConversationEventText(languageCode: AppLanguageController.shared.languageCode)
     let state = item.automationRunId == nil ? automationEventLabel(eventType) : words.runStatus(item.automationRunStatus)
     var lines = ["**\(L10n("事件类型"))**  \(state)"]
@@ -452,6 +461,7 @@ func nativeAutomationCardPresentation(for item: CodexThreadItem) -> NativeSpecia
     if let expiresAt = AutomationTimelinePresentation.localizedDate(item.automationExpiresAt) {
         lines.append("**\(L10n("过期时间"))**  \(expiresAt)")
     }
+    let detailsMarkdown = lines.joined(separator: "\n")
     if !message.isEmpty {
         lines.append(contentsOf: ["", "**\(L10n("触发消息"))**", automationMarkdownEscaped(message)])
     }
@@ -459,7 +469,8 @@ func nativeAutomationCardPresentation(for item: CodexThreadItem) -> NativeSpecia
         title: name,
         metadata: state,
         bodyMarkdown: lines.joined(separator: "\n"),
-        messageText: message
+        messageText: message,
+        detailsMarkdown: detailsMarkdown
     )
 }
 

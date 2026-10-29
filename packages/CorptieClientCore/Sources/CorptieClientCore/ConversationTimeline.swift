@@ -41,8 +41,12 @@ public struct ConversationEntry<Item: ConversationTimelineItem>: Identifiable, S
     /// A presentation-only process aggregate may finish when its final reply
     /// finishes, without rewriting any retained source item.
     public let processReplyCompleted: Bool
-    public init(kind: Kind, mediaItems: [Item] = [], processReplyCompleted: Bool = false) {
+    /// Whole-reply lifecycle, independent of already closed process segments.
+    public let processReplyState: ConversationProcessState?
+    public init(kind: Kind, mediaItems: [Item] = [], processReplyCompleted: Bool = false,
+                processReplyState: ConversationProcessState? = nil) {
         self.kind = kind; self.mediaItems = mediaItems; self.processReplyCompleted = processReplyCompleted
+        self.processReplyState = processReplyState
     }
 
     public var id: String {

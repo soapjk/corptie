@@ -410,7 +410,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
 
 
     private func usesSharedCard(_ row: AppKitChatTimelineRow) -> Bool {
-        return (row.userInput != nil || row.executionPlan != nil || (row.nativeStyle == .process ? useSharedProcessCards : useSharedTextCards))
+        return (row.scheduledTrigger != nil || row.userInput != nil || row.executionPlan != nil || (row.nativeStyle == .process ? useSharedProcessCards : useSharedTextCards))
             && MacSharedMessageTextCard.supports(row)
     }
 
@@ -1429,10 +1429,14 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
 
     private func scrollToProcessRow(_ rowID: String) {
         guard let row = rows.firstIndex(where: { $0.id == rowID }) else { return }
-        scrollToRow(row)
+        scrollToRow(row, clampsToDocument: true)
+        if isViewportNearBottom() {
+            followsLatest = true
+            if !followsLatestBinding.wrappedValue { followsLatestBinding.wrappedValue = true }
+        }
     }
 
-    private func scrollToRow(_ row: Int) {
+    private func scrollToRow(_ row: Int, clampsToDocument: Bool = false) {
         guard !isProcessingUserScrollEvent,
               let tableView,
               let clipView = scrollView?.contentView else { return }
@@ -1444,7 +1448,12 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         if followsLatestBinding.wrappedValue { followsLatestBinding.wrappedValue = false }
         tableView.layoutSubtreeIfNeeded()
         synchronizeDocumentHeight(in: tableView)
-        clipView.scroll(to: NSPoint(x: 0, y: max(0, tableView.rect(ofRow: row).minY - 10)))
+        // A collapsed row can be near the end of a now much shorter document.
+        // Clamp navigation to its new scroll range instead of exposing empty space.
+        let maximumY = max(0, (scrollView?.documentView?.frame.height ?? 0) - clipView.bounds.height)
+        let targetY = max(0, tableView.rect(ofRow: row).minY - 10)
+        let y = clampsToDocument ? min(maximumY, targetY) : targetY
+        clipView.scroll(to: NSPoint(x: 0, y: y))
         scrollView?.reflectScrolledClipView(clipView)
         schedulePositionPublish()
     }

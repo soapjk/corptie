@@ -7,6 +7,98 @@ import CorptieConversation
 
 @MainActor
 final class ConversationNativeRowBuilderTests: XCTestCase {
+    func testScheduledTriggerPreviewsThreeVisualLinesAndExpandsWithoutTruncatingCopy() throws {
+        let message = (0..<30).map { "Trigger line \($0): " + String(repeating: "完整任务内容 **literal** ", count: 8) }.joined(separator: "\n")
+        let entry = ChatDisplayEntry(kind: .message(try item(["id": "scheduled-preview", "type": "automationEvent",
+            "presentationRole": "automation", "automationEventType": "ScheduledSessionTaskCreated",
+            "automationName": "A scheduled task", "text": message])))
+        let collapsed = builder().nativeAppKitRow(entry, expandedTurnIds: [])
+        let id = try XCTUnwrap(collapsed.scheduledTrigger?.expansionID)
+        XCTAssertEqual(collapsed.copyText, message)
+        XCTAssertFalse(collapsed.nativeText.contains("Trigger line"))
+        XCTAssertEqual(collapsed.expandableTurnId, id)
+        let expanded = builder().nativeAppKitRow(entry, expandedTurnIds: [id])
+        XCTAssertNotEqual(expanded.contentRevision, collapsed.contentRevision)
+        for width: CGFloat in [320, 1000, 2400] {
+            let preview = NativeTimelineLayoutCache.shared.layout(for: collapsed, columnWidth: width)
+            let full = NativeTimelineLayoutCache.shared.layout(for: expanded, columnWidth: width)
+            XCTAssertEqual(preview.cardWidth, min(480, width - 4))
+            XCTAssertTrue(preview.triggerCanExpand)
+            XCTAssertEqual(preview.triggerTextHeight, NativeTextKitLayout.height(of: try XCTUnwrap(preview.triggerText),
+                width: preview.cardWidth - 20, maximumLines: 3))
+            XCTAssertGreaterThan(full.rowHeight, preview.rowHeight)
+            XCTAssertEqual(full.triggerText?.string, message)
+            XCTAssertTrue(preview.attributedText === full.attributedText)
+            XCTAssertEqual(NativeTimelineLayoutCache.shared.layout(for: collapsed, columnWidth: width).rowHeight, preview.rowHeight)
+        }
+        _ = NSApplication.shared
+        let layout = NativeTimelineLayoutCache.shared.layout(for: collapsed, columnWidth: 1000)
+        let cell = AppKitSharedMessageTextCell(identifier: .init("scheduled-preview"))
+        cell.frame = .init(x: 0, y: 0, width: 1000, height: layout.rowHeight)
+        var toggled: String?
+        cell.setContent(collapsed, availableWidth: 1000, onToggleExpansion: { toggled = $0 })
+        cell.layoutSubtreeIfNeeded()
+        func textViews(_ view: NSView) -> [NativeTimelineTextView] {
+            if let text = view as? NativeTimelineTextView { return [text] }
+            return view.subviews.flatMap(textViews)
+        }
+        let triggerView = try XCTUnwrap(textViews(cell).first { $0.string == message })
+        XCTAssertEqual(triggerView.textContainer?.maximumNumberOfLines, 3)
+        cell.toggleRepresentedProcess()
+        XCTAssertEqual(toggled, id)
+        cell.copyRepresentedMessage()
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), message)
+        let short = ChatDisplayEntry(kind: .message(try item(["id": "short-scheduled", "type": "automationEvent",
+            "presentationRole": "automation", "text": "Short trigger"])))
+        let shortRow = builder().nativeAppKitRow(short, expandedTurnIds: [])
+        XCTAssertFalse(NativeTimelineLayoutCache.shared.layout(for: shortRow, columnWidth: 1000).triggerCanExpand)
+    }
+
+    func testFunctionalCardsStayCompactWhileReplyDocumentsUseTheWideLane() {
+        let text = String(repeating: "A long document response. ", count: 300)
+        let document = AppKitChatTimelineRow(id: "document", contentRevision: 0, nativeText: text, copyText: text,
+            nativeStyle: .agent, title: "", metadata: "", expandableTurnId: nil, isExpanded: false, showsHeader: false)
+        let card = AppKitChatTimelineRow(id: "functional-card", contentRevision: 0, nativeText: text, copyText: text,
+            nativeStyle: .agent, title: "Event", metadata: "", expandableTurnId: nil, isExpanded: false, showsHeader: true)
+        for typography in [ConversationTypography.classic, .codexReading] {
+            XCTAssertEqual(NativeTimelineLayoutCache.shared.layout(for: document, columnWidth: 1600, typography: typography).cardWidth, 1596)
+            XCTAssertEqual(NativeTimelineLayoutCache.shared.layout(for: card, columnWidth: 1600, typography: typography).cardWidth, 480)
+            XCTAssertEqual(NativeTimelineLayoutCache.shared.layout(for: card, columnWidth: 320, typography: typography).cardWidth, 316)
+        }
+    }
+
+    func testMergedProcessClockIgnoresClosedSegmentsUntilWholeReplyEnds() throws {
+        let first = try item(["id": "first-tool", "type": "mcpToolCall", "turnStatus": "running",
+            "createdAt": "2026-10-29T12:00:01Z", "processStartedAt": "2026-10-29T12:00:00Z",
+            "processEndedAt": "2026-10-29T12:00:02Z"])
+        let explanation = try item(["id": "explanation", "presentationRole": "commentary", "turnStatus": "running",
+            "createdAt": "2026-10-29T12:00:03Z"])
+        let last = try item(["id": "last-tool", "type": "mcpToolCall", "turnStatus": "running",
+            "createdAt": "2026-10-29T12:00:04Z", "processStartedAt": "2026-10-29T12:00:04Z"])
+        let entries: [ChatDisplayEntry] = [.init(kind: .process(turnId: "turn:one", items: [first])),
+            .init(kind: .message(explanation)), .init(kind: .process(turnId: "turn:one:process-segment:1", items: [last]))]
+        let projected = ConversationReplyProgressProjection.entries(entries)
+        let running = builder().nativeAppKitRow(projected[0], expandedTurnIds: [])
+        XCTAssertEqual(running.processState, .running)
+        let start = try XCTUnwrap(running.processStartedAt)
+        XCTAssertTrue(running.processSummaryText(now: start.addingTimeInterval(5), advancing: true, languageCode: "en").contains("5.00s"))
+        XCTAssertTrue(running.processSummaryText(now: start.addingTimeInterval(6), advancing: true, languageCode: "en").contains("6.00s"))
+        guard case .process(_, let source) = projected[0].kind else { return XCTFail("Missing aggregate") }
+        XCTAssertEqual(source[0].processEndedAt, first.processEndedAt)
+        let again = ConversationReplyProgressProjection.entries(projected)
+        XCTAssertEqual(again[0].processReplyState, .running)
+        for (status, expected) in [("completed", ConversationProcessState.completed), ("failed", .failed), ("interrupted", .cancelled)] {
+            let final = ChatDisplayEntry(kind: .message(try item(["id": "final", "turnStatus": status,
+                "createdAt": "2026-10-29T12:00:10Z"])))
+            let ended = ConversationReplyProgressProjection.entries(entries + [final])
+            let completed = builder().nativeAppKitRow(ended[0], expandedTurnIds: [])
+            XCTAssertEqual(ConversationReplyProgressProjection.entries(ended)[0].processReplyState, expected)
+            XCTAssertEqual(completed.processState, expected)
+            XCTAssertNil(completed.processStartedAt)
+            XCTAssertNotEqual(running.contentRevision, completed.contentRevision)
+        }
+    }
+
     func testLatestExplanationReplacesEarlierOneAndCompletionArchivesAll() throws {
         let oldText = String(repeating: "Earlier explanation in full.\n", count: 40)
         let old = try item(["id": "old", "text": oldText, "presentationRole": "commentary", "turnStatus": "running"])
@@ -98,7 +190,7 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         for index in [2, 7] {
             let original = NativeTimelineLayoutCache.shared.layout(for: base[index], columnWidth: 640)
             let decorated = NativeTimelineLayoutCache.shared.layout(for: rows[index], columnWidth: 640)
-            XCTAssertEqual(decorated.rowHeight, original.rowHeight + 36)
+            XCTAssertEqual(decorated.rowHeight, original.rowHeight + 44)
             XCTAssertEqual(decorated.cardHeight, original.cardHeight)
             XCTAssertEqual(decorated.cardWidth, original.cardWidth)
             XCTAssertTrue(decorated.attributedText === original.attributedText)
@@ -189,6 +281,63 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
             forkUnavailableReason: unavailableReason,
             imageURL: { _ in nil }
         )
+    }
+
+    func testFinalReplyActionsAreOutsideContentAndRespectLifecycleAndCapabilities() throws {
+        let final = builder().nativeAppKitRow(.init(kind: .message(try item([
+            "createdAt": "2026-10-29T12:00:00Z"]))), expandedTurnIds: [])
+        XCTAssertTrue(final.showsReplyActions)
+        for overrides: [String: Any] in [["turnStatus": "running"], ["presentationRole": "commentary"],
+            ["type": "userMessage"], ["type": "systemMessage"], ["messageOrigin": "scheduled_task"]] {
+            XCTAssertFalse(builder().nativeAppKitRow(.init(kind: .message(try item(overrides))), expandedTurnIds: []).showsReplyActions)
+        }
+        var without = final
+        without.showsReplyActions = false
+        for typography in [ConversationTypography.classic, .codexReading] {
+            let layout = NativeTimelineLayoutCache.shared.layout(for: final, columnWidth: 900, typography: typography)
+            let previous = NativeTimelineLayoutCache.shared.layout(for: without, columnWidth: 900, typography: typography)
+            XCTAssertEqual(layout.rowHeight - previous.rowHeight, 26)
+            XCTAssertEqual(layout.cardHeight, previous.cardHeight)
+            XCTAssertEqual(layout.cardWidth, previous.cardWidth)
+            XCTAssertTrue(layout.attributedText === previous.attributedText)
+        }
+        _ = NSApplication.shared
+        func button(_ view: NSView, _ suffix: String) -> NSButton? {
+            if let result = view as? NSButton, result.identifier?.rawValue == "chat.timeline.reply-actions." + suffix { return result }
+            return view.subviews.lazy.compactMap { button($0, suffix) }.first
+        }
+        for shared in [false, true] {
+            var acted: String?
+            let renderer: any AppKitChatRowRendering = shared
+                ? AppKitSharedMessageTextCell(identifier: .init("shared-actions"))
+                : AppKitChatNativeTextCell(identifier: .init("native-actions"))
+            let cell = try XCTUnwrap(renderer as? NSView)
+            let layout = NativeTimelineLayoutCache.shared.layout(for: final, columnWidth: 900)
+            cell.frame = .init(x: 0, y: 0, width: 900, height: layout.rowHeight)
+            renderer.setContent(final, availableWidth: 900, baseDirectory: nil, onToggleExpansion: { _ in },
+                onAction: { acted = $0.id })
+            cell.layoutSubtreeIfNeeded()
+            let copy = try XCTUnwrap(button(cell, "copy"))
+            copy.performClick(nil)
+            XCTAssertEqual(NSPasteboard.general.string(forType: .string), final.copyText)
+            let clock = try XCTUnwrap(button(cell, "timestamp"))
+            XCTAssertFalse(clock.isHiddenOrHasHiddenAncestor)
+            clock.performClick(nil)
+            XCTAssertEqual(NSPasteboard.general.string(forType: .string), final.contextTimestamp)
+            let fork = try XCTUnwrap(button(cell, "fork"))
+            fork.performClick(nil)
+            XCTAssertEqual(acted, "fork:" + (final.forkItemID ?? ""))
+            let unavailable = builder(allowsFork: false, unavailableReason: "Unavailable")
+                .nativeAppKitRow(.init(kind: .message(try item())), expandedTurnIds: [])
+            renderer.setContent(unavailable, availableWidth: 900, baseDirectory: nil, onToggleExpansion: { _ in }, onAction: { _ in })
+            cell.layoutSubtreeIfNeeded()
+            let disabled = try XCTUnwrap(button(cell, "fork"))
+            XCTAssertFalse(disabled.isEnabled)
+            XCTAssertEqual(disabled.toolTip, "Unavailable")
+            renderer.setContent(without, availableWidth: 900, baseDirectory: nil, onToggleExpansion: { _ in }, onAction: { _ in })
+            cell.layoutSubtreeIfNeeded()
+            XCTAssertTrue(button(cell, "copy")?.isHiddenOrHasHiddenAncestor ?? true)
+        }
     }
 
     func testCompletedAnswerExplainsUnavailableForkWithoutMakingItActionable() throws {

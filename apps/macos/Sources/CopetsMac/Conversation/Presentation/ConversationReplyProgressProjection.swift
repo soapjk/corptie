@@ -22,7 +22,14 @@ enum ConversationReplyProgressProjection {
         }
         func replyStatus(_ index: Int) -> String? {
             switch entries[index].kind {
-            case .process(_, let items): return items.last?.turnStatus
+            case .process(_, let items):
+                switch entries[index].processReplyState {
+                case .running: return "running"
+                case .completed: return "completed"
+                case .failed: return "failed"
+                case .cancelled: return "cancelled"
+                case nil: return items.last?.turnStatus
+                }
             case .message(let item):
                 guard item.messageOrigin != "scheduled_task",
                       ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole) == .agentMessage else { return nil }
@@ -72,7 +79,16 @@ enum ConversationReplyProgressProjection {
             for preceding in start..<first where !isQuestion(preceding) { result.append(entries[preceding]) }
             if let archivedFirst = archived.first {
                 result.append(.init(kind: .process(turnId: processID ?? "commentary:" + archivedFirst.id, items: archived),
-                    processReplyCompleted: completed))
+                    processReplyCompleted: completed, processReplyState: {
+                        if completed { return .completed }
+                        switch lastStatus?.lowercased() {
+                        case "failed", "error": return .failed
+                        case "cancelled", "canceled", "interrupted": return .cancelled
+                        case .some: return .running
+                        case nil: return intermediate.compactMap { entries[$0].processReplyState }.last
+                            ?? ConversationProcessPresentation.state(for: archived)
+                        }
+                    }()))
             }
             if let latest { result.append(entries[latest]) }
             for remaining in segment where !isIntermediate(remaining) && (remaining >= first || isQuestion(remaining)) {

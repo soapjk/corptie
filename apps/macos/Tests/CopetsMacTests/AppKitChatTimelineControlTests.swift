@@ -20,7 +20,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         earlier.replyIdentity = identity
         answer.replyIdentity = nil
         harness.coordinator.apply(rows: [earlier, answer])
-        XCTAssertEqual(harness.coordinator.tableView(harness.tableView, heightOfRow: 1), originalHeight - 36)
+        XCTAssertEqual(harness.coordinator.tableView(harness.tableView, heightOfRow: 1), originalHeight - 44)
         let surviving = try XCTUnwrap(harness.tableView.view(atColumn: 0, row: 1, makeIfNecessary: true))
         XCTAssertFalse(surviving.subviews.contains { $0 is NSHostingView<MacReplyIdentityHeader> })
         let inserted = try XCTUnwrap(harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true))
@@ -541,6 +541,34 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         harness.coordinator.apply(rows: [compact])
         XCTAssertTrue(collapse.isHidden)
         XCTAssertLessThanOrEqual(clip.bounds.minY, 10)
+    }
+
+    func testFloatingCollapseClampsToNewBottomAndResumesFollowingLatest() throws {
+        let harness = makeHarness(followsLatest: false, height: 300)
+        let history = row(id: "history", text: String(repeating: "Earlier message\n", count: 40))
+        let latest = row(id: "latest", text: "Latest reply")
+        let text = String(repeating: "Long execution detail\n", count: 150)
+        func process(_ expanded: Bool) -> AppKitChatTimelineRow {
+            AppKitChatTimelineRow(id: "process", contentRevision: expanded ? 1 : 2,
+                nativeText: text, copyText: text, nativeStyle: .process, title: "", metadata: "",
+                expandableTurnId: "turn", isExpanded: expanded, processCount: 150)
+        }
+        harness.coordinator.apply(rows: [history, process(true), latest])
+        harness.window.layoutIfNeeded()
+        let clip = harness.scrollView.contentView
+        clip.scroll(to: NSPoint(x: 0, y: harness.tableView.rect(ofRow: 1).minY + 200))
+        harness.scrollView.reflectScrolledClipView(clip)
+        let collapse = try XCTUnwrap(button(in: harness.scrollView, identifier: "chat.timeline.process-follow-collapse"))
+        XCTAssertFalse(collapse.isHidden)
+        collapse.performClick(nil)
+        harness.coordinator.apply(rows: [history, process(false), latest])
+        harness.window.layoutIfNeeded()
+        let document = try XCTUnwrap(harness.scrollView.documentView)
+        XCTAssertGreaterThan(document.frame.height, clip.bounds.height)
+        XCTAssertEqual(clip.bounds.minY, max(0, document.frame.height - clip.bounds.height), accuracy: 0.5)
+        XCTAssertLessThanOrEqual(harness.tableView.rect(ofRow: 2).maxY + harness.tableView.frame.minY,
+                                 clip.bounds.maxY + 0.5)
+        XCTAssertTrue(harness.coordinator.followsLatest)
     }
 
     func testCollaborationCardShowsHeaderMetadataAndDistinctVisualTreatment() throws {

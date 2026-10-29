@@ -72,7 +72,7 @@ struct ConversationTypographyTests {
         for (style, size) in [(MessageMarkdown.Style.agent, CGFloat(16)), (.user, 15)] {
             let value = MessageMarkdown.make(text: "正文 English 😀\n\nNext", style: style, typography: .codexReading)
             #expect((value.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize == size)
-            #expect((value.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)?.lineSpacing == 4)
+            #expect((value.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)?.lineSpacing == (style == .agent ? 2 : 4))
         }
         let heading = MessageMarkdown.make(text: "# Heading", style: .agent, typography: .codexReading)
         #expect((heading.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize == 22)
