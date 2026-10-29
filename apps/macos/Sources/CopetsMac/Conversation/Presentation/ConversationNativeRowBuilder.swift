@@ -14,8 +14,12 @@ struct ConversationNativeRowBuilder {
     var replyIdentity: ConversationReplyIdentity? = nil
 
     func applyingReplyIdentity(to rows: [AppKitChatTimelineRow], entries: [ChatDisplayEntry]) -> [AppKitChatTimelineRow] {
-        guard let replyIdentity, rows.count == entries.count else { return rows }
+        guard rows.count == entries.count else { return rows }
         var result = rows
+        // Reused prefix rows may already have a header. Recompute ownership
+        // without changing content revisions or invalidating text caches.
+        for index in result.indices { result[index].replyIdentity = nil }
+        guard let replyIdentity else { return result }
         var hasReply = false
         var activeTurnID: String?
         for index in entries.indices {
@@ -34,9 +38,6 @@ struct ConversationNativeRowBuilder {
             let newTurn = !hasReply || (!turnID.isEmpty && activeTurnID != nil && activeTurnID != turnID)
             if newTurn {
                 result[index].replyIdentity = replyIdentity
-                // Separate decorated rows from their undecorated cache revisions
-                // without adding another hashing or persistence mechanism.
-                result[index].contentRevision = ~result[index].contentRevision
             }
             hasReply = true
             if !turnID.isEmpty { activeTurnID = turnID }

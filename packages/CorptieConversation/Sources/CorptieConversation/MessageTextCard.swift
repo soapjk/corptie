@@ -379,8 +379,8 @@ public struct MessageStatusGlow: View {
     }
     public var body: some View {
         RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .fill(color)
-            .shadow(color: color, radius: 4)
+            .stroke(color, lineWidth: 5)
+            .blur(radius: 4)
             .opacity(active ? (bright ? 0.85 : 0.25) : 0.65)
             .allowsHitTesting(false)
             .accessibilityHidden(true)

@@ -13,7 +13,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
             showsHeader: header, contextTimestamp: "12:34")
     }
 
-    func testLongUserCardHasSymmetricWidthAndScrollableBodyWithoutTruncation() throws {
+    func testLongUserCardRetainsWidthCeilingAndScrollableBodyWithoutTruncation() throws {
         _ = NSApplication.shared
         let text = (0..<120).map { "Line \($0): " + String(repeating: "Full message content ", count: 8) }.joined(separator: "\n")
         let user = AppKitChatTimelineRow(id: "long-user", contentRevision: 1,
@@ -23,7 +23,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
         for width: CGFloat in [320, 800] {
             let measured = NativeTimelineLayoutCache.shared.layout(for: user, columnWidth: width)
             let agent = NativeTimelineLayoutCache.shared.layout(for: reply, columnWidth: width)
-            XCTAssertEqual(measured.cardWidth, agent.cardWidth)
+            XCTAssertEqual(agent.cardWidth, width - 4)
             XCTAssertEqual(measured.cardWidth, min(width - 4, 640))
             XCTAssertEqual(measured.cardHeight, MessageCardMetrics.maximumUserCardHeight)
             XCTAssertEqual(measured.rowHeight, measured.cardHeight + 2)

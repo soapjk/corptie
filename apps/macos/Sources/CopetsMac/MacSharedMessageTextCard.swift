@@ -510,8 +510,9 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         if let measuredLayout, let row {
             let size = NSSize(width: measuredLayout.cardWidth,
                               height: measuredLayout.cardHeight)
+            let topInset = row.timeSeparatorHeight + row.replyIdentityHeight + measuredLayout.typography.rowInset
             messageGlow?.frame = NSRect(x: bounds.width - size.width - 2,
-                y: isFlipped ? row.timeSeparatorHeight + row.replyIdentityHeight + 1 : bounds.height - row.timeSeparatorHeight - row.replyIdentityHeight - 1 - size.height,
+                y: isFlipped ? topInset : bounds.height - topInset - size.height,
                 width: size.width, height: size.height)
         }
         super.layout()

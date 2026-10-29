@@ -890,9 +890,9 @@ struct ThreadItemView: View {
     private var isUserMessage: Bool { item.type == "userMessage" }
     private var isAgentMessage: Bool { item.type == "agentMessage" }
     private var isUserOrAgentMessage: Bool { isUserMessage || isAgentMessage }
-    /// 消息气泡最大宽度，保留左右留白。
+    /// Model replies use the available lane; user bubbles retain their ceiling.
     private var messageBubbleMaxWidth: CGFloat {
-        isAgentMessage ? ChatBubbleWidthPolicy.assistantMaximumWidth : ChatBubbleWidthPolicy.maximumWidth
+        isAgentMessage ? .infinity : ChatBubbleWidthPolicy.maximumWidth
     }
 
     private var userMessageStatusLabel: String? {

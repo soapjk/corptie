@@ -670,8 +670,9 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         let newIDs = nextRows.map(\.id)
         let oldRevisions = revisionsByID
         let oldReplyIdentities = rows.map(\.replyIdentity)
-        let replyIdentityChanged = rows.first(where: { $0.replyIdentity != nil })?.replyIdentity
-            != nextRows.first(where: { $0.replyIdentity != nil })?.replyIdentity
+        let oldReplyIdentitiesByID = Dictionary(uniqueKeysWithValues: rows.compactMap { row in
+            row.replyIdentity.map { (row.id, $0) }
+        })
         // Preserve reader intent across the entire mutation, including
         // geometry feedback before a coalesced correction has committed.
         let followedLatestBeforeUpdate = followsLatest
@@ -720,7 +721,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                 from: oldIDs,
                 to: newIDs,
                 oldRevisions: oldRevisions,
-                replyIdentityChanged: replyIdentityChanged,
+                oldReplyIdentities: oldReplyIdentitiesByID,
                 in: tableView
             )
             synchronizeDocumentHeight(in: tableView)
@@ -811,7 +812,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         from oldIDs: [String],
         to newIDs: [String],
         oldRevisions: [String: Int],
-        replyIdentityChanged: Bool,
+        oldReplyIdentities: [String: ConversationReplyIdentity],
         in tableView: NSTableView
     ) {
         let difference = newIDs.difference(from: oldIDs)
@@ -840,9 +841,13 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         let changedSurvivors = IndexSet(newIDs.indices.filter { index in
             !insertions.contains(index)
                 && (oldRevisions[newIDs[index]] != rows[index].contentRevision
-                    || (replyIdentityChanged && rows[index].replyIdentity != nil))
+                    || oldReplyIdentities[newIDs[index]] != rows[index].replyIdentity)
         })
         if !changedSurvivors.isEmpty {
+            heightCache = heightCache.filter { key, _ in
+                key.sessionID != representedSessionID
+                    || !changedSurvivors.contains { rows[$0].id == key.id }
+            }
             tableView.reloadData(
                 forRowIndexes: changedSurvivors,
                 columnIndexes: IndexSet(integer: 0)

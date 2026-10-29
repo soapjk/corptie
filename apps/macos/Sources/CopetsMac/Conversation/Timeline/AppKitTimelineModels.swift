@@ -251,7 +251,6 @@ extension AppKitChatTimelineRow {
 @MainActor
 enum ChatBubbleWidthPolicy {
     static let maximumWidth = MessageBubbleWidthPolicy.maximumWidth
-    static let assistantMaximumWidth: CGFloat = 800
     static let minimumWidth = MessageBubbleWidthPolicy.minimumWidth
     static let horizontalPadding = MessageBubbleWidthPolicy.horizontalPadding
     static let collapsedProcessWidth = MessageBubbleWidthPolicy.collapsedProcessWidth
@@ -262,10 +261,10 @@ enum ChatBubbleWidthPolicy {
         title: String,
         metadata: String,
         processWidth: CGFloat = 0,
-        availableWidth: CGFloat = assistantMaximumWidth,
+        availableWidth: CGFloat = maximumWidth,
         typography: ConversationTypography = .classic
     ) -> CGFloat {
-        let widthCeiling = style == .agent ? assistantMaximumWidth : maximumWidth
+        let widthCeiling = style == .agent ? availableWidth : maximumWidth
         let bodyWidth: CGFloat
         if MessageBubbleWidthPolicy.requiresFullWidthLayout(text) {
             bodyWidth = widthCeiling - horizontalPadding

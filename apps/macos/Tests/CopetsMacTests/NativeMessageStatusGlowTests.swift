@@ -22,7 +22,7 @@ final class NativeMessageStatusGlowTests: XCTestCase {
         XCTAssertEqual(glow.pathUpdateCount, count)
         glow.updateAnimation(isVisible: true, reduceMotion: false, appActive: true)
         let animation = try XCTUnwrap(glow.layer?.animation(forKey: NativeMessageStatusGlow.pulseKey) as? CABasicAnimation)
-        XCTAssertEqual(animation.keyPath, "opacity")
+        XCTAssertEqual(animation.keyPath, "shadowOpacity")
         XCTAssertEqual(glow.layer?.animationKeys(), [NativeMessageStatusGlow.pulseKey])
         for conditions in [(false, false, true), (true, true, true), (true, false, false)] {
             glow.updateAnimation(isVisible: conditions.0, reduceMotion: conditions.1, appActive: conditions.2)
@@ -31,9 +31,9 @@ final class NativeMessageStatusGlowTests: XCTestCase {
         glow.configure(try status("queued"))
         glow.updateAnimation(isVisible: true, reduceMotion: false, appActive: true)
         XCTAssertNil(glow.layer?.animationKeys())
-        XCTAssertGreaterThan(glow.layer?.opacity ?? 0, 0)
+        XCTAssertGreaterThan(glow.layer?.shadowOpacity ?? 0, 0)
         glow.configure(try status("cancelled"))
-        XCTAssertEqual(glow.layer?.opacity, 0)
+        XCTAssertEqual(glow.layer?.shadowOpacity, 0)
         XCTAssertNil(glow.hitTest(.zero))
     }
 
@@ -45,11 +45,10 @@ final class NativeMessageStatusGlowTests: XCTestCase {
         let layer = try XCTUnwrap(glow.layer)
         XCTAssertFalse(layer.masksToBounds)
         XCTAssertEqual(layer.shadowPath?.boundingBox, glow.bounds)
-        XCTAssertNil(layer.mask, "The opaque card covers the background without a second cutout edge")
-        XCTAssertEqual(layer.cornerCurve, .continuous)
-        XCTAssertEqual(layer.cornerRadius, 14)
-        XCTAssertEqual(layer.backgroundColor?.alpha, 1)
-        let cardPath = RoundedRectangle(cornerRadius: 14, style: .continuous).path(in: glow.bounds).cgPath
+        XCTAssertNil(layer.mask)
+        XCTAssertNil(layer.backgroundColor, "The historical glow paints only a soft shadow, never a solid color slab")
+        XCTAssertEqual(layer.shadowRadius, 4)
+        let cardPath = CGPath(roundedRect: glow.bounds, cornerWidth: 14, cornerHeight: 14, transform: nil)
         XCTAssertEqual(layer.shadowPath, cardPath)
         guard let device = MTLCreateSystemDefaultDevice() else { throw XCTSkip("Metal unavailable") }
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
@@ -134,6 +133,20 @@ final class NativeMessageStatusGlowTests: XCTestCase {
         XCTAssertEqual(glow.frame.width, measured.cardWidth)
         XCTAssertEqual(glow.frame.height, measured.cardHeight)
         XCTAssertEqual(glow.frame.maxX, 398)
+        for skin in [ConversationSkin.codexFlat, .classic] {
+            cell.updateAppearance(skin: skin)
+            let layout = NativeTimelineLayoutCache.shared.layout(for: message, columnWidth: 400,
+                typography: skin.typography(for: .user))
+            cell.frame.size.height = layout.rowHeight
+            cell.needsLayout = true
+            cell.layoutSubtreeIfNeeded()
+            let topInset = cell.isFlipped ? glow.frame.minY : cell.bounds.height - glow.frame.maxY
+            XCTAssertEqual(topInset, message.timeSeparatorHeight + layout.typography.rowInset)
+            XCTAssertEqual(glow.frame.size, NSSize(width: layout.cardWidth, height: layout.cardHeight))
+            let pathCount = glow.pathUpdateCount
+            glow.updateAnimation(isVisible: true, reduceMotion: false, appActive: true)
+            XCTAssertEqual(glow.pathUpdateCount, pathCount, "Breathing must not invalidate geometry")
+        }
         let plain = AppKitChatTimelineRow(id: "glow-user", contentRevision: 2,
             nativeText: "Hello", copyText: "Hello", nativeStyle: .user,
             title: "", metadata: "", expandableTurnId: nil, isExpanded: false,
