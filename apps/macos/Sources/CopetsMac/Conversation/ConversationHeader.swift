@@ -27,6 +27,7 @@ struct DetailHeaderView: View {
 }
 
 struct SessionConversationHeaderSurface: View {
+    @Environment(\.detailColumnVisibility) private var detailColumnVisibility
     let session: TaskSession?
     let historicalWorkspacePath: String?
     var activity: ConversationDetailPresentationActivity? = nil
@@ -135,7 +136,7 @@ struct SessionConversationHeaderSurface: View {
                     .help(L10n("Back to task list"))
                 }
             }
-            .frame(width: 66, alignment: .leading)
+            .frame(width: detailColumnVisibility == nil ? 66 : 104, alignment: .leading)
 
             HStack {
                 Spacer(minLength: 0)
@@ -146,6 +147,20 @@ struct SessionConversationHeaderSurface: View {
 
             HStack(spacing: 10) {
                 if session != nil {
+                    if let visibility = detailColumnVisibility {
+                        Button {
+                            visibility.wrappedValue.toggle()
+                        } label: {
+                            Image(systemName: "sidebar.right")
+                                .font(.system(size: 12, weight: .semibold))
+                                .frame(width: 28, height: 28)
+                                .platformGlassSurface(in: Circle(), interactive: true)
+                        }
+                        .buttonStyle(.plain)
+                        .help(L10n(visibility.wrappedValue ? "Hide Detail" : "Show Detail"))
+                        .accessibilityLabel(L10n(visibility.wrappedValue ? "Hide Detail" : "Show Detail"))
+                        .accessibilityIdentifier("session.detail.toggle-column")
+                    }
                     Button {
                         guard canAct, let session else { return }
                         DetachedChatWindowManager.shared.show(session: session)
@@ -187,7 +202,7 @@ struct SessionConversationHeaderSurface: View {
                     .accessibilityIdentifier("session.detail.actions")
                 }
             }
-            .frame(width: 66, alignment: .trailing)
+            .frame(width: detailColumnVisibility == nil ? 66 : 104, alignment: .trailing)
         }
     }
 

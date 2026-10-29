@@ -86,6 +86,8 @@ struct SessionConversationSurface: View {
     let presentationCache: SessionPresentationCache
     private let presentationState: SessionPresentationState
     @State private var expandedProcessTurnIds: Set<String> = []
+    @State private var expandedReplyActivityIDs: Set<String> = []
+    @State private var hasToggledReplyActivity = false
     @State private var viewportState = ConversationViewportState()
     @State private var appKitScrollToBottomRevision = 0
     @State private var headerClearance: CGFloat = 0
@@ -358,6 +360,8 @@ struct SessionConversationSurface: View {
             viewportState.reset()
             visibleMessageLimit = ChatTimelineFeatureFlags.current.initialDisplayWeight
             expandedProcessTurnIds.removeAll()
+            expandedReplyActivityIDs.removeAll()
+            hasToggledReplyActivity = false
             restoreDisplayCacheForCurrentSession()
         }
         .onChange(of: restorationTimelinePosition) { _, position in
@@ -582,15 +586,18 @@ struct SessionConversationSurface: View {
     private func appKitDetailMessages(
         displayEntries: [ChatDisplayEntry]
     ) -> some View {
-        let rows = cachedSessionId == sessionId && cachedAppKitRows.count == displayEntries.count
+        let sourceRows = cachedSessionId == sessionId && cachedAppKitRows.count == displayEntries.count
             ? cachedAppKitRows
             : preparedAppKitRows(displayEntries, cache: cachedDisplayProjection)
+        let rows = ConversationReplyActivityProjection.rows(sourceRows, entries: displayEntries,
+            expandedIDs: expandedReplyActivityIDs,
+            revealingRowID: searchRowID ?? (hasToggledReplyActivity ? nil : effectiveInitialTimelinePosition?.rowID))
         return VStack(alignment: .leading, spacing: 6) {
             AppKitChatTimelineView(
                 sessionID: sessionId,
                 rows: rows,
                 scrollToBottomRevision: appKitScrollToBottomRevision,
-                contentRevision: cachedSessionId == sessionId && cachedAppKitRows.count == displayEntries.count ? cachedRowsRevision : nil,
+                contentRevision: searchRowID == nil && cachedSessionId == sessionId && cachedAppKitRows.count == displayEntries.count ? cachedRowsRevision : nil,
                 renderInputs: renderInputs,
                 baseDirectory: displayedDetail?.cwd,
                 canAdvanceProcessClock: displayedOnline && (renderInputs?.activity.isActive ?? true)
@@ -838,6 +845,23 @@ struct SessionConversationSurface: View {
     }
 
     private func toggleNativeProcessExpansion(_ turnId: String) {
+        if turnId.hasPrefix(ConversationReplyActivityProjection.prefix) {
+            let entries = currentSessionDisplayEntries
+            let source = cachedAppKitRows.count == entries.count ? cachedAppKitRows
+                : preparedAppKitRows(entries, cache: cachedDisplayProjection)
+            let visibleGroup = ConversationReplyActivityProjection.rows(source, entries: entries,
+                expandedIDs: expandedReplyActivityIDs,
+                revealingRowID: searchRowID ?? (hasToggledReplyActivity ? nil : effectiveInitialTimelinePosition?.rowID))
+                .first { $0.id == turnId }
+            let wasExpanded = visibleGroup?.replyActivity?.isExpanded ?? expandedReplyActivityIDs.contains(turnId)
+            hasToggledReplyActivity = true
+            if wasExpanded { expandedReplyActivityIDs.remove(turnId) }
+            else { expandedReplyActivityIDs.insert(turnId) }
+            // Preserve the native timeline's revision fast path on idle renders.
+            cachedRowsRevision &+= 1
+            searchRowID = nil
+            return
+        }
         // AppKit owns the row geometry. A SwiftUI transition would put hosted
         // content and the enclosing row on different layout clocks.
         setProcessExpansion(!expandedProcessTurnIds.contains(turnId), for: turnId)

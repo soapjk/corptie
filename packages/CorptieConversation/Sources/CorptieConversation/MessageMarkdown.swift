@@ -153,7 +153,7 @@ public enum MessageMarkdown {
             hasRenderedLine = true
             previousWasBlank = line.isEmpty && !inCodeFence
             previousWasCode = inCodeFence
-            let displayLine = style == .agent && !inCodeFence ? repairedStrongEmphasis(sourceLine) : sourceLine
+            let displayLine = sourceLine
             if inCodeFence {
                 attributed.append(blockLine(
                     sourceLine,
@@ -174,7 +174,7 @@ public enum MessageMarkdown {
                     color: color,
                     paragraphSpacingBefore: typography.isReading ? 14 : (heading.level == 1 ? 8 : 5),
                     paragraphSpacing: 4,
-                    rendersMath: rendersMath, typography: typography
+                    rendersMath: rendersMath, typography: typography, toleratesModelStrong: style == .agent
                 ))
             } else if let listItem = unorderedListItem(in: displayLine) {
                 attributed.append(blockLine(
@@ -183,7 +183,7 @@ public enum MessageMarkdown {
                     color: color,
                     headIndent: CGFloat(listItem.depth * 14),
                     firstLineHeadIndent: CGFloat(listItem.depth * 14),
-                    rendersMath: rendersMath, typography: typography
+                    rendersMath: rendersMath, typography: typography, toleratesModelStrong: style == .agent
                 ))
             } else if let listItem = orderedListItem(in: displayLine) {
                 attributed.append(blockLine(
@@ -192,7 +192,7 @@ public enum MessageMarkdown {
                     color: color,
                     headIndent: CGFloat(listItem.depth * 14),
                     firstLineHeadIndent: CGFloat(listItem.depth * 14),
-                    rendersMath: rendersMath, typography: typography
+                    rendersMath: rendersMath, typography: typography, toleratesModelStrong: style == .agent
                 ))
             } else if let quote = blockQuote(in: displayLine) {
                 attributed.append(blockLine(
@@ -201,20 +201,20 @@ public enum MessageMarkdown {
                     color: quoteColor,
                     headIndent: 8,
                     firstLineHeadIndent: 0,
-                    rendersMath: rendersMath, typography: typography
+                    rendersMath: rendersMath, typography: typography, toleratesModelStrong: style == .agent
                 ))
             } else if isThematicBreak(sourceLine) {
                 attributed.append(blockLine("────────", baseFont: baseFont, color: separatorColor, typography: typography))
             } else {
-                attributed.append(blockLine(displayLine, baseFont: baseFont, color: color, rendersMath: rendersMath, typography: typography))
+                attributed.append(blockLine(displayLine, baseFont: baseFont, color: color, rendersMath: rendersMath, typography: typography, toleratesModelStrong: style == .agent))
             }
         }
         return attributed
     }
 
-    /// Tolerate whitespace inside a model's strong-emphasis delimiters without
+    /// Tolerate whitespace and punctuation beside model strong-emphasis delimiters without
     /// rewriting source payloads, escaped stars, or stars in inline code/URLs.
-    private static func repairedStrongEmphasis(_ text: String) -> String {
+    private static func repairedStrongEmphasis(_ text: String, boundary: String) -> String {
         var index = text.startIndex
         var copied = text.startIndex
         var opening: Range<String.Index>?
@@ -243,6 +243,11 @@ public enum MessageMarkdown {
                 index = text.index(after: index)
                 continue
             }
+            if character == "<", ["<https://", "<http://", "<mailto:"].contains(where: { text[index...].hasPrefix($0) }),
+               let end = text[index...].firstIndex(of: ">") {
+                index = text.index(after: end)
+                continue
+            }
             if text[index...].hasPrefix("](") {
                 destinationDepth = 1
                 index = text.index(index, offsetBy: 2)
@@ -255,8 +260,8 @@ public enum MessageMarkdown {
             if let previous = opening {
                 let body = String(text[previous.upperBound..<start])
                 let trimmed = body.trimmingCharacters(in: .whitespaces)
-                if !trimmed.isEmpty, trimmed != body {
-                    result += text[copied..<previous.lowerBound] + "**" + trimmed + "**"
+                if !trimmed.isEmpty {
+                    result += text[copied..<previous.lowerBound] + "**" + boundary + trimmed + boundary + "**"
                     copied = index
                 }
                 opening = nil
@@ -279,7 +284,8 @@ public enum MessageMarkdown {
         paragraphSpacingBefore: CGFloat = 0,
         paragraphSpacing: CGFloat = 0,
         rendersMath: Bool = true,
-        typography: ConversationTypography = .classic
+        typography: ConversationTypography = .classic,
+        toleratesModelStrong: Bool = false
     ) -> NSAttributedString {
         let effectiveFont = font ?? baseFont ?? .systemFont(ofSize: 13)
         let attributed: NSMutableAttributedString
@@ -296,6 +302,16 @@ public enum MessageMarkdown {
             prepared.replaceSubrange(item.range, with: token)
             replacements.append((token, value))
         }
+        // Alphanumeric sentinels let Foundation parse CJK punctuation-adjacent
+        // strong spans. They are source-unique and removed before measurement,
+        // selection or drawing; inline links and code still use the parser.
+        var strongBoundary: String?
+        if toleratesModelStrong, prepared.contains("**") {
+            var token = "CORPTIESTRONGBOUNDARY"
+            while prepared.contains(token) { token += "X" }
+            prepared = repairedStrongEmphasis(prepared, boundary: token)
+            strongBoundary = token
+        }
         if font == nil,
            let parsed = try? AttributedString(
                markdown: prepared,
@@ -307,6 +323,10 @@ public enum MessageMarkdown {
             attributed = NSMutableAttributedString(parsed)
         } else {
             attributed = NSMutableAttributedString(string: prepared)
+        }
+        if let strongBoundary {
+            attributed.mutableString.replaceOccurrences(of: strongBoundary, with: "", options: [],
+                range: NSRange(location: 0, length: attributed.length))
         }
         for (token, value) in replacements {
             let range = (attributed.string as NSString).range(of: token)

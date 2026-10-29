@@ -43,6 +43,7 @@ struct UnifiedConsoleView: View {
     @State var pendingSelectionTask: Task<Void, Never>?
     @State private var navigationSelection = ConsoleNavigationSelectionState()
     @State private var pagePresentation = SessionPagePresentationState()
+    @State private var showsDetailColumn = true
     var selectedCategory: SessionCategory {
         get { navigationSelection.category }
         nonmutating set { if navigationSelection.category != newValue { navigationSelection.category = newValue } }
@@ -1185,7 +1186,7 @@ struct UnifiedConsoleView: View {
            SessionCategory(session: session) == selectedCategory,
            navigationMode == .taskCards || selectedCategory != .worker
                 || isArchivedWorkerSession(session) == isShowingWorkerArchive {
-            HStack(spacing: MainWindowPageLayoutMetrics.columnSpacing) {
+            HStack(spacing: showsDetailColumn ? MainWindowPageLayoutMetrics.columnSpacing : 0) {
                 // All navigation modes share the full conversation surface.
                 // Keep details present without replacing the editor or timeline.
                 VStack(spacing: 6) {
@@ -1203,6 +1204,7 @@ struct UnifiedConsoleView: View {
                 }
                 .modifier(ConversationColumnSurface(.transcript))
 
+                Group {
                 if Self.usesResidentDetailHosts {
                     SessionDetailHostSwitcher(session: session,
                         scope: ClientDetailBusinessScope(serverID: CorptieAppEnvironment.backendBaseURL.absoluteString,
@@ -1216,9 +1218,12 @@ struct UnifiedConsoleView: View {
                     SessionDetailPanel(session: session, railWidth: ConversationDetailWidgetMetrics.railWidth, detailPresentation: detailPresentation)
                         .frame(maxHeight: .infinity)
                 }
+                }
+                .modifier(ConsoleDetailColumnVisibility(isVisible: showsDetailColumn))
             }
             .padding(MainWindowPageLayoutMetrics.outerPadding)
-            .modifier(ConsoleDetailColumnBackground())
+            .modifier(ConsoleDetailColumnBackground(isVisible: showsDetailColumn))
+            .environment(\.detailColumnVisibility, $showsDetailColumn)
         } else if let task = selectedTask {
             HStack(spacing: MainWindowPageLayoutMetrics.columnSpacing) {
                 VStack(spacing: 12) {

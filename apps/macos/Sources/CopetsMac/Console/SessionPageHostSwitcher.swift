@@ -46,6 +46,7 @@ struct ResidentSessionPageSwitcher<Fallback: View>: NSViewControllerRepresentabl
 }
 
 struct ResidentSessionPageRoot: View {
+    @State private var showsDetailColumn = true
     let inputs: SessionPageRenderInputs
     let backend: BackendClient
     let cache: SessionPresentationCache
@@ -62,7 +63,7 @@ struct ResidentSessionPageRoot: View {
         }
     }
     private var page: some View {
-        HStack(spacing: MainWindowPageLayoutMetrics.columnSpacing) {
+        HStack(spacing: showsDetailColumn ? MainWindowPageLayoutMetrics.columnSpacing : 0) {
             VStack(spacing: 6) {
                 SearchMessageNavigationSurface(sessionID: inputs.scope.sessionID,
                     target: inputs.searchTarget, matches: inputs.searchMatches) { delta in
@@ -82,9 +83,11 @@ struct ResidentSessionPageRoot: View {
             SessionDetailPanel(session: inputs.session, railWidth: ConversationDetailWidgetMetrics.railWidth,
                 activity: inputs.activity, detailPresentation: detailPresentation)
                 .frame(maxHeight: .infinity)
+                .modifier(ConsoleDetailColumnVisibility(isVisible: showsDetailColumn))
         }
         .padding(MainWindowPageLayoutMetrics.outerPadding)
-        .modifier(ConsoleDetailColumnBackground())
+        .modifier(ConsoleDetailColumnBackground(isVisible: showsDetailColumn))
+        .environment(\.detailColumnVisibility, $showsDetailColumn)
         .modifier(ConversationSkinHost())
         .environmentObject(layout)
         .environmentObject(backend)

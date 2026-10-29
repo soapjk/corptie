@@ -49,11 +49,33 @@ struct ConsolePaneContent<Content: View>: View {
 
 /// Paint outside page padding and title-bar safe areas. Card/content geometry
 /// stays unchanged, and the trailing page gutter belongs to the Detail canvas.
+private struct DetailColumnVisibilityKey: EnvironmentKey {
+    static let defaultValue: Binding<Bool>? = nil
+}
+
+extension EnvironmentValues {
+    var detailColumnVisibility: Binding<Bool>? {
+        get { self[DetailColumnVisibilityKey.self] }
+        set { self[DetailColumnVisibilityKey.self] = newValue }
+    }
+}
+
+struct ConsoleDetailColumnVisibility: ViewModifier {
+    let isVisible: Bool
+    func body(content: Content) -> some View {
+        content.frame(width: isVisible ? ConversationDetailWidgetMetrics.railWidth : 0)
+            .clipped().allowsHitTesting(isVisible).disabled(!isVisible).accessibilityHidden(!isVisible)
+    }
+}
+
 struct ConsoleDetailColumnBackground: ViewModifier {
+    var isVisible = true
     func body(content: Content) -> some View {
         content.background(alignment: .trailing) {
-            ConversationColumnBackground(.inspector)
-                .frame(width: ConversationDetailWidgetMetrics.railWidth + MainWindowPageLayoutMetrics.outerPadding)
+            if isVisible {
+                ConversationColumnBackground(.inspector)
+                    .frame(width: ConversationDetailWidgetMetrics.railWidth + MainWindowPageLayoutMetrics.outerPadding)
+            }
         }
     }
 }
@@ -220,7 +242,7 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
         saveWork?.cancel()
         isRestoring = true
         let stored = CorptieAppEnvironment.userDefaults.double(forKey: widthKey)
-        let preferred = stored > 0 ? stored : (mode == .taskCards ? 540 : PlatformWorkOutlineLayout.columnWidth)
+        let preferred = stored > 0 ? stored : (mode == .taskCards ? 540 : 284)
         let maximum = max(284, splitView.bounds.width - 581)
         splitView.setPosition(min(max(284, preferred), maximum), ofDividerAt: 0)
         isRestoring = false

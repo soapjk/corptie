@@ -1577,3 +1577,8 @@
 "Integration blocked: %@ has unfinished message deliveries. Wait for processing to finish, then generate a new plan." = "Integration blocked: %@ has unfinished message deliveries. Wait for processing to finish, then generate a new plan.";
 "Integration blocked: %@ has unfinished background work. Wait for it to finish, then generate a new plan." = "Integration blocked: %@ has unfinished background work. Wait for it to finish, then generate a new plan.";
 "Integration blocked by another Git integration job (%@). Review that job before retrying." = "Integration blocked by another Git integration job (%@). Review that job before retrying.";
+
+"Hide Detail" = "Hide Detail";
+"Show Detail" = "Show Detail";
+
+"回复过程 · %lld 项" = "Reply activity · %lld items";
