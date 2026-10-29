@@ -63,7 +63,7 @@ struct ResidentSessionPageRoot: View {
         }
     }
     private var page: some View {
-        HStack(spacing: showsDetailColumn ? MainWindowPageLayoutMetrics.columnSpacing : 0) {
+        HStack(spacing: 0) {
             VStack(spacing: 6) {
                 SearchMessageNavigationSurface(sessionID: inputs.scope.sessionID,
                     target: inputs.searchTarget, matches: inputs.searchMatches) { delta in

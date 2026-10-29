@@ -89,15 +89,6 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     private var topClearance: CGFloat = 0
     private var bottomClearance: CGFloat = 0
 
-    /// The timeline width is a parent-owned layout input. Reserving a
-    /// legacy scroller gutter unconditionally prevents the feedback loop
-    /// where content height toggles the scroller, changes text width, and
-    /// makes a two-line message become three lines after it is visible.
-    private static let verticalScrollerGutter = NSScroller.scrollerWidth(
-        for: .regular,
-        scrollerStyle: .legacy
-    )
-
     private struct HeightCacheKey: Hashable {
         let sessionID: String
         let id: String
@@ -1244,7 +1235,9 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
 
     private func synchronizeTableWidth() {
         guard let tableView, let scrollView, let column = tableView.tableColumns.first else { return }
-        let width = max(120, scrollView.bounds.width - Self.verticalScrollerGutter)
+        // The explicitly overlay-style scroller does not consume a layout lane.
+        // Parent bounds stay stable when it appears or disappears.
+        let width = max(120, scrollView.bounds.width)
         guard abs(column.width - width) >= 0.5 else { return }
         let anchor = visibleAnchor(in: tableView)
         column.width = width

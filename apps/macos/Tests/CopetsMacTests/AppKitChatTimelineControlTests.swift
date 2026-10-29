@@ -1059,7 +1059,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(secondSeparator.alignment, .center)
     }
 
-    func testSingleColumnReservesAStableScrollerGutter() async {
+    func testSingleColumnUsesViewportWidthWithoutAnUnusedScrollerGutter() async {
         let harness = makeHarness(followsLatest: true)
         harness.coordinator.apply(rows: [row(id: "message", text: "Ready")])
         harness.window.setContentSize(NSSize(width: 620, height: 320))
@@ -1070,14 +1070,33 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         )
         await settleMainQueue()
 
-        let expectedWidth = harness.scrollView.bounds.width - NSScroller.scrollerWidth(
-            for: .regular,
-            scrollerStyle: .legacy
-        )
+        let expectedWidth = harness.scrollView.bounds.width
         XCTAssertEqual(harness.tableView.tableColumns[0].width, expectedWidth, accuracy: 1)
-        XCTAssertLessThan(harness.tableView.tableColumns[0].width, harness.scrollView.bounds.width)
+        harness.scrollView.verticalScroller?.isHidden = true
+        XCTAssertEqual(harness.tableView.tableColumns[0].width, expectedWidth, accuracy: 1)
+        harness.scrollView.verticalScroller?.isHidden = false
+        XCTAssertEqual(harness.tableView.tableColumns[0].width, expectedWidth, accuracy: 1)
         XCTAssertEqual(harness.tableView.style, .plain)
         XCTAssertEqual(harness.tableView.rect(ofColumn: 0).minX, 0, accuracy: 0.5)
+    }
+
+    func testUserCardsReachViewportTrailingEdgeInBothRenderers() throws {
+        for shared in [false, true] {
+            let harness = makeHarness(followsLatest: false, useSharedTextCards: shared)
+            for skin in [ConversationSkin.classic, .codexFlat] {
+                harness.coordinator.updateSkin(skin)
+                let user = row(id: "right-aligned-user", text: "A short user message", nativeStyle: .user, showsHeader: false)
+                harness.coordinator.apply(rows: [user])
+                harness.window.layoutIfNeeded()
+                let cell = try XCTUnwrap(harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true))
+                cell.layoutSubtreeIfNeeded()
+                let body = try XCTUnwrap(textView(in: cell, identifier: "chat.timeline.body"))
+                let bodyFrame = body.convert(body.bounds, to: harness.scrollView.contentView)
+                // Body has 10pt padding inside the card and the card has 2pt exterior inset.
+                XCTAssertEqual(harness.scrollView.contentView.bounds.maxX - bodyFrame.maxX, 12, accuracy: 1)
+                XCTAssertEqual(harness.tableView.tableColumns[0].width, harness.scrollView.bounds.width, accuracy: 1)
+            }
+        }
     }
 
     func testUnbrokenModelTextWrapsInsideTheCardBoundary() throws {
