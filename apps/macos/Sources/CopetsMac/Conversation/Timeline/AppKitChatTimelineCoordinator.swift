@@ -88,6 +88,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     private var lastReflowMeasurementWidth: CGFloat?
     private var topClearance: CGFloat = 0
     private var bottomClearance: CGFloat = 0
+    private var reservesVerticalScrollerGutter = true
 
     /// The timeline width is a parent-owned layout input. Reserving a
     /// legacy scroller gutter unconditionally prevents the feedback loop
@@ -1242,9 +1243,23 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         performExactWidthReflow()
     }
 
+    func setReservesVerticalScrollerGutter(_ reserves: Bool) {
+        guard reservesVerticalScrollerGutter != reserves else { return }
+        reservesVerticalScrollerGutter = reserves
+        synchronizeTableWidth()
+        reconcileLayout()
+    }
+
     private func synchronizeTableWidth() {
         guard let tableView, let scrollView, let column = tableView.tableColumns.first else { return }
-        let width = max(120, scrollView.bounds.width - Self.verticalScrollerGutter)
+        // AppKit can restore the preferred legacy style while tiling. Compact
+        // windows require an overlay so showing the knob never narrows the clip.
+        if let timelineScrollView = scrollView as? FirstLayoutRestoringScrollView,
+           timelineScrollView.forcesOverlayScrollers != !reservesVerticalScrollerGutter {
+            timelineScrollView.forcesOverlayScrollers = !reservesVerticalScrollerGutter
+        }
+        let gutter = reservesVerticalScrollerGutter ? Self.verticalScrollerGutter : 0
+        let width = max(120, scrollView.bounds.width - gutter)
         guard abs(column.width - width) >= 0.5 else { return }
         let anchor = visibleAnchor(in: tableView)
         column.width = width

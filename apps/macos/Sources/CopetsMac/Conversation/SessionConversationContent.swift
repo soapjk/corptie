@@ -617,7 +617,8 @@ struct SessionConversationSurface: View {
                 scrollToTurnRevision: scrollTargetTurnRevision,
                 historyRequestEpoch: historyRequestEpoch,
                 topClearance: max(headerClearance, topChromeClearance),
-                bottomClearance: composerClearance
+                bottomClearance: composerClearance,
+                reservesVerticalScrollerGutter: !compactComposer
             )
             .sheet(item: $pendingFork) { selection in
                 SessionForkSheet(selection: selection, backendClient: backendClient)
