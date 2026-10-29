@@ -1582,3 +1582,6 @@
 "Show Detail" = "Show Detail";
 
 "回复过程 · %lld 项" = "Reply activity · %lld items";
+
+"展开消息" = "Expand message";
+"收起消息" = "Collapse message";

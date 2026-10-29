@@ -779,7 +779,8 @@ struct SessionConversationSurface: View {
             sessionTitle: builder.sessionTitle, workingDirectory: builder.workingDirectory,
             allowsFork: builder.allowsFork, forkUnavailableReason: builder.forkUnavailableReason,
             replyIdentity: builder.replyIdentity,
-            processReplyCompleted: entries.map(\.processReplyCompleted))
+            processReplyCompleted: entries.map(\.processReplyCompleted),
+            processReplyStates: entries.map(\.processReplyState))
         if let rows = presentationCache.preparedRows(for: sessionId, context: context) { return rows }
         let rows = builder.applyingReplyIdentity(to: entries.map {
             appKitRow($0, expansionSnapshot: expanded, builder: builder)

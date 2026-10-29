@@ -9,9 +9,16 @@ struct ConversationReplyIdentity: Equatable {
     let avatarPath: String?
 }
 
+enum ReplyIdentityLayout {
+    static let avatarSize: CGFloat = 32
+    static let headerHeight: CGFloat = 36
+    static let bottomSpacing: CGFloat = 8
+}
+
 struct AppKitChatTimelineRow: Identifiable {
+    var scheduledTrigger: ScheduledTriggerPresentation? = nil
     var replyIdentity: ConversationReplyIdentity? = nil
-    var replyIdentityHeight: CGFloat { replyIdentity == nil ? 0 : 36 }
+    var replyIdentityHeight: CGFloat { replyIdentity == nil ? 0 : ReplyIdentityLayout.headerHeight + ReplyIdentityLayout.bottomSpacing }
     var forkItemID: String? = nil
     var queuedMessageTaskID: String? = nil
     var deletableMessageID: String? = nil
@@ -20,6 +27,8 @@ struct AppKitChatTimelineRow: Identifiable {
     var timeSeparatorText: String? = nil
     var isWorkspaceCard = false
     var isCommentary = false
+    var showsReplyActions = false
+    var replyActionsHeight: CGFloat { showsReplyActions ? 26 : 0 }
     var userInput: ConversationUserInput? = nil
     var userInputItemID: String? = nil
     var userInputStatus: String? = nil
@@ -250,6 +259,7 @@ extension AppKitChatTimelineRow {
 /// AppKit measurement on top of the shared `MessageBubbleWidthPolicy` clamp.
 @MainActor
 enum ChatBubbleWidthPolicy {
+    static let functionalCardMaximumWidth: CGFloat = 480
     static let maximumWidth = MessageBubbleWidthPolicy.maximumWidth
     static let minimumWidth = MessageBubbleWidthPolicy.minimumWidth
     static let horizontalPadding = MessageBubbleWidthPolicy.horizontalPadding
@@ -290,7 +300,11 @@ enum ChatBubbleWidthPolicy {
         if row.isWorkspaceCard {
             return WorkspaceMessageCardLayout.cardWidth(in: availableWidth)
         }
-        let fullAvailableWidth = MessageBubbleWidthPolicy.fullAvailableWidth(laneWidth: availableWidth)
+        let laneWidth = MessageBubbleWidthPolicy.fullAvailableWidth(laneWidth: availableWidth)
+        let isFunctionalCard = row.nativeStyle == .agent
+            && (row.contentSurfaceRole != .assistant || row.userInput != nil || row.executionPlan != nil)
+        let fullAvailableWidth = isFunctionalCard ? min(laneWidth, functionalCardMaximumWidth) : laneWidth
+        if row.scheduledTrigger != nil { return fullAvailableWidth }
         if row.nativeStyle == .process {
             let summaryWidth = ceil((row.processPrimarySummary as NSString).size(withAttributes: [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)
@@ -322,7 +336,7 @@ enum ChatBubbleWidthPolicy {
             )
         }
         if row.collaborationRoute != nil {
-            return min(fullAvailableWidth, maximumWidth)
+            return fullAvailableWidth
         }
         let preferred = preferredWidth(
             text: row.nativeText,

@@ -106,7 +106,7 @@ final class NativeMarkdownTextCache {
 /// wrapping engine and rendered with another.
 @MainActor
 enum NativeTextKitLayout {
-    static func height(of attributedText: NSAttributedString, width: CGFloat) -> CGFloat {
+    static func height(of attributedText: NSAttributedString, width: CGFloat, maximumLines: Int = 0) -> CGFloat {
         guard attributedText.length > 0 else { return 0 }
         let textStorage = NSTextStorage(attributedString: attributedText)
         let layoutManager = NSLayoutManager()
@@ -114,7 +114,8 @@ enum NativeTextKitLayout {
             containerSize: NSSize(width: max(1, width), height: .greatestFiniteMagnitude)
         )
         textContainer.lineFragmentPadding = 0
-        textContainer.lineBreakMode = .byCharWrapping
+        textContainer.lineBreakMode = maximumLines > 0 ? .byTruncatingTail : .byCharWrapping
+        textContainer.maximumNumberOfLines = maximumLines
         textContainer.widthTracksTextView = false
         textContainer.heightTracksTextView = false
         layoutManager.addTextContainer(textContainer)
@@ -331,6 +332,9 @@ final class NativeTimelineLayoutCache {
         /// Painted card height, excluding the separator and exterior row insets.
         var cardHeight: CGFloat = 0
         var scrollsUserContent = false
+        var triggerText: NSAttributedString? = nil
+        var triggerTextHeight: CGFloat = 0
+        var triggerCanExpand = false
     }
 
     private struct Key: Hashable {
@@ -362,9 +366,11 @@ final class NativeTimelineLayoutCache {
         let userInput: ConversationUserInput?
         let userInputStatus: String?
         let executionPlan: ConversationExecutionPlan?
+        let scheduledTriggerText: String?
+        let scheduledTriggerExpanded: Bool
 
         var estimatedTextLength: Int {
-            text.utf16.count + rawStatusText.utf16.count + processSteps.reduce(into: 0) { total, step in
+            text.utf16.count + rawStatusText.utf16.count + (scheduledTriggerText?.utf16.count ?? 0) + processSteps.reduce(into: 0) { total, step in
                 total += step.title.utf16.count + (step.detail?.utf16.count ?? 0) + 32
                 if let plan = step.plan {
                     total += plan.explanation?.utf16.count ?? 0
@@ -395,7 +401,7 @@ final class NativeTimelineLayoutCache {
 
     func layout(for row: AppKitChatTimelineRow, columnWidth: CGFloat, typography requested: ConversationTypography = .classic) -> Layout {
         var layout = contentLayout(for: row, columnWidth: columnWidth, typography: requested)
-        layout.rowHeight += row.replyIdentityHeight
+        layout.rowHeight += row.replyIdentityHeight + row.replyActionsHeight
         return layout
     }
 
@@ -430,7 +436,9 @@ final class NativeTimelineLayoutCache {
             imageGeometries: row.imageGeometries,
             userInput: row.userInput,
             userInputStatus: row.userInputStatus,
-            executionPlan: row.executionPlan
+            executionPlan: row.executionPlan,
+            scheduledTriggerText: row.scheduledTrigger?.text,
+            scheduledTriggerExpanded: row.scheduledTrigger?.isExpanded ?? false
         )
         if let cached = values[key], cached.typography == typography {
             touch(key)
@@ -439,7 +447,7 @@ final class NativeTimelineLayoutCache {
         if let old = values[key] { estimatedBytes -= layoutCost(key, old) }
 
         if let request = row.userInput {
-            let cardWidth = min(560, max(120, normalizedWidth - 8))
+            let cardWidth = min(ChatBubbleWidthPolicy.functionalCardMaximumWidth, max(120, normalizedWidth - 8))
             let layout = Layout(attributedText: NSAttributedString(string: ""), richBlocks: [],
                 processBlocks: [], cardWidth: cardWidth, textHeight: 0, rawStatusHeight: 0,
                 rowHeight: userInputHeight(request, status: row.userInputStatus, cardWidth: cardWidth)
@@ -452,7 +460,7 @@ final class NativeTimelineLayoutCache {
         }
 
         if let plan = row.executionPlan {
-            let cardWidth = min(560, max(120, normalizedWidth - 8))
+            let cardWidth = min(ChatBubbleWidthPolicy.functionalCardMaximumWidth, max(120, normalizedWidth - 8))
             let measured = NativePlanChecklistHeightCache.shared.height(of: plan, width: cardWidth - 28)
             let height = min(300, measured) + 28
             let layout = Layout(attributedText: NSAttributedString(string: ""), richBlocks: [],
@@ -461,6 +469,36 @@ final class NativeTimelineLayoutCache {
             values[key] = layout
             touch(key)
             estimatedBytes += 512 + plan.steps.reduce(0) { $0 + $1.text.utf16.count * 8 }
+            evictIfNeeded()
+            return layout
+        }
+
+        if let trigger = row.scheduledTrigger {
+            let cardWidth = ChatBubbleWidthPolicy.cardWidth(for: row, availableWidth: normalizedWidth)
+            let width = max(20, cardWidth - 20)
+            let details = NativeMarkdownTextCache.shared.value(text: row.nativeText, style: .agent, typography: .classic)
+            let detailsHeight = NativeTextKitLayout.height(of: details, width: width)
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineBreakMode = .byCharWrapping
+            let message = NSAttributedString(string: trigger.text, attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph])
+            let previewHeight = NativeTextKitLayout.height(of: message, width: width, maximumLines: 3)
+            let fullHeight = NativeTextKitLayout.height(of: message, width: width)
+            let canExpand = fullHeight > previewHeight
+            let messageHeight = trigger.isExpanded ? fullHeight : previewHeight
+            let contentHeight: CGFloat = 16 + (detailsHeight > 0 ? 8 + detailsHeight : 0)
+                + (trigger.text.isEmpty ? 0 : 8 + 14 + 8 + messageHeight + (canExpand ? 8 + 20 : 0))
+            let cardHeight = contentHeight + 20
+            var layout = Layout(attributedText: details, richBlocks: [], processBlocks: [],
+                cardWidth: cardWidth, textHeight: detailsHeight, rawStatusHeight: 0,
+                rowHeight: cardHeight + row.timeSeparatorHeight + 2, cardHeight: cardHeight)
+            layout.triggerText = message
+            layout.triggerTextHeight = messageHeight
+            layout.triggerCanExpand = canExpand
+            values[key] = layout
+            touch(key)
+            estimatedBytes += layoutCost(key, layout)
             evictIfNeeded()
             return layout
         }
@@ -713,6 +751,7 @@ final class NativeTimelineLayoutCache {
 
     private func layoutCost(_ key: Key, _ value: Layout) -> Int {
         key.estimatedTextLength * 8 + value.attributedText.length * 8
+            + (value.triggerText?.length ?? 0) * 8
             + value.processBlocks.reduce(0) { $0 + $1.attributedText.length * 8 } + 192
     }
 
@@ -721,14 +760,7 @@ final class NativeTimelineLayoutCache {
               let oldest = accessByKey.min(by: { $0.value < $1.value })?.key {
             accessByKey[oldest] = nil
             guard let removed = values.removeValue(forKey: oldest) else { continue }
-            estimatedBytes = max(
-                0,
-                estimatedBytes
-                    - (oldest.estimatedTextLength * 8)
-                    - removed.attributedText.length * 8
-                    - removed.processBlocks.reduce(0) { $0 + $1.attributedText.length * 8 }
-                    - 192
-            )
+            estimatedBytes = max(0, estimatedBytes - layoutCost(oldest, removed))
         }
     }
 }

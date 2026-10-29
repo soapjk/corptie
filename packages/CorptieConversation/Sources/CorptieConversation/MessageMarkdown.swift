@@ -206,7 +206,8 @@ public enum MessageMarkdown {
             } else if isThematicBreak(sourceLine) {
                 attributed.append(blockLine("────────", baseFont: baseFont, color: separatorColor, typography: typography))
             } else {
-                attributed.append(blockLine(displayLine, baseFont: baseFont, color: color, rendersMath: rendersMath, typography: typography, toleratesModelStrong: style == .agent))
+                attributed.append(blockLine(displayLine, baseFont: baseFont, color: color, rendersMath: rendersMath, typography: typography,
+                    lineSpacing: style == .agent ? typography.lineSpacing / 2 : nil, toleratesModelStrong: style == .agent))
             }
         }
         return attributed
@@ -285,6 +286,7 @@ public enum MessageMarkdown {
         paragraphSpacing: CGFloat = 0,
         rendersMath: Bool = true,
         typography: ConversationTypography = .classic,
+        lineSpacing: CGFloat? = nil,
         toleratesModelStrong: Bool = false
     ) -> NSAttributedString {
         let effectiveFont = font ?? baseFont ?? .systemFont(ofSize: 13)
@@ -343,7 +345,7 @@ public enum MessageMarkdown {
         paragraphStyle.tailIndent = tailIndent
         paragraphStyle.paragraphSpacingBefore = paragraphSpacingBefore
         paragraphStyle.paragraphSpacing = typography.isReading && font == nil ? max(paragraphSpacing, typography.paragraphSpacing) : paragraphSpacing
-        paragraphStyle.lineSpacing = typography.lineSpacing
+        paragraphStyle.lineSpacing = lineSpacing ?? typography.lineSpacing
         // Chat messages regularly contain URLs, hashes, file paths, and model
         // identifiers with no whitespace. Word wrapping lets those runs escape
         // the fixed card width; character wrapping preserves the card boundary.

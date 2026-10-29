@@ -12,17 +12,87 @@ struct MacReplyIdentityHeader: View {
                     AnimatedAvatarImage(path: path, animates: false)
                 } else {
                     DefaultInitialAvatarView(familySeed: identity.name, variationSeed: identity.agentID,
-                        initials: DefaultAvatarInitials.make(from: identity.name), size: 24)
+                        initials: DefaultAvatarInitials.make(from: identity.name), size: ReplyIdentityLayout.avatarSize)
                 }
             }
-            .frame(width: 24, height: 24)
+            .frame(width: ReplyIdentityLayout.avatarSize, height: ReplyIdentityLayout.avatarSize)
             .clipShape(Circle())
             .accessibilityHidden(true)
             Text(identity.name).font(.system(size: 12, weight: .semibold)).lineLimit(1)
         }
-        .frame(maxWidth: .infinity, minHeight: 28, maxHeight: 28, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: ReplyIdentityLayout.headerHeight, maxHeight: ReplyIdentityLayout.headerHeight, alignment: .leading)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("chat.timeline.reply-identity")
+    }
+}
+
+/// Fixed native controls shared by both timeline renderers; no hover observation.
+final class ReplyActionBar: NSStackView {
+    private let copyButton = NSButton()
+    private let timeButton = NSButton()
+    private let branchButton = NSButton()
+    private var copyMessage: () -> Void = {}
+    private var branch: () -> Void = {}
+    private var timestamp = ""
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        orientation = .horizontal
+        alignment = .centerY
+        spacing = 6
+        identifier = .init("chat.timeline.reply-actions")
+        for (button, symbol, name, selector) in [
+            (copyButton, "doc.on.doc", "copy", #selector(copyReply)),
+            (timeButton, "clock", "timestamp", #selector(copyTimestamp)),
+            (branchButton, "arrow.triangle.branch", "fork", #selector(createBranch))
+        ] {
+            button.isBordered = false
+            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            button.imagePosition = .imageOnly
+            button.symbolConfiguration = .init(pointSize: 12, weight: .regular)
+            button.contentTintColor = .secondaryLabelColor
+            button.identifier = .init("chat.timeline.reply-actions." + name)
+            button.target = self
+            button.action = selector
+            addArrangedSubview(button)
+            button.widthAnchor.constraint(equalToConstant: 22).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        }
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(_ row: AppKitChatTimelineRow, copy: @escaping () -> Void, fork: @escaping () -> Void) {
+        copyMessage = copy
+        branch = fork
+        timestamp = row.contextTimestamp
+        copyButton.isEnabled = !row.copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        copyButton.toolTip = L10n("Copy Message")
+        timeButton.isHidden = timestamp.isEmpty
+        timeButton.toolTip = L10nFormat("Time: %@", timestamp) + " · " + L10n("Copy")
+        branchButton.isHidden = row.forkItemID == nil && row.forkUnavailableReason == nil
+        branchButton.isEnabled = row.forkItemID != nil
+        branchButton.toolTip = row.forkUnavailableReason ?? L10n("Create Branch")
+        for button in [copyButton, timeButton, branchButton] { button.setAccessibilityLabel(button.toolTip) }
+    }
+    @objc private func copyReply() { copyMessage() }
+    @objc private func copyTimestamp() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(timestamp, forType: .string)
+    }
+    @objc private func createBranch() { branch() }
+}
+
+private struct ReplyActions: NSViewRepresentable {
+    let row: AppKitChatTimelineRow
+    let copy: () -> Void
+    let performAction: (AppKitChatTimelineRow.Action) -> Void
+    func makeNSView(context: Context) -> ReplyActionBar { ReplyActionBar(frame: .zero) }
+    func updateNSView(_ view: ReplyActionBar, context: Context) {
+        view.configure(row, copy: copy, fork: {
+            guard let itemID = row.forkItemID else { return }
+            performAction(.init(id: "fork:" + itemID, label: L10n("Create Branch"),
+                isDestructive: false, kind: .forkMessage(itemID: itemID)))
+        })
     }
 }
 
@@ -46,7 +116,7 @@ struct MacSharedMessageTextCard: View {
     }
 
     static func supports(_ row: AppKitChatTimelineRow) -> Bool {
-        row.userInput != nil || row.executionPlan != nil || supportsProcess(row) || (row.nativeStyle != .process && (!row.showsHeader || row.scheduledMessageSource != nil) && !row.isCollaboration
+        row.scheduledTrigger != nil || row.userInput != nil || row.executionPlan != nil || supportsProcess(row) || (row.nativeStyle != .process && (!row.showsHeader || row.scheduledMessageSource != nil) && !row.isCollaboration
             && row.collaborationRoute == nil && row.processCount == nil && row.expandableTurnId == nil
             && (row.actions.isEmpty || (row.nativeStyle == .agent
                 && (row.nativeText.contains("```corptie-chart") || row.nativeText.contains("|"))))
@@ -74,10 +144,11 @@ struct MacSharedMessageTextCard: View {
             }
             if let identity = row.replyIdentity {
                 MacReplyIdentityHeader(identity: identity)
-                    .padding(.horizontal, 12).padding(.bottom, 8)
+                    .padding(.horizontal, 12).padding(.bottom, ReplyIdentityLayout.bottomSpacing)
             }
             Group {
-                if let input = row.userInput { userInputCard(input) }
+                if let trigger = row.scheduledTrigger { scheduledTaskCard(trigger) }
+                else if let input = row.userInput { userInputCard(input) }
                 else if let plan = row.executionPlan { executionPlanCard(plan) }
                 else if row.nativeStyle == .process { processCard }
                 else { messageCard }
@@ -86,8 +157,51 @@ struct MacSharedMessageTextCard: View {
                 alignment: row.nativeStyle == .user ? .topTrailing : .topLeading)
             .padding(.horizontal, 2)
             .padding(.vertical, layout.typography.rowInset)
+            if row.showsReplyActions {
+                ReplyActions(row: row, copy: copy, performAction: performAction)
+                    .frame(width: 78, height: 22)
+                    .frame(maxWidth: .infinity, minHeight: 26, maxHeight: 26, alignment: .topLeading)
+                    .padding(.leading, 4)
+            }
         }
         .environment(\.conversationSkin, skin)
+    }
+
+    private func scheduledTaskCard(_ trigger: ScheduledTriggerPresentation) -> some View {
+        let width = layout.cardWidth - 20
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text(row.title).font(.system(size: 13, weight: .bold)).lineLimit(1).layoutPriority(1)
+                Spacer(minLength: 0)
+                Text(row.metadata).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
+            }
+            .frame(height: 16)
+            if layout.textHeight > 0 {
+                MeasuredMessageText(text: layout.attributedText,
+                    size: .init(width: width, height: layout.textHeight), baseDirectory: baseDirectory)
+                    .frame(width: width, height: layout.textHeight)
+            }
+            if !trigger.text.isEmpty, let message = layout.triggerText {
+                Text(L10n("触发消息")).font(.system(size: 11, weight: .bold)).frame(height: 14)
+                MeasuredMessageText(text: message, size: .init(width: width, height: layout.triggerTextHeight),
+                    baseDirectory: baseDirectory, maximumLines: trigger.isExpanded ? 0 : 3)
+                    .frame(width: width, height: layout.triggerTextHeight)
+                if layout.triggerCanExpand {
+                    Button(L10n(trigger.isExpanded ? "收起消息" : "展开消息"), action: toggle)
+                    .buttonStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundStyle(.tint)
+                    .frame(height: 20)
+                    .accessibilityIdentifier("chat.timeline.scheduled-trigger-toggle")
+                }
+            }
+        }
+        .frame(width: width, alignment: .leading)
+        .padding(10)
+        .frame(width: layout.cardWidth, height: layout.cardHeight, alignment: .topLeading)
+        .modifier(ConversationContentSurface(cornerRadius: 14,
+            tint: Color(nsColor: MessageTextCardPalette.agentNativeBackground),
+            fallback: Color(nsColor: MessageTextCardPalette.agentNativeBackground),
+            isMessage: true, role: .interaction))
+        .accessibilityIdentifier("chat.timeline.scheduled-task")
     }
 
     private func userInputCard(_ request: ConversationUserInput) -> some View {
@@ -686,12 +800,15 @@ private struct MeasuredMessageText: NSViewRepresentable {
     let size: CGSize
     let baseDirectory: String?
     var contextMenu: NSMenu? = nil
+    var maximumLines = 0
     final class Coordinator { var text: NSAttributedString? }
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NativeTimelineTextView { NativeTimelineTextView() }
     func updateNSView(_ view: NativeTimelineTextView, context: Context) {
         view.linkBaseDirectory = baseDirectory
         view.cardContextMenu = contextMenu
+        view.textContainer?.maximumNumberOfLines = maximumLines
+        view.textContainer?.lineBreakMode = maximumLines > 0 ? .byTruncatingTail : .byCharWrapping
         if context.coordinator.text !== text {
             let selection = view.selectedRanges
             let sameText = view.string == text.string

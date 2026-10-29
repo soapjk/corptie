@@ -28,7 +28,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private var queuedMessageTaskID: String?
     private var deletableMessageID: String?
     private var forkUnavailableReason: String?
-    private let messageActionBar = NSStackView()
+    private let messageActionBar = ReplyActionBar(frame: .zero)
     private let actionStack = NSStackView()
     private let collaborationSentStatus = NSStackView()
     private let collaborationSentStatusIcon = NSImageView()
@@ -181,7 +181,6 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         messageStatusButton.action = #selector(showMessageStatusDetail)
         messageStatusButton.identifier = NSUserInterfaceItemIdentifier("chat.timeline.message-status")
         messageActionBar.identifier = NSUserInterfaceItemIdentifier("chat.timeline.message-actions")
-        messageActionBar.addArrangedSubview(messageStatusButton)
         processButton.isBordered = false
         processButton.alignment = .left
         processButton.imagePosition = .imageLeading
@@ -343,8 +342,8 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
                 NSLayoutConstraint.activate([
                     header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
                     header.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-                    header.bottomAnchor.constraint(equalTo: cardView.topAnchor, constant: -8),
-                    header.heightAnchor.constraint(equalToConstant: 28)
+                    header.bottomAnchor.constraint(equalTo: cardView.topAnchor, constant: -ReplyIdentityLayout.bottomSpacing),
+                    header.heightAnchor.constraint(equalToConstant: ReplyIdentityLayout.headerHeight)
                 ])
                 replyHeader = header
             }
@@ -389,7 +388,9 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         forkUnavailableReason = row.forkUnavailableReason
         configureContextMenu()
         configureMessageStatus(row.messageStatus)
-        let showsMessageStatus = false // Status light never reserves a footer.
+        messageActionBar.configure(row, copy: { [weak self] in self?.copyText() },
+            fork: { [weak self] in self?.forkMessage() })
+        let showsMessageStatus = row.showsReplyActions
         NSLayoutConstraint.deactivate([
             cardBottomStandardConstraint,
             cardBottomWithMessageActionsConstraint,
