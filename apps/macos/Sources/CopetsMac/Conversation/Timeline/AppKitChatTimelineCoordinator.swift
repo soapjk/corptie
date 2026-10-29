@@ -88,6 +88,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     private var lastReflowMeasurementWidth: CGFloat?
     private var topClearance: CGFloat = 0
     private var bottomClearance: CGFloat = 0
+    private var reservesVerticalScrollerGutter = true
 
     private struct HeightCacheKey: Hashable {
         let sessionID: String
@@ -1233,10 +1234,23 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         performExactWidthReflow()
     }
 
+    func setReservesVerticalScrollerGutter(_ reserves: Bool) {
+        guard reservesVerticalScrollerGutter != reserves else { return }
+        reservesVerticalScrollerGutter = reserves
+        synchronizeTableWidth()
+        reconcileLayout()
+    }
+
     private func synchronizeTableWidth() {
         guard let tableView, let scrollView, let column = tableView.tableColumns.first else { return }
-        // The explicitly overlay-style scroller does not consume a layout lane.
-        // Parent bounds stay stable when it appears or disappears.
+        // Compact windows must stay overlay-style even when AppKit reapplies
+        // the system scroller preference while tiling.
+        if let timelineScrollView = scrollView as? FirstLayoutRestoringScrollView,
+           timelineScrollView.forcesOverlayScrollers != !reservesVerticalScrollerGutter {
+            timelineScrollView.forcesOverlayScrollers = !reservesVerticalScrollerGutter
+        }
+        // All timelines use the full parent width; overlay scrollers do not
+        // consume a layout lane or change text wrapping when they appear.
         let width = max(120, scrollView.bounds.width)
         guard abs(column.width - width) >= 0.5 else { return }
         let anchor = visibleAnchor(in: tableView)

@@ -58,24 +58,25 @@ struct DetachedChatWindowTests {
     }
 
     @Test
-    func detachedHeaderUsesAnIndependentWorkIdentityGlassCapsule() throws {
+    func detachedHeaderUsesAFixedOpaqueFullWidthBar() throws {
         let source = try contents(of: "DetachedChatWindowManager.swift")
 
         #expect(source.contains("DetachedChatWindowTitle("))
         #expect(source.contains("ObjectiveAvatarView(objectiveID: work.id"))
         #expect(source.contains("Text(work.name)"))
-        #expect(source.contains(".platformGlassSurface(in: Capsule(), variant: .clear)"))
+        #expect(!source.contains(".platformGlassSurface(in: Capsule(), variant: .clear)"))
+        #expect(source.contains(".background(Color(nsColor: .windowBackgroundColor))"))
         #expect(!source.contains(".background(.regularMaterial)"))
         #expect(source.contains("PersistentRedWindowCloseButton(action: close)"))
-        #expect(source.contains("ZStack(alignment: .top)"))
-        #expect(source.contains("topChromeClearance: 50"))
+        #expect(source.contains("VStack(spacing: 0) {\n            windowHeader\n            Divider()"))
+        #expect(source.contains("topChromeClearance: 0"))
         #expect(source.contains(".frame(maxWidth: maximumWidth)\n        .fixedSize(horizontal: true, vertical: false)"))
         #expect(source.contains(".overlay { DetachedChatWindowDragArea() }"))
         #expect(source.contains("DetachedChatWindowTitleLayout.maximumWidth("))
     }
 
     @Test @MainActor
-    func titleCapsuleFitsShortTextAndCapsLongText() {
+    func titleFitsShortTextAndCapsLongText() {
         func measuredWidth(_ title: String, maximumWidth: CGFloat) -> CGFloat {
             NSHostingView(rootView: Text(title)
                 .lineLimit(1)
@@ -110,9 +111,10 @@ struct DetachedChatWindowTests {
         let composer = try contents(of: "Conversation/Composer/MessageComposer.swift")
 
         #expect(window.contains("compactComposer: true"))
-        #expect(window.contains("topChromeClearance: 50"))
+        #expect(window.contains("topChromeClearance: 0"))
         #expect(window.contains(".padding(.horizontal, 4)"))
-        #expect(window.contains(".padding(.top, 3)"))
+        #expect(window.contains(".frame(height: 40)"))
+        #expect(conversation.contains("reservesVerticalScrollerGutter: !compactComposer"))
         #expect(window.contains(".font(.system(size: 11, weight: .semibold))"))
         #expect(conversation.contains("compact: compactComposer"))
         #expect(composer.contains("if !compact {\n                MacComposerQuickMessages"))
@@ -123,7 +125,7 @@ struct DetachedChatWindowTests {
         #expect(!composer.contains("ConversationComposerChrome(verticalPadding: compact"))
         #expect(composer.contains("private var compactEditorRow: some View"))
         #expect(composer.contains("sendButton\n                if session?.executionTaskStatus == .running"))
-        #expect(composer.contains("SessionComposerStopButton(session: session, compact: true)"))
+        #expect(composer.contains("stopButton(compact: true)"))
         #expect(composer.contains("moreMenu\n                    .padding(.trailing, 4)"))
         #expect(composer.contains("CompactComposerLayout.maximumWidth"))
         // The refresh task now belongs to the non-compact child, so compact
@@ -280,7 +282,7 @@ struct DetachedChatWindowTests {
         let composer = source[composerStart.lowerBound..<source.endIndex]
 
         #expect(composer.contains("backendClient.sendMessage(submission.text, to: session"))
-        #expect(composer.contains("SessionComposerStopButton(session: session)"))
+        #expect(composer.contains("stopButton(compact: false)"))
         let stopButton = try contents(of: "SessionComposerStopButton.swift")
         #expect(stopButton.contains("backendClient.interrupt(session: session, surface: .sessionDetailComposerControl)"))
         #expect(!stopButton.contains("backendClient.selectedSession"))
