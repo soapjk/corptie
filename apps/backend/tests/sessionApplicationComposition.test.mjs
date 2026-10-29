@@ -4,6 +4,9 @@ import { createSessionApplicationComposition } from "../src/application/sessionA
 import { AgentProviderRegistry } from "../src/agent-provider/agentProviderRegistry.mjs";
 import { CallbackAgentProvider } from "../src/agent-provider/callbackAgentProvider.mjs";
 import { AGENT_PROVIDER_CAPABILITIES as C } from "../src/agent-provider/contracts.mjs";
+import { ToolHostService } from "../src/application/toolHostService.mjs";
+import { HostToolCatalog } from "../src/application/hostToolCatalog.mjs";
+import { collaborationDynamicTools } from "../src/collaboration/collaborationDynamicTools.mjs";
 
 for (const providerId of ["codex-app-server", "claude-code", "openclacky"]) {
   test(`${providerId}: all new Session kinds use one defaults policy; explicit choices and forks win`, async () => {
@@ -49,6 +52,9 @@ for (const providerId of ["codex-app-server", "claude-code", "openclacky"]) {
     let revision = "assigned:1";
     const service = createSessionApplicationComposition({
       store: { getSession: () => session }, agentProviderRegistry: {},
+      toolHostService: new ToolHostService({ registry: {}, catalog: new HostToolCatalog([
+        { id: "collaboration", tools: collaborationDynamicTools, execute: () => null }
+      ]) }),
       sessionBindingRepository: { resolve: () => reference },
       resolveContextReferences: async () => ({ atomic: true,
         prompt: 'Local file reference: {"absolutePath":"/tmp/中文报告.docx"}; Corptie has not read this file.' }),
@@ -61,6 +67,9 @@ for (const providerId of ["codex-app-server", "claude-code", "openclacky"]) {
     assert.match(first.prompt, /\/tmp\/中文报告.docx/);
     assert.match(first.prompt, /Corptie has not read this file/);
     assert.match(first.prompt, /ALL_TOOLS/);
+    assert.match(first.prompt, /corptie_tool_discovery/);
+    assert.match(first.prompt, /普通 Task/);
+    assert.equal(first.contextSections.filter(section => section.id === "tool-discovery").length, 1);
     assert.match(first.prompt, /name="investrace"/);
     capabilities = [{ id:"mcp:one", kind:"mcp", name:"tradude" }]; revision = "assigned:2";
     const next = await service.resolveMessageContext(reference, { message: "查运行状态" });
@@ -172,6 +181,9 @@ test("Worker message context injects bounded selected references after authorita
       getSessionToolCatalogMaterialization: () => null
     },
     agentProviderRegistry: {}, sessionBindingRepository: { resolve: () => reference },
+    toolHostService: new ToolHostService({ registry: {}, catalog: new HostToolCatalog([
+      { id: "collaboration", tools: collaborationDynamicTools, execute: () => null }
+    ]) }),
     artifactService: { indexForSession: () => ({ items: [] }) },
     mcpAssignmentRevisionForAgent: () => null,
     resolveContextReferences: async (id, options) => {
@@ -182,6 +194,8 @@ test("Worker message context injects bounded selected references after authorita
   });
   const context = await service.resolveMessageContext(reference, { message: { text: "Use the reference" } });
   assert.match(context.prompt, /corptie_message_presentation/);
+  assert.match(context.prompt, /corptie_tool_discovery/);
+  assert.ok(context.contextBudget.sectionBytes["tool-discovery"] > 0);
   assert.match(context.prompt, /prefer a native fenced/);
   assert.deepEqual(calls, [[session.id, { characterBudget: 4_096 }]]);
   assert.match(context.prompt, /Authoritative bound Task definition/);
@@ -246,6 +260,9 @@ test("Work Chat records selected Memory only when it enters the provider-neutral
   const service = createSessionApplicationComposition({
     store: { getSession: () => session },
     agentProviderRegistry: {}, sessionBindingRepository: { resolve: () => reference },
+    toolHostService: new ToolHostService({ registry: {}, catalog: new HostToolCatalog([
+      { id: "collaboration", tools: collaborationDynamicTools, execute: () => null }
+    ]) }),
     workChatContextService: { build: () => ({ prompt: "Work context" }) },
     resolveContextReferences: async () => null,
     mcpAssignmentRevisionForAgent: () => null,
@@ -258,5 +275,6 @@ test("Work Chat records selected Memory only when it enters the provider-neutral
   });
   const context = await service.resolveMessageContext(reference, { message: { text: "如何提交？" } });
   assert.match(context.prompt, /先运行本地测试/);
+  assert.match(context.prompt, /corptie_tool_discovery/);
   assert.deepEqual(statuses, [["recall:one", "context_included"]]);
 });

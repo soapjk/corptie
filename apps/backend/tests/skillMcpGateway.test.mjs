@@ -15,6 +15,20 @@ function fakeClient(name, closed) {
   };
 }
 
+test("MCP exact discovery ignores wrong hints while domain loading stays exact", async () => {
+  const gateway = new SkillMcpGateway({ resolveServers: async () => ({ first: {}, second: {} }),
+    connectServer: async name => fakeClient(name, []) });
+  const scope = { actorId: "agent:1", providerId: "provider:1" };
+  try {
+    const found = await gateway.search({ ...scope, intent: "second_lookup", domainHint: "first" });
+    assert.equal(found.domains[0].recommendedTool, "second_lookup");
+    const loaded = await gateway.domain({ ...scope, domainHint: "first" }, "skill-mcp:second");
+    assert.equal(loaded.domainId, "skill-mcp:second");
+    assert.deepEqual(loaded.tools.map(tool => tool.canonicalName), ["second_lookup"]);
+    assert.equal(await gateway.domain(scope, "skill-mcp:missing"), null);
+  } finally { await gateway.close(); }
+});
+
 test("MCP catalog fingerprints are keyed while credential rotation invalidates one gateway", async () => {
   let secret = "short-secret";
   const closed = [];
@@ -220,7 +234,7 @@ test("Skill MCP gateway exposes assigned tools as restricted-gateway discovery c
     });
     assert.equal(result.domains.length, 1);
     assert.equal(result.domains[0].domainId, "skill-mcp:investrace");
-    assert.equal(result.domains[0].recommendedTool, "investrace_diagnostics");
+    assert.equal(result.domains[0].recommendedTool, "investrace_context");
     assert.equal(result.domains[0].invocation.mode, "restricted_gateway");
     assert.match(result.domains[0].invocation.expectedCatalogVersion, /^skill-mcp:1:/);
     assert.deepEqual(result.domains[0].tools.map((tool) => tool.canonicalName), [

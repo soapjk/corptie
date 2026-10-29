@@ -698,6 +698,33 @@ test("an explicit @Session message query recommends direct Channel open", async 
   }
 });
 
+test("Task creation discovery survives wrong hints and mixed Chinese/English without loading or creating", async () => {
+  const value = await fixture();
+  try {
+    value.catalog.register({ id: "collaboration", tools: collaborationDynamicTools, execute: () => { throw new Error("discovery must not execute"); } });
+    value.catalog.register({ id: "scheduled-tasks", tools: scheduledSessionTaskDynamicTools, execute: () => null });
+    for (const [intent, domainHint] of [
+      ["Create a new Task in current Work with description and attach existing research design Artifact references", "tasks"],
+      ["corptie_collaboration_tasks_create", "collaboration-tasks"],
+      ["corptie_collaboration_tasks_create", "totally-wrong"],
+      ["新建工作任务 创建Task 非定时任务", "task-management"],
+      ["创建独立Task并指定Agent", "collaboration"],
+      ["创建子任务", "scheduled-tasks"]
+    ]) {
+      const result = await value.coordinator.search({ logicalSessionId: value.binding.logicalSessionId,
+        providerBindingId: value.binding.providerBindingId, intent, domainHint });
+      assert.equal(result.domains[0].domainId, "collaboration", intent);
+      assert.equal(result.domains[0].recommendedTool, "corptie_collaboration_tasks_create", intent);
+      assert.equal(result.domains[0].tools[0].canonicalName, result.domains[0].recommendedTool);
+      assert.equal(result.domains[0].tools.filter(tool => tool.recommended).length, 1);
+    }
+    assert.equal(value.applyCount, 0);
+    const empty = await value.coordinator.search({ logicalSessionId: value.binding.logicalSessionId,
+      providerBindingId: value.binding.providerBindingId, intent: "zzzzzz-unrelated", domainHint: "collaboration" });
+    assert.deepEqual(empty.domains, []);
+  } finally { value.store.close(); await rm(value.directory, { recursive: true, force: true }); }
+});
+
 test("Automation product terminology and historical hints discover one complete recommended contract", async () => {
   const value = await fixture();
   try {

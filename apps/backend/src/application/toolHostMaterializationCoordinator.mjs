@@ -5,7 +5,7 @@ import {
   providerContractHashFromReceipt,
   stableStringify
 } from "./hostToolCatalog.mjs";
-import { searchableDomainText } from "./toolDiscoveryContracts.mjs";
+import { rankDiscoveryCandidates, domainDiscoveryProfile } from "./toolDiscoveryContracts.mjs";
 import {
   appliedToolMaterializationReceipt,
   validateToolMaterializationReceipt
@@ -303,60 +303,43 @@ export class ToolHostMaterializationCoordinator {
     const started = performance.now();
     const binding = await this.#binding(input.logicalSessionId, input.providerBindingId);
     const snapshot = this.catalog.snapshot();
-    const query = searchableText(input.intent);
-    const queryTerms = searchTerms(query);
-    const hintTerms = searchTerms(input.domainHint);
     const domains = [];
     let domainOrder = 0;
     for (const [domainId, entries] of this.catalog.domains(catalogContext(binding))) {
-      const normalizedDomainId = searchableText(searchableDomainText(domainId));
-      if (hintTerms.length > 0 && !hintTerms.every((term) => normalizedDomainId.includes(term))) continue;
+      const profile = domainDiscoveryProfile(domainId);
+      const preferred = entries.some(entry => entry.canonicalName === profile.recommendedTool)
+        ? profile.recommendedTool : entries[0].canonicalName;
+      const rankedTools = rankDiscoveryCandidates(entries.map((entry) => ({
+        entry, name: entry.canonicalName, definition: entry.definition, domainId,
+        aliases: profile.aliases, toolAliases: entry.aliases,
+        preferred: entry.canonicalName === preferred
+      })), input);
+      if (rankedTools.length === 0) continue;
       const domainContract = this.catalog.domainContract(catalogContext(binding), domainId, {
         catalogVersion: snapshot.catalogVersion
       });
-      const domainIntentMatch = query.length > 0 && domainContract.aliases.some((alias) => {
-        const normalizedAlias = searchableText(alias);
-        return query.includes(normalizedAlias) || normalizedAlias.includes(query);
-      });
-      const rankedTools = entries
-        .map((entry) => {
-          const haystack = searchableText(
-            `${entry.canonicalName} ${entry.definition.description ?? ""} ${normalizedDomainId}`
-          );
-          const matchedTerms = queryTerms.filter((term) => haystack.includes(term));
-          const exactPhrase = query.length > 0 && haystack.includes(query);
-          const preferred = entry.canonicalName === domainContract.recommendedTool ? 1 : 0;
-          const baseScore = (exactPhrase ? queryTerms.length + 2 : matchedTerms.length)
-            + (domainIntentMatch ? 1 : 0);
-          return {
-            entry,
-            score: baseScore > 0 ? baseScore + preferred : 0
-          };
-        })
-        .filter(({ score }) => queryTerms.length === 0 || score > 0)
-        .sort((left, right) => right.score - left.score
-          || left.entry.canonicalName.localeCompare(right.entry.canonicalName));
-      if (queryTerms.length > 0 && rankedTools.length === 0) continue;
       const score = rankedTools.reduce((maximum, tool) => Math.max(maximum, tool.score), 0);
       const tools = rankedTools.map(({ entry }) => entry);
       const snapshotDomain = snapshot.domains.find((domain) => domain.domainId === domainId);
       domains.push({
         score,
+        exact: rankedTools.some(tool => tool.exact || tool.aliasExact),
         order: domainOrder++,
         contract: {
           domainId,
           domainRevision: snapshotDomain?.domainRevision ?? "1",
           toolCount: tools.length,
           aliases: domainContract.aliases,
-          recommendedTool: domainContract.recommendedTool,
+          recommendedTool: tools[0].canonicalName,
           invocation: domainContract.invocation,
-          tools: tools.slice(0, 20).map((entry) => domainContract.tools.find(
+          tools: tools.slice(0, 20).map((entry) => ({ ...domainContract.tools.find(
             (tool) => tool.canonicalName === entry.canonicalName
-          ))
+          ), recommended: entry.canonicalName === tools[0].canonicalName }))
         }
       });
     }
-    const rankedDomains = domains
+    const exactDomains = domains.filter(domain => domain.exact);
+    const rankedDomains = (exactDomains.length ? exactDomains : domains)
       .sort((left, right) => right.score - left.score || left.order - right.order)
       .map(({ contract }) => contract);
     const durationMs = performance.now() - started;
@@ -834,20 +817,6 @@ function catalogContext(binding) {
       providerBindingId: binding.providerBindingId
     }
   };
-}
-
-function searchableText(value) {
-  return String(value ?? "")
-    .normalize("NFKC")
-    .toLocaleLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .trim();
-}
-
-function searchTerms(value) {
-  const normalized = searchableText(value);
-  if (!normalized) return [];
-  return [...new Set(normalized.split(/\s+/u).filter((term) => term.length > 1))];
 }
 
 function safeErrorSummary(error) {
