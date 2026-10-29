@@ -42,25 +42,6 @@ struct SessionConversationHeaderSurface: View {
     @State private var didCopySessionTitle = false
     @State private var sessionTitleCopyFeedbackTask: Task<Void, Never>?
     @State private var didCopyWorkspacePath = false
-    private struct WorkspaceGitHead: Equatable {
-        let path: String
-        let head: GitHeadState?
-    }
-    @State private var workspaceGitHead: WorkspaceGitHead?
-    private var gitHeadState: GitHeadState? {
-        guard let path = workspacePath else { return nil }
-        if workspaceGitHead?.path == path { return workspaceGitHead?.head }
-        if let cached = GitBranchResolver.cachedHeadState(at: path) { return cached }
-        // State Sync may already carry this exact routed worktree's HEAD.
-        // Never borrow metadata for an unrelated historical workspace.
-        if !showsHistoricalThread, let workspace = session?.external?.workspace,
-           workspace.path == path, let branch = workspace.branchName, !branch.isEmpty,
-           let oid = workspace.headOid, !oid.isEmpty {
-            return .branch(name: branch, oid: oid)
-        }
-        return nil
-    }
-
     struct ProjectStatusSnapshot {
         let serverID: String
         let sessionID: String?
@@ -98,10 +79,6 @@ struct SessionConversationHeaderSurface: View {
             .onChange(of: incomingProjectStatus, initial: true) { _, status in
                 guard let status else { return }
                 lastProjectStatus = ProjectStatusSnapshot(serverID: backendClient.baseURL.absoluteString, sessionID: session?.id, workspacePath: workspacePath, status: status)
-            }
-            .task(id: isPresentationActive ? workspaceRouteIdentity : nil) {
-                guard isPresentationActive else { return }
-                await refreshGitBranch()
             }
             .onReceive(backendClient.gitHubPushController.$preparation.dropFirst()) { preparation in
                 guard canAct else { return }
@@ -261,10 +238,6 @@ struct SessionConversationHeaderSurface: View {
                     Label(L10n("Worktree continuation failed"), systemImage: "exclamationmark.triangle.fill")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.orange)
-                } else if session?.external?.workspace?.transitionStrategy == "handoff" {
-                    Label(L10n("Context handoff"), systemImage: "arrow.triangle.branch")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(CorptiePalette.secondaryText)
                 }
             }
             HStack(alignment: .center, spacing: 6) {
@@ -290,18 +263,6 @@ struct SessionConversationHeaderSurface: View {
                     }
                     .buttonStyle(.plain)
                     .help(L10nFormat("Copy full workspace path: %@", cwd))
-
-                    if let gitHeadState,
-                       gitHeadState.stampText != nil {
-                        Button {
-                            openWorktreeManagement()
-                        } label: {
-                            GitBranchStamp(headState: gitHeadState)
-                        }
-                        .buttonStyle(.plain)
-                        .help(gitHeadState.helpText ?? L10n("Manage project worktrees and service"))
-                        .accessibilityLabel(gitHeadState.helpText ?? L10n("Manage project worktrees and service"))
-                    }
                 }
                 if let status = displayedProjectStatus {
                     ProjectServiceStatusDot(status: status.service)
@@ -502,31 +463,6 @@ struct SessionConversationHeaderSurface: View {
         let path = projectPath?.isEmpty == false ? projectPath : workspacePath
         guard let path, !path.isEmpty else { return nil }
         return URL(fileURLWithPath: path).standardizedFileURL.lastPathComponent
-    }
-
-    private var workspaceRouteIdentity: String {
-        let version = session?.external?.routingVersion ?? 0
-        return "\(version):\(workspacePath ?? "")"
-    }
-
-    private func refreshGitBranch() async {
-        guard isPresentationActive, renderInputs?.acceptsPresentationUpdates ?? true else { return }
-        guard let workspacePath else {
-            workspaceGitHead = nil
-            return
-        }
-        let generation = activity?.generation ?? 0
-        while isPresentationActive && (renderInputs?.acceptsPresentationUpdates ?? true) && !Task.isCancelled {
-            let nextHeadState = await GitBranchResolver.headState(at: workspacePath)
-            guard !Task.isCancelled, activity?.allows(generation: generation) ?? true, workspacePath == self.workspacePath else {
-                return
-            }
-            let next = WorkspaceGitHead(path: workspacePath, head: nextHeadState)
-            if workspaceGitHead != next {
-                workspaceGitHead = next
-            }
-            try? await Task.sleep(for: .seconds(3))
-        }
     }
 
     private var canInterruptCurrentRun: Bool {
