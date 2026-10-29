@@ -26,11 +26,51 @@ struct MacReplyIdentityHeader: View {
     }
 }
 
+/// Local pointer tracking redraws only the hovered native button.
+final class ReplyActionIconButton: NSButton {
+    private var pointerArea: NSTrackingArea?
+    private var pointerInside = false
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let pointerArea { removeTrackingArea(pointerArea) }
+        let area = NSTrackingArea(rect: .zero,
+            options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        pointerArea = area
+    }
+    override func mouseEntered(with event: NSEvent) {
+        guard isEnabled else { return }
+        pointerInside = true
+        contentTintColor = .labelColor
+        needsDisplay = true
+    }
+    override func mouseExited(with event: NSEvent) { clearHover() }
+    override var isEnabled: Bool {
+        didSet { if !isEnabled { clearHover() } }
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { clearHover() }
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        if pointerInside && isEnabled {
+            NSColor.labelColor.withAlphaComponent(0.12).setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 2), xRadius: 4, yRadius: 4).fill()
+        }
+        super.draw(dirtyRect)
+    }
+    private func clearHover() {
+        pointerInside = false
+        contentTintColor = .secondaryLabelColor
+        needsDisplay = true
+    }
+}
+
 /// Fixed native controls shared by both timeline renderers; no hover observation.
 final class ReplyActionBar: NSStackView {
-    private let copyButton = NSButton()
+    private let copyButton = ReplyActionIconButton()
     private let timeButton = NSButton()
-    private let branchButton = NSButton()
+    private let branchButton = ReplyActionIconButton()
     private var copyMessage: () -> Void = {}
     private var branch: () -> Void = {}
     private var timestamp = ""
@@ -43,11 +83,11 @@ final class ReplyActionBar: NSStackView {
         identifier = .init("chat.timeline.reply-actions")
         for (button, symbol, name, selector) in [
             (copyButton, "doc.on.doc", "copy", #selector(copyReply)),
-            (timeButton, "clock", "timestamp", #selector(copyTimestamp)),
-            (branchButton, "arrow.triangle.branch", "fork", #selector(createBranch))
+            (branchButton, "arrow.triangle.branch", "fork", #selector(createBranch)),
+            (timeButton, "", "timestamp", #selector(copyTimestamp))
         ] {
             button.isBordered = false
-            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            button.image = symbol.isEmpty ? nil : NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
             button.imagePosition = .imageOnly
             button.symbolConfiguration = .init(pointSize: 12, weight: .regular)
             button.contentTintColor = .secondaryLabelColor
@@ -55,16 +95,28 @@ final class ReplyActionBar: NSStackView {
             button.target = self
             button.action = selector
             addArrangedSubview(button)
-            button.widthAnchor.constraint(equalToConstant: 22).isActive = true
+            if button !== timeButton { button.widthAnchor.constraint(equalToConstant: 22).isActive = true }
             button.heightAnchor.constraint(equalToConstant: 22).isActive = true
         }
+        timeButton.imagePosition = .noImage
+        timeButton.font = .systemFont(ofSize: 10.5)
+        timeButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        timeButton.cell?.lineBreakMode = .byTruncatingTail
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    static func width(for row: AppKitChatTimelineRow) -> CGFloat {
+        let timestampWidth = ceil((row.contextTimestamp as NSString).size(withAttributes: [
+            .font: NSFont.systemFont(ofSize: 10.5)
+        ]).width) + 8
+        return 56 + (row.contextTimestamp.isEmpty ? 0 : timestampWidth)
+    }
 
     func configure(_ row: AppKitChatTimelineRow, copy: @escaping () -> Void, fork: @escaping () -> Void) {
         copyMessage = copy
         branch = fork
         timestamp = row.contextTimestamp
+        timeButton.title = timestamp
         copyButton.isEnabled = !row.copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         copyButton.toolTip = L10n("Copy Message")
         timeButton.isHidden = timestamp.isEmpty
@@ -159,7 +211,7 @@ struct MacSharedMessageTextCard: View {
             .padding(.vertical, layout.typography.rowInset)
             if row.showsReplyActions {
                 ReplyActions(row: row, copy: copy, performAction: performAction)
-                    .frame(width: 78, height: 22)
+                    .frame(width: min(ReplyActionBar.width(for: row), layout.cardWidth - 4), height: 22)
                     .frame(maxWidth: .infinity, minHeight: 26, maxHeight: 26, alignment: .topLeading)
                     .padding(.leading, 4)
             }

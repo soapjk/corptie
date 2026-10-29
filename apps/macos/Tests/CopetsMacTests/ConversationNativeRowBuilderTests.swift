@@ -283,6 +283,18 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         )
     }
 
+    func testReplyActionIconsKeepDisabledButtonsNeutral() {
+        let button = ReplyActionIconButton()
+        let event = NSEvent()
+        button.mouseEntered(with: event)
+        XCTAssertEqual(button.contentTintColor, .labelColor)
+        button.mouseExited(with: event)
+        XCTAssertEqual(button.contentTintColor, .secondaryLabelColor)
+        button.isEnabled = false
+        button.mouseEntered(with: event)
+        XCTAssertEqual(button.contentTintColor, .secondaryLabelColor)
+    }
+
     func testFinalReplyActionsAreOutsideContentAndRespectLifecycleAndCapabilities() throws {
         let final = builder().nativeAppKitRow(.init(kind: .message(try item([
             "createdAt": "2026-10-29T12:00:00Z"]))), expandedTurnIds: [])
@@ -322,6 +334,8 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
             XCTAssertEqual(NSPasteboard.general.string(forType: .string), final.copyText)
             let clock = try XCTUnwrap(button(cell, "timestamp"))
             XCTAssertFalse(clock.isHiddenOrHasHiddenAncestor)
+            XCTAssertEqual(clock.title, final.contextTimestamp)
+            XCTAssertEqual(clock.imagePosition, .noImage)
             clock.performClick(nil)
             XCTAssertEqual(NSPasteboard.general.string(forType: .string), final.contextTimestamp)
             let fork = try XCTUnwrap(button(cell, "fork"))
