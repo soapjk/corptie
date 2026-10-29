@@ -386,6 +386,11 @@ struct MacSharedMessageTextCard: View {
                     .padding(.top, 4)
                 }
             }
+            .background {
+                if row.nativeStyle == .user && layout.scrollsUserContent {
+                    ConsoleOverlayScroller()
+                }
+            }
         }
         .accessibilityActions {
             if !row.copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

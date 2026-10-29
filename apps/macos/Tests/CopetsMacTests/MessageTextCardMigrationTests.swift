@@ -43,6 +43,9 @@ final class MessageTextCardMigrationTests: XCTestCase {
             (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap(scrollViews)
         }
         let scroll = try XCTUnwrap(scrollViews(cell).first)
+        XCTAssertTrue(scroll.verticalScroller is ConsoleThinScroller)
+        XCTAssertEqual(scroll.scrollerStyle, .overlay)
+        XCTAssertTrue(scroll.autohidesScrollers)
         XCTAssertGreaterThan(try XCTUnwrap(scroll.documentView).bounds.height, scroll.contentView.bounds.height)
         scroll.contentView.scroll(to: NSPoint(x: 0, y: 100))
         XCTAssertGreaterThan(scroll.contentView.bounds.minY, 0)
