@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Paint-only variants. Geometry, content and execution semantics never depend on a skin.
+/// Appearance and reading variants. Workspace structure and execution semantics stay shared.
 public enum ConversationSkin: String, CaseIterable, Sendable {
     case classic
     case codexFlat

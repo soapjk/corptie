@@ -4,18 +4,8 @@ import SwiftUI
 
 @MainActor
 final class ConsoleNativeSplitView: NSSplitView {
-    // Preserve the native divider hit area. Only the flat skin paints its boundary.
-    private var skin = ConversationSkin.classic
-    func updateSkin(_ next: ConversationSkin) {
-        guard skin != next else { return }
-        skin = next; needsDisplay = true
-    }
-    override func drawDivider(in rect: NSRect) {
-        guard skin == .codexFlat else { return }
-        NSColor.separatorColor.setFill()
-        let width = 1 / (window?.backingScaleFactor ?? 2)
-        NSRect(x: rect.midX - width / 2, y: rect.minY, width: width, height: rect.height).fill()
-    }
+    // Column colors provide the boundary; keep the native divider's hit area.
+    override func drawDivider(in rect: NSRect) {}
 
     // A viewport has no content-derived ideal size. In particular, querying
     // fittingSize must not recursively measure the SwiftUI trees it contains.
@@ -57,8 +47,18 @@ struct ConsolePaneContent<Content: View>: View {
     }
 }
 
+/// Paint outside page padding and title-bar safe areas. Card/content geometry
+/// stays unchanged, and the trailing page gutter belongs to the Detail canvas.
+struct ConsoleDetailColumnBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        content.background(alignment: .trailing) {
+            ConversationColumnBackground(.inspector)
+                .frame(width: ConversationDetailWidgetMetrics.railWidth + MainWindowPageLayoutMetrics.outerPadding)
+        }
+    }
+}
+
 struct ConsoleWindowSplitView<Sidebar: View, Detail: View>: NSViewControllerRepresentable {
-    @Environment(\.conversationSkin) private var skin
     let mode: ConsoleNavigationMode
     let isActive: Bool
     let sidebar: () -> Sidebar
@@ -78,7 +78,6 @@ struct ConsoleWindowSplitView<Sidebar: View, Detail: View>: NSViewControllerRepr
 
     func updateNSViewController(_ controller: ConsoleSplitController<ConsolePaneContent<Sidebar>, ConsolePaneContent<Detail>>, context: Context) {
         controller.update(mode: mode, isActive: isActive, sidebar: ConsolePaneContent(content: sidebar, columnRole: .sidebar), detail: ConsolePaneContent(content: detail))
-        (controller.splitView as? ConsoleNativeSplitView)?.updateSkin(skin)
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsViewController: ConsoleSplitController<ConsolePaneContent<Sidebar>, ConsolePaneContent<Detail>>, context: Context) -> CGSize? {

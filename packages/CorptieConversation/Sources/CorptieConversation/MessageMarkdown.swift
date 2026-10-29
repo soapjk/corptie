@@ -46,19 +46,20 @@ public enum MessageMarkdown {
         text: String,
         style: Style,
         rendersMath: Bool = true,
-        boundary: MessageTextBoundary = .both
+        boundary: MessageTextBoundary = .both,
+        typography: ConversationTypography = .classic
     ) -> NSAttributedString {
         guard style != .process else { return makeMarkdown(text: text, style: style, rendersMath: false) }
         let result = NSMutableAttributedString(string: "")
         for block in MessageMath.blocks(messageSource(text, boundary: boundary)) {
             switch block {
-            case .text(let text): result.append(makeMarkdown(text: text, style: style, rendersMath: rendersMath))
+            case .text(let text): result.append(makeMarkdown(text: text, style: style, rendersMath: rendersMath, typography: typography))
             case .formula(let formula):
-                let rendered = rendersMath ? MessageMathRenderer.attributed(formula, user: style == .user) : nil
+                let rendered = rendersMath ? MessageMathRenderer.attributed(formula, user: style == .user, typography: typography) : nil
                 let paragraph = NSMutableParagraphStyle()
                 paragraph.lineBreakMode = .byCharWrapping
                 result.append(rendered ?? NSAttributedString(string: formula.source, attributes: [
-                        .font: MessageFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                        .font: MessageFont.monospacedSystemFont(ofSize: typography.codeSize, weight: .regular),
                         .foregroundColor: style == .user ? MessageTextCardPalette.userNativeForeground : secondaryText,
                         .paragraphStyle: paragraph]))
             }
@@ -112,9 +113,9 @@ public enum MessageMarkdown {
         }
     }
 
-    private static func makeMarkdown(text: String, style: Style, rendersMath: Bool = true) -> NSAttributedString {
+    private static func makeMarkdown(text: String, style: Style, rendersMath: Bool = true, typography: ConversationTypography = .classic) -> NSAttributedString {
         let baseFont: MessageFont = switch style {
-        case .user, .agent: .systemFont(ofSize: 11, weight: .medium)
+        case .user, .agent: .systemFont(ofSize: typography.bodySize(for: style), weight: typography.isReading ? .regular : .medium)
         case .process: .systemFont(ofSize: 10.5, weight: .semibold)
         }
         let color = style == .user ? MessageTextCardPalette.userNativeForeground : secondaryText
@@ -126,6 +127,8 @@ public enum MessageMarkdown {
         var inCodeFence = false
         let lines = text.components(separatedBy: "\n")
         var hasRenderedLine = false
+        var previousWasBlank = false
+        var previousWasCode = false
         for sourceLine in lines {
             let line = sourceLine.trimmingCharacters(in: .whitespaces)
             if line.hasPrefix("```") || line.hasPrefix("~~~") {
@@ -133,29 +136,43 @@ public enum MessageMarkdown {
                 continue
             }
             if hasRenderedLine {
-                attributed.append(NSAttributedString(string: "\n", attributes: [.font: baseFont]))
+                if typography.isReading && previousWasBlank {
+                    // Preserve character offsets across skins without counting
+                    // an empty source paragraph as another full-size text line.
+                    let paragraph = NSMutableParagraphStyle()
+                    paragraph.lineBreakMode = .byCharWrapping
+                    attributed.append(NSAttributedString(string: "\n", attributes: [
+                        .font: MessageFont.systemFont(ofSize: 1), .paragraphStyle: paragraph]))
+                } else {
+                    let separatorFont = typography.isReading && previousWasCode
+                        ? MessageFont.monospacedSystemFont(ofSize: typography.codeSize, weight: .regular) : baseFont
+                    attributed.append(NSAttributedString(string: "\n", attributes: [.font: separatorFont]))
+                }
             }
             hasRenderedLine = true
+            previousWasBlank = line.isEmpty && !inCodeFence
+            previousWasCode = inCodeFence
             if inCodeFence {
                 attributed.append(blockLine(
                     sourceLine,
-                    font: .monospacedSystemFont(ofSize: 12, weight: .regular),
+                    font: .monospacedSystemFont(ofSize: typography.codeSize, weight: .regular),
                     color: color,
                     backgroundColor: codeBackground,
                     headIndent: 8,
-                    tailIndent: -8
+                    tailIndent: -8,
+                    typography: typography
                 ))
             } else if let heading = heading(in: sourceLine) {
                 attributed.append(blockLine(
                     heading.text,
                     baseFont: .systemFont(
-                        ofSize: max(14, 21 - CGFloat(heading.level * 2)),
-                        weight: .bold
+                        ofSize: typography.headingSize(level: heading.level),
+                        weight: typography.isReading ? .semibold : .bold
                     ),
                     color: color,
-                    paragraphSpacingBefore: heading.level == 1 ? 8 : 5,
+                    paragraphSpacingBefore: typography.isReading ? 14 : (heading.level == 1 ? 8 : 5),
                     paragraphSpacing: 4,
-                    rendersMath: rendersMath
+                    rendersMath: rendersMath, typography: typography
                 ))
             } else if let listItem = unorderedListItem(in: sourceLine) {
                 attributed.append(blockLine(
@@ -164,7 +181,7 @@ public enum MessageMarkdown {
                     color: color,
                     headIndent: CGFloat(listItem.depth * 14),
                     firstLineHeadIndent: CGFloat(listItem.depth * 14),
-                    rendersMath: rendersMath
+                    rendersMath: rendersMath, typography: typography
                 ))
             } else if let listItem = orderedListItem(in: sourceLine) {
                 attributed.append(blockLine(
@@ -173,7 +190,7 @@ public enum MessageMarkdown {
                     color: color,
                     headIndent: CGFloat(listItem.depth * 14),
                     firstLineHeadIndent: CGFloat(listItem.depth * 14),
-                    rendersMath: rendersMath
+                    rendersMath: rendersMath, typography: typography
                 ))
             } else if let quote = blockQuote(in: sourceLine) {
                 attributed.append(blockLine(
@@ -182,12 +199,12 @@ public enum MessageMarkdown {
                     color: quoteColor,
                     headIndent: 8,
                     firstLineHeadIndent: 0,
-                    rendersMath: rendersMath
+                    rendersMath: rendersMath, typography: typography
                 ))
             } else if isThematicBreak(sourceLine) {
-                attributed.append(blockLine("────────", baseFont: baseFont, color: separatorColor))
+                attributed.append(blockLine("────────", baseFont: baseFont, color: separatorColor, typography: typography))
             } else {
-                attributed.append(blockLine(sourceLine, baseFont: baseFont, color: color, rendersMath: rendersMath))
+                attributed.append(blockLine(sourceLine, baseFont: baseFont, color: color, rendersMath: rendersMath, typography: typography))
             }
         }
         return attributed
@@ -204,7 +221,8 @@ public enum MessageMarkdown {
         tailIndent: CGFloat = 0,
         paragraphSpacingBefore: CGFloat = 0,
         paragraphSpacing: CGFloat = 0,
-        rendersMath: Bool = true
+        rendersMath: Bool = true,
+        typography: ConversationTypography = .classic
     ) -> NSAttributedString {
         let effectiveFont = font ?? baseFont ?? .systemFont(ofSize: 13)
         let attributed: NSMutableAttributedString
@@ -216,7 +234,7 @@ public enum MessageMarkdown {
         for (index, item) in formulas.enumerated().reversed() {
             let token = "CORPTIEMATH\(index)PLACEHOLDER"
             guard !text.contains(token) else { continue }
-            let rendered = rendersMath ? MessageMathRenderer.attributed(item.formula, user: color == MessageTextCardPalette.userNativeForeground) : nil
+            let rendered = rendersMath ? MessageMathRenderer.attributed(item.formula, user: color == MessageTextCardPalette.userNativeForeground, typography: typography) : nil
             let value = rendered ?? NSAttributedString(string: item.formula.source)
             prepared.replaceSubrange(item.range, with: token)
             replacements.append((token, value))
@@ -247,7 +265,8 @@ public enum MessageMarkdown {
         paragraphStyle.firstLineHeadIndent = firstLineHeadIndent ?? headIndent
         paragraphStyle.tailIndent = tailIndent
         paragraphStyle.paragraphSpacingBefore = paragraphSpacingBefore
-        paragraphStyle.paragraphSpacing = paragraphSpacing
+        paragraphStyle.paragraphSpacing = typography.isReading && font == nil ? max(paragraphSpacing, typography.paragraphSpacing) : paragraphSpacing
+        paragraphStyle.lineSpacing = typography.lineSpacing
         // Chat messages regularly contain URLs, hashes, file paths, and model
         // identifiers with no whitespace. Word wrapping lets those runs escape
         // the fixed card width; character wrapping preserves the card boundary.

@@ -11,8 +11,8 @@ public enum MessageCardMetrics {
         max(0, contentHeight) + contentInset * 2
     }
 
-    public static func rowHeight(cardHeight: CGFloat, separatorHeight: CGFloat = 0) -> CGFloat {
-        separatorHeight + cardHeight + rowInset * 2
+    public static func rowHeight(cardHeight: CGFloat, separatorHeight: CGFloat = 0, typography: ConversationTypography = .classic) -> CGFloat {
+        separatorHeight + cardHeight + typography.rowInset * 2
     }
 }
 

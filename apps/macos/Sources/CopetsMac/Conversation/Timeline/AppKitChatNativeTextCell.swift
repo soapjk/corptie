@@ -10,6 +10,9 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private var representedImageLayout = MessageImageGalleryLayout.layout(geometries: [], width: 0)
     private let cardView = NativeContentCardSurface(frame: .zero)
     private var skin = ConversationSkin.classic
+    private var renderedRow: AppKitChatTimelineRow?
+    private var renderedWidth: CGFloat = 0
+    private var measuredTypography = ConversationTypography.classic
     private var surfaceRole = ConversationSurfaceRole.structured
     private var messageGlow: NativeMessageStatusGlow?
     private let timeSeparatorLabel = NSTextField(labelWithString: "")
@@ -301,6 +304,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         guard self.skin != skin else { return }
         self.skin = skin
         cardView.updateSkin(skin, role: surfaceRole)
+        if let row = renderedRow { _ = updateLayoutIfContentUnchanged(row, availableWidth: renderedWidth) }
     }
 
     func setContent(
@@ -310,7 +314,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         onToggleExpansion: @escaping (String) -> Void,
         onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in }
     ) {
-        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth)
+        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth, typography: skin.typography(for: row.nativeStyle == .user ? .user : .assistant))
         // Retire the old topology before resizing a reused image canvas. Leaving
         // its fixed width/height attached while shrinking the bubble generates
         // intermediate Auto Layout conflicts before the new topology is installed.
@@ -322,6 +326,9 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         ])
         imageStack.arrangedSubviews.forEach { imageStack.removeArrangedSubview($0); $0.removeFromSuperview() }
         label.endTextSelection()
+        renderedRow = row
+        renderedWidth = availableWidth
+        measuredTypography = layout.typography
         representedRowID = row.id
         representedContentRevision = row.contentRevision
         representedProcessRow = row.nativeStyle == .process ? row : nil
@@ -381,7 +388,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         messageActionBar.alphaValue = 1
         timeSeparatorLabel.stringValue = row.timeSeparatorText ?? ""
         timeSeparatorLabel.isHidden = row.timeSeparatorText == nil
-        cardTopConstraint.constant = row.timeSeparatorText == nil ? 1 : 29
+        cardTopConstraint.constant = row.timeSeparatorHeight + layout.typography.rowInset
         cardLeadingConstraint.isActive = row.nativeStyle != .user
         cardTrailingConstraint.isActive = row.nativeStyle == .user
         let hasProcess = row.processCount != nil
@@ -550,7 +557,14 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         guard representedRowID == row.id,
               representedContentRevision == row.contentRevision,
               representedImageGeometries == row.imageGeometries else { return false }
-        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth)
+        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth, typography: skin.typography(for: row.nativeStyle == .user ? .user : .assistant))
+        renderedWidth = availableWidth
+        if measuredTypography != layout.typography {
+            let selection = label.selectedRanges
+            label.textStorage?.setAttributedString(layout.attributedText)
+            label.selectedRanges = selection
+            measuredTypography = layout.typography
+        }
         if layout.imageLayout.size.width < representedImageLayout.size.width { resizeImages(layout.imageLayout) }
         apply(layout: layout)
         if representedImageLayout != layout.imageLayout { resizeImages(layout.imageLayout) }
@@ -560,6 +574,9 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     }
 
     private func apply(layout: NativeTimelineLayoutCache.Layout) {
+        cardTopConstraint.constant = (renderedRow?.timeSeparatorHeight ?? 0) + layout.typography.rowInset
+        cardBottomStandardConstraint.constant = -layout.typography.rowInset
+        cardBottomWithMessageActionsConstraint.constant = -26 - layout.typography.rowInset
         labelHeightConstraint.constant = layout.textHeight
         labelTopToImagesConstraint.constant = layout.textHeight > 0 ? MessageCardMetrics.contentSpacing : 0
         rawStatusHeightConstraint.constant = layout.rawStatusHeight

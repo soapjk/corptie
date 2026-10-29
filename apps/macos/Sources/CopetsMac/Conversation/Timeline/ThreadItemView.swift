@@ -6,6 +6,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ThreadItemView: View {
+    @Environment(\.conversationSkin) private var conversationSkin
     @EnvironmentObject private var backendClient: BackendClient
     @Environment(\.isLiquidGlass) private var isLiquidGlass
     @State private var isActivityExpanded = false
@@ -662,6 +663,7 @@ struct ThreadItemView: View {
             maxWidth: .infinity,
             alignment: isUserMessage ? .trailing : .leading
         )
+        .padding(.vertical, isUserOrAgentMessage && conversationSkin == .codexFlat ? 5 : 0)
         .onHover { hovering in
             isHovering = hovering
         }
@@ -889,7 +891,9 @@ struct ThreadItemView: View {
     private var isAgentMessage: Bool { item.type == "agentMessage" }
     private var isUserOrAgentMessage: Bool { isUserMessage || isAgentMessage }
     /// 消息气泡最大宽度，保留左右留白。
-    private var messageBubbleMaxWidth: CGFloat { ChatBubbleWidthPolicy.maximumWidth }
+    private var messageBubbleMaxWidth: CGFloat {
+        isAgentMessage ? ChatBubbleWidthPolicy.assistantMaximumWidth : ChatBubbleWidthPolicy.maximumWidth
+    }
 
     private var userMessageStatusLabel: String? {
         switch item.authoritativeUserMessageState {
@@ -941,7 +945,8 @@ struct ThreadItemView: View {
             text: measurementText,
             style: style,
             title: "",
-            metadata: ""
+            metadata: "",
+            typography: conversationSkin.typography(for: isUserMessage ? .user : .assistant)
         )
     }
 
@@ -1057,7 +1062,8 @@ struct ThreadItemView: View {
             baseDirectory: backendClient.selectedContentDirectory,
             allowsSelection: allowsSelection,
             fillWidth: fillWidth,
-            maxContentWidth: fillWidth ? nil : (messageBubbleMaxWidth - 20)
+            maxContentWidth: fillWidth ? nil : (messageBubbleMaxWidth - 20),
+            typography: isUserOrAgentMessage ? conversationSkin.typography(for: isUserMessage ? .user : .assistant).body(for: isUserMessage ? .user : .agent) : .classic
         )
     }
 

@@ -2,9 +2,9 @@ import Foundation
 import SwiftUI
 import CorptieClientCore
 
-/// Card width rules of an ordinary message, identical on macOS (AppKit timeline)
-/// and iPad (SwiftUI timeline). Hosts measure text with their own text engine and
-/// hand the natural widths in; the clamp, padding and image floor live here.
+/// Shared message width rules. Hosts measure text with their own text engine and
+/// supply natural widths and, when needed, a role-specific width ceiling.
+/// Default limits, padding and the image floor remain shared across platforms.
 public enum MessageBubbleWidthPolicy {
     /// SwiftUI hosts can supply the actual intrinsic card width, including
     /// scaled fonts, icons, spacing and padding, instead of estimating glyphs.
@@ -44,8 +44,9 @@ public enum MessageBubbleWidthPolicy {
     /// `fullWidthBody` for rich Markdown); `headerWidth` / `processWidth` are the
     /// other in-card rows competing for width.
     public static func preferredWidth(bodyWidth: CGFloat, headerWidth: CGFloat = 0,
-                                      processWidth: CGFloat = 0, availableWidth: CGFloat = maximumWidth) -> CGFloat {
-        let available = max(minimumWidth, min(maximumWidth, availableWidth))
+                                      processWidth: CGFloat = 0, availableWidth: CGFloat = maximumWidth,
+                                      widthCeiling: CGFloat = maximumWidth) -> CGFloat {
+        let available = max(minimumWidth, min(widthCeiling, availableWidth))
         return min(available, max(minimumWidth, max(bodyWidth, headerWidth, processWidth) + horizontalPadding))
     }
 

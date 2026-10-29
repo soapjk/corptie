@@ -57,7 +57,7 @@ struct MacSharedMessageTextCard: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity,
                 alignment: row.nativeStyle == .user ? .topTrailing : .topLeading)
             .padding(.horizontal, 2)
-            .padding(.vertical, MessageCardMetrics.rowInset)
+            .padding(.vertical, layout.typography.rowInset)
         }
         .environment(\.conversationSkin, skin)
     }
@@ -373,7 +373,12 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
     func updateAppearance(skin: ConversationSkin) {
         guard self.skin != skin else { return }
         self.skin = skin
-        updateHost(needsLayout: false)
+        guard let row, let measuredWidth else { return }
+        let typography = row.readingTypography(skin.typography(for: row.nativeStyle == .user ? .user : .assistant))
+        if measuredLayout?.typography != typography {
+            measuredLayout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: measuredWidth, typography: typography)
+            updateHost()
+        } else { updateHost(needsLayout: false) }
     }
 
     func updateCallbacks(onToggleExpansion: @escaping (String) -> Void,
@@ -399,7 +404,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         elapsedSummary.text = nil
         self.onToggleExpansion = onToggleExpansion
         self.onAction = onAction
-        measuredLayout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth)
+        measuredLayout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth, typography: skin.typography(for: row.nativeStyle == .user ? .user : .assistant))
         measuredWidth = availableWidth
         contentConfigurationCount += 1
         configureContextMenu(for: row)
@@ -410,9 +415,9 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
     func updateLayoutIfContentUnchanged(_ row: AppKitChatTimelineRow, availableWidth: CGFloat) -> Bool {
         guard self.row?.id == row.id, self.row?.contentRevision == row.contentRevision,
               representedImageGeometries == row.imageGeometries else { return false }
-        guard measuredWidth != availableWidth else { return true }
+        guard measuredWidth != availableWidth || measuredLayout?.typography != row.readingTypography(skin.typography(for: row.nativeStyle == .user ? .user : .assistant)) else { return true }
         measuredWidth = availableWidth
-        measuredLayout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth)
+        measuredLayout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth, typography: skin.typography(for: row.nativeStyle == .user ? .user : .assistant))
         widthLayoutUpdateCount += 1
         ChatPerformanceRecorder.shared.increment(.appKitRowWidthUpdates)
         updateHost()
@@ -657,7 +662,10 @@ private struct MeasuredMessageText: NSViewRepresentable {
         view.linkBaseDirectory = baseDirectory
         view.cardContextMenu = contextMenu
         if context.coordinator.text !== text {
+            let selection = view.selectedRanges
+            let sameText = view.string == text.string
             view.textStorage?.setAttributedString(text)
+            if sameText { view.selectedRanges = selection }
             context.coordinator.text = text
         }
     }

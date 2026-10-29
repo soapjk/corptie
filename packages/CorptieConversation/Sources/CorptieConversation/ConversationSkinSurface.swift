@@ -37,22 +37,28 @@ public struct ConversationSkinSurface: ViewModifier {
 
 public enum ConversationColumnRole: Sendable { case sidebar, transcript, inspector }
 
-public struct ConversationColumnSurface: ViewModifier {
+/// A column's canvas extends behind window chrome without moving its content.
+public struct ConversationColumnBackground: View {
     @Environment(\.conversationSkin) private var skin
     private let role: ConversationColumnRole
     public init(_ role: ConversationColumnRole) { self.role = role }
-    public func body(content: Content) -> some View {
-        content.background {
+    public var body: some View {
+        ZStack {
             if skin == .codexFlat {
                 WorkbenchCanvasSurface.defaultColor
                 if role != .transcript { Color.primary.opacity(0.025) }
             }
         }
-        .overlay(alignment: .leading) {
-            if skin == .codexFlat && role == .inspector {
-                Rectangle().fill(Color.primary.opacity(0.12)).frame(width: 0.5)
-                    .allowsHitTesting(false).accessibilityHidden(true)
-            }
-        }
+        .ignoresSafeArea(.container, edges: .vertical)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+public struct ConversationColumnSurface: ViewModifier {
+    private let role: ConversationColumnRole
+    public init(_ role: ConversationColumnRole) { self.role = role }
+    public func body(content: Content) -> some View {
+        content.background { ConversationColumnBackground(role) }
     }
 }
