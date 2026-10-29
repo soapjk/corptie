@@ -121,6 +121,9 @@ public struct LocalWallpaperSettingsView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
         }
+        // A scaled image can have hit bounds beyond its visible clipped frame.
+        // The preview is informational; only the controls below it are interactive.
+        .allowsHitTesting(false)
         .accessibilityLabel(wallpaper.hasWallpaper ? "当前自定义背景预览" : "当前使用默认背景")
     }
 }

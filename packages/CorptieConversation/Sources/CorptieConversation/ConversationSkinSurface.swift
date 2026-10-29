@@ -44,9 +44,10 @@ public struct ConversationColumnBackground: View {
     public init(_ role: ConversationColumnRole) { self.role = role }
     public var body: some View {
         ZStack {
-            if skin == .codexFlat {
-                WorkbenchCanvasSurface.defaultColor
-                if role != .transcript { Color.primary.opacity(0.025) }
+            // The window owns the wallpaper and its default canvas. Columns
+            // only tint that shared canvas instead of covering it with a fill.
+            if skin == .codexFlat && role != .transcript {
+                Color.primary.opacity(0.025)
             }
         }
         .ignoresSafeArea(.container, edges: .vertical)

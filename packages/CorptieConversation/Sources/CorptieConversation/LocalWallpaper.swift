@@ -104,6 +104,7 @@ public struct LocalWallpaperCanvas: View {
             }
         }
         .ignoresSafeArea()
+        .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
 }
