@@ -92,10 +92,10 @@ final class ChatBubbleWidthPolicyTests: XCTestCase {
         XCTAssertEqual(width, 312)
     }
 
-    func testExpandedProcessCardUsesMessageWidthCeiling() {
+    func testExpandedProcessCardRetainsItsOwnWidthCeiling() {
         XCTAssertEqual(MessageBubbleWidthPolicy.processCardWidth(
             summaryWidth: 80, expanded: true, laneWidth: 900),
-            ChatBubbleWidthPolicy.maximumWidth)
+            MessageBubbleWidthPolicy.maximumProcessWidth)
         XCTAssertEqual(MessageBubbleWidthPolicy.processCardWidth(
             summaryWidth: 80, expanded: true, laneWidth: 320), 316)
 
@@ -105,7 +105,7 @@ final class ChatBubbleWidthPolicyTests: XCTestCase {
             expandableTurnId: "turn", isExpanded: true, processCount: 1
         )
         XCTAssertEqual(NativeTimelineLayoutCache.shared.layout(
-            for: process, columnWidth: 900).cardWidth, ChatBubbleWidthPolicy.maximumWidth)
+            for: process, columnWidth: 900).cardWidth, MessageBubbleWidthPolicy.maximumProcessWidth)
     }
 
     /// User messages retain the shared default clamp and attachment floor.

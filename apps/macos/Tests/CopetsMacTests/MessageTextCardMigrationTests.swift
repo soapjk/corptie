@@ -13,6 +13,72 @@ final class MessageTextCardMigrationTests: XCTestCase {
             showsHeader: header, contextTimestamp: "12:34")
     }
 
+    func testLongUserCardHasSymmetricWidthAndScrollableBodyWithoutTruncation() throws {
+        _ = NSApplication.shared
+        let text = (0..<120).map { "Line \($0): " + String(repeating: "Full message content ", count: 8) }.joined(separator: "\n")
+        let user = AppKitChatTimelineRow(id: "long-user", contentRevision: 1,
+            nativeText: text, copyText: text, nativeStyle: .user, title: "", metadata: "",
+            expandableTurnId: nil, isExpanded: false, showsHeader: false)
+        let reply = row(text, id: "long-reply")
+        for width: CGFloat in [320, 800] {
+            let measured = NativeTimelineLayoutCache.shared.layout(for: user, columnWidth: width)
+            let agent = NativeTimelineLayoutCache.shared.layout(for: reply, columnWidth: width)
+            XCTAssertEqual(measured.cardWidth, agent.cardWidth)
+            XCTAssertEqual(measured.cardWidth, min(width - 4, 640))
+            XCTAssertEqual(measured.cardHeight, MessageCardMetrics.maximumUserCardHeight)
+            XCTAssertEqual(measured.rowHeight, measured.cardHeight + 2)
+            XCTAssertTrue(measured.scrollsUserContent)
+            XCTAssertFalse(agent.scrollsUserContent)
+            XCTAssertGreaterThan(agent.cardHeight, measured.cardHeight)
+        }
+        let measured = NativeTimelineLayoutCache.shared.layout(for: user, columnWidth: 800)
+        let cell = AppKitSharedMessageTextCell(identifier: .init("scrolling-user"))
+        cell.frame = NSRect(x: 0, y: 0, width: 800, height: measured.rowHeight)
+        let window = NSWindow(contentRect: cell.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = cell
+        defer { window.contentView = nil }
+        cell.setContent(user, availableWidth: 800, onToggleExpansion: { _ in })
+        cell.layoutSubtreeIfNeeded()
+        func scrollViews(_ view: NSView) -> [NSScrollView] {
+            (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap(scrollViews)
+        }
+        let scroll = try XCTUnwrap(scrollViews(cell).first)
+        XCTAssertGreaterThan(try XCTUnwrap(scroll.documentView).bounds.height, scroll.contentView.bounds.height)
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: 100))
+        XCTAssertGreaterThan(scroll.contentView.bounds.minY, 0)
+        XCTAssertEqual(cell.frame.height, measured.rowHeight)
+        cell.copyRepresentedMessage()
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), text)
+        let short = AppKitChatTimelineRow(id: "short-user", contentRevision: 1,
+            nativeText: "Hi", copyText: "Hi", nativeStyle: .user, title: "", metadata: "",
+            expandableTurnId: nil, isExpanded: false, showsHeader: false)
+        XCTAssertFalse(NativeTimelineLayoutCache.shared.layout(for: short, columnWidth: 800).scrollsUserContent)
+    }
+
+    func testFlatSkinKeepsSourceLabelledEventsFramedAndOrdinaryRepliesPlain() throws {
+        _ = NSApplication.shared
+        let ordinary = row("Ordinary reply")
+        let event = row("Automation or system event", header: true, id: "event")
+        var scheduled = row("Scheduled message", header: true, id: "scheduled")
+        scheduled.scheduledMessageSource = "计划任务"
+        XCTAssertEqual(ordinary.contentSurfaceRole, .assistant)
+        XCTAssertEqual(event.contentSurfaceRole, .interaction)
+        XCTAssertEqual(scheduled.contentSurfaceRole, .interaction)
+        XCTAssertFalse(MacSharedMessageTextCard.supports(event))
+        XCTAssertTrue(MacSharedMessageTextCard.supports(scheduled))
+        XCTAssertEqual(ConversationSkin.codexFlat.surface(for: ordinary.contentSurfaceRole), .plain)
+        XCTAssertEqual(ConversationSkin.codexFlat.surface(for: scheduled.contentSurfaceRole), .legacy)
+
+        let cell = AppKitChatNativeTextCell(identifier: .init("special-event-surface"))
+        cell.updateAppearance(skin: .codexFlat)
+        let surface = try XCTUnwrap(cell.subviews.compactMap { $0 as? NativeContentCardSurface }.first)
+        for model in [event, ordinary, event] {
+            cell.setContent(model, availableWidth: 400, onToggleExpansion: { _ in })
+            XCTAssertEqual(surface.layer?.backgroundColor?.alpha == 0, !model.showsHeader)
+            XCTAssertEqual(surface.layer?.borderWidth, model.showsHeader ? 0.5 : 0)
+        }
+    }
+
     func testSkinSwitchPreservesHostedTextIdentitySelectionAndReflowsTypography() throws {
         _ = NSApplication.shared
         let model = row("Shared selectable text", revision: 1)

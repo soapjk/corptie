@@ -28,6 +28,7 @@ struct PreparedRowsContext: Equatable {
     let workingDirectory: String?
     let allowsFork: Bool
     let forkUnavailableReason: String?
+    var replyIdentity: ConversationReplyIdentity? = nil
 }
 
 @MainActor

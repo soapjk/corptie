@@ -3,6 +3,15 @@ import Testing
 import CorptieClientCore
 @testable import CorptieConversation
 
+@Test func imageOnlyUserMessageDoesNotInventACaptionFromItsRole() {
+    #expect(ConversationMessageDisplayText.resolve(text: "", presentationText: nil,
+        title: "user", type: "userMessage", hasImages: true).isEmpty)
+    #expect(ConversationMessageDisplayText.resolve(text: "user", presentationText: nil,
+        title: "user", type: "userMessage", hasImages: true) == "user")
+    #expect(ConversationMessageDisplayText.resolve(text: "", presentationText: "Image caption",
+        title: "user", type: "userMessage", hasImages: true) == "Image caption")
+}
+
 @Test func displayedMessagePrefersTheBackendProjectionOnBothClients() {
     let chart = "```corptie-chart\n{\"version\":1,\"type\":\"bar\",\"title\":\"Projected\",\"data\":[{\"label\":\"A\",\"value\":2}]}\n```"
     let displayed = ConversationMessageDisplayText.resolve(text: "Raw text",

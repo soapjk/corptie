@@ -101,7 +101,7 @@ struct MessageBubbleWidthPolicyTests {
             summaryWidth: 80,
             expanded: true,
             laneWidth: 700
-        ) == MessageBubbleWidthPolicy.maximumWidth)
+        ) == MessageBubbleWidthPolicy.maximumProcessWidth)
     }
 
     @Test("Process cards clamp to narrow lanes")
@@ -120,7 +120,7 @@ struct MessageBubbleWidthPolicyTests {
         #expect(shortWidth == 50)
         #expect(shortWidth < MessageBubbleWidthPolicy.maximumWidth)
 
-        // Long text (bodyWidth: 1000) clamps to maximumWidth = 480
+        // Long text (bodyWidth: 1000) clamps to maximumWidth = 640
         let longWidth = MessageBubbleWidthPolicy.cardWidth(bodyWidth: 1000, hasAttachments: false, laneWidth: 800)
         #expect(longWidth == MessageBubbleWidthPolicy.maximumWidth)
 

@@ -5,6 +5,23 @@ import CorptieConversation
 
 @MainActor
 final class NativeContentCardSurfaceTests: XCTestCase {
+    func testUserCardIsOpaqueInEverySkinAndAppearance() throws {
+        let card = NativeContentCardSurface(frame: NSRect(x: 0, y: 0, width: 120, height: 44))
+        card.configure(tint: MessageTextCardPalette.userNativeBackground)
+        for skin in ConversationSkin.allCases {
+            card.updateSkin(skin, role: .user)
+            for name in [NSAppearance.Name.aqua, .darkAqua] {
+                card.appearance = try XCTUnwrap(NSAppearance(named: name))
+                for contrast in [false, true] {
+                    card.refreshAppearance(reduceTransparency: false, increasedContrast: contrast)
+                    XCTAssertEqual(card.layer?.backgroundColor?.alpha, 1)
+                    XCTAssertEqual(card.alphaValue, 1)
+                    XCTAssertEqual(card.layer?.borderWidth, skin == .codexFlat && !contrast ? 0 : (contrast ? 1 : 0.5))
+                }
+            }
+        }
+    }
+
     func testTranslucentColorWithoutBlurOrSubviewGrowth() throws {
         let card = NativeContentCardSurface(frame: NSRect(x: 0, y: 0, width: 320, height: 80))
         let background = try XCTUnwrap(card.subviews.first)

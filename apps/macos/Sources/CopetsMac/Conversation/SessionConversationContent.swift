@@ -335,6 +335,11 @@ struct SessionConversationSurface: View {
             restoreCachedProjectionDisplayCacheIfNeeded()
             restoreMissingHistoryAnchorIfNeeded()
         }
+        .onChange(of: replyIdentity) { _, _ in
+            guard acceptsPresentationUpdates, cachedSessionId == sessionId else { return }
+            cachedAppKitRows = preparedAppKitRows(cachedDisplayEntries, cache: cachedDisplayProjection)
+            cachedRowsRevision &+= 1
+        }
         .onChange(of: cachedDisplayProjection?.signature) { _, _ in
             restoreCachedProjectionDisplayCacheIfNeeded()
             restoreMissingHistoryAnchorIfNeeded()
@@ -765,9 +770,12 @@ struct SessionConversationSurface: View {
             localeID: locale.identifier, languageCode: AppLanguageController.shared.languageCode,
             isWorkspaceCard: presentation == .workspaceCard,
             sessionTitle: builder.sessionTitle, workingDirectory: builder.workingDirectory,
-            allowsFork: builder.allowsFork, forkUnavailableReason: builder.forkUnavailableReason)
+            allowsFork: builder.allowsFork, forkUnavailableReason: builder.forkUnavailableReason,
+            replyIdentity: builder.replyIdentity)
         if let rows = presentationCache.preparedRows(for: sessionId, context: context) { return rows }
-        let rows = entries.map { appKitRow($0, expansionSnapshot: expanded, builder: builder) }
+        let rows = builder.applyingReplyIdentity(to: entries.map {
+            appKitRow($0, expansionSnapshot: expanded, builder: builder)
+        }, entries: entries)
         // No source means a transitional projection: render it, but never
         // retain it under a source identity belonging to another Session.
         if let cache, cache.sessionId == sessionId, cache.displayEntries.map(\.id) == context.entryIDs {
@@ -784,8 +792,16 @@ struct SessionConversationSurface: View {
             forkUnavailableReason: forkUnavailableReason,
             imageURL: { [backendClient, sessionId] path in
                 backendClient.chatImageURL(sessionID: sessionId, managedPath: path)
-            }
+            }, replyIdentity: replyIdentity
         )
+    }
+
+    private var replyIdentity: ConversationReplyIdentity? {
+        guard let session = selectedSession else { return nil }
+        let agents = renderInputs?.agents ?? EntityAPIClient.shared.agents
+        let agent = agents.first { $0.agentId == session.agentId }
+        return ConversationReplyIdentity(agentID: agent?.agentId ?? session.agentId ?? session.id,
+            name: agent?.name ?? L10n("Agent"), avatarPath: agent?.avatarPath)
     }
 
     private var forkUnavailableReason: String? {

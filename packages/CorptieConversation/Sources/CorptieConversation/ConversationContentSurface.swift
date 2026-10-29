@@ -16,6 +16,9 @@ public enum ConversationContentSurfacePolicy {
     public static let messageMaterialOpacity = 0.80
     public static let panelMaterialOpacity = 0.60
 
+    /// Opaque equivalent of the Codex user bubble, independent of status colors below it.
+    public static func userBubbleWhite(dark: Bool) -> Double { dark ? 0.17 : 0.94 }
+
     public static func usesPanelMaterial(isPanel: Bool, reduceTransparency: Bool, increasedContrast: Bool) -> Bool {
         isPanel && !reduceTransparency && !increasedContrast
     }
@@ -65,8 +68,9 @@ public struct ConversationContentSurface: ViewModifier {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         let style = skin.surface(for: role ?? (isPanel ? .inspector : .structured))
         let increasedContrast = contrast == .increased
+        let opaqueUser = isMessage && role == .user
         #if os(iOS)
-        let withMaterial = ConversationContentSurfacePolicy.usesMessageMaterial(isMessage: isMessage,
+        let withMaterial = ConversationContentSurfacePolicy.usesMessageMaterial(isMessage: isMessage && !opaqueUser,
             reduceTransparency: reduceTransparency, increasedContrast: increasedContrast)
         #else
         let withMaterial = false
@@ -87,10 +91,12 @@ public struct ConversationContentSurface: ViewModifier {
                 if withPanelMaterial {
                     shape.fill(.thinMaterial.opacity(ConversationContentSurfacePolicy.panelMaterialOpacity))
                 }
-                shape.fill(base.opacity(opacity))
+                shape.fill(base.opacity(opaqueUser ? 1 : opacity))
                 if !usesSemanticBackground, let tint {
                     shape.fill(tint.opacity(tintOpacity))
                 }
+            } else if style == .bubble && opaqueUser {
+                shape.fill(Color(white: ConversationContentSurfacePolicy.userBubbleWhite(dark: colorScheme == .dark)))
             } else if style == .bubble || style == .neutral {
                 shape.fill(Color.primary.opacity(0.06))
             }

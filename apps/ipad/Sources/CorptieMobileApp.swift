@@ -2355,7 +2355,8 @@ private struct MobileMessageBubble: View {
     private var fromUser: Bool { message.presentationKind == .userMessage }
     private var rawDisplayText: String {
         ConversationMessageDisplayText.resolve(text: message.text,
-            presentationText: message.presentationText, title: message.title, type: message.type)
+            presentationText: message.presentationText, title: message.title, type: message.type,
+            hasImages: !message.images.isEmpty)
     }
     private var imageReferences: [ConversationMessageImageReference] {
         ConversationMessageImageReferenceCache.shared.references(messageID: message.id, text: rawDisplayText)
@@ -2429,6 +2430,7 @@ private struct MobileMessageBubble: View {
                         ? .commentary : .agent),
                     timestamp: "", showsActions: false, actionsAlwaysVisible: false, cardWidth: cardWidth,
                     status: messageStatus,
+                    surfaceRole: !fromUser && message.messageOrigin == "scheduled_task" ? .interaction : nil,
                     contextMenu: MessageTextCardMenuConfiguration(
                         timestampTitle: timestamp.isEmpty ? nil : "时间：\(timestamp)",
                         copyTitle: "复制消息", selectTextTitle: "选择文本",

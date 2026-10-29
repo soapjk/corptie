@@ -11,6 +11,38 @@ struct ConversationNativeRowBuilder {
     let allowsFork: Bool
     let forkUnavailableReason: String?
     let imageURL: (String) -> URL?
+    var replyIdentity: ConversationReplyIdentity? = nil
+
+    func applyingReplyIdentity(to rows: [AppKitChatTimelineRow], entries: [ChatDisplayEntry]) -> [AppKitChatTimelineRow] {
+        guard let replyIdentity, rows.count == entries.count else { return rows }
+        var result = rows
+        var hasReply = false
+        var activeTurnID: String?
+        for index in entries.indices {
+            let turnID = chatDisplayEntryTurnId(entries[index])
+            switch entries[index].kind {
+            case .message(let item):
+                let kind = ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole)
+                if kind == .userMessage {
+                    hasReply = false
+                    activeTurnID = nil
+                    continue
+                }
+                guard (kind == .agentMessage || item.isStandaloneImage), item.messageOrigin != "scheduled_task" else { continue }
+            case .process: break
+            }
+            let newTurn = !hasReply || (!turnID.isEmpty && activeTurnID != nil && activeTurnID != turnID)
+            if newTurn {
+                result[index].replyIdentity = replyIdentity
+                // Separate decorated rows from their undecorated cache revisions
+                // without adding another hashing or persistence mechanism.
+                result[index].contentRevision = ~result[index].contentRevision
+            }
+            hasReply = true
+            if !turnID.isEmpty { activeTurnID = turnID }
+        }
+        return result
+    }
 
     func nativeAppKitRow(
         _ entry: ChatDisplayEntry,

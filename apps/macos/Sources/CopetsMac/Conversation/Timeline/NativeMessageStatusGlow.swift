@@ -1,5 +1,6 @@
 import AppKit
 import QuartzCore
+import SwiftUI
 import CorptieClientCore
 
 /// Paint-only decoration. Its frame never participates in row measurement.
@@ -8,7 +9,6 @@ final class NativeMessageStatusGlow: NSView {
     static let pulseKey = "message.status.pulse"
     private var status: UserMessageStatusPresentation?
     private var pathSize: CGSize = .zero
-    private let exteriorMask = CAShapeLayer()
     private(set) var pathUpdateCount = 0
     private static let instances = NSHashTable<NativeMessageStatusGlow>.weakObjects()
     private static let observers: [NSObjectProtocol] = {
@@ -44,9 +44,9 @@ final class NativeMessageStatusGlow: NSView {
         layer?.masksToBounds = false
         layer?.shadowRadius = 4
         layer?.shadowOffset = .zero
-        exteriorMask.fillRule = .evenOdd
-        exteriorMask.fillColor = NSColor.black.cgColor
-        layer?.mask = exteriorMask
+        layer?.shadowOpacity = 1
+        layer?.cornerRadius = 14
+        layer?.cornerCurve = .continuous
         _ = Self.observers
     }
 
@@ -69,16 +69,9 @@ final class NativeMessageStatusGlow: NSView {
         pathSize = bounds.size
         pathUpdateCount += 1
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        // Keep the shadow outside the card even when its background is translucent.
-        // This static mask includes the shadow's overflow and only changes on resize.
-        layer?.shadowPath = CGPath(roundedRect: bounds, cornerWidth: 14, cornerHeight: 14, transform: nil)
-        let overflow: CGFloat = 16
-        exteriorMask.frame = bounds.insetBy(dx: -overflow, dy: -overflow)
-        let exterior = CGMutablePath()
-        exterior.addRect(CGRect(origin: .zero, size: exteriorMask.frame.size))
-        exterior.addRoundedRect(in: CGRect(origin: CGPoint(x: overflow, y: overflow), size: bounds.size),
-                                cornerWidth: 14, cornerHeight: 14)
-        exteriorMask.path = exterior
+        // Match the card's continuous corner geometry. The opaque card above
+        // covers this filled background; only its soft outer shadow is visible.
+        layer?.shadowPath = RoundedRectangle(cornerRadius: 14, style: .continuous).path(in: bounds).cgPath
         CATransaction.commit()
     }
 
@@ -114,6 +107,7 @@ final class NativeMessageStatusGlow: NSView {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             CATransaction.begin(); CATransaction.setDisableActions(true)
             layer?.shadowColor = color.cgColor
+            layer?.backgroundColor = color.cgColor
             CATransaction.commit()
         }
     }
@@ -129,11 +123,11 @@ final class NativeMessageStatusGlow: NSView {
         let running = isVisible && !reduceMotion && appActive && status?.lightPulses == true
         let opacity: Float = status?.light == .off || status == nil ? 0 : 0.65
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        if layer.shadowOpacity != opacity { layer.shadowOpacity = opacity }
+        if layer.opacity != opacity { layer.opacity = opacity }
         CATransaction.commit()
         if running {
             guard layer.animation(forKey: Self.pulseKey) == nil else { return }
-            let animation = CABasicAnimation(keyPath: "shadowOpacity")
+            let animation = CABasicAnimation(keyPath: "opacity")
             animation.fromValue = 0.25
             animation.toValue = 0.85
             animation.duration = 1.2

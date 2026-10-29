@@ -101,23 +101,31 @@ struct SessionAvatarView: View {
 
 struct AnimatedAvatarImage: NSViewRepresentable {
     let path: String
+    var animates = true
+    final class Coordinator { var path: String? }
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> AspectFillAnimatedImageView {
         AspectFillAnimatedImageView()
     }
 
     func updateNSView(_ imageView: AspectFillAnimatedImageView, context: Context) {
-        imageView.image = AvatarImageSupport.loadImage(at: path)
+        imageView.animates = animates
+        if context.coordinator.path != path {
+            imageView.image = AvatarImageSupport.loadImage(at: path)
+            context.coordinator.path = path
+        }
     }
 
     final class AspectFillAnimatedImageView: NSView {
         private let imageView = NSImageView()
         private var imageSize: CGSize = .zero
+        var animates = true { didSet { imageView.animates = animates } }
 
         var image: NSImage? {
             didSet {
                 imageView.image = image
-                imageView.animates = true
+                imageView.animates = animates
                 imageSize = image?.size ?? .zero
                 needsLayout = true
             }

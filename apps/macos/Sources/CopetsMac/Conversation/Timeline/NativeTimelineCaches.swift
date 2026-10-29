@@ -39,7 +39,8 @@ enum ChatTimelineRowRouting {
 
     static func displayText(for item: CodexThreadItem) -> String {
         ConversationMessageDisplayText.resolve(text: item.text,
-            presentationText: item.presentationText, title: item.title, type: item.type)
+            presentationText: item.presentationText, title: item.title, type: item.type,
+            hasImages: item.images?.isEmpty == false)
     }
 
     static func copyText(for item: CodexThreadItem) -> String {
@@ -326,9 +327,10 @@ final class NativeTimelineLayoutCache {
         let cardWidth: CGFloat
         let textHeight: CGFloat
         let rawStatusHeight: CGFloat
-        let rowHeight: CGFloat
+        var rowHeight: CGFloat
         /// Painted card height, excluding the separator and exterior row insets.
         var cardHeight: CGFloat = 0
+        var scrollsUserContent = false
     }
 
     private struct Key: Hashable {
@@ -392,6 +394,12 @@ final class NativeTimelineLayoutCache {
     private let chartHeightLimit = 128
 
     func layout(for row: AppKitChatTimelineRow, columnWidth: CGFloat, typography requested: ConversationTypography = .classic) -> Layout {
+        var layout = contentLayout(for: row, columnWidth: columnWidth, typography: requested)
+        layout.rowHeight += row.replyIdentityHeight
+        return layout
+    }
+
+    private func contentLayout(for row: AppKitChatTimelineRow, columnWidth: CGFloat, typography requested: ConversationTypography) -> Layout {
         let typography = row.readingTypography(requested)
         let normalizedWidth = max(120, columnWidth)
         let key = Key(
@@ -586,6 +594,8 @@ final class NativeTimelineLayoutCache {
                 rowHeight = MessageCardMetrics.rowHeight(cardHeight: cardHeight, separatorHeight: row.timeSeparatorHeight, typography: typography)
             }
         }
+        let visibleCardHeight = row.nativeStyle == .user && MacSharedMessageTextCard.supports(row)
+            ? min(cardHeight, MessageCardMetrics.maximumUserCardHeight) : cardHeight
         var layout = Layout(
             attributedText: attributed,
             richBlocks: richBlocks,
@@ -593,10 +603,11 @@ final class NativeTimelineLayoutCache {
             cardWidth: cardWidth,
             textHeight: textHeight,
             rawStatusHeight: rawStatusHeight,
-            rowHeight: rowHeight,
-            cardHeight: cardHeight
+            rowHeight: rowHeight - cardHeight + visibleCardHeight,
+            cardHeight: visibleCardHeight
         )
         layout.typography = typography
+        layout.scrollsUserContent = visibleCardHeight < cardHeight
         layout.imageLayout = imageLayout
         values[key] = layout
         touch(key)
