@@ -192,9 +192,9 @@ struct ConversationNativeRowBuilder {
             isExpanded = expanded
             processCount = items.count
             processDuration = executionProcessDurationText(for: items)
-            processStartedAt = items.contains(where: { $0.processEndedAt != nil })
+            processStartedAt = entry.processReplyCompleted || items.contains(where: { $0.processEndedAt != nil })
                 ? nil : ConversationProcessPresentation.startedAt(for: items)
-            processState = projectedProcessState(for: items)
+            processState = entry.processReplyCompleted ? .completed : projectedProcessState(for: items)
             if processState == .running, let last = items.last {
                 if last.type == "executionPlan", let plan = processPlan {
                     processCurrentStepTitle = plan.steps.first(where: { $0.status == "inProgress" })?.text
@@ -427,6 +427,7 @@ struct ConversationNativeRowBuilder {
         case .message(let item):
             hasher.combine(itemSignature(item))
         case .process(let turnId, let items):
+            hasher.combine(entry.processReplyCompleted)
             hasher.combine(AppLanguageController.shared.languageCode)
             hasher.combine(turnId)
             hasher.combine(expandedTurnIds.contains(turnId))

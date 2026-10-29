@@ -17,6 +17,20 @@ struct DetailIncrementalProjection {
         visibleMessageLimit: Int,
         requestedRestorationAnchorRowID: String? = nil
     ) -> (displayItems: [CodexThreadItem], visibleEntries: [ChatDisplayEntry], totalCount: Int, signature: String, sourceSignature: String)? {
+        guard let source = projectSource(for: detail, sessionId: sessionId,
+            visibleMessageLimit: visibleMessageLimit, requestedRestorationAnchorRowID: requestedRestorationAnchorRowID) else { return nil }
+        let entries = ConversationReplyProgressProjection.entries(source.visibleEntries)
+        let removedWeight = source.visibleEntries.reduce(0) { $0 + $1.displayWeight }
+            - entries.reduce(0) { $0 + $1.displayWeight }
+        return (source.displayItems, entries, max(0, source.totalCount - removedWeight), source.signature, source.sourceSignature)
+    }
+
+    private func projectSource(
+        for detail: CodexThreadDetail,
+        sessionId: String,
+        visibleMessageLimit: Int,
+        requestedRestorationAnchorRowID: String?
+    ) -> (displayItems: [CodexThreadItem], visibleEntries: [ChatDisplayEntry], totalCount: Int, signature: String, sourceSignature: String)? {
         let tailTurnID = detail.items.last(where: { !isLowSignalDetailProcessItem($0) })?.turnId
         var nextDisplayItems: [CodexThreadItem] = []
         nextDisplayItems.reserveCapacity(detail.items.count)

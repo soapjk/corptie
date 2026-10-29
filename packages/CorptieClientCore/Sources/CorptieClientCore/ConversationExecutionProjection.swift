@@ -198,7 +198,8 @@ public enum ConversationExecutionProjection {
                 state: state(item, isLatest: index == items.indices.last, runningTurn: runningTurn),
                 title: title(for: item),
                 detail: item.executionPlan?.schemaVersion == 1 || item.toolExecution?.schemaVersion == 1
-                    ? nil : detailPreview(item.text, excludingTitle: sourceTitle),
+                    ? nil : (ConversationPresentationKind.isCommentary(type: item.type, presentationRole: item.presentationRole)
+                        ? item.text : detailPreview(item.text, excludingTitle: sourceTitle)),
                 plan: item.executionPlan?.schemaVersion == 1 ? item.executionPlan : nil,
                 tool: item.toolExecution?.schemaVersion == 1 ? item.toolExecution : nil,
                 changeSet: item.changeSet?.schemaVersion == 1 ? item.changeSet : nil

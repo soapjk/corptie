@@ -7,57 +7,57 @@ import CorptieConversation
 
 @MainActor
 final class ConversationNativeRowBuilderTests: XCTestCase {
-    func testOuterReplyActivityCollapsesCommentaryAndKeepsFinalAndAgentIdentityVisible() throws {
-        var projection = builder()
-        projection.replyIdentity = .init(agentID: "agent:one", name: "Developer", avatarPath: nil)
-        let entries: [ChatDisplayEntry] = [
-            .init(kind: .message(try item(["id": "u", "type": "userMessage", "presentationRole": NSNull()]))),
-            .init(kind: .message(try item(["id": "middle", "presentationRole": "commentary"]))),
-            .init(kind: .process(turnId: "turn:one", items: [try item(["id": "tool", "type": "mcpToolCall", "presentationRole": NSNull()])])),
-            .init(kind: .message(try item(["id": "middle-2", "presentationRole": "commentary"]))),
-            .init(kind: .message(try item(["id": "final"]))),
-        ]
-        let source = projection.applyingReplyIdentity(to: entries.map { projection.nativeAppKitRow($0, expandedTurnIds: []) }, entries: entries)
-        let collapsed = ConversationReplyActivityProjection.rows(source, entries: entries, expandedIDs: [])
-        XCTAssertEqual(collapsed.count, 3)
-        XCTAssertEqual(collapsed.last?.id, source.last?.id)
-        let group = try XCTUnwrap(collapsed[1].replyActivity)
-        XCTAssertFalse(group.isExpanded)
-        XCTAssertEqual(group.commentaryCount, 2)
-        XCTAssertEqual(group.processCount, 1)
-        XCTAssertEqual(collapsed[1].replyIdentity, projection.replyIdentity)
-        let expanded = ConversationReplyActivityProjection.rows(source, entries: entries, expandedIDs: [collapsed[1].id])
-        XCTAssertEqual(expanded.count, source.count + 1)
-        XCTAssertEqual(expanded.filter { $0.replyIdentity != nil }.count, 1)
-        XCTAssertFalse(try XCTUnwrap(expanded.first { $0.id == source[2].id }).isExpanded,
-            "Opening the outer group must leave the inner process folded")
-        let innerSource = projection.applyingReplyIdentity(to: entries.map { projection.nativeAppKitRow($0, expandedTurnIds: ["turn:one"]) }, entries: entries)
-        let both = ConversationReplyActivityProjection.rows(innerSource, entries: entries, expandedIDs: [collapsed[1].id])
-        XCTAssertTrue(try XCTUnwrap(both.first { $0.id == source[2].id }).isExpanded)
-        XCTAssertEqual(ConversationReplyActivityProjection.rows(source, entries: entries, expandedIDs: []).map(\.id), collapsed.map(\.id))
-        let searched = ConversationReplyActivityProjection.rows(source, entries: entries, expandedIDs: [], revealingRowID: source[3].id)
-        XCTAssertTrue(try XCTUnwrap(searched[1].replyActivity).isExpanded)
-        XCTAssertTrue(searched.contains { $0.id == source[3].id })
+    func testLatestExplanationReplacesEarlierOneAndCompletionArchivesAll() throws {
+        let oldText = String(repeating: "Earlier explanation in full.\n", count: 40)
+        let old = try item(["id": "old", "text": oldText, "presentationRole": "commentary", "turnStatus": "running"])
+        let latest = try item(["id": "latest", "text": "Latest explanation", "presentationRole": "commentary", "turnStatus": "running"])
+        let tool = try item(["id": "tool", "type": "mcpToolCall", "presentationRole": NSNull(), "turnStatus": "running"])
+        let original: [ChatDisplayEntry] = [.init(kind: .message(old)), .init(kind: .process(turnId: "turn:one", items: [tool])), .init(kind: .message(latest))]
+        let projected = ConversationReplyProgressProjection.entries(original)
+        XCTAssertEqual(projected.count, 2)
+        XCTAssertEqual(projected.last?.id, "message:latest")
+        guard case .process(let id, let items) = projected[0].kind else { return XCTFail("Expected the original process card") }
+        XCTAssertEqual(id, "turn:one")
+        XCTAssertEqual(items.map(\.id), ["old", "tool"])
+        XCTAssertEqual(items[0].text, oldText)
+        let expanded = builder().nativeAppKitRow(projected[0], expandedTurnIds: [id])
+        XCTAssertTrue(expanded.copyText.contains(oldText))
+        let again = ConversationReplyProgressProjection.entries(projected)
+        XCTAssertEqual(again.map(\.id), projected.map(\.id))
+        guard case .process(_, let repeatedItems) = again[0].kind else { return XCTFail("Missing process") }
+        XCTAssertEqual(repeatedItems.map(\.id), items.map(\.id))
+        let final = ChatDisplayEntry(kind: .message(try item(["id": "final", "turnStatus": "completed"])))
+        let completed = ConversationReplyProgressProjection.entries(original + [final])
+        XCTAssertEqual(completed.count, 2)
+        XCTAssertEqual(completed.last?.id, final.id)
+        XCTAssertTrue(completed[0].processReplyCompleted)
+        guard case .process(_, let archived) = completed[0].kind else { return XCTFail("Missing archive") }
+        XCTAssertEqual(archived.map(\.id), ["old", "tool", "latest"])
+        XCTAssertEqual(builder().nativeAppKitRow(completed[0], expandedTurnIds: []).processState, .completed)
+        XCTAssertEqual(ConversationReplyProgressProjection.archivedProcess(forRowID: "message:latest", in: completed)?.id, completed[0].id)
+        let single = ConversationReplyProgressProjection.entries([.init(kind: .message(latest))])
+        XCTAssertEqual(single.map(\.id), ["message:latest"])
     }
 
-    func testReplyActivityDoesNotHideSpecialMessagesOrCrossTurnBoundaries() throws {
-        let entries: [ChatDisplayEntry] = [
-            .init(kind: .message(try item(["id": "one", "presentationRole": "commentary"]))),
-            .init(kind: .message(try item(["id": "event", "type": "automationEvent", "presentationRole": "automation"]))),
-            .init(kind: .message(try item(["id": "two", "turnId": "turn:two", "presentationRole": "commentary"]))),
-            .init(kind: .message(try item(["id": "three", "turnId": "turn:three", "presentationRole": "commentary"]))),
-        ]
-        let source = entries.map { builder().nativeAppKitRow($0, expandedTurnIds: []) }
-        let rows = ConversationReplyActivityProjection.rows(source, entries: entries, expandedIDs: [])
-        XCTAssertEqual(rows.count, 4)
-        XCTAssertEqual(rows.filter { $0.replyActivity != nil }.count, 3)
-        XCTAssertEqual(rows[1].id, source[1].id)
-        XCTAssertNil(rows[1].replyActivity)
-        let streamed = source + [builder().nativeAppKitRow(.init(kind: .message(try item(["id": "four", "turnId": "turn:three", "presentationRole": "commentary"]))), expandedTurnIds: [])]
-        let nextEntries = entries + [.init(kind: .message(try item(["id": "four", "turnId": "turn:three", "presentationRole": "commentary"])))]
-        let next = ConversationReplyActivityProjection.rows(streamed, entries: nextEntries, expandedIDs: [])
-        XCTAssertEqual(next.map(\.id), rows.map(\.id))
-        XCTAssertEqual(next.last?.replyActivity?.commentaryCount, 2)
+    func testArchivedExplanationsDoNotHideQuestionsOrCreatePhantomHistoryWeight() throws {
+        let first = try item(["id": "first", "presentationRole": "commentary", "turnStatus": "running"])
+        let question = try item(["id": "question", "type": "userInput", "presentationRole": NSNull(), "turnId": "question:synthetic"])
+        let next = try item(["id": "next", "presentationRole": "commentary", "turnStatus": "running"])
+        let final = try item(["id": "final", "turnStatus": "completed"])
+        let entries: [ChatDisplayEntry] = [first, question, next, final].map { .init(kind: .message($0)) }
+        let cache = DetailDisplayCache(sessionId: "session", displayItems: [first, question, next, final],
+            displayEntries: entries, totalDisplayEntryCount: 4, visibleMessageLimit: 100,
+            signature: "source", sourceSignature: "source", restorationAnchorRowID: "message:first")
+        let projected = cache.projectingReplyProgress()
+        XCTAssertEqual(projected.displayEntries.count, 3)
+        XCTAssertEqual(projected.displayEntries[1].id, "message:question")
+        XCTAssertEqual(projected.displayEntries[2].id, "message:final")
+        XCTAssertEqual(projected.totalDisplayEntryCount, projected.displayEntries.reduce(0) { $0 + $1.displayWeight })
+        XCTAssertEqual(projected.restorationAnchorRowID, projected.displayEntries[0].id)
+        XCTAssertEqual(projected.projectingReplyProgress().totalDisplayEntryCount, projected.totalDisplayEntryCount)
+        let user = try item(["id": "user", "type": "userMessage", "presentationRole": NSNull()])
+        let separated = ConversationReplyProgressProjection.entries([.init(kind: .message(first)), .init(kind: .message(user)), .init(kind: .message(next))])
+        XCTAssertEqual(separated.map(\.id), ["message:first", "message:user", "message:next"])
     }
 
     func testSpecialReplyCardsKeepTheSameTypographyAndMeasurementsAcrossSkins() throws {

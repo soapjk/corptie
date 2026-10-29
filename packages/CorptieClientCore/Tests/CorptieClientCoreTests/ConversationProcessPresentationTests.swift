@@ -11,8 +11,8 @@ struct ConversationProcessPresentationTests {
         #expect(ConversationProcessPresentation.durationText(startedAt: start,
             endingAt: start.addingTimeInterval(seconds)) == expected)
         let completed = ConversationProcessPresentation(state: .completed, count: 1, duration: "12.34s")
-        #expect(completed.summary(languageCode: "en") == "Processed for 12.34s · 1 step")
-        #expect(completed.summary(languageCode: "zh-Hans") == "已处理 12.34秒 · 1 步")
+        #expect(completed.summary(languageCode: "en") == "Completed in 12.34s · 1 step")
+        #expect(completed.summary(languageCode: "zh-Hans") == "已完成 12.34秒 · 1 步")
     }
 
     @Test func durationUsesProjectedBoundsAndDoesNotInventMissingTime() throws {
@@ -67,12 +67,12 @@ struct ConversationProcessPresentationTests {
 
     @Test func summariesKeepDesktopWordingAndDurationRules() {
         let completed = ConversationProcessPresentation(state: .completed, count: 3, duration: "1.2s")
-        #expect(completed.summary(languageCode: "en") == "Processed for 1.2s · 3 steps")
-        #expect(completed.summary(languageCode: "zh-Hans") == "已处理 1.2秒 · 3 步")
+        #expect(completed.summary(languageCode: "en") == "Completed in 1.2s · 3 steps")
+        #expect(completed.summary(languageCode: "zh-Hans") == "已完成 1.2秒 · 3 步")
         #expect(ConversationProcessPresentation(state: .completed, count: 1, duration: "1m 12.00s")
-            .summary(languageCode: "zh") == "已处理 1分钟 12.00秒 · 1 步")
+            .summary(languageCode: "zh") == "已完成 1分钟 12.00秒 · 1 步")
         #expect(ConversationProcessPresentation(state: .completed, count: 1, duration: "1h 2m")
-            .summary(languageCode: "zh") == "已处理 1小时 2分钟 · 1 步")
+            .summary(languageCode: "zh") == "已完成 1小时 2分钟 · 1 步")
         #expect(ConversationProcessPresentation(state: .running, count: 2).summary == "Working… · 2 steps")
         #expect(ConversationProcessPresentation(state: .completed, count: 1).summary == "Completed · 1 step")
         #expect(ConversationProcessPresentation(state: .failed, count: 2, duration: "· 3s").summary == "Execution failed after 3s · 2 steps")

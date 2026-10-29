@@ -86,8 +86,6 @@ struct SessionConversationSurface: View {
     let presentationCache: SessionPresentationCache
     private let presentationState: SessionPresentationState
     @State private var expandedProcessTurnIds: Set<String> = []
-    @State private var expandedReplyActivityIDs: Set<String> = []
-    @State private var hasToggledReplyActivity = false
     @State private var viewportState = ConversationViewportState()
     @State private var appKitScrollToBottomRevision = 0
     @State private var headerClearance: CGFloat = 0
@@ -360,8 +358,6 @@ struct SessionConversationSurface: View {
             viewportState.reset()
             visibleMessageLimit = ChatTimelineFeatureFlags.current.initialDisplayWeight
             expandedProcessTurnIds.removeAll()
-            expandedReplyActivityIDs.removeAll()
-            hasToggledReplyActivity = false
             restoreDisplayCacheForCurrentSession()
         }
         .onChange(of: restorationTimelinePosition) { _, position in
@@ -586,12 +582,9 @@ struct SessionConversationSurface: View {
     private func appKitDetailMessages(
         displayEntries: [ChatDisplayEntry]
     ) -> some View {
-        let sourceRows = cachedSessionId == sessionId && cachedAppKitRows.count == displayEntries.count
+        let rows = cachedSessionId == sessionId && cachedAppKitRows.count == displayEntries.count
             ? cachedAppKitRows
             : preparedAppKitRows(displayEntries, cache: cachedDisplayProjection)
-        let rows = ConversationReplyActivityProjection.rows(sourceRows, entries: displayEntries,
-            expandedIDs: expandedReplyActivityIDs,
-            revealingRowID: searchRowID ?? (hasToggledReplyActivity ? nil : effectiveInitialTimelinePosition?.rowID))
         return VStack(alignment: .leading, spacing: 6) {
             AppKitChatTimelineView(
                 sessionID: sessionId,
@@ -730,11 +723,18 @@ struct SessionConversationSurface: View {
 
     private var effectiveInitialTimelinePosition: AppKitChatTimelinePosition? {
         guard let restorationTimelinePosition,
-              !restorationTimelinePosition.followsLatest,
-              currentSessionDisplayEntries.contains(where: { $0.id == restorationTimelinePosition.rowID }) else {
+              !restorationTimelinePosition.followsLatest else {
             return nil
         }
-        return restorationTimelinePosition
+        if currentSessionDisplayEntries.contains(where: { $0.id == restorationTimelinePosition.rowID }) {
+            return restorationTimelinePosition
+        }
+        if let process = ConversationReplyProgressProjection.archivedProcess(
+            forRowID: restorationTimelinePosition.rowID, in: currentSessionDisplayEntries) {
+            return .init(rowID: process.id, offset: 0, absoluteScrollY: restorationTimelinePosition.absoluteScrollY,
+                followsLatest: false)
+        }
+        return nil
     }
 
     /// Only tail mutations represent content arriving below the reader. A
@@ -778,7 +778,8 @@ struct SessionConversationSurface: View {
             isWorkspaceCard: presentation == .workspaceCard,
             sessionTitle: builder.sessionTitle, workingDirectory: builder.workingDirectory,
             allowsFork: builder.allowsFork, forkUnavailableReason: builder.forkUnavailableReason,
-            replyIdentity: builder.replyIdentity)
+            replyIdentity: builder.replyIdentity,
+            processReplyCompleted: entries.map(\.processReplyCompleted))
         if let rows = presentationCache.preparedRows(for: sessionId, context: context) { return rows }
         let rows = builder.applyingReplyIdentity(to: entries.map {
             appKitRow($0, expansionSnapshot: expanded, builder: builder)
@@ -845,23 +846,6 @@ struct SessionConversationSurface: View {
     }
 
     private func toggleNativeProcessExpansion(_ turnId: String) {
-        if turnId.hasPrefix(ConversationReplyActivityProjection.prefix) {
-            let entries = currentSessionDisplayEntries
-            let source = cachedAppKitRows.count == entries.count ? cachedAppKitRows
-                : preparedAppKitRows(entries, cache: cachedDisplayProjection)
-            let visibleGroup = ConversationReplyActivityProjection.rows(source, entries: entries,
-                expandedIDs: expandedReplyActivityIDs,
-                revealingRowID: searchRowID ?? (hasToggledReplyActivity ? nil : effectiveInitialTimelinePosition?.rowID))
-                .first { $0.id == turnId }
-            let wasExpanded = visibleGroup?.replyActivity?.isExpanded ?? expandedReplyActivityIDs.contains(turnId)
-            hasToggledReplyActivity = true
-            if wasExpanded { expandedReplyActivityIDs.remove(turnId) }
-            else { expandedReplyActivityIDs.insert(turnId) }
-            // Preserve the native timeline's revision fast path on idle renders.
-            cachedRowsRevision &+= 1
-            searchRowID = nil
-            return
-        }
         // AppKit owns the row geometry. A SwiftUI transition would put hosted
         // content and the enclosing row on different layout clocks.
         setProcessExpansion(!expandedProcessTurnIds.contains(turnId), for: turnId)
@@ -1000,10 +984,16 @@ struct SessionConversationSurface: View {
             searchNavigation.error = L10n(result == .missing ? "This message no longer exists." : "Could not locate this message. Try again.")
             return
         }
-        let position = AppKitChatTimelinePosition(rowID: rowID, offset: 0, absoluteScrollY: 0, followsLatest: false)
+        let projected = ConversationReplyProgressProjection.entries(makeChatDisplayEntries(from: detail.items))
+        let archivedProcess = ConversationReplyProgressProjection.archivedProcess(forRowID: rowID, in: projected)
+        let destinationRowID = archivedProcess?.id ?? rowID
+        if let archivedProcess, case .process(let turnID, _) = archivedProcess.kind {
+            expandedProcessTurnIds.insert(turnID)
+        }
+        let position = AppKitChatTimelinePosition(rowID: destinationRowID, offset: 0, absoluteScrollY: 0, followsLatest: false)
         timelineRestorationIntent.reset(initialPosition: position)
         updateCachedDisplayEntries(for: detail)
-        searchRowID = rowID
+        searchRowID = destinationRowID
         searchRowRevision &+= 1
     }
 
@@ -1148,26 +1138,27 @@ struct SessionConversationSurface: View {
         }
     }
 
-    private func commitDisplayCache(_ preparedDisplay: DetailDisplayCache) {
+    private func commitDisplayCache(_ sourceDisplay: DetailDisplayCache) {
         guard acceptsPresentationUpdates else { return }
         ChatPerformanceRecorder.shared.increment(.displayRebuilds)
-        let uniqueEntries = uniquedChatDisplayEntries(preparedDisplay.displayEntries)
-        let removedDisplayWeight = preparedDisplay.displayEntries.reduce(0) { $0 + $1.displayWeight }
+        let projectedDisplay = sourceDisplay.projectingReplyProgress()
+        let uniqueEntries = uniquedChatDisplayEntries(projectedDisplay.displayEntries)
+        let removedDisplayWeight = projectedDisplay.displayEntries.reduce(0) { $0 + $1.displayWeight }
             - uniqueEntries.reduce(0) { $0 + $1.displayWeight }
-        let preparedDisplay = uniqueEntries.count == preparedDisplay.displayEntries.count
-            ? preparedDisplay
+        let preparedDisplay = uniqueEntries.count == projectedDisplay.displayEntries.count
+            ? projectedDisplay
             : DetailDisplayCache(
-                sessionId: preparedDisplay.sessionId,
-                displayItems: preparedDisplay.displayItems,
+                sessionId: projectedDisplay.sessionId,
+                displayItems: projectedDisplay.displayItems,
                 displayEntries: uniqueEntries,
                 totalDisplayEntryCount: max(
                     uniqueEntries.reduce(0) { $0 + $1.displayWeight },
-                    preparedDisplay.totalDisplayEntryCount - removedDisplayWeight
+                    projectedDisplay.totalDisplayEntryCount - removedDisplayWeight
                 ),
-                visibleMessageLimit: preparedDisplay.visibleMessageLimit,
-                signature: preparedDisplay.signature,
-                sourceSignature: preparedDisplay.sourceSignature,
-                restorationAnchorRowID: preparedDisplay.restorationAnchorRowID
+                visibleMessageLimit: projectedDisplay.visibleMessageLimit,
+                signature: projectedDisplay.signature,
+                sourceSignature: projectedDisplay.sourceSignature,
+                restorationAnchorRowID: projectedDisplay.restorationAnchorRowID
             )
         var transaction = Transaction()
         transaction.disablesAnimations = true

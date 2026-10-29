@@ -38,7 +38,12 @@ public struct ConversationEntry<Item: ConversationTimelineItem>: Identifiable, S
     /// Consecutive materialized images in one turn retain their original items.
     /// The first message remains the stable row/scroll identity.
     public let mediaItems: [Item]
-    public init(kind: Kind, mediaItems: [Item] = []) { self.kind = kind; self.mediaItems = mediaItems }
+    /// A presentation-only process aggregate may finish when its final reply
+    /// finishes, without rewriting any retained source item.
+    public let processReplyCompleted: Bool
+    public init(kind: Kind, mediaItems: [Item] = [], processReplyCompleted: Bool = false) {
+        self.kind = kind; self.mediaItems = mediaItems; self.processReplyCompleted = processReplyCompleted
+    }
 
     public var id: String {
         switch kind {

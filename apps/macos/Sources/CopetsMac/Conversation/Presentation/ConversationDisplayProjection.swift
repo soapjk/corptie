@@ -67,7 +67,7 @@ func makeDetailDisplayCache(
         signature: preparedDisplay.signature,
         sourceSignature: preparedDisplay.sourceSignature,
         restorationAnchorRowID: preparedDisplay.resolvedRestorationAnchorRowID
-    )
+    ).projectingReplyProgress()
 }
 
 private func makeVisibleDetailDisplay(
