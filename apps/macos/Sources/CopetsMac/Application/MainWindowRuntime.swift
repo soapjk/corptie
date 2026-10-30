@@ -92,6 +92,19 @@ final class MainWindow: NSWindow {
             zoom(nil)
             return
         }
+        if event.type == .leftMouseDown,
+           event.clickCount == 1,
+           attachedSheet == nil,
+           event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
+           let contentView,
+           !isOverStandardWindowButton(event),
+           MainWindowBackgroundDragPolicy.canDrag(
+               at: event.locationInWindow,
+               in: contentView
+           ) {
+            performDrag(with: event)
+            return
+        }
         super.sendEvent(event)
     }
 
@@ -109,6 +122,39 @@ final class MainWindow: NSWindow {
                 button.convert(event.locationInWindow, from: nil)
             )
         }
+    }
+}
+
+/// Native scroll containers consume empty clicks before SwiftUI backgrounds.
+/// Only their unoccupied canvas is draggable; descendants inside cells and all
+/// native input controls keep their ordinary mouse handling.
+@MainActor
+enum MainWindowBackgroundDragPolicy {
+    static func canDrag(at windowPoint: NSPoint, in contentView: NSView) -> Bool {
+        guard contentView.window != nil,
+              contentView.bounds.insetBy(dx: 4, dy: 4).contains(contentView.convert(windowPoint, from: nil)),
+              let hit = contentView.hitTest(contentView.superview?.convert(windowPoint, from: nil) ?? windowPoint)
+        else { return false }
+        var ancestor: NSView? = hit
+        var isScrollCanvas = false
+        while let view = ancestor {
+            if view is NSTextView || view is NSScroller { return false }
+            if view is NSControl, !(view is NSTableView) { return false }
+            if view is NSTableCellView, view !== hit { return false }
+            if let scroll = view as? NSScrollView {
+                isScrollCanvas = true
+                if hit === scroll.documentView,
+                   scroll.documentView?.subviews.first is IntrinsicHeightTableView {
+                    return true
+                }
+            }
+            if view === contentView { break }
+            ancestor = view.superview
+        }
+        // SwiftUI owns gestures in its hosting leaves. Its background drag
+        // surface handles empty regions without competing with foreground UI.
+        return isScrollCanvas && (hit is NSClipView || hit is NSTableView
+            || type(of: hit) == NSView.self || hit is NSTableCellView)
     }
 }
 
