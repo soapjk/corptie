@@ -6,6 +6,37 @@ import Testing
 @testable import CorptieMac
 
 struct UnifiedConsoleControlSurfaceTests {
+    @MainActor
+    @Test(.serialized, arguments: [true, false])
+    func sessionSelectionRunsBeforeMouseUpAndDoesNotRunAgainOnRelease(enabled: Bool) throws {
+        _ = NSApplication.shared
+        var selections = 0
+        let host = NSHostingView(rootView: Button { selections += 1 } label: {
+            Text("Session").frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Rectangle())
+        }.buttonStyle(SessionSelectionPressStyle()).disabled(!enabled))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 40),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        window.orderBack(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        host.layoutSubtreeIfNeeded()
+        for click in 1...2 {
+            func event(_ type: NSEvent.EventType) throws -> NSEvent {
+                try #require(NSEvent.mouseEvent(with: type, location: .init(x: 150, y: 20),
+                    modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: click,
+                    clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+            }
+            window.sendEvent(try event(.leftMouseDown))
+            RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+            #expect(selections == (enabled ? click : 0), "Selection must happen while the mouse is still held down")
+            window.sendEvent(try event(.leftMouseUp))
+            RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+            #expect(selections == (enabled ? click : 0), "Release must not trigger a second selection")
+        }
+    }
+
     @Test
     func cardGroupsUpdateAutomaticallyWithoutManualRefreshAndUseNativeTaskGrid() throws {
         let console = try source(named: "UnifiedConsoleView.swift")
