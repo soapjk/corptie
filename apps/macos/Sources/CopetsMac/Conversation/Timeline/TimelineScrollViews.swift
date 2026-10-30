@@ -50,8 +50,39 @@ final class IntrinsicHeightTableView: NSTableView {
 }
 
 final class TimelineIntentScroller: ConsoleThinScroller {
+    override var paintedKnobWidth: CGFloat { 9 }
+    override class func scrollerWidth(for controlSize: NSControl.ControlSize,
+                                     scrollerStyle: NSScroller.Style) -> CGFloat {
+        scrollerStyle == .overlay ? 12 : super.scrollerWidth(for: controlSize, scrollerStyle: scrollerStyle)
+    }
     override var knobTrailingInset: CGFloat? { 1 }
-    override var knobColor: NSColor { .white.withAlphaComponent(0.38) }
+    override var doubleValue: Double {
+        didSet { if oldValue != doubleValue { needsDisplay = true } }
+    }
+    override var knobProportion: CGFloat {
+        didSet { if oldValue != knobProportion { needsDisplay = true } }
+    }
+    override var isEnabled: Bool {
+        didSet { if oldValue != isEnabled { needsDisplay = true } }
+    }
+    override func setNeedsDisplay(_ invalidRect: NSRect) {
+        // AppKit's narrow native knob invalidation does not cover our 9pt
+        // drawing. Repaint this small control, never the message viewport.
+        guard !invalidRect.isEmpty else { return }
+        super.setNeedsDisplay(bounds)
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        // This control is layer-backed. Clear old translucent pixels instead
+        // of blending each new knob onto the previous cached image.
+        NSColor.clear.setFill()
+        dirtyRect.fill(using: .copy)
+        super.draw(dirtyRect)
+    }
+    private static let visibleKnobColor = NSColor(name: nil) { appearance in
+        let dark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        return NSColor(calibratedWhite: dark ? 1 : 0.4, alpha: 0.45)
+    }
+    override var knobColor: NSColor { Self.visibleKnobColor }
     private var hideTimer: Timer?
     private var pointerArea: NSTrackingArea?
     private var pointerInside = false

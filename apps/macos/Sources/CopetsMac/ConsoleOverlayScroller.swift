@@ -6,6 +6,7 @@ import SwiftUI
 /// (including the native hover track), inside a wider native drag target.
 class ConsoleThinScroller: NSScroller {
     static let knobWidth: CGFloat = 3
+    var paintedKnobWidth: CGFloat { Self.knobWidth }
     var knobTrailingInset: CGFloat? { nil }
     var knobColor: NSColor { .secondaryLabelColor.withAlphaComponent(0.55) }
 
@@ -44,11 +45,11 @@ class ConsoleThinScroller: NSScroller {
         guard isEnabled, knobProportion < 1 else { return .zero }
         let nativeKnob = rect(for: .knob)
         guard nativeKnob.width > 0, nativeKnob.height > 0 else { return .zero }
-        let x = knobTrailingInset.map { bounds.maxX - $0 - Self.knobWidth }
-            ?? (nativeKnob.midX - Self.knobWidth / 2)
+        let x = knobTrailingInset.map { bounds.maxX - $0 - paintedKnobWidth }
+            ?? (nativeKnob.midX - paintedKnobWidth / 2)
         let scale = window?.backingScaleFactor ?? 1
         return NSRect(x: (x * scale).rounded() / scale,
-                      y: nativeKnob.minY, width: Self.knobWidth, height: nativeKnob.height)
+                      y: nativeKnob.minY, width: paintedKnobWidth, height: nativeKnob.height)
     }
 
     override func drawKnob() { drawFallbackKnob() }
@@ -57,8 +58,8 @@ class ConsoleThinScroller: NSScroller {
         let knob = knobDrawingRect
         guard !knob.isEmpty else { return }
         knobColor.setFill()
-        NSBezierPath(roundedRect: knob, xRadius: Self.knobWidth / 2,
-                     yRadius: Self.knobWidth / 2).fill()
+        NSBezierPath(roundedRect: knob, xRadius: paintedKnobWidth / 2,
+                     yRadius: paintedKnobWidth / 2).fill()
     }
 }
 
