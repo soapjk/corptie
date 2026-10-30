@@ -1,3 +1,4 @@
+import { logSessionMessageLatency } from "../utils/sessionMessageLatency.mjs";
 import { AGENT_PROVIDER_CAPABILITIES, AgentProviderNotFoundError } from "./contracts.mjs";
 import { SingleFlight } from "../utils/singleFlight.mjs";
 import { SessionContextDelivery } from "../application/sessionContextDelivery.mjs";
@@ -692,6 +693,8 @@ export class SessionApplicationService {
       throw withDispatchStateNotSent(error);
     }
     let ready;
+    const preparationStartedAt = Date.now();
+    logSessionMessageLatency(context.latencyTrace, "tools_preparation_started");
     try {
       ready = await this.ensureActiveBindingToolsReady(reference.requestedSessionId, {
         ...context,
@@ -706,11 +709,14 @@ export class SessionApplicationService {
     } catch (error) {
       throw withDispatchStateNotSent(error);
     }
+    logSessionMessageLatency(context.latencyTrace, "tools_preparation_completed", { durationMs: Date.now() - preparationStartedAt });
     const prepared = ready.reference;
     let sessionContext;
     let dispatchReference;
     try {
       await this.assertMessageDispatchAllowed?.(prepared, context);
+      const assemblyStartedAt = Date.now();
+      logSessionMessageLatency(context.latencyTrace, "context_assembly_started");
       sessionContext = this.resolveMessageContext
         ? await Promise.resolve().then(() => this.resolveMessageContext(prepared, { ...context, message })).catch((error) => {
           // Context assembly is local; its failure says nothing about Provider health.
@@ -725,6 +731,7 @@ export class SessionApplicationService {
           throw failure;
         })
         : null;
+      logSessionMessageLatency(context.latencyTrace, "context_assembly_completed", { durationMs: Date.now() - assemblyStartedAt });
       dispatchReference = await this.referenceFor(prepared.requestedSessionId);
       assertSameBinding(prepared, dispatchReference);
       await this.assertMessageDispatchAllowed?.(dispatchReference, context);

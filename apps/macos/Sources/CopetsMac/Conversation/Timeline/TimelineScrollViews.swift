@@ -70,13 +70,13 @@ final class IntrinsicHeightTableView: NSTableView {
 }
 
 final class TimelineIntentScroller: ConsoleThinScroller {
-    override var paintedKnobWidth: CGFloat { 9 }
+    override var paintedKnobWidth: CGFloat { 4.5 }
     override class func scrollerWidth(for controlSize: NSControl.ControlSize,
                                      scrollerStyle: NSScroller.Style) -> CGFloat {
         scrollerStyle == .overlay ? 12 : super.scrollerWidth(for: controlSize, scrollerStyle: scrollerStyle)
     }
     override var knobTrailingInset: CGFloat? { 0 }
-    /// Own the complete 9pt capsule instead of drawing into AppKit's 6pt thumb layer.
+    /// Own the complete capsule instead of drawing into AppKit's 6pt thumb layer.
     private(set) var visibleKnobLayer = CALayer()
     override var wantsUpdateLayer: Bool { true }
 
@@ -115,7 +115,7 @@ final class TimelineIntentScroller: ConsoleThinScroller {
         didSet { if oldValue != isEnabled { needsDisplay = true } }
     }
     override func setNeedsDisplay(_ invalidRect: NSRect) {
-        // AppKit's narrow native knob invalidation does not cover our 9pt
+        // AppKit's narrow native knob invalidation does not cover our custom
         // drawing. Repaint this small control, never the message viewport.
         guard !invalidRect.isEmpty else { return }
         super.setNeedsDisplay(bounds)

@@ -59,3 +59,18 @@ test("memory extraction is serialized per session and only the latest operation 
   await drain();
   assert.equal(f.projection.pendingMemoryCount, 0);
 });
+
+test('all Session kinds flush optional topic work after settlement, never during startup reconciliation', () => {
+  const ids = [];
+  const projection = createTaskSessionProjection({
+    store: { getTaskBySessionId: () => null, listTasks: () => [] },
+    memoryScheduler: { requestForTurn() {} }, memoryExtractor: {},
+    memoryTopicService: { flushPending(id) { ids.push(id); return Promise.resolve(); } },
+    emitEvent() {}, sessionWithLogicalWorkspace: value => value
+  });
+  for (const sessionKind of ['assistantChat', 'workChat', 'worker']) {
+    projection.settleEntityTaskFromSession({ id: sessionKind, sessionKind, status: 'complete' });
+  }
+  projection.settleEntityTaskFromSession({ id: 'startup', status: 'complete' }, { extractMemory: false });
+  assert.deepEqual(ids, ['assistantChat', 'workChat', 'worker']);
+});

@@ -9,7 +9,7 @@ export function createCollaborationTimelinePresentation({ store, collaborationCo
   function agentWorkTimelineItem(task, sessionId, queuePosition = null) {
     if (!task?.taskId || task.source?.deleted === true) return null;
     const presentation = collaborationPresentationForTask(task, sessionId);
-    const userMessageStatus = userMessageStatusForAgentWork(task.status);
+    const userMessageStatus = userMessageStatusForAgentWork(task.status, task.targetTurnId ?? null);
     const canonicalId = task.kind === "user"
       ? (task.source?.messageId ?? task.taskId)
       : `work:${task.taskId}`;

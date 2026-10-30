@@ -83,7 +83,7 @@ test("channel inbound presentation uses verified envelope and current logical ti
   assert.equal(item.collaborationInitiatorSessionTitle, "Updated");
   assert.equal(item.collaborationSourceWorkName, "work-s");
   assert.equal(item.collaborationSourceTaskId, "task-s");
-  assert.equal(item.userMessageStatus, "processing");
+  assert.equal(item.userMessageStatus, "preparing");
   assert.equal(item.collaborationChannelId, "channel");
 });
 

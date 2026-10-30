@@ -246,7 +246,8 @@ test("verified channel dispatch writes the returned turn and publishes work star
   await f.queue.drainAgentWork("session");
   assert.equal(f.tasks.get("work").targetTurnId, "channel-turn");
   assert.equal(f.tasks.get("work").status, "running");
-  assert.equal(f.events[0][0], "AgentWorkStarted");
+  assert.equal(f.events[0][0], "AgentWorkPreparing");
+  assert.equal(f.events.at(-1)[0], "AgentWorkStarted");
   assert.equal(f.settled[0][0], "started");
   assert.equal(f.sends.length, 0);
 });

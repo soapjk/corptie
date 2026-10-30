@@ -408,7 +408,8 @@ test("user-saved Global preferences reach existing Sessions across Works on unre
         sessionBindingRepository: { resolve: () => reference },
         assertForkDispatchAllowed: () => {}, assertSessionRecoveryMessageBoundary: () => {},
         memoryRecallService: recallService,
-        memoryTopicService: { update: async () => ({ topics: ["programming"], contexts: ["development"] }) },
+        memoryTopicService: { profileForMessage: () => ({ topics: ["programming"], contexts: ["development"] }),
+          requestUpdate() {} },
         workChatContextService: { build: () => ({ prompt: "Work context" }) },
         resolveContextReferences: async () => null,
         mcpAssignmentRevisionForAgent: () => null, emitEvent: () => {} });

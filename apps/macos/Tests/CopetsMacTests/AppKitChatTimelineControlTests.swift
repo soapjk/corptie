@@ -26,12 +26,15 @@ final class AppKitChatTimelineControlTests: XCTestCase {
                 let copy = try XCTUnwrap(button(in: cell, identifier: "chat.timeline.reply-actions.copy"))
                 let bodyX = cell.convert(body.bounds, from: body).minX
                 let image = try XCTUnwrap(copy.cell).imageRect(forBounds: copy.bounds)
-                XCTAssertEqual(bodyX, 12, accuracy: 0.5, "shared=\(shared), skin=\(skin)")
+                let cardX: CGFloat = skin == .classic ? 12 : 2
+                XCTAssertEqual(bodyX, cardX + 10, accuracy: 0.5, "shared=\(shared), skin=\(skin)")
                 XCTAssertEqual(cell.convert(image, from: copy).minX, bodyX, accuracy: 0.5)
                 XCTAssertEqual(copy.bounds.width, 22, accuracy: 0.5)
                 if !shared {
                     let header = try XCTUnwrap(cell.subviews.first { $0 is NSHostingView<MacReplyIdentityHeader> })
-                    XCTAssertEqual(cell.convert(header.bounds, from: header).minX, bodyX, accuracy: 0.5)
+                    XCTAssertEqual(cell.convert(header.bounds, from: header).minX, 12, accuracy: 0.5)
+                    let card = try XCTUnwrap(view(in: cell, identifier: "chat.timeline.card"))
+                    XCTAssertEqual(cell.convert(card.bounds, from: card).minX, cardX, accuracy: 0.5)
                 }
             }
         }
@@ -64,7 +67,28 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             harness.window.layoutIfNeeded()
             let cell = try XCTUnwrap(harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true))
             let body = try XCTUnwrap(textView(in: cell, identifier: "chat.timeline.body"))
-            XCTAssertEqual(cell.convert(body.bounds, from: body).minX, 12, accuracy: 0.5)
+            XCTAssertEqual(cell.convert(body.bounds, from: body).minX, skin == .classic ? 22 : 12, accuracy: 0.5)
+        }
+    }
+
+    func testPaintedReplyCardsReserveTheirLeadingInsetWithoutMovingUserCards() {
+        for functional in [false, true] {
+            let answer = row(id: "wide-answer", text: String(repeating: "Wide reply body ", count: 120), showsHeader: functional)
+            for skin in [ConversationSkin.classic, .codexFlat] {
+                for width: CGFloat in [240, 420, 900] {
+                    let layout = NativeTimelineLayoutCache.shared.layout(for: answer, columnWidth: width,
+                        typography: skin.typography(for: .assistant), skin: skin)
+                    let leading = ReplyLeadingLayout.cardLeading(for: answer, skin: skin)
+                    XCTAssertLessThanOrEqual(leading + layout.cardWidth, width - 2)
+                }
+            }
+        }
+        let user = AppKitChatTimelineRow(id: "user-edge", contentRevision: 1, nativeText: "User", copyText: "User",
+            nativeStyle: .user, title: "", metadata: "", expandableTurnId: nil, isExpanded: false)
+        for skin in [ConversationSkin.classic, .codexFlat] {
+            XCTAssertEqual(ReplyLeadingLayout.cardLeading(for: user, skin: skin), 2)
+            XCTAssertEqual(ReplyLeadingLayout.additionalCardInset(for: user, skin: skin), 0)
+            XCTAssertEqual(ChatBubbleWidthPolicy.userTrailingInset, 2)
         }
     }
 
@@ -1098,7 +1122,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertNotEqual(initial[0].contentRevision, prepended[1].contentRevision)
     }
 
-    func testNativeTimelineRendersOneCenteredSeparatorAtTheGapBoundary() throws {
+    func testNativeTimelineHidesCenteredSeparatorsAtTheGapBoundary() throws {
         let harness = makeHarness(followsLatest: true, useSharedTextCards: false)
         let start = Date(timeIntervalSince1970: 1_000)
         harness.coordinator.apply(rows: [
@@ -1116,7 +1140,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let firstSeparator = try XCTUnwrap(textField(in: first, identifier: "chat.timeline.time-separator"))
         let secondSeparator = try XCTUnwrap(textField(in: second, identifier: "chat.timeline.time-separator"))
         XCTAssertTrue(firstSeparator.isHidden)
-        XCTAssertFalse(secondSeparator.isHidden)
+        XCTAssertTrue(secondSeparator.isHidden)
         XCTAssertEqual(secondSeparator.alignment, .center)
     }
 
@@ -1236,7 +1260,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(thumb.alphaValue, 1)
         XCTAssertFalse(thumb.isHiddenOrHasHiddenAncestor)
         XCTAssertGreaterThan(thumb.knobDrawingRect.height, 0)
-        XCTAssertEqual(thumb.knobDrawingRect.width, 9)
+        XCTAssertEqual(thumb.knobDrawingRect.width, 4.5)
         XCTAssertTrue(thumb.bounds.contains(thumb.knobDrawingRect))
         try await Task.sleep(for: .milliseconds(1150))
         XCTAssertEqual(thumb.alphaValue, 0)

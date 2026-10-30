@@ -82,7 +82,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
         }
     }
 
-    func testCodexHidesGapSeparatorButKeepsReplyTimestampAcrossSkinSwitches() throws {
+    func testBothSkinsHideGapSeparatorButKeepReplyTimestampAcrossSkinSwitches() throws {
         _ = NSApplication.shared
         var model = row("Reply with a timestamp", revision: 1)
         model.timeSeparatorText = "今天 12:34"
@@ -111,11 +111,11 @@ final class MessageTextCardMigrationTests: XCTestCase {
                 withoutSeparator.timeSeparatorText = nil
                 let plain = NativeTimelineLayoutCache.shared.layout(for: withoutSeparator, columnWidth: 480,
                     typography: typography, skin: skin)
-                let expected: CGFloat = skin == .classic ? 28 : 0
+                let expected: CGFloat = 0
                 XCTAssertEqual(layout.timeSeparatorHeight, expected)
                 XCTAssertEqual(layout.rowHeight - plain.rowHeight, expected)
                 if let label = descendant(cell, id: "chat.timeline.time-separator") {
-                    XCTAssertEqual(label.isHidden, skin == .codexFlat)
+                    XCTAssertTrue(label.isHidden)
                 }
                 if let host = cell.subviews.compactMap({ $0 as? NSHostingView<MacSharedMessageTextCard> }).first {
                     XCTAssertEqual(host.rootView.layout.timeSeparatorHeight, expected)
