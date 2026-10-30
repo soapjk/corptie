@@ -37,7 +37,7 @@ enum DetailWidgetSizing {
         let base = card.kind == "contextReferences" || card.actions.contains(where: { $0.operation == "editor.open" }) ? 68 : 54
         let page = card.nextCursor != nil
         switch card.payload {
-        case .session(let value): return .fitted(height: value.workName.isEmpty ? 72 : 84)
+        case .session(let value): return .fitted(height: value.workName.isEmpty ? 84 : 96)
         case .summary(let value): return .fitted(height: base + textHeight(value.text))
         case .work(let value): return .fitted(height: base + textHeight(value.name, lines: 2) + blockHeight(value.description))
         case .task(let value):

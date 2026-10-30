@@ -1585,3 +1585,38 @@
 
 "展开消息" = "Expand message";
 "收起消息" = "Collapse message";
+
+/* Management and composer presentation. */
+"All Automations" = "All Automations";
+"Automations" = "Automations";
+"History" = "History";
+"No Automations" = "No Automations";
+"No matching Automations" = "No matching Automations";
+"Tasks in this category will appear here." = "Tasks in this category will appear here.";
+"Create an Automation from a Session’s message composer." = "Create an Automation from a Session’s message composer.";
+"View scheduled and event-driven tasks and their run history." = "View scheduled and event-driven tasks and their run history.";
+"After %lld seconds" = "After %lld seconds";
+"Every %lld seconds" = "Every %lld seconds";
+"After a delay" = "After a delay";
+"One time" = "One time";
+"Interval" = "Interval";
+"Process exit" = "Process exit";
+"Condition" = "Condition";
+"Claimed" = "Claimed";
+"Queued" = "Queued";
+"Running" = "Running";
+"Failed" = "Failed";
+"Cancelled" = "Cancelled";
+"Skipped" = "Skipped";
+"Edit" = "Edit";
+"Last Result" = "Last Result";
+"Not run" = "Not run";
+"Risk" = "Risk";
+"Run History (%lld)" = "Run History (%lld)";
+"Run Now" = "Run Now";
+"The target Logical Session is unavailable." = "The target Logical Session is unavailable.";
+"Local-only actions; remote writes and destructive operations are disabled." = "Local-only actions; remote writes and destructive operations are disabled.";
+"Used when reviewing files changed during a session." = "Used when reviewing files changed during a session.";
+"Send an instruction" = "Send an instruction";
+"Missed" = "Missed";
+"Waiting to retry" = "Waiting to retry";

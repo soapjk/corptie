@@ -29,7 +29,7 @@ public struct ConversationDetailProviderCard: View {
             Button { Task { await reload() } } label: { ConversationDetailHeaderIcon(systemName: "arrow.clockwise") }
                 .buttonStyle(.plain).disabled(submitting || configuration.busy).help("刷新配置").accessibilityLabel("刷新配置")
         }) {
-            VStack(alignment: .leading, spacing: compact ? 0 : 7) {
+            VStack(alignment: .leading, spacing: compact ? 0 : 8) {
                 selector(.provider, label: "Provider")
                 selector(.model, label: "模型")
                 selector(.reasoning, label: "处理强度")
@@ -73,8 +73,8 @@ public struct ConversationDetailProviderCard: View {
             .help("\(label)：\(value.title.isEmpty ? "未设置" : value.title)")
         return Group {
             if compact { menu }
-            else { LabeledContent(label) { menu } }
-        }.font(.caption)
+            else { ConversationDetailPropertyRow(label) { menu } }
+        }.font(WorkbenchTypography.font(for: compact ? .help : .body))
     }
     private func submit(_ field: ClientDetailConfiguration.Field, _ id: String) {
         let value = configuration.selection(field)

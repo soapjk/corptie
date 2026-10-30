@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import CorptieConversation
 
 private struct FirstRunFailure: Decodable { let error: String }
 
@@ -395,7 +396,7 @@ struct FirstRunProviderCard: View {
                 providerIcon
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 8) {
-                        Text(provider.name).font(.headline)
+                        Text(provider.name).font(WorkbenchTypography.font(for: .cardTitle))
                         if isDefault && result.enabled && available {
                             Text(L10n("默认"))
                                 .font(.caption.weight(.medium))
@@ -414,7 +415,7 @@ struct FirstRunProviderCard: View {
                         }
                         Text(statusLabel)
                     }
-                    .font(.callout)
+                    .font(WorkbenchTypography.font(for: .help))
                     .foregroundStyle(available && result.enabled ? Color.accentColor : Color.secondary)
                 }
                 Spacer(minLength: 8)
@@ -429,7 +430,7 @@ struct FirstRunProviderCard: View {
             if available && !editingPath && result.program == nil {
                 HStack {
                     Text(L10n("已通过实际回复检测"))
-                        .font(.callout).foregroundStyle(.secondary)
+                        .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
                     Spacer()
                     Button(L10n("更改配置…")) { editingPath = true }
                         .disabled(busy || saving)
@@ -450,7 +451,7 @@ struct FirstRunProviderCard: View {
                     }
                     if path.isEmpty {
                         Text(L10n("未找到程序，请选择已安装的 Agent 可执行文件。"))
-                            .font(.callout).foregroundStyle(.secondary)
+                            .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -466,7 +467,7 @@ struct FirstRunProviderCard: View {
             }
             if let message = error ?? (resultMatchesSelection ? result.message : nil) {
                 Label(L10n(message), systemImage: "exclamationmark.circle")
-                    .font(.callout).foregroundStyle(.red)
+                    .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.red)
                     .textSelection(.enabled)
             }
         }
@@ -581,7 +582,7 @@ struct FirstRunProviderCard: View {
     private func environmentSelection(_ environment: ProviderRuntimeEnvironment) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(L10n("使用本机已有配置和登录状态，认证由 Codex 管理。Codex 自身可能请求系统授权。"))
-                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if !available {
                 HStack {
                     Button(L10n("登录 Codex")) { Task { await authenticate("login") } }
@@ -734,9 +735,9 @@ struct ProviderEnvironmentSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(L10n("Provider 专属配置")).font(.title3.weight(.semibold))
+            Text(L10n("Provider 专属配置")).font(WorkbenchTypography.font(for: .sectionTitle))
             Text(L10n("各 Provider 的程序路径、可用状态与认证配置分别管理，不影响上方的共用模型设置。"))
-                .font(.caption).foregroundStyle(.secondary)
+                .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
             if let status {
                 ForEach(status.providers) { provider in
                     FirstRunProviderCard(provider: provider, busy: false, scanGeneration: 0,
