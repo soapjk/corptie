@@ -29,7 +29,7 @@ export function worktreeDispatchBlocker(store, reference) {
     if (job.status === "paused" && ["awaiting_integration_acceptance", "recovery_required"].includes(job.phase)
       && step?.kind === "acceptance" && workspaceId === step.targetWorktreeId
       && (logical.taskId ?? store.getSession?.(logical.legacySessionId)?.taskId) === step.rootTaskId) return null;
-    if (job.status === "paused" && job.phase !== "awaiting_integration_acceptance"
+    if (job.status === "paused"
       && safetyCurrent && safety?.safeWorktrees?.some(tree => tree.worktreeId === workspaceId)) return null;
     return plan.reservedWorktreeIds?.includes(workspaceId) ? blocked("WORKTREE_INTEGRATION_IN_PROGRESS") : null;
   }
