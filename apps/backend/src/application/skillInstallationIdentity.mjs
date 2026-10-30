@@ -4,6 +4,7 @@ import { resolve, posix } from "node:path";
 // Identity is independent of display names and manifest-only content hashes.
 // Local aliases resolve to the selected Skill directory, including symlinks.
 export async function skillInstallationIdentity(skill) {
+  if (skill.sourceType === "url") return JSON.stringify(["url", new URL(skill.source).href, posix.normalize(skill.sourceSubpath || ".")]);
   if (skill.sourceType !== "git") {
     const path = resolve(skill.source, skill.sourceSubpath || ".");
     try { return JSON.stringify(["local", await realpath(path)]); }

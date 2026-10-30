@@ -30,8 +30,14 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { skillInstallationIdentity, withSkillRegistryMutation } from "./skillInstallationIdentity.mjs";
+import { SkillPackageStorage, validateSkillArchiveURL } from "./skillPackageStorage.mjs";
 
 const execFileAsync = promisify(execFile);
+
+function normalizeSourceType(value = "local") {
+  if (!["local", "git", "url"].includes(value)) throw Object.assign(new Error("Unsupported Skill source type."), { code: "INVALID_INPUT" });
+  return value;
+}
 
 // 项目级 Skill 发现必须覆盖任意深度的源码子目录。明确排除依赖、版本库和构建缓存，
 // 避免把第三方包里的 SKILL.md 当成用户项目的可安装 Skill，也避免无意义的大目录遍历。
@@ -77,6 +83,7 @@ export class SkillRegistryService {
     store,
     skillsDirs = {},
     cacheRoot,
+    packageRoot,
     exec = execFileAsync,
     removePath = rm,
     discoveryAssistant = null,
@@ -92,6 +99,7 @@ export class SkillRegistryService {
     // git 源克隆缓存的根目录（全局共享，跨 Provider）。
     this.cacheRoot = resolve(cacheRoot ?? join(process.env.CORPTIE_HOME ?? join(homedirFallback(), ".corptie"), "skill-cache"));
     this.mcpRuntimeRoot = join(this.cacheRoot, "mcp-runtime");
+    this.packageStorage = new SkillPackageStorage({ root: packageRoot ?? join(this.cacheRoot, "skill-packages") });
     this.mcpRuntimeFlights = new Map();
     this.exec = exec;
     this.removePath = removePath;
@@ -122,13 +130,13 @@ export class SkillRegistryService {
   }
 
   async discover({ sourceType, source, assist = true }) {
-    const type = sourceType === "git" ? "git" : "local";
+    const type = normalizeSourceType(sourceType);
     const rawSource = String(source ?? "").trim();
     if (!rawSource) throw skillError("INVALID_INPUT", "source is required.");
     let cachePath = null;
     try {
-      const rootDir = type === "git"
-        ? (cachePath = await this.#cloneGitSource(rawSource))
+      const rootDir = type !== "local"
+        ? (cachePath = await this.#checkoutSource(type, rawSource))
         : resolve(rawSource);
       // 项目扫描阶段只做确定性发现：一棵项目树可能包含大量普通 Skill，不能为每个
       // 候选串行启动后台 Agent。用户选定具体候选并登记时，register() 才按 assist
@@ -146,13 +154,107 @@ export class SkillRegistryService {
         diagnostics: diagnostics.map(({ error: _error, ...diagnostic }) => diagnostic)
       };
     } finally {
-      if (cachePath) await rm(cachePath, { recursive: true, force: true });
+      if (cachePath) await rm(type === "url" ? dirname(cachePath) : cachePath, { recursive: true, force: true });
     }
   }
 
   // 登记一个 Skill。启动上下文只使用 manifest 索引；完整正文由 loadForAgent() 按需读取。
   async register(input) {
-    return withSkillRegistryMutation(this.store, () => this.#register(input));
+    return withSkillRegistryMutation(this.store, () => this.#runInstallOperation("register", null, input,
+      (operationId) => this.#register({ ...input, operationId })));
+  }
+
+  installationOperation(operationId) {
+    const operation = this.store.getInstallOperation(operationId);
+    if (!operation) throw skillError("NOT_FOUND", "Skill installation operation not found.");
+    return operation;
+  }
+
+  // Called once by the composition root before requests can be accepted. Never
+  // silently repeat downloads or activation after an interrupted process.
+  reconcileInterruptedInstallations() {
+    return this.store.listPendingInstallOperations().map((operation) =>
+      this.store.advanceInstallOperation(operation.operationId,
+        operation.status === "activating" ? "repair_required" : "failed",
+        { errorCode: "SKILL_INSTALL_INTERRUPTED" }));
+  }
+
+  async recoverInstallation(operationId) {
+    return withSkillRegistryMutation(this.store, async () => {
+      const operation = this.installationOperation(operationId);
+      if (["succeeded", "failed"].includes(operation.status)) return operation;
+      if (operation.status !== "repair_required" || !operation.skillId) {
+        throw skillError("INSTALL_STATE_CONFLICT", "Only an interrupted activation with a recorded Skill ID can be repaired.");
+      }
+      const skillId = validateSkillId(operation.skillId);
+      const current = this.store.getRegistrySkill(skillId);
+      if (current) {
+        if (this.deletionImpact(skillId).activeSessionCount > 0) throw skillError("SKILL_HAS_ACTIVE_SESSIONS", "Installation recovery waits for idle Sessions.");
+        if (!current.managedPackagePath) throw skillError("LEGACY_RECOVERY_REQUIRES_SOURCE", "Legacy installation has no verified managed rollback snapshot.");
+        // SQLite's committed version is authoritative. Never redownload or
+        // activate a merely prepared candidate during recovery.
+        await this.materialize(current);
+        const committed = current.packageRevision === operation.snapshot?.packageRevision;
+        return this.store.advanceInstallOperation(operationId, committed ? "succeeded" : "failed",
+          { errorCode: committed ? null : "SKILL_INSTALL_ROLLED_BACK" });
+      }
+      await this.unmaterialize({ skillId });
+      return this.store.advanceInstallOperation(operationId, "failed", { errorCode: "SKILL_INSTALL_ROLLED_BACK" });
+    });
+  }
+
+  submitInstallation(input, { skillId = null, onCompleted = null } = {}) {
+    const operation = this.#prepareInstallOperation(skillId ? "update" : "register", skillId, input);
+    if (!operation.replay) {
+      // The queue is service-owned, not request-owned. Disconnecting a client
+      // cannot cancel a partially activated package.
+      void withSkillRegistryMutation(this.store, () => this.#executeInstallOperation(operation, skillId,
+        (operationId) => skillId ? this.#update(skillId, { ...input, operationId }) : this.#register({ ...input, operationId })))
+        .then((skill) => { try { onCompleted?.(skill); } catch { /* receipt remains authoritative */ } })
+        .catch(() => { /* terminal error is durably recorded by the executor */ });
+    }
+    return operation;
+  }
+
+  #prepareInstallOperation(action, skillId, input) {
+    const sourceType = normalizeSourceType(input.sourceType ?? (skillId && this.store.getRegistrySkill(skillId)?.sourceType) ?? "local");
+    if (sourceType === "url") validateSkillArchiveURL(input.source ?? this.store.getRegistrySkill(skillId)?.source);
+    const requestId = input.requestId ?? randomUUID();
+    if (typeof requestId !== "string" || !requestId.trim() || requestId.length > 200) throw skillError("INVALID_INPUT", "Invalid installation request ID.");
+    const request = { action, skillId, name: input.name ?? null, description: input.description ?? null,
+      sourceType: input.sourceType ?? null, source: input.source ?? null, sourceSubpath: input.sourceSubpath ?? null,
+      assist: input.assist !== false, refreshSource: input.refreshSource !== false };
+    return this.store.createInstallOperation(requestId, request);
+  }
+
+  async #runInstallOperation(action, skillId, input, run) {
+    const operation = this.#prepareInstallOperation(action, skillId, input);
+    if (operation.replay) {
+      const skill = operation.skillId && this.store.getRegistrySkill(operation.skillId);
+      if (operation.status === "succeeded" && skill) return { ...skill, operationId: operation.operationId, idempotentReplay: true };
+      const error = skillError("INSTALL_OPERATION_INCOMPLETE", "已有安装操作未成功完成；不会重放安装或覆盖当前版本，请检查该操作。");
+      error.operation = operation;
+      throw error;
+    }
+    return this.#executeInstallOperation(operation, skillId, run);
+  }
+
+  async #executeInstallOperation(operation, skillId, run) {
+    this.store.advanceInstallOperation(operation.operationId, "preparing", { skillId });
+    try {
+      const skill = await run(operation.operationId);
+      this.store.advanceInstallOperation(operation.operationId, "succeeded", { skillId: skill.skillId });
+      return { ...skill, operationId: operation.operationId };
+    } catch (error) {
+      const current = this.store.getInstallOperation(operation.operationId);
+      if (["preparing", "prepared", "activating"].includes(current.status)) {
+        this.store.advanceInstallOperation(operation.operationId,
+          current.status === "activating" ? "repair_required" : "failed",
+          { errorCode: error.code ?? "SKILL_INSTALL_FAILED" });
+      }
+      error.operation = this.store.getInstallOperation(operation.operationId);
+      throw error;
+    }
   }
 
   async #matchingInstallations(coordinates, excludedId = null) {
@@ -177,12 +279,12 @@ export class SkillRegistryService {
   }
 
   async previewInstall({ sourceType, source, sourceSubpath = "" }) {
-    const type = sourceType === "git" ? "git" : "local";
+    const type = normalizeSourceType(sourceType);
     const rawSource = String(source ?? "").trim();
     if (!rawSource) throw skillError("INVALID_INPUT", "source is required.");
     let cachePath = null;
     try {
-      const root = type === "git" ? (cachePath = await this.#cloneGitSource(rawSource)) : resolve(rawSource);
+      const root = type !== "local" ? (cachePath = await this.#checkoutSource(type, rawSource)) : resolve(rawSource);
       const candidate = await this.#selectCandidate(root, sourceSubpath, { assist: false });
       const coordinates = this.#registrationCoordinates(type, rawSource, root, candidate);
       const matches = await this.#matchingInstallations({ sourceType: type, ...coordinates });
@@ -191,7 +293,7 @@ export class SkillRegistryService {
         existingSkillIds: matches.map((skill) => skill.skillId),
         versionComparison: "unknown", requiresExplicitUpdate: matches.length > 0 };
     } finally {
-      if (cachePath) await rm(cachePath, { recursive: true, force: true });
+      if (cachePath) await rm(type === "url" ? dirname(cachePath) : cachePath, { recursive: true, force: true });
     }
   }
 
@@ -205,23 +307,28 @@ export class SkillRegistryService {
     throw error;
   }
 
-  async #register({ name, description = "", sourceType, source, sourceSubpath = "", assist = true }) {
-    const type = sourceType === "git" ? "git" : "local";
+  async #register({ name, description = "", sourceType, source, sourceSubpath = "", assist = true, operationId }) {
+    const type = normalizeSourceType(sourceType);
     const rawSource = String(source ?? "").trim();
     if (!rawSource) throw skillError("INVALID_INPUT", "source is required.");
 
     let cachePath = null;
     try {
-      const sourceRoot = type === "git"
-        ? (cachePath = await this.#cloneGitSource(rawSource))
+      const sourceRoot = type !== "local"
+        ? (cachePath = await this.#checkoutSource(type, rawSource))
         : resolve(rawSource);
       const candidate = await this.#selectCandidate(sourceRoot, sourceSubpath, { assist });
       const coordinates = this.#registrationCoordinates(type, rawSource, sourceRoot, candidate);
       await this.#assertNotRegistered({ sourceType: type, ...coordinates });
+      const snapshot = await this.packageStorage.stagePackage(candidate[CANDIDATE_INTERNAL]);
+      this.store.advanceInstallOperation(operationId, "prepared", { snapshot });
       const resolvedName = String(name ?? "").trim() || candidate.manifestName;
       const resolvedDescription = String(description ?? "").trim() || candidate.manifestDescription;
 
+      const skillId = `skill:${randomUUID()}`;
+      this.store.advanceInstallOperation(operationId, "activating", { skillId });
       const skill = this.store.createRegistrySkill({
+        id: skillId,
         name: resolvedName,
         description: resolvedDescription,
         sourceType: type,
@@ -230,10 +337,11 @@ export class SkillRegistryService {
         packageSubpath: coordinates.packageSubpath,
         mcpDescriptorSubpath: coordinates.mcpDescriptorSubpath,
         packageDiscoveryMethod: coordinates.packageDiscoveryMethod,
-        cachePath,
+        cachePath: type === "git" ? cachePath : null,
         manifestName: candidate.manifestName,
         manifestDescription: candidate.manifestDescription,
-        contentHash: candidate.contentHash
+        contentHash: candidate.contentHash,
+        ...snapshot
       });
 
       try {
@@ -271,26 +379,32 @@ export class SkillRegistryService {
         await rm(cachePath, { recursive: true, force: true });
       }
       throw error;
+    } finally {
+      if (type === "url" && cachePath) await rm(dirname(cachePath), { recursive: true, force: true });
     }
   }
 
   // 保留 skillId 和 Agent 绑定，重新指向一个经过验证的具体 Skill。
   async update(skillId, input = {}) {
-    return withSkillRegistryMutation(this.store, () => this.#update(skillId, input));
+    return withSkillRegistryMutation(this.store, () => this.#runInstallOperation("update", skillId, input,
+      (operationId) => this.#update(skillId, { ...input, operationId })));
   }
 
   async #update(skillId, input = {}) {
     const existing = this.store.getRegistrySkill(skillId);
     if (!existing) throw skillError("NOT_FOUND", `Skill not found: ${skillId}`);
-    const type = input.sourceType === "git" ? "git" : (input.sourceType ?? existing.sourceType);
+    if (this.deletionImpact(skillId).activeSessionCount > 0) {
+      throw skillError("SKILL_HAS_ACTIVE_SESSIONS", "Skill 存在活跃 Session，当前版本不能安全替换；请在会话空闲后更新。");
+    }
+    const type = normalizeSourceType(input.sourceType ?? existing.sourceType);
     const source = String(input.source ?? existing.source).trim();
     // Explicit updates must inspect a fresh checkout, not silently reinstall the
     // old snapshot. Legacy metadata repair is the only non-refreshing caller.
     let cachePath = type === "git" && input.refreshSource === false && source === existing.source ? existing.cachePath : null;
-    const createdCache = type === "git" && !cachePath;
+    const createdCache = type !== "local" && !cachePath;
     try {
-      if (createdCache) cachePath = await this.#cloneGitSource(source);
-      const sourceRoot = type === "git" ? cachePath : resolve(source);
+      if (createdCache) cachePath = await this.#checkoutSource(type, source);
+      const sourceRoot = type !== "local" ? cachePath : resolve(source);
       const candidate = await this.#selectCandidate(
         sourceRoot,
         input.sourceSubpath ?? existing.sourceSubpath ?? "",
@@ -298,6 +412,8 @@ export class SkillRegistryService {
       );
       const coordinates = this.#registrationCoordinates(type, source, sourceRoot, candidate);
       await this.#assertNotRegistered({ sourceType: type, ...coordinates }, skillId);
+      const snapshot = await this.packageStorage.stagePackage(candidate[CANDIDATE_INTERNAL]);
+      this.store.advanceInstallOperation(input.operationId, "prepared", { snapshot });
       const next = {
         ...existing,
         name: String(input.name ?? existing.name).trim() || candidate.manifestName,
@@ -308,12 +424,27 @@ export class SkillRegistryService {
         packageSubpath: coordinates.packageSubpath,
         mcpDescriptorSubpath: coordinates.mcpDescriptorSubpath,
         packageDiscoveryMethod: coordinates.packageDiscoveryMethod,
-        cachePath,
+        cachePath: type === "git" ? cachePath : null,
         manifestName: candidate.manifestName,
         manifestDescription: candidate.manifestDescription,
-        contentHash: candidate.contentHash
+        contentHash: candidate.contentHash,
+        ...snapshot
       };
-      await this.materialize(next);
+      this.store.advanceInstallOperation(input.operationId, "activating", { skillId });
+      if (this.deletionImpact(skillId).activeSessionCount > 0) {
+        throw skillError("SKILL_HAS_ACTIVE_SESSIONS", "准备期间出现活跃 Session，取消本次版本替换。");
+      }
+      try {
+        await this.materialize(next);
+      } catch (error) {
+        // For managed records the previous package is independent of the
+        // mutable source. Restore providers already replaced before the failure.
+        if (existing.managedPackagePath) {
+          try { await this.materialize(existing); }
+          catch (recoveryError) { error.recoveryCode = recoveryError.code ?? "SKILL_RECOVERY_FAILED"; }
+        }
+        throw error;
+      }
       const updated = this.store.updateRegistrySkill(skillId, next);
       this.#recordRuntimeEvent({
         stage: "registration",
@@ -340,6 +471,8 @@ export class SkillRegistryService {
       });
       if (createdCache && cachePath) await rm(cachePath, { recursive: true, force: true });
       throw error;
+    } finally {
+      if (type === "url" && cachePath) await rm(dirname(cachePath), { recursive: true, force: true });
     }
   }
 
@@ -404,7 +537,21 @@ export class SkillRegistryService {
           });
           continue;
         }
-        const updated = await this.update(skill.skillId, { sourceSubpath: selected.relativePath, refreshSource: false });
+        // Startup repairs only legacy indexing metadata. It must not turn a
+        // source reference into a managed installation without an explicit
+        // install/update request, nor refresh its upstream repository.
+        const updated = await withSkillRegistryMutation(this.store, async () => {
+          const current = this.store.getRegistrySkill(skill.skillId);
+          if (!current || current.managedPackagePath) return current;
+          if (this.deletionImpact(skill.skillId).activeSessionCount > 0) {
+            throw skillError("SKILL_HAS_ACTIVE_SESSIONS", "Legacy metadata repair waits for idle Sessions.");
+          }
+          const coordinates = this.#registrationCoordinates(current.sourceType, current.source, sourceRoot, selected);
+          const next = { ...current, ...coordinates, manifestName: selected.manifestName,
+            manifestDescription: selected.manifestDescription, contentHash: selected.contentHash };
+          await this.materialize(next);
+          return this.store.updateRegistrySkill(skill.skillId, next);
+        });
         if (previousFailure) {
           delete repairState.failures[skill.skillId];
           repairStateChanged = true;
@@ -430,6 +577,10 @@ export class SkillRegistryService {
   // 物化安装：把 skill 内容落到每个 Provider 的 skills 目录（skill_id 命名子目录）。
   async materialize(skill) {
     try {
+      if (skill.managedPackagePath) {
+        const inspection = await this.packageStorage.inspectStagedPackage(skill.managedPackagePath);
+        if (inspection.packageHash !== skill.packageHash) throw skillError("MANAGED_PACKAGE_CHANGED", "托管 Skill 内容与安装校验不一致，拒绝重新分发。");
+      }
       const installation = await this.#resolveInstallation(skill);
       const sourceComposition = await this.#inspectPackage(installation.packageRoot, installation);
       const results = [];
@@ -486,6 +637,7 @@ export class SkillRegistryService {
     }
     if (!refresh && await isDirectory(targetDir)) return targetDir;
     let source = installation;
+    if (!source && skill.managedPackagePath) source = await this.#resolveInstallation(skill);
     if (!source) {
       // Older installations have no shared MCP copy. Migrate from an already
       // materialized, previously verified runtime, never from the mutable
@@ -620,6 +772,8 @@ export class SkillRegistryService {
     const assigned = this.store.listRegistrySkillsForAgent(agentId).map((skill) => ({
       skillId: skill.skillId,
       contentHash: skill.contentHash ?? "",
+      packageRevision: skill.packageRevision ?? "",
+      packageHash: skill.packageHash ?? "",
       updatedAt: skill.updatedAt ?? "",
       packageSubpath: skill.packageSubpath ?? "",
       mcpDescriptorSubpath: skill.mcpDescriptorSubpath ?? ""
@@ -870,6 +1024,10 @@ export class SkillRegistryService {
   // - local：source 即目录本身。
   // - git：cache_path（克隆缓存）。克隆时会把仓库根直接作为缓存目录。
   async #sourceDir(skill) {
+    if (skill.managedPackagePath) {
+      if (await isDirectory(skill.managedPackagePath)) return skill.managedPackagePath;
+      throw skillError("MANAGED_PACKAGE_MISSING", `托管 Skill 包缺失：${skill.name}；不会回退到未经校验的来源。`);
+    }
     if (skill.sourceType === "git") {
       const dir = skill.cachePath ?? skill.source;
       if (await isDirectory(dir)) return dir;
@@ -890,11 +1048,16 @@ export class SkillRegistryService {
 
   async #resolveInstallation(skill) {
     const sourceRoot = await realpath(await this.#sourceDir(skill));
-    const skillRoot = await this.#resolveSubpath(sourceRoot, skill.sourceSubpath ?? "");
+    if (skill.managedPackagePath) {
+      const storedRoot = await realpath(join(this.packageStorage.root, "installed"));
+      if (!isPathWithin(sourceRoot, storedRoot)) throw skillError("PACKAGE_RESOURCE_OUTSIDE_ROOT", "Managed package escapes storage.");
+    }
+    const skillRoot = await this.#resolveSubpath(sourceRoot, skill.managedPackagePath
+      ? skill.managedSkillSubpath : (skill.sourceSubpath ?? ""));
     const markerPath = await this.#markerAtRoot(skillRoot);
     if (!markerPath) throw skillError("INVALID_SKILL", `Skill 根目录缺少 SKILL.md：${skillRoot}`);
 
-    let packageRoot = skill.packageSubpath
+    let packageRoot = !skill.managedPackagePath && skill.packageSubpath
       ? await this.#resolveSubpath(sourceRoot, skill.packageSubpath)
       : sourceRoot;
     let definition = await this.#packageDefinition(packageRoot, skillRoot);
@@ -925,7 +1088,7 @@ export class SkillRegistryService {
     const packageRel = relative(resolvedSourceRoot, internal.packageRoot);
     const packageOutsideSource = packageRel === ".." || packageRel.startsWith(`..${sep}`) || isAbsolute(packageRel);
     if (packageOutsideSource) {
-      if (type === "git") {
+      if (type !== "local") {
         throw skillError("PACKAGE_ROOT_OUTSIDE_SOURCE", "Git Skill 的 Package 根目录不能超出克隆来源。");
       }
       return {
@@ -1293,11 +1456,18 @@ export class SkillRegistryService {
     return dir;
   }
 
+  async #checkoutSource(type, source) {
+    if (type === "git") return this.#cloneGitSource(source);
+    return (await this.packageStorage.acquireSource(source)).root;
+  }
+
   // 原子物化整个 Package，并把所选 Skill 的内容提升到目标根，使 Provider 仍能按
   // <skillsRoot>/<skillId>/SKILL.md 加载，同时保留 ${PLUGIN_ROOT} 所需的包级资源。
   async #mirrorPackage(packageRoot, skillRoot, targetDir, options = {}) {
     const parent = dirname(targetDir);
     const temporary = join(parent, `.${basename(targetDir)}.tmp-${randomUUID()}`);
+    const backup = join(parent, `.${basename(targetDir)}.previous-${randomUUID()}`);
+    let backedUp = false;
     await mkdir(parent, { recursive: true, mode: 0o700 });
     await rm(temporary, { recursive: true, force: true });
     try {
@@ -1326,8 +1496,21 @@ export class SkillRegistryService {
         const verification = await this.#verifyMcpServers(composition.mcp.servers);
         composition.mcp.toolCount = verification.toolCount;
       }
-      await rm(targetDir, { recursive: true, force: true });
-      await rename(temporary, targetDir);
+      try {
+        await rename(targetDir, backup);
+        backedUp = true;
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+      try { await rename(temporary, targetDir); }
+      catch (error) {
+        if (backedUp) {
+          await rename(backup, targetDir);
+          backedUp = false;
+        }
+        throw error;
+      }
+      if (backedUp) await rm(backup, { recursive: true, force: true });
       return stripResolvedServers(composition);
     } catch (error) {
       await rm(temporary, { recursive: true, force: true });

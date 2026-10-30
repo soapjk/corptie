@@ -582,6 +582,35 @@ test("Skill HTTP preview and duplicate guard share the installer and update emit
   }
 });
 
+test("Skill HTTP async submission returns 202 and a queryable idempotent receipt", async () => {
+  const services = await createServices();
+  try {
+    const source = join(services.directory, "async-source");
+    await mkdir(source);
+    await writeFile(join(source, "SKILL.md"), "---\nname: async-sample\n---\nInstructions\n");
+    const body = { sourceType: "local", source, assist: false, async: true, requestId: "http-async" };
+    const accepted = await callApi({ ...services, method: "POST", pathname: "/skills", body });
+    assert.equal(accepted.statusCode, 202);
+    const id = accepted.body.operation.operationId;
+    const replay = await callApi({ ...services, method: "POST", pathname: "/skills", body });
+    assert.equal(replay.body.operation.operationId, id);
+    let operation;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const result = await callApi({ ...services, method: "GET", pathname: `/skills/install-operations/${id}` });
+      assert.equal(result.statusCode, 200);
+      operation = result.body.operation;
+      if (["succeeded", "failed", "repair_required"].includes(operation.status)) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(operation.status, "succeeded");
+    assert.equal(services.store.listRegistrySkills().length, 1);
+    assert.equal(services.entityEvents.filter((event) => event.type === "SkillChanged").length, 1);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
 test("GET /skills/runtime-events exposes filterable persisted stage diagnostics", async () => {
   const services = await createServices();
   try {

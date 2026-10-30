@@ -32,7 +32,7 @@ test("registration domain is discoverable for MCP and Skill and shared across Pr
     const contract = catalog.domainContract({ ...scope, providerId }, "integration-registry");
     assert.deepEqual(contract.tools.map((tool) => tool.canonicalName).sort(), [
       "corptie_integration_list", "corptie_mcp_register", "corptie_skill_discover",
-      "corptie_skill_duplicates_list", "corptie_skill_install_preview", "corptie_skill_register", "corptie_skill_update"
+      "corptie_skill_duplicates_list", "corptie_skill_install_operation_get", "corptie_skill_install_operation_recover", "corptie_skill_install_preview", "corptie_skill_register", "corptie_skill_update"
     ]);
     for (const entry of catalog.entries(scope, { domains: ["integration-registry"] })) {
       assert.deepEqual([...entry.eligibleSurfaces].sort(), ["generated_authenticated_mcp", "native_dynamic", "restricted_gateway"]);
