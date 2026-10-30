@@ -126,32 +126,32 @@ struct ConsoleOverlayScrollerTests {
                 NSColor.clear.setFill()
                 bounds.fill(using: .copy)
                 NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance {
-                    // Verify the older-system fallback independently of live glass compositing.
-                    scroller.drawFallbackKnob()
+                    scroller.draw(bounds)
                     scroller.drawKnobSlot(in: bounds, highlight: true)
                 }
                 context.flushGraphics()
                 NSGraphicsContext.restoreGraphicsState()
                 var paintedColumns = Set<Int>()
                 var paintedRows = Set<Int>()
+                var maximumAlpha: CGFloat = 0
                 for y in 0..<bitmap.pixelsHigh {
                     for x in 0..<bitmap.pixelsWide {
-                        if (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.01 {
+                        let pixel = bitmap.colorAt(x: x, y: y)
+                        maximumAlpha = max(maximumAlpha, pixel?.alphaComponent ?? 0)
+                        if (pixel?.alphaComponent ?? 0) > 0.01 {
+                            #expect((pixel?.redComponent ?? 0) > 0.95)
+                            #expect((pixel?.greenComponent ?? 0) > 0.95)
+                            #expect((pixel?.blueComponent ?? 0) > 0.95)
                             paintedColumns.insert(x)
                             paintedRows.insert(y)
                         }
                     }
                 }
                 #expect(!paintedColumns.isEmpty)
+                #expect(maximumAlpha > 0.3 && maximumAlpha < 0.4)
                 // At most one anti-aliased edge pixel per side at 1x.
                 #expect(paintedColumns.count == Int(ConsoleThinScroller.knobWidth))
                 #expect(scroller.knobColor == NSColor.white.withAlphaComponent(0.38))
-                if #available(macOS 26.0, *) {
-                    scroller.layoutSubtreeIfNeeded()
-                    let glass = try #require(scroller.subviews.first { $0 is NSGlassEffectView })
-                    #expect(glass.frame == scroller.knobDrawingRect)
-                    #expect(glass.hitTest(NSPoint(x: 1, y: 1)) == nil)
-                }
                 #expect(paintedColumns.max() == Int(bounds.maxX) - 2)
                 let visibleThumbPoint = scroller.convert(NSPoint(x: bounds.maxX - 2, y: knob.midY), to: nil)
                 #expect(scroller.testPart(visibleThumbPoint) == .knob)
@@ -159,6 +159,32 @@ struct ConsoleOverlayScrollerTests {
                 #expect(paintedRows.count < bitmap.pixelsHigh / 2)
             }
         }
+    }
+
+    @Test func timelineThumbFadesAfterIdleAndCanReappear() async throws {
+        let scroller = TimelineIntentScroller(frame: NSRect(x: 0, y: 0, width: 8, height: 240))
+        #expect(scroller.alphaValue == 0)
+        scroller.beginScrollInteraction()
+        #expect(scroller.alphaValue == 1)
+        scroller.endScrollInteraction()
+        try await Task.sleep(for: .milliseconds(450))
+        #expect(scroller.alphaValue == 1)
+        scroller.beginScrollInteraction()
+        scroller.endScrollInteraction()
+        try await Task.sleep(for: .milliseconds(450))
+        #expect(scroller.alphaValue == 1)
+        try await Task.sleep(for: .milliseconds(650))
+        #expect(scroller.alphaValue == 0)
+        scroller.beginScrollInteraction()
+        #expect(scroller.alphaValue == 1)
+        scroller.endScrollInteraction()
+        let event = NSEvent()
+        scroller.mouseEntered(with: event)
+        try await Task.sleep(for: .milliseconds(1000))
+        #expect(scroller.alphaValue == 1)
+        scroller.mouseExited(with: event)
+        try await Task.sleep(for: .milliseconds(1100))
+        #expect(scroller.alphaValue == 0)
     }
 
     @Test func contentProbeConfiguresOnlyItsEnclosingScrollView() {

@@ -52,32 +52,83 @@ final class IntrinsicHeightTableView: NSTableView {
 final class TimelineIntentScroller: ConsoleThinScroller {
     override var knobTrailingInset: CGFloat? { 1 }
     override var knobColor: NSColor { .white.withAlphaComponent(0.38) }
-    private var glassThumb: NSView?
+    private var hideTimer: Timer?
+    private var pointerArea: NSTrackingArea?
+    private var pointerInside = false
+    private var interacting = false
 
-    override var doubleValue: Double { didSet { needsLayout = true } }
-    override var knobProportion: CGFloat { didSet { needsLayout = true } }
-    override var isEnabled: Bool { didSet { needsLayout = true } }
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        alphaValue = 0
+    }
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        wantsLayer = true
+        alphaValue = 0
+    }
+    isolated deinit { hideTimer?.invalidate() }
 
-    override func layout() {
-        super.layout()
-        if #available(macOS 26.0, *) {
-            if glassThumb == nil {
-                let glass = ScrollbarGlassThumb()
-                glass.style = .clear
-                glass.tintColor = .white.withAlphaComponent(0.16)
-                glass.cornerRadius = ConsoleThinScroller.knobWidth / 2
-                addSubview(glass)
-                glassThumb = glass
-            }
-            let rect = knobDrawingRect
-            glassThumb?.isHidden = rect.isEmpty
-            if glassThumb?.frame != rect { glassThumb?.frame = rect }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let pointerArea { removeTrackingArea(pointerArea) }
+        let area = NSTrackingArea(rect: .zero,
+            options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        pointerArea = area
+    }
+    override func mouseEntered(with event: NSEvent) {
+        pointerInside = true
+        reveal()
+    }
+    override func mouseExited(with event: NSEvent) {
+        pointerInside = false
+        scheduleHide()
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            hideTimer?.invalidate()
+            hideTimer = nil
+            pointerInside = false
+            interacting = false
+            alphaValue = 0
         }
     }
 
-    override func drawKnob() {
-        if #available(macOS 26.0, *) { return }
-        drawFallbackKnob()
+    func beginScrollInteraction() {
+        interacting = true
+        reveal()
+    }
+    func endScrollInteraction() {
+        interacting = false
+        scheduleHide()
+    }
+    private func reveal() {
+        // Keep one event-driven deadline per gesture, not one task per wheel tick.
+        hideTimer?.fireDate = .distantFuture
+        layer?.removeAnimation(forKey: "opacity")
+        alphaValue = 1
+    }
+    private func scheduleHide() {
+        guard !pointerInside, !interacting else { return }
+        if let hideTimer {
+            hideTimer.fireDate = Date().addingTimeInterval(0.8)
+            return
+        }
+        let timer = Timer(timeInterval: 0.8, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.hideTimer = nil
+                guard !self.pointerInside, !self.interacting else { return }
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.18
+                    self.animator().alphaValue = 0
+                }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        hideTimer = timer
     }
     var onBegin: (() -> Void)?
     var onEnd: (() -> Void)?
@@ -97,9 +148,4 @@ final class TimelineIntentScroller: ConsoleThinScroller {
         defer { onEnd?() }
         super.mouseDown(with: event)
     }
-}
-
-@available(macOS 26.0, *)
-private final class ScrollbarGlassThumb: NSGlassEffectView {
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
