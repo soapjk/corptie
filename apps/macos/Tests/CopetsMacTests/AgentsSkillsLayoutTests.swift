@@ -20,9 +20,14 @@ struct AgentsSkillsLayoutTests {
     func skillSourcePresentation() {
         let local = skill(sourceType: "local", source: "/tmp/example")
         let git = skill(sourceType: "git", source: "https://example.com/skill.git")
+        var remote = skill(sourceType: "url", source: "https://example.com/skill.zip")
 
         #expect(local.sourceKindLocalizationKey == "Local")
         #expect(git.sourceKindLocalizationKey == "Git")
+        #expect(remote.sourceKindLocalizationKey == "HTTPS ZIP")
+        #expect(!remote.isManaged)
+        remote.installationMode = "managed"
+        #expect(remote.isManaged)
         #expect(local.source == "/tmp/example")
         #expect(git.source == "https://example.com/skill.git")
     }
