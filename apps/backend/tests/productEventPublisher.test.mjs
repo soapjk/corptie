@@ -105,3 +105,12 @@ test("client and work reconciliation failures do not suppress other subscribers 
   f.deferred[0]();
   assert.deepEqual(f.calls.at(-1), ["conflict", "session:1"]);
 });
+
+test('preparation publishes the ordinary timeline projection without claiming Provider execution', () => {
+  const f = fixture();
+  f.options.agentWorkTimelineItem = task => ({ id: task.taskId, type: 'userMessage', userMessageStatus: 'preparing' });
+  const publisher = createProductEventPublisher(f.options);
+  publisher.emitEvent('AgentWorkPreparing', { task: { taskId: 'preparing-task', status: 'running', targetTurnId: null } }, { sessionId: 'session:1' });
+  assert.ok(f.calls.some(call => call[0] === 'timeline' && call[2].userMessageStatus === 'preparing'));
+  assert.ok(!f.calls.some(call => call[0] === 'scheduled'));
+});

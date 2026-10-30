@@ -2,7 +2,7 @@ import { taskExecutionPatch } from "./taskAcceptance.mjs";
 
 // Projects execution status only; Task completion stays behind acceptance and
 // explicit completion commands. Owns per-Session memory extraction ordering.
-export function createTaskSessionProjection({ store, memoryExtractor, memoryScheduler = null,
+export function createTaskSessionProjection({ store, memoryExtractor, memoryScheduler = null, memoryTopicService = null,
   emitEvent, sessionWithLogicalWorkspace }) {
   const taskMemoryExtractions = new Map();
 
@@ -14,7 +14,11 @@ export function createTaskSessionProjection({ store, memoryExtractor, memorySche
     // Replaced Worker Sessions remain queryable for audit, but only the current
     // binding may project lifecycle state back onto the Task.
     if (task && task.current_session_id !== session.id) return task;
-    if (extractMemory) scheduleTaskMemoryExtraction(session, task);
+    if (extractMemory) {
+      scheduleTaskMemoryExtraction(session, task);
+      // Starts on a later event-loop turn, outside the terminal projection.
+      void memoryTopicService?.flushPending(session.id).catch(() => {});
+    }
     if (!task) return null;
     const patch = taskExecutionPatch(task, session.status);
     if (!patch) return task;

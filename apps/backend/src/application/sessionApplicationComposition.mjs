@@ -82,6 +82,10 @@ export function createSessionApplicationComposition({
         reference.sessionId,
         normalizeConversationMessage(messageContext.message).mentions ?? []
       );
+      const ownership = session?.sessionKind === "worker"
+        ? store.assertLogicalWorkSessionBinding(reference.logicalSessionId) : null;
+      const assignedCapabilities = Promise.resolve().then(() => session?.agentId
+        ? resolveAssignedCapabilities(session.agentId) : []).then(value => ({ value }), error => ({ error }));
       let baseContext = null;
       let referenceContext = null;
       if (session?.sessionKind === "workChat" && session.workId) {
@@ -100,7 +104,6 @@ export function createSessionApplicationComposition({
           prompt: [sessionResponsibilityInstructions("assistantChat"), baseContext?.prompt].filter(Boolean).join("\n\n")
         };
       } else if (session?.sessionKind === "worker") {
-        const ownership = store.assertLogicalWorkSessionBinding(reference.logicalSessionId);
         const task = store.getTask(ownership.taskId);
         const work = task?.work_id ? store.getWork(task.work_id) : null;
         const startupReceiptRow = store.selectOne(
@@ -138,7 +141,9 @@ export function createSessionApplicationComposition({
       } : null;
       const currentMessage = conversationMessageText(messageContext.message);
       const topicProfile = session && memoryTopicService
-        ? await memoryTopicService.update(session, currentMessage) : { topics: [], contexts: [], keywords: [] };
+        ? memoryTopicService.profileForMessage(session, currentMessage) : { topics: [], contexts: [], keywords: [] };
+      memoryTopicService?.requestUpdate(session, currentMessage,
+        messageContext.source?.messageId ?? messageContext.source?.deliveryId ?? messageContext.idempotencyKey ?? null);
       const globalPreferences = recallScope
         ? memoryRecallService?.applicablePreferences?.(recallScope, topicProfile) : null;
       if (globalPreferences?.memories.length) {
@@ -175,9 +180,11 @@ export function createSessionApplicationComposition({
           logicalSessionId: reference.logicalSessionId, providerId: reference.providerId,
           providerBindingId: reference.bindingId }
       });
+      const assigned = await assignedCapabilities;
+      if (assigned.error) throw assigned.error;
       const skillRoutingContext = { ...skillMcpTurnContext(
         mcpAssignmentRevisionForAgent(session?.agentId),
-        session?.agentId ? await resolveAssignedCapabilities(session.agentId) : []
+        assigned.value
       ), contextKey: "skill-routing", contextReusable: true };
       // Refresh presentation capabilities at Turn boundaries, including already
       // running/resumed Sessions whose Provider thread predates this contract.

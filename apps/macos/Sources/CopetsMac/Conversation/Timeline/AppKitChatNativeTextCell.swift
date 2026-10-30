@@ -412,7 +412,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         timeSeparatorLabel.stringValue = row.timeSeparatorText ?? ""
         timeSeparatorLabel.isHidden = layout.timeSeparatorHeight == 0
         cardTopConstraint.constant = layout.timeSeparatorHeight + row.replyIdentityHeight + layout.typography.rowInset
-        cardLeadingConstraint.constant = ReplyLeadingLayout.cardLeading(for: row.nativeStyle)
+        cardLeadingConstraint.constant = ReplyLeadingLayout.cardLeading(for: row, skin: skin)
         messageActionBarLeadingConstraint.constant = MessageCardMetrics.contentInset - ReplyActionBar.leadingImageInset
         cardLeadingConstraint.isActive = row.nativeStyle != .user
         cardTrailingConstraint.isActive = row.nativeStyle == .user
@@ -599,6 +599,9 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     }
 
     private func apply(layout: NativeTimelineLayoutCache.Layout) {
+        if let row = renderedRow {
+            cardLeadingConstraint.constant = ReplyLeadingLayout.cardLeading(for: row, skin: skin)
+        }
         timeSeparatorLabel.isHidden = layout.timeSeparatorHeight == 0
         cardTopConstraint.constant = layout.timeSeparatorHeight + (renderedRow?.replyIdentityHeight ?? 0) + layout.typography.rowInset
         cardBottomStandardConstraint.constant = -layout.typography.rowInset

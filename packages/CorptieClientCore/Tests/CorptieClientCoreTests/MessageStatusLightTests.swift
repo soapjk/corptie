@@ -5,7 +5,7 @@ struct MessageStatusLightTests {
     @Test func authoritativeLightMapping() {
         for (state, light, pulse) in [
             ("queued", UserMessageStatusPresentation.Light.orange, false),
-            ("processing", .green, true), ("failed", .red, false), ("cancelled", .off, false)
+            ("preparing", .purple, false), ("processing", .green, true), ("failed", .red, false), ("cancelled", .off, false)
         ] {
             let value = UserMessageStatusPresentation(authoritativeStatus: state, legacyStatus: nil)
             #expect(value?.light == light)

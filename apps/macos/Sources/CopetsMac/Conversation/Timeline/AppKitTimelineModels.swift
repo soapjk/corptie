@@ -262,8 +262,17 @@ enum ReplyLeadingLayout {
     static let cardLeading: CGFloat = 2
     static var processLeadingAdjustment: CGFloat { contentLeading - cardLeading }
 
-    static func cardLeading(for style: AppKitChatTimelineRow.NativeStyle) -> CGFloat {
-        style == .process ? contentLeading : cardLeading
+    static func cardLeading(for row: AppKitChatTimelineRow, skin: ConversationSkin) -> CGFloat {
+        if row.nativeStyle == .process { return contentLeading }
+        if row.nativeStyle == .agent, skin.surface(for: row.contentSurfaceRole) == .legacy {
+            return contentLeading
+        }
+        return cardLeading
+    }
+
+    static func additionalCardInset(for row: AppKitChatTimelineRow, skin: ConversationSkin) -> CGFloat {
+        // Process widths already reserve their leading adjustment in the width policy.
+        row.nativeStyle == .agent ? cardLeading(for: row, skin: skin) - cardLeading : 0
     }
 }
 

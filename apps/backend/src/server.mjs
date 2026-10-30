@@ -541,7 +541,7 @@ const memoryExtractionScheduler = new MemoryExtractionScheduler({ store, extract
       memoryIds: memories.map((memory) => memory.id) });
   } });
 const taskSessionProjection = createTaskSessionProjection({
-  store, memoryExtractor, memoryScheduler: memoryExtractionScheduler,
+  store, memoryExtractor, memoryScheduler: memoryExtractionScheduler, memoryTopicService,
   emitEvent, sessionWithLogicalWorkspace
 });
 const { settleEntityTaskFromSession, settleTaskForWorkspaceContinuation, reconcileEntityTasksAtStartup } = taskSessionProjection;
@@ -1945,6 +1945,7 @@ const sessionMessageOperation = createSessionMessageOperation({
   onTurnAccepted: (entry) => turnExecutionProbe.observe({ event: { ...entry, type: "turn.started" }, binding: entry }),
   ensureCollaborationAgentForSession, registerRuntimeQueuedWork,
   runtimeQueuePosition, publishProviderEventOutbox, scheduleAgentWorkDrain,
+  memoryTopicService,
   scheduleMemoryExtraction: (sessionId, reason) => memoryExtractionScheduler.request(sessionId, reason)
 });
 
@@ -2449,7 +2450,7 @@ startBackendRuntime();
 
 
 const shutdownBackend = createBackendShutdown({
-  backgroundAgentService, memoryExtractionScheduler, getClientDeviceGateway: () => clientDeviceGateway,
+  backgroundAgentService, memoryExtractionScheduler, memoryTopicService, getClientDeviceGateway: () => clientDeviceGateway,
   taskSummaryService, turnObservability, runtimeActivity, mcpCleanupInterval, turnExecutionProbe, mcpRegistryService,
   stateSyncPublisher, scheduledSessionTaskService,
   getResetForecastMonitor: () => codexResetForecastMonitor,

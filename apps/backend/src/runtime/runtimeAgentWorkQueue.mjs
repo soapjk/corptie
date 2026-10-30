@@ -211,6 +211,7 @@ export function createRuntimeAgentWorkQueue({
     forgetRuntimeQueuedWork(sessionId, next.taskId);
     logSessionMessageLatency(latencyTrace, "task_claimed");
     try {
+      emitEvent("AgentWorkPreparing", { sessionId, task: claimed }, { sessionId, source: claimed.source });
       let turnId = null;
       if (claimed.kind === "collaboration") {
         const delivered = claimed.source?.type === "session_channel"

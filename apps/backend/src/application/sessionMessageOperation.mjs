@@ -18,7 +18,7 @@ export function createSessionMessageOperation({
   onTurnAccepted = () => {},
   ensureCollaborationAgentForSession, registerRuntimeQueuedWork,
   runtimeQueuePosition, publishProviderEventOutbox, scheduleAgentWorkDrain,
-  scheduleMemoryExtraction = null
+  scheduleMemoryExtraction = null, memoryTopicService = null
 }) {
 async function sendUnifiedSessionMessage(sessionId, input, source = { type: "desktop" }, options = {}) {
   const message = normalizeConversationMessage(input);
@@ -71,10 +71,17 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
   // generation. Reuse that proof until Provider restart, route replacement,
   // or a failed dispatch invalidates it; ordinary messages must not resume the
   // same Provider thread merely to rediscover that it is still present.
+  if (options.fromAgentWorkQueue === true) {
+    try { memoryTopicService?.requestUpdate(before, value, source.messageId ?? source.deliveryId ?? null); }
+    catch { console.warn("[memory-topic] optional scheduling unavailable"); }
+  }
+  const bindingStartedAt = Date.now();
+  logSessionMessageLatency(latencyTrace, "binding_verification_started");
   const bindingVerification = await sessionBindingReadinessProbe.verify(
     routedSessionId,
     { reuseReady: true }
   );
+  logSessionMessageLatency(latencyTrace, "binding_verification_completed", { durationMs: Date.now() - bindingStartedAt });
   if (bindingVerification.ready !== true) {
     const error = new Error(
       bindingVerification.readiness?.message ?? "The Provider Session is unavailable."
@@ -182,7 +189,7 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
   try {
     result = await sessionApplicationService.sendMessage(
       sessionId,
-      await resolvedConversationMessage(reference, message),
+      await resolvedConversationMessage(reference, message, latencyTrace),
       {
       before,
       latencyTrace,
@@ -195,7 +202,7 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
   } catch (error) {
     // A failed Provider dispatch makes the last-known-ready proof suspect. The
     // next dispatch performs one real probe before retrying this Binding.
-    if (error.stage !== "context_assembly" && error.stage !== "context_delivery") {
+    if (!["context_assembly", "context_delivery", "attachment_resolution"].includes(error.stage)) {
       sessionBindingReadinessProbe.invalidateBinding(reference);
     }
     if (delivery) {
@@ -335,19 +342,30 @@ function collaborationConfirmationReply(value) {
 }
 
 
-async function resolvedConversationMessage(reference, input) {
+async function resolvedConversationMessage(reference, input, latencyTrace) {
   const message = normalizeConversationMessage(input);
-  const images = [];
-  for (const image of message.images) {
-    const stored = await chatResourceService.readImage(reference, image.managedPath);
-    images.push({
-      ...image,
-      absolutePath: stored.path,
-      mimeType: stored.mimeType,
-      byteLength: stored.byteLength,
-      ...(stored.pixelWidth && stored.pixelHeight ? { pixelWidth: stored.pixelWidth, pixelHeight: stored.pixelHeight } : {})
-    });
+  const startedAt = Date.now();
+  logSessionMessageLatency(latencyTrace, "attachments_started", { count: message.images.length });
+  const images = new Array(message.images.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(4, images.length) }, async () => {
+    while (next < message.images.length) {
+      const index = next++;
+      const image = message.images[index];
+      const stored = await chatResourceService.readImage(reference, image.managedPath);
+      images[index] = { ...image, absolutePath: stored.path, mimeType: stored.mimeType,
+        byteLength: stored.byteLength,
+        ...(stored.pixelWidth && stored.pixelHeight ? { pixelWidth: stored.pixelWidth, pixelHeight: stored.pixelHeight } : {}) };
+    }
+  });
+  // Settle every read before dispatch/error; a failed attachment never sends a partial message.
+  const results = await Promise.allSettled(workers);
+  const failed = results.find(result => result.status === "rejected");
+  if (failed) {
+    const error = failed.reason instanceof Error ? failed.reason : new Error("Required attachment could not be read.");
+    throw Object.assign(error, { stage: "attachment_resolution", dispatchState: "not_sent" });
   }
+  logSessionMessageLatency(latencyTrace, "attachments_completed", { count: images.length, durationMs: Date.now() - startedAt });
   return { text: message.text, images, ...(message.mentions ? { mentions: message.mentions } : {}) };
 }
 
@@ -391,6 +409,10 @@ function enqueueUserAgentWork(session, input, source, latencyTrace = null, refer
     source: persistedSource,
     createdAt: now()
   });
+  // In-memory only: a newly admitted message supersedes optional work even
+  // before its turn reaches context assembly. Never compromise durable admission.
+  try { memoryTopicService?.requestUpdate(session, message.text, messageId); }
+  catch { console.warn("[memory-topic] optional scheduling unavailable"); }
   delete persistedSource.clientReceipt;
   const task = created.task;
   registerRuntimeQueuedWork(session.id, task.taskId);
