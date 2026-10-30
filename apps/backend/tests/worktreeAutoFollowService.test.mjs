@@ -25,7 +25,7 @@ test("paused and canceled reservations never expose an unverified or conflicted 
   assert.doesNotThrow(() => assertNoAutomaticWorktreeMutation(store, { sessionId: "s" }));
 });
 
-test("hierarchical integration reserves only its closure and permits the exact parent acceptance Session while waiting", () => {
+test("hierarchical integration releases verified Worktrees while waiting for parent acceptance", () => {
   let workspace = "child";
   const job = { status: "running", phase: "merging", details: { plan: { orchestration: { version: 1 }, reservedWorktreeIds: ["parent", "child", "main"] },
     graphExecution: { index: 0, steps: [{ kind: "acceptance", rootTaskId: "task:parent", targetWorktreeId: "parent" }] } } };
@@ -38,6 +38,19 @@ test("hierarchical integration reserves only its closure and permits the exact p
   job.status = "paused"; job.phase = "awaiting_integration_acceptance";
   assert.doesNotThrow(() => assertNoAutomaticWorktreeMutation(store, { sessionId: "session" }));
   workspace = "child";
+  assert.throws(() => assertNoAutomaticWorktreeMutation(store, { sessionId: "session" }), { code: "SESSION_BUSY" });
+  job.details.dispatchRevision = 2;
+  job.details.dispatchSafety = { verifiedRevision: 2,
+    safeWorktrees: [{ worktreeId: "child" }, { worktreeId: "main" }], blockedWorktreeIds: [] };
+  for (const providerId of ["codex-app-server", "claude-sdk", "openclacky", "future-provider"]) {
+    assert.doesNotThrow(() => assertNoAutomaticWorktreeMutation(store, { sessionId: "session", providerId }));
+  }
+  workspace = "main";
+  assert.doesNotThrow(() => assertNoAutomaticWorktreeMutation(store, { sessionId: "session" }));
+  job.details.dispatchSafety.blockedWorktreeIds = ["main"];
+  assert.throws(() => assertNoAutomaticWorktreeMutation(store, { sessionId: "session" }), { code: "SESSION_BUSY" });
+  workspace = "child";
+  job.details.dispatchSafety.verifiedRevision = 1;
   assert.throws(() => assertNoAutomaticWorktreeMutation(store, { sessionId: "session" }), { code: "SESSION_BUSY" });
 });
 
