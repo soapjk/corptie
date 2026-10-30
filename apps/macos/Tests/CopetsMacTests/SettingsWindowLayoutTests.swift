@@ -69,7 +69,9 @@ struct SettingsWindowLayoutTests {
         for route in ["general", "provider", "appearance", "notifications", "proxy", "gateway", "devices", "archivedSessions"] {
             #expect(contents.contains("case .\(route):"))
         }
-        #expect(contents.contains("LocalWallpaperSettingsView()"))
+        #expect(contents.contains("AppearanceSettingsView()"))
+        let appearance = try String(contentsOf: source.deletingLastPathComponent().appendingPathComponent("AppearanceSettingsView.swift"), encoding: .utf8)
+        #expect(appearance.contains("LocalWallpaperSettingsView()"))
         #expect(contents.contains("ForEach(SettingsTab.allCases"))
         #expect(contents.contains("selectedTab = tab"))
         #expect(!contents.contains(".tabItem"))

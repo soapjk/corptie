@@ -1,4 +1,5 @@
 import SwiftUI
+import CorptieConversation
 
 private struct FoundationModelConfiguration: Codable, Equatable {
     var mode = "default"
@@ -22,9 +23,9 @@ struct FoundationModelSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("底层能力支持的模型设置").font(.headline)
+            Text("底层能力支持的模型设置").font(WorkbenchTypography.font(for: .cardTitle))
             Text("用于 Task 摘要、帮我写及提交说明等后台文本能力，不改变普通会话模型或任务修改权限。")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
             Picker("模型来源", selection: $value.mode) {
                 Text("默认 Provider").tag("default")
                 Text("指定 Provider").tag("provider")
@@ -58,7 +59,7 @@ struct FoundationModelSettingsView: View {
                     }
                 }
                 Text("摘要仍要求 Provider 支持安全的无工具后台执行；不支持时会明确失败，不自动换 Provider。")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
             } else if value.mode == "api" {
                 TextField("OpenAI-compatible Base URL（例如 https://example.com/v1）", text: $value.baseURL)
                 TextField("模型 ID", text: $value.model)
@@ -66,12 +67,12 @@ struct FoundationModelSettingsView: View {
                 Toggle("清除已保存的 API Key", isOn: $clearKey)
                 TextField("推理强度（可选，例如 low / medium / high）", text: $value.reasoning)
                 Text("兼容 Chat Completions；摘要要求支持 JSON Schema。保存后后台能力按此配置运行，相关任务文本会发送到此地址，不额外发起测试请求。密钥仅保存在本机受限配置文件中，不回显；第三方的数据留存由该服务决定。")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
             }
             HStack {
                 Button("保存") { Task { await save() } }.disabled(busy || !loaded)
                 if busy { ProgressView().controlSize(.small) }
-                Text(status).font(.caption).foregroundStyle(.secondary)
+                Text(status).font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
             }
         }
         .textFieldStyle(.roundedBorder)

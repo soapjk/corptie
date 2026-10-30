@@ -435,8 +435,8 @@ struct SessionMessageComposerSurface: View {
     private var editorInput: some View {
         ComposerInputTextView(
             controller: editorController,
-            placeholder: "Send a instruction",
-            font: .systemFont(ofSize: 12, weight: .medium),
+            placeholder: L10n("Send an instruction"),
+            font: WorkbenchTypography.nativeFont(for: compact ? .compactComposerInput : .composerInput),
             textInsetHeight: compact ? CompactComposerLayout.textInsetHeight : ComposerShellMetrics.textInsetHeight,
             onFocusChange: { if acceptsPresentationUpdates { isFocused = $0 } },
             onSendableTextChange: { nextValue in
@@ -811,7 +811,7 @@ struct SessionMessageComposerSurface: View {
     }
 
     private var modelMenuMaxWidth: CGFloat {
-        ComposerShellMetrics.modelMenuMaxWidth(composerWidth: composerWidth)
+        ComposerShellMetrics.modelMenuMaxWidth(composerWidth: composerWidth, presentation: .regular)
     }
 }
 

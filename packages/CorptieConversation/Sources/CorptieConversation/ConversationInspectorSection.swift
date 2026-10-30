@@ -201,7 +201,7 @@ public struct ConversationInspectorSection<Content: View, HeaderActions: View>: 
         self.content = content()
     }
     public var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 6) {
                 if let cardDrag {
                     #if os(macOS)
@@ -223,7 +223,7 @@ public struct ConversationInspectorSection<Content: View, HeaderActions: View>: 
 
     private var titleLabel: some View {
         Label(title, systemImage: systemImage)
-            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            .font(WorkbenchTypography.font(for: .cardTitle)).foregroundStyle(.secondary)
             .lineLimit(1).truncationMode(.tail)
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityAddTraits(.isHeader)
@@ -304,5 +304,36 @@ public struct ConversationTaskDefinition: View {
                 }
             }
         }
+    }
+}
+
+/// Stable property columns in regular widgets, stacked values in compact ones.
+public struct ConversationDetailPropertyRow<Value: View>: View {
+    @Environment(\.detailWidgetSize) private var widgetSize
+    private let title: String
+    private let value: Value
+
+    public init(_ title: String, @ViewBuilder value: () -> Value) {
+        self.title = title
+        self.value = value()
+    }
+
+    public var body: some View {
+        Group {
+            if widgetSize?.columns == 1 {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title).foregroundStyle(.secondary)
+                    value
+                }
+            } else {
+                HStack(alignment: .top, spacing: 8) {
+                    Text(title).foregroundStyle(.secondary)
+                        .frame(width: 64, alignment: .leading)
+                    value.frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .font(WorkbenchTypography.font(for: .body))
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
