@@ -2102,6 +2102,8 @@ export class WorktreeIntegrationJobService {
   // Inspect only on a lifecycle transition, never in the message-queue hot
   // path. Unknown/failed inspection remains closed. Git conflicts are scoped
   // to the actual target, not every source reserved by the integration plan.
+  // Waiting for acceptance is also a pause: other safe Sessions must remain
+  // usable, with the baseline checked again before integration resumes.
   async reconcileDispatchSafety(jobId) {
     if (this.dispatchSafetyChecks.has(jobId)) return this.dispatchSafetyChecks.get(jobId);
     const check = this.#inspectDispatchSafety(jobId);
@@ -2116,8 +2118,7 @@ export class WorktreeIntegrationJobService {
   async #inspectDispatchSafety(jobId) {
     const job = this.store.getWorktreeIntegrationJob(jobId);
     if (!job || !["paused", "canceled"].includes(job.status) || this.activeJobs.has(jobId)
-      || job.details.commitPolicyBlocker
-      || job.details.graphExecution?.steps[job.details.graphExecution.index]?.kind === "acceptance") return;
+      || job.details.commitPolicyBlocker) return;
     let inspection;
     try {
       inspection = await this.inspectRepository(job.repositoryId, { forceFresh: true, reason: "integration_dispatch_safety" });

@@ -9,6 +9,7 @@ import {
   presentJob
 } from "../src/application/worktreeIntegrationJobService.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
+import { worktreeDispatchBlocker } from "../src/application/worktreeExecutionBarrier.mjs";
 
 function memoryFixture({
   conflictOnce = false,
@@ -446,6 +447,57 @@ test("startup reconciles legacy paused reservations without replaying their Git 
   assert.equal(recovered.dispatchSafety.verifiedRevision, recovered.dispatchRevision);
   assert.deepEqual(calls, []);
 });
+
+async function pausedAcceptanceFixture() {
+  const f = memoryFixture({ featureDirty: false });
+  const plan = await f.service.preflight("repository:1");
+  const job = f.store.getWorktreeIntegrationJob(plan.id);
+  f.store.updateWorktreeIntegrationJob(plan.id, { status: "paused", phase: "awaiting_integration_acceptance",
+    details: { ...job.details, plan: { ...job.details.plan,
+      orchestration: { version: 1 }, reservedWorktreeIds: ["wt:main", "wt:feature"] },
+    graphExecution: { index: 0, phase: "executing", reviewedItems: job.details.plan.items,
+      steps: [{ kind: "acceptance", rootTaskId: "task:parent", targetWorktreeId: "wt:main" }] } } });
+  return { ...f, id: plan.id };
+}
+
+test("acceptance waits release safe source Sessions without replaying Git, including after startup", async () => {
+  const { service, store, calls, id } = await pausedAcceptanceFixture();
+  await service.recover();
+  const job = store.getWorktreeIntegrationJob(id);
+  assert.ok(job.details.dispatchSafety.safeWorktrees.some(tree => tree.worktreeId === "wt:feature"));
+  assert.equal(job.details.dispatchSafety.verifiedRevision, job.details.dispatchRevision);
+  assert.equal(worktreeDispatchBlocker(store, { logicalSession: {
+    repositoryId: "repository:1", activeWorkspaceId: "wt:feature", taskId: "task:source"
+  } }), null);
+  assert.equal(service.get(id).phase, "awaiting_integration_acceptance");
+  assert.deepEqual(calls, []);
+});
+
+test("acceptance waits do not release a source with an unfinished Git operation", async () => {
+  const { service, store, worktrees, id } = await pausedAcceptanceFixture();
+  worktrees[1].operationState = "rebase";
+  await service.reconcileDispatchSafety(id);
+  const blocker = worktreeDispatchBlocker(store, { logicalSession: {
+    repositoryId: "repository:1", activeWorkspaceId: "wt:feature"
+  } });
+  assert.equal(blocker.reason, "WORKTREE_CONFLICT_OR_RECOVERY");
+});
+
+for (const change of ["commit", "uncommitted edit"]) {
+  test(`integration revalidates a released source after an acceptance wait: ${change}`, async () => {
+    const { service, store, worktrees, calls, id } = await pausedAcceptanceFixture();
+    await service.reconcileDispatchSafety(id);
+    const baseline = store.getWorktreeIntegrationJob(id).details.dispatchSafety;
+    if (change === "commit") worktrees[1].headOid = "feature:2";
+    else { worktrees[1].dirty = true; worktrees[1].statusSummary = " M feature.txt"; }
+    await service.reconcileDispatchSafety(id);
+    assert.deepEqual(store.getWorktreeIntegrationJob(id).details.dispatchSafety, baseline);
+    service.retry(id);
+    const paused = await waitForJobWhere(service, id, job => job.status === "paused" && job.resumeRequiresReplan);
+    assert.match(paused.error, /released Worktree changed/);
+    assert.deepEqual(calls, []);
+  });
+}
 
 test("a resumed ordinary merge waits for already running target work before touching Git", async () => {
   const { service, store, calls } = memoryFixture({ featureDirty: false });
