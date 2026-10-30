@@ -480,6 +480,24 @@ export function handleEntityHttpRequest({
         if (request.method === "GET" && path === "/skills/duplicates") {
           return sendJson(response, 200, await skillRegistryService.duplicates());
         }
+        const recoverOperationMatch = path.match(/^\/skills\/install-operations\/([^/]+)\/recover$/);
+        if (request.method === "POST" && recoverOperationMatch) {
+          try {
+            const operation = await skillRegistryService.recoverInstallation(decodeURIComponent(recoverOperationMatch[1]));
+            onEntityChanged?.("SkillChanged", { action: "recovered", entity: { skillId: operation.skillId } });
+            return sendJson(response, 200, { operation });
+          } catch (error) {
+            throw apiError(error.code ?? "SKILL_RECOVERY_FAILED", error.message, error.code === "NOT_FOUND" ? 404 : 409);
+          }
+        }
+        const installOperationMatch = path.match(/^\/skills\/install-operations\/([^/]+)$/);
+        if (request.method === "GET" && installOperationMatch) {
+          try {
+            return sendJson(response, 200, { operation: skillRegistryService.installationOperation(decodeURIComponent(installOperationMatch[1])) });
+          } catch (error) {
+            throw apiError(error.code ?? "SKILL_OPERATION_FAILED", error.message, error.code === "NOT_FOUND" ? 404 : 400);
+          }
+        }
         if (request.method === "POST" && path === "/skills/install-preview") {
           const input = await readJson(request);
           try {
@@ -505,19 +523,26 @@ export function handleEntityHttpRequest({
         }
         if (request.method === "POST" && path === "/skills") {
           const input = await readJson(request);
-          const sourceType = input.sourceType === "git" ? "git" : "local";
+          const sourceType = input.sourceType ?? "local";
           const source = String(input.source ?? "").trim();
           if (!source) throw apiError("INVALID_INPUT", "source is required.", 400);
           try {
+            if (input.async === true) {
+              const operation = skillRegistryService.submitInstallation({ ...input, sourceType, source }, {
+                onCompleted: (skill) => onEntityChanged?.("SkillChanged", { action: "created", entity: skill })
+              });
+              return sendJson(response, 202, { operation });
+            }
             const skill = await skillRegistryService.register({
               name: input.name ?? "",
               description: input.description ?? "",
               sourceType,
               source,
               sourceSubpath: input.sourceSubpath ?? "",
+              requestId: input.requestId,
               assist: input.assist !== false
             });
-            onEntityChanged?.("SkillChanged", { action: "created", entity: skill });
+            if (!skill.idempotentReplay) onEntityChanged?.("SkillChanged", { action: "created", entity: skill });
             return sendJson(response, 201, { skill });
           } catch (error) {
             const wrapped = apiError(error?.code ?? "SKILL_REGISTER_FAILED", error?.message ?? "Skill 登记失败。",
@@ -565,8 +590,13 @@ export function handleEntityHttpRequest({
           if (request.method === "PATCH") {
             const input = await readJson(request);
             try {
+              if (input.async === true) {
+                const operation = skillRegistryService.submitInstallation(input, { skillId: id,
+                  onCompleted: (skill) => onEntityChanged?.("SkillChanged", { action: "updated", entity: skill }) });
+                return sendJson(response, 202, { operation });
+              }
               const skill = await skillRegistryService.update(id, input);
-              onEntityChanged?.("SkillChanged", { action: "updated", entity: skill });
+              if (!skill.idempotentReplay) onEntityChanged?.("SkillChanged", { action: "updated", entity: skill });
               return sendJson(response, 200, { skill });
             } catch (error) {
               const wrapped = apiError(error?.code ?? "SKILL_UPDATE_FAILED", error?.message ?? "Skill 更新失败。", 400);

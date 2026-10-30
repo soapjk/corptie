@@ -15,6 +15,52 @@ export class SkillRegistryRepository {
     return this.getDatabase();
   }
 
+  createInstallOperation(requestId, request) {
+    const encoded = JSON.stringify(request);
+    const previous = this.selectOne("SELECT * FROM skill_install_operations WHERE request_id = ?", [requestId]);
+    if (previous) {
+      if (previous.request_json !== encoded) throw Object.assign(new Error("Installation request ID was reused with different parameters."), { code: "IDEMPOTENCY_CONFLICT" });
+      return { ...this.getInstallOperation(previous.operation_id), replay: true };
+    }
+    const pending = this.selectOne("SELECT COUNT(*) AS count FROM skill_install_operations WHERE status IN ('accepted', 'preparing', 'prepared', 'activating')");
+    if (pending.count >= 32) throw Object.assign(new Error("Skill installation queue is full."), { code: "SKILL_INSTALL_QUEUE_FULL" });
+    const id = randomUUID();
+    const now = createdAtFromOrNow();
+    this.db.run(`INSERT INTO skill_install_operations
+      (operation_id, request_id, request_json, status, created_at, updated_at)
+      VALUES (?, ?, ?, 'accepted', ?, ?)`, [id, requestId, encoded, now, now]);
+    this.scheduleSave();
+    return this.getInstallOperation(id);
+  }
+
+  getInstallOperation(operationId) {
+    const row = this.selectOne("SELECT * FROM skill_install_operations WHERE operation_id = ?", [operationId]);
+    if (!row) return null;
+    return { operationId: row.operation_id, requestId: row.request_id, status: row.status,
+      skillId: row.skill_id, snapshot: parseJson(row.snapshot_json, null), errorCode: row.error_code,
+      createdAt: row.created_at, updatedAt: row.updated_at };
+  }
+
+  listPendingInstallOperations() {
+    return this.selectAll("SELECT operation_id FROM skill_install_operations WHERE status IN ('accepted', 'preparing', 'prepared', 'activating') ORDER BY created_at")
+      .map((row) => this.getInstallOperation(row.operation_id));
+  }
+
+  advanceInstallOperation(operationId, status, { skillId, snapshot, errorCode } = {}) {
+    const previous = this.getInstallOperation(operationId);
+    if (!previous) throw Object.assign(new Error("Installation operation not found."), { code: "NOT_FOUND" });
+    const transitions = { accepted: ["preparing", "failed"], preparing: ["prepared", "failed"],
+      prepared: ["activating", "failed"], activating: ["succeeded", "failed", "repair_required"],
+      repair_required: ["succeeded", "failed"] };
+    if (!transitions[previous.status]?.includes(status)) throw Object.assign(new Error("Invalid installation operation transition."), { code: "INSTALL_STATE_CONFLICT" });
+    this.db.run(`UPDATE skill_install_operations SET status = ?, skill_id = ?, snapshot_json = ?,
+      error_code = ?, updated_at = ? WHERE operation_id = ? AND status = ?`,
+    [status, skillId ?? previous.skillId, JSON.stringify(snapshot ?? previous.snapshot), errorCode ?? null,
+      createdAtFromOrNow(), operationId, previous.status]);
+    this.scheduleSave();
+    return this.getInstallOperation(operationId);
+  }
+
   listRegistrySkills() {
     return this.selectAll(`SELECT * FROM skill_registry ORDER BY name ASC`).map(skillFromRow);
   }
@@ -31,13 +77,14 @@ export class SkillRegistryRepository {
       `INSERT INTO skill_registry (
          skill_id, name, description, source_type, source, source_subpath, package_subpath,
          mcp_descriptor_subpath, package_discovery_method, cache_path,
-         manifest_name, manifest_description, content_hash, installed_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         manifest_name, manifest_description, content_hash, installed_at, updated_at,
+         managed_package_path, managed_skill_subpath, package_revision, package_hash, origin_kind
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.name,
         input.description ?? "",
-        input.sourceType ?? "local",
+        input.sourceType === "url" ? "local" : (input.sourceType ?? "local"),
         input.source,
         input.sourceSubpath ?? "",
         input.packageSubpath ?? "",
@@ -48,7 +95,12 @@ export class SkillRegistryRepository {
         input.manifestDescription ?? input.description ?? "",
         input.contentHash ?? "",
         now,
-        now
+        now,
+        input.managedPackagePath ?? null,
+        input.managedSkillSubpath ?? "",
+        input.packageRevision ?? null,
+        input.packageHash ?? null,
+        input.sourceType ?? "local"
       ]
     );
     this.scheduleSave();
@@ -63,22 +115,28 @@ export class SkillRegistryRepository {
       `UPDATE skill_registry
        SET name = ?, description = ?, source_type = ?, source = ?, source_subpath = ?, package_subpath = ?,
            mcp_descriptor_subpath = ?, package_discovery_method = ?, cache_path = ?,
-           manifest_name = ?, manifest_description = ?, content_hash = ?, updated_at = ?
+           manifest_name = ?, manifest_description = ?, content_hash = ?, updated_at = ?,
+           managed_package_path = ?, managed_skill_subpath = ?, package_revision = ?, package_hash = ?, origin_kind = ?
        WHERE skill_id = ?`,
       [
         input.name ?? existing.name,
         input.description ?? existing.description,
-        input.sourceType ?? existing.sourceType,
+        (input.sourceType ?? existing.sourceType) === "url" ? "local" : (input.sourceType ?? existing.sourceType),
         input.source ?? existing.source,
         input.sourceSubpath ?? existing.sourceSubpath ?? "",
         input.packageSubpath ?? existing.packageSubpath ?? "",
         input.mcpDescriptorSubpath ?? existing.mcpDescriptorSubpath ?? "",
         input.packageDiscoveryMethod ?? existing.packageDiscoveryMethod ?? "",
-        input.cachePath ?? existing.cachePath,
+        Object.hasOwn(input, "cachePath") ? input.cachePath : existing.cachePath,
         input.manifestName ?? existing.manifestName ?? existing.name,
         input.manifestDescription ?? existing.manifestDescription ?? existing.description,
         input.contentHash ?? existing.contentHash ?? "",
         now,
+        input.managedPackagePath ?? existing.managedPackagePath,
+        input.managedSkillSubpath ?? existing.managedSkillSubpath ?? "",
+        input.packageRevision ?? existing.packageRevision,
+        input.packageHash ?? existing.packageHash,
+        input.sourceType ?? existing.sourceType,
         skillId
       ]
     );
@@ -302,7 +360,7 @@ function skillFromRow(row) {
     skillId: row.skill_id,
     name: row.name,
     description: row.description ?? "",
-    sourceType: row.source_type ?? "local",
+    sourceType: row.origin_kind ?? row.source_type ?? "local",
     source: row.source,
     sourceSubpath: row.source_subpath ?? "",
     packageSubpath: row.package_subpath ?? "",
@@ -312,6 +370,11 @@ function skillFromRow(row) {
     manifestName: row.manifest_name || row.name,
     manifestDescription: row.manifest_description || row.description || "",
     contentHash: row.content_hash ?? "",
+    installationMode: row.managed_package_path ? "managed" : "legacy-reference",
+    managedPackagePath: row.managed_package_path ?? null,
+    managedSkillSubpath: row.managed_skill_subpath ?? "",
+    packageRevision: row.package_revision ?? null,
+    packageHash: row.package_hash ?? null,
     installedAt: row.installed_at,
     updatedAt: row.updated_at
   };

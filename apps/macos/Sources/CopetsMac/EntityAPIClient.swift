@@ -1628,12 +1628,15 @@ final class EntityAPIClient: ObservableObject {
         description: String?,
         sourceType: String,
         source: String,
-        sourceSubpath: String? = nil
+        sourceSubpath: String? = nil,
+        requestID: String = UUID().uuidString,
+        onAccepted: ((String) -> Void)? = nil
     ) async -> Skill? {
         var request = URLRequest(url: baseURL.appending(path: "skills"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        var body: [String: Any] = ["sourceType": sourceType, "source": source, "assist": true]
+        var body: [String: Any] = ["sourceType": sourceType, "source": source, "assist": true,
+                                   "async": true, "requestId": requestID]
         if let name, !name.isEmpty { body["name"] = name }
         if let description, !description.isEmpty { body["description"] = description }
         if let sourceSubpath { body["sourceSubpath"] = sourceSubpath }
@@ -1645,7 +1648,42 @@ final class EntityAPIClient: ObservableObject {
                 errorMessage = envelope?.error ?? "登记 Skill 失败（HTTP \(http.statusCode)）"
                 return nil
             }
-            let skill = try decoder.decode(SkillEnvelope.self, from: data).skill
+            var skillData = data
+            if (response as? HTTPURLResponse)?.statusCode == 202 {
+                var operation = try decoder.decode(ClientSkillInstallEnvelope.self, from: data).operation
+                onAccepted?(operation.operationId)
+                // Bounded observation only. The server owns the operation and
+                // keeps its receipt even if this task or window goes away.
+                for _ in 0..<120 {
+                    if operation.isTerminal { break }
+                    try await Task.sleep(for: .seconds(2))
+                    let (receiptData, receiptResponse) = try await URLSession.shared.data(from:
+                        baseURL.appending(path: "skills/install-operations/\(operation.operationId)"))
+                    guard (receiptResponse as? HTTPURLResponse)?.statusCode == 200 else {
+                        throw URLError(.badServerResponse)
+                    }
+                    operation = try decoder.decode(ClientSkillInstallEnvelope.self, from: receiptData).operation
+                }
+                guard operation.succeeded, let skillID = operation.skillId else {
+                    errorMessage = operation.isTerminal
+                        ? "安装未完成：\(operation.errorCode ?? operation.status)。操作 ID：\(operation.operationId)"
+                        : "后台安装仍在进行，请通过操作 ID 查询：\(operation.operationId)"
+                    OperationNotificationManager.shared.complete(OperationNotificationEvent(
+                        id: "skill-install:\(operation.operationId):\(operation.status)", category: .environment,
+                        outcome: operation.isTerminal ? .attention : .unconfirmed,
+                        name: "Skill 安装", summary: errorMessage ?? ""))
+                    return nil
+                }
+                let (installedData, installedResponse) = try await URLSession.shared.data(from:
+                    baseURL.appending(path: "skills/\(skillID)"))
+                guard (installedResponse as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+                skillData = installedData
+                OperationNotificationManager.shared.complete(OperationNotificationEvent(
+                    id: "skill-install:\(operation.operationId):succeeded", category: .environment,
+                    outcome: .succeeded, name: "Skill 安装", summary: name ?? "Skill 已完成托管安装"))
+            }
+            let skill = try decoder.decode(SkillEnvelope.self, from: skillData).skill
+            errorMessage = nil
             await refreshSkills()
             return skill
         } catch {

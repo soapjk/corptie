@@ -13,6 +13,7 @@ public struct ClientControlItem: Decodable, Sendable, Identifiable, Equatable {
     public let status: String?
     public let kind: String?
     public let sourceType: String?
+    public let installationMode: String?
     public let logicalSessionId: String?
     public let sessionId: String?
     public let scheduleType: String?

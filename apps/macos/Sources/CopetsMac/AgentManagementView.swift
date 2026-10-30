@@ -286,9 +286,9 @@ struct SkillRegistryRow: View {
                     .font(.headline)
                     .lineLimit(1)
                 Spacer(minLength: 4)
-                Label(L10n("Registered"), systemImage: "checkmark.circle.fill")
+                Label(L10n(skill.isManaged ? "托管安装" : "来源引用"), systemImage: skill.isManaged ? "checkmark.shield.fill" : "link")
                     .font(.caption2)
-                    .foregroundStyle(.green)
+                    .foregroundStyle(skill.isManaged ? .green : .secondary)
                     .labelStyle(.titleAndIcon)
                 Button(role: .destructive, action: onDelete) {
                     Image(systemName: "trash")
@@ -306,7 +306,7 @@ struct SkillRegistryRow: View {
 
             Label(
                 "\(L10n(skill.sourceKindLocalizationKey)) · \(skill.source)",
-                systemImage: skill.isGit ? "arrow.triangle.branch" : "folder"
+                systemImage: skill.sourceType == "url" ? "link" : (skill.isGit ? "arrow.triangle.branch" : "folder")
             )
                 .font(.caption)
                 .foregroundStyle(.secondary)

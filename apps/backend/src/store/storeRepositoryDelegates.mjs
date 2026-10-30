@@ -6,7 +6,7 @@ const foundationalDelegates = Object.freeze({
     "deleteRegistrySkill", "registrySkillDeletionImpact", "createSkillDeletionOperation",
     "updateSkillDeletionOperation", "getSkillDeletionOperation", "listRegistrySkillIdsForAgent",
     "listRegistrySkillsForAgent", "recordSkillRuntimeEvent", "getSkillRuntimeEvent",
-    "listSkillRuntimeEvents"
+    "listSkillRuntimeEvents", "createInstallOperation", "getInstallOperation", "advanceInstallOperation", "listPendingInstallOperations"
   ],
   agentRepository: [
     "createAgentWithRegistrySkills", "createAgentWithRegistrySkillsIdempotently",

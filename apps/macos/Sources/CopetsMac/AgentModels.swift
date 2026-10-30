@@ -48,12 +48,15 @@ struct Skill: Identifiable, Codable, Hashable {
     var manifestName: String?
     var manifestDescription: String?
     var contentHash: String?
+    var installationMode: String?
+    var packageRevision: String?
     var installedAt: String
     var updatedAt: String
 
     var id: String { skillId }
     var isGit: Bool { sourceType == "git" }
-    var sourceKindLocalizationKey: String { isGit ? "Git" : "Local" }
+    var sourceKindLocalizationKey: String { sourceType == "url" ? "HTTPS ZIP" : (isGit ? "Git" : "Local") }
+    var isManaged: Bool { installationMode == "managed" }
 }
 
 struct SkillCandidate: Codable, Hashable, Identifiable {

@@ -221,6 +221,24 @@ export function ensureSkillTables({ db, selectOne, selectAll, ensureColumn }) {
   ensureColumn("skill_registry", "manifest_name", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("skill_registry", "manifest_description", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("skill_registry", "content_hash", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn("skill_registry", "managed_package_path", "TEXT");
+  ensureColumn("skill_registry", "managed_skill_subpath", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn("skill_registry", "package_revision", "TEXT");
+  ensureColumn("skill_registry", "package_hash", "TEXT");
+  // Keep the legacy CHECK constraint and its foreign keys intact. Public
+  // sourceType is origin_kind when present; old rows retain their old meaning.
+  ensureColumn("skill_registry", "origin_kind", "TEXT");
+  db.run(`CREATE TABLE IF NOT EXISTS skill_install_operations (
+    operation_id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL UNIQUE,
+    request_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    skill_id TEXT,
+    snapshot_json TEXT,
+    error_code TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`);
 
   // 迁移：删除旧「晋升技能」遗留的 agent_skills 关联表。
   // 该表带 FOREIGN KEY (skill_id) REFERENCES skills(skill_id) ON DELETE CASCADE，

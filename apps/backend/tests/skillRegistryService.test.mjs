@@ -45,6 +45,131 @@ async function pathExists(path) {
   }
 }
 
+test("asynchronous installation returns a durable receipt before work and converges once", async () => {
+  const value = await fixture();
+  try {
+    let completed;
+    const finished = new Promise((resolve) => { completed = resolve; });
+    const input = { sourceType: "local", source: join(value.source, "skills", "alpha"), assist: false, requestId: "async-request" };
+    const accepted = value.service.submitInstallation(input, { onCompleted: completed });
+    assert.equal(accepted.status, "accepted");
+    assert.equal(value.service.get(accepted.skillId), null);
+    const replay = value.service.submitInstallation(input);
+    assert.equal(replay.operationId, accepted.operationId);
+    assert.equal(replay.replay, true);
+    const skill = await finished;
+    assert.equal(value.service.installationOperation(accepted.operationId).status, "succeeded");
+    assert.equal(value.service.list().length, 1);
+    assert.equal(skill.installationMode, "managed");
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("startup reconciliation terminates interrupted work without replaying activation", async () => {
+  const value = await fixture();
+  try {
+    const accepted = value.store.createInstallOperation("queued", {});
+    const activating = value.store.createInstallOperation("activating", {});
+    value.store.advanceInstallOperation(activating.operationId, "preparing");
+    value.store.advanceInstallOperation(activating.operationId, "prepared");
+    value.store.advanceInstallOperation(activating.operationId, "activating");
+    value.service.reconcileInterruptedInstallations();
+    assert.equal(value.service.installationOperation(accepted.operationId).status, "failed");
+    assert.equal(value.service.installationOperation(activating.operationId).status, "repair_required");
+    assert.equal(value.service.installationOperation(activating.operationId).errorCode, "SKILL_INSTALL_INTERRUPTED");
+    assert.deepEqual(value.service.reconcileInterruptedInstallations(), []);
+    assert.equal(value.service.list().length, 0);
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("explicit recovery restores committed snapshots and preserves identity after source removal", async () => {
+  const value = await fixture();
+  try {
+    const source = join(value.source, "skills", "alpha");
+    const skill = await value.service.register({ source, assist: false });
+    const agent = value.store.createAgent({ name: "Recovery" });
+    value.store.setAgentRegistrySkills(agent.agentId, [skill.skillId]);
+    await rm(source, { recursive: true });
+    const operation = value.store.createInstallOperation("crashed-update", { action: "update" });
+    value.store.advanceInstallOperation(operation.operationId, "preparing", { skillId: skill.skillId });
+    value.store.advanceInstallOperation(operation.operationId, "prepared", { snapshot: { packageRevision: "uncommitted-version" } });
+    value.store.advanceInstallOperation(operation.operationId, "activating");
+    await writeFile(join(value.runtime, skill.skillId, "SKILL.md"), "uncommitted content");
+    await rm(join(value.runtimeSecond, skill.skillId), { recursive: true });
+    value.service.reconcileInterruptedInstallations();
+    const recovered = await value.service.recoverInstallation(operation.operationId);
+    assert.equal(recovered.status, "failed");
+    assert.equal(recovered.errorCode, "SKILL_INSTALL_ROLLED_BACK");
+    for (const runtime of [value.runtime, value.runtimeSecond]) {
+      assert.match(await readFile(join(runtime, skill.skillId, "SKILL.md"), "utf8"), /Alpha instructions/);
+    }
+    assert.deepEqual(value.store.listRegistrySkillIdsForAgent(agent.agentId), [skill.skillId]);
+    assert.equal(value.service.get(skill.skillId).packageRevision, skill.packageRevision);
+    assert.deepEqual(await value.service.recoverInstallation(operation.operationId), recovered);
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("explicit legacy migration preserves assignments and complete resources after temporary source deletion", async () => {
+  const value = await fixture();
+  try {
+    const source = join(value.source, "skills", "alpha");
+    await mkdir(join(source, "scripts"));
+    await writeFile(join(source, "scripts", "helper.mjs"), "export const value = 42;");
+    const legacy = value.store.createRegistrySkill({ name: "alpha", sourceType: "local", source });
+    const agent = value.store.createAgent({ name: "Migration" });
+    value.store.setAgentRegistrySkills(agent.agentId, [legacy.skillId]);
+    assert.equal(legacy.installationMode, "legacy-reference");
+    const migrated = await value.service.update(legacy.skillId, { assist: false, requestId: "explicit-migration" });
+    assert.equal(migrated.installationMode, "managed");
+    assert.equal(migrated.skillId, legacy.skillId);
+    assert.equal(migrated.source, legacy.source);
+    assert.deepEqual(value.store.listRegistrySkillIdsForAgent(agent.agentId), [legacy.skillId]);
+    await rm(source, { recursive: true });
+    await value.service.unmaterialize(migrated);
+    await value.service.rematerialize(migrated.skillId);
+    for (const runtime of [value.runtime, value.runtimeSecond]) {
+      assert.equal(await readFile(join(runtime, legacy.skillId, "scripts", "helper.mjs"), "utf8"), "export const value = 42;");
+    }
+    assert.match((await value.service.loadForAgent(agent.agentId, legacy.skillId)).content, /Alpha instructions/);
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("URL origin is preserved and credentials rejected before journaling", async () => {
+  const value = await fixture();
+  try {
+    await assert.rejects(value.service.register({ sourceType: "url", source: "https://example.com/skill.zip?token=secret", requestId: "secret-url" }), { code: "SKILL_URL_INVALID" });
+    assert.deepEqual(value.store.listPendingInstallOperations(), []);
+    // Isolate public download from registration; the archive safety suite tests extraction.
+    value.service.packageStorage.acquireSource = async () => {
+      const root = join(value.directory, "download", "extracted");
+      await mkdir(root, { recursive: true });
+      await writeFile(join(root, "SKILL.md"), "---\nname: remote\ndescription: Remote skill\n---\nRemote instructions");
+      return { root, cleanupRoot: join(value.directory, "download") };
+    };
+    const skill = await value.service.register({ sourceType: "url", source: "https://example.com/skill.zip", assist: false });
+    assert.equal(skill.sourceType, "url");
+    assert.equal(skill.source, "https://example.com/skill.zip");
+    assert.equal(skill.cachePath, null);
+    assert.equal(await pathExists(join(value.directory, "download")), false);
+    await value.service.rematerialize(skill.skillId);
+    assert.match(await readFile(join(value.runtime, skill.skillId, "SKILL.md"), "utf8"), /Remote instructions/);
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
 test("same-source registration is serialized and aliases cannot create duplicate IDs", async () => {
   const value = await fixture();
   try {
@@ -89,6 +214,84 @@ test("legacy duplicate groups are reported and preserved without picking a survi
     assert.equal(report.automaticMerge, false);
     await assert.rejects(value.service.register(input), { code: "SKILL_DUPLICATE_GROUP" });
     assert.equal(value.service.list().length, 2);
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("managed installation survives source removal, store reopen and idempotent request replay", async () => {
+  const value = await fixture();
+  try {
+    const source = join(value.source, "skills", "alpha");
+    const input = { sourceType: "local", source, assist: false, requestId: "durable-install-test" };
+    const installed = await value.service.register(input);
+    assert.equal(installed.installationMode, "managed");
+    assert.match(installed.packageHash, /^[a-f0-9]{64}$/);
+    const agent = value.store.createAgent({ name: "Managed" });
+    value.store.setAgentRegistrySkills(agent.agentId, [installed.skillId]);
+    await rm(source, { recursive: true });
+    await value.store.close();
+    value.store = new CorptieStore({ dbPath: join(value.directory, "corptie.sqlite"), configPath: join(value.directory, "config.json") });
+    await value.store.initialize();
+    const service = new SkillRegistryService({ store: value.store, skillsDirs: { test: value.runtime }, cacheRoot: value.cacheRoot });
+    const replay = await service.register(input);
+    assert.equal(replay.skillId, installed.skillId);
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(service.installationOperation(installed.operationId).status, "succeeded");
+    await assert.rejects(service.register({ ...input, name: "different" }), { code: "IDEMPOTENCY_CONFLICT" });
+    await rm(join(value.runtime, installed.skillId), { recursive: true });
+    await service.rematerialize(installed.skillId);
+    assert.match((await service.loadForAgent(agent.agentId, installed.skillId)).content, /Alpha instructions/);
+    assert.match(await readFile(join(value.runtime, installed.skillId, "SKILL.md"), "utf8"), /Alpha instructions/);
+    await writeFile(join(installed.managedPackagePath, "SKILL.md"), "tampered");
+    await assert.rejects(service.rematerialize(installed.skillId), { code: "MANAGED_PACKAGE_CHANGED" });
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("interrupted durable operation is not blindly replayed after restart", async () => {
+  const value = await fixture();
+  try {
+    const input = { sourceType: "local", source: value.source, sourceSubpath: "skills/alpha", assist: false, requestId: "interrupted" };
+    const operation = value.store.createInstallOperation(input.requestId, {
+      action: "register", skillId: null, name: null, description: null,
+      sourceType: "local", source: value.source, sourceSubpath: "skills/alpha", assist: false, refreshSource: true
+    });
+    value.store.advanceInstallOperation(operation.operationId, "preparing");
+    await assert.rejects(value.service.register(input), (error) => error.code === "INSTALL_OPERATION_INCOMPLETE"
+      && error.operation.operationId === operation.operationId);
+    assert.equal(value.service.list().length, 0);
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("failed managed update restores previous runtime copies without changing registry or assignments", async () => {
+  const value = await fixture();
+  try {
+    const source = join(value.source, "skills", "alpha");
+    const first = await value.service.register({ sourceType: "local", source, assist: false });
+    const agent = value.store.createAgent({ name: "Recovery" });
+    value.store.setAgentRegistrySkills(agent.agentId, [first.skillId]);
+    await writeFile(join(source, "SKILL.md"), "---\nname: alpha\n---\nNew instructions");
+    const materialize = value.service.materialize.bind(value.service);
+    let failNext = true;
+    value.service.materialize = async (skill) => {
+      const result = await materialize(skill);
+      if (failNext) { failNext = false; throw Object.assign(new Error("injected failure"), { code: "INJECTED" }); }
+      return result;
+    };
+    await assert.rejects(value.service.update(first.skillId, { assist: false }), (error) => error.code === "INJECTED"
+      && error.operation.status === "repair_required");
+    assert.equal(value.service.get(first.skillId).packageRevision, first.packageRevision);
+    assert.deepEqual(value.store.listRegistrySkillIdsForAgent(agent.agentId), [first.skillId]);
+    for (const root of [value.runtime, value.runtimeSecond]) {
+      assert.match(await readFile(join(root, first.skillId, "SKILL.md"), "utf8"), /Alpha instructions/);
+    }
   } finally {
     await value.store.close();
     await rm(value.directory, { recursive: true, force: true });
@@ -1029,6 +1232,8 @@ test("legacy registration repair selects the unique manifest matching the regist
     const repaired = value.store.getRegistrySkill(legacy.skillId);
     assert.equal(repaired.sourceSubpath, "skills/investrace");
     assert.equal(repaired.manifestName, "investrace");
+    assert.equal(repaired.installationMode, "legacy-reference");
+    assert.equal(repaired.managedPackagePath, null);
     const installed = await readFile(join(value.runtime, legacy.skillId, "SKILL.md"), "utf8");
     assert.match(installed, /Investrace instructions/);
   } finally {

@@ -48,6 +48,16 @@ test("control query boundaries and cross-resource cursors reject ambiguous reque
   await assert.rejects(api.list("__proto__"), { code: "ROUTE_NOT_AVAILABLE" });
 });
 
+test("Skill device summaries distinguish managed packages without disclosing paths", async () => {
+  const api = new ClientControlReadAPI({ lists: { skills: () => [
+    { skillId: "skill:1", name: "Managed", sourceType: "url", managedPackagePath: "/private/managed/package" },
+    { skillId: "skill:2", name: "Legacy", sourceType: "local", source: "/private/source" }
+  ] } });
+  const result = await api.list("skills");
+  assert.deepEqual(result.items.map((item) => item.installationMode), ["managed", "legacy-reference"]);
+  assert.doesNotMatch(JSON.stringify(result), /private/);
+});
+
 test("oversized descriptions fail explicitly instead of silently truncating", async () => {
   const { api, rows } = fixture();
   rows[0].description = "x".repeat(2 * 1024 * 1024);
