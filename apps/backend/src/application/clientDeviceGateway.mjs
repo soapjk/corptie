@@ -167,6 +167,18 @@ export class ClientDeviceGateway {
         return reply(response, 200, await this.authority.refresh(await body(request)));
       }
       const identity = this.authenticateRequest(request);
+      const userApproval = path.match(/^\/client\/v1\/tasks\/([^/]+)\/integration-acceptance-(intents|confirmations)$/);
+      if(userApproval && this.readAPI?.store) {
+        if(request.method!=="POST") throw deviceError("REQUEST_NOT_ALLOWED",405);
+        if(!this.worktreeAPI) throw deviceError("CAPABILITY_UNAVAILABLE",403);
+        const taskId=decode(userApproval[1],"INVALID_TASK_ID"), input=await body(request);
+        const service=new TaskIntegrationAcceptanceService({store:this.readAPI.store});
+        const user={type:"user",id:`user:device:${identity.deviceId}`};
+        const options={revalidate:()=>{if(this.authenticateRequest(request).deviceId!==identity.deviceId) throw deviceError("DEVICE_AUTH_CHANGED",403);}};
+        return reply(response,200,userApproval[2]==="intents"
+          ? await service.prepareUserApproval(taskId,input,user,options)
+          : await service.confirmUserApproval(taskId,input,user,options));
+      }
       const integration = path.match(/^\/client\/v1\/tasks\/([^/]+)\/integration-(snapshots|acceptance)$/);
       if(integration && this.readAPI?.store) {
         const service=new TaskIntegrationAcceptanceService({store:this.readAPI.store}),taskId=decode(integration[1],"INVALID_TASK_ID");

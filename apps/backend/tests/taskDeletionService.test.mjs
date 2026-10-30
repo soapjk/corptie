@@ -1,14 +1,58 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { TaskDeletionService } from "../src/application/taskDeletionService.mjs";
+import { worktreeDispatchBlocker } from "../src/application/worktreeExecutionBarrier.mjs";
+
+test("deletion freezes only the target Session even without a repository route", () => {
+  const store = { getTask: id => ({ deletion_status: id === "task:deleting" ? "deleting" : null }) };
+  assert.equal(worktreeDispatchBlocker(store, { logicalSession: { taskId: "task:deleting" } }).reason, "TASK_DELETION_IN_PROGRESS");
+  assert.equal(worktreeDispatchBlocker(store, { logicalSession: { taskId: "task:sibling" } }), null);
+});
+
+test("empty leaf children are deletable but parents with live children are not", async () => {
+  const leaf = fixture({ task: { parent_task_id: "task:parent" } });
+  assert.equal((await leaf.service.inspect("task:one")).status, "safe");
+  assert.equal((await leaf.service.delete("task:one")).ok, true);
+  const parent = fixture({ hasChildren: true });
+  await assert.rejects(parent.service.delete("task:one", { deleteWorktree: false, mode: "force" }), { code: "TASK_DELETE_BLOCKED" });
+});
+
+test("force cannot bypass busy Sessions, including metadata-only deletion", async () => {
+  const f = fixture({ sessions: [{ id: "session:busy", status: "running" }] });
+  for (const deleteWorktree of [true, false]) await assert.rejects(f.service.delete("task:one", {
+    mode: "force", deleteWorktree, acknowledgeDataLoss: true, confirmedBranchName: "task/one"
+  }), { code: "TASK_DELETE_BLOCKED" });
+  assert.deepEqual(f.calls, []);
+});
+
+test("parent delivery classification replaces main-only risk and still requires force for unique history", async () => {
+  for (const delivered of [true, false]) {
+    const f = fixture({ task: { parent_task_id: "task:parent" }, inspection: { status: "available", worktree: {
+      worktreeId: "tree:child", branchName: "task/child", mergedIntoMain: false, aheadOfMain: 20,
+      statusSummary: "", deliveryComparison: { delivered, commitCount: delivered ? 0 : 1 }
+    } } });
+    const plan = await f.service.inspect("task:one");
+    assert.deepEqual(plan.risks.map(r => r.code), delivered ? [] : ["NOT_DELIVERED_TO_PARENT"]);
+    if (!delivered) await assert.rejects(f.service.delete("task:one"), { code: "TASK_DELETE_RISK_CONFIRMATION_REQUIRED" });
+  }
+});
+
+test("a Worktree cleanup rejection preserves Sessions and Artifacts", async () => {
+  const f = fixture({ sessions: [{ id: "session:one" }], associations: { artifacts: [{ artifactId: "a" }] },
+    inspection: { status: "available", worktree: { worktreeId: "w", mergedIntoMain: true } },
+    removeError: Object.assign(new Error("changed"), { code: "TASK_DELETE_TARGET_CHANGED" }) });
+  await assert.rejects(f.service.delete("task:one"), { code: "TASK_DELETE_TARGET_CHANGED" });
+  assert.equal(f.calls.some(([name]) => ["deleteSession", "artifacts", "finalize"].includes(name)), false);
+});
 
 function fixture(options = {}) {
-  let item = { id: "task:one", deletion_worktree_removed_at: null };
+  let item = { id: "task:one", deletion_worktree_removed_at: null, ...options.task };
   const calls = [];
   const store = {
     getTask: () => item,
     listSessionsByTask: () => options.sessions ?? [],
-    selectOne: () => options.activeStart ? { operation_id: "start:one" } : null,
+    selectOne: (sql) => sql.includes("FROM tasks WHERE parent_task_id") ? (options.hasChildren ? { found: 1 } : null)
+      : sql.includes("work_session_startup_operations") && options.activeStart ? { operation_id: "start:one" } : null,
     listTaskDeletionBlockingAssociations: () => options.associations ?? { artifacts: [] },
     getActiveWorktreeIntegrationJobForConflictTask: () => options.integrationJob ?? null,
     markTaskDeletion: (...args) => calls.push(["mark", ...args]),
@@ -154,7 +198,7 @@ test("Task without a Worktree deletes metadata without unnecessary Git cleanup",
   assert.deepEqual(calls.map(([name]) => name), ["mark", "finalize"]);
 });
 
-test("deletion permanently removes every associated Session before Worktree and metadata cleanup", async () => {
+test("deletion validates and cleans Worktree before deleting Session history and metadata", async () => {
   const { service, calls } = fixture({
     sessions: [{ id: "session:one" }, { id: "session:two" }],
     inspection: {
@@ -171,7 +215,7 @@ test("deletion permanently removes every associated Session before Worktree and 
   const result = await service.delete("task:one", { mode: "safe" });
 
   assert.deepEqual(calls.map(([name]) => name), [
-    "mark", "deleteSession", "deleteSession", "remove", "removed", "finalize"
+    "mark", "remove", "removed", "deleteSession", "deleteSession", "finalize"
   ]);
   assert.deepEqual(result.resources.deletedSessionIds, ["session:one", "session:two"]);
 });
@@ -234,7 +278,7 @@ test("bound Artifacts are exposed in the plan and use the selected deletion disp
   assert.equal(plan.status, "safe");
   assert.deepEqual(plan.artifacts.map((artifact) => artifact.artifactId), ["artifact:one"]);
   await service.delete("task:one", { mode: "safe", artifactDisposition: "work" });
-  assert.deepEqual(calls.map(([name]) => name), ["mark", "artifacts", "remove", "removed", "finalize"]);
+  assert.deepEqual(calls.map(([name]) => name), ["mark", "remove", "removed", "artifacts", "finalize"]);
   assert.deepEqual(calls.find(([name]) => name === "artifacts"), ["artifacts", "work"]);
 });
 

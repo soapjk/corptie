@@ -20,3 +20,6 @@ export const worktreeHierarchySchema = object({
   actions: object({ createChild: action, mergeChildren: action, syncChildren: action, mergeToParent: action,
     syncFromParent: action, syncFromMain: action, promoteToMain: action })
 });
+// Additive optional projections; older hosts and clients remain readable.
+worktreeHierarchySchema.properties.changeState = nullable(text);
+worktreeHierarchySchema.properties.integrationRequirement = nullable(text);

@@ -823,6 +823,17 @@ export function handleEntityHttpRequest({
       }
       const hierarchyMatch = path.match(/^\/works\/([^/]+)\/task-hierarchy$/);
       const integrationMatch = path.match(/^\/tasks\/([^/]+)\/integration-(snapshots|acceptance)$/);
+      const userApprovalMatch = path.match(/^\/tasks\/([^/]+)\/integration-acceptance-(intents|confirmations)$/);
+      if (userApprovalMatch && request.method === "POST") {
+        // These product routes intentionally never accept an Agent-reported actor.
+        if (headerText(request,"origin") || headerText(request,"x-corptie-agent-id") || headerText(request,"x-corptie-logical-session-id")) throw apiError("DIRECT_USER_INTENT_REQUIRED","Use the native user acceptance action.",403);
+        const id=decodeURIComponent(userApprovalMatch[1]), input=await readJson(request);
+        const service=workService.integrationAcceptance;
+        const result=userApprovalMatch[2]==="intents"
+          ? await service.prepareUserApproval(id,input,localMacUserActor())
+          : await service.confirmUserApproval(id,input,localMacUserActor());
+        return sendJson(response,200,result);
+      }
       if (integrationMatch) {
         const id=decodeURIComponent(integrationMatch[1]);
         if(request.method==="GET" && integrationMatch[2]==="acceptance") return sendJson(response,200,await workService.integrationAcceptance.readStatus(id));

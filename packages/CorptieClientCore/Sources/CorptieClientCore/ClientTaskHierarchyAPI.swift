@@ -14,6 +14,25 @@ public struct ClientTaskHierarchyAPI: Sendable {
         let (data, _) = try await transport.data(for: request)
         return try JSONDecoder().decode(TaskIntegrationAcceptanceStatus.self, from: data)
     }
+    public func prepareManualAcceptance(taskID: String, requestID: String, revision: Int, bindingRevision: Int) async throws -> TaskIntegrationUserApproval {
+        struct Body: Encodable { let requestId: String; let expectedHierarchyRevision: Int; let expectedBindingRevision: Int }
+        return try await approvalRequest(taskID: taskID, action: "intents", body: Body(requestId: requestID,
+            expectedHierarchyRevision: revision, expectedBindingRevision: bindingRevision))
+    }
+    public func confirmManualAcceptance(_ approval: TaskIntegrationUserApproval, requestID: String, acknowledgedFailure: Bool) async throws -> TaskIntegrationAcceptanceStatus {
+        struct Body: Encodable { let requestId: String; let snapshotId: String; let confirmationToken: String; let acknowledgedAutomatedFailure: Bool }
+        return try await approvalRequest(taskID: approval.parentTaskId, action: "confirmations", body: Body(requestId: requestID,
+            snapshotId: approval.snapshotId, confirmationToken: approval.confirmationToken, acknowledgedAutomatedFailure: acknowledgedFailure))
+    }
+    private func approvalRequest<B: Encodable, R: Decodable>(taskID: String, action: String, body: B) async throws -> R {
+        let prefix = surface == .pairedDevice ? ["client", "v1"] : []
+        var request = try transport.endpoint.request(path: prefix + ["tasks", taskID, "integration-acceptance-\(action)"])
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(body)
+        let (data, _) = try await transport.data(for: request)
+        return try JSONDecoder().decode(R.self, from: data)
+    }
     public func captureIntegrationSnapshot(taskID: String, requestID: String, revision: Int, bindingRevision: Int) async throws -> TaskIntegrationSnapshot {
         struct Body: Encodable { let requestId: String; let expectedHierarchyRevision: Int; let expectedBindingRevision: Int }
         let prefix = surface == .pairedDevice ? ["client", "v1"] : []

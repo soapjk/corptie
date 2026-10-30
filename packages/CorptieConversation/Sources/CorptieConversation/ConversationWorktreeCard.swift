@@ -10,6 +10,7 @@ public struct ConversationWorktreeCard: View {
     private let api: @MainActor () async throws -> ClientSessionWorktreeAPI
     private let onJob: @MainActor (ClientWorktreeJob) -> Void
     private let localize: (String) -> String
+    private let openParent: ((String) -> Void)?
     private let presentationState: ClientDetailWorktreeState?
     private let activity: ConversationDetailPresentationActivity?
     private var active: Bool { activity?.isActive ?? true }
@@ -45,7 +46,8 @@ public struct ConversationWorktreeCard: View {
                 initialDetail: ClientSessionWorktreeDetail? = nil,
                 state: ClientDetailWorktreeState? = nil, expectedWorktreeID: String? = nil,
                 presentationState: ClientDetailWorktreeState? = nil,
-                activity: ConversationDetailPresentationActivity? = nil) {
+                activity: ConversationDetailPresentationActivity? = nil,
+                openParent: ((String) -> Void)? = nil) {
         self.sessionID = sessionID; self.refreshID = refreshID
         self.expectedWorktreeID = expectedWorktreeID
         self.presentationState = presentationState; self.activity = activity
@@ -58,6 +60,7 @@ public struct ConversationWorktreeCard: View {
         }
         self.onJob = { value in guard activity?.allows(generation: activity?.generation ?? 0) ?? true else { return }; onJob(value) }
         self.localize = localize
+        self.openParent = openParent
         let retained = state ?? ClientDetailWorktreeState()
         if presentationState == nil {
             if let expectedWorktreeID { retained.bind(expectedWorktreeID) }
@@ -123,7 +126,7 @@ public struct ConversationWorktreeCard: View {
                                 guard activity?.allows(generation: generation) ?? true else { return }
                                 job=next;review=next;onJob(next)
                             } catch { self.error=error.localizedDescription }
-                        },localize:localize)
+                        },openParent:openParent,localize:localize)
                     }
                     Text(tree.path).font(.caption2.monospaced()).textSelection(.enabled)
                     Text(localize("比较本地主分支；不会自动 fetch 或 push。"))

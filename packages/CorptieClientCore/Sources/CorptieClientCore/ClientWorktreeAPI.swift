@@ -187,6 +187,7 @@ public struct ClientGitCommitProtectionStatus: Decodable, Equatable, Sendable {
 }
 
 public struct ClientWorktreeJob: Identifiable, Decodable, Equatable, Sendable {
+    public var graphExecution: ClientWorktreeGraphExecution? = nil
     public let notification: OperationJobSnapshot?
     public let id: String
     public let repositoryId: String
@@ -215,6 +216,20 @@ public struct ClientWorktreeJob: Identifiable, Decodable, Equatable, Sendable {
     public var hasMergeConflict: Bool {
         status == "paused" && plan.operationType != "sync"
             && plan.items.contains { $0.worktreeId == currentWorktreeId && $0.mergeStatus == "conflict" }
+    }
+}
+
+public struct ClientWorktreeGraphExecution: Decodable, Equatable, Sendable {
+    public struct Step: Decodable, Equatable, Sendable {
+        public let kind: String
+        public let rootTaskId: String?
+    }
+    public let index: Int
+    public let steps: [Step]
+    public let acceptanceSessionId: String?
+    public var acceptanceTaskID: String? {
+        guard steps.indices.contains(index), steps[index].kind == "acceptance" else { return nil }
+        return steps[index].rootTaskId
     }
 }
 

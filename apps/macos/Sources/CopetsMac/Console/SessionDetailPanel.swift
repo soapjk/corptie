@@ -175,7 +175,10 @@ struct SessionDetailPanel: View {
                                 OperationNotificationManager.shared.track(jobID: job.id, resourceName: "Worktree")
                                 if let notification = job.notification { OperationNotificationManager.shared.observe(notification) }
                             }
-                        }, localize: { L10n($0) })
+                        }, localize: { L10n($0) },openParent:{ id in
+                            guard isPresentationActive,let target=residentDetailSessionID(id) else { return }
+                            AppTabRouter.shared.openSession(target,source:.userSelection)
+                        })
                     Button(L10n("关闭")) { detailNativeSheet = nil }
                 }.padding(20).frame(minWidth: 360)
             }
@@ -265,7 +268,11 @@ struct SessionDetailPanel: View {
             }, resident: .init(taskTitle: task?.title ?? "", workName: work?.name ?? "", workDescription: work?.description ?? ""),
             referenceManagement: .init(addKinds: ConversationReferenceAddKind.allCases, canAdd: canManageReferences,
                 add: beginAddingReference, operations: referenceOperations, perform: performReferenceOperation),
-            openArtifact: { guard isPresentationActive else { return }; AppTabRouter.shared.openResource($0) })
+            openArtifact: { guard isPresentationActive else { return }; AppTabRouter.shared.openResource($0) },
+            openSession: { id in
+                guard isPresentationActive,let target=residentDetailSessionID(id) else { return }
+                AppTabRouter.shared.openSession(target,source:.userSelection)
+            })
     }
     private var canManageReferences: Bool {
         guard isPresentationActive, activity?.allows(generation: activity?.generation ?? 0) ?? true,
@@ -395,7 +402,10 @@ struct SessionDetailPanel: View {
                         OperationNotificationManager.shared.track(jobID: job.id, resourceName: "Worktree")
                         if let notification = job.notification { OperationNotificationManager.shared.observe(notification) }
                     }
-                }, localize: { L10n($0) })
+                }, localize: { L10n($0) },openParent:{ id in
+                    guard isPresentationActive,let target=residentDetailSessionID(id) else { return }
+                    AppTabRouter.shared.openSession(target,source:.userSelection)
+                })
                 .id(session.id)
 
             if detailKind == .workDetail,

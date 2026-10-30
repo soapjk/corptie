@@ -22,6 +22,7 @@ export function migrateTaskHierarchy({ db, ensureColumn }) {
       task_id TEXT NOT NULL REFERENCES tasks(id), assessment_hash TEXT NOT NULL,
       evidence_json TEXT NOT NULL, created_at TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS idx_task_integration_acceptances_task ON task_integration_acceptances(task_id);
     CREATE TRIGGER IF NOT EXISTS task_parent_insert_guard BEFORE INSERT ON tasks
       WHEN NEW.parent_task_id IS NOT NULL AND (
         NEW.id=NEW.parent_task_id OR NOT EXISTS (
