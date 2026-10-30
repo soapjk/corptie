@@ -32,6 +32,23 @@ struct ComposerShellMetricsTests {
     }
     #endif
     #if os(macOS)
+    @Test @MainActor func regularModelMenuHugsShortLabelsAndCapsLongLabels() {
+        func size(_ model: String, limit: CGFloat) -> CGSize {
+            let host = NSHostingView(rootView: ComposerModelMenuLabel(
+                modelLabel: model, reasoningShortLabel: "中等", isBusy: false,
+                maxWidth: limit, showsSurface: false, presentation: .regular))
+            return host.fittingSize
+        }
+        let short = size("GPT-6", limit: 240)
+        #expect(short.width < 120)
+        #expect(abs(short.width - size("GPT-6", limit: 176).width) < 1)
+        for limit: CGFloat in [176, 200, 240] {
+            let long = size(String(repeating: "Long model name ", count: 8), limit: limit)
+            #expect(long.width <= limit + 1)
+            #expect(long.height == short.height)
+        }
+    }
+
     @MainActor private final class Mounts { var count = 0 }
     private struct EditorProbe: NSViewRepresentable {
         let mounts: Mounts
@@ -72,7 +89,7 @@ struct ComposerShellMetricsTests {
     }
     #endif
 
-    @Test func regularMenusReserveReadableSpaceWithoutChangingCompactCallers() {
+    @Test func regularMenusCapLongNamesWithoutChangingCompactCallers() {
         for width: CGFloat in [0, 220, 360, 600, 1200] {
             let regular = ComposerShellMetrics.modelMenuMaxWidth(composerWidth: width, presentation: .regular)
             let compact = ComposerShellMetrics.modelMenuMaxWidth(composerWidth: width)
