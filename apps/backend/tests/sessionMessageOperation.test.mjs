@@ -202,3 +202,49 @@ test("a late dispatch acknowledgement settles against the durable Turn for every
     }
   }
 });
+
+test('attachment reads are bounded and parallel, retain order and finish before Provider submission', async () => {
+  const gates = [];
+  let active = 0, maximum = 0, sentImages;
+  const { operation } = fixture({
+    store: { getLogicalSession: () => ({}), listUnsettledSessionTurns: () => [] }, agentProviderRegistry: { supports: () => true },
+    chatResourceService: { readImage: async (_reference, managedPath) => {
+      active++; maximum = Math.max(maximum, active);
+      await new Promise(resolve => gates.push(resolve));
+      active--; return { path: managedPath, mimeType: 'image/png', byteLength: 1 };
+    } },
+    sessionApplicationService: { sendMessage: async (_id, message) => { sentImages = message.images; return {}; } }
+  });
+  const images = Array.from({ length: 6 }, (_, i) => ({ managedPath: `chat-resources/${i}.png` }));
+  const pending = operation.sendUnifiedSessionMessage('session', { text: 'Images', images }, {}, { fromAgentWorkQueue: true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(active, 4);
+  assert.equal(sentImages, undefined);
+  gates.slice().reverse().forEach(release => release());
+  await new Promise(resolve => setImmediate(resolve));
+  gates.slice(4).forEach(release => release());
+  await pending;
+  assert.equal(maximum, 4);
+  assert.deepEqual(sentImages.map(image => image.absolutePath), images.map(image => image.managedPath));
+});
+
+test('a missing required image settles outstanding reads and never dispatches a partial message', async () => {
+  let release, settled = false, sends = 0;
+  const { operation } = fixture({
+    store: { getLogicalSession: () => ({}), listUnsettledSessionTurns: () => [] }, agentProviderRegistry: { supports: () => true },
+    chatResourceService: { readImage: async (_reference, path) => {
+      if (path.endsWith('missing.png')) throw Object.assign(new Error('Missing image'), { code: 'ENOENT' });
+      await new Promise(resolve => { release = resolve; });
+      return { path, mimeType: 'image/png', byteLength: 1 };
+    } },
+    sessionApplicationService: { sendMessage: async () => { sends++; return {}; } }
+  });
+  const pending = operation.sendUnifiedSessionMessage('session', { text: 'Images', images: [
+    { managedPath: 'chat-resources/missing.png' }, { managedPath: 'chat-resources/present.png' }
+  ] }, {}, { fromAgentWorkQueue: true });
+  const checked = assert.rejects(pending, { code: 'ENOENT' }).then(() => { settled = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false);
+  release(); await checked;
+  assert.equal(sends, 0);
+});

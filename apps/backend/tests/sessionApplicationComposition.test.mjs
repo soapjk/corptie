@@ -278,3 +278,75 @@ test("Work Chat records selected Memory only when it enters the provider-neutral
   assert.match(context.prompt, /corptie_tool_discovery/);
   assert.deepEqual(statuses, [["recall:one", "context_included"]]);
 });
+
+// Real common context assembly and dispatch, with the optional model intentionally never resolving.
+for (const providerId of ['codex-app-server', 'claude-code', 'openclacky']) {
+  for (const sessionKind of ['assistantChat', 'workChat', 'worker']) {
+    test(`${providerId}/${sessionKind}: optional classification cannot delay or replace the real send`, async () => {
+      const { MemoryTopicService } = await import('../src/application/memoryTopicService.mjs');
+      const session = { id: 'session:fast', title: 'Fast', sessionKind, status: 'complete',
+        agentId: 'agent:one', workId: 'work:one', taskId: 'task:one' };
+      const reference = { sessionId: session.id, providerId, providerSessionId: 'thread:one',
+        logicalSessionId: 'logical:fast', bindingId: 'binding:fast', metadata: { session } };
+      const task = { id: session.taskId, title: 'Required task', description: 'Keep required scope',
+        work_id: session.workId, revision: 1, resource_version: 1, lifecycle_state: 'in_progress' };
+      let classificationCalls = 0, sends = 0;
+      const store = { getSession: () => session, getSessionMemoryTopics: () => null,
+        getLogicalSessionByLegacySessionId: () => null, getRuntimeState: () => null,
+        assertLogicalWorkSessionBinding: () => ({ taskId: task.id }),
+        getTask: () => task, getWork: () => ({ id: session.workId, name: 'Required Work' }),
+        selectOne: () => null, getSessionToolCatalogMaterialization: () => null };
+      const topics = new MemoryTopicService({ store,
+        classify: () => { classificationCalls++; return new Promise(() => {}); } });
+      const registry = new AgentProviderRegistry([new CallbackAgentProvider({ id: providerId,
+        displayName: providerId, transport: 'test', capabilities: [C.CONVERSATION_SEND] }, {
+        send: async (_reference, message, context) => {
+          sends++;
+          assert.equal(message, 'Use the selected document');
+          assert.match(context.sessionContext.prompt, /Required selected document/);
+          if (sessionKind === 'worker') assert.match(context.sessionContext.prompt, /Required task/);
+          return { turnId: 'turn:accepted' };
+        }
+      })]);
+      const service = createSessionApplicationComposition({ store, agentProviderRegistry: registry,
+        sessionBindingRepository: { resolve: () => reference }, memoryTopicService: topics,
+        assertForkDispatchAllowed() {}, assertSessionRecoveryMessageBoundary() {}, emitEvent() {},
+        workChatContextService: { build: () => ({ prompt: 'Required Work' }) },
+        artifactService: { indexForSession: () => ({ items: [] }) },
+        mcpAssignmentRevisionForAgent: () => null,
+        resolveContextReferences: async () => ({ prompt: 'Required selected document' }),
+        resolveAssignedCapabilities: async () => [],
+        memoryRecallService: { applicablePreferences: () => null, turn: async () => ({ memories: [] }) }
+      });
+      const started = performance.now();
+      const result = await service.sendMessage(session.id, 'Use the selected document');
+      const elapsed = performance.now() - started;
+      assert.equal(result.turnId, 'turn:accepted');
+      assert.equal(sends, 1);
+      assert.equal(classificationCalls, 0);
+      console.info(`[dispatch-regression] ${JSON.stringify({ providerId, sessionKind, optionalClassifier: 'never resolves', dispatchMs: elapsed })}`);
+      topics.close();
+    });
+  }
+}
+
+test('required references and skill capability reads overlap without dropping either result', async () => {
+  let releaseReferences, releaseCapabilities, referenceStarted = false, capabilityStarted = false;
+  const session = { id: 'parallel', sessionKind: 'assistantChat', agentId: 'agent:one' };
+  const service = createSessionApplicationComposition({
+    store: { getSession: () => session }, agentProviderRegistry: {}, sessionBindingRepository: {},
+    resolveContextReferences: async () => { referenceStarted = true; await new Promise(resolve => { releaseReferences = resolve; });
+      return { prompt: 'Required reference survives' }; },
+    resolveAssignedCapabilities: async () => { capabilityStarted = true; await new Promise(resolve => { releaseCapabilities = resolve; });
+      return [{ id: 'skill:parallel', kind: 'skill', name: 'parallel-skill' }]; },
+    mcpAssignmentRevisionForAgent: () => 'assignment:one',
+    memoryRecallService: { turn: async () => ({ memories: [] }) }
+  });
+  const pending = service.resolveMessageContext({ sessionId: session.id }, { message: 'Use reference' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(referenceStarted, true); assert.equal(capabilityStarted, true);
+  releaseCapabilities(); releaseReferences();
+  const context = await pending;
+  assert.match(context.prompt, /Required reference survives/);
+  assert.match(context.prompt, /parallel-skill/);
+});

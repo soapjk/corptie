@@ -73,10 +73,10 @@ export function assertAgentWorkSessionReference(task, reference) {
   return reference;
 }
 
-export function userMessageStatusForAgentWork(status) {
+export function userMessageStatusForAgentWork(status, targetTurnId = undefined) {
   switch (status) {
     case "queued": return "queued";
-    case "running": return "processing";
+    case "running": return targetTurnId === null ? "preparing" : "processing";
     case "completed": return "consumed";
     case "failed": return "failed";
     case "cancelled": return "cancelled";

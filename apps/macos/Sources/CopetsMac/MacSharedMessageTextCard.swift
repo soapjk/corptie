@@ -218,14 +218,14 @@ struct MacSharedMessageTextCard: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity,
                 alignment: row.nativeStyle == .user ? .topTrailing : .topLeading)
-            .padding(.leading, ReplyLeadingLayout.cardLeading(for: row.nativeStyle))
+            .padding(.leading, ReplyLeadingLayout.cardLeading(for: row, skin: skin))
             .padding(.trailing, row.nativeStyle == .user ? ChatBubbleWidthPolicy.userTrailingInset : 2)
             .padding(.vertical, layout.typography.rowInset)
             if row.showsReplyActions {
                 ReplyActions(row: row, copy: copy, performAction: performAction)
                     .frame(width: min(ReplyActionBar.width(for: row), layout.cardWidth - 4), height: 22)
                     .frame(maxWidth: .infinity, minHeight: 26, maxHeight: 26, alignment: .topLeading)
-                    .padding(.leading, ReplyLeadingLayout.contentLeading - ReplyActionBar.leadingImageInset)
+                    .padding(.leading, ReplyLeadingLayout.cardLeading(for: row, skin: skin) + MessageCardMetrics.contentInset - ReplyActionBar.leadingImageInset)
             }
         }
         .environment(\.conversationSkin, skin)

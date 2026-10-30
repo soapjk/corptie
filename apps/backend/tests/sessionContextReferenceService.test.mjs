@@ -14,10 +14,10 @@ async function fixture(onChanged) {
   store.createSession({ id: "referenced-session", title: "Research", sessionKind: "assistantChat", status: "complete", summary: "Stored preview" });
   const agent = store.createAgent({ name: "Researcher", description: "Finds primary sources", role: "independentContributor", capabilities: ["research"] });
   const work = store.createWork({
-    id: "work-a", name: "Ship context", description: "Build references",
+    id: "work-a", name: "Ship-context", description: "Build references",
     contributorAgentIds: [agent.agentId]
   });
-  store.createTask({ id: "task-a", workId: work.id, title: "Implement resolver", description: "Resolve structured context" });
+  store.createTask({ id: "task-a", workId: work.id, title: "Implement-resolver", description: "Resolve structured context" });
   const localPath = join(directory, "reference.md");
   await writeFile(localPath, "# Local reference\nUse the shared Provider contract.");
   const service = new SessionContextReferenceService({
@@ -97,9 +97,9 @@ test("Assistant Sessions persist and resolve Provider-neutral context references
     assert.ok(resolved.prompt.includes(JSON.stringify(value.localPath)));
     assert.doesNotMatch(resolved.prompt, /Use the shared Provider contract/);
     assert.match(resolved.prompt, /Web reference body/);
-    assert.match(resolved.prompt, /Work: Ship context/);
+    assert.match(resolved.prompt, /Work: Ship-context/);
     assert.match(resolved.prompt, /Build references/);
-    assert.match(resolved.prompt, /Task: Implement resolver/);
+    assert.match(resolved.prompt, /Task: Implement-resolver/);
     assert.match(resolved.prompt, /Agent: Researcher/);
     assert.match(resolved.prompt, /The contract changed/);
     assert.equal(resolved.documents.length, 6);
@@ -133,7 +133,7 @@ test("Task Worker Sessions can manage and resolve references; self references an
     });
     const created = await value.service.create("worker", { targetType: "work", targetId: "work-a" });
     assert.equal(value.service.list("worker").length, 1);
-    assert.match((await value.service.resolve("worker")).prompt, /Work: Ship context/);
+    assert.match((await value.service.resolve("worker")).prompt, /Work: Ship-context/);
     await value.service.update("worker", created.referenceId, { enabled: false });
     assert.equal((await value.service.resolve("worker")).prompt, "");
     value.service.delete("worker", created.referenceId);

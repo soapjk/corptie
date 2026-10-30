@@ -404,7 +404,8 @@ final class NativeTimelineLayoutCache {
                 skin: ConversationSkin = .classic) -> Layout {
         var row = row
         if !skin.showsTimelineTimeSeparators { row.timeSeparatorText = nil }
-        var layout = contentLayout(for: row, columnWidth: columnWidth, typography: requested)
+        let contentWidth = columnWidth - ReplyLeadingLayout.additionalCardInset(for: row, skin: skin)
+        var layout = contentLayout(for: row, columnWidth: contentWidth, typography: requested)
         layout.timeSeparatorHeight = row.timeSeparatorHeight
         layout.rowHeight += row.replyIdentityHeight + row.replyActionsHeight
         return layout

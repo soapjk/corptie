@@ -48,7 +48,11 @@ class ConsoleThinScroller: NSScroller {
         let x = knobTrailingInset.map { bounds.maxX - $0 - paintedKnobWidth }
             ?? (nativeKnob.midX - paintedKnobWidth / 2)
         let scale = window?.backingScaleFactor ?? 1
-        return NSRect(x: (x * scale).rounded() / scale,
+        // Align the pinned trailing edge, rather than rounding the leading edge
+        // outwards when a fractional-width knob is used on a 1x display.
+        let alignedX = knobTrailingInset.map { ((bounds.maxX - $0) * scale).rounded() / scale - paintedKnobWidth }
+            ?? (x * scale).rounded() / scale
+        return NSRect(x: alignedX,
                       y: nativeKnob.minY, width: paintedKnobWidth, height: nativeKnob.height)
     }
 

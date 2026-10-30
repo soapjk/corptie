@@ -424,3 +424,9 @@ test("restart reconciliation does not resend user work that reached a Provider t
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('claimed work stays preparing until an actual provider Turn exists', () => {
+  assert.equal(userMessageStatusForAgentWork('running', null), 'preparing');
+  assert.equal(userMessageStatusForAgentWork('running', 'turn:accepted'), 'processing');
+  assert.equal(userMessageStatusForAgentWork('queued', null), 'queued');
+});

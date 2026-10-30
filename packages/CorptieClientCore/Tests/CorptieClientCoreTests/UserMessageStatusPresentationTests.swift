@@ -13,6 +13,17 @@ struct UserMessageStatusPresentationTests {
         #expect(stopped.kind == .retryStopped)
         #expect(stopped.detail(languageCode: "zh").contains("不代表已撤回"))
     }
+    @Test func claimedMessageShowsPreparingUntilProviderAcceptance() throws {
+        let value = try #require(UserMessageStatusPresentation(authoritativeStatus: "preparing",
+            legacyStatus: "running", localDeliveryState: "Sent", queuePosition: 1))
+        #expect(value.kind == .preparing)
+        #expect(value.queuePosition == nil)
+        #expect(value.shortLabel(languageCode: "zh") == "准备中")
+        #expect(value.shortLabel(languageCode: "en") == "Preparing")
+        #expect(value.detail(languageCode: "zh").contains("尚未交给模型"))
+        #expect(value.light != .green)
+    }
+
     @Test func authoritativeProcessingOverridesTransportReceipt() throws {
         let status = try #require(UserMessageStatusPresentation(
             authoritativeStatus: "processing", legacyStatus: "queued",

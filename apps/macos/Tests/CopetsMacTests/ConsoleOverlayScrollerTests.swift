@@ -34,8 +34,8 @@ struct ConsoleOverlayScrollerTests {
                     #expect(knob.superlayer === thumb.layer)
                     #expect(thumb.layer?.sublayers?.count == 1)
                     #expect(knob.frame == thumb.knobDrawingRect)
-                    #expect(knob.frame.width == 9)
-                    #expect(knob.cornerRadius == 4.5)
+                    #expect(knob.frame.width == 4.5)
+                    #expect(knob.cornerRadius == 2.25)
                     #expect(thumb.bounds.contains(knob.frame))
                     let visible = scroll.convert(knob.frame, from: thumb)
                     let cardRight = scroll.contentView.frame.maxX - ChatBubbleWidthPolicy.userTrailingInset
@@ -65,7 +65,7 @@ struct ConsoleOverlayScrollerTests {
         scroller.onEnd = { ends += 1 }
         let knob = scroller.rect(for: .knob)
         #expect(!knob.isEmpty)
-        let knobPoint = scroller.convert(NSPoint(x: knob.midX, y: knob.midY), to: nil)
+        let knobPoint = scroller.convert(NSPoint(x: scroller.knobDrawingRect.midX, y: knob.midY), to: nil)
         #expect(scroller.testPart(knobPoint) == .knob)
         let trackPoint = scroller.convert(NSPoint(x: knob.midX, y: max(1, knob.minY - 10)), to: nil)
         #expect(scroller.testPart(trackPoint) == .noPart)
@@ -148,7 +148,7 @@ struct ConsoleOverlayScrollerTests {
         #expect(scroll.scrollerInsets.right == 0)
     }
 
-    @Test func timelinePaintsNinePointKnobAndNoTrackInBothAppearances() throws {
+    @Test func timelinePaintsHalfWidthKnobAndNoTrackInBothAppearances() throws {
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             for width: CGFloat in [12, 16, 20] {
                 let scroller = TimelineIntentScroller(frame: NSRect(x: 0, y: 0, width: width, height: 240))
@@ -197,7 +197,7 @@ struct ConsoleOverlayScrollerTests {
                 #expect(!paintedColumns.isEmpty)
                 #expect(maximumAlpha > 0.4 && maximumAlpha < 0.5)
                 // At most one anti-aliased edge pixel per side at 1x.
-                #expect(paintedColumns.count == 9)
+                #expect(paintedColumns.count >= 4 && paintedColumns.count <= 6)
                 #expect(paintedColumns.max() == Int(bounds.maxX) - 1)
                 let visibleThumbPoint = scroller.convert(NSPoint(x: bounds.maxX - 2, y: knob.midY), to: nil)
                 #expect(scroller.testPart(visibleThumbPoint) == .knob)

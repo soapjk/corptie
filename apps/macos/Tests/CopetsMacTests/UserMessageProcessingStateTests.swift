@@ -42,6 +42,13 @@ final class UserMessageProcessingStateTests: XCTestCase {
         XCTAssertEqual(ChatTimelineRowRouting.route(for: ChatDisplayEntry(kind: .message(consumed))), .native)
     }
 
+    func testPreparationIsVisibleWithoutClaimingModelExecution() {
+        let preparing = item(status: "running", userMessageStatus: "preparing")
+        XCTAssertEqual(preparing.authoritativeUserMessageState, .preparing)
+        XCTAssertEqual(ChatTimelineRowRouting.route(for: ChatDisplayEntry(kind: .message(preparing))), .native)
+        XCTAssertEqual(makeChatDisplayEntries(from: [preparing]).count, 1)
+    }
+
     func testUnknownAuthoritativeStateDoesNotFallBackToLegacyQueuedStatus() {
         let future = item(status: "queued", userMessageStatus: "provider-injected")
         XCTAssertNil(future.authoritativeUserMessageState)
