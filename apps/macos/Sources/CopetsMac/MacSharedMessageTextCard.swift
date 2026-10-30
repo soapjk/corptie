@@ -75,6 +75,21 @@ final class ReplyActionBar: NSStackView {
     private var branch: () -> Void = {}
     private var timestamp = ""
 
+    /// Measure once with exactly the configuration used by the real copy button.
+    static let leadingImageInset: CGFloat = {
+        let button = ReplyActionIconButton(frame: NSRect(x: 0, y: 0, width: 22, height: 22))
+        configureIcon(button, symbol: "doc.on.doc")
+        return button.cell?.imageRect(forBounds: button.bounds).minX ?? 0
+    }()
+
+    private static func configureIcon(_ button: NSButton, symbol: String) {
+        button.isBordered = false
+        button.image = symbol.isEmpty ? nil : NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        button.imagePosition = .imageOnly
+        button.symbolConfiguration = .init(pointSize: 12, weight: .regular)
+        button.contentTintColor = .secondaryLabelColor
+    }
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         orientation = .horizontal
@@ -86,11 +101,7 @@ final class ReplyActionBar: NSStackView {
             (branchButton, "arrow.triangle.branch", "fork", #selector(createBranch)),
             (timeButton, "", "timestamp", #selector(copyTimestamp))
         ] {
-            button.isBordered = false
-            button.image = symbol.isEmpty ? nil : NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-            button.imagePosition = .imageOnly
-            button.symbolConfiguration = .init(pointSize: 12, weight: .regular)
-            button.contentTintColor = .secondaryLabelColor
+            Self.configureIcon(button, symbol: symbol)
             button.identifier = .init("chat.timeline.reply-actions." + name)
             button.target = self
             button.action = selector
@@ -196,7 +207,7 @@ struct MacSharedMessageTextCard: View {
             }
             if let identity = row.replyIdentity {
                 MacReplyIdentityHeader(identity: identity)
-                    .padding(.horizontal, 12).padding(.bottom, ReplyIdentityLayout.bottomSpacing)
+                    .padding(.horizontal, ReplyLeadingLayout.contentLeading).padding(.bottom, ReplyIdentityLayout.bottomSpacing)
             }
             Group {
                 if let trigger = row.scheduledTrigger { scheduledTaskCard(trigger) }
@@ -207,14 +218,14 @@ struct MacSharedMessageTextCard: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity,
                 alignment: row.nativeStyle == .user ? .topTrailing : .topLeading)
-            .padding(.leading, 2)
+            .padding(.leading, ReplyLeadingLayout.cardLeading(for: row.nativeStyle))
             .padding(.trailing, row.nativeStyle == .user ? ChatBubbleWidthPolicy.userTrailingInset : 2)
             .padding(.vertical, layout.typography.rowInset)
             if row.showsReplyActions {
                 ReplyActions(row: row, copy: copy, performAction: performAction)
                     .frame(width: min(ReplyActionBar.width(for: row), layout.cardWidth - 4), height: 22)
                     .frame(maxWidth: .infinity, minHeight: 26, maxHeight: 26, alignment: .topLeading)
-                    .padding(.leading, 4)
+                    .padding(.leading, ReplyLeadingLayout.contentLeading - ReplyActionBar.leadingImageInset)
             }
         }
         .environment(\.conversationSkin, skin)
