@@ -107,6 +107,9 @@ struct PadControlView: View {
                 }
                 Section("信息") {
                     if let type = item.kind ?? item.sourceType { LabeledContent("类型", value: type) }
+                    if kind == .skills {
+                        LabeledContent("安装方式", value: item.installationMode == "managed" ? "Corptie 托管安装" : "旧版来源引用")
+                    }
                     LabeledContent("ID", value: item.id).textSelection(.enabled)
                     if let date = item.updatedAt { LabeledContent("更新时间", value: PadControlPresentation.date(date)) }
                 }

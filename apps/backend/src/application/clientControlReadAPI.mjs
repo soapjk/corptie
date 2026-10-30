@@ -11,7 +11,8 @@ const projections = {
   agents: row => ({ id: row.agentId, name: row.name, description: text(row.description),
     kind: text(row.agentKind), updatedAt: row.updatedAt }),
   skills: row => ({ id: row.skillId, name: row.name, description: text(row.description),
-    sourceType: text(row.sourceType), updatedAt: row.updatedAt }),
+    sourceType: text(row.sourceType), installationMode: row.managedPackagePath ? "managed" : "legacy-reference",
+    updatedAt: row.updatedAt }),
   repositories: row => ({ id: row.id, name: row.name, availability: row.availability,
     worktreeCount: row.worktreeCount })
 };

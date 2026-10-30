@@ -607,6 +607,7 @@ const managedOpenClackyRuntime = configuredOpenClackyBaseURL ? null : new OpenCl
 // 仅把 Skill 内容镜像到这些目录；Claude Code / Codex 运行时会自动扫描各自目录发现 Skill。
 const skillRegistryService = new SkillRegistryService({
   store,
+  packageRoot: join(store.dataRoot, "skill-packages"),
   skillsDirs: {
     "codex-app-server": corptieCodexRuntimePaths.skillsDir,
     "claude-sdk": join(corptieClaudeRuntimePaths.pluginPath, "skills")
@@ -2332,6 +2333,7 @@ await migrateStoreOffMainThread({
   dataRoot: store.dataRoot
 });
 await store.initialize({ resolveDataPath: false, performMigrations: false });
+if (!developmentPreview) skillRegistryService.reconcileInterruptedInstallations();
 detailServiceFor(store, detailMigration);
 await firstRunSetup.initialize();
 await codexEnvironmentRegistry.initialize();

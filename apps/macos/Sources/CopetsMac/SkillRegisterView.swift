@@ -23,6 +23,8 @@ struct SkillRegisterView: View {
     @State private var discoveryDiagnostics: [SkillDiscoveryDiagnostic] = []
     @State private var selectedCandidateID = ""
     @State private var discoveredSource = ""
+    @State private var requestID = UUID().uuidString
+    @State private var installationOperationID: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -32,8 +34,10 @@ struct SkillRegisterView: View {
             Picker(L10n("来源"), selection: $sourceType) {
                 Text(L10n("本地目录")).tag("local")
                 Text(L10n("Git 仓库")).tag("git")
+                Text("HTTPS ZIP").tag("url")
             }
             .pickerStyle(.segmented)
+            .disabled(isBusy)
             .frame(maxWidth: 320, alignment: .leading)
 
             if sourceType == "local" {
@@ -44,16 +48,19 @@ struct SkillRegisterView: View {
                     HStack {
                         TextField(L10n("选择项目目录"), text: $localPath)
                             .textFieldStyle(.roundedBorder)
+                            .disabled(isBusy)
                         Button(L10n("浏览…")) { chooseDirectory() }
+                            .disabled(isBusy)
                     }
                 }
             } else {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(L10n("Git 仓库 URL（需含 SKILL.md）"))
+                    Text(L10n(sourceType == "url" ? "公开 HTTPS ZIP 地址（不含凭据或查询参数）" : "Git 仓库 URL（需含 SKILL.md）"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    TextField("https://github.com/user/skill-repo.git", text: $gitURL)
+                    TextField(sourceType == "url" ? "https://example.com/skill.zip" : "https://github.com/user/skill-repo.git", text: $gitURL)
                         .textFieldStyle(.roundedBorder)
+                        .disabled(isBusy)
                 }
             }
 
@@ -63,7 +70,7 @@ struct SkillRegisterView: View {
                 if isBusy {
                     ProgressView()
                         .controlSize(.small)
-                    Text(L10n("正在扫描项目…"))
+                    Text(L10n(installationOperationID == nil ? "正在检查来源…" : "正在后台安装…"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else if discoveredSource == currentSource, !candidates.isEmpty {
@@ -75,6 +82,7 @@ struct SkillRegisterView: View {
 
             if !candidates.isEmpty {
                 candidatePicker
+                    .disabled(isBusy)
             }
 
             if !discoveryDiagnostics.isEmpty {
@@ -94,9 +102,11 @@ struct SkillRegisterView: View {
             field(L10n("名称（可选）")) {
                 TextField(L10n("留空则自动推断"), text: $name)
             }
+            .disabled(isBusy)
             field(L10n("描述（可选）")) {
                 TextField(L10n("这个 Skill 做什么"), text: $description)
             }
+            .disabled(isBusy)
 
             if let errorMessage {
                 Text(errorMessage)
@@ -105,9 +115,16 @@ struct SkillRegisterView: View {
                     .lineLimit(3)
             }
 
+            if let installationOperationID {
+                Text("安装已受理，关闭此窗口不会中断安装。操作 ID：\(installationOperationID)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
             HStack {
                 Spacer()
-                Button(L10n("取消")) { dismiss() }
+                Button(L10n(installationOperationID == nil ? "取消" : "关闭")) { dismiss() }
                 Button(L10n("登记")) { register() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(isBusy || !canSubmit)
@@ -118,6 +135,8 @@ struct SkillRegisterView: View {
         .onChange(of: sourceType) { _, _ in resetDiscovery() }
         .onChange(of: localPath) { _, _ in resetDiscovery() }
         .onChange(of: gitURL) { _, _ in resetDiscovery() }
+        .onChange(of: name) { _, _ in if !isBusy { requestID = UUID().uuidString } }
+        .onChange(of: description) { _, _ in if !isBusy { requestID = UUID().uuidString } }
     }
 
     private var canSubmit: Bool {
@@ -155,6 +174,9 @@ struct SkillRegisterView: View {
     }
 
     private func resetDiscovery() {
+        guard !isBusy else { return }
+        requestID = UUID().uuidString
+        installationOperationID = nil
         candidates = []
         discoveryDiagnostics = []
         selectedCandidateID = ""
@@ -189,7 +211,9 @@ struct SkillRegisterView: View {
                 description: trimmedDesc.isEmpty ? nil : trimmedDesc,
                 sourceType: sourceType,
                 source: source,
-                sourceSubpath: candidate.relativePath
+                sourceSubpath: candidate.relativePath,
+                requestID: requestID,
+                onAccepted: { installationOperationID = $0 }
             )
             isBusy = false
             if let skill {
