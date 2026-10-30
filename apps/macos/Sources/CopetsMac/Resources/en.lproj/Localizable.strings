@@ -1620,3 +1620,11 @@
 "Send an instruction" = "Send an instruction";
 "Missed" = "Missed";
 "Waiting to retry" = "Waiting to retry";
+
+"性能" = "Performance";
+
+"加速会话切换" = "Accelerate session switching";
+
+"保留最近访问的会话页面，减少重复排版和输入区重建。最多保留 3 个页面，会增加内存占用。更改后重新启动 App 生效。" = "Keep recently visited session pages to reduce repeated layout and editor rebuilding. Retains up to 3 pages and uses more memory. Restart the app to apply changes.";
+
+"需要重新启动 App 才能应用此更改。" = "Restart the app to apply this change.";

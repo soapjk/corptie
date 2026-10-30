@@ -103,10 +103,22 @@ struct ConsoleDetailColumnVisibility: ViewModifier {
 }
 
 struct ConsoleDetailColumnBackground: ViewModifier {
+    @Environment(\.conversationSkin) private var skin
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var isVisible = true
     func body(content: Content) -> some View {
-        content.background(alignment: .trailing) {
+        content.background {
+            if skin == .codexFlat {
+                // This layer is outside the page padding. The trailing gutter
+                // belongs to Detail; all other gutters belong to the transcript.
+                Color.primary.opacity(0.12)
+                    .padding(.trailing, isVisible
+                        ? ConversationDetailWidgetMetrics.railWidth + MainWindowPageLayoutMetrics.outerPadding : 0)
+                    .ignoresSafeArea(.container, edges: .vertical)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }.background(alignment: .trailing) {
             ConversationColumnBackground(.inspector)
                 .frame(width: ConversationDetailWidgetMetrics.railWidth + MainWindowPageLayoutMetrics.outerPadding)
                 .opacity(isVisible ? 1 : 0)

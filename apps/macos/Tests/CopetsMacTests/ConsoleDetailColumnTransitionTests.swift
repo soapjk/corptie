@@ -35,6 +35,9 @@ final class ConsoleDetailColumnTransitionTests: XCTestCase {
                 Probe(view: rail).frame(maxHeight: .infinity)
                     .modifier(ConsoleDetailColumnVisibility(isVisible: state.visible))
             }
+            .padding(MainWindowPageLayoutMetrics.outerPadding)
+            .modifier(ConsoleDetailColumnBackground(isVisible: state.visible))
+            .environment(\.conversationSkin, .codexFlat)
         }
     }
 
