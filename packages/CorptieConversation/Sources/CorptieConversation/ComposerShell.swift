@@ -467,6 +467,23 @@ public struct ComposerModelMenuLabel: View {
     }
 
     private var labelContent: some View {
+        Group {
+            if presentation == .regular {
+                menuText
+                    .padding(.horizontal, 8)
+                    .frame(maxWidth: maxWidth)
+                    .fixedSize(horizontal: true, vertical: false)
+            } else {
+                menuText
+                    .frame(maxWidth: maxWidth)
+                    .padding(.horizontal, 8)
+            }
+        }
+        .frame(height: ComposerShellMetrics.modelMenuHeight)
+        .help(modelLabel)
+    }
+
+    private var menuText: some View {
         HStack(spacing: 4) {
             if isBusy {
                 ProgressView().controlSize(.small).frame(width: 16, height: 16)
@@ -484,11 +501,6 @@ public struct ComposerModelMenuLabel: View {
             }
         }
         .foregroundStyle(ComposerPalette.primaryText)
-        .frame(maxWidth: maxWidth)
-        .padding(.horizontal, 8)
-        .frame(width: presentation == .regular ? maxWidth : nil)
-        .frame(height: ComposerShellMetrics.modelMenuHeight)
-        .help(modelLabel)
     }
 }
 
