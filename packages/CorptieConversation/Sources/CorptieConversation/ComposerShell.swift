@@ -3,6 +3,10 @@ import SwiftUI
 /// Geometry of the message composer row, identical on macOS (`MessageComposer`)
 /// and iPad. Hosts keep their own text engine (NSTextView / UITextView); the
 /// clamp, chip strip, action glyphs and model menu frame live here.
+public enum ComposerModelMenuPresentation: Equatable, Sendable {
+    case compact, regular
+}
+
 public enum ComposerShellMetrics {
     public static let minimumInputHeight: CGFloat = 30
     public static let maximumInputHeight: CGFloat = 96
@@ -26,10 +30,17 @@ public enum ComposerShellMetrics {
         min(maximumInputHeight, max(minimumInputHeight, ceil(contentHeight)))
     }
 
-    /// The model menu yields to the editor: a sixth of the row, 54–74pt.
-    public static func modelMenuMaxWidth(composerWidth: CGFloat) -> CGFloat {
-        guard composerWidth > 0 else { return 74 }
-        return max(54, min(74, composerWidth / 6))
+    /// Compact clients keep a 54–74pt menu; regular desktop menus reserve readable space.
+    public static func modelMenuMaxWidth(composerWidth: CGFloat,
+                                        presentation: ComposerModelMenuPresentation = .compact) -> CGFloat {
+        switch presentation {
+        case .compact:
+            guard composerWidth.isFinite, composerWidth > 0 else { return 74 }
+            return max(54, min(74, composerWidth / 6))
+        case .regular:
+            guard composerWidth.isFinite, composerWidth > 0 else { return 176 }
+            return max(176, min(240, composerWidth * 0.35))
+        }
     }
 }
 
@@ -427,9 +438,11 @@ public struct ComposerModelMenuLabel: View {
     private let isBusy: Bool
     private let maxWidth: CGFloat
     private let showsSurface: Bool
+    private let presentation: ComposerModelMenuPresentation
 
     public init(modelLabel: String, reasoningShortLabel: String, isBusy: Bool, maxWidth: CGFloat,
-                showsSurface: Bool = true) {
+                showsSurface: Bool = true, presentation: ComposerModelMenuPresentation = .compact) {
+        self.presentation = presentation
         self.modelLabel = modelLabel
         self.reasoningShortLabel = reasoningShortLabel
         self.isBusy = isBusy
@@ -458,21 +471,24 @@ public struct ComposerModelMenuLabel: View {
             if isBusy {
                 ProgressView().controlSize(.small).frame(width: 16, height: 16)
             }
-            Text(ComposerModelLabel.compact(modelLabel))
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
+            Text(presentation == .regular ? modelLabel : ComposerModelLabel.compact(modelLabel))
+                .font(presentation == .regular ? WorkbenchTypography.font(for: .help) : .system(size: 10, weight: .semibold, design: .rounded))
                 .lineLimit(1)
                 .truncationMode(.tail)
             if !reasoningShortLabel.isEmpty {
                 Text(reasoningShortLabel)
-                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .font(presentation == .regular ? WorkbenchTypography.font(for: .help).weight(.medium) : .system(size: 9, weight: .bold, design: .rounded))
                     .foregroundStyle(ComposerPalette.secondaryText)
                     .lineLimit(1)
+                    .layoutPriority(1)
             }
         }
         .foregroundStyle(ComposerPalette.primaryText)
         .frame(maxWidth: maxWidth)
         .padding(.horizontal, 8)
+        .frame(width: presentation == .regular ? maxWidth : nil)
         .frame(height: ComposerShellMetrics.modelMenuHeight)
+        .help(modelLabel)
     }
 }
 

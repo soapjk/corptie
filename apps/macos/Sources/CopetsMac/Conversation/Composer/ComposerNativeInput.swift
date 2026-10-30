@@ -435,7 +435,7 @@ struct ComposerInputTextView: NSViewRepresentable {
                 return
             }
             let attributes: [NSAttributedString.Key: Any] = [
-                .font: font ?? NSFont.systemFont(ofSize: 12),
+                .font: font ?? WorkbenchTypography.nativeFont(for: .composerInput),
                 .foregroundColor: NSColor.secondaryLabelColor
             ]
             let textSize = placeholder.size(withAttributes: attributes)
@@ -582,7 +582,7 @@ struct ChatInputTextView: NSViewRepresentable {
                 return
             }
             let attributes: [NSAttributedString.Key: Any] = [
-                .font: font ?? NSFont.systemFont(ofSize: 12),
+                .font: font ?? WorkbenchTypography.nativeFont(for: .composerInput),
                 .foregroundColor: NSColor.secondaryLabelColor
             ]
             let textSize = placeholder.size(withAttributes: attributes)

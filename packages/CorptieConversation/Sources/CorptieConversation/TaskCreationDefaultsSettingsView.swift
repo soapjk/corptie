@@ -27,12 +27,12 @@ public struct TaskCreationDefaultsSettingsView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("创建会话默认模型").font(.headline)
+            Text("创建会话默认模型").font(WorkbenchTypography.font(for: .cardTitle))
             Text("所有新建会话共用，包括 Task、聊天、内部工具与冲突处理；显式选择优先，不修改已有会话。")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
             if catalog?.readOnly == true {
                 Text("Development 预览只读：可查看配置，不加载模型或保存修改。")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
             }
             if let catalog {
                 Picker("Provider", selection: Binding(get: { draft.providerId ?? "" }, set: {
@@ -71,11 +71,11 @@ public struct TaskCreationDefaultsSettingsView: View {
                 }
                 if let provider = selectedProvider, !provider.supportsModels {
                     Text("此 Provider 使用自身默认模型，不支持模型选择。")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
                 }
                 if catalog.modelError != nil {
                     Text("模型列表暂不可用，已保存的配置不会被清除。")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
                 }
             }
             HStack {
@@ -86,7 +86,7 @@ public struct TaskCreationDefaultsSettingsView: View {
                 Button("重新加载") { Task { await refresh(initial: !initialized) } }.disabled(busy)
                 if busy { ProgressView().controlSize(.small) }
             }
-            if !notice.isEmpty { Text(notice).font(.caption).foregroundStyle(.secondary) }
+            if !notice.isEmpty { Text(notice).font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary) }
         }
         .disabled(busy || catalog?.readOnly == true)
         .task { await refresh(initial: true) }

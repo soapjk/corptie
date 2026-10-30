@@ -228,7 +228,7 @@ struct MainWindowResizeLayoutTests {
         #expect(contents.contains("GridItem(.adaptive(minimum: 300, maximum: 430)"))
         #expect(contents.contains("if isShowingDetails { details }"))
         #expect(contents.contains("compactActionButton"))
-        let emptyStateStart = try #require(contents.range(of: "ContentUnavailableView("))
+        let emptyStateStart = try #require(contents.range(of: "ContentUnavailableView {"))
         let emptyStateEnd = try #require(contents.range(of: "} else {", range: emptyStateStart.upperBound..<contents.endIndex))
         let emptyState = contents[emptyStateStart.lowerBound..<emptyStateEnd.lowerBound]
         #expect(emptyState.contains(".frame(maxWidth: .infinity, maxHeight: .infinity)"))

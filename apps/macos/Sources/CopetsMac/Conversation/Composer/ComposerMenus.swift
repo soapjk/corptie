@@ -110,11 +110,11 @@ struct SessionModelMenuSurface: View {
         } label: {
             ComposerModelMenuLabel(
                 modelLabel: currentModelLabel,
-                reasoningShortLabel: reasoningShortLabel(currentReasoningLevel),
+                reasoningShortLabel: reasoningLabel(currentReasoningLevel),
                 isBusy: switchingModel || switchingReasoning
                     || loadingModels,
                 maxWidth: maxWidth,
-                showsSurface: false
+                showsSurface: false, presentation: .regular
             )
         }
         .buttonStyle(.plain)

@@ -31,6 +31,57 @@ struct ComposerShellMetricsTests {
         }
     }
     #endif
+    #if os(macOS)
+    @MainActor private final class Mounts { var count = 0 }
+    private struct EditorProbe: NSViewRepresentable {
+        let mounts: Mounts
+        func makeNSView(context: Context) -> NSView {
+            mounts.count += 1
+            let view = NSView()
+            view.identifier = .init("test.resident-editor")
+            return view
+        }
+        func updateNSView(_ nsView: NSView, context: Context) {}
+    }
+
+    @Test @MainActor func modelWrapKeepsTheSameNativeEditorAcrossTheBreakpoint() throws {
+        let mounts = Mounts()
+        let host = NSHostingView(rootView: ConversationComposerEditorRow(showsAttachments: false, showsModel: true) {
+            EmptyView()
+        } editor: {
+            EditorProbe(mounts: mounts).frame(height: 30)
+        } send: { EmptyView() } more: { EmptyView() } model: {
+            ComposerModelMenuLabel(modelLabel: "A provider-neutral model with a long name", reasoningShortLabel: "Medium",
+                isBusy: false, maxWidth: 200, showsSurface: false, presentation: .regular)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading))
+        func editor(_ view: NSView) -> NSView? {
+            if view.identifier?.rawValue == "test.resident-editor" { return view }
+            return view.subviews.lazy.compactMap { editor($0) }.first
+        }
+        var original: NSView?
+        for width: CGFloat in [640, 300, 640] {
+            host.frame = NSRect(x: 0, y: 0, width: width, height: 180)
+            host.layoutSubtreeIfNeeded()
+            let native = try #require(editor(host))
+            if let original { #expect(native === original) } else { original = native }
+            let frame = native.convert(native.bounds, to: host)
+            #expect(frame.maxX <= width + 1)
+            #expect(frame.width >= 176)
+        }
+        #expect(mounts.count == 1)
+    }
+    #endif
+
+    @Test func regularMenusReserveReadableSpaceWithoutChangingCompactCallers() {
+        for width: CGFloat in [0, 220, 360, 600, 1200] {
+            let regular = ComposerShellMetrics.modelMenuMaxWidth(composerWidth: width, presentation: .regular)
+            let compact = ComposerShellMetrics.modelMenuMaxWidth(composerWidth: width)
+            #expect(regular >= 176 && regular <= 240)
+            #expect(compact >= 54 && compact <= 74)
+        }
+        #expect(ComposerShellMetrics.modelMenuMaxWidth(composerWidth: .infinity, presentation: .regular).isFinite)
+    }
+
     @Test("An empty or single-line input uses one row")
     func singleLineMinimum() {
         #expect(ComposerShellMetrics.minimumInputHeight == 30)

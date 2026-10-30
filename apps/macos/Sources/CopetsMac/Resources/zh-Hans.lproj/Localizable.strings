@@ -1896,3 +1896,34 @@
 "Waiting for Session messages to finish" = "正在等待会话消息处理完成";
 "Message received; waiting for Worktree integration to finish." = "消息已接收，正在等待工作区集成完成。";
 "Message received; the Worktree needs conflict resolution or recovery." = "消息已接收，工作区需要先解决冲突或恢复。";
+
+/* Management and composer presentation. */
+"All Automations" = "全部任务";
+"Automations" = "自动化任务";
+"History" = "执行记录";
+"No Automations" = "暂无自动化任务";
+"No matching Automations" = "当前分类暂无任务";
+"Tasks in this category will appear here." = "此分类中的任务会显示在这里。";
+"Create an Automation from a Session’s message composer." = "可从会话输入框创建自动化任务。";
+"View scheduled and event-driven tasks and their run history." = "查看定时、事件触发任务及执行记录。";
+"After %lld seconds" = "%lld 秒后触发";
+"Every %lld seconds" = "每 %lld 秒触发";
+"After a delay" = "延迟触发";
+"One time" = "单次触发";
+"Interval" = "定时重复";
+"Process exit" = "进程退出时触发";
+"Condition" = "条件触发";
+"Claimed" = "已领取";
+"Edit" = "编辑";
+"Last Result" = "上次结果";
+"Not run" = "尚未执行";
+"Risk" = "风险";
+"Run History (%lld)" = "执行记录（%lld）";
+"Run Now" = "立即运行";
+"The target Logical Session is unavailable." = "目标会话当前不可用。";
+"Local-only actions; remote writes and destructive operations are disabled." = "仅执行本地操作；远程写入和破坏性操作已禁用。";
+"Used when reviewing files changed during a session." = "用于查看会话中修改的文件。";
+"Send an instruction" = "输入指令";
+"已完成" = "已完成";
+"Missed" = "未触发";
+"Waiting to retry" = "等待重试";

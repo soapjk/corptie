@@ -11,6 +11,7 @@ enum SettingsPageLayout {
     static let sidebarMinimum: CGFloat = 180
     static let sidebarIdeal: CGFloat = 200
     static let sidebarMaximum: CGFloat = 240
+    static let contentMaximum: CGFloat = 720
 }
 
 enum SettingsTab: Hashable, CaseIterable {
@@ -106,7 +107,7 @@ struct SettingsView: View {
                 .padding(.trailing, MainWindowPageLayoutMetrics.halfColumnSpacing)
             VStack(spacing: 12) {
                 HStack {
-                    Text(L10n(selectedTab.titleKey)).font(.title2.weight(.semibold))
+                    Text(L10n(selectedTab.titleKey)).font(WorkbenchTypography.font(for: .pageTitle))
                     Spacer()
                 }
                 Divider()
@@ -127,8 +128,9 @@ struct SettingsView: View {
                     }
                 }
             }
+            .frame(maxWidth: SettingsPageLayout.contentMaximum, maxHeight: .infinity, alignment: .topLeading)
             .padding(20)
-            .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .mainWindowPageCard()
             .padding(.leading, MainWindowPageLayoutMetrics.halfColumnSpacing)
         }
@@ -325,28 +327,14 @@ struct SettingsView: View {
     private var settingsCategories: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 4) {
-                Text(L10n("Settings")).font(.title2.weight(.semibold)).padding(.bottom, 12)
+                Text(L10n("Settings")).font(WorkbenchTypography.font(for: .pageTitle)).padding(.bottom, 12)
                 ForEach(SettingsTab.allCases, id: \.self) { tab in
                     Button {
                         selectedTab = tab
                     } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: tab.systemImage)
-                                .frame(width: 20)
-                            Text(L10n(tab.titleKey))
-                                .font(.body)
-                                .lineLimit(2)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 10)
-                        .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
-                        .contentShape(Rectangle())
-                        .background {
-                            if selectedTab == tab {
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(Color.accentColor.opacity(0.12))
-                            }
-                        }
+                        ManagementCategoryRow(title: L10n(tab.titleKey),
+                                              systemImage: tab.systemImage,
+                                              isSelected: selectedTab == tab)
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("settings.tab.\(tab)")
@@ -381,152 +369,122 @@ struct SettingsView: View {
     }
 
     private var generalSettingsTab: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(L10n("Storage"))
-                        .font(.system(size: 18, weight: .semibold, design: .rounded))
-                    Text(L10nFormat(
-                        "%@ environment on port %lld.",
-                        L10n(CorptieAppEnvironment.displayName),
-                        CorptieAppEnvironment.backendPort
-                    ))
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(CorptiePalette.secondaryText)
-                }
-                Spacer()
-                if backendClient.isUpdatingSettings {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text(L10n("Data Root"))
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(CorptiePalette.secondaryText)
-                HStack(spacing: 8) {
-                    TextField(L10n("Choose a data root"), text: $dataRoot)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-
-                    Button {
-                        chooseDataRoot()
-                    } label: {
-                        Image(systemName: "folder")
-                    }
-                    .help(L10n("Choose data root"))
-                }
-                Text(L10n("Database, configuration, logs, Artifacts, Provider runtimes, Skills, cache, state, and backups are migrated and verified before a controlled Backend restart. The old Data Root is retained and is never deleted automatically."))
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(CorptiePalette.secondaryText)
-
-                if let migration = backendClient.dataRootMigration {
-                    let presentedPhase = backendClient.dataRootMigrationPresentationPhase ?? migration.phase
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 8) {
-                            if presentedPhase != "completed" && presentedPhase != "failed" {
-                                ProgressView().controlSize(.small)
-                            }
-                            Text(dataRootMigrationPhaseLabel(presentedPhase))
-                                .font(.system(size: 11, weight: .semibold))
-                            Spacer()
-                            Text("#\(migration.generation)")
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(CorptiePalette.secondaryText)
-                        }
-                        Text(migration.targetDataRoot)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(CorptiePalette.secondaryText)
-                            .lineLimit(2)
-                        if let error = migration.error {
-                            Text("\(error.code): \(error.message)")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(.red)
-                        }
-                    }
-                    .padding(9)
-                    .background(CorptiePalette.secondaryText.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text(L10n("Language"))
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(CorptiePalette.secondaryText)
-                Picker(L10n(""), selection: $appLanguage.selection) {
-                    ForEach(AppLanguage.allCases) { language in
-                        Text(L10n(language.localizationKey)).tag(language)
-                    }
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .frame(maxWidth: 220, alignment: .leading)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text(L10n("Session Management"))
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(CorptiePalette.secondaryText)
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(L10n("Archived Sessions"))
-                            .font(.system(size: 12, weight: .semibold))
-                        Text(L10n("View or restore sessions removed from the main screen."))
-                            .font(.system(size: 11, weight: .medium))
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L10n("Storage"))
+                            .font(WorkbenchTypography.font(for: .sectionTitle))
+                        Text(L10nFormat(
+                            "%@ environment on port %lld.",
+                            L10n(CorptieAppEnvironment.displayName),
+                            CorptieAppEnvironment.backendPort
+                        ))
+                            .font(WorkbenchTypography.font(for: .help))
                             .foregroundStyle(CorptiePalette.secondaryText)
                     }
                     Spacer()
-                    Button(L10n("View…"), systemImage: "archivebox") {
-                        selectedTab = .archivedSessions
+                    if backendClient.isUpdatingSettings {
+                        ProgressView()
+                            .controlSize(.small)
                     }
                 }
-            }
 
-
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(L10n("Code Diff Tool"))
-                        .font(.system(size: 12, weight: .bold))
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(L10n("Data Root"))
+                        .font(WorkbenchTypography.font(for: .body))
                         .foregroundStyle(CorptiePalette.secondaryText)
-                    Text(L10n("Used when you review files changed by a Codex reply."))
-                        .font(.system(size: 11, weight: .medium))
+                    HStack(spacing: 8) {
+                        TextField(L10n("Choose a data root"), text: $dataRoot)
+                            .textFieldStyle(.roundedBorder)
+                            .font(WorkbenchTypography.font(for: .technical))
+
+                        Button {
+                            chooseDataRoot()
+                        } label: {
+                            Image(systemName: "folder")
+                        }
+                        .help(L10n("Choose data root"))
+                    }
+                    Text(L10n("Database, configuration, logs, Artifacts, Provider runtimes, Skills, cache, state, and backups are migrated and verified before a controlled Backend restart. The old Data Root is retained and is never deleted automatically."))
+                        .font(WorkbenchTypography.font(for: .help))
                         .foregroundStyle(CorptiePalette.secondaryText)
+
+                    if let migration = backendClient.dataRootMigration {
+                        let presentedPhase = backendClient.dataRootMigrationPresentationPhase ?? migration.phase
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 8) {
+                                if presentedPhase != "completed" && presentedPhase != "failed" {
+                                    ProgressView().controlSize(.small)
+                                }
+                                Text(dataRootMigrationPhaseLabel(presentedPhase))
+                                    .font(WorkbenchTypography.font(for: .metadata).weight(.semibold))
+                                Spacer()
+                                Text("#\(migration.generation)")
+                                    .font(WorkbenchTypography.font(for: .technical))
+                                    .foregroundStyle(CorptiePalette.secondaryText)
+                            }
+                            Text(migration.targetDataRoot)
+                                .font(WorkbenchTypography.font(for: .technical))
+                                .foregroundStyle(CorptiePalette.secondaryText)
+                                .lineLimit(2)
+                            if let error = migration.error {
+                                Text("\(error.code): \(error.message)")
+                                    .font(WorkbenchTypography.font(for: .help))
+                                    .foregroundStyle(.red)
+                            }
+                        }
+                        .padding(12)
+                        .background(CorptiePalette.secondaryText.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                    }
                 }
-                Spacer()
-                Picker(L10n(""), selection: $codeDiff.tool) {
-                    Text(L10n("Automatic")).tag("automatic")
-                    Text(L10n("Git Difftool")).tag("git-difftool")
-                    Text(L10n("FileMerge")).tag("filemerge")
-                    Text(L10n("Visual Studio Code")).tag("vscode")
-                    Text(L10n("Kaleidoscope")).tag("kaleidoscope")
-                    Text(L10n("Beyond Compare")).tag("beyond-compare")
-                    Text(L10n("Sublime Merge")).tag("sublime-merge")
-                }
-                .labelsHidden()
-                .frame(width: 180)
-            }
 
 
-            if let error = settingsError {
-                Text(error)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.red)
-                    .lineLimit(2)
-            }
+                SettingsOptionRow(title: L10n("Language")) {
+                    Picker(L10n("Language"), selection: $appLanguage.selection) {
+                        ForEach(AppLanguage.allCases) { language in
+                            Text(L10n(language.localizationKey)).tag(language)
+                        }
+                    }
+                    .pickerStyle(.menu).labelsHidden()
                 }
-                .padding(.trailing, 8)
-            }
 
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(L10n("Session Management"))
+                        .font(WorkbenchTypography.font(for: .sectionTitle))
+                    SettingsOptionRow(title: L10n("Archived Sessions"),
+                                      explanation: L10n("View or restore sessions removed from the main screen.")) {
+                        Button(L10n("View…"), systemImage: "archivebox") { selectedTab = .archivedSessions }
+                    }
+                }
+
+                SettingsOptionRow(title: L10n("Code Diff Tool"),
+                                  explanation: L10n("Used when reviewing files changed during a session.")) {
+                    Picker(L10n("Code Diff Tool"), selection: $codeDiff.tool) {
+                        Text(L10n("Automatic")).tag("automatic")
+                        Text(L10n("Git Difftool")).tag("git-difftool")
+                        Text(L10n("FileMerge")).tag("filemerge")
+                        Text(L10n("Visual Studio Code")).tag("vscode")
+                        Text(L10n("Kaleidoscope")).tag("kaleidoscope")
+                        Text(L10n("Beyond Compare")).tag("beyond-compare")
+                        Text(L10n("Sublime Merge")).tag("sublime-merge")
+                    }
+                    .labelsHidden()
+                }
+
+                if let error = settingsError {
+                    Text(error).font(WorkbenchTypography.font(for: .help))
+                        .foregroundStyle(.red).lineLimit(2)
+                }
+            }
+            .padding(.trailing, 8)
         }
     }
 
     private var providerSettingsTab: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                Text(L10n("共用配置")).font(.title3.weight(.semibold))
+            VStack(alignment: .leading, spacing: 24) {
+                Text(L10n("共用配置")).font(WorkbenchTypography.font(for: .sectionTitle))
                 GroupBox {
                     TaskCreationDefaultsSettingsView(
                         load: { try await ProviderSettingsAPI.readTaskDefaults(providerId: $0) },
