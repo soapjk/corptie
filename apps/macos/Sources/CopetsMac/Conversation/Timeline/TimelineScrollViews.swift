@@ -50,11 +50,45 @@ final class IntrinsicHeightTableView: NSTableView {
 }
 
 final class TimelineIntentScroller: ConsoleThinScroller {
+    override var knobTrailingInset: CGFloat? { 1 }
+    override var knobColor: NSColor { .white.withAlphaComponent(0.38) }
+    private var glassThumb: NSView?
+
+    override var doubleValue: Double { didSet { needsLayout = true } }
+    override var knobProportion: CGFloat { didSet { needsLayout = true } }
+    override var isEnabled: Bool { didSet { needsLayout = true } }
+
+    override func layout() {
+        super.layout()
+        if #available(macOS 26.0, *) {
+            if glassThumb == nil {
+                let glass = ScrollbarGlassThumb()
+                glass.style = .clear
+                glass.tintColor = .white.withAlphaComponent(0.16)
+                glass.cornerRadius = ConsoleThinScroller.knobWidth / 2
+                addSubview(glass)
+                glassThumb = glass
+            }
+            let rect = knobDrawingRect
+            glassThumb?.isHidden = rect.isEmpty
+            if glassThumb?.frame != rect { glassThumb?.frame = rect }
+        }
+    }
+
+    override func drawKnob() {
+        if #available(macOS 26.0, *) { return }
+        drawFallbackKnob()
+    }
     var onBegin: (() -> Void)?
     var onEnd: (() -> Void)?
 
     override func testPart(_ point: NSPoint) -> NSScroller.Part {
-        super.testPart(point) == .knob ? .knob : .noPart
+        // The painted thumb is pinned to the edge rather than the native
+        // hover knob's moving center. Keep its whole narrow lane draggable.
+        let local = convert(point, from: nil)
+        let knob = rect(for: .knob)
+        return bounds.contains(local) && local.y >= knob.minY && local.y <= knob.maxY
+            ? .knob : .noPart
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -63,4 +97,9 @@ final class TimelineIntentScroller: ConsoleThinScroller {
         defer { onEnd?() }
         super.mouseDown(with: event)
     }
+}
+
+@available(macOS 26.0, *)
+private final class ScrollbarGlassThumb: NSGlassEffectView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

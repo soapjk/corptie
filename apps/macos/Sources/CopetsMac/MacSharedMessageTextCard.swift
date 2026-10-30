@@ -207,7 +207,8 @@ struct MacSharedMessageTextCard: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity,
                 alignment: row.nativeStyle == .user ? .topTrailing : .topLeading)
-            .padding(.horizontal, 2)
+            .padding(.leading, 2)
+            .padding(.trailing, row.nativeStyle == .user ? ChatBubbleWidthPolicy.userTrailingInset : 2)
             .padding(.vertical, layout.typography.rowInset)
             if row.showsReplyActions {
                 ReplyActions(row: row, copy: copy, performAction: performAction)
@@ -682,7 +683,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
             let size = NSSize(width: measuredLayout.cardWidth,
                               height: measuredLayout.cardHeight)
             let topInset = row.timeSeparatorHeight + row.replyIdentityHeight + measuredLayout.typography.rowInset
-            messageGlow?.frame = NSRect(x: bounds.width - size.width - 2,
+            messageGlow?.frame = NSRect(x: bounds.width - size.width - ChatBubbleWidthPolicy.userTrailingInset,
                 y: isFlipped ? topInset : bounds.height - topInset - size.height,
                 width: size.width, height: size.height)
         }

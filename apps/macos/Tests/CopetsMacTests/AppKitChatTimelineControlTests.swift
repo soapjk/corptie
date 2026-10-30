@@ -1070,6 +1070,11 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         )
         await settleMainQueue()
 
+        harness.scrollView.scrollerStyle = .legacy
+        XCTAssertEqual(harness.scrollView.scrollerStyle, .overlay)
+        XCTAssertEqual(harness.scrollView.contentView.bounds.width, harness.scrollView.bounds.width, accuracy: 1)
+        XCTAssertFalse(harness.scrollView.drawsBackground)
+        XCTAssertFalse(harness.scrollView.contentView.drawsBackground)
         let expectedWidth = harness.scrollView.bounds.width
         XCTAssertEqual(harness.tableView.tableColumns[0].width, expectedWidth, accuracy: 1)
         harness.scrollView.verticalScroller?.isHidden = true
@@ -1092,7 +1097,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
                 cell.layoutSubtreeIfNeeded()
                 let body = try XCTUnwrap(textView(in: cell, identifier: "chat.timeline.body"))
                 let bodyFrame = body.convert(body.bounds, to: harness.scrollView.contentView)
-                // Body has 10pt padding inside the card and the card has 2pt exterior inset.
+                // Body has 10pt padding and the original 2pt card inset.
                 XCTAssertEqual(harness.scrollView.contentView.bounds.maxX - bodyFrame.maxX, 12, accuracy: 1)
                 XCTAssertEqual(harness.tableView.tableColumns[0].width, harness.scrollView.bounds.width, accuracy: 1)
             }

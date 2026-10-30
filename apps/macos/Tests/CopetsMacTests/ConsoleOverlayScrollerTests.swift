@@ -106,45 +106,58 @@ struct ConsoleOverlayScrollerTests {
 
     @Test func scrollerPaintsOnlyThreePointKnobAndNoTrackInBothAppearances() throws {
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
-            let scroller = ConsoleThinScroller(frame: NSRect(x: 0, y: 0, width: 16, height: 240))
-            // Exercise the drawing independently of AppKit's overlay fade state.
-            scroller.scrollerStyle = .legacy
-            scroller.isEnabled = true
-            scroller.knobProportion = 0.2
-            scroller.doubleValue = 0.5
-            let bounds = scroller.bounds
-            let knob = scroller.rect(for: .knob)
-            #expect(!knob.isEmpty)
-            let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil,
-                pixelsWide: Int(bounds.width), pixelsHigh: Int(bounds.height), bitsPerSample: 8,
-                samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
-            let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
-            NSGraphicsContext.saveGraphicsState()
-            NSGraphicsContext.current = context
-            NSColor.clear.setFill()
-            bounds.fill(using: .copy)
-            NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance {
-                scroller.draw(bounds)
-                scroller.drawKnobSlot(in: bounds, highlight: true)
-            }
-            context.flushGraphics()
-            NSGraphicsContext.restoreGraphicsState()
-            var paintedColumns = Set<Int>()
-            var paintedRows = Set<Int>()
-            for y in 0..<bitmap.pixelsHigh {
-                for x in 0..<bitmap.pixelsWide {
-                    if (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.01 {
-                        paintedColumns.insert(x)
-                        paintedRows.insert(y)
+            for width: CGFloat in [8, 12, 16] {
+                let scroller = TimelineIntentScroller(frame: NSRect(x: 0, y: 0, width: width, height: 240))
+                // Exercise the drawing independently of AppKit's overlay fade state.
+                scroller.scrollerStyle = .legacy
+                scroller.isEnabled = true
+                scroller.knobProportion = 0.2
+                scroller.doubleValue = 0.5
+                let bounds = scroller.bounds
+                let knob = scroller.rect(for: .knob)
+                #expect(!knob.isEmpty)
+                let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil,
+                    pixelsWide: Int(bounds.width), pixelsHigh: Int(bounds.height), bitsPerSample: 8,
+                    samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                    colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+                let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = context
+                NSColor.clear.setFill()
+                bounds.fill(using: .copy)
+                NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance {
+                    // Verify the older-system fallback independently of live glass compositing.
+                    scroller.drawFallbackKnob()
+                    scroller.drawKnobSlot(in: bounds, highlight: true)
+                }
+                context.flushGraphics()
+                NSGraphicsContext.restoreGraphicsState()
+                var paintedColumns = Set<Int>()
+                var paintedRows = Set<Int>()
+                for y in 0..<bitmap.pixelsHigh {
+                    for x in 0..<bitmap.pixelsWide {
+                        if (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.01 {
+                            paintedColumns.insert(x)
+                            paintedRows.insert(y)
+                        }
                     }
                 }
+                #expect(!paintedColumns.isEmpty)
+                // At most one anti-aliased edge pixel per side at 1x.
+                #expect(paintedColumns.count == Int(ConsoleThinScroller.knobWidth))
+                #expect(scroller.knobColor == NSColor.white.withAlphaComponent(0.38))
+                if #available(macOS 26.0, *) {
+                    scroller.layoutSubtreeIfNeeded()
+                    let glass = try #require(scroller.subviews.first { $0 is NSGlassEffectView })
+                    #expect(glass.frame == scroller.knobDrawingRect)
+                    #expect(glass.hitTest(NSPoint(x: 1, y: 1)) == nil)
+                }
+                #expect(paintedColumns.max() == Int(bounds.maxX) - 2)
+                let visibleThumbPoint = scroller.convert(NSPoint(x: bounds.maxX - 2, y: knob.midY), to: nil)
+                #expect(scroller.testPart(visibleThumbPoint) == .knob)
+                #expect(paintedRows.count <= Int(ceil(knob.height)) + 2)
+                #expect(paintedRows.count < bitmap.pixelsHigh / 2)
             }
-            #expect(!paintedColumns.isEmpty)
-            // At most one anti-aliased edge pixel per side at 1x.
-            #expect(paintedColumns.count <= Int(ConsoleThinScroller.knobWidth) + 2)
-            #expect(paintedRows.count <= Int(ceil(knob.height)) + 2)
-            #expect(paintedRows.count < bitmap.pixelsHigh / 2)
         }
     }
 

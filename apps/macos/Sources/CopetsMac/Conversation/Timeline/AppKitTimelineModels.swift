@@ -259,6 +259,7 @@ extension AppKitChatTimelineRow {
 /// AppKit measurement on top of the shared `MessageBubbleWidthPolicy` clamp.
 @MainActor
 enum ChatBubbleWidthPolicy {
+    static let userTrailingInset: CGFloat = 2
     static let functionalCardMaximumWidth: CGFloat = 480
     static let maximumWidth = MessageBubbleWidthPolicy.maximumWidth
     static let minimumWidth = MessageBubbleWidthPolicy.minimumWidth
@@ -300,7 +301,8 @@ enum ChatBubbleWidthPolicy {
         if row.isWorkspaceCard {
             return WorkspaceMessageCardLayout.cardWidth(in: availableWidth)
         }
-        let laneWidth = MessageBubbleWidthPolicy.fullAvailableWidth(laneWidth: availableWidth)
+        let contentLaneWidth = availableWidth
+        let laneWidth = MessageBubbleWidthPolicy.fullAvailableWidth(laneWidth: contentLaneWidth)
         let isFunctionalCard = row.nativeStyle == .agent
             && (row.contentSurfaceRole != .assistant || row.userInput != nil || row.executionPlan != nil)
         let fullAvailableWidth = isFunctionalCard ? min(laneWidth, functionalCardMaximumWidth) : laneWidth
@@ -348,7 +350,7 @@ enum ChatBubbleWidthPolicy {
             typography: typography
         )
         return row.images.isEmpty ? preferred : max(preferred, MessageImageGalleryLayout.cardWidth(
-            bodyWidth: max(0, preferred - horizontalPadding), geometries: row.imageGeometries, laneWidth: availableWidth))
+            bodyWidth: max(0, preferred - horizontalPadding), geometries: row.imageGeometries, laneWidth: contentLaneWidth))
     }
 }
 

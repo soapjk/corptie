@@ -1243,11 +1243,11 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
 
     private func synchronizeTableWidth() {
         guard let tableView, let scrollView, let column = tableView.tableColumns.first else { return }
-        // Compact windows must stay overlay-style even when AppKit reapplies
-        // the system scroller preference while tiling.
+        // Every timeline stays overlay-style: a restored legacy preference
+        // would introduce an opaque track strip and narrow the clip view.
         if let timelineScrollView = scrollView as? FirstLayoutRestoringScrollView,
-           timelineScrollView.forcesOverlayScrollers != !reservesVerticalScrollerGutter {
-            timelineScrollView.forcesOverlayScrollers = !reservesVerticalScrollerGutter
+           !timelineScrollView.forcesOverlayScrollers {
+            timelineScrollView.forcesOverlayScrollers = true
         }
         // All timelines use the full parent width; overlay scrollers do not
         // consume a layout lane or change text wrapping when they appear.
