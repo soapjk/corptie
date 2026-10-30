@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { createRuntimeAgentWorkQueue } from "../src/runtime/runtimeAgentWorkQueue.mjs";
 import { automaticWorktreeMutationActive } from "../src/application/worktreeAutoFollowService.mjs";
 
-test("a paused integration yields its verified safe source so the message it waits for can run", async () => {
-  const job = { id: "integration", status: "paused", phase: "awaiting_session_idle", details: {
+for (const phase of ["awaiting_session_idle", "awaiting_integration_acceptance"]) {
+test(`a paused integration yields its verified safe source so queued work can run: ${phase}`, async () => {
+  const job = { id: "integration", status: "paused", phase, details: {
     plan: { orchestration: {}, reservedWorktreeIds: ["source", "target"] },
     dispatchSafety: { safeWorktrees: [{ worktreeId: "source" }], blockedWorktreeIds: ["target"] }
   } };
@@ -18,6 +19,7 @@ test("a paused integration yields its verified safe source so the message it wai
   store.getLogicalSessionByLegacySessionId = () => ({ repositoryId: "repo", activeWorkspaceId: "target" });
   assert.equal(automaticWorktreeMutationActive(store, { sessionId: "session" }), true);
 });
+}
 
 test("integration starting during an asynchronous route probe prevents claiming queued work", async () => {
   let mutating = false;
