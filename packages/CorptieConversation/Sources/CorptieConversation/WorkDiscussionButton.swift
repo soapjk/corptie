@@ -1,5 +1,30 @@
 import SwiftUI
 
+#if os(macOS)
+import AppKit
+
+/// Pointer selection begins on press; the underlying Button keeps keyboard and
+/// accessibility activation. The winning press gesture consumes its mouse-up.
+public struct SessionSelectionPressStyle: PrimitiveButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    public init() {}
+
+    public func makeBody(configuration: Configuration) -> some View {
+        Button(configuration)
+            .buttonStyle(.plain)
+            .highPriorityGesture(
+                LongPressGesture(minimumDuration: 0)
+                    .onEnded { _ in
+                        if isEnabled, NSApp.currentEvent?.type != .rightMouseDown,
+                           NSApp.currentEvent?.type != .rightMouseUp { configuration.trigger() }
+                    }
+            )
+    }
+}
+
+#endif
+
 /// Shared Work-outline entry. Platform hosts choose hit area and navigation action.
 public struct WorkDiscussionButton: View {
     let isSelected: Bool
@@ -33,7 +58,11 @@ public struct WorkDiscussionButton: View {
             WorkDiscussionLabel(isSelected: isSelected, isRunning: isRunning, isActive: isActive,
                 hasUnread: hasUnread, title: title, minimumHitHeight: minimumHitHeight, isHovering: isHovering)
         }
+#if os(macOS)
+        .buttonStyle(SessionSelectionPressStyle())
+#else
         .buttonStyle(.plain)
+#endif
         .fixedSize()
         .onHover { isHovering = $0 }
         .accessibilityLabel(accessibilityTitle)
