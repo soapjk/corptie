@@ -247,7 +247,7 @@ private struct NativeBusinessCard: View {
     @ViewBuilder private var content: some View {
         switch card.payload {
         case .session(let value):
-            NativeBusinessProperty(title: "Session", value: value.sessionId)
+            NativeBusinessProperty(title: "Session", value: value.sessionId, technical: true)
             if !value.workName.isEmpty { NativeBusinessProperty(title: "Work", value: value.workName) }
         case .summary(let value): NativeBusinessTextSection(title: "会话摘要", text: value.text)
         case .work(let value):
@@ -572,7 +572,14 @@ private struct NativeBusinessNavigation: View {
 }
 private struct NativeBusinessProperty: View {
     let title: String; let value: String
-    var body: some View { HStack(alignment: .top, spacing: 8) { Text(title).foregroundStyle(.secondary); Spacer(minLength: 0); Text(value).textSelection(.enabled) }.font(.caption) }
+    var technical = false
+    var body: some View {
+        ConversationDetailPropertyRow(title) {
+            Text(value).font(WorkbenchTypography.font(for: technical ? .technical : .body))
+                .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+    }
 }
 private struct NativeBusinessStatus: View {
     let status: String

@@ -1,4 +1,5 @@
 import SwiftUI
+import CorptieConversation
 
 private enum AutomationCategory: String, CaseIterable, Identifiable {
     case all
@@ -49,10 +50,20 @@ struct AutomationsView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $sidebarState.visibility) {
             List(AutomationCategory.allCases, selection: $category) { item in
-                Label(item.title, systemImage: item.symbol)
+                ManagementCategoryRow(title: item.title, systemImage: item.symbol,
+                                      isSelected: category == item)
+                    .padding(.vertical, 2)
                     .tag(Optional(item))
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
             }
-            .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
+            .listStyle(.plain)
+            .environment(\.defaultMinListRowHeight, 36)
+            .padding(16)
+            .navigationSplitViewColumnWidth(min: SettingsPageLayout.sidebarMinimum,
+                                            ideal: SettingsPageLayout.sidebarIdeal,
+                                            max: SettingsPageLayout.sidebarMaximum)
             .mainWindowPageCard()
             .padding(.trailing, MainWindowPageLayoutMetrics.halfColumnSpacing)
         } detail: {
@@ -82,9 +93,9 @@ struct AutomationsView: View {
         HStack {
             VStack(alignment: .leading, spacing: 3) {
                 Text(category?.title ?? L10n("Automations"))
-                    .font(.title2.weight(.semibold))
-                Text(L10n("Event-driven tasks route through each Logical Session’s current Provider binding."))
-                    .font(.caption)
+                    .font(WorkbenchTypography.font(for: .pageTitle))
+                Text(L10n("View scheduled and event-driven tasks and their run history."))
+                    .font(WorkbenchTypography.font(for: .help))
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -95,7 +106,7 @@ struct AutomationsView: View {
                 Label(L10n("Refresh"), systemImage: "arrow.clockwise")
             }
         }
-        .padding(18)
+        .padding(20)
     }
 
     @ViewBuilder
@@ -103,11 +114,16 @@ struct AutomationsView: View {
         if scheduling.isLoadingAutomations && scheduling.automations.isEmpty {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if visibleAutomations.isEmpty {
-            ContentUnavailableView(
-                L10n("No Automations"),
-                systemImage: "bolt.badge.clock",
-                description: Text(L10n("Create an Automation from a Session’s message composer."))
-            )
+            ContentUnavailableView {
+                Label(L10n(scheduling.automations.isEmpty ? "No Automations" : "No matching Automations"),
+                      systemImage: "bolt.badge.clock")
+                    .font(WorkbenchTypography.font(for: .cardTitle))
+            } description: {
+                Text(L10n(scheduling.automations.isEmpty
+                    ? "Create an Automation from a Session’s message composer."
+                    : "Tasks in this category will appear here."))
+                    .font(WorkbenchTypography.font(for: .help))
+            }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollViewReader { proxy in
@@ -136,7 +152,7 @@ struct AutomationsView: View {
                             }
                         }
                     }
-                    .padding(18)
+                    .padding(20)
                 }
                 .onChange(of: router.pendingAutomationId, initial: true) { _, automationID in
                     guard let automationID,
@@ -207,10 +223,10 @@ private struct AutomationCard: View {
     @State private var isShowingDetails = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top) {
                 Text(automation.name)
-                    .font(.headline)
+                    .font(WorkbenchTypography.font(for: .cardTitle))
                     .lineLimit(1)
                 Spacer()
                 statusBadge
@@ -221,7 +237,7 @@ private struct AutomationCard: View {
                     .lineLimit(1)
             }
             .buttonStyle(.link)
-            .font(.caption)
+            .font(WorkbenchTypography.font(for: .help))
 
             HStack(spacing: 8) {
                 Label(triggerLabel, systemImage: "bolt.badge.clock")
@@ -233,11 +249,11 @@ private struct AutomationCard: View {
                         .lineLimit(1)
                 }
             }
-            .font(.caption2.weight(.medium))
+            .font(WorkbenchTypography.font(for: .metadata))
             .foregroundStyle(.secondary)
 
             Text(automation.message)
-                .font(.caption)
+                .font(WorkbenchTypography.font(for: .body))
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
                 .textSelection(.enabled)
@@ -245,7 +261,7 @@ private struct AutomationCard: View {
             if isShowingDetails { details }
 
             Divider()
-            HStack(spacing: 7) {
+            HStack(spacing: 8) {
                 Button {
                     isShowingDetails.toggle()
                 } label: {
@@ -278,8 +294,8 @@ private struct AutomationCard: View {
 
     @ViewBuilder
     private var details: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 2), spacing: 9) {
+        VStack(alignment: .leading, spacing: 8) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 2), spacing: 8) {
                 metric(L10n("创建时间"), dateLabel(automation.createdAt), "calendar.badge.plus")
                 metric(L10n("上次执行时间"), dateLabel(automation.lastRunAt), "clock.arrow.circlepath")
                 if automation.scheduleType.hasPredictableNextRun {
@@ -295,66 +311,66 @@ private struct AutomationCard: View {
                 ),
                 systemImage: "globe"
             )
-            .font(.caption2.weight(.medium))
+            .font(WorkbenchTypography.font(for: .metadata))
             .foregroundStyle(.secondary)
 
             HStack(spacing: 12) {
-                metric(L10n("Last Result"), automation.lastRunStatus?.rawValue ?? L10n("Not run"), "checklist")
+                metric(L10n("Last Result"), automation.lastRunStatus.map { AutomationPresentation.status($0.rawValue) } ?? L10n("Not run"), "checklist")
                 metric(L10n("Risk"), automation.risk?.level ?? "minimal", "shield")
             }
 
             Text(automation.risk?.summary ?? L10n("Local-only actions; remote writes and destructive operations are disabled."))
-                .font(.caption2)
+                .font(WorkbenchTypography.font(for: .metadata))
                 .foregroundStyle(.secondary)
 
             if !automation.actions.isEmpty {
                 HStack(spacing: 6) {
                     ForEach(Array(automation.actions.enumerated()), id: \.offset) { _, action in
                         Text(action.type)
-                            .font(.caption2.monospaced())
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
+                            .font(WorkbenchTypography.font(for: .technical))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
                             .background(Color.accentColor.opacity(0.1), in: Capsule())
                     }
                 }
             }
 
             if !automation.runs.isEmpty {
-                DisclosureGroup(L10n("Run History (\(automation.runs.count))")) {
+                DisclosureGroup(L10nFormat("Run History (%lld)", automation.runs.count)) {
                     VStack(spacing: 8) {
                         ForEach(automation.runs) { run in AutomationRunRow(run: run) }
                     }
                     .padding(.top, 8)
                 }
-                .font(.caption.weight(.semibold))
+                .font(WorkbenchTypography.font(for: .help).weight(.semibold))
             }
 
             Text("misfire: \(automation.policy?.misfire ?? automation.missedPolicy.rawValue)")
-                .font(.caption2.monospaced())
+                .font(WorkbenchTypography.font(for: .technical))
                 .foregroundStyle(.secondary)
         }
     }
 
     private var statusBadge: some View {
         Text(automation.presentationStatusText)
-            .font(.caption.weight(.semibold))
-            .padding(.horizontal, 9)
+            .font(WorkbenchTypography.font(for: .help).weight(.semibold))
+            .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(automation.statusTint.opacity(0.13), in: Capsule())
             .foregroundStyle(automation.statusTint)
     }
 
     private var triggerLabel: String {
-        guard let trigger = automation.trigger else { return automation.scheduleType.rawValue }
-        if trigger.type == "interval", let seconds = trigger.intervalSeconds { return "interval · \(seconds)s" }
-        if trigger.type == "after", let seconds = trigger.delaySeconds { return "after · \(seconds)s" }
-        return trigger.type
+        guard let trigger = automation.trigger else { return AutomationPresentation.trigger(automation.scheduleType.rawValue) }
+        if trigger.type == "interval", let seconds = trigger.intervalSeconds { return L10nFormat("Every %lld seconds", seconds) }
+        if trigger.type == "after", let seconds = trigger.delaySeconds { return L10nFormat("After %lld seconds", seconds) }
+        return AutomationPresentation.trigger(trigger.type)
     }
 
     private func metric(_ label: String, _ value: String, _ image: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Label(label, systemImage: image).font(.caption2).foregroundStyle(.secondary)
-            Text(value).font(.caption.weight(.medium)).lineLimit(1).textSelection(.enabled)
+            Label(label, systemImage: image).font(WorkbenchTypography.font(for: .metadata)).foregroundStyle(.secondary)
+            Text(value).font(WorkbenchTypography.font(for: .body)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -378,7 +394,7 @@ private struct AutomationCard: View {
     ) -> some View {
         Button(role: role, action: action) {
             Image(systemName: systemImage)
-                .frame(width: 16, height: 16)
+                .frame(width: 28, height: 28)
         }
         .buttonStyle(.borderless)
         .help(title)
@@ -392,30 +408,30 @@ private struct AutomationRunRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
-                Text(run.status.rawValue).font(.caption.monospaced().weight(.semibold))
+                Text(AutomationPresentation.status(run.status.rawValue)).font(WorkbenchTypography.font(for: .body).weight(.semibold))
                 Spacer()
-                Text(run.scheduledFor).font(.caption2).foregroundStyle(.secondary)
+                Text(ScheduledSessionManagementTimeFormatting.string(from: run.scheduledFor, locale: AppLanguageController.shared.locale) ?? run.scheduledFor).font(WorkbenchTypography.font(for: .metadata)).foregroundStyle(.secondary)
             }
             if let bindingId = run.bindingId {
                 Text("binding \(bindingId) · routing v\(run.routingVersion ?? 0)")
-                    .font(.caption2.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                    .font(WorkbenchTypography.font(for: .technical)).foregroundStyle(.secondary).textSelection(.enabled)
             }
             ForEach(Array((run.stages ?? []).enumerated()), id: \.offset) { _, stage in
                 HStack(spacing: 6) {
                     Image(systemName: stage.status == "completed" ? "checkmark.circle.fill" : "circle.dashed")
                     Text(stage.name)
                     Spacer()
-                    Text(stage.status)
+                    Text(AutomationPresentation.status(stage.status))
                 }
-                .font(.caption2)
+                .font(WorkbenchTypography.font(for: .metadata))
                 .foregroundStyle(stage.status == "completed" ? Color.green : Color.secondary)
             }
             if let error = run.errorMessage {
                 Text([run.errorCode, error].compactMap { $0 }.joined(separator: " · "))
-                    .font(.caption2).foregroundStyle(.red).textSelection(.enabled)
+                    .font(WorkbenchTypography.font(for: .metadata)).foregroundStyle(.red).textSelection(.enabled)
             }
         }
-        .padding(9)
+        .padding(8)
         .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
     }
 }
@@ -440,6 +456,35 @@ private extension ScheduledSessionTask {
         case .expired: .orange
         case .error: .red
         default: .red
+        }
+    }
+}
+
+@MainActor
+enum AutomationPresentation {
+    static func status(_ value: String) -> String {
+        switch value {
+        case "claimed": L10n("Claimed")
+        case "queued": L10n("Queued")
+        case "running": L10n("Running")
+        case "completed": L10n("Completed")
+        case "failed": L10n("Failed")
+        case "cancelled": L10n("Cancelled")
+        case "skipped": L10n("Skipped")
+        case "missed": L10n("Missed")
+        case "retry_wait": L10n("Waiting to retry")
+        default: value
+        }
+    }
+
+    static func trigger(_ value: String) -> String {
+        switch value {
+        case "at", "once": L10n("One time")
+        case "after": L10n("After a delay")
+        case "interval": L10n("Interval")
+        case "process", "processExit": L10n("Process exit")
+        case "condition": L10n("Condition")
+        default: value
         }
     }
 }

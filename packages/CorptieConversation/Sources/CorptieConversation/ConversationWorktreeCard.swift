@@ -73,7 +73,8 @@ public struct ConversationWorktreeCard: View {
             HStack(spacing: 4) {
                 Button { expanded.toggle() } label: {
                     Label("Worktree", systemImage: expanded ? "chevron.down" : "arrow.triangle.branch")
-                        .font(.caption.weight(.semibold)).frame(maxWidth: .infinity, alignment: .leading)
+                        .font(WorkbenchTypography.font(for: .cardTitle)).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .frame(minHeight: headerHeight).contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityValue(localize(expanded ? "已展开" : "已收起"))
                 if detail?.worktree?.dirty == true {
@@ -91,8 +92,8 @@ public struct ConversationWorktreeCard: View {
             if loading && detail == nil { ProgressView() }
             if let tree = detail?.worktree {
                 Text("\(tree.branchName ?? localize("游离 HEAD")) → \(tree.hierarchy?.comparison.branchName ?? detail?.mainBranch ?? "—")")
-                    .font(.caption.monospaced()).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                Text(relation(tree)).font(.caption).foregroundStyle(.secondary)
+                    .font(WorkbenchTypography.font(for: .technical)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                Text(relation(tree)).font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
                 if tree.dirty == true {
                     Text("\(localize("未提交修改")) · \(tree.changedFileCount ?? tree.changedFiles.count)").font(.caption).foregroundStyle(.orange)
                 }

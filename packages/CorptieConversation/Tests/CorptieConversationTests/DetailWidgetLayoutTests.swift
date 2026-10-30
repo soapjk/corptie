@@ -90,7 +90,7 @@ import AppKit
 
     @Test func sessionProviderAndCollapsedContentUseCompactProfiles() throws {
         let session = try decode(kind: "sessionInfo", data: ["sessionId": "session:1", "workName": "Work"])
-        #expect(DetailWidgetSizing.preferredSize(for: session) == .strip)
+        #expect(DetailWidgetSizing.preferredSize(for: session) == .fitted(height: 96))
         let provider = try decode(kind: "provider", data: ["providerId": "test", "name": "Provider", "model": "Model",
             "reasoning": "Medium", "switching": false, "providers": []])
         #expect(DetailWidgetSizing.preferredSize(for: provider) == .small)
