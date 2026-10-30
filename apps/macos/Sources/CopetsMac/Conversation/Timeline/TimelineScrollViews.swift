@@ -15,6 +15,26 @@ final class FirstLayoutRestoringScrollView: NSScrollView {
         set { super.scrollerStyle = forcesOverlayScrollers ? .overlay : newValue }
     }
 
+    /// The host borrows existing page spacing; the message viewport stays unchanged.
+    var trailingScrollerExtension: CGFloat = 0 {
+        didSet {
+            guard oldValue != trailingScrollerExtension else { return }
+            tile()
+            needsLayout = true
+        }
+    }
+
+    override func tile() {
+        super.tile()
+        guard trailingScrollerExtension > 0 else { return }
+        let contentWidth = max(0, bounds.width - trailingScrollerExtension)
+        contentView.setFrameSize(NSSize(width: contentWidth, height: contentView.frame.height))
+        if let scroller = verticalScroller {
+            scroller.frame = NSRect(x: bounds.maxX - 12, y: scroller.frame.minY,
+                width: 12, height: scroller.frame.height)
+        }
+    }
+
     var onLayout: (() -> Void)?
     var onUserScrollWillBegin: (() -> Void)?
     var onUserScrollDidEnd: (() -> Void)?
@@ -55,7 +75,36 @@ final class TimelineIntentScroller: ConsoleThinScroller {
                                      scrollerStyle: NSScroller.Style) -> CGFloat {
         scrollerStyle == .overlay ? 12 : super.scrollerWidth(for: controlSize, scrollerStyle: scrollerStyle)
     }
-    override var knobTrailingInset: CGFloat? { 1 }
+    override var knobTrailingInset: CGFloat? { 0 }
+    /// Own the complete 9pt capsule instead of drawing into AppKit's 6pt thumb layer.
+    private(set) var visibleKnobLayer = CALayer()
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        guard let layer else { return }
+        if visibleKnobLayer.superlayer !== layer || layer.sublayers?.count != 1 {
+            layer.sublayers = [visibleKnobLayer]
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.backgroundColor = nil
+        layer.masksToBounds = false
+        visibleKnobLayer.frame = knobDrawingRect
+        visibleKnobLayer.cornerRadius = paintedKnobWidth / 2
+        visibleKnobLayer.contentsScale = window?.backingScaleFactor ?? 1
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            visibleKnobLayer.backgroundColor = knobColor.cgColor
+        }
+        visibleKnobLayer.isHidden = knobDrawingRect.isEmpty
+        CATransaction.commit()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        // The transparent leading part of the 12pt control belongs to the card.
+        guard !isHidden, alphaValue > 0, knobDrawingRect.contains(local) else { return nil }
+        return super.hitTest(point)
+    }
     override var doubleValue: Double {
         didSet { if oldValue != doubleValue { needsDisplay = true } }
     }
@@ -168,9 +217,7 @@ final class TimelineIntentScroller: ConsoleThinScroller {
         // The painted thumb is pinned to the edge rather than the native
         // hover knob's moving center. Keep its whole narrow lane draggable.
         let local = convert(point, from: nil)
-        let knob = rect(for: .knob)
-        return bounds.contains(local) && local.y >= knob.minY && local.y <= knob.maxY
-            ? .knob : .noPart
+        return knobDrawingRect.contains(local) ? .knob : .noPart
     }
 
     override func mouseDown(with event: NSEvent) {

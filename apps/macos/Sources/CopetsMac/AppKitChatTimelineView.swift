@@ -31,6 +31,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     /// The full-height clip view lets earlier rows pass beneath the glass.
     var bottomClearance: CGFloat = 0
     var reservesVerticalScrollerGutter = true
+    var trailingScrollerExtension: CGFloat = 0
 
     nonisolated static func rowIndex(forTurnID turnID: String, in rows: [AppKitChatTimelineRow]) -> Int? {
         rows.firstIndex(where: {
@@ -76,6 +77,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         let tableView = Self.makeTableView()
         let scrollView = Self.makeScrollView(tableView: tableView)
 
+        (scrollView as? FirstLayoutRestoringScrollView)?.trailingScrollerExtension = trailingScrollerExtension
         context.coordinator.setReservesVerticalScrollerGutter(reservesVerticalScrollerGutter)
         context.coordinator.attach(tableView: tableView, scrollView: scrollView)
         context.coordinator.setProcessClockEnabled(canAdvanceProcessClock)
@@ -156,6 +158,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             initialPosition: initialPosition,
             deferReloadUntilRowsArrive: true
         )
+        (scrollView as? FirstLayoutRestoringScrollView)?.trailingScrollerExtension = trailingScrollerExtension
         context.coordinator.setReservesVerticalScrollerGutter(reservesVerticalScrollerGutter)
         context.coordinator.updateSkin(skin)
         context.coordinator.updateBaseDirectory(baseDirectory)

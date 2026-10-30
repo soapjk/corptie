@@ -1252,9 +1252,9 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
            !timelineScrollView.forcesOverlayScrollers {
             timelineScrollView.forcesOverlayScrollers = true
         }
-        // All timelines use the full parent width; overlay scrollers do not
-        // consume a layout lane or change text wrapping when they appear.
-        let width = max(120, scrollView.bounds.width)
+        // The host may extend only the scroller into existing page spacing.
+        // Always measure the actual message viewport, never that extension.
+        let width = max(120, scrollView.contentView.bounds.width)
         guard abs(column.width - width) >= 0.5 else { return }
         let anchor = visibleAnchor(in: tableView)
         column.width = width
