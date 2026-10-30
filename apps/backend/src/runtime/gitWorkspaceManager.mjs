@@ -222,6 +222,21 @@ export class GitWorkspaceManager {
     return this.taskDeletionStatusForWorktree(logical.repositoryId, logical.activeWorkspaceId);
   }
 
+  async taskDeletionDeliveryComparison(taskId, worktree) {
+    const task = this.store.getTask(taskId);
+    const binding = this.store.getTaskDeliveryBinding(taskId);
+    const parent = task?.parent_task_id && this.store.getTaskDeliveryBinding(task.parent_task_id);
+    const parentTree = parent && this.store.getGitWorktree(parent.worktree_id);
+    if (!binding || binding.worktree_id !== worktree.worktreeId || !parentTree || parent.repository_id !== binding.repository_id) {
+      throw deletionSafetyError("TASK_DELIVERY_BINDING_CHANGED", "无法确认子分支与父分支的交付关系，请先修复绑定。");
+    }
+    const parentHead = (await this.gitOutput(parentTree.path, ["rev-parse", "--verify", "HEAD"])).trim();
+    const inheritedOnly = Boolean(binding.base_commit_oid && worktree.headOid === binding.base_commit_oid);
+    const delivered = inheritedOnly || await this.gitSucceeds(parentTree.path, ["merge-base", "--is-ancestor", worktree.headOid, parentHead]);
+    const commitCount = delivered ? 0 : Number((await this.gitOutput(parentTree.path, ["rev-list", "--count", `${parentHead}..${worktree.headOid}`])).trim());
+    return { target: "parent", parentTaskId: task.parent_task_id, parentHeadOid: parentHead, delivered, commitCount };
+  }
+
   async taskDeletionStatusForWorktree(repositoryId, worktreeId) {
     const startedAt = performance.now();
     const target = this.store.getGitWorktree(worktreeId);
@@ -258,7 +273,7 @@ export class GitWorkspaceManager {
       headOid: targetHead.trim(),
       branchName: targetBranch.trim() === "HEAD" ? null : targetBranch.trim(),
       dirty,
-      statusSummary: status.trim(),
+      statusSummary: status.trimEnd(),
       diffStat: "",
       mergedIntoMain: aheadOfMain === 0,
       synchronizedWithMain: !dirty && aheadOfMain === 0 && behindMain === 0,
@@ -1953,7 +1968,46 @@ export class GitWorkspaceManager {
   }
 
   async removeWorktreeForProject(input) {
-    this.store.assertStandaloneWorktreeMutation?.({worktreeIds:[input.sourceWorktreeId]});
+    this.store.assertStandaloneWorktreeMutation?.({worktreeIds:[input.sourceWorktreeId], taskDeletionOperationId: input.taskDeletionOperationId});
+    const operation = input.taskDeletionOperationId && this.store.getTaskDeletionOperation(input.taskDeletionOperationId);
+    const target = operation?.input?.target;
+    if (input.taskDeletionOperationId && (!target || operation.state !== "running" || operation.taskId !== target.taskId
+      || target.worktreeId !== input.sourceWorktreeId || target.repositoryId !== input.repositoryId)) {
+      throw deletionSafetyError("TASK_DELETE_TARGET_CHANGED", "删除作业的目标已变化，请重新确认。");
+    }
+    if (target) {
+      const task = this.store.getTask(target.taskId);
+      const binding = this.store.getTaskDeliveryBinding?.(target.taskId);
+      if (task?.deletion_status !== "deleting" || (task.parent_task_id ?? null) !== target.parentTaskId
+        || (target.bindingRevision != null && (binding?.worktree_id !== target.worktreeId
+          || binding.binding_revision !== target.bindingRevision))) throw deletionSafetyError("TASK_DELETE_TARGET_CHANGED", "任务删除绑定已变化。");
+      const routes = this.store.listLogicalSessionsByWorkspaceId(target.worktreeId);
+      for (const route of routes) {
+        const session = this.store.getSession(route.legacySessionId);
+        if ((route.taskId ?? session?.taskId) !== target.taskId || this.store.getSessionRuntimeBlocker?.(route.legacySessionId, { includeQueued: true })
+          || ["running", "blocked"].includes(session?.status)) throw deletionSafetyError("WORKTREE_IN_USE", "工作区仍被其他任务或运行中的会话占用。");
+      }
+    }
+    const activeJob = this.store.getLatestWorktreeIntegrationJob?.(input.repositoryId);
+    const reserved = activeJob?.details?.plan?.reservedWorktreeIds ?? activeJob?.details?.plan?.items?.map(item => item.worktreeId) ?? [];
+    if (activeJob && (["queued", "running", "cancellation_requested", "replanning"].includes(activeJob.status)
+      || (activeJob.status === "paused" && reserved.includes(input.sourceWorktreeId)))) {
+      throw deletionSafetyError("ACTIVE_WORKTREE_INTEGRATION_JOB", "仓库正执行 Git 作业，请等待结束后重试。");
+    }
+    const checkpoint = operation?.result?.cleanup ?? operation?.input?.resumeCleanup;
+    if (checkpoint?.worktreeRemoved) {
+      const snapshot = await createGitWorkspaceSnapshot(input.workingDirectory);
+      if (snapshot.worktrees.some(tree => tree.worktreeId === target.worktreeId || tree.path === target.path
+        || tree.branchName === target.branchName)) throw deletionSafetyError("TASK_DELETE_TARGET_CHANGED", "清理目标已被重新使用，请重新检查。");
+      const exists = await this.gitSucceeds(input.workingDirectory, ["show-ref", "--verify", `refs/heads/${target.branchName}`]);
+      if (exists) {
+        const head = (await this.gitOutput(input.workingDirectory, ["rev-parse", `refs/heads/${target.branchName}`])).trim();
+        if (head !== target.headOid) throw deletionSafetyError("TASK_DELETE_TARGET_CHANGED", "待清理分支已变化，请重新确认。");
+        await this.runGit(input.workingDirectory, ["branch", "-D", target.branchName]);
+      }
+      this.store.upsertGitWorkspaceSnapshot(await createGitWorkspaceSnapshot(input.workingDirectory));
+      return { ...checkpoint, removed: true, branchDeleted: true };
+    }
     const sourceWorktreeId = input.sourceWorktreeId;
     const source = this.store.getGitWorktree(sourceWorktreeId);
     if (!source || source.repositoryId !== input.repositoryId || source.isMain) {
@@ -1977,17 +2031,23 @@ export class GitWorkspaceManager {
     if (!currentSource || currentSource.isMain) {
       throw new Error("The selected worktree is no longer available.");
     }
+    if (target && (currentSource.path !== target.path || currentSource.branchName !== target.branchName
+      || currentSource.headOid !== target.headOid)) throw deletionSafetyError("TASK_DELETE_TARGET_CHANGED", "工作区版本已变化，请重新确认删除。");
     const status = await this.gitOutput(currentSource.path, ["status", "--porcelain=v1"]);
     const dirty = Boolean(status.trim());
+    if (target && status.trimEnd() !== target.statusSummary) throw deletionSafetyError("TASK_DELETE_TARGET_CHANGED", "工作区文件范围已变化，请重新确认。");
     const operationState = await this.integrationOperationState(currentSource.path);
     const conflicts = (await this.gitOutput(currentSource.path, ["diff", "--name-only", "--diff-filter=U"]))
       .split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
-    const merged = await this.gitSucceeds(main.path, [
+    let merged = await this.gitSucceeds(main.path, [
       "merge-base",
       "--is-ancestor",
       currentSource.headOid,
       main.headOid
     ]);
+    if (target && this.store.getTask(target.taskId)?.parent_task_id) {
+      merged = (await this.taskDeletionDeliveryComparison(target.taskId, currentSource)).delivered;
+    }
     let discardedCommitCount = 0;
     if (!merged) {
       const counts = await this.gitOutput(main.path, [
@@ -1996,6 +2056,9 @@ export class GitWorkspaceManager {
       discardedCommitCount = Number(counts.trim().split(/\s+/)[1]) || 0;
     }
     const requiresForceConfirmation = !merged || dirty;
+    if (target && (currentSource.isLocked || currentSource.isPrunable || operationState || conflicts.length > 0)) {
+      throw deletionSafetyError("GIT_OPERATION_IN_PROGRESS", "工作区有 Git 锁、未完成操作或冲突，请先安全处理。");
+    }
     if (input.safeOnly === true) {
       let error = null;
       if (currentSource.isLocked) error = deletionSafetyError("WORKTREE_LOCKED", currentSource.lockReason || "This Worktree is locked by another operation.");
@@ -2026,9 +2089,16 @@ export class GitWorkspaceManager {
     await this.runGit(main.path, [
       "worktree", "remove", ...(dirty ? ["--force"] : []), currentSource.path
     ]);
+    if (operation) this.store.updateTaskDeletionOperation(operation.operationId, {
+      stage: "branch_cleanup", result: { ...operation.result, cleanup: { worktreeRemoved: true,
+        sourceWorktreeId, sourcePath: currentSource.path, sourceBranch: currentSource.branchName,
+        forced: requiresForceConfirmation, discardedCommitCount } }
+    });
     let branchDeleted = false;
     if (input.deleteBranch !== false && currentSource.branchName) {
-      await this.runGit(main.path, ["branch", merged ? "-d" : "-D", currentSource.branchName]);
+      // Parent-delivered commits need not be on main. The service has already
+      // verified the exact child ref, so -D here removes only that local ref.
+      await this.runGit(main.path, ["branch", target ? "-D" : merged ? "-d" : "-D", currentSource.branchName]);
       branchDeleted = true;
     }
     const updated = await createGitWorkspaceSnapshot(main.path);

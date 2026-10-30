@@ -833,6 +833,10 @@ export class WorktreeIntegrationJobService {
 
   #assertNoActiveJob(repositoryId, ignoreJobId = null, includeAwaitingConfirmation = false) {
     this.assertRepositoryWritable(repositoryId);
+    const deletion = this.store.selectOne?.(`SELECT o.operation_id FROM task_deletion_operations o
+      WHERE o.state IN ('queued','running') AND json_extract(o.input_json,'$.target.repositoryId')=?
+      AND COALESCE(json_extract(o.input_json,'$.deleteWorktree'),1)=1 LIMIT 1`, [repositoryId]);
+    if (deletion) throw new WorktreeIntegrationJobError("TASK_DELETION_ACTIVE", "仓库正清理任务资源，请等待删除完成。", 409);
     const activeStatuses = includeAwaitingConfirmation
       ? ["awaiting_confirmation", ...ACTIVE_JOB_STATUSES]
       : ACTIVE_JOB_STATUSES;
@@ -2221,7 +2225,7 @@ export class WorktreeIntegrationJobService {
             auditEvent: "integration_acceptance_required", auditData: { taskId: step.rootTaskId, code: status.reason } });
           return null;
         }
-        state = { ...state, index: state.index + 1, steps: state.steps.map((entry, index) => index === state.index ? { ...entry, status: "completed", acceptanceReceiptId: status.receiptId, testedHeadOid: status.testedHeadOid } : entry) };
+        state = { ...state, index: state.index + 1, steps: state.steps.map((entry, index) => index === state.index ? { ...entry, status: "completed", reason: status.state === "not_required" ? "NO_CHILD_CODE_CHANGE" : null, acceptanceReceiptId: status.receiptId, testedHeadOid: status.testedHeadOid } : entry) };
         job = this.#update(job, { details: { ...job.details, graphExecution: state }, auditEvent: "integration_acceptance_verified", auditData: { taskId: step.rootTaskId, receiptId: status.receiptId } });
         continue;
       }

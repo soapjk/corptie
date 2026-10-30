@@ -159,12 +159,12 @@ test("Git parent completion requires integration acceptance but audit remains re
   const completion=new TaskCompletionService({store:f.store});
   assert.deepEqual(completion.listAudit(root.id),[]);
   const input={requestId:"test:hierarchy",interactionId:"interaction:hierarchy",uiSurface:"task_completion_confirmation",displayedTaskId:root.id,displayedTaskTitle:root.title};
-  await assert.rejects(()=>completion.issueMacOSIntent(root.id,input,{type:"user",id:"user:local-macos"}),{code:"INTEGRATION_ACCEPTANCE_REQUIRED"});
+  await assert.rejects(()=>completion.issueMacOSIntent(root.id,input,{type:"user",id:"user:local-macos"}),{code:"PARENT_WORKTREE_REQUIRED"});
   const guard=completion.integrationAcceptance.assertCompletionAllowed;
   completion.integrationAcceptance.assertCompletionAllowed=async()=>{};
   const receipt=await completion.issueMacOSIntent(root.id,input,{type:"user",id:"user:local-macos"});
   completion.integrationAcceptance.assertCompletionAllowed=guard;
-  await assert.rejects(()=>completion.completeFromMacOS(root.id,{intentToken:receipt.intentToken,requestId:input.requestId,idempotencyKey:"complete:hierarchy"}),{code:"INTEGRATION_ACCEPTANCE_REQUIRED"});
+  await assert.rejects(()=>completion.completeFromMacOS(root.id,{intentToken:receipt.intentToken,requestId:input.requestId,idempotencyKey:"complete:hierarchy"}),{code:"PARENT_WORKTREE_REQUIRED"});
   await assert.rejects(()=>completion.completeFromSession({targetTaskId:root.id},{}),{code:"WORK_ID_REQUIRED"});
   assert.notEqual(f.store.getTask(root.id).lifecycle_state,"done");
 });

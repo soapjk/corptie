@@ -140,7 +140,9 @@ struct CorptieTaskDetailView: View {
                     onCancel: { showDeletion = false },
                     onMergeFirst: {
                         showDeletion = false
-                        deletionFeedback = L10n("Merge the Task Worktree into the target branch before deleting it.")
+                        deletionFeedback = L10n(deletionPlan.parentTaskId == nil
+                            ? "Merge the Task Worktree into the target branch before deleting it."
+                            : "可先将子分支合并到父分支，或重新选择强制删除。")
                     },
                     onDelete: { force, branch, deleteWorktree, artifactDisposition in
                         deleteTask(

@@ -118,7 +118,7 @@ export async function clientTaskDeletionPlan(api, identity, taskId) {
   const risk = row => ({ code: String(row.code), message: typeof row.message === "string" ? row.message.slice(0, 512) : "",
     ...(Array.isArray(row.files) ? { files: row.files.filter(file => typeof file === "string").slice(0, 8).map(file => file.slice(0, 256)) } : {}),
     ...(Number.isFinite(row.commitCount) ? { commitCount: row.commitCount } : {}) });
-  return { schemaVersion: 1, taskId: task.id,
+  return { schemaVersion: 1, taskId: task.id, parentTaskId: plan?.parentTaskId ?? null,
     status: ["blocked", "risky", "safe"].includes(plan?.status) ? plan.status : "blocked",
     associatedSessionCount: Number(plan?.associatedSessionCount) || 0,
     artifacts: (plan?.artifacts ?? []).map(row => ({ id: String(row.artifactId), title: typeof row.title === "string" ? row.title : "" })).slice(0, 50),

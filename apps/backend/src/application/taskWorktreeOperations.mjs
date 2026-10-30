@@ -16,6 +16,33 @@ export function createTaskWorktreeOperations({ store, gitWorkspaces, projectAppl
       throw error;
     }
     const sessions = store.listSessionsByTask(taskId);
+    const delivery = store.getTaskDeliveryBinding?.(taskId);
+    if (delivery) {
+      const project = await gitWorkspaces.taskDeletionStatusForWorktree(delivery.repository_id, delivery.worktree_id);
+      const worktree = project.worktrees[0];
+      if (!worktree || worktree.availability !== "available") return { status: "unavailable", worktree, blocker: "WORKTREE_UNAVAILABLE" };
+      if (task.parent_task_id) worktree.deliveryComparison = await gitWorkspaces.taskDeletionDeliveryComparison(taskId, worktree);
+      const routes = store.listLogicalSessionsByWorkspaceId(worktree.worktreeId);
+      const foreign = routes.some(route => route.taskId !== taskId
+        && store.getSession(route.legacySessionId)?.taskId !== taskId);
+      const busy = routes.some(route => sessionHasActiveRun(store.getSession(route.legacySessionId) ?? {})
+        || ["running", "waiting_approval"].includes(route.executionStatus)
+        || store.getSessionRuntimeBlocker?.(route.legacySessionId, { includeQueued: true }));
+      const job = store.getLatestWorktreeIntegrationJob?.(delivery.repository_id);
+      const reserved = job?.details?.plan?.reservedWorktreeIds ?? job?.details?.plan?.items?.map(item => item.worktreeId) ?? [];
+      const integrationBusy = job && ["queued", "running", "paused", "cancellation_requested", "replanning"].includes(job.status)
+        && reserved.includes(worktree.worktreeId);
+      const operationState = await gitWorkspaces.integrationOperationState?.(worktree.path);
+      const conflicts = String(worktree.statusSummary ?? "").split(/\r?\n/).some(line => /^(DD|AU|UD|UA|DU|AA|UU) /.test(line));
+      const blocker = worktree.isMain ? "MAIN_WORKTREE" : foreign ? "SHARED_WITH_ACTIVE_TASK"
+        : busy ? "SESSION_BUSY" : integrationBusy ? "ACTIVE_WORKTREE_INTEGRATION_JOB"
+        : worktree.isLocked ? "WORKTREE_LOCKED" : operationState ? "GIT_OPERATION_IN_PROGRESS"
+        : conflicts ? "UNRESOLVED_CONFLICTS" : !worktree.branchName ? "WORKTREE_BRANCH_AMBIGUOUS"
+        : !completedTaskStatus(task.lifecycle_state) ? "TASK_NOT_COMPLETED" : worktree.dirty ? "UNCOMMITTED_CHANGES"
+        : !(worktree.deliveryComparison?.delivered ?? worktree.mergedIntoMain) ? "NOT_MERGED_INTO_MAIN" : null;
+      return { status: "available", repositoryId: delivery.repository_id, sessionId: sessions.at(-1)?.id ?? null,
+        worktree, blocker, canReclaim: blocker === null };
+    }
     const session = sessions.find((candidate) => candidate.id === task.current_session_id)
       ?? sessions.at(-1)
       ?? null;
@@ -91,15 +118,11 @@ export function createTaskWorktreeOperations({ store, gitWorkspaces, projectAppl
       .map((binding) => binding.sessionId ? store.getSession(binding.sessionId) : null)
       .filter(Boolean);
     const hasBusySession = boundSessions.some((candidate) => sessionHasActiveRun(candidate));
-    const hasIncompleteTask = boundSessions.some((candidate) => {
-      const boundTask = candidate.taskId ? store.getTask(candidate.taskId) : null;
-      return boundTask && !completedTaskStatus(boundTask.lifecycle_state);
-    });
     let blocker = null;
-    if (!completedTaskStatus(task.lifecycle_state)) blocker = "TASK_NOT_COMPLETED";
-    else if (worktree.isMain) blocker = "MAIN_WORKTREE";
+    if (worktree.isMain) blocker = "MAIN_WORKTREE";
     else if (hasBusySession) blocker = "SESSION_BUSY";
-    else if (hasIncompleteTask) blocker = "SHARED_WITH_ACTIVE_TASK";
+    else if (boundSessions.some(candidate => candidate.taskId !== taskId)) blocker = "SHARED_WITH_ACTIVE_TASK";
+    else if (!completedTaskStatus(task.lifecycle_state)) blocker = "TASK_NOT_COMPLETED";
     else if (worktree.dirty) blocker = "UNCOMMITTED_CHANGES";
     else if (worktree.mergedIntoMain !== true) blocker = "NOT_MERGED_INTO_MAIN";
     else if (worktree.pendingIntegration) blocker = "INTEGRATION_PENDING";
@@ -113,19 +136,22 @@ export function createTaskWorktreeOperations({ store, gitWorkspaces, projectAppl
     };
   }
 
-  async function removeTaskDeletionWorktree({ inspection, force, confirmedBranchName }) {
-    const worktree = inspection.worktree;
-    const project = await projectApplicationService.requireProject(inspection.repositoryId);
-    const logicalSessionIds = (worktree.sessions ?? []).map((item) => item.logicalSessionId);
+  async function removeTaskDeletionWorktree({ taskId, inspection, force, confirmedBranchName, operationId, target }) {
+    const worktree = inspection?.worktree ?? { worktreeId: target.worktreeId, sessions: [] };
+    const repositoryId = inspection?.repositoryId ?? target.repositoryId;
+    const project = await projectApplicationService.requireProject(repositoryId);
+    const logicalSessionIds = (worktree.sessions ?? []).filter(item => !taskId
+      || store.getSession(item.sessionId)?.taskId === taskId).map((item) => item.logicalSessionId);
     const cleanup = await gitWorkspaces.removeWorktreeForProject({
-      repositoryId: inspection.repositoryId,
+      repositoryId,
       workingDirectory: project.mainPath,
       sourceWorktreeId: worktree.worktreeId,
       ignoreLogicalSessionIds: logicalSessionIds,
       deleteBranch: true,
       forceDeleteUnmerged: force,
       acknowledgeIrrecoverable: force,
-      confirmedBranchName
+      confirmedBranchName,
+      ...(operationId ? { taskDeletionOperationId: operationId } : {})
     });
     for (const logicalSessionId of logicalSessionIds) {
       const route = store.getLogicalSession(logicalSessionId);

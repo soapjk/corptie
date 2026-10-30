@@ -69,6 +69,21 @@ export class TaskDeletionRepository {
         error.statusCode = 409;
         throw error;
       }
+      if (this.selectOne("SELECT 1 FROM tasks WHERE parent_task_id=? AND COALESCE(deletion_status,'')<>'deleted' LIMIT 1", [id])) {
+        throw Object.assign(new Error("该任务仍有子任务，请先逐个处理。"), { code: "TASK_DELETE_BLOCKED", statusCode: 409 });
+      }
+      const target = input.target;
+      if (target?.worktreeId) {
+        const binding = this.selectOne("SELECT * FROM task_delivery_worktrees WHERE task_id=?", [id]);
+        if (target.bindingRevision != null && (binding?.worktree_id !== target.worktreeId
+          || binding.binding_revision !== target.bindingRevision || binding.repository_id !== target.repositoryId)) {
+          throw Object.assign(new Error("删除目标绑定已变化，请重新确认。"), { code: "TASK_DELETE_TARGET_CHANGED", statusCode: 409 });
+        }
+        if (input.deleteWorktree !== false && this.selectOne(`SELECT 1 FROM worktree_integration_jobs
+          WHERE repository_id=? AND status IN ('queued','running','cancellation_requested','replanning') LIMIT 1`, [target.repositoryId])) {
+          throw Object.assign(new Error("仓库正执行 Git 作业，请稍后重试。"), { code: "ACTIVE_WORKTREE_INTEGRATION_JOB", statusCode: 409 });
+        }
+      }
       const timestamp = createdAtFromOrNow();
       const operationId = `task-deletion:${randomUUID()}`;
       this.db.run(
@@ -193,6 +208,10 @@ export class TaskDeletionRepository {
       this.db.run(`UPDATE collaboration_requests SET source_task_id=NULL WHERE source_task_id=?`, [id]);
       this.db.run(`UPDATE collaboration_requests SET target_task_id=NULL WHERE target_task_id=?`, [id]);
       this.db.run(`UPDATE project_integration_runs SET conflict_task_id=NULL WHERE conflict_task_id=?`, [id]);
+      // A retained Worktree remains in the project inventory, but no longer
+      // participates as a live Task delivery. Historical receipts stay intact.
+      this.db.run("DELETE FROM task_delivery_worktrees WHERE task_id=?", [id]);
+      if (item.parent_task_id) this.db.run("UPDATE tasks SET hierarchy_revision=hierarchy_revision+1 WHERE id=?", [item.parent_task_id]);
       // Completion, cancellation, startup, and repair records are immutable
       // audit evidence with RESTRICT references to the Task identity. A
       // user-visible deletion therefore retires the live resource while

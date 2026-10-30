@@ -18,6 +18,22 @@ export function migrateTaskCreationState({ db, ensureColumn, runDataMigrationOnc
           AND COALESCE(c.deletion_status,'')<>'deleted'
           AND (c.creation_state<>'failed' OR c.current_session_id IS NOT NULL)))
       BEGIN SELECT RAISE(ABORT, 'TASK_HIERARCHY_DEPENDENCY'); END;`));
+  // Leaf retirement is authorized by the deletion service. Keep physical
+  // deletion and all outstanding child-resource guards intact.
+  runDataMigrationOnce("task-leaf-deletion-retirement-v2", () => db.run(`
+    DROP TRIGGER IF EXISTS task_hierarchy_retire_guard;
+    CREATE TRIGGER task_hierarchy_retire_guard BEFORE UPDATE OF deletion_status ON tasks
+      WHEN NEW.deletion_status='deleted' AND (
+        (OLD.parent_task_id IS NOT NULL AND (
+          COALESCE(OLD.deletion_status,'')<>'deleting' OR NEW.current_session_id IS NOT NULL
+          OR EXISTS (SELECT 1 FROM sessions s WHERE s.task_id=OLD.id AND s.deleted_at IS NULL)
+          OR EXISTS (SELECT 1 FROM task_delivery_worktrees d WHERE d.task_id=OLD.id)))
+        OR EXISTS (SELECT 1 FROM tasks c WHERE c.parent_task_id=OLD.id
+          AND COALESCE(c.deletion_status,'')<>'deleted'
+          AND (c.creation_state<>'failed' OR c.current_session_id IS NOT NULL
+            OR EXISTS (SELECT 1 FROM task_delivery_worktrees d WHERE d.task_id=c.id)
+            OR EXISTS (SELECT 1 FROM sessions s WHERE s.task_id=c.id AND s.deleted_at IS NULL))))
+      BEGIN SELECT RAISE(ABORT, 'TASK_HIERARCHY_DEPENDENCY'); END;`));
   // Classify only proven failures from the canonical creation workflow. Do not
   // infer failure for historical manually-created Tasks or tasks with Sessions.
   runDataMigrationOnce("task-creation-state-v1", () => db.run(`UPDATE tasks SET creation_state='failed', creation_error_code=(

@@ -350,17 +350,20 @@ struct PadWorkOutline: View {
     private func workGroup(_ work: ClientWork) -> some View {
         let isExpanded = expandedWorkIDs.contains(work.id) || hasSearch
         let tasks = tasksByWork[work.id] ?? []
+        let roots = tasks.filter { $0.parentTaskId == nil }
         let visibleTaskCount = WorkOutlineTaskDisclosurePolicy.visibleCount(
-            totalCount: tasks.count,
+            totalCount: roots.count,
             showsAll: fullyExpandedWorkIDs.contains(work.id),
             isSearching: hasSearch,
             isShowingArchive: showingArchived
         )
-        let hiddenTaskCount = tasks.count - visibleTaskCount
+        let hiddenTaskCount = roots.count - visibleTaskCount
+        let visibleRootIDs = Set(roots.prefix(visibleTaskCount).map(\.id))
+        let visibleTasks = tasks.filter { visibleRootIDs.contains($0.parentTaskId ?? $0.id) }
         return VStack(alignment: .leading, spacing: 2) {
             workHeader(work, isExpanded: isExpanded)
             if isExpanded {
-                ForEach(tasks.prefix(visibleTaskCount)) { task in
+                ForEach(visibleTasks) { task in
                     let sessionID = workspace.sessionIDByTaskID[task.id]
                     hierarchyTaskRow(task, sessionID: sessionID)
                         .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
@@ -510,25 +513,25 @@ struct PadWorkOutline: View {
 
     private func hierarchyTaskRow(_ task: ClientTask, sessionID: String?) -> some View {
         HStack(spacing:4) {
-            if (task.hierarchy?.childCount ?? 0)>0 {
-                Button {
-                    if !expandedParentIDs.insert(task.id).inserted {expandedParentIDs.remove(task.id)}
-                    else { Task { await workspace.loadTaskChildren(task,connection:connection) } }
-                } label: {Image(systemName:expandedParentIDs.contains(task.id) ? "chevron.down" : "chevron.right").frame(minWidth:24,minHeight:32)}
-                .buttonStyle(.plain).accessibilityLabel("展开子任务")
-                if expandedParentIDs.contains(task.id), workspace.taskChildrenCursors[task.id] != nil {
-                    Button { Task { await workspace.loadTaskChildren(task,connection:connection,more:true) } }
-                    label: { Image(systemName:"ellipsis").frame(minWidth:24,minHeight:32) }
-                    .buttonStyle(.plain).accessibilityLabel("加载更多子任务")
-                }
-            }
             taskRow(task,sessionID:sessionID)
             if let hierarchy=task.hierarchy, hierarchy.childCount > 0 {
                 Text("\(hierarchy.completedChildCount)/\(hierarchy.childCount)")
                     .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                     .accessibilityLabel("子任务完成进度")
             }
-        }.padding(.leading,task.parentTaskId == nil ? 0 : 14)
+            if (task.hierarchy?.childCount ?? 0)>0 {
+                Button {
+                    if !expandedParentIDs.insert(task.id).inserted {expandedParentIDs.remove(task.id)}
+                    else { Task { await workspace.loadTaskChildren(task,connection:connection) } }
+                } label: {Image(systemName:expandedParentIDs.contains(task.id) ? "chevron.down" : "chevron.right").frame(minWidth:24,minHeight:32)}
+                .buttonStyle(.plain).accessibilityLabel(expandedParentIDs.contains(task.id) ? "收起子任务" : "展开子任务")
+                if expandedParentIDs.contains(task.id), workspace.taskChildrenCursors[task.id] != nil {
+                    Button { Task { await workspace.loadTaskChildren(task,connection:connection,more:true) } }
+                    label: { Image(systemName:"ellipsis").frame(minWidth:24,minHeight:32) }
+                    .buttonStyle(.plain).accessibilityLabel("加载更多子任务")
+                }
+            }
+        }.padding(.leading,task.parentTaskId == nil ? 0 : 24)
     }
     private func taskRow(_ task: ClientTask, sessionID: String?) -> some View {
         let activity = workspace.activityByTaskID[task.id]

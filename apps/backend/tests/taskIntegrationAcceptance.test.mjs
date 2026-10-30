@@ -68,6 +68,108 @@ for (const providerId of ["codex-app-server", "claude-code"]) {
   });
 }
 
+async function freezeFixtureBases(f) {
+  const tree=await git(f.mainPath,["rev-parse",`${f.baseHead}^{tree}`]);
+  for(const child of f.children) f.store.db.run("UPDATE task_delivery_worktrees SET base_commit_oid=?,base_tree_oid=? WHERE task_id=?",[f.baseHead,tree,child.id]);
+}
+
+test("empty ready children need no integration acceptance; dirty, missing-base and actual changes cannot claim exemption",async t=>{
+  const f=await fixture(t); await freezeFixtureBases(f);
+  const initial=await f.acceptance.readStatus(f.parent.id);
+  assert.equal(initial.state,"not_required"); assert.equal(initial.canPromote,true); assert.equal(initial.testedHeadOid,null);
+  await f.acceptance.assertCompletionAllowed(f.store.getTask(f.parent.id));
+  const child=f.children[0],path=f.trees.get(child.id).path;
+  await writeFile(join(path,"untracked.txt"),"private change");
+  assert.equal((await f.acceptance.readStatus(f.parent.id)).canPromote,false);
+  await rm(join(path,"untracked.txt"));
+  f.store.db.run("UPDATE task_delivery_worktrees SET base_tree_oid=NULL WHERE task_id=?",[child.id]);
+  assert.notEqual((await f.acceptance.readStatus(f.parent.id)).state,"not_required");
+  await freezeFixtureBases(f);
+  await f.commit(child,"real.txt");
+  assert.notEqual((await f.acceptance.readStatus(f.parent.id)).state,"not_required");
+  await f.integrate();
+  assert.equal((await f.acceptance.readStatus(f.parent.id)).state,"not_recorded");
+});
+
+test("empty children do not pause the reviewed graph and main remains unchanged when nothing was delivered",async t=>{
+  const f=await fixture(t); await freezeFixtureBases(f);
+  const jobs=integrationJobs(f);
+  const {job}=await startGraph(f,jobs,[f.parentTree.worktreeId]);
+  const result=await waitForTerminal(jobs,job.id);
+  assert.equal(result.status,"completed",result.error);
+  assert.equal(await git(f.mainPath,["rev-parse","HEAD"]),f.baseHead);
+  assert.equal(result.graphExecution.steps.find(step=>step.kind==="acceptance").reason,"NO_CHILD_CODE_CHANGE");
+});
+
+test("manual approval is exact-version, user-only, idempotent, never fabricates model evidence or advances main",async t=>{
+  const f=await fixture(t); await freezeFixtureBases(f);
+  await f.commit(f.children[0],"manual.txt"); await f.integrate();
+  const user={type:"user",id:"user:local-macos"};
+  const request={requestId:"manual-prepare-1",expectedHierarchyRevision:f.store.getTask(f.parent.id).hierarchy_revision,expectedBindingRevision:1};
+  await assert.rejects(()=>f.acceptance.prepareUserApproval(f.parent.id,request,{type:"session",id:"session:agent"}),{code:"DIRECT_USER_INTENT_REQUIRED"});
+  const intent=await f.acceptance.prepareUserApproval(f.parent.id,request,user);
+  assert.equal((await f.acceptance.prepareUserApproval(f.parent.id,request,user)).confirmationToken,intent.confirmationToken);
+  const input={requestId:"manual-confirm-1",snapshotId:intent.snapshotId,confirmationToken:intent.confirmationToken,acknowledgedAutomatedFailure:false};
+  await assert.rejects(()=>f.acceptance.confirmUserApproval(f.parent.id,input,{type:"user",id:"user:device:other"}),{code:"USER_APPROVAL_INTENT_INVALID"});
+  const before=f.store.getTask(f.parent.id);
+  const results=await Promise.all([f.acceptance.confirmUserApproval(f.parent.id,input,user),f.acceptance.confirmUserApproval(f.parent.id,input,user)]);
+  assert.equal(results[0].receiptId,results[1].receiptId);
+  assert.equal(results[0].approvalSource,"manual_user"); assert.equal(results[0].testedHeadOid,null);
+  assert.equal(results[0].canPromote,true);
+  assert.equal(f.store.getTask(f.parent.id).acceptance_assessment_json,before.acceptance_assessment_json);
+  assert.equal(f.store.getTask(f.parent.id).lifecycle_state,before.lifecycle_state);
+  assert.equal(await git(f.mainPath,["rev-parse","HEAD"]),f.baseHead);
+  await f.commit(f.parent,"changed-after-approval.txt");
+  assert.equal((await f.acceptance.readStatus(f.parent.id)).state,"stale");
+  assert.equal((await f.acceptance.readStatus(f.parent.id)).canPromote,false);
+});
+
+test("manual confirmation rejects a changed version, expired intent, revoked device and unacknowledged automated failure",async t=>{
+  const f=await fixture(t); await freezeFixtureBases(f);
+  await f.commit(f.children[0],"failure.txt"); await f.integrate();
+  f.store.db.run("UPDATE tasks SET acceptance_assessment_json=? WHERE id=?",[JSON.stringify({status:"failed",results:[{verdict:"failed"}]}),f.parent.id]);
+  const user={type:"user",id:"user:device:paired"};
+  const intent=await f.acceptance.prepareUserApproval(f.parent.id,{requestId:"manual-failure-1",expectedHierarchyRevision:f.store.getTask(f.parent.id).hierarchy_revision,expectedBindingRevision:1},user);
+  const input={requestId:"manual-failure-confirm",snapshotId:intent.snapshotId,confirmationToken:intent.confirmationToken};
+  await assert.rejects(()=>f.acceptance.confirmUserApproval(f.parent.id,input,user),{code:"AUTOMATED_FAILURE_ACKNOWLEDGEMENT_REQUIRED"});
+  await assert.rejects(()=>f.acceptance.confirmUserApproval(f.parent.id,{...input,acknowledgedAutomatedFailure:true},user,{revalidate:()=>{throw Object.assign(new Error("revoked"),{code:"DEVICE_REVOKED"});}}),{code:"DEVICE_REVOKED"});
+  await f.commit(f.parent,"changed-before-confirm.txt");
+  await assert.rejects(()=>f.acceptance.confirmUserApproval(f.parent.id,{...input,acknowledgedAutomatedFailure:true},user),{code:"INTEGRATION_ACCEPTANCE_STALE"});
+  f.acceptance.now=()=>new Date("2099-01-01T00:00:00.000Z");
+  await assert.rejects(()=>f.acceptance.confirmUserApproval(f.parent.id,{...input,acknowledgedAutomatedFailure:true},user),{code:"USER_APPROVAL_INTENT_EXPIRED"});
+});
+
+test("history-only commits preserve Git history without inventing code verification",async t=>{
+  const f=await fixture(t); await freezeFixtureBases(f);
+  const path=f.trees.get(f.children[0].id).path;
+  await git(path,["commit","--allow-empty","-m","History only"]);
+  assert.equal((await f.hierarchy.inspectChildDeliveryChanges(f.children[0].id)).changeState,"history_only");
+  assert.equal((await f.acceptance.readStatus(f.parent.id)).canPromote,false);
+  await f.integrate();
+  const state=await f.acceptance.readStatus(f.parent.id);
+  assert.equal(state.state,"not_required"); assert.equal(state.canPromote,true);
+});
+
+test("manual approval releases an existing paused integration only after an explicit retry",{timeout:60000},async t=>{
+  const f=await fixture(t); await freezeFixtureBases(f);
+  await f.commit(f.children[0],"integration-manual.txt");
+  const jobs=integrationJobs(f),{job}=await startGraph(f,jobs,[f.parentTree.worktreeId]);
+  const paused=await waitForTerminal(jobs,job.id);
+  assert.equal(paused.phase,"awaiting_integration_acceptance");
+  const user={type:"user",id:"user:local-macos"};
+  const prepared=await f.acceptance.prepareUserApproval(f.parent.id,{requestId:"manual-paused-prepare",
+    expectedHierarchyRevision:f.store.getTask(f.parent.id).hierarchy_revision,expectedBindingRevision:1},user);
+  const approved=await f.acceptance.confirmUserApproval(f.parent.id,{requestId:"manual-paused-confirm",snapshotId:prepared.snapshotId,
+    confirmationToken:prepared.confirmationToken,acknowledgedAutomatedFailure:false},user);
+  assert.equal(approved.canPromote,true);
+  assert.equal(jobs.get(job.id).status,"paused");
+  assert.equal(await git(f.mainPath,["rev-parse","HEAD"]),f.baseHead);
+  jobs.retry(job.id);
+  const finished=await waitForTerminal(jobs,job.id);
+  assert.equal(finished.status,"completed",finished.error);
+  assert.equal(await git(f.mainPath,["rev-parse","HEAD"]),prepared.parentHeadOid);
+});
+
 test("messages admitted behind an executing integration do not prevent its next step", { timeout: 20000 }, async t => {
   const f = await fixture(t);
   const first = await addStandalone(f, "queued-first"), second = await addStandalone(f, "queued-second");

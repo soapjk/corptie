@@ -85,15 +85,18 @@ extension UnifiedConsoleView {
                 .consoleWorkOutlineGroupCard()
 
                 ForEach(orderedOutlineWorks) { work in
-                    let tasks = tasksByWorkID[work.id] ?? []
+                    let tasks = hierarchyTasks(tasksByWorkID[work.id] ?? [])
+                    let roots = tasks.filter { $0.parentTaskId == nil }
                     let queryIsActive = !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     let visibleTaskCount = WorkOutlineTaskDisclosurePolicy.visibleCount(
-                        totalCount: tasks.count,
+                        totalCount: roots.count,
                         showsAll: outlineFullyExpandedWorkIDs.contains(work.id),
                         isSearching: queryIsActive,
                         isShowingArchive: isShowingWorkerArchive
                     )
-                    let hiddenTaskCount = tasks.count - visibleTaskCount
+                    let hiddenTaskCount = roots.count - visibleTaskCount
+                    let visibleRootIDs = Set(roots.prefix(visibleTaskCount).map(\.id))
+                    let visibleTasks = tasks.filter { visibleRootIDs.contains($0.parentTaskId ?? $0.id) }
 
                     DisclosureGroup(isExpanded: outlineWorkExpandedBinding(work.id)) {
                         VStack(alignment: .leading, spacing: 2) {
@@ -103,8 +106,8 @@ extension UnifiedConsoleView {
                                 let rows = (archivedRowsByWorkID[work.id] ?? []).filter {
                                     !taskIDs.contains($0.session.taskId ?? "")
                                 }
-                                ForEach(archivedTasks) { task in
-                                    taskRow(task)
+                                ForEach(hierarchyTasks(archivedTasks)) { task in
+                                    hierarchyTaskRow(task)
                                         .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
                                         .background(outlineChildSelectionBackground(selectedTaskId == task.id))
                                 }
@@ -120,8 +123,8 @@ extension UnifiedConsoleView {
                                     }
                                 }
                             } else {
-                                ForEach(tasks.prefix(visibleTaskCount)) { task in
-                                    taskRow(task)
+                                ForEach(visibleTasks) { task in
+                                    hierarchyTaskRow(task)
                                         .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
                                         .background(outlineChildSelectionBackground(
                                             selectedTaskId == task.id

@@ -12,12 +12,110 @@ import {
   upgradeConflictResolutionWritableRoots
 } from "../src/runtime/conflictResolutionWorkspacePermissions.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
+import { TaskDeletionService } from "../src/application/taskDeletionService.mjs";
+import { createTaskWorktreeOperations } from "../src/application/taskWorktreeOperations.mjs";
 import {
   createGitWorkspaceSnapshot,
   inspectGitWorkspace
 } from "../src/utils/gitWorktreeInventory.mjs";
 
 const execFileAsync = promisify(execFile);
+
+test("child deletion uses parent delivery and safely retries partial Git cleanup without touching parent or main", async () => {
+  for (const mode of ["empty", "delivered", "force", "branch_retry", "changed", "locked"]) {
+    const f = await createFixture(`child-delete-${mode}`);
+    try {
+      const manager = new GitWorkspaceManager({ store: f.store, transitions: {} });
+      const agent = f.store.createAgent({ name: "Delete_worker", role: "independentContributor" });
+      const work = f.store.createWork({ name: "Delete_children", workspaceId: f.store.getGitRepository(f.repositoryId).workspaceId,
+        contributorAgentIds: [agent.agentId] });
+      const parent = f.store.createTask({ id: "task:parent", workId: work.id, title: "Parent", mainAgentId: agent.agentId });
+      const parentPath = join(f.directory, "parent");
+      await git(["worktree", "add", "-b", "parent-development", parentPath], f.repository);
+      await writeFile(join(parentPath, "parent.txt"), "parent feature\n");
+      await git(["add", "parent.txt"], parentPath);
+      await git(["commit", "-m", "parent feature"], parentPath);
+      const child = f.store.createTask({ id: "task:child", workId: work.id, title: "Child", parentTaskId: parent.id }, {},
+        { expectedParentResourceVersion: f.store.getTask(parent.id).resource_version });
+      const childPath = join(f.directory, "child");
+      await git(["worktree", "add", "-b", "child-deletion", childPath, "parent-development"], f.repository);
+      const base = (await gitOutput(["rev-parse", "HEAD"], childPath)).trim();
+      if (["delivered", "force", "branch_retry"].includes(mode)) {
+        await writeFile(join(childPath, "child.txt"), "child feature\n");
+        await git(["add", "child.txt"], childPath);
+        await git(["commit", "-m", "child feature"], childPath);
+      }
+      if (mode === "delivered") await git(["merge", "--ff-only", "child-deletion"], parentPath);
+      if (mode === "force") await writeFile(join(childPath, "untracked.txt"), "discard explicitly\n");
+      f.store.upsertGitWorkspaceSnapshot(await createGitWorkspaceSnapshot(f.repository));
+      const trees = f.store.listGitWorktrees(f.repositoryId);
+      const parentTree = trees.find(t => t.branchName === "parent-development"), childTree = trees.find(t => t.branchName === "child-deletion");
+      for (const [task, tree, baseTree] of [[parent, parentTree, null], [child, childTree, parentTree]]) {
+        f.store.db.run(`INSERT INTO task_delivery_worktrees
+          (task_id,repository_id,worktree_id,startup_operation_id,base_worktree_id,base_commit_oid,created_at,updated_at)
+          VALUES (?,?,?,'test:startup',?,?,?,?)`, [task.id, f.repositoryId, tree.worktreeId, baseTree?.worktreeId ?? null,
+          baseTree ? base : null, "now", "now"]);
+      }
+      const ops = createTaskWorktreeOperations({ store: f.store, gitWorkspaces: manager,
+        projectApplicationService: { requireProject: async () => ({ mainPath: f.repository }) }, emitEvent() {} });
+      const deletion = new TaskDeletionService({ store: f.store, authorize: ({ actor }) => actor?.type === "user",
+        inspectWorktree: ops.inspectTaskWorktree, removeWorktree: ops.removeTaskDeletionWorktree,
+        deleteSession: async () => assert.fail("No Sessions in this fixture"), handleArtifacts: async () => ({}) });
+      const actor = { type: "user", id: "user:paired-device:fixture" };
+      const plan = await deletion.inspect(child.id, actor);
+      assert.equal(plan.risks.some(r => r.code === "NOT_DELIVERED_TO_PARENT"), ["force", "branch_retry"].includes(mode));
+      assert.equal(plan.risks.some(r => r.code === "NOT_MERGED_INTO_MAIN"), false);
+      const parentHead = (await gitOutput(["rev-parse", "HEAD"], parentPath)).trim();
+      const mainHead = (await gitOutput(["rev-parse", "HEAD"], f.repository)).trim();
+      const originalRun = manager.runGit.bind(manager);
+      let injected = false;
+      manager.runGit = async (path, args, ...rest) => {
+        if (mode === "branch_retry" && args[0] === "branch" && !injected) {
+          injected = true;
+          throw Object.assign(new Error("simulated ref lock"), { code: "TEST_REF_LOCK" });
+        }
+        return originalRun(path, args, ...rest);
+      };
+      const originalInspect = deletion.inspectWorktree;
+      if (mode === "changed") {
+        let inspections = 0;
+        deletion.inspectWorktree = async id => {
+          const value = await originalInspect(id);
+          if (++inspections === 1) await git(["commit", "--allow-empty", "-m", "changed after preflight"], childPath);
+          return value;
+        };
+      }
+      if (mode === "locked") await git(["worktree", "lock", childPath], f.repository);
+      const input = { mode: plan.risks.length ? "force" : "safe", acknowledgeDataLoss: true,
+        confirmedBranchName: "child-deletion", idempotencyKey: `delete-${mode}` };
+      let accepted = await deletion.request(child.id, input, actor);
+      await deletion.inFlight.get(accepted.operation.operationId);
+      let result = deletion.getOperation(accepted.operation.operationId);
+      assert.equal(result.input.actor.id, actor.id);
+      if (["changed", "locked"].includes(mode)) {
+        assert.equal(result.state, "failed");
+        assert.ok(f.store.getTask(child.id));
+        assert.equal(await readFile(join(childPath, "parent.txt"), "utf8"), "parent feature\n");
+      } else {
+        if (mode === "branch_retry") {
+          assert.equal(result.state, "failed");
+          assert.equal(result.result.cleanup.worktreeRemoved, true);
+          accepted = await deletion.request(child.id, { ...input, idempotencyKey: "retry-new-confirmation" }, actor);
+          await deletion.inFlight.get(accepted.operation.operationId);
+          result = deletion.getOperation(accepted.operation.operationId);
+        }
+        assert.equal(result.state, "succeeded", result.errorMessage);
+        assert.equal(f.store.getTask(child.id), null);
+        assert.equal(f.store.getTaskDeliveryBinding(child.id), null);
+        assert.equal(await manager.gitSucceeds(f.repository, ["show-ref", "--verify", "refs/heads/child-deletion"]), false);
+        assert.equal((await deletion.inspect(parent.id, actor)).blockers.some(b => b.code === "TASK_HAS_CHILDREN"), false);
+      }
+      assert.equal((await gitOutput(["rev-parse", "HEAD"], parentPath)).trim(), parentHead);
+      assert.equal((await gitOutput(["rev-parse", "HEAD"], f.repository)).trim(), mainHead);
+      assert.deepEqual(f.store.selectAll("PRAGMA foreign_key_check"), []);
+    } finally { await f.close(); }
+  }
+});
 
 test("inspectGitWorkspace reads one atomic Git identity snapshot", async () => {
   const calls = [];

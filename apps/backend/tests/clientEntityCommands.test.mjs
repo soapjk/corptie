@@ -133,7 +133,7 @@ test("deletion plan is inspected as the paired-device actor and never exposes ho
     const api = f.make();
     const plan = await api.taskDeletionPlan(tasks, f.task.id);
     assert.deepEqual(f.calls, [["inspectTaskDeletion", f.task.id, { type: "user", id: "user:paired-device:device:test" }]]);
-    assert.deepEqual(plan, { schemaVersion: 1, taskId: f.task.id, status: "risky", associatedSessionCount: 1,
+    assert.deepEqual(plan, { schemaVersion: 1, taskId: f.task.id, parentTaskId: null, status: "risky", associatedSessionCount: 1,
       artifacts: [{ id: "artifact:a", title: "Plan" }],
       worktree: { branchName: "task/abc", dirty: true, mergedIntoMain: false, aheadOfMain: 2 },
       risks: [{ code: "DIRTY_WORKTREE", message: "uncommitted changes", files: ["a.swift", "/Volumes/PRIVATE/b.swift"], commitCount: 2 }], blockers: [] });
