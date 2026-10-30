@@ -1059,6 +1059,25 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(secondSeparator.alignment, .center)
     }
 
+    func testTimelineInputCallbacksShowAndHideThumbWithoutChangingRows() async throws {
+        let harness = makeHarness(followsLatest: false, useSharedTextCards: false)
+        harness.coordinator.apply(rows: (0..<30).map { row(id: "fade-\($0)", text: "Message \($0)") })
+        await settleMainQueue()
+        let scroll = try XCTUnwrap(harness.scrollView as? FirstLayoutRestoringScrollView)
+        let thumb = try XCTUnwrap(scroll.verticalScroller as? TimelineIntentScroller)
+        let cell = try XCTUnwrap(harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitChatNativeTextCell)
+        let configurations = cell.contentConfigurationCount
+        let position = scroll.contentView.bounds.origin
+        XCTAssertEqual(thumb.alphaValue, 0)
+        scroll.onUserScrollWillBegin?()
+        XCTAssertEqual(thumb.alphaValue, 1)
+        scroll.onUserScrollDidEnd?()
+        try await Task.sleep(for: .milliseconds(1150))
+        XCTAssertEqual(thumb.alphaValue, 0)
+        XCTAssertEqual(cell.contentConfigurationCount, configurations)
+        XCTAssertEqual(scroll.contentView.bounds.origin, position)
+    }
+
     func testSingleColumnUsesViewportWidthWithoutAnUnusedScrollerGutter() async {
         let harness = makeHarness(followsLatest: true)
         harness.coordinator.apply(rows: [row(id: "message", text: "Ready")])

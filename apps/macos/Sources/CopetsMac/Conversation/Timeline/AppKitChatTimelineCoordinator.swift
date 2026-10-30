@@ -1180,6 +1180,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     }
 
     func userScrollEventWillBegin() {
+        (scrollView?.verticalScroller as? TimelineIntentScroller)?.beginScrollInteraction()
         // Complete a ready first-frame restore before granting the gesture
         // viewport ownership. If geometry is not ready, userDidBeginScrolling
         // leaves the restore pending for the next layout pass.
@@ -1189,6 +1190,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     }
 
     func userScrollEventDidEnd() {
+        (scrollView?.verticalScroller as? TimelineIntentScroller)?.endScrollInteraction()
         // A wheel/trackpad gesture at the bottom can be fully clamped by
         // the scroll boundary. AppKit then emits no bounds-change event,
         // so `userDidBeginScrolling()` would otherwise leave follow mode
