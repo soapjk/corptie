@@ -186,7 +186,7 @@ struct MacSharedMessageTextCard: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let timeSeparatorText = row.timeSeparatorText {
+            if layout.timeSeparatorHeight > 0, let timeSeparatorText = row.timeSeparatorText {
                 Text(timeSeparatorText)
                     .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(.secondary)
@@ -576,8 +576,8 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         self.skin = skin
         guard let row, let measuredWidth else { return }
         let typography = row.readingTypography(skin.typography(for: row.nativeStyle == .user ? .user : .assistant))
-        if measuredLayout?.typography != typography {
-            measuredLayout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: measuredWidth, typography: typography)
+        if measuredLayout?.typography != typography || measuredLayout?.timeSeparatorHeight != (skin.showsTimelineTimeSeparators ? row.timeSeparatorHeight : 0) {
+            measuredLayout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: measuredWidth, typography: typography, skin: skin)
             updateHost()
         } else { updateHost(needsLayout: false) }
     }
@@ -605,7 +605,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         elapsedSummary.text = nil
         self.onToggleExpansion = onToggleExpansion
         self.onAction = onAction
-        measuredLayout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth, typography: skin.typography(for: row.nativeStyle == .user ? .user : .assistant))
+        measuredLayout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth, typography: skin.typography(for: row.nativeStyle == .user ? .user : .assistant), skin: skin)
         measuredWidth = availableWidth
         contentConfigurationCount += 1
         configureContextMenu(for: row)
@@ -617,9 +617,10 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         guard self.row?.id == row.id, self.row?.contentRevision == row.contentRevision,
               self.row?.replyIdentity == row.replyIdentity,
               representedImageGeometries == row.imageGeometries else { return false }
-        guard measuredWidth != availableWidth || measuredLayout?.typography != row.readingTypography(skin.typography(for: row.nativeStyle == .user ? .user : .assistant)) else { return true }
+        guard measuredWidth != availableWidth || measuredLayout?.typography != row.readingTypography(skin.typography(for: row.nativeStyle == .user ? .user : .assistant))
+            || measuredLayout?.timeSeparatorHeight != (skin.showsTimelineTimeSeparators ? row.timeSeparatorHeight : 0) else { return true }
         measuredWidth = availableWidth
-        measuredLayout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth, typography: skin.typography(for: row.nativeStyle == .user ? .user : .assistant))
+        measuredLayout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth, typography: skin.typography(for: row.nativeStyle == .user ? .user : .assistant), skin: skin)
         widthLayoutUpdateCount += 1
         ChatPerformanceRecorder.shared.increment(.appKitRowWidthUpdates)
         updateHost()
@@ -682,7 +683,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         if let measuredLayout, let row {
             let size = NSSize(width: measuredLayout.cardWidth,
                               height: measuredLayout.cardHeight)
-            let topInset = row.timeSeparatorHeight + row.replyIdentityHeight + measuredLayout.typography.rowInset
+            let topInset = measuredLayout.timeSeparatorHeight + row.replyIdentityHeight + measuredLayout.typography.rowInset
             messageGlow?.frame = NSRect(x: bounds.width - size.width - ChatBubbleWidthPolicy.userTrailingInset,
                 y: isFlipped ? topInset : bounds.height - topInset - size.height,
                 width: size.width, height: size.height)

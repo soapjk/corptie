@@ -315,7 +315,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         onToggleExpansion: @escaping (String) -> Void,
         onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in }
     ) {
-        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth, typography: skin.typography(for: row.nativeStyle == .user ? .user : .assistant))
+        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth, typography: skin.typography(for: row.nativeStyle == .user ? .user : .assistant), skin: skin)
         // Retire the old topology before resizing a reused image canvas. Leaving
         // its fixed width/height attached while shrinking the bubble generates
         // intermediate Auto Layout conflicts before the new topology is installed.
@@ -410,8 +410,8 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         messageActionBar.isHidden = !showsMessageStatus
         messageActionBar.alphaValue = 1
         timeSeparatorLabel.stringValue = row.timeSeparatorText ?? ""
-        timeSeparatorLabel.isHidden = row.timeSeparatorText == nil
-        cardTopConstraint.constant = row.timeSeparatorHeight + row.replyIdentityHeight + layout.typography.rowInset
+        timeSeparatorLabel.isHidden = layout.timeSeparatorHeight == 0
+        cardTopConstraint.constant = layout.timeSeparatorHeight + row.replyIdentityHeight + layout.typography.rowInset
         cardLeadingConstraint.isActive = row.nativeStyle != .user
         cardTrailingConstraint.isActive = row.nativeStyle == .user
         let hasProcess = row.processCount != nil
@@ -580,7 +580,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
               representedContentRevision == row.contentRevision,
               representedReplyIdentity == row.replyIdentity,
               representedImageGeometries == row.imageGeometries else { return false }
-        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth, typography: skin.typography(for: row.nativeStyle == .user ? .user : .assistant))
+        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth, typography: skin.typography(for: row.nativeStyle == .user ? .user : .assistant), skin: skin)
         renderedWidth = availableWidth
         if measuredTypography != layout.typography {
             let selection = label.selectedRanges
@@ -597,7 +597,8 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     }
 
     private func apply(layout: NativeTimelineLayoutCache.Layout) {
-        cardTopConstraint.constant = (renderedRow?.timeSeparatorHeight ?? 0) + layout.typography.rowInset
+        timeSeparatorLabel.isHidden = layout.timeSeparatorHeight == 0
+        cardTopConstraint.constant = layout.timeSeparatorHeight + (renderedRow?.replyIdentityHeight ?? 0) + layout.typography.rowInset
         cardBottomStandardConstraint.constant = -layout.typography.rowInset
         cardBottomWithMessageActionsConstraint.constant = -26 - layout.typography.rowInset
         labelHeightConstraint.constant = layout.textHeight

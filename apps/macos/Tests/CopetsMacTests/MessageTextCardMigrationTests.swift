@@ -82,6 +82,53 @@ final class MessageTextCardMigrationTests: XCTestCase {
         }
     }
 
+    func testCodexHidesGapSeparatorButKeepsReplyTimestampAcrossSkinSwitches() throws {
+        _ = NSApplication.shared
+        var model = row("Reply with a timestamp", revision: 1)
+        model.timeSeparatorText = "今天 12:34"
+        model.showsReplyActions = true
+        func descendant(_ view: NSView, id: String) -> NSView? {
+            if view.identifier?.rawValue == id { return view }
+            return view.subviews.lazy.compactMap { descendant($0, id: id) }.first
+        }
+        for shared in [false, true] {
+            let cell: NSTableCellView & AppKitChatRowRendering = shared
+                ? AppKitSharedMessageTextCell(identifier: .init("separator-shared"))
+                : AppKitChatNativeTextCell(identifier: .init("separator-native"))
+            let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 480, height: 240),
+                styleMask: [.borderless], backing: .buffered, defer: false)
+            window.contentView = cell
+            cell.setContent(model, availableWidth: 480, baseDirectory: nil,
+                onToggleExpansion: { _ in }, onAction: { _ in })
+            for skin in [ConversationSkin.classic, .codexFlat, .classic] {
+                cell.updateAppearance(skin: skin)
+                cell.layoutSubtreeIfNeeded()
+                RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.01))
+                let typography = skin.typography(for: .assistant)
+                let layout = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 480,
+                    typography: typography, skin: skin)
+                var withoutSeparator = model
+                withoutSeparator.timeSeparatorText = nil
+                let plain = NativeTimelineLayoutCache.shared.layout(for: withoutSeparator, columnWidth: 480,
+                    typography: typography, skin: skin)
+                let expected: CGFloat = skin == .classic ? 28 : 0
+                XCTAssertEqual(layout.timeSeparatorHeight, expected)
+                XCTAssertEqual(layout.rowHeight - plain.rowHeight, expected)
+                if let label = descendant(cell, id: "chat.timeline.time-separator") {
+                    XCTAssertEqual(label.isHidden, skin == .codexFlat)
+                }
+                if let host = cell.subviews.compactMap({ $0 as? NSHostingView<MacSharedMessageTextCard> }).first {
+                    XCTAssertEqual(host.rootView.layout.timeSeparatorHeight, expected)
+                }
+                let timestamp = try XCTUnwrap(descendant(cell, id: "chat.timeline.reply-actions.timestamp") as? NSButton)
+                XCTAssertFalse(timestamp.isHidden)
+                XCTAssertEqual(timestamp.title, "12:34")
+            }
+            window.contentView = nil
+        }
+        XCTAssertEqual(model.timeSeparatorText, "今天 12:34", "Presentation must not mutate the original row")
+    }
+
     func testSkinSwitchPreservesHostedTextIdentitySelectionAndReflowsTypography() throws {
         _ = NSApplication.shared
         let model = row("Shared selectable text", revision: 1)
