@@ -6,6 +6,50 @@ import Testing
 
 @MainActor
 struct ConsoleOverlayScrollerTests {
+    @Test func actualOverlayLayerOwnsTheWholeCapsuleOutsideTheUnchangedViewport() throws {
+        let table = AppKitChatTimelineView.makeTableView()
+        let scroll = try #require(AppKitChatTimelineView.makeScrollView(tableView: table) as? FirstLayoutRestoringScrollView)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 427, height: 300),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = scroll
+        defer { window.orderOut(nil) }
+        scroll.trailingScrollerExtension = 7
+        let document = try #require(scroll.documentView)
+        document.frame = NSRect(x: 0, y: 0, width: 420, height: 2400)
+        let thumb = try #require(scroll.verticalScroller as? TimelineIntentScroller)
+        for width: CGFloat in [427, 287, 807] {
+            window.setContentSize(NSSize(width: width, height: 300))
+            window.layoutIfNeeded()
+            scroll.tile()
+            scroll.reflectScrolledClipView(scroll.contentView)
+            thumb.beginScrollInteraction()
+            for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+                thumb.appearance = NSAppearance(named: appearance)
+                for position in [0.0, 0.25, 0.8, 1.0] {
+                    thumb.doubleValue = position
+                    thumb.displayIfNeeded()
+                    thumb.layer?.displayIfNeeded()
+                    #expect(scroll.contentView.frame.width == width - 7)
+                    let knob = thumb.visibleKnobLayer
+                    #expect(knob.superlayer === thumb.layer)
+                    #expect(thumb.layer?.sublayers?.count == 1)
+                    #expect(knob.frame == thumb.knobDrawingRect)
+                    #expect(knob.frame.width == 9)
+                    #expect(knob.cornerRadius == 4.5)
+                    #expect(thumb.bounds.contains(knob.frame))
+                    let visible = scroll.convert(knob.frame, from: thumb)
+                    let cardRight = scroll.contentView.frame.maxX - ChatBubbleWidthPolicy.userTrailingInset
+                    #expect(visible.minX >= cardRight)
+                    #expect(visible.maxX <= scroll.bounds.maxX)
+                    let transparentPoint = NSPoint(x: thumb.frame.minX + 0.5, y: thumb.frame.midY)
+                    #expect(thumb.hitTest(transparentPoint) == nil)
+                    let center = thumb.convert(NSPoint(x: knob.frame.midX, y: knob.frame.midY), to: nil)
+                    #expect(thumb.testPart(center) == .knob)
+                }
+            }
+        }
+    }
+
     @Test func timelineTrackClicksAreIgnoredWithoutChangingReaderIntent() throws {
         let scroller = TimelineIntentScroller(frame: NSRect(x: 0, y: 0, width: 16, height: 400))
         let window = NSWindow(contentRect: scroller.frame, styleMask: [.borderless], backing: .buffered, defer: false)
@@ -154,7 +198,7 @@ struct ConsoleOverlayScrollerTests {
                 #expect(maximumAlpha > 0.4 && maximumAlpha < 0.5)
                 // At most one anti-aliased edge pixel per side at 1x.
                 #expect(paintedColumns.count == 9)
-                #expect(paintedColumns.max() == Int(bounds.maxX) - 2)
+                #expect(paintedColumns.max() == Int(bounds.maxX) - 1)
                 let visibleThumbPoint = scroller.convert(NSPoint(x: bounds.maxX - 2, y: knob.midY), to: nil)
                 #expect(scroller.testPart(visibleThumbPoint) == .knob)
                 #expect(paintedRows.count <= Int(ceil(knob.height)) + 2)

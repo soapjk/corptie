@@ -585,6 +585,10 @@ struct SessionConversationSurface: View {
         let rows = cachedSessionId == sessionId && cachedAppKitRows.count == displayEntries.count
             ? cachedAppKitRows
             : preparedAppKitRows(displayEntries, cache: cachedDisplayProjection)
+        // Standard pages have 1pt surface padding and a 6pt page/Detail gap.
+        // Borrow that space without changing the message column's width.
+        let scrollerExtension: CGFloat = presentation == .standard && !compactComposer
+            ? 1 + min(MainWindowPageLayoutMetrics.outerPadding, MainWindowPageLayoutMetrics.columnSpacing) : 0
         return VStack(alignment: .leading, spacing: 6) {
             AppKitChatTimelineView(
                 sessionID: sessionId,
@@ -618,8 +622,10 @@ struct SessionConversationSurface: View {
                 historyRequestEpoch: historyRequestEpoch,
                 topClearance: max(headerClearance, topChromeClearance),
                 bottomClearance: composerClearance,
-                reservesVerticalScrollerGutter: !compactComposer
+                reservesVerticalScrollerGutter: !compactComposer,
+                trailingScrollerExtension: scrollerExtension
             )
+            .padding(.trailing, -scrollerExtension)
             .sheet(item: $pendingFork) { selection in
                 SessionForkSheet(selection: selection, backendClient: backendClient)
             }

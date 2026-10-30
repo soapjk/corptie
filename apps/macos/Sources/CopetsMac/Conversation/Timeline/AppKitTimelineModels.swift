@@ -256,6 +256,17 @@ extension AppKitChatTimelineRow {
     }
 }
 
+/// Shared leading coordinates for the native and hosted macOS reply renderers.
+enum ReplyLeadingLayout {
+    static let contentLeading: CGFloat = 12
+    static let cardLeading: CGFloat = 2
+    static var processLeadingAdjustment: CGFloat { contentLeading - cardLeading }
+
+    static func cardLeading(for style: AppKitChatTimelineRow.NativeStyle) -> CGFloat {
+        style == .process ? contentLeading : cardLeading
+    }
+}
+
 /// AppKit measurement on top of the shared `MessageBubbleWidthPolicy` clamp.
 @MainActor
 enum ChatBubbleWidthPolicy {
@@ -334,7 +345,7 @@ enum ChatBubbleWidthPolicy {
                 secondaryWidth: secondaryWidth,
                 progressLabelWidth: progressWidth,
                 expanded: row.isExpanded,
-                laneWidth: availableWidth
+                laneWidth: availableWidth - ReplyLeadingLayout.processLeadingAdjustment
             )
         }
         if row.collaborationRoute != nil {

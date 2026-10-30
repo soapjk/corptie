@@ -340,7 +340,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
                 header.translatesAutoresizingMaskIntoConstraints = false
                 addSubview(header)
                 NSLayoutConstraint.activate([
-                    header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+                    header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: ReplyLeadingLayout.contentLeading),
                     header.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
                     header.bottomAnchor.constraint(equalTo: cardView.topAnchor, constant: -ReplyIdentityLayout.bottomSpacing),
                     header.heightAnchor.constraint(equalToConstant: ReplyIdentityLayout.headerHeight)
@@ -412,6 +412,8 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         timeSeparatorLabel.stringValue = row.timeSeparatorText ?? ""
         timeSeparatorLabel.isHidden = layout.timeSeparatorHeight == 0
         cardTopConstraint.constant = layout.timeSeparatorHeight + row.replyIdentityHeight + layout.typography.rowInset
+        cardLeadingConstraint.constant = ReplyLeadingLayout.cardLeading(for: row.nativeStyle)
+        messageActionBarLeadingConstraint.constant = MessageCardMetrics.contentInset - ReplyActionBar.leadingImageInset
         cardLeadingConstraint.isActive = row.nativeStyle != .user
         cardTrailingConstraint.isActive = row.nativeStyle == .user
         let hasProcess = row.processCount != nil

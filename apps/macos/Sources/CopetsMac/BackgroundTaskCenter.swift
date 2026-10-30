@@ -191,79 +191,99 @@ struct BackgroundTaskStatusBar: View {
     static let actionHitSize = CGSize(width: 24, height: 22)
 
     @ObservedObject var center: BackgroundTaskCenter
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        if let record = featuredRecord {
-            HStack(spacing: 4) {
-                HStack(spacing: 5) {
-                    statusIcon(record.state)
-                        .frame(width: 14, height: 14)
+        ZStack(alignment: .topTrailing) {
+            if let record = featuredRecord {
+                taskCard(record)
+                    .id(record.id)
+                    .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        // Keep animation inside the notification leaf; task updates never animate the page.
+        .animation(.easeOut(duration: reduceMotion ? 0.12 : 0.22), value: featuredRecord?.id)
+    }
 
-                    Text(record.title)
-                        .font(.caption.weight(.medium))
+    private func taskCard(_ record: BackgroundTaskRecord) -> some View {
+        HStack(spacing: 4) {
+            HStack(spacing: 5) {
+                statusIcon(record.state)
+                    .frame(width: 14, height: 14)
+
+                Text(record.title)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .layoutPriority(1)
+
+                if center.records.count > 1 {
+                    Text("+\(center.records.count - 1)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
-                        .layoutPriority(1)
-
-                    if center.records.count > 1 {
-                        Text("+\(center.records.count - 1)")
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
-                    }
-                }
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(record.title)
-                .accessibilityValue(record.detail)
-
-                if record.state == .failed {
-                    Button {
-                        center.retry(id: record.id)
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 11, weight: .medium))
-                            .frame(
-                                width: Self.actionHitSize.width,
-                                height: Self.actionHitSize.height
-                            )
-                            .background(
-                                Color.primary.opacity(0.055),
-                                in: RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            )
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help(L10n("重试"))
-                    .accessibilityLabel(L10n("重试"))
-                }
-
-                if record.state != .running {
-                    Button {
-                        center.dismiss(id: record.id)
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 9, weight: .semibold))
-                            .frame(
-                                width: Self.actionHitSize.width,
-                                height: Self.actionHitSize.height
-                            )
-                            .background(
-                                Color.primary.opacity(0.055),
-                                in: Circle()
-                            )
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help(L10n("关闭"))
-                    .accessibilityLabel(L10n("关闭"))
                 }
             }
-            .fixedSize(horizontal: true, vertical: false)
-            .help("\(record.title)\n\(record.detail)")
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("background-task.\(record.id)")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(record.title)
+            .accessibilityValue(record.detail)
+
+            if record.state == .failed {
+                Button {
+                    center.retry(id: record.id)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11, weight: .medium))
+                        .frame(
+                            width: Self.actionHitSize.width,
+                            height: Self.actionHitSize.height
+                        )
+                        .background(
+                            Color.primary.opacity(0.055),
+                            in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(L10n("重试"))
+                .accessibilityLabel(L10n("重试"))
+            }
+
+            if record.state != .running {
+                Button {
+                    center.dismiss(id: record.id)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .semibold))
+                        .frame(
+                            width: Self.actionHitSize.width,
+                            height: Self.actionHitSize.height
+                        )
+                        .background(
+                            Color.primary.opacity(0.055),
+                            in: Circle()
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(L10n("关闭"))
+                .accessibilityLabel(L10n("关闭"))
+            }
         }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thickMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5)
+                .allowsHitTesting(false)
+        }
+        .shadow(color: .black.opacity(0.14), radius: 6, x: 0, y: 2)
+        .help("\(record.title)\n\(record.detail)")
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("background-task.\(record.id)")
     }
 
     /// Keep active work visible first, then failures that need attention, then
