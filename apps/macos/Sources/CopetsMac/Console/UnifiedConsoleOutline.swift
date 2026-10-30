@@ -163,7 +163,7 @@ extension UnifiedConsoleView {
         ) {
             Button {
                 if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation) {
+                    withAnimation(reduceOutlineMotion ? nil : ConsoleWorkOutlineMetrics.disclosureAnimation) {
                         outlineExpansionPreferences.toggleAssistant()
                     }
                 }
@@ -268,7 +268,7 @@ extension UnifiedConsoleView {
             hasUnreadChat: workChat.map(isSessionUnread) ?? false,
             toggleExpanded: {
                 guard searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-                withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation) {
+                withAnimation(reduceOutlineMotion ? nil : ConsoleWorkOutlineMetrics.disclosureAnimation) {
                     if outlineWorkIsExpanded(work.id) {
                         outlineFullyExpandedWorkIDs.remove(work.id)
                     }

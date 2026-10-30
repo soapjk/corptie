@@ -76,6 +76,7 @@ struct UnifiedConsoleView: View {
         "sessions.workerGroupingMode",
         store: CorptieAppEnvironment.userDefaults
     ) var workerGroupingModeRawValue = WorkerSessionGroupingMode.work.rawValue
+    @Environment(\.accessibilityReduceMotion) var reduceOutlineMotion
     @EnvironmentObject var router: AppTabRouter
     private static let usesResidentDetailHosts = CorptieAppEnvironment.isDevelopment
         && ProcessInfo.processInfo.environment["CORPTIE_DETAIL_RESIDENT_HOSTS"] == "1"

@@ -108,16 +108,55 @@ struct ConsoleScheduledWakeIcon: View {
     }
 }
 
+/// Measure the full child stack once for a width, then reveal its height.
+/// The transition retains children only until removal completes.
+private struct ConsoleDisclosureRevealLayout: Layout {
+    var fraction: CGFloat
+    struct Cache {
+        var width: CGFloat?
+        var size: CGSize?
+    }
+    func makeCache(subviews: Subviews) -> Cache { Cache() }
+    func updateCache(_ cache: inout Cache, subviews: Subviews) { cache.size = nil }
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
+        if cache.size == nil || cache.width != proposal.width {
+            cache.width = proposal.width
+            cache.size = subviews.first?.sizeThatFits(.init(width: proposal.width, height: nil)) ?? .zero
+        }
+        let size = cache.size ?? .zero
+        return .init(width: size.width, height: size.height * min(1, max(0, fraction)))
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading,
+            proposal: .init(width: bounds.width, height: cache.size?.height))
+    }
+}
+
+private struct ConsoleDisclosureReveal: ViewModifier, Animatable {
+    nonisolated var fraction: CGFloat
+    nonisolated var animatableData: CGFloat {
+        get { fraction }
+        set { fraction = newValue }
+    }
+    func body(content: Content) -> some View {
+        ConsoleDisclosureRevealLayout(fraction: fraction) { content }
+            .clipped().opacity(fraction)
+            .allowsHitTesting(fraction >= 0.99)
+    }
+}
+
 struct ConsoleWorkOutlineDisclosureStyle: DisclosureGroupStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 0) {
                 Button {
-                    withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation) {
+                    withAnimation(reduceMotion ? nil : ConsoleWorkOutlineMetrics.disclosureAnimation) {
                         configuration.isExpanded.toggle()
                     }
                 } label: {
-                    Image(systemName: configuration.isExpanded ? "chevron.down" : "chevron.right")
+                    Image(systemName: "chevron.right")
+                        .rotationEffect(.degrees(configuration.isExpanded ? 90 : 0))
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.secondary)
                         .frame(width: 18, height: 24)
@@ -134,11 +173,13 @@ struct ConsoleWorkOutlineDisclosureStyle: DisclosureGroupStyle {
 
             if configuration.isExpanded {
                 configuration.content
-                    .transition(.opacity.combined(with: .offset(y: -4)))
+                    .transition(reduceMotion ? .identity : .modifier(
+                        active: ConsoleDisclosureReveal(fraction: 0),
+                        identity: ConsoleDisclosureReveal(fraction: 1)))
             }
         }
         .animation(
-            ConsoleWorkOutlineMetrics.disclosureAnimation,
+            reduceMotion ? nil : ConsoleWorkOutlineMetrics.disclosureAnimation,
             value: configuration.isExpanded
         )
     }

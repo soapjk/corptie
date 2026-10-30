@@ -4,7 +4,7 @@ public enum ConsoleWorkOutlineMetrics {
     public static let childIndent: CGFloat = 24
     public static let groupCornerRadius: CGFloat = 8
     public static let groupHorizontalInset: CGFloat = 6
-    public static let disclosureAnimation = Animation.easeInOut(duration: 0.16)
+    public static let disclosureAnimation = Animation.easeInOut(duration: 0.22)
     public static let workingGradientDuration: Double = 2.6
     public static let workingGradientFrameInterval: Double = 1.0 / 24.0
 }
