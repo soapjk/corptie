@@ -7,6 +7,24 @@ import Testing
 
 struct UnifiedConsoleControlSurfaceTests {
     @Test
+    func primaryWorkOutlineUsesTheSameCollapsibleTaskRowsAsTaskSidebar() throws {
+        let outline = try source(named: "Console/UnifiedConsoleOutline.swift")
+        let rows = try source(named: "Console/UnifiedConsoleWorkTaskList.swift")
+        #expect(outline.contains("let tasks = hierarchyTasks(tasksByWorkID[work.id] ?? [])"))
+        #expect(outline.contains("ForEach(visibleTasks)"))
+        #expect(outline.contains("hierarchyTaskRow(task)"))
+        #expect(outline.contains("ForEach(hierarchyTasks(archivedTasks))"))
+        // Limit root groups, not flattened rows: expanding a parent must never
+        // truncate its children at the Work's initial Task limit.
+        #expect(outline.contains("totalCount: roots.count"))
+        #expect(outline.contains("visibleRootIDs.contains($0.parentTaskId ?? $0.id)"))
+        #expect(!outline.contains("ForEach(tasks.prefix(visibleTaskCount))"))
+        #expect(rows.contains("func hierarchyTaskRow(_ task: CorptieTask)"))
+        #expect(rows.contains("task.parentTaskId == nil ? 0 : 24"))
+        #expect(rows.contains("收起子任务"))
+    }
+
+    @Test
     func cardGroupsUpdateAutomaticallyWithoutManualRefreshAndUseNativeTaskGrid() throws {
         let console = try source(named: "UnifiedConsoleView.swift")
         let workspace = try source(named: "ConsoleCardWorkspace.swift")
@@ -728,14 +746,18 @@ struct UnifiedConsoleControlSurfaceTests {
     func activeWorkGroupsLimitTasksUntilExplicitRevealOnBothClients() throws {
         let desktop = try source(named: "UnifiedConsoleView.swift")
         #expect(desktop.contains("WorkOutlineTaskDisclosurePolicy.visibleCount("))
-        #expect(desktop.contains("ForEach(tasks.prefix(visibleTaskCount))"))
+        #expect(desktop.contains("ForEach(visibleTasks)"))
+        #expect(desktop.contains("totalCount: roots.count"))
         #expect(desktop.contains("outlineShowAllTasksButton("))
         #expect(desktop.contains("outlineFullyExpandedWorkIDs.remove(workID)"))
         #expect(desktop.contains("accessibilityLabel(\"展开全部 Task，还剩 \\(hiddenCount) 个\")"))
 
         let mobile = try source(named: "../../../ipad/Sources/PadWorkOutline.swift")
         #expect(mobile.contains("WorkOutlineTaskDisclosurePolicy.visibleCount("))
-        #expect(mobile.contains("ForEach(tasks.prefix(visibleTaskCount))"))
+        #expect(mobile.contains("ForEach(visibleTasks)"))
+        #expect(mobile.contains("totalCount: roots.count"))
+        #expect(mobile.contains("visibleRootIDs.contains($0.parentTaskId ?? $0.id)"))
+        #expect(mobile.contains("task.parentTaskId == nil ? 0 : 24"))
         #expect(mobile.contains("showAllTasksButton(workID:"))
         #expect(mobile.contains("fullyExpandedWorkIDs.remove(id)"))
         #expect(mobile.contains("accessibilityLabel(\"展开全部 Task，还剩 \\(hiddenCount) 个\")"))
@@ -775,7 +797,9 @@ struct UnifiedConsoleControlSurfaceTests {
         ))
         let outline = source[outlineStart.lowerBound..<outlineEnd.lowerBound]
 
-        #expect(outline.contains("taskRow(task)"))
+        #expect(outline.contains("hierarchyTaskRow(task)"))
+        let taskRows = try self.source(named: "Console/UnifiedConsoleWorkTaskList.swift")
+        #expect(taskRows.contains("taskRow(task)"))
         #expect(!outline.contains("workChatRow(row)"))
         #expect(!outline.contains("Start Work Chat"))
         #expect(outline.contains("sessionRow(row)"))
