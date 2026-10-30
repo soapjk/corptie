@@ -3,6 +3,11 @@
 export function worktreeDispatchBlocker(store, reference) {
   const logical = reference.logicalSession ?? (reference.logicalSessionId ? store.getLogicalSession?.(reference.logicalSessionId) : null)
     ?? store.getLogicalSessionByLegacySessionId?.(reference.sessionId);
+  const taskId = logical?.taskId ?? store.getSession?.(logical?.legacySessionId ?? reference.sessionId)?.taskId;
+  if (taskId && store.getTask?.(taskId)?.deletion_status === "deleting") return {
+    reason: "TASK_DELETION_IN_PROGRESS", worktreeId: logical?.activeWorkspaceId ?? null,
+    message: "任务正在删除，暂不启动新的执行。"
+  };
   if (!logical?.repositoryId || !logical.activeWorkspaceId) return null;
   const job = store.getLatestWorktreeIntegrationJob?.(logical.repositoryId);
   if (!job) return null;

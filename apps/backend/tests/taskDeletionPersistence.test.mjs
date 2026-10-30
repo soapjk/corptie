@@ -9,6 +9,58 @@ import { CorptieStore } from "../src/store/corptieStore.mjs";
 
 const localUser = { type: "user", id: "user:local-macos" };
 
+test("durable deletion ignores client target overrides and preserves authenticated actor", async () => {
+  const f = await fixture();
+  try {
+    const accepted = await f.deletion.request("task:delete", {
+      idempotencyKey: "delete:bound", target: { taskId: "task:other", path: "/unrelated" },
+      actor: { type: "user", id: "user:forged" }
+    }, localUser);
+    await f.deletion.inFlight.get(accepted.operation.operationId);
+    const operation = f.deletion.getOperation(accepted.operation.operationId);
+    assert.equal(operation.state, "succeeded");
+    assert.equal(operation.input.target.taskId, "task:delete");
+    assert.equal(operation.input.target.path, null);
+    assert.deepEqual(operation.input.actor, localUser);
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("legacy recovery cannot delete a newly resolved target without reconfirmation", async () => {
+  const f = await fixture();
+  try {
+    const old = f.store.beginTaskDeletionOperation("task:delete", { mode: "force" }, "legacy:unbound");
+    assert.equal(f.deletion.recoverInterruptedDeletions(), 1);
+    await f.deletion.inFlight.get(old.operationId);
+    const result = f.deletion.getOperation(old.operationId);
+    assert.equal(result.state, "failed");
+    assert.equal(result.errorCode, "TASK_DELETE_RECONFIRM_REQUIRED");
+    assert.equal(f.store.getTask("task:delete").deletion_status, "delete_failed");
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("leaf retirement survives reload and retains parent identity without retiring the parent", async () => {
+  const f = await fixture();
+  try {
+    const parent = f.store.getTask("task:delete");
+    f.store.createTask({ id: "task:child", workId: parent.work_id, title: "Child", parentTaskId: parent.id }, {},
+      { expectedParentResourceVersion: parent.resource_version });
+    const before = f.store.getTask(parent.id).hierarchy_revision;
+    const accepted = await f.deletion.request("task:child", { idempotencyKey: "leaf:retire" }, localUser);
+    await f.deletion.inFlight.get(accepted.operation.operationId);
+    assert.equal(f.deletion.getOperation(accepted.operation.operationId).state, "succeeded");
+    assert.ok(f.store.getTask(parent.id));
+    assert.equal(f.store.getTask(parent.id).hierarchy_revision, before + 1);
+    assert.equal(f.store.hasTaskChildren(parent.id), false);
+    await f.store.close();
+    f.store = new CorptieStore({ dbPath: f.dbPath, configPath: f.configPath });
+    await f.store.initialize();
+    assert.equal(f.store.getTask("task:child"), null);
+    assert.equal(f.store.selectOne("SELECT parent_task_id FROM tasks WHERE id='task:child'").parent_task_id, parent.id);
+    assert.ok(f.store.getTask(parent.id));
+    assert.deepEqual(f.store.selectAll("PRAGMA foreign_key_check"), []);
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "corptie-task-delete-"));
   const dbPath = join(directory, "corptie.sqlite");
@@ -79,7 +131,7 @@ test("deletion request returns a durable operation before slow cleanup completes
     f.store.createSession({
       id: "session:slow", title: "Slow", provider: "codex-app-server",
       agentId: "agent:deletion", sessionKind: "worker", workId: "work:delete",
-      taskId: "task:delete", cwd: f.directory, deferTaskProjection: true
+      taskId: "task:delete", cwd: f.directory, deferTaskProjection: true, status: "idle"
     });
     const accepted = await f.deletion.request("task:delete", {
       mode: "safe", idempotencyKey: "delete:slow"

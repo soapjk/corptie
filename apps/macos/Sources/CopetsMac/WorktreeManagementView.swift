@@ -954,7 +954,7 @@ struct WorktreeManagementView: View {
                 },prepare:{action,receipt in
                     showingPlan=true
                     await client.prepareHierarchyOperation(tree,action:action,receiptID:receipt)
-                },localize:L10n)
+                },openParent:{ sessionID in openConflictSession(sessionId: sessionID, taskId: hierarchy.rootTaskId) },localize:L10n)
             }
             HStack(spacing: 8) {
                 Button {
@@ -1041,8 +1041,6 @@ struct WorktreeManagementView: View {
                             openConflictSession(sessionId: sessionId, taskId: state.steps[state.index].rootTaskId)
                         }.controlSize(.small)
                     }
-                    Button(L10n("Revalidate and Continue")) { Task { await client.retryJob() } }
-                        .controlSize(.small).disabled(client.isMutating)
                 } else if job.hasMergeConflict,
                           let resolution = job.currentConflictResolution,
                           let sessionId = resolution.sessionId {
@@ -1132,9 +1130,14 @@ struct WorktreeManagementView: View {
             ProgressView(value: job.progress.fraction)
             if let graph = job.graphExecution {
                 WorktreeIntegrationStepsView(steps: graph.steps)
-                if job.phase == "awaiting_integration_acceptance" {
-                    Text(L10n("Child changes are preserved in the parent. In its Session, capture the current integration version, verify it and report acceptance, then return here to continue. Nothing is published to main before acceptance passes."))
-                        .font(.caption).foregroundStyle(.orange)
+                if job.phase == "awaiting_integration_acceptance", graph.steps.indices.contains(graph.index),
+                   let taskID=graph.steps[graph.index].rootTaskId {
+                    ConversationIntegrationAcceptance(taskID:taskID,api:{
+                        ClientTaskHierarchyAPI(transport:try BackendTransport(endpoint:BackendEndpoint(CorptieAppEnvironment.backendBaseURL)),surface:.local)
+                    },openParent:{ sessionID in openConflictSession(sessionId:sessionID,taskId:taskID) },localize:L10n) { status in
+                        Button(L10n("继续合并到主分支")) { Task { await client.retryJob() } }
+                            .disabled(status?.mayPromote != true || client.isMutating)
+                    }
                 }
             }
             if job.status == "cancellation_requested" {

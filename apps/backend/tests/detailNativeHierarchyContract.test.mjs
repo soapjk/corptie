@@ -46,3 +46,12 @@ test("native Worktree card preserves parent comparison and rejects undeclared hi
   const invalid = structuredClone(document); invalid.cards[0].data.hierarchy.comparison.absolutePath = "/private/host";
   assert.throws(() => validateNativeBusinessDocument(invalid), { code: "DETAIL_BUSINESS_INVALID" });
 });
+
+test("shared worktree contract carries additive code-delivery classification without granting actions",()=>{
+  const classified={...hierarchy,changeState:"no_changes",integrationRequirement:null};
+  const card=nativeBusinessModuleCard("worktree",{state:"ready",data:{attached:true,workspace:{id:"worktree:child"},mainBranch:"main",hierarchy:classified}});
+  const document=nativeBusinessEnvelope("logical:child","classification",[card]);
+  assert.equal(validateNativeBusinessDocument(document),document);
+  assert.equal(document.cards[0].data.hierarchy.changeState,"no_changes");
+  assert.equal(document.cards[0].data.hierarchy.actions.promoteToMain.available,false);
+});

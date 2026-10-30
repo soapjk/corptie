@@ -71,7 +71,7 @@ struct PadConversationInspector: View {
                                 PadOperationNotifications.shared.track(job.id, resourceName: "Worktree")
                                 if let notification = job.notification { PadOperationNotifications.shared.observe(notification) }
                             }
-                        })
+                        },openParent:{ id in if let target=permittedDetailSession(id) { workspace.selection=target } })
                         .id("\(connection.serverID):\(connection.address):\(session.id)")
                 }
                 .id(resourceScope)
@@ -104,7 +104,7 @@ struct PadConversationInspector: View {
                                     PadOperationNotifications.shared.track(job.id, resourceName: "Worktree")
                                     if let notification = job.notification { PadOperationNotifications.shared.observe(notification) }
                                 }
-                            })
+                            },openParent:{ id in if let target=permittedDetailSession(id) { workspace.selection=target } })
                     }
                 }.padding()
                 .navigationTitle("原生管理")
@@ -142,7 +142,8 @@ struct PadConversationInspector: View {
                     if let notification = job.notification { PadOperationNotifications.shared.observe(notification) }
                 }
             }, resident: .init(taskTitle: task?.title ?? "", workName: work?.name ?? "", workDescription: work?.description ?? ""), turnSnapshot: turn.snapshot,
-            openArtifact: { NotificationCenter.default.post(name: .corptieOpenResource, object: $0) })
+            openArtifact: { NotificationCenter.default.post(name: .corptieOpenResource, object: $0) },
+            openSession: { id in if let target=permittedDetailSession(id) { workspace.selection=target } })
     }
     private var nativeDetailNavigation: ConversationDetailActions {
         ConversationDetailActions(canPerform: { action in

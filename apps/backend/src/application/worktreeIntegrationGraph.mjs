@@ -72,8 +72,9 @@ export class WorktreeIntegrationGraph {
       sourceBranchNames: step.sourceWorktreeIds.map(id => byId.get(id)?.branchName ?? id),
       targetBranchName: byId.get(step.targetWorktreeId)?.branchName ?? step.targetWorktreeId, ...step });
     for (const group of [...groups.values()].sort((a, b) => a.rootTaskId.localeCompare(b.rootTaskId))) {
-      if (group.childWorktreeIds.length) add({ kind: "merge_children", rootTaskId: group.rootTaskId,
-        sourceWorktreeIds: group.childWorktreeIds, targetWorktreeId: group.parentWorktreeId });
+      const changedSources=group.childWorktreeIds.filter(id=>byId.get(id)?.hierarchy?.changeState!=="no_changes");
+      if (changedSources.length) add({ kind: "merge_children", rootTaskId: group.rootTaskId,
+        sourceWorktreeIds: changedSources, targetWorktreeId: group.parentWorktreeId });
       // Parent publication is ff-only. Bring the current main baseline into the
       // parent BEFORE assessing its exact integrated code, never after testing.
       add({ kind: "merge_main_into_parent", rootTaskId: group.rootTaskId,

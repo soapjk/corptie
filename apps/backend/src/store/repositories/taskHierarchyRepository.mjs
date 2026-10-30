@@ -134,7 +134,7 @@ export class TaskHierarchyRepository {
     return ancestors;
   }
 
-  assertStandaloneWorktreeMutation({ worktreeIds = [], paths = [], readPaths = [], jobId = null }) {
+  assertStandaloneWorktreeMutation({ worktreeIds = [], paths = [], readPaths = [], jobId = null, taskDeletionOperationId = null }) {
     if (!worktreeIds.length && !paths.length && !readPaths.length) return;
     const ids = [...new Set(worktreeIds.filter(Boolean))];
     const locations = [...new Set([...paths,...readPaths].filter(Boolean))];
@@ -152,6 +152,22 @@ export class TaskHierarchyRepository {
     const protectedMembers=members.filter(row=>row.parent_task_id || (participation.byParentTaskId.get(row.id) ?? []).some(child=>child.participates));
     const member=protectedMembers[0];
     if (member) {
+      if (taskDeletionOperationId) {
+        const operation = this.selectOne("SELECT * FROM task_deletion_operations WHERE operation_id=?", [taskDeletionOperationId]);
+        const input = operation && JSON.parse(operation.input_json);
+        const target = input?.target;
+        const task = operation && this.getTask(operation.task_id);
+        const binding = task && this.getTaskDeliveryBinding(task.id);
+        const onlyTarget = ids.every(id => id === target?.worktreeId)
+          && locations.every(path => path === target?.path);
+        if (operation?.state === "running" && input.deleteWorktree !== false && task?.deletion_status === "deleting"
+          && target?.version === 1 && target.taskId === task.id && target.parentTaskId === (task.parent_task_id ?? null)
+          && binding?.worktree_id === target.worktreeId && binding.repository_id === target.repositoryId
+          && binding.binding_revision === target.bindingRevision && onlyTarget
+          && !this.selectOne("SELECT 1 FROM tasks WHERE parent_task_id=? AND COALESCE(deletion_status,'')<>'deleted' LIMIT 1", [task.id])
+          && protectedMembers.every(row => row.id === task.id)) return;
+        throw taskHierarchyError("TASK_DELETE_TARGET_CHANGED", "The deletion operation no longer authorizes this Worktree.");
+      }
       const job=jobId && this.selectOne("SELECT * FROM worktree_integration_jobs WHERE id=?",[jobId]);
       const plan=job?.details_json ? JSON.parse(job.details_json).plan : null;
       const scope=plan?.taskScope;
