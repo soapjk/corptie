@@ -76,11 +76,11 @@ struct UnifiedConsoleView: View {
         "sessions.workerGroupingMode",
         store: CorptieAppEnvironment.userDefaults
     ) var workerGroupingModeRawValue = WorkerSessionGroupingMode.work.rawValue
+    @Environment(\.accessibilityReduceMotion) var reduceOutlineMotion
     @EnvironmentObject var router: AppTabRouter
     private static let usesResidentDetailHosts = CorptieAppEnvironment.isDevelopment
         && ProcessInfo.processInfo.environment["CORPTIE_DETAIL_RESIDENT_HOSTS"] == "1"
-    static let usesResidentPages = CorptieAppEnvironment.isDevelopment
-        && ProcessInfo.processInfo.environment["CORPTIE_SESSION_RESIDENT_PAGES"] == "1"
+    static let usesResidentPages = SessionSwitchingPreferences.launchEnabled
     static let usesPageGateProof = CorptieAppEnvironment.isDevelopment
         && ProcessInfo.processInfo.environment["CORPTIE_SESSION_FRAME_GATE"] == "1"
     @EnvironmentObject var sidebarState: TabSidebarState

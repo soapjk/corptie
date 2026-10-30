@@ -72,6 +72,8 @@ struct SettingsView: View {
     @ObservedObject private var settingsState = BackendClient.shared.settingsController
     @ObservedObject private var feishuStore = BackendClient.shared.feishuStore
     @ObservedObject private var appLanguage = AppLanguageController.shared
+    @AppStorage(SessionSwitchingPreferences.preferenceKey, store: CorptieAppEnvironment.userDefaults)
+    private var acceleratedSessionSwitching = SessionSwitchingPreferences.launchEnabled
     @State private var selectedTab = SettingsTab.general
     @State private var archivedSessionPendingDeletion: TaskSession?
     @State private var dataRoot = ""
@@ -371,6 +373,21 @@ struct SettingsView: View {
     private var generalSettingsTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
+                GroupBox(L10n("性能")) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle(L10n("加速会话切换"), isOn: $acceleratedSessionSwitching)
+                            .accessibilityIdentifier("settings.sessionSwitchingAcceleration")
+                        Text(L10n("保留最近访问的会话页面，减少重复排版和输入区重建。最多保留 3 个页面，会增加内存占用。更改后重新启动 App 生效。"))
+                            .font(WorkbenchTypography.font(for: .help))
+                            .foregroundStyle(CorptiePalette.secondaryText)
+                        if acceleratedSessionSwitching != SessionSwitchingPreferences.launchEnabled {
+                            Text(L10n("需要重新启动 App 才能应用此更改。"))
+                                .font(WorkbenchTypography.font(for: .help))
+                                .foregroundStyle(CorptiePalette.amber)
+                                .accessibilityIdentifier("settings.sessionSwitchingRestartRequired")
+                        }
+                    }.padding(8)
+                }
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(L10n("Storage"))

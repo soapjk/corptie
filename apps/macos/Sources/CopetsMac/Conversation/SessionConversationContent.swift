@@ -550,10 +550,7 @@ struct SessionConversationSurface: View {
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         }
         .padding(1)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.white.opacity(0.001))
-        )
+        .background(Color.white.opacity(0.001))
     }
 
     private func appKitCachedDetailMessages() -> some View {

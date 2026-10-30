@@ -394,7 +394,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                 interventionSummary(task, session: session)
             }
         }.anchorPreference(key: TaskCardAnchors.self, value: .bounds) { [task.id: $0] }
-        .buttonStyle(.plain).disabled(task.deletionStatus == "deleting").contextMenu {
+        .buttonStyle(SessionSelectionPressStyle()).disabled(task.deletionStatus == "deleting").contextMenu {
             Button("暂不处理") {
                 displayPreferences.setFixed(false, taskID: task.id)
                 deferred[task.id] = ConsoleAttentionPolicy.receipt(task, session: session)
@@ -534,7 +534,7 @@ private struct CompactWorkCard<Content: View>: View {
                         }
                         .contentShape(Rectangle())
                 }
-                    .buttonStyle(.plain)
+                    .buttonStyle(SessionSelectionPressStyle())
                     .fixedSize()
                     .overlay { ConsoleDiscussionActivityBorder(isRunning: isChatRunning, isActive: isActive) }
                     .accessibilityValue(isChatSelected ? L10n("Selected") : "")
