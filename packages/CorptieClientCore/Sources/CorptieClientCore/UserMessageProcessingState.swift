@@ -2,7 +2,7 @@ import Foundation
 
 /// Shared authoritative lifecycle mapping for desktop and mobile messages.
 public enum UserMessageProcessingState: String, Equatable, Sendable {
-    case queued, processing, consumed, failed, cancelled
+    case queued, preparing, processing, consumed, failed, cancelled
 
     public init?(authoritativeValue: String?, legacyStatus: String?) {
         if let authoritativeValue {
@@ -23,7 +23,7 @@ public enum UserMessageProcessingState: String, Equatable, Sendable {
 /// execution. A transport receipt never proves that the Provider started.
 public struct UserMessageStatusPresentation: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
-        case sending, deliveryUnknown, accepted, queued, processing
+        case sending, deliveryUnknown, accepted, queued, preparing, processing
         case deliveryFailed, processingFailed, cancelled
         case waitingToSend, retrying, deliveryBlocked, retryStopped
         case uploading, submitting
@@ -44,6 +44,7 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
         ) {
             switch state {
             case .queued: kind = .queued
+            case .preparing: kind = .preparing
             case .processing: kind = .processing
             case .failed: kind = .processingFailed
             case .cancelled: kind = .cancelled
@@ -94,6 +95,7 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
         case .deliveryUnknown: "questionmark.circle"
         case .accepted: "checkmark.circle"
         case .queued: "clock"
+        case .preparing: "hourglass"
         case .processing: "circle.dotted.circle"
         case .deliveryFailed, .processingFailed: "exclamationmark.circle.fill"
         case .cancelled: "xmark.circle"
@@ -108,7 +110,7 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
     public var light: Light {
         switch kind {
         case .sending, .uploading, .submitting, .waitingToSend, .retrying: .blue
-        case .deliveryUnknown, .accepted, .deliveryBlocked: .purple
+        case .deliveryUnknown, .accepted, .deliveryBlocked, .preparing: .purple
         case .queued: .orange
         case .processing: .green
         case .deliveryFailed, .processingFailed: .red
@@ -118,7 +120,7 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
     public var lightPulses: Bool { light == .blue || light == .green }
     public var tone: Tone {
         switch kind {
-        case .queued: .amber
+        case .queued, .preparing: .amber
         case .waitingToSend, .retrying, .deliveryBlocked: .amber
         case .processing: .green
         case .deliveryFailed, .processingFailed: .red
@@ -135,6 +137,7 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
         case .deliveryUnknown: return chinese ? "待确认" : "Unconfirmed"
         case .accepted: return chinese ? "已接收" : "Received"
         case .queued: return chinese ? "排队中" : "Queued"
+        case .preparing: return chinese ? "准备中" : "Preparing"
         case .processing: return chinese ? "处理中" : "Processing"
         case .deliveryFailed: return chinese ? "发送失败" : "Send failed"
         case .processingFailed: return chinese ? "处理失败" : "Processing failed"
@@ -152,6 +155,9 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
         if let failureReason { return "\(label)：\(failureReason)" }
         if kind == .queued, let queuePosition {
             return chinese ? "\(label)，当前第 \(queuePosition) 位" : "\(label), position \(queuePosition)"
+        }
+        if kind == .preparing {
+            return chinese ? "正在准备执行环境；尚未交给模型处理。" : "Preparing the execution environment; the model has not started yet."
         }
         if kind == .deliveryUnknown {
             return chinese ? "送达状态尚未确认；为避免重复消息，不会自动重发。"

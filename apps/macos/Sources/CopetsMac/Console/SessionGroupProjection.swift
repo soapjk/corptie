@@ -260,6 +260,12 @@ func isArchivedWorkerSession(_ session: TaskSession) -> Bool {
 enum SessionSelectionRecoveryPolicy {
     private static let historyLimit = 50
 
+    static func restoring(recentSessionIDs: [String], sessions: [TaskSession]) -> String? {
+        recentSessionIDs.first { id in
+            sessions.contains { $0.id == id && $0.archived != true && $0.hasValidProductClassification }
+        }
+    }
+
     static func recording(_ sessionID: String, in recentSessionIDs: [String]) -> [String] {
         var result = recentSessionIDs.filter { $0 != sessionID }
         result.insert(sessionID, at: 0)

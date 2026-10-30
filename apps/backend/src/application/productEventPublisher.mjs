@@ -149,7 +149,7 @@ export function createProductEventPublisher({
     if (type === "SessionCommandCompleted" && payload?.item) {
       items.push(payload.item);
     }
-    if (["AgentWorkQueued", "AgentWorkStarted", "AgentWorkCompleted", "AgentWorkFailed"].includes(type)) {
+    if (["AgentWorkQueued", "AgentWorkPreparing", "AgentWorkStarted", "AgentWorkCompleted", "AgentWorkFailed"].includes(type)) {
       const item = agentWorkTimelineItem(payload?.task, sessionId, payload?.queuePosition);
       if (item) items.push(item);
     }

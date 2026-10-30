@@ -129,7 +129,7 @@ struct UnifiedConsoleView: View {
     @State var outlineFullyExpandedWorkIDs = Set<String>()
     @State var cardAttentionCount = 0
     @State var cardSelectionExplicitlyCleared = false
-    @State private var didResolveDevelopmentPreviewStart = false
+    @State private var didResolveInitialSession = false
     /// 每个 Tab（SessionCategory）独立记录其上一次选中的 Session，跨窗口/重启恢复，
     /// 避免不同 Tab 的选择相互覆盖。key 形如 `sessions.lastSelectedSessionId.<category>`。
     static let recentSessionIdsKey = "sessions.recentSessionIds"
@@ -161,7 +161,7 @@ struct UnifiedConsoleView: View {
         .modifier(ConversationSkinHost())
         .onAppear {
             PerfStopwatch.event("UnifiedConsoleView·onAppear", value: 1)
-            selectDevelopmentPreviewAtStartupIfAvailable(backendClient.sessions)
+            restoreInitialSessionIfAvailable(backendClient.sessions)
             restoreConsoleSpaceIfNeeded()
             activateSessions()
         }
@@ -188,7 +188,7 @@ struct UnifiedConsoleView: View {
         .onReceive(backendClient.sessionsDidChange) { sessions in
             guard sidebarState.isSelected else { return }
             attemptPendingSelection(sessions)
-            selectDevelopmentPreviewAtStartupIfAvailable(sessions)
+            restoreInitialSessionIfAvailable(sessions)
             restoreConsoleContentIfNeeded()
             if let selectedSessionID = backendClient.selectedSession?.id {
                 markOpenedSessionRead(sessions.first(where: { $0.id == selectedSessionID }))
@@ -510,16 +510,26 @@ struct UnifiedConsoleView: View {
             return
         }
         guard selectionController.selectedSessionID == nil else { return }
+        restoreInitialSessionIfAvailable(backendClient.sessions)
+        guard selectionController.selectedSessionID == nil else { return }
         selectedWorkId = entityClient.works.first?.id
         selectedCategory = selectedWorkId == nil ? .assistant : .worker
         selectDefaultContentForCurrentSpace()
     }
 
-    private func selectDevelopmentPreviewAtStartupIfAvailable(_ sessions: [TaskSession]) {
-        guard !didResolveDevelopmentPreviewStart, !sessions.isEmpty else { return }
-        didResolveDevelopmentPreviewStart = true
-        guard router.pendingSessionId == nil,
-              let previewID = ProcessInfo.processInfo.environment["CORPTIE_DEVELOPMENT_PREVIEW_SESSION_ID"],
+    private func restoreInitialSessionIfAvailable(_ sessions: [TaskSession]) {
+        guard !didResolveInitialSession, !sessions.isEmpty else { return }
+        didResolveInitialSession = true
+        guard router.pendingSessionId == nil, selectionController.selectedSessionID == nil else { return }
+        // Restore the existing recent-selection history before any default or
+        // development preview. Explicit navigation/current selection still wins.
+        if let restoredID = SessionSelectionRecoveryPolicy.restoring(
+            recentSessionIDs: Self.restoredRecentSessionIds(), sessions: sessions),
+           let session = sessions.first(where: { $0.id == restoredID }) {
+            selectSessionAfterHighlight(session)
+            return
+        }
+        guard let previewID = ProcessInfo.processInfo.environment["CORPTIE_DEVELOPMENT_PREVIEW_SESSION_ID"],
               let session = sessions.first(where: { $0.id == previewID }) else { return }
         selectSessionAfterHighlight(session)
     }
@@ -594,6 +604,8 @@ struct UnifiedConsoleView: View {
             return
         }
         // Keep an unresolved selected identity while its data is hydrating.
+        guard selectionController.selectedSessionID == nil else { return }
+        restoreInitialSessionIfAvailable(backendClient.sessions)
         guard selectionController.selectedSessionID == nil else { return }
         // A Task without a Session is still an explicit, valid user selection.
         // Keep it authoritative across session-index refreshes instead of
