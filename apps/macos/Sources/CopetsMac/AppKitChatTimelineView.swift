@@ -130,6 +130,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
     static func makeScrollView(tableView: NSTableView) -> NSScrollView {
         let scrollView = FirstLayoutRestoringScrollView()
+        scrollView.forcesOverlayScrollers = true
         scrollView.contentView = NSClipView()
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.drawsBackground = false

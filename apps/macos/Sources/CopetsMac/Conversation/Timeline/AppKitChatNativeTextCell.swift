@@ -216,7 +216,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         collaborationSentStatusHeight = collaborationSentStatus.heightAnchor.constraint(equalToConstant: 0)
         cardWidthConstraint = cardView.widthAnchor.constraint(equalToConstant: ChatBubbleWidthPolicy.maximumWidth)
         cardLeadingConstraint = cardView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2)
-        cardTrailingConstraint = cardView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2)
+        cardTrailingConstraint = cardView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -ChatBubbleWidthPolicy.userTrailingInset)
         cardTopConstraint = cardView.topAnchor.constraint(equalTo: topAnchor, constant: 1)
         cardBottomStandardConstraint = cardView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -1)
         cardBottomWithMessageActionsConstraint = cardView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -27)

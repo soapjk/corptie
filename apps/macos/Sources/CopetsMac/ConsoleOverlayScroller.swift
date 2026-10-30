@@ -6,6 +6,23 @@ import SwiftUI
 /// (including the native hover track), inside a wider native drag target.
 class ConsoleThinScroller: NSScroller {
     static let knobWidth: CGFloat = 3
+    var knobTrailingInset: CGFloat? { nil }
+    var knobColor: NSColor { .secondaryLabelColor.withAlphaComponent(0.55) }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        // Repaint at each native overlay width, rather than stretching a cached
+        // bitmap of the wider hover state into a hairline.
+        layerContentsRedrawPolicy = .duringViewResize
+    }
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        layerContentsRedrawPolicy = .duringViewResize
+    }
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        needsDisplay = true
+    }
 
     override var isOpaque: Bool { false }
     override class var isCompatibleWithOverlayScrollers: Bool { true }
@@ -23,13 +40,23 @@ class ConsoleThinScroller: NSScroller {
         drawKnob()
     }
 
-    override func drawKnob() {
-        guard isEnabled, knobProportion < 1 else { return }
+    var knobDrawingRect: NSRect {
+        guard isEnabled, knobProportion < 1 else { return .zero }
         let nativeKnob = rect(for: .knob)
-        guard nativeKnob.width > 0, nativeKnob.height > 0 else { return }
-        let knob = NSRect(x: nativeKnob.midX - Self.knobWidth / 2,
-                          y: nativeKnob.minY, width: Self.knobWidth, height: nativeKnob.height)
-        NSColor.secondaryLabelColor.withAlphaComponent(0.55).setFill()
+        guard nativeKnob.width > 0, nativeKnob.height > 0 else { return .zero }
+        let x = knobTrailingInset.map { bounds.maxX - $0 - Self.knobWidth }
+            ?? (nativeKnob.midX - Self.knobWidth / 2)
+        let scale = window?.backingScaleFactor ?? 1
+        return NSRect(x: (x * scale).rounded() / scale,
+                      y: nativeKnob.minY, width: Self.knobWidth, height: nativeKnob.height)
+    }
+
+    override func drawKnob() { drawFallbackKnob() }
+
+    func drawFallbackKnob() {
+        let knob = knobDrawingRect
+        guard !knob.isEmpty else { return }
+        knobColor.setFill()
         NSBezierPath(roundedRect: knob, xRadius: Self.knobWidth / 2,
                      yRadius: Self.knobWidth / 2).fill()
     }
