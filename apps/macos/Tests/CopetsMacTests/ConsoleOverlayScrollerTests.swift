@@ -104,9 +104,9 @@ struct ConsoleOverlayScrollerTests {
         #expect(scroll.scrollerInsets.right == 0)
     }
 
-    @Test func scrollerPaintsOnlyThreePointKnobAndNoTrackInBothAppearances() throws {
+    @Test func timelinePaintsNinePointKnobAndNoTrackInBothAppearances() throws {
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
-            for width: CGFloat in [8, 12, 16] {
+            for width: CGFloat in [12, 16, 20] {
                 let scroller = TimelineIntentScroller(frame: NSRect(x: 0, y: 0, width: width, height: 240))
                 // Exercise the drawing independently of AppKit's overlay fade state.
                 scroller.scrollerStyle = .legacy
@@ -139,19 +139,21 @@ struct ConsoleOverlayScrollerTests {
                         let pixel = bitmap.colorAt(x: x, y: y)
                         maximumAlpha = max(maximumAlpha, pixel?.alphaComponent ?? 0)
                         if (pixel?.alphaComponent ?? 0) > 0.01 {
-                            #expect((pixel?.redComponent ?? 0) > 0.95)
-                            #expect((pixel?.greenComponent ?? 0) > 0.95)
-                            #expect((pixel?.blueComponent ?? 0) > 0.95)
+                            if (pixel?.alphaComponent ?? 0) > 0.3 {
+                                let red = pixel?.redComponent ?? 0
+                                #expect(appearance == .darkAqua ? red > 0.95 : (red > 0.2 && red < 0.75))
+                                #expect(abs(red - (pixel?.greenComponent ?? 0)) < 0.03)
+                                #expect(abs(red - (pixel?.blueComponent ?? 0)) < 0.03)
+                            }
                             paintedColumns.insert(x)
                             paintedRows.insert(y)
                         }
                     }
                 }
                 #expect(!paintedColumns.isEmpty)
-                #expect(maximumAlpha > 0.3 && maximumAlpha < 0.4)
+                #expect(maximumAlpha > 0.4 && maximumAlpha < 0.5)
                 // At most one anti-aliased edge pixel per side at 1x.
-                #expect(paintedColumns.count == Int(ConsoleThinScroller.knobWidth))
-                #expect(scroller.knobColor == NSColor.white.withAlphaComponent(0.38))
+                #expect(paintedColumns.count == 9)
                 #expect(paintedColumns.max() == Int(bounds.maxX) - 2)
                 let visibleThumbPoint = scroller.convert(NSPoint(x: bounds.maxX - 2, y: knob.midY), to: nil)
                 #expect(scroller.testPart(visibleThumbPoint) == .knob)
@@ -159,6 +161,43 @@ struct ConsoleOverlayScrollerTests {
                 #expect(paintedRows.count < bitmap.pixelsHigh / 2)
             }
         }
+    }
+
+    @Test func movingTimelineThumbDoesNotLeaveFragmentsOrAccumulateOpacity() throws {
+        let scroller = TimelineIntentScroller(frame: NSRect(x: 0, y: 0, width: 12, height: 240))
+        scroller.scrollerStyle = .legacy
+        scroller.isEnabled = true
+        scroller.knobProportion = 0.2
+        let bounds = scroller.bounds
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil,
+            pixelsWide: Int(bounds.width), pixelsHigh: Int(bounds.height), bitsPerSample: 8,
+            samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = context
+        NSColor.clear.setFill()
+        bounds.fill(using: .copy)
+        for position in [0.2, 0.25, 0.7] {
+            scroller.doubleValue = position
+            scroller.draw(bounds)
+        }
+        context.flushGraphics()
+        let current = scroller.knobDrawingRect.insetBy(dx: -1, dy: -1)
+        var strayPixels = 0
+        var maximumAlpha: CGFloat = 0
+        for y in 0..<bitmap.pixelsHigh {
+            for x in 0..<bitmap.pixelsWide {
+                let alpha = bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0
+                maximumAlpha = max(maximumAlpha, alpha)
+                // NSBitmapImageRep rows start at the top; the drawing context is unflipped.
+                let point = NSPoint(x: CGFloat(x) + 0.5, y: CGFloat(bitmap.pixelsHigh - y) - 0.5)
+                if alpha > 0.01 && !current.contains(point) { strayPixels += 1 }
+            }
+        }
+        #expect(strayPixels == 0)
+        #expect(maximumAlpha <= 0.46)
     }
 
     @Test func timelineThumbFadesAfterIdleAndCanReappear() async throws {

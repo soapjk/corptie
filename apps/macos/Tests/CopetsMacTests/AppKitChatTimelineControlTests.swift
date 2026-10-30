@@ -1078,6 +1078,30 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(scroll.contentView.bounds.origin, position)
     }
 
+    func testWheelEventHandlerShowsThumbBeforeIdleFade() async throws {
+        let harness = makeHarness(followsLatest: false)
+        harness.coordinator.apply(rows: (0..<40).map { row(id: "wheel-\($0)", text: "Message \($0)") })
+        await settleMainQueue()
+        let thumb = try XCTUnwrap(harness.scrollView.verticalScroller as? TimelineIntentScroller)
+        harness.scrollView.contentView.scroll(to: NSPoint(x: 0, y: 200))
+        harness.scrollView.reflectScrolledClipView(harness.scrollView.contentView)
+        let cgEvent = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
+            wheelCount: 1, wheel1: -80, wheel2: 0, wheel3: 0))
+        cgEvent.location = CGPoint(x: 100, y: (NSScreen.main?.frame.height ?? 900) - 100)
+        let event = try XCTUnwrap(NSEvent(cgEvent: cgEvent))
+        XCTAssertEqual(event.type, .scrollWheel)
+        XCTAssertNotEqual(event.scrollingDeltaY, 0)
+        harness.scrollView.scrollWheel(with: event)
+        harness.window.layoutIfNeeded()
+        XCTAssertEqual(thumb.alphaValue, 1)
+        XCTAssertFalse(thumb.isHiddenOrHasHiddenAncestor)
+        XCTAssertGreaterThan(thumb.knobDrawingRect.height, 0)
+        XCTAssertEqual(thumb.knobDrawingRect.width, 9)
+        XCTAssertTrue(thumb.bounds.contains(thumb.knobDrawingRect))
+        try await Task.sleep(for: .milliseconds(1150))
+        XCTAssertEqual(thumb.alphaValue, 0)
+    }
+
     func testSingleColumnUsesViewportWidthWithoutAnUnusedScrollerGutter() async {
         let harness = makeHarness(followsLatest: true)
         harness.coordinator.apply(rows: [row(id: "message", text: "Ready")])

@@ -88,7 +88,7 @@ struct ConversationTypographyTests {
         #expect(reading.string == classic.string)
         let emptyParagraph = (source as NSString).range(of: "\n\n").location + 1
         #expect((reading.attribute(.font, at: emptyParagraph, effectiveRange: nil) as? NSFont)?.pointSize == 1)
-        #expect((reading.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)?.paragraphSpacing == 10)
+        #expect((reading.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)?.paragraphSpacing == 6)
         #expect((classic.attribute(.font, at: emptyParagraph, effectiveRange: nil) as? NSFont)?.pointSize == 11)
     }
     @Test func tableCacheReplacesProfileWithoutReusingOldFonts() throws {
