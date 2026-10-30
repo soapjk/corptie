@@ -17,6 +17,14 @@ struct PadThreadMetaView: View {
         capabilities?.readiness != "not_ready"
     }
 
+    private var executionWaitMessage: String? {
+        switch capabilities?.executionWait?.reason {
+        case "WORKTREE_INTEGRATION_IN_PROGRESS": "消息已接收，正在等待工作区集成完成。"
+        case "WORKTREE_CONFLICT_OR_RECOVERY": "消息已接收，工作区需要先解决冲突或恢复。"
+        default: capabilities?.executionWait?.message
+        }
+    }
+
     var body: some View {
         let reason = capabilities?.notReadyReason
         ConversationComposerStatusRow(
@@ -25,7 +33,7 @@ struct PadThreadMetaView: View {
             readinessMessage: SessionReadinessPresentation.message(code: reason?.code, fallback: reason?.message),
             readinessCode: reason?.code,
             executionState: SessionExecutionState(executionStatus: session?.executionStatus),
-            activity: session?.activityStatus
+            activity: executionWaitMessage ?? session?.activityStatus
         ) {
             if let usage {
                 PadUsageBar(usage: usage, compact: compactUsage, refreshAccount: refreshAccount)

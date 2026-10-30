@@ -12,6 +12,85 @@ import { TaskWorktreeHierarchyService } from "../src/application/taskWorktreeHie
 import { GitWorkspaceManager } from "../src/runtime/gitWorkspaceManager.mjs";
 import { WorktreeIntegrationJobService } from "../src/application/worktreeIntegrationJobService.mjs";
 import { WorktreeIntegrationGraph } from "../src/application/worktreeIntegrationGraph.mjs";
+import { automaticWorktreeMutationActive } from "../src/application/worktreeAutoFollowService.mjs";
+import { createRuntimeAgentWorkQueue } from "../src/runtime/runtimeAgentWorkQueue.mjs";
+
+for (const providerId of ["codex-app-server", "claude-code"]) {
+  test(`conflict pause releases a safe source, preserves the target and rejects a stale resume (${providerId})`, { timeout: 20000 }, async t => {
+    const f = await fixture(t);
+    await f.commit(f.parent, "shared.txt", "parent\n");
+    await f.commit(f.children[0], "shared.txt", "child\n");
+    const child = f.trees.get(f.children[0].id);
+    const agent = f.store.createAgent({ name: "Queue_worker", role: "independentContributor" });
+    const sessionId = "session:queue-worker";
+    f.store.upsertSession({ id: sessionId, title: "Queue_worker", status: "complete", provider: providerId });
+    const route = f.store.createLogicalSessionRoute({ logicalSessionId: "logical:queue-worker", legacySessionId: sessionId,
+      providerId, providerThreadId: "thread:queue-worker", bindingId: "binding:queue-worker",
+      boundCwd: child.path, worktreeId: child.worktreeId, repositoryId: "repository:integration", sessionName: "Queue_worker" });
+    const jobs = integrationJobs(f);
+    let released;
+    const release = new Promise(resolve => { released = resolve; });
+    jobs.onDispatchReleased = ids => { if (ids.includes(child.worktreeId)) released(); };
+    const { job } = await startGraph(f, jobs, [f.parentTree.worktreeId]);
+    const conflicted = await waitForTerminal(jobs, job.id);
+    assert.equal(conflicted.phase, "conflict");
+    await release;
+    assert.equal(automaticWorktreeMutationActive(f.store, { sessionId }), false);
+    assert.ok(jobs.get(job.id).dispatchSafety.blockedWorktreeIds.includes(f.parentTree.worktreeId));
+
+    const { task } = f.store.createUserMessageDelivery({ deliveryId: "delivery:queue-worker", messageId: "message:queue-worker",
+      sessionId, binding: route.activeBinding, agentId: agent.agentId, text: "make the scrollbar thinner" });
+    let sends = 0;
+    const queue = createRuntimeAgentWorkQueue({ store: f.store,
+      collaborationCore: { getAgentForSession: () => agent }, workspaceContinuationCoordinator: {
+        assertWorkTarget() {}, recordWorkStarted() {}, recordWorkSettled() {}, recordWorkRequeued() {}
+      }, inspectCollaborationSession: async () => "idle", emitEvent() {},
+      isWorkspaceMutationActive: id => automaticWorktreeMutationActive(f.store, { sessionId: id }),
+      sendUnifiedSessionMessage: async () => { sends++; return { result: { turnId: "turn:queue-worker" } }; }
+    });
+    queue.registerRuntimeQueuedWork(sessionId, task.taskId);
+    await queue.drainAgentWork(sessionId);
+    assert.equal(sends, 1);
+    assert.equal(f.store.getAgentTask(task.taskId).status, "running");
+    await f.commit(f.children[0], "scrollbar.txt", "thinner\n");
+    f.store.updateAgentTask(task.taskId, { status: "completed" });
+    f.store.updateMessageDelivery("delivery:queue-worker", { status: "completed" });
+    jobs.retry(job.id);
+    const stale = await waitForTerminal(jobs, job.id);
+    assert.equal(stale.resumeRequiresReplan, true);
+    assert.deepEqual(stale.availableActions, ["repreflight", "cancel"]);
+    assert.equal(await git(f.mainPath, ["rev-parse", "HEAD"]), f.baseHead);
+    assert.throws(() => jobs.retry(job.id), { code: "WORKTREE_STATE_CHANGED" });
+    // A restart must preserve the released baseline, not bless the newer HEAD.
+    const restarted = integrationJobs(f);
+    await restarted.recover();
+    assert.equal(restarted.get(job.id).resumeRequiresReplan, true);
+  });
+}
+
+test("messages admitted behind an executing integration do not prevent its next step", { timeout: 20000 }, async t => {
+  const f = await fixture(t);
+  const first = await addStandalone(f, "queued-first"), second = await addStandalone(f, "queued-second");
+  const agent = f.store.createAgent({ name: "Queued_worker", role: "independentContributor" });
+  const sessionId = "session:queued-worker";
+  f.store.upsertSession({ id: sessionId, title: "Queued_worker", status: "complete", provider: "provider:test" });
+  const route = f.store.createLogicalSessionRoute({ logicalSessionId: "logical:queued-worker", legacySessionId: sessionId,
+    providerId: "provider:test", providerThreadId: "thread:queued-worker", bindingId: "binding:queued-worker",
+    boundCwd: second.path, worktreeId: second.worktreeId, repositoryId: "repository:integration", sessionName: "Queued_worker" });
+  let delivered = false;
+  const jobs = integrationJobs(f, { beforeMerge: async () => {
+    if (delivered) return;
+    delivered = true;
+    assert.equal(automaticWorktreeMutationActive(f.store, { sessionId }), true);
+    f.store.createUserMessageDelivery({ deliveryId: "delivery:behind", messageId: "message:behind", sessionId,
+      binding: route.activeBinding, agentId: agent.agentId, text: "arrived during merge" });
+  } });
+  const { job } = await startGraph(f, jobs, [first.worktreeId, second.worktreeId]);
+  const result = await waitForTerminal(jobs, job.id);
+  assert.equal(result.status, "completed", result.error);
+  assert.equal(f.store.getMessageDelivery("delivery:behind").status, "queued");
+  assert.equal(automaticWorktreeMutationActive(f.store, { sessionId }), false);
+});
 
 test("empty failed child is absent from summaries, decoration, graph, scope and acceptance",async t=>{
   const f=await fixture(t);
@@ -89,7 +168,7 @@ test("a parent with only an empty failed child uses ordinary merge and rejects r
 
 const exec = promisify(execFile);
 const git = async (path, args) => (await exec("git", ["-C", path, ...args], {
-  encoding: "utf8", timeout: 15000, env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" }
+  encoding: "utf8", timeout: 15000, env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_OPTIONAL_LOCKS: "0" }
 })).stdout.trim();
 
 async function fixture(t) {

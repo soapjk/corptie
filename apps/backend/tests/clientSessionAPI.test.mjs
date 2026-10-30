@@ -696,6 +696,14 @@ test("capabilities carry Session readiness and usage is a sanitized read-only pr
       readiness: () => ({ readiness: "ready", notReadyReason: { code: "STALE", message: "ignored" } }) });
     assert.equal(ready.capabilities(identity, "session:test").readiness, "ready");
     assert.equal(ready.capabilities(identity, "session:test").notReadyReason, null);
+    const waiting = new ClientSessionAPI({ store: f.store, ...callbacks,
+      readiness: () => ({ readiness: "ready", executionWait: { reason: "WORKTREE_INTEGRATION_IN_PROGRESS",
+        jobId: "job", worktreeId: "tree", message: "waiting", privateField: "private" } }) });
+    assert.deepEqual(waiting.capabilities(identity, "session:test").executionWait, {
+      reason: "WORKTREE_INTEGRATION_IN_PROGRESS", jobId: "job", worktreeId: "tree", message: "waiting"
+    });
+    assert.equal(waiting.capabilities(identity, "session:test").readiness, "ready",
+      "waiting for execution must not disable durable message admission");
 
     const usage = await api.usage(identity, "session:test");
     assert.deepEqual(usage, { schemaVersion: 1, sessionId: "session:test",

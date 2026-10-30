@@ -1536,6 +1536,11 @@ const { sessionForkService, prepareConversationForkWorkspace } = createSessionFo
   createGitWorkspaceSnapshot, ensureArtifactCommitHook: ensureRepositoryArtifactCommitHook
 });
 const { projectWorktreeIntegrationService, worktreeIntegrationJobService } = createWorktreeIntegrationServices({
+  onDispatchReleased: worktreeIds => {
+    for (const id of worktreeIds) {
+      for (const session of store.listLogicalSessionsByWorkspaceId(id)) scheduleAgentWorkDrain(session.legacySessionId);
+    }
+  },
   store, projectApplicationService, gitWorkspaces, gitHubPushes, gitCommitProtection,
   workService, artifactService, agentProviderRegistry, startPreparedWorkSession,
   admitReliableSessionMessage: (...args) => sessionMessageOperation.admitReliableMessage(...args),

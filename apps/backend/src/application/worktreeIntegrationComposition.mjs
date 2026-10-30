@@ -63,8 +63,23 @@ export function createWorktreeIntegrationServices({
   store, projectApplicationService, gitWorkspaces, gitHubPushes, gitCommitProtection,
   workService, artifactService, agentProviderRegistry, startPreparedWorkSession,
   admitReliableSessionMessage, prepareConflictSession, emitEvent, presentTaskForClient,
-  authorizeAutomaticFollow
+  authorizeAutomaticFollow, onDispatchReleased
 }) {
+  const dispatchProjectionByRepository = new Map();
+  const publishIntegrationEvent = (type, payload) => {
+    const job = payload?.job;
+    if (type === "WorktreeIntegrationJobChanged" && job) {
+      const signature = JSON.stringify([job.id, job.status, job.phase,
+        job.dispatchSafety?.verifiedRevision, job.dispatchSafety?.safeWorktrees?.map(tree => tree.worktreeId), job.dispatchSafety?.blockedWorktreeIds]);
+      if (dispatchProjectionByRepository.get(job.repositoryId) !== signature) {
+        dispatchProjectionByRepository.set(job.repositoryId, signature);
+        const sessions = new Set((job.plan.reservedWorktreeIds ?? job.plan.items.map(item => item.worktreeId))
+          .flatMap(id => (store.listLogicalSessionsByWorkspaceId?.(id) ?? []).map(session => session.legacySessionId)));
+        for (const id of sessions) store.touchSessionProjectionDependency?.(id);
+      }
+    }
+    emitEvent(type, payload);
+  };
   const applyArtifactDecision = createMarkdownArtifactDecision({store,gitWorkspaces,artifactService,
     resolveOwner:input=>commitPolicyArtifactBinding(store,input.item),
     trackingTargets:(input,path)=>integrationTrackingTargets(store.getWorktreeIntegrationJob?.(input.jobId),path)});
@@ -137,9 +152,10 @@ export function createWorktreeIntegrationServices({
     },
     isSessionActive: sessionHasActiveRun,
     presentTask: presentTaskForClient,
-    onEvent: (type, payload) => emitEvent(type, payload)
+    onEvent: publishIntegrationEvent
   });
   const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
+    onDispatchReleased,
     store,
     authorizeAutomaticFollow,
     inspectGitHubPushStatus: (input) => gitHubPushes.branchStatus(input),
@@ -425,7 +441,7 @@ export function createWorktreeIntegrationServices({
     onDeletionFailure: (failure) => {
       console.error(`[worktree-delete] failed ${JSON.stringify(failure)}`);
     },
-    onEvent: (type, payload) => emitEvent(type, payload)
+    onEvent: publishIntegrationEvent
   });
   return { projectWorktreeIntegrationService, worktreeIntegrationJobService };
 }

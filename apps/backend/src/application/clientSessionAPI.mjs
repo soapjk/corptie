@@ -543,6 +543,10 @@ export class ClientSessionAPI {
       preparation: Boolean(this.preparations),
       readiness: readiness?.readiness === "ready" ? "ready" : readiness?.readiness === "not_ready" ? "not_ready" : null,
       notReadyReason: readiness?.readiness === "not_ready" ? notReadyReason : null,
+      executionWait: readiness?.executionWait ? {
+        reason: readiness.executionWait.reason, jobId: readiness.executionWait.jobId,
+        worktreeId: readiness.executionWait.worktreeId, message: readiness.executionWait.message
+      } : null,
       composer: Boolean(this.composer),
       cancelQueuedMessage: Boolean(this.cancelQueuedMessageHandler),
       deleteUnreceivedMessage: Boolean(this.deleteUserMessage),

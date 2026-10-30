@@ -88,7 +88,7 @@ export class TaskWorktreeHierarchyService {
       const session=this.store.getSession(logical.legacySessionId);
       const blocker=sessionHasActiveRun(session)
         ? {reason:session.status==="blocked" ? "WAITING_APPROVAL" : "ACTIVE_TURN"}
-        : includeQueued ? this.store.getSessionRuntimeBlocker(logical.legacySessionId) : null;
+        : this.store.getSessionRuntimeBlocker?.(logical.legacySessionId, { includeQueued }) ?? null;
       if(blocker) {
         const title=session?.title || logical.title || logical.legacySessionId || id;
         const reason={ACTIVE_TURN:"is still running",WAITING_APPROVAL:"is waiting for input or approval",

@@ -2145,6 +2145,7 @@ private func localizedIntegrationPhase(_ value: String) -> String {
     case "recovery_queued": L10n("Recovery queued")
     case "recovery_required": L10n("Revalidate and Continue")
     case "awaiting_integration_acceptance": L10n("Waiting for Parent Acceptance")
+    case "awaiting_session_idle": L10n("Waiting for Session messages to finish")
     case "step_queued", "step_running": L10n("Executing Integration Steps")
     case "plan_stale": L10n("Plan changed")
     case "stopping": L10n("Stopping at a safe boundary")

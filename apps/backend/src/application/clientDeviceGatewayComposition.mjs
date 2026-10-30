@@ -172,7 +172,8 @@ export function startClientDeviceGateway({
       actions: session => decorateSessionForClient(session).actions ?? {},
       readiness: session => {
         const presented = decorateSessionForClient(session);
-        return { readiness: presented.readiness ?? null, notReadyReason: presented.notReadyReason ?? null };
+        return { readiness: presented.readiness ?? null, notReadyReason: presented.notReadyReason ?? null,
+          executionWait: presented.executionWait ?? null };
       },
       usage: (sessionId, { requireFreshAccount = false } = {}) =>
         readSessionUsage(sessionId, undefined, { requireFreshAccount }),

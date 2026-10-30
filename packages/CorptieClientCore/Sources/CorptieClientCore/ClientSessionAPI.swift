@@ -283,6 +283,13 @@ public struct ClientCommandReceipt: Decodable, Sendable {
     public let entityResult: ClientEntityCommandResult?
 }
 public struct ClientSessionCapabilities: Decodable, Sendable {
+    public struct ExecutionWait: Decodable, Equatable, Sendable {
+        public let reason: String
+        public let jobId: String
+        public let worktreeId: String
+        public let message: String
+    }
+    public let executionWait: ExecutionWait?
     public let cancelQueuedMessage: Bool?
     public let deleteUnreceivedMessage: Bool?
     public struct ImageUploads: Decodable, Sendable {

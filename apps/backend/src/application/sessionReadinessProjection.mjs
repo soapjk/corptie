@@ -1,5 +1,6 @@
 import { withResolvedSessionActions } from "../agent-provider/sessionActions.mjs";
 import { withSessionReadiness } from "./sessionReadiness.mjs";
+import { worktreeDispatchBlocker } from "./worktreeExecutionBarrier.mjs";
 
 // Owns transient Provider readiness and projects it through the durable Session
 // revision stream. Probe ownership remains with the runtime lifecycle.
@@ -46,12 +47,17 @@ export function createSessionReadinessProjection({
 
   function decorateSessionForClient(session, options = {}) {
     if (!session) return session;
-    const decorated = withResolvedSessionActions(session, agentProviderRegistry);
+    const decorated = { ...withResolvedSessionActions(session, agentProviderRegistry) };
     const providerIdentity = decorated.external?.provider ?? decorated.provider ?? null;
     const providerId = providerIdentity ? agentProviderRegistry.resolveId(providerIdentity) : null;
     const logical = decorated.logicalSessionId
       ? store.getLogicalSession(decorated.logicalSessionId)
       : store.getLogicalSessionByLegacySessionId(decorated.id);
+    decorated.executionWait = decorated.deliveryStatus === "queued"
+      ? worktreeDispatchBlocker(store, { sessionId: decorated.id, logicalSession: logical }) : null;
+    if (decorated.executionWait && !["running", "blocked"].includes(decorated.executionStatus ?? decorated.status)) {
+      decorated.activityStatus = decorated.executionWait.message;
+    }
     const binding = logical?.activeBinding ?? null;
     const toolMaterialization = logical?.logicalSessionId && binding?.bindingId
       ? store.getSessionToolCatalogMaterialization(logical.logicalSessionId, binding.bindingId)

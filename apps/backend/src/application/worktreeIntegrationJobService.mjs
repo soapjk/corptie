@@ -60,8 +60,10 @@ export class WorktreeIntegrationJobService {
     this.isSessionActive = options.isSessionActive ?? (() => false);
     this.onDeletionFailure = options.onDeletionFailure ?? (() => {});
     this.onEvent = options.onEvent ?? (() => {});
+    this.onDispatchReleased = options.onDispatchReleased ?? (() => {});
     this.authorizeAutomaticFollow = options.authorizeAutomaticFollow ?? (() => false);
     this.activeJobs = new Set();
+    this.dispatchSafetyChecks = new Map();
     this.activeConflictResolutions = new Map();
     this.integrationCandidates = new Map();
     this.repositoryStartOperations = new Map();
@@ -688,6 +690,9 @@ export class WorktreeIntegrationJobService {
     );
     assertCommitProtectionDecisions(built.plan, boundCommitProtectionDecisions);
     this.#assertNoActiveJob(repository.id);
+    // No await between this check and admission of the queued job. A message
+    // claimed before admission must finish; later messages wait behind the job.
+    this.hierarchy.assertIdle(built.plan.reservedWorktreeIds ?? built.plan.items.map(item => item.worktreeId), true);
 
     const now = new Date(this.now()).toISOString();
     const noWorkRequired = built.noWorkRequired;
@@ -888,6 +893,7 @@ export class WorktreeIntegrationJobService {
       }));
     }
     this.#assertNoActiveJob(job.repositoryId, job.id);
+    this.hierarchy.assertIdle(job.details.plan.reservedWorktreeIds ?? job.details.plan.items.map(item => item.worktreeId), true);
     let updated;
     try {
       updated = this.#update(job, {
@@ -1085,6 +1091,9 @@ export class WorktreeIntegrationJobService {
     const job = this.#reconcileConflictResolution(this.#requireJob(jobId));
     if (job.status !== "paused") {
       throw new WorktreeIntegrationJobError("JOB_NOT_PAUSED", "Only a paused task can be retried.", 409);
+    }
+    if (job.details.resumeRequiresReplan) {
+      throw new WorktreeIntegrationJobError("WORKTREE_STATE_CHANGED", "A released Worktree changed. Generate and review a fresh integration plan.", 409);
     }
     if (job.details.conflictResolution?.status === "running") {
       throw new WorktreeIntegrationJobError(
@@ -1642,9 +1651,21 @@ export class WorktreeIntegrationJobService {
 
   async recover() {
     const jobs = this.store.listRecoverableWorktreeIntegrationJobs();
+    const alreadyRecovering = new Set(jobs.map(job => job.id));
+    // Legacy failed/paused jobs are intentionally not replayable, but their
+    // reservations still need reconciliation or they keep messages stuck
+    // across every backend restart.
+    for (const repository of this.store.listGitRepositories?.() ?? []) {
+      const job = this.store.getLatestWorktreeIntegrationJob(repository.id);
+      if (!job || alreadyRecovering.has(job.id) || !(job.status === "paused"
+        || (job.status === "canceled" && job.phase === "canceled_conflict_preserved"))) continue;
+      this.#update(job, { status: job.status, auditEvent: "dispatch_recovery_started" });
+      await this.reconcileDispatchSafety(job.id);
+    }
     for (const job of jobs) {
       if (job.details.plan.orchestration && job.status !== "cancellation_requested") {
         this.#update(job, { status: "paused", phase: "recovery_required", error: "Integration progress was preserved. Revalidate and continue explicitly after restart.", auditEvent: "backend_recovered" });
+        await this.reconcileDispatchSafety(job.id);
         continue;
       }
       if (["cancellation_requested", "replanning"].includes(job.status)) {
@@ -1686,6 +1707,10 @@ export class WorktreeIntegrationJobService {
         await this.#finishCancellation(job, { replan: job.details.replanAfterCancel === true });
         return;
       }
+      if (!['queued', 'running'].includes(job.status)) return;
+      await this.#assertReleasedWorktreesUnchanged(job);
+      job = this.#requireJob(jobId);
+      if (await this.#stopIfRequested(jobId)) return;
       if (!['queued', 'running'].includes(job.status)) return;
       if (job.details.plan.orchestration) {
         this.integrationGraph.assertFresh(job.details.plan.orchestration);
@@ -2070,7 +2095,84 @@ export class WorktreeIntegrationJobService {
       }
     } finally {
       this.activeJobs.delete(jobId);
+      await this.reconcileDispatchSafety(jobId);
     }
+  }
+
+  // Inspect only on a lifecycle transition, never in the message-queue hot
+  // path. Unknown/failed inspection remains closed. Git conflicts are scoped
+  // to the actual target, not every source reserved by the integration plan.
+  async reconcileDispatchSafety(jobId) {
+    if (this.dispatchSafetyChecks.has(jobId)) return this.dispatchSafetyChecks.get(jobId);
+    const check = this.#inspectDispatchSafety(jobId);
+    this.dispatchSafetyChecks.set(jobId, check);
+    try {
+      const stale = await check;
+      if (stale) setImmediate(() => this.reconcileDispatchSafety(jobId).catch(() => {}));
+    }
+    finally { this.dispatchSafetyChecks.delete(jobId); }
+  }
+
+  async #inspectDispatchSafety(jobId) {
+    const job = this.store.getWorktreeIntegrationJob(jobId);
+    if (!job || !["paused", "canceled"].includes(job.status) || this.activeJobs.has(jobId)
+      || job.details.commitPolicyBlocker
+      || job.details.graphExecution?.steps[job.details.graphExecution.index]?.kind === "acceptance") return;
+    let inspection;
+    try {
+      inspection = await this.inspectRepository(job.repositoryId, { forceFresh: true, reason: "integration_dispatch_safety" });
+    } catch { return; }
+    const latest = this.store.getWorktreeIntegrationJob(jobId);
+    if (!latest) return;
+    if (latest.status !== job.status || latest.updatedAt !== job.updatedAt
+      || latest.details.dispatchRevision !== job.details.dispatchRevision || this.activeJobs.has(jobId)) return true;
+    const ids = new Set([...(job.details.plan.reservedWorktreeIds ?? []),
+      ...job.details.plan.items.map(item => item.worktreeId)]);
+    const safeWorktrees = [], blockedWorktreeIds = [];
+    const conflictTargets = new Set(job.details.plan.items.filter(item => item.mergeStatus === "conflict")
+      .map(item => job.details.plan.operationType === "sync" ? item.worktreeId : job.details.plan.mainWorktreeId));
+    for (const id of ids) {
+      const tree = inspection.worktrees.find(item => item.worktreeId === id);
+      if (conflictTargets.has(id) || !tree || tree.availability !== "available" || !tree.headOid || tree.operationState
+        || tree.isLocked || (tree.conflictFiles ?? []).length) {
+        blockedWorktreeIds.push(id);
+      } else {
+        safeWorktrees.push({ worktreeId: id, path: tree.path, branchName: tree.branchName,
+          headOid: tree.headOid, statusSummary: tree.statusSummary ?? "" });
+      }
+    }
+    // Retain the original baseline across repeated reconciliation/restarts.
+    // Otherwise a later safety probe could silently bless Session edits.
+    const prior = new Map((job.details.dispatchSafety?.safeWorktrees ?? []).map(tree => [tree.worktreeId, tree]));
+    const dispatchSafety = { verifiedRevision: job.details.dispatchRevision ?? 0,
+      safeWorktrees: safeWorktrees.map(tree => prior.get(tree.worktreeId) ?? tree), blockedWorktreeIds };
+    if (JSON.stringify(dispatchSafety) === JSON.stringify(job.details.dispatchSafety)) return;
+    const updated = this.#update(latest, { details: { ...latest.details, dispatchSafety }, auditEvent: "dispatch_safety_verified" });
+    this.onEvent("WorktreeIntegrationDispatchReleased", { job: presentJob(updated),
+      worktreeIds: safeWorktrees.map(tree => tree.worktreeId) });
+    this.onDispatchReleased(safeWorktrees.map(tree => tree.worktreeId));
+  }
+
+  async #assertReleasedWorktreesUnchanged(job) {
+    if (job.details.resumeRequiresReplan) throw new WorktreeIntegrationJobError("WORKTREE_STATE_CHANGED", "Generate and review a fresh integration plan.", 409);
+    if (!job.details.dispatchSafety) return;
+    const released = job.details.plan.orchestration || job.details.plan.taskScope
+      ? job.details.dispatchSafety.safeWorktrees ?? [] : [];
+    const inspection = released.length
+      ? await this.inspectRepository(job.repositoryId, { forceFresh: true, reason: "integration_resume_validation" }) : null;
+    for (const before of released) {
+      const tree = inspection.worktrees.find(item => item.worktreeId === before.worktreeId);
+      // A dirty baseline cannot prove file-byte equality from porcelain alone.
+      // Re-preflight it rather than silently approving changed private content.
+      if (!tree || before.statusSummary || tree.path !== before.path || tree.branchName !== before.branchName || tree.headOid !== before.headOid
+        || (tree.statusSummary ?? "") !== before.statusSummary || tree.operationState || (tree.conflictFiles ?? []).length) {
+        const latest = this.#requireJob(job.id);
+        this.#update(latest, { details: { ...latest.details, resumeRequiresReplan: true } });
+        throw new WorktreeIntegrationJobError("WORKTREE_STATE_CHANGED", "A released Worktree changed while integration was paused. Generate and review a fresh integration plan.", 409);
+      }
+    }
+    const latest = this.#requireJob(job.id);
+    this.#update(latest, { details: { ...latest.details, dispatchSafety: null } });
   }
 
   async #stopIfRequested(jobId) {
@@ -2083,7 +2185,11 @@ export class WorktreeIntegrationJobService {
   async #assertIntegrationScopeFresh(job) {
     this.assertRepositoryWritable(job.repositoryId);
     const graph = job.details.plan.orchestration;
-    if (!graph) return this.hierarchy.assertOperationFresh(job.details.plan, job.id);
+    if (!graph) {
+      this.hierarchy.assertIdle(job.details.plan.reservedWorktreeIds ?? job.details.plan.items.map(item => item.worktreeId),
+        job.status === "awaiting_confirmation");
+      return this.hierarchy.assertOperationFresh(job.details.plan, job.id);
+    }
     this.integrationGraph.assertFresh(graph);
     const state = job.details.graphExecution;
     const step = state?.steps[state.index];
@@ -2091,7 +2197,9 @@ export class WorktreeIntegrationJobService {
       const status = await this.integrationGraph.acceptanceStatus(step, job.id);
       if (!status.canPromote) throw new WorktreeIntegrationJobError(status.reason ?? "INTEGRATION_ACCEPTANCE_REQUIRED", "The parent integration acceptance is missing or stale. Complete acceptance for the current parent HEAD, then continue.", 409);
     }
-    this.hierarchy.assertIdle(job.details.plan.reservedWorktreeIds, true);
+    // Once admitted, queued messages are waiting behind this job. Only
+    // dispatched work can block execution; counting queued rows creates a cycle.
+    this.hierarchy.assertIdle(job.details.plan.reservedWorktreeIds, job.status === "awaiting_confirmation");
   }
 
   async #prepareGraphStep(job) {
@@ -2286,6 +2394,7 @@ export class WorktreeIntegrationJobService {
   async #assertWorktreeIdle(repositoryId, worktreeId) {
     const inspection = this.#associate(await this.inspectRepository(repositoryId));
     const worktree = inspection.worktrees.find((candidate) => candidate.worktreeId === worktreeId);
+    this.hierarchy.assertIdle([worktreeId], false);
     const activeSessions = (worktree?.associations ?? []).filter((association) => association.active === true);
     if (activeSessions.length === 0) return;
     throw new WorktreeIntegrationJobError(
@@ -2363,10 +2472,13 @@ export class WorktreeIntegrationJobService {
     const shouldBlockAutomation = automation?.status === "running" && error.code !== "MERGE_CONFLICT";
     const updated = this.#update(job, {
       status: "paused",
-      phase: error.code === "MERGE_CONFLICT" ? "conflict" : "failed",
+      phase: ["TASK_HIERARCHY_BUSY", "ACTIVE_SESSION_IN_PROGRESS"].includes(error.code)
+        ? "awaiting_session_idle" : error.code === "MERGE_CONFLICT" ? "conflict" : "failed",
       error: error.message,
       details: {
         ...job.details,
+        waitingForSession: ["TASK_HIERARCHY_BUSY", "ACTIVE_SESSION_IN_PROGRESS"].includes(error.code)
+          ? { code: error.code, ...error.busyContext } : null,
         ...(error.code === "INTEGRATION_STAGED_TREE_REJECTED" ? {
           stagedTreeBlocker: {
             worktreeId: currentItem?.worktreeId ?? job.details.currentWorktreeId ?? null,
@@ -2474,6 +2586,7 @@ export class WorktreeIntegrationJobService {
     const at = new Date().toISOString();
     const stored = this.store.getWorktreeIntegrationJob(job.id) ?? job;
     let details = patch.details ?? stored.details;
+    if (patch.status) details = { ...details, dispatchRevision: (stored.details.dispatchRevision ?? 0) + 1 };
     if (Object.prototype.hasOwnProperty.call(patch, "currentWorktreeId")) {
       details = { ...details, currentWorktreeId: patch.currentWorktreeId };
     }
@@ -2487,6 +2600,14 @@ export class WorktreeIntegrationJobService {
     }
     const updated = this.store.updateWorktreeIntegrationJob(job.id, { ...patch, details });
     this.onEvent("WorktreeIntegrationJobChanged", { job: presentJob(updated) });
+    if (patch.status === "completed") {
+      this.onDispatchReleased(updated.details.plan.reservedWorktreeIds ?? updated.details.plan.items.map(item => item.worktreeId));
+    }
+    if (["paused", "canceled"].includes(patch.status)) {
+      setImmediate(() => this.reconcileDispatchSafety(updated.id).catch(error => {
+        console.warn(`[worktree-integration] dispatch safety check failed job=${updated.id}: ${error.message}`);
+      }));
+    }
     return updated;
   }
 
@@ -3382,6 +3503,7 @@ function integrationJobAvailableActions(job) {
     return ["cancel"];
   }
   if (job.status !== "paused") return [];
+  if (job.resumeRequiresReplan) return ["repreflight", "cancel"];
   if (job.phase === "awaiting_integration_acceptance") return ["retry", "cancel"];
   if (job.plan?.orchestration && ["INTEGRATION_GRAPH_STATE_CHANGED", "TASK_HIERARCHY_CHANGED", "TASK_DELIVERY_BINDING_CHANGED",
     "MAIN_HEAD_CHANGED", "MAIN_DIRTY", "WORKTREE_STATE_CHANGED", "WORKTREE_RECHECK_DIRTY"].includes([...(job.audit ?? [])].reverse().find(event => event.code)?.code)) return ["repreflight", "cancel"];

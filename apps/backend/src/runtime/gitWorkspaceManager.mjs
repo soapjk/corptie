@@ -2263,7 +2263,10 @@ export class GitWorkspaceManager {
     if (repositoryId) this.invalidateInspectionCache(repositoryId, `git_${arguments_[0]}`);
     const result = await this.execFile("git", ["-C", cwd, ...arguments_], {
       encoding: "utf8",
-      maxBuffer: 4 * 1024 * 1024
+      maxBuffer: 4 * 1024 * 1024,
+      // Read-only safety probes must not refresh the index while an explicit
+      // conflict-resolution commit is taking its mandatory index lock.
+      ...(arguments_[0] === "status" ? { env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } } : {})
     });
     if (repositoryId) this.invalidateInspectionCache(repositoryId, `git_${arguments_[0]}_completed`);
     return result;

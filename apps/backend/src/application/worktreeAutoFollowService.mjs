@@ -1,30 +1,12 @@
+import { worktreeDispatchBlocker } from "./worktreeExecutionBarrier.mjs";
+
 const STATE_KEY = "worktree:auto-follow:v1";
 const ACTIVE = new Set(["awaiting_confirmation", "queued", "running", "paused", "replanning", "cancellation_requested"]);
 
 // Shared Session dispatch barrier: queued user messages remain queued during
 // an actual automatic Git job instead of starting in the rebasing Worktree.
 export function automaticWorktreeMutationActive(store, reference) {
-  const logical = (reference.logicalSessionId ? store.getLogicalSession?.(reference.logicalSessionId) : null)
-    ?? store.getLogicalSessionByLegacySessionId?.(reference.sessionId);
-  if (!logical?.repositoryId || !logical.activeWorkspaceId) return false;
-  const job = store.getLatestWorktreeIntegrationJob?.(logical.repositoryId);
-  if(job?.details?.plan?.orchestration && ["queued","running","paused","cancellation_requested","replanning"].includes(job.status)) {
-    const state=job.details.graphExecution;
-    const step=state?.steps[state.index];
-    // The parent Session must be able to capture/run/report acceptance while
-    // the orchestration waits. Its exact code is rechecked before publication.
-    if(job.status==="paused" && job.phase==="awaiting_integration_acceptance"
-      && step?.kind==="acceptance" && logical.activeWorkspaceId===step.targetWorktreeId
-      && (logical.taskId ?? store.getSession?.(logical.legacySessionId)?.taskId)===step.rootTaskId) return false;
-    return job.details.plan.reservedWorktreeIds?.includes(logical.activeWorkspaceId) === true;
-  }
-  if(job?.details?.plan?.taskScope && ["queued","running","paused","cancellation_requested","replanning"].includes(job.status)) {
-    return job.details.plan.reservedWorktreeIds?.includes(logical.activeWorkspaceId) === true;
-  }
-  return Boolean(job && ["queued", "running", "cancellation_requested"].includes(job.status)
-      && (job.details?.automaticFollow || job.details?.plan?.operationType === "sync")
-      && job.details.plan?.items?.some(item => item.worktreeId === logical.activeWorkspaceId
-        && !item.isMain && !["completed", "already_integrated", "recovered"].includes(item.mergeStatus)));
+  return worktreeDispatchBlocker(store, reference) !== null;
 }
 export function assertNoAutomaticWorktreeMutation(store, reference) {
   if (automaticWorktreeMutationActive(store, reference)) {

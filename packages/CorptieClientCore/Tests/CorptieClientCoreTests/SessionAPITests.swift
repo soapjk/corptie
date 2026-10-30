@@ -149,6 +149,12 @@ struct SessionAPITests {
             from: Data(#"{"schemaVersion":1,"sessionId":"s","readMessages":true,"send":{"available":true},"stop":{"available":true}}"#.utf8))
         #expect(legacy.readiness == nil)
         #expect(legacy.notReadyReason == nil)
+        #expect(legacy.executionWait == nil)
+        let waiting = try JSONDecoder().decode(ClientSessionCapabilities.self,
+            from: Data(#"{"schemaVersion":1,"sessionId":"s","readMessages":true,"send":{"available":true},"stop":{"available":false},"readiness":"ready","executionWait":{"reason":"WORKTREE_INTEGRATION_IN_PROGRESS","jobId":"job","worktreeId":"tree","message":"Waiting for integration"}}"#.utf8))
+        #expect(waiting.send.available)
+        #expect(waiting.executionWait?.jobId == "job")
+        #expect(waiting.executionWait?.reason == "WORKTREE_INTEGRATION_IN_PROGRESS")
     }
     @Test func timelinePresentationDecodesAdditivelyAndInvalidatesOnStateChanges() throws {
         let data = Data(#"{"id":"tool:1","turnId":"turn:1","type":"commandExecution","text":"output","turnStatus":"running","title":"Read source","presentationRole":"commentary","presentationText":"检查代码","sourceType":"tool","localVisibility":"visible","processingError":"failed","processStartedAt":"start","processEndedAt":"end"}"#.utf8)

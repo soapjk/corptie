@@ -417,6 +417,49 @@ async function waitForJob(service, id, status) {
   assert.fail(`job ${id} did not reach ${status}`);
 }
 
+test("dispatch safety coalesces inspections, fails closed and discards stale lifecycle results", async () => {
+  const { service, store, worktrees } = memoryFixture({ featureDirty: false });
+  const plan = await service.preflight("repository:1");
+  store.updateWorktreeIntegrationJob(plan.id, { status: "paused", phase: "failed" });
+  service.inspectRepository = async () => { throw new Error("Git state unavailable"); };
+  await service.reconcileDispatchSafety(plan.id);
+  assert.equal(service.get(plan.id).dispatchSafety, undefined);
+  let finish, scans = 0;
+  service.inspectRepository = () => { scans++; return new Promise(resolve => { finish = resolve; }); };
+  const first = service.reconcileDispatchSafety(plan.id), second = service.reconcileDispatchSafety(plan.id);
+  assert.equal(scans, 1);
+  store.updateWorktreeIntegrationJob(plan.id, { status: "running" });
+  finish({ worktrees: structuredClone(worktrees) });
+  await Promise.all([first, second]);
+  assert.equal(service.get(plan.id).dispatchSafety, undefined);
+});
+
+test("startup reconciles legacy paused reservations without replaying their Git operations", async () => {
+  const { service, store, calls } = memoryFixture({ featureDirty: false });
+  const job = await service.preflight("repository:1");
+  store.updateWorktreeIntegrationJob(job.id, { status: "paused", phase: "failed", error: "unfinished message deliveries" });
+  assert.equal(store.listRecoverableWorktreeIntegrationJobs().length, 0);
+  await service.recover();
+  const recovered = service.get(job.id);
+  assert.equal(recovered.status, "paused");
+  assert.ok(recovered.dispatchSafety.safeWorktrees.some(tree => tree.worktreeId === "wt:feature"));
+  assert.equal(recovered.dispatchSafety.verifiedRevision, recovered.dispatchRevision);
+  assert.deepEqual(calls, []);
+});
+
+test("a resumed ordinary merge waits for already running target work before touching Git", async () => {
+  const { service, store, calls } = memoryFixture({ featureDirty: false });
+  const job = await service.preflight("repository:1");
+  store.updateWorktreeIntegrationJob(job.id, { status: "paused", phase: "failed" });
+  store.listLogicalSessionsByWorkspaceId = id => id === "wt:main" ? [{ legacySessionId: "session:target" }] : [];
+  store.getSession = () => ({ id: "session:target", title: "Target", status: "running" });
+  service.retry(job.id);
+  const waiting = await waitForJob(service, job.id, "paused");
+  assert.equal(waiting.phase, "awaiting_session_idle");
+  assert.equal(waiting.waitingForSession.reason, "ACTIVE_TURN");
+  assert.equal(calls.some(call => call.startsWith("merge:")), false);
+});
+
 async function waitForJobWhere(service, id, predicate) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const job = service.get(id);

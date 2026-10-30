@@ -1893,3 +1893,6 @@
 
 "展开消息" = "展开消息";
 "收起消息" = "收起消息";
+"Waiting for Session messages to finish" = "正在等待会话消息处理完成";
+"Message received; waiting for Worktree integration to finish." = "消息已接收，正在等待工作区集成完成。";
+"Message received; the Worktree needs conflict resolution or recovery." = "消息已接收，工作区需要先解决冲突或恢复。";

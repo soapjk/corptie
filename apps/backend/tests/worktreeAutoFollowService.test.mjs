@@ -6,6 +6,25 @@ import { ClientInspectorAPI } from "../src/application/clientInspectorAPI.mjs";
 import { handleSessionGitHttpRequest } from "../src/application/sessionGitHttpApi.mjs";
 import { GitWorkspaceManager } from "../src/runtime/gitWorkspaceManager.mjs";
 
+test("paused and canceled reservations never expose an unverified or conflicted Worktree", () => {
+  const job = { id: "job", status: "paused", phase: "awaiting_session_idle", details: {
+    plan: { operationType: "merge", items: [{ worktreeId: "source" }, { worktreeId: "target", isMain: true }] }
+  } };
+  let workspaceId = "source";
+  const store = { getLogicalSessionByLegacySessionId: () => ({ repositoryId: "repo", activeWorkspaceId: workspaceId }),
+    getLatestWorktreeIntegrationJob: () => job };
+  assert.throws(() => assertNoAutomaticWorktreeMutation(store, { sessionId: "s" }), { code: "SESSION_BUSY" });
+  job.details.dispatchSafety = { safeWorktrees: [{ worktreeId: "source" }], blockedWorktreeIds: ["target"] };
+  assert.doesNotThrow(() => assertNoAutomaticWorktreeMutation(store, { sessionId: "s" }));
+  workspaceId = "target";
+  for (const status of ["paused", "canceled"]) {
+    job.status = status;
+    assert.throws(() => assertNoAutomaticWorktreeMutation(store, { sessionId: "s" }), { code: "SESSION_BUSY" });
+  }
+  workspaceId = "unrelated";
+  assert.doesNotThrow(() => assertNoAutomaticWorktreeMutation(store, { sessionId: "s" }));
+});
+
 test("hierarchical integration reserves only its closure and permits the exact parent acceptance Session while waiting", () => {
   let workspace = "child";
   const job = { status: "running", phase: "merging", details: { plan: { orchestration: { version: 1 }, reservedWorktreeIds: ["parent", "child", "main"] },
@@ -80,6 +99,8 @@ test("all Providers share a dispatch barrier only for the affected automatic Git
   logical.activeWorkspaceId = "unrelated";
   assert.doesNotThrow(() => assertNoAutomaticWorktreeMutation(store, { logicalSessionId: "logical" }));
   logical.activeWorkspaceId = "tree"; job.status = "paused";
+  assert.throws(() => assertNoAutomaticWorktreeMutation(store, { logicalSessionId: "logical" }), { code: "SESSION_BUSY" });
+  job.details.dispatchSafety = { safeWorktrees: [{ worktreeId: "tree" }], blockedWorktreeIds: [] };
   assert.doesNotThrow(() => assertNoAutomaticWorktreeMutation(store, { logicalSessionId: "logical" }));
   job.status = "completed";
   assert.doesNotThrow(() => assertNoAutomaticWorktreeMutation(store, { logicalSessionId: "logical" }));

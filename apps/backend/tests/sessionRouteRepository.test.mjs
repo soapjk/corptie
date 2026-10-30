@@ -51,8 +51,15 @@ test("integration identifies the exact unfinished Delivery and remains blocked u
     store.createAgent({id:"agent:busy",name:"Busy",role:"independentContributor"});
     store.upsertSession({id:"session:busy",title:"Busy Session",agent:"Busy",status:"complete",provider:"provider:test"});
     const binding = {bindingId:"binding:busy",providerId:"provider:test",providerSessionId:"thread:busy",routingVersion:1};
-    store.createUserMessageDelivery({deliveryId:"delivery:busy",messageId:"message:busy",sessionId:"session:busy",
+    const created = store.createUserMessageDelivery({deliveryId:"delivery:busy",messageId:"message:busy",sessionId:"session:busy",
       binding,agentId:"agent:busy",text:"run"});
+    assert.equal(store.getSessionRuntimeBlocker("session:busy",{includeQueued:false}), null,
+      "new queued messages must not block the integration that holds them");
+    store.claimAgentTask(created.task.taskId);
+    assert.deepEqual(store.getSessionRuntimeBlocker("session:busy",{includeQueued:false}), {reason:"BACKGROUND_OPERATION"},
+      "claimed work blocks Git even before Provider acknowledgement");
+    store.updateMessageDelivery("delivery:busy",{status:"delivery_unknown"});
+    assert.equal(store.getSessionRuntimeBlocker("session:busy",{includeQueued:false}).reason,"UNSETTLED_DELIVERY");
     store.updateMessageDelivery("delivery:busy",{status:"processing",providerTurnId:"turn:busy"});
     // Finish the admission queue operation; the remaining blocker is the Delivery.
     store.db.run("UPDATE agent_operations SET status='completed' WHERE session_id=?",["session:busy"]);

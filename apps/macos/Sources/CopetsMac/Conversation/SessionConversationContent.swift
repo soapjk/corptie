@@ -285,7 +285,7 @@ struct SessionConversationSurface: View {
                     status: selectedSession?.executionTaskStatus ?? displayedDetail?.status,
                     isReady: selectedSession?.isReady ?? displayedDetail?.isReady ?? true,
                     notReadyReason: selectedSession?.notReadyReason ?? displayedDetail?.notReadyReason,
-                    activityStatus: selectedSession?.activityStatus ?? displayedDetail?.activityStatus,
+                    activityStatus: (selectedSession?.activityStatus ?? displayedDetail?.activityStatus).map { L10n($0) },
                     onSubmissionStarted: { if acceptsPresentationUpdates { hasSubmittedMessage = true } },
                     renderInputs: renderInputs)
                 .id(sessionId)
@@ -299,7 +299,7 @@ struct SessionConversationSurface: View {
                 status: selectedSession?.executionTaskStatus ?? displayedDetail?.status,
                 isReady: selectedSession?.isReady ?? displayedDetail?.isReady ?? true,
                 notReadyReason: selectedSession?.notReadyReason ?? displayedDetail?.notReadyReason,
-                activityStatus: selectedSession?.activityStatus ?? displayedDetail?.activityStatus,
+                activityStatus: (selectedSession?.activityStatus ?? displayedDetail?.activityStatus).map { L10n($0) },
                 onSubmissionStarted: { hasSubmittedMessage = true }
             )
             .id(sessionId)

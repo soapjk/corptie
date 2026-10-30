@@ -1,6 +1,38 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRuntimeAgentWorkQueue } from "../src/runtime/runtimeAgentWorkQueue.mjs";
+import { automaticWorktreeMutationActive } from "../src/application/worktreeAutoFollowService.mjs";
+
+test("a paused integration yields its verified safe source so the message it waits for can run", async () => {
+  const job = { id: "integration", status: "paused", phase: "awaiting_session_idle", details: {
+    plan: { orchestration: {}, reservedWorktreeIds: ["source", "target"] },
+    dispatchSafety: { safeWorktrees: [{ worktreeId: "source" }], blockedWorktreeIds: ["target"] }
+  } };
+  const store = { getLogicalSessionByLegacySessionId: () => ({ repositoryId: "repo", activeWorkspaceId: "source" }),
+    getLatestWorktreeIntegrationJob: () => job };
+  const f = fixture({ isWorkspaceMutationActive: () => automaticWorktreeMutationActive(store, { sessionId: "session" }) });
+  f.add("message");
+  await f.queue.drainAgentWork("session");
+  assert.equal(f.sends.length, 1);
+  assert.equal(f.tasks.get("message").status, "running");
+  store.getLogicalSessionByLegacySessionId = () => ({ repositoryId: "repo", activeWorkspaceId: "target" });
+  assert.equal(automaticWorktreeMutationActive(store, { sessionId: "session" }), true);
+});
+
+test("integration starting during an asynchronous route probe prevents claiming queued work", async () => {
+  let mutating = false;
+  const f = fixture({ isWorkspaceMutationActive: () => mutating });
+  // Active-run reconciliation is an asynchronous boundary before claim.
+  f.deps.store.getSession = id => ({ id, status: "running", external: { activeTurnId: "old" } });
+  // Recreate with a probe that observes the run settling as integration starts.
+  const queue = createRuntimeAgentWorkQueue({ ...f.deps,
+    inspectCollaborationSession: async () => { mutating = true; return "idle"; } });
+  f.add("message");
+  queue.registerRuntimeQueuedWork("session", "message");
+  await queue.drainAgentWork("session");
+  assert.equal(f.tasks.get("message").status, "queued");
+  assert.equal(f.sends.length, 0);
+});
 
 test("automatic Worktree mutation holds messages without claiming or exhausting retries", async () => {
   let mutating = true;

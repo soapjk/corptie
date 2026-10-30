@@ -201,6 +201,11 @@ export function createRuntimeAgentWorkQueue({
     }
     if (workspaceTransitionBlocksWork(store.getLogicalSessionByLegacySessionId(sessionId))) return;
 
+    // Route verification and stale-run reconciliation above may await. Check
+    // again immediately before the synchronous claim, which reserves dispatch
+    // against integration's final idle check.
+    if (isWorkspaceMutationActive(sessionId)) return;
+
     const claimed = store.claimAgentTask(next.taskId);
     if (!claimed) return;
     forgetRuntimeQueuedWork(sessionId, next.taskId);
