@@ -3,6 +3,20 @@ import Testing
 @testable import CorptieMac
 
 struct CorptieTaskDeletionInteractionTests {
+    @Test func forceDeletionUsesTypedBranchOnDesktopAndMobile() throws {
+        let desktop = try warRoomSource("WorkTasks/TaskDeletionConfirmation.swift")
+        let package = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let mobile = try String(contentsOf: package.appendingPathComponent("../ipad/Sources/PadEntityMenus.swift"), encoding: .utf8)
+        for source in [desktop, mobile] {
+            #expect(source.contains("TaskDeletionConfirmationPolicy.confirmsBranch(confirmedBranchName"))
+            #expect(source.contains("TaskDeletionConfirmationPolicy.isTaskLevelBlocker"))
+            #expect(source.contains("输入完整分支名以确认"))
+            #expect(source.contains("不影响父任务、兄弟任务"))
+        }
+        #expect(desktop.contains("onDelete(true, confirmedBranchName"))
+        #expect(mobile.contains("request.confirmedBranchName = confirmedBranchName"))
+        #expect(!mobile.contains("request.confirmedBranchName = plan.worktree?.branchName"))
+    }
     @Test
     func taskCardsExposeTheSafeDeletionFlowFromAContextMenu() throws {
         let contents = try warRoomSource("WorkTasks/TaskBoardViews.swift")

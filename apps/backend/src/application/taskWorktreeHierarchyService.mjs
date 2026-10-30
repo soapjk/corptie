@@ -21,6 +21,37 @@ export class TaskWorktreeHierarchyService {
       .filter(child=>child.participates);
   }
 
+  async inspectChildDeliveryChanges(childTaskId, observation=null) {
+    const item = observation?.item ?? this.resolveTaskDelivery(childTaskId, { allowAdoption: false });
+    if(!observation) await this.assertClean(item.inventory);
+    const path = item.inventory.canonicalPath || item.inventory.path;
+    const currentHeadOid = observation?.headOid ?? await this.scalar(path, ["rev-parse", "HEAD"]);
+    const baseCommitOid = item.binding.base_commit_oid;
+    const baseTreeOid = item.binding.base_tree_oid;
+    const currentTreeOid = currentHeadOid===baseCommitOid && baseTreeOid
+      ? baseTreeOid : await this.scalar(path, ["rev-parse", `${currentHeadOid}^{tree}`]);
+    // Legacy deliveries without a frozen base cannot prove an exemption.
+    const changeState = !baseCommitOid || !baseTreeOid ? "unavailable"
+      : currentHeadOid === baseCommitOid && currentTreeOid === baseTreeOid ? "no_changes"
+      : currentTreeOid === baseTreeOid ? "history_only" : "code_changes";
+    if(!observation) {
+      await this.assertClean(item.inventory);
+      if (await this.scalar(path, ["rev-parse", "HEAD"]) !== currentHeadOid) throw error("WORKTREE_STATE_CHANGED");
+    }
+    return { taskId: childTaskId, parentTaskId: item.task.parent_task_id, worktreeId: item.binding.worktree_id,
+      baseCommitOid, baseTreeOid, currentHeadOid, currentTreeOid, changeState };
+  }
+
+  async inspectIntegrationRequirement(rootTaskId) {
+    const root = this.resolveTaskDelivery(rootTaskId, { allowAdoption: false });
+    await this.assertClean(root.inventory);
+    const parentHeadOid = await this.scalar(root.inventory.canonicalPath || root.inventory.path, ["rev-parse", "HEAD"]);
+    const children = [];
+    for (const child of this.deliveryChildren(rootTaskId)) children.push(await this.inspectChildDeliveryChanges(child.id));
+    return { requirement: children.some(child => !["no_changes", "history_only"].includes(child.changeState)) ? "required" : "none",
+      parentHeadOid, hierarchyRevision: root.task.hierarchy_revision, bindingRevision: root.binding.binding_revision, children };
+  }
+
   deliveryFailure(task, binding, reason) {
     return Object.assign(error("PARENT_WORKTREE_REQUIRED", `Task ${task.title || task.id} (${task.id}) has no proven available delivery Worktree: ${reason}.`), {
       diagnosis:{taskId:task.id,parentTaskId:task.parent_task_id ?? null,worktreeId:binding?.worktree_id ?? null,
@@ -72,8 +103,8 @@ export class TaskWorktreeHierarchyService {
     if(scope.action==="promote_parent") {
       if(!main?.headOid) throw error("WORKTREE_STATE_CHANGED");
       const status=await new TaskIntegrationAcceptanceService({store:this.store,execGit:this.git}).readStatus(root.task.id,{receiptId:scope.acceptanceReceiptId,ownJobId:input.jobId});
-      if(!scope.acceptanceReceiptId || !status.canPromote) throw error(status.reason ?? "INTEGRATION_ACCEPTANCE_REQUIRED");
-      await this.git(root.inventory.path,["merge-base","--is-ancestor",main.headOid,status.testedHeadOid]).catch(cause=>{if(cause.code===1)throw error("MAIN_NOT_ANCESTOR_OF_ACCEPTED_PARENT");throw cause;});
+      if(!status.canPromote) throw error(status.reason ?? "INTEGRATION_ACCEPTANCE_REQUIRED");
+      await this.git(root.inventory.path,["merge-base","--is-ancestor",main.headOid,status.currentHeadOid ?? status.testedHeadOid]).catch(cause=>{if(cause.code===1)throw error("MAIN_NOT_ANCESTOR_OF_ACCEPTED_PARENT");throw cause;});
     }
     const reservedWorktreeIds=[...new Set([...ids,...(scope.action==="promote_parent" ? children.map(c=>c.worktree_id).filter(Boolean) : [])])];
     this.assertIdle(reservedWorktreeIds,true);
@@ -182,7 +213,20 @@ export class TaskWorktreeHierarchyService {
       const id=tree.hierarchy.parentTaskId;
       integratedCounts.set(id,(integratedCounts.get(id) ?? 0)+1);
     }
-    for(const tree of result) if(tree.hierarchy?.role==="parent") tree.hierarchy.integratedChildCount=integratedCounts.get(tree.hierarchy.taskId) ?? 0;
+    const childStates=new Map();
+    for(const tree of result) if(tree.hierarchy?.role==="child") {
+      try { tree.hierarchy.changeState=(await this.inspectChildDeliveryChanges(tree.hierarchy.taskId)).changeState; }
+      catch { tree.hierarchy.changeState=tree.dirty ? "dirty" : "unavailable"; }
+      const parentID=tree.hierarchy.parentTaskId;
+      if(!childStates.has(parentID)) childStates.set(parentID,[]);
+      childStates.get(parentID).push(tree.hierarchy.changeState);
+    }
+    for(const tree of result) if(tree.hierarchy?.role==="parent") {
+      tree.hierarchy.integratedChildCount=integratedCounts.get(tree.hierarchy.taskId) ?? 0;
+      const states=childStates.get(tree.hierarchy.taskId) ?? [];
+      tree.hierarchy.integrationRequirement=states.length!==tree.hierarchy.childCount || states.some(state=>["dirty","unavailable"].includes(state))
+        ? "blocked" : states.some(state=>state==="code_changes") ? "required" : "none";
+    }
     return {...inspection,deliveryNotices,taskHierarchyCapabilities:{version:1,maxDepth:1,createChild:true,worktreeOperations:true,integrationAcceptance:true},worktrees:result};
   }
 

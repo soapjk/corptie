@@ -95,7 +95,7 @@ struct ConversationNativeBusinessDetail: View {
             ConversationWorktreeCard(sessionID: handle.scope.sessionID, refreshID: "\(value.worktreeId ?? ""):\(state.card.revision)",
                 api: { try await adapters.worktreeAPI(value.worktreeId) }, onJob: adapters.onWorktreeJob,
                 state: handle.worktree, expectedWorktreeID: value.worktreeId,
-                presentationState: renderState?.worktree, activity: activity)
+                presentationState: renderState?.worktree, activity: activity, openParent: adapters.openSession)
                 .disabled(!store.isCurrent)
         default:
             NativeBusinessCard(state: state, api: api, store: store, commandStore: operationStore, activity: activity, actions: actions, references: adapters.referenceManagement, openArtifact: adapters.openArtifact, workID: context.workID,

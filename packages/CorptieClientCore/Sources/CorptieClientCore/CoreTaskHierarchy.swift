@@ -71,6 +71,8 @@ public struct TaskHierarchyScope: Codable, Sendable, Hashable {
 }
 
 public struct WorktreeHierarchy: Codable, Sendable, Hashable {
+    public var changeState: String? = nil
+    public var integrationRequirement: String? = nil
     public struct Comparison: Codable, Sendable, Hashable {
         public let kind: String
         public let worktreeId: String
@@ -117,4 +119,26 @@ public struct TaskIntegrationAcceptanceStatus: Decodable, Sendable {
     public let testedHeadOid: String?
     public let canPromote: Bool
     public let reason: String?
+    public let approvalSource: String?
+    public let automatedVerification: String?
+    public let acceptedHeadOid: String?
+    public let currentHeadOid: String?
+    public let parentTaskTitle: String?
+    public let parentSessionId: String?
+    public let hierarchyRevision: Int?
+    public let bindingRevision: Int?
+    public let manualAcceptance: Bool?
+    public var mayPromote: Bool { canPromote && ["passed", "not_required"].contains(state) }
+}
+
+public struct TaskIntegrationUserApproval: Decodable, Sendable, Identifiable {
+    public var id: String { intentId }
+    public let intentId: String
+    public let confirmationToken: String
+    public let expiresAt: String
+    public let snapshotId: String
+    public let parentTaskId: String
+    public let parentTaskTitle: String
+    public let parentHeadOid: String
+    public let automatedVerification: String
 }

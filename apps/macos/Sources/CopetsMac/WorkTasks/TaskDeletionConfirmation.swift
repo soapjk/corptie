@@ -16,12 +16,16 @@ struct CorptieTaskDeletionConfirmationView: View {
 
     @State private var showForceConfirmation = false
     @State private var acknowledgesDataLoss = false
+    @State private var confirmedBranchName = ""
     @State private var deleteWorktree = true
     @State private var artifactDisposition: CorptieTaskArtifactDisposition = .delete
 
     private var artifacts: [CorptieTaskDeletionArtifact] { plan.artifacts ?? [] }
     private var effectiveBlockers: [CorptieTaskDeletionRisk] {
-        deleteWorktree ? plan.blockers : plan.blockers.filter { $0.code == "START_IN_PROGRESS" }
+        deleteWorktree ? plan.blockers : plan.blockers.filter { TaskDeletionConfirmationPolicy.isTaskLevelBlocker($0.code) }
+    }
+    private var canForceDelete: Bool {
+        TaskDeletionConfirmationPolicy.canForceDelete(riskCodes: plan.risks.map(\.code), branchName: plan.worktree?.branchName)
     }
 
     var body: some View {
@@ -34,6 +38,10 @@ struct CorptieTaskDeletionConfirmationView: View {
             .foregroundStyle(showForceConfirmation ? Color.red : Color.primary)
 
             Text(task.title).font(.headline)
+            if plan.parentTaskId != nil {
+                Text(L10n("仅删除此子任务及所选资源；不影响父任务、兄弟任务或已合入父分支的代码。"))
+                    .font(.callout).foregroundStyle(.secondary)
+            }
 
             Text(L10nFormat(
                 "删除此 CorptieTask 将永久删除 %d 个关联会话及完整会话历史。Worktree 和 Artifact 将按下方选项处理。此操作无法撤销。",
@@ -86,19 +94,28 @@ struct CorptieTaskDeletionConfirmationView: View {
                 Text(L10n("强制删除将永久丢弃上述未提交修改、未跟踪文件和未合并提交，且无法从 Corptie 恢复。"))
                     .font(.callout.weight(.semibold)).foregroundStyle(.red)
                 Toggle(L10n("我理解这些内容可能永久丢失"), isOn: $acknowledgesDataLoss)
+                TextField(L10n("输入完整分支名以确认"), text: $confirmedBranchName)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel(L10n("输入完整分支名以确认"))
             }
 
             HStack {
                 Spacer()
                 Button(L10n("取消"), role: .cancel, action: onCancel)
                 if !showForceConfirmation, deleteWorktree, !plan.risks.isEmpty, effectiveBlockers.isEmpty {
-                    Button(L10n("先合并"), action: onMergeFirst)
-                    Button(L10n("强制删除"), role: .destructive) { showForceConfirmation = true }
+                    Button(L10n(plan.parentTaskId == nil ? "先合并" : "先合并到父分支"), action: onMergeFirst)
+                    Button(L10n("强制删除"), role: .destructive) {
+                        showForceConfirmation = true
+                        confirmedBranchName = ""
+                        acknowledgesDataLoss = false
+                    }.disabled(!canForceDelete)
                 } else if showForceConfirmation {
                     Button(L10n("确认强制删除"), role: .destructive) {
-                        onDelete(true, plan.worktree?.branchName, deleteWorktree, artifactDisposition)
+                        onDelete(true, confirmedBranchName, deleteWorktree, artifactDisposition)
                     }
-                    .disabled(!acknowledgesDataLoss)
+                    .disabled(!acknowledgesDataLoss || !canForceDelete
+                        || !TaskDeletionConfirmationPolicy.confirmsBranch(confirmedBranchName, expected: plan.worktree?.branchName)
+                        || !effectiveBlockers.isEmpty)
                 } else if effectiveBlockers.isEmpty {
                     Button(L10n("确认删除"), role: .destructive) {
                         onDelete(false, nil, deleteWorktree, artifactDisposition)
@@ -109,10 +126,16 @@ struct CorptieTaskDeletionConfirmationView: View {
         .padding(20)
         .frame(width: 520)
         .onChange(of: deleteWorktree) { _, enabled in
+            confirmedBranchName = ""
             if !enabled {
                 showForceConfirmation = false
                 acknowledgesDataLoss = false
             }
+        }
+        .onChange(of: plan) { _, _ in
+            showForceConfirmation = false
+            acknowledgesDataLoss = false
+            confirmedBranchName = ""
         }
     }
 

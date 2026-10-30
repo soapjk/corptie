@@ -37,6 +37,10 @@ export class SessionChannelService {
           409
         );
       }
+      if (presented.status === "confirmed" && this.store.selectOne(
+        "SELECT 1 FROM session_collaboration_channel_authorizations WHERE request_id=? AND json_extract(evidence_json,'$.type')='parent_child_policy'", [presented.requestId])) {
+        return this.parentChildSendReceipt(presented, input);
+      }
       return presented;
     }
 
@@ -75,6 +79,9 @@ export class SessionChannelService {
       summary: optionalText(input.summary) ?? body,
       sourceContext: this.#resourceContext(source.logicalSessionId)
     };
+    const authorization = recipient ? this.resolveParentChildAuthorization(source.logicalSessionId, recipient.logicalSessionId) : null;
+    let confirmed;
+    this.store.runInTransaction(() => {
     this.store.db.run(
       `INSERT INTO session_collaboration_channel_requests (
          request_id, channel_id, requesting_session_id, requested_recipient_session_id,
@@ -83,8 +90,36 @@ export class SessionChannelService {
       [requestId, source.logicalSessionId, recipient?.logicalSessionId ?? null,
         JSON.stringify(request), idempotencyKey, timestamp]
     );
+    if (authorization) {
+      const current = this.resolveParentChildAuthorization(source.logicalSessionId, recipient.logicalSessionId);
+      if (!current) throw channelError("CHANNEL_PARENT_CHILD_BINDING_CHANGED", "The parent/child Session binding changed.", 409);
+      confirmed = this.confirmRequest(requestId, {}, current);
+    }
+    });
     this.store.scheduleSave();
+    if (confirmed) return this.parentChildSendReceipt(confirmed, input);
     return this.getRequest(requestId);
+  }
+
+  resolveParentChildAuthorization(sourceId, recipientId) {
+    const source = this.#resourceContext(sourceId), recipient = this.#resourceContext(recipientId);
+    if (!source.taskId || !recipient.taskId || !source.workId || source.workId !== recipient.workId) return null;
+    const parent = this.store.getTask(source.taskId), child = this.store.getTask(recipient.taskId);
+    if (!parent || !child || parent.parent_task_id || child.parent_task_id !== parent.id
+      || parent.work_id !== child.work_id || parent.work_id !== source.workId
+      || parent.archived || child.archived || parent.deletion_status || child.deletion_status
+      || parent.current_session_id !== this.#requireLogicalSession(sourceId).legacySessionId
+      || child.current_session_id !== this.#requireLogicalSession(recipientId).legacySessionId) return null;
+    const [a,b] = canonicalPair(sourceId,recipientId);
+    if (this.store.selectOne("SELECT 1 FROM session_collaboration_channels WHERE session_a_id=? AND session_b_id=? AND status='revoked'",[a,b])) return null;
+    return {type:"parent_child_policy",parentTaskId:parent.id,childTaskId:child.id,
+      sourceSessionId:sourceId,recipientSessionId:recipientId};
+  }
+
+  parentChildSendReceipt(request, input) {
+    const sent = this.sendMessage({channelId:request.channelId,senderSessionId:request.requestingSessionId,
+      body:input.body,messageKind:input.messageKind,inReplyToMessageId:input.inReplyToMessageId,idempotencyKey:input.idempotencyKey});
+    return {status:"sent",routeAuthorization:"parent_child_policy",requestId:request.requestId,...sent};
   }
 
   getRequest(requestId) {

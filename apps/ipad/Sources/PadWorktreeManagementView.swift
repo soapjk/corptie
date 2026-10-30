@@ -393,7 +393,7 @@ struct PadWorktreeManagementView: View {
                 },prepare:{action,receipt in
                     await manager.prepareHierarchy(worktree,action:action,receiptID:receipt,connection:connection)
                     if manager.job?.status == "awaiting_confirmation" { showingJobReview=true }
-                })
+                },openParent:openSession)
             } else if worktree.isMain {
                 Button("提交主 Worktree 修改", systemImage: "checkmark.circle") { prepare(worktree) }
                     .disabled(busy || worktree.dirty != true)
@@ -464,7 +464,17 @@ struct PadWorktreeManagementView: View {
                 Text("\(job.progress.completed) / \(job.progress.total)").foregroundStyle(.secondary)
             }
             ProgressView(value: job.progress.fraction)
-            Text("阶段：\(job.phase)").font(.footnote).foregroundStyle(.secondary)
+            if job.phase != "awaiting_integration_acceptance" {
+                Text("阶段：\(job.phase)").font(.footnote).foregroundStyle(.secondary)
+            }
+            if job.phase == "awaiting_integration_acceptance",let taskID=job.graphExecution?.acceptanceTaskID {
+                ConversationIntegrationAcceptance(taskID:taskID,api:{
+                    ClientTaskHierarchyAPI(transport:try await connection.transport(),surface:.pairedDevice)
+                },openParent:openSession) { status in
+                    Button("继续合并到主分支") { Task { await manager.jobAction("retry",connection:connection) } }
+                        .disabled(status?.mayPromote != true || manager.jobBusy)
+                }
+            }
             ForEach(job.plan.blockingRisks, id: \.code) { risk in
                 Label(risk.message, systemImage: "exclamationmark.triangle.fill").font(.footnote).foregroundStyle(.orange)
             }
@@ -484,12 +494,12 @@ struct PadWorktreeManagementView: View {
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote).foregroundStyle(.orange)
             }
-            if let error = job.error { Text(error).font(.footnote).foregroundStyle(.red) }
+            if let error = job.error,job.phase != "awaiting_integration_acceptance" { Text(error).font(.footnote).foregroundStyle(.red) }
             HStack {
                 if job.status == "awaiting_confirmation" {
                     Button("查看并确认计划", systemImage: "checkmark.seal") { showingJobReview = true }
                 }
-                if job.status == "paused" {
+                if job.status == "paused",job.phase != "awaiting_integration_acceptance" {
                     Button("重新验证并继续", systemImage: "arrow.clockwise") {
                         Task { await manager.jobAction("retry", connection: connection) }
                     }

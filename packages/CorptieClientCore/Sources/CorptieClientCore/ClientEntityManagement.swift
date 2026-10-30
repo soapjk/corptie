@@ -40,6 +40,7 @@ public struct ClientTaskManagement: Decodable, Sendable {
 /// Desktop deletion plan without host paths (§10.1): branch name, dirtiness and
 /// counts are enough for the same confirmation the macOS dialog shows.
 public struct ClientTaskDeletionPlan: Decodable, Sendable {
+    public let parentTaskId: String?
     public struct Artifact: Decodable, Sendable, Identifiable, Equatable {
         public let id: String
         public let title: String
@@ -65,6 +66,23 @@ public struct ClientTaskDeletionPlan: Decodable, Sendable {
     public let worktree: Worktree?
     public let risks: [Risk]
     public let blockers: [Risk]
+}
+
+/// Mirrors the server's conservative risk classification on every client.
+public enum TaskDeletionConfirmationPolicy {
+    public static func isTaskLevelBlocker(_ code: String) -> Bool {
+        !["MAIN_WORKTREE", "SHARED_WITH_ACTIVE_TASK", "GIT_OPERATION_IN_PROGRESS", "UNRESOLVED_CONFLICTS", "WORKTREE_LOCKED"].contains(code)
+    }
+
+    public static func canForceDelete(riskCodes: [String], branchName: String?) -> Bool {
+        branchName?.isEmpty == false && riskCodes.allSatisfy {
+            ["UNCOMMITTED_CHANGES", "UNTRACKED_FILES", "NOT_MERGED_INTO_MAIN", "NOT_DELIVERED_TO_PARENT"].contains($0)
+        }
+    }
+
+    public static func confirmsBranch(_ entered: String, expected: String?) -> Bool {
+        expected?.isEmpty == false && entered == expected
+    }
 }
 
 public struct ClientWorkManagement: Decodable, Sendable {

@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { sessionHasActiveRun } from "../utils/sessionPresentation.mjs";
 
-const FORCEABLE_RISKS = new Set(["UNCOMMITTED_CHANGES", "UNTRACKED_FILES", "NOT_MERGED_INTO_MAIN"]);
+const FORCEABLE_RISKS = new Set(["UNCOMMITTED_CHANGES", "UNTRACKED_FILES", "NOT_MERGED_INTO_MAIN", "NOT_DELIVERED_TO_PARENT"]);
+const WORKTREE_ONLY_BLOCKERS = new Set(["MAIN_WORKTREE", "SHARED_WITH_ACTIVE_TASK", "GIT_OPERATION_IN_PROGRESS", "UNRESOLVED_CONFLICTS", "WORKTREE_LOCKED"]);
 const ARTIFACT_DISPOSITIONS = new Set(["delete", "work", "retain"]);
 
 export class TaskDeletionService {
@@ -36,7 +38,11 @@ export class TaskDeletionService {
     this.#assertDeletionAllowed(plan, input);
     const operation = this.store.beginTaskDeletionOperation(
       taskId,
-      input,
+      { mode: input.mode ?? "safe", deleteWorktree: input.deleteWorktree !== false,
+        artifactDisposition: input.artifactDisposition ?? "delete", acknowledgeDataLoss: input.acknowledgeDataLoss === true,
+        confirmedBranchName: input.confirmedBranchName, actor: { type: actor?.type, id: actor?.id },
+        resumeCleanup: plan.inspection?.pendingCleanup ?? null,
+        target: this.#target(taskId, plan) },
       requestedKey || `task-delete:${randomUUID()}`
     );
     this.onChanged("TaskChanged", {
@@ -77,7 +83,9 @@ export class TaskDeletionService {
       attempt: operation.state === "running" ? operation.attempt + 1 : operation.attempt
     });
     try {
-      const result = await this.delete(operation.taskId, operation.input, { type: "user", id: "user:local-macos" });
+      if (!operation.input.target) throw coded("TASK_DELETE_RECONFIRM_REQUIRED", "旧删除作业缺少精确目标，请重新检查并确认删除。", 409);
+      const result = await this.delete(operation.taskId, operation.input,
+        operation.input.actor, operation.operationId);
       operation = this.store.updateTaskDeletionOperation(operationId, {
         state: "succeeded",
         stage: "completed",
@@ -88,6 +96,7 @@ export class TaskDeletionService {
         completedAt: new Date().toISOString()
       });
     } catch (error) {
+      if (this.store.getTask(operation.taskId)) this.store.markTaskDeletion(operation.taskId, "delete_failed", actionableFailure(error));
       operation = this.store.updateTaskDeletionOperation(operationId, {
         state: "failed",
         stage: error?.stage ?? "cleanup",
@@ -105,7 +114,7 @@ export class TaskDeletionService {
     return operation;
   }
 
-  async inspect(taskId, actor = null) {
+  async inspect(taskId, actor = null, operationId = null) {
     const item = this.store.getTask(taskId);
     if (!item) throw coded("TASK_NOT_FOUND", `Task not found: ${taskId}`, 404);
     if (await this.authorize({ actor, task: item, operation: "delete" }) !== true) {
@@ -114,8 +123,12 @@ export class TaskDeletionService {
     const associations = this.store.listTaskDeletionBlockingAssociations(taskId);
     const artifacts = Array.isArray(associations?.artifacts) ? associations.artifacts : [];
     const associatedSessionCount = this.store.listSessionsByTask(taskId).length;
-    if (this.store.hasTaskChildren?.(taskId) || item.parent_task_id) {
-      return deletionPlan(item, null, [], [{code:"TASK_HIERARCHY_DEPENDENCY",message:"父子任务的集成和清理尚未完成，不能删除交付资源。"}], associatedSessionCount, artifacts);
+    if (this.store.listSessionsByTask(taskId).some(session => sessionHasActiveRun(session)
+      || this.store.getSessionRuntimeBlocker?.(session.id, { includeQueued: true }))) {
+      return deletionPlan(item, null, [], [{ code: "SESSION_BUSY", message: "该任务的会话仍在执行或有未完成投递，请先停止后重试。" }], associatedSessionCount, artifacts);
+    }
+    if (this.store.selectOne?.("SELECT 1 FROM tasks WHERE parent_task_id=? AND COALESCE(deletion_status,'')<>'deleted' LIMIT 1", [taskId])) {
+      return deletionPlan(item, null, [], [{code:"TASK_HAS_CHILDREN",message:"该任务仍有子任务。请先逐个处理子任务；删除不会自动级联。"}], associatedSessionCount, artifacts);
     }
     const owningIntegrationJob = this.store.getActiveWorktreeIntegrationJobForConflictTask?.(taskId) ?? null;
     if (owningIntegrationJob) {
@@ -123,6 +136,17 @@ export class TaskDeletionService {
         code: "ACTIVE_WORKTREE_INTEGRATION_JOB",
         message: "该冲突任务及其 Integration Worktree 正被未完成的一键合并占用。请先完成或取消该合并任务。"
       }], associatedSessionCount, artifacts);
+    }
+    const currentOperation = operationId && this.store.getTaskDeletionOperation(operationId);
+    const previousRow = !operationId && this.store.selectOne?.(
+      "SELECT operation_id FROM task_deletion_operations WHERE task_id=? AND state='failed' ORDER BY rowid DESC LIMIT 1", [taskId]);
+    const previous = previousRow && this.store.getTaskDeletionOperation(previousRow.operation_id);
+    const pending = currentOperation?.result?.cleanup ?? currentOperation?.input?.resumeCleanup ?? previous?.result?.cleanup;
+    if (!item.deletion_worktree_removed_at && pending?.worktreeRemoved) {
+      const target = (currentOperation ?? previous).input.target;
+      return deletionPlan(item, { status: "available", repositoryId: target.repositoryId, pendingCleanup: pending,
+        worktree: { worktreeId: target.worktreeId, path: target.path, branchName: target.branchName,
+          headOid: target.headOid, dirty: false, mergedIntoMain: true, sessions: [] } }, [], [], associatedSessionCount, artifacts);
     }
     if (item.deletion_worktree_removed_at) {
       return deletionPlan(item, { status: "removed", worktree: null }, [], [], associatedSessionCount, artifacts);
@@ -141,9 +165,33 @@ export class TaskDeletionService {
     return deletionPlan(item, inspection, risks, blockers, associatedSessionCount, artifacts);
   }
 
-  async delete(taskId, input = {}, actor = null) {
-    const plan = await this.inspect(taskId, actor);
+  #target(taskId, plan) {
+    const task = this.store.getTask(taskId);
+    const binding = this.store.getTaskDeliveryBinding?.(taskId);
+    return { version: 1, taskId, parentTaskId: task.parent_task_id ?? null,
+      repositoryId: plan.inspection?.repositoryId ?? null,
+      worktreeId: plan.worktree?.worktreeId ?? null, path: plan.worktree?.path ?? null,
+      branchName: plan.worktree?.branchName ?? null, headOid: plan.inspection?.worktree?.headOid ?? null,
+      statusSummary: plan.inspection?.worktree?.statusSummary ?? "",
+      bindingRevision: binding?.binding_revision ?? null,
+      sessionIds: this.store.listSessionsByTask(taskId).map(s => s.id).sort(),
+      artifactIds: plan.artifacts.map(a => a.artifactId).sort() };
+  }
+
+  async delete(taskId, input = {}, actor = null, operationId = null) {
+    const plan = await this.inspect(taskId, actor, operationId);
     this.#assertDeletionAllowed(plan, input);
+    if (input.target) {
+      const actual = this.#target(taskId, plan), expected = input.target;
+      const removed = Boolean(this.store.getTask(taskId).deletion_worktree_removed_at)
+        || Boolean(plan.inspection?.pendingCleanup?.worktreeRemoved);
+      const fields = ["taskId", "parentTaskId", "bindingRevision", ...(removed ? [] : ["repositoryId", "worktreeId", "path", "branchName", "headOid", "statusSummary"])];
+      if (fields.some(key => actual[key] !== expected[key])
+        || actual.sessionIds.some(id => !expected.sessionIds.includes(id))
+        || actual.artifactIds.some(id => !expected.artifactIds.includes(id))) {
+        throw coded("TASK_DELETE_TARGET_CHANGED", "删除目标或关联资源已变化，请重新检查并确认。", 409);
+      }
+    }
     const deleteWorktree = input.deleteWorktree !== false;
     const artifactDisposition = input.artifactDisposition ?? "delete";
 
@@ -151,6 +199,13 @@ export class TaskDeletionService {
     let cleanup = null;
     const deletedSessionIds = [];
     try {
+      if (deleteWorktree && (plan.worktree || (operationId && input.target?.worktreeId
+        && !this.store.getTask(taskId).deletion_worktree_removed_at))) {
+        cleanup = await this.removeWorktree({ taskId, inspection: plan.inspection,
+          force: input.mode === "force", confirmedBranchName: input.confirmedBranchName,
+          operationId, target: input.target });
+        this.store.markTaskWorktreeRemoved(taskId);
+      }
       for (const session of this.store.listSessionsByTask(taskId)) {
         await this.deleteSession(session.id, {
           source: "task-deletion",
@@ -164,15 +219,6 @@ export class TaskDeletionService {
         disposition: artifactDisposition,
         actor
       });
-      if (deleteWorktree && plan.worktree) {
-        cleanup = await this.removeWorktree({
-          taskId,
-          inspection: plan.inspection,
-          force: input.mode === "force",
-          confirmedBranchName: input.confirmedBranchName
-        });
-        this.store.markTaskWorktreeRemoved(taskId);
-      }
       const resources = {
         ...this.store.finalizeTaskDeletion(taskId),
         deletedSessionIds,
@@ -200,9 +246,7 @@ export class TaskDeletionService {
     }
     const effectiveBlockers = deleteWorktree
       ? plan.blockers
-      : plan.blockers.filter((blocker) => [
-        "START_IN_PROGRESS", "ACTIVE_WORKTREE_INTEGRATION_JOB"
-      ].includes(blocker.code));
+      : plan.blockers.filter((blocker) => !WORKTREE_ONLY_BLOCKERS.has(blocker.code));
     if (effectiveBlockers.length > 0) {
       throw coded("TASK_DELETE_BLOCKED", effectiveBlockers[0].message, 409, { deletion: plan });
     }
@@ -215,7 +259,7 @@ export class TaskDeletionService {
         { deletion: plan }
       );
     }
-    if (deleteWorktree && force) this.#assertForceConfirmation(plan, input);
+    if (deleteWorktree && force && plan.worktree) this.#assertForceConfirmation(plan, input);
   }
 
   #assertForceConfirmation(plan, input) {
@@ -237,6 +281,7 @@ export class TaskDeletionService {
 function deletionPlan(item, inspection, risks, blockers, associatedSessionCount, artifacts = []) {
   return {
     taskId: item.id,
+    parentTaskId: item.parent_task_id ?? null,
     status: blockers.length > 0 ? "blocked" : (risks.length > 0 ? "risky" : "safe"),
     retryable: true,
     associatedSessionCount,
@@ -269,10 +314,11 @@ function contentRisks(worktree) {
   const risks = [];
   if (trackedChanges.length > 0) risks.push({ code: "UNCOMMITTED_CHANGES", message: "Worktree 存在未提交修改。", files: trackedChanges });
   if (untrackedFiles.length > 0) risks.push({ code: "UNTRACKED_FILES", message: "Worktree 存在未跟踪文件。", files: untrackedFiles });
-  if (worktree.mergedIntoMain !== true) risks.push({
-    code: "NOT_MERGED_INTO_MAIN",
-    message: `Worktree 有 ${Number(worktree.aheadOfMain) || 0} 个提交尚未合并到目标主分支。`,
-    commitCount: Number(worktree.aheadOfMain) || 0
+  if ((worktree.deliveryComparison?.delivered ?? worktree.mergedIntoMain) !== true) risks.push({
+    code: worktree.deliveryComparison ? "NOT_DELIVERED_TO_PARENT" : "NOT_MERGED_INTO_MAIN",
+    message: worktree.deliveryComparison ? `子分支有 ${worktree.deliveryComparison.commitCount} 个独有提交尚未交付到父分支。`
+      : `Worktree 有 ${Number(worktree.aheadOfMain) || 0} 个提交尚未合并到目标主分支。`,
+    commitCount: worktree.deliveryComparison?.commitCount ?? (Number(worktree.aheadOfMain) || 0)
   });
   return risks;
 }
@@ -286,7 +332,11 @@ function hardBlockers(inspection) {
     SESSION_BUSY: "关联 Session 仍在运行。请先等待或终止执行。",
     SHARED_WITH_ACTIVE_TASK: "该 Worktree 仍被其他 Task 使用，禁止删除共享资源。",
     WORKTREE_UNAVAILABLE: "关联 Worktree 当前不可访问。请恢复磁盘或修复 Git Worktree 后重试。",
-    NO_WORKSPACE_ROUTE: "Task 的 Workspace 路由已失效，无法确认专属资源边界。"
+    NO_WORKSPACE_ROUTE: "Task 的 Workspace 路由已失效，无法确认专属资源边界。",
+    GIT_OPERATION_IN_PROGRESS: "该工作区仍有未完成的 Git 操作，请先安全完成或中止后重试。",
+    UNRESOLVED_CONFLICTS: "该工作区仍有未解决的冲突，请先处理后重试。",
+    WORKTREE_LOCKED: "该工作区已被 Git 锁定，请确认锁定原因后安全处理。",
+    WORKTREE_BRANCH_AMBIGUOUS: "无法确定专属分支，不能安全确认删除范围。"
   };
   return [{ code, message: messages[code] ?? inspection.detail ?? "无法确认关联资源可安全删除。" }];
 }

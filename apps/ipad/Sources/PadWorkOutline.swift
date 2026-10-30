@@ -513,6 +513,12 @@ struct PadWorkOutline: View {
 
     private func hierarchyTaskRow(_ task: ClientTask, sessionID: String?) -> some View {
         HStack(spacing:4) {
+            taskRow(task,sessionID:sessionID)
+            if let hierarchy=task.hierarchy, hierarchy.childCount > 0 {
+                Text("\(hierarchy.completedChildCount)/\(hierarchy.childCount)")
+                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                    .accessibilityLabel("子任务完成进度")
+            }
             if (task.hierarchy?.childCount ?? 0)>0 {
                 Button {
                     if !expandedParentIDs.insert(task.id).inserted {expandedParentIDs.remove(task.id)}
@@ -524,14 +530,6 @@ struct PadWorkOutline: View {
                     label: { Image(systemName:"ellipsis").frame(minWidth:24,minHeight:32) }
                     .buttonStyle(.plain).accessibilityLabel("加载更多子任务")
                 }
-            } else {
-                Color.clear.frame(width: 24, height: 1)
-            }
-            taskRow(task,sessionID:sessionID)
-            if let hierarchy=task.hierarchy, hierarchy.childCount > 0 {
-                Text("\(hierarchy.completedChildCount)/\(hierarchy.childCount)")
-                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                    .accessibilityLabel("子任务完成进度")
             }
         }.padding(.leading,task.parentTaskId == nil ? 0 : 24)
     }

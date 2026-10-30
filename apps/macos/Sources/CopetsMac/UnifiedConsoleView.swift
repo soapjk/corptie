@@ -288,7 +288,9 @@ struct UnifiedConsoleView: View {
                 onMergeFirst: {
                     taskDeletionPresentation = nil
                     taskDeletionError = L10nFormat(
-                        "CorptieTask 未删除。请先在项目 Worktree 管理中将分支 %@ 合并到目标主分支，确认无待提交文件后再重试删除。",
+                        presentation.plan.parentTaskId == nil
+                            ? "CorptieTask 未删除。请先在项目 Worktree 管理中将分支 %@ 合并到目标主分支，确认无待提交文件后再重试删除。"
+                            : "子任务未删除。可在 Worktree 管理中将分支 %@ 合并到父分支，或重新选择强制删除。",
                         presentation.plan.worktree?.branchName ?? ""
                     )
                 },

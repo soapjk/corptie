@@ -80,6 +80,8 @@ test("invalid acceptance objects are rejected without changing the canonical Tas
     archived: false,
     mainAgentId: "agent:1",
     currentSessionId: "session:1",
+    creationState: "ready",
+    creationErrorCode: null,
     executionStatus: "running",
     hasPendingScheduledWake: false,
     userSummary: null,

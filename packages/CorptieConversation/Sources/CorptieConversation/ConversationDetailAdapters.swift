@@ -70,6 +70,7 @@ public enum ConversationReferenceOperation: String, Identifiable {
     let turnSnapshot: ClientTurnSummary?
     let referenceManagement: ConversationReferenceManagement?
     let openArtifact: ((ClientResourceFocus) -> Void)?
+    let openSession: ((String) -> Void)?
     public init(configuration: ClientDetailConfiguration,
                 selectConfiguration: @escaping @MainActor (ClientDetailConfiguration.Field, String) async throws -> Void,
                 reloadConfiguration: @escaping @MainActor () async -> Void,
@@ -79,13 +80,15 @@ public enum ConversationReferenceOperation: String, Identifiable {
                 onWorktreeJob: @escaping @MainActor (ClientWorktreeJob) -> Void,
                 resident: Resident, turnSnapshot: ClientTurnSummary? = nil,
                 referenceManagement: ConversationReferenceManagement? = nil,
-                openArtifact: ((ClientResourceFocus) -> Void)? = nil) {
+                openArtifact: ((ClientResourceFocus) -> Void)? = nil,
+                openSession: ((String) -> Void)? = nil) {
         self.configuration = configuration; self.selectConfiguration = selectConfiguration
         self.reloadConfiguration = reloadConfiguration; self.readTurnSummary = readTurnSummary; self.readTurnTrace = readTurnTrace
         self.worktreeAPI = worktreeAPI; self.onWorktreeJob = onWorktreeJob; self.resident = resident
         self.turnSnapshot = turnSnapshot
         self.referenceManagement = referenceManagement
         self.openArtifact = openArtifact
+        self.openSession = openSession
     }
 }
 

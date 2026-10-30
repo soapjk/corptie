@@ -27,7 +27,7 @@ async function fixture() {
     { provider: "provider:b", logical: "session:b", agent: "agent:b", item: "task:b" }
   ]) {
     store.createTask({
-      id: endpoint.item, workId: work.id, title: endpoint.item, mainAgentId: endpoint.agent
+      id: endpoint.item, workId: work.id, title: endpoint.item.replaceAll(":","_"), mainAgentId: endpoint.agent
     }, { originType: "direct_user" });
     store.createSession({
       id: endpoint.provider, title: endpoint.provider, agentId: endpoint.agent,
@@ -53,6 +53,32 @@ async function fixture() {
   });
   return { directory, store, service };
 }
+
+test("current parent to direct child auto-authorizes one durable channel; siblings, stale bindings and revocation do not",async()=>{
+  const f=await fixture();
+  try {
+    f.store.createTask({id:"task:child",workId:"work:channel",title:"Child",parentTaskId:"task:a"},{},
+      {expectedParentResourceVersion:f.store.getTask("task:a").resource_version});
+    f.store.createSession({id:"provider:child",title:"Child",agentId:"agent:b",sessionKind:"worker",workId:"work:channel",taskId:"task:child",cwd:f.directory});
+    f.store.createLogicalSessionRoute({logicalSessionId:"session:child",legacySessionId:"provider:child",providerThreadId:"provider:child",
+      providerSessionId:"provider:child",providerId:"another-provider",boundCwd:f.directory,sessionName:"Child"});
+    f.store.db.run("UPDATE tasks SET current_session_id=? WHERE id=?",["provider:a","task:a"]);
+    f.store.db.run("UPDATE tasks SET current_session_id=? WHERE id=?",["provider:child","task:child"]);
+    const input={requestingSessionId:"session:a",recipientSessionId:"session:child",body:"test only",idempotencyKey:"parent-child-first"};
+    const first=f.service.requestChannel(input);
+    assert.equal(first.status,"sent"); assert.equal(first.routeAuthorization,"parent_child_policy");
+    assert.equal(f.service.pendingRequestForSession("session:a"),null);
+    assert.equal(f.service.requestChannel(input).message.messageId,first.message.messageId);
+    assert.equal(f.service.listMessages(first.channel.channelId,"session:a").length,1);
+    const reply=f.service.sendMessage({channelId:first.channel.channelId,senderSessionId:"session:child",body:"received",idempotencyKey:"child-reply"});
+    assert.equal(reply.message.recipientSessionId,"session:a");
+    assert.equal(f.service.requestChannel({...input,recipientSessionId:"session:b",idempotencyKey:"unrelated"}).status,"pending");
+    f.service.revokeChannel(first.channel.channelId,"session:a","stop");
+    assert.equal(f.service.requestChannel({...input,idempotencyKey:"after-revoke"}).status,"pending");
+    f.store.db.run("UPDATE tasks SET current_session_id=NULL WHERE id='task:a'");
+    assert.equal(f.service.resolveParentChildAuthorization("session:a","session:child"),null);
+  } finally {await f.store.close(); await rm(f.directory,{recursive:true,force:true});}
+});
 
 test("Channel authorization creates one durable equal Session pair and supports both directions", async () => {
   const value = await fixture();
@@ -236,7 +262,7 @@ test("one authorization can provision the missing Task and Session before activa
       requestingSessionId: "session:a",
       targetWorkId: "work:channel",
       sessionAgentId: "agent:b",
-      title: "Long-lived peer",
+      title: "Long-lived_peer",
       body: "Please join this Channel.",
       idempotencyKey: "provision:1"
     });
