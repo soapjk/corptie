@@ -302,6 +302,7 @@ final class NativeTimelineLayoutCache {
     }
 
     struct Layout {
+        var timeSeparatorHeight: CGFloat = 0
         var typography: ConversationTypography = .classic
         var imageLayout = MessageImageGalleryLayout.layout(geometries: [], width: 0)
         enum RichBlock {
@@ -399,8 +400,12 @@ final class NativeTimelineLayoutCache {
     private let byteLimit = 64 * 1_024 * 1_024
     private let chartHeightLimit = 128
 
-    func layout(for row: AppKitChatTimelineRow, columnWidth: CGFloat, typography requested: ConversationTypography = .classic) -> Layout {
+    func layout(for row: AppKitChatTimelineRow, columnWidth: CGFloat, typography requested: ConversationTypography = .classic,
+                skin: ConversationSkin = .classic) -> Layout {
+        var row = row
+        if !skin.showsTimelineTimeSeparators { row.timeSeparatorText = nil }
         var layout = contentLayout(for: row, columnWidth: columnWidth, typography: requested)
+        layout.timeSeparatorHeight = row.timeSeparatorHeight
         layout.rowHeight += row.replyIdentityHeight + row.replyActionsHeight
         return layout
     }

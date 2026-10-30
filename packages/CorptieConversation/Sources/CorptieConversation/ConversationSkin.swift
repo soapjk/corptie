@@ -5,6 +5,8 @@ public enum ConversationSkin: String, CaseIterable, Sendable {
     case classic
     case codexFlat
 
+    public var showsTimelineTimeSeparators: Bool { self == .classic }
+
     public func surface(for role: ConversationSurfaceRole) -> ConversationSurfaceStyle {
         guard self == .codexFlat else { return .legacy }
         switch role {

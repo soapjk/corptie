@@ -391,7 +391,8 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         let height = NativeTimelineLayoutCache.shared.layout(
             for: item,
             columnWidth: measurementWidth,
-            typography: skin.typography(for: item.nativeStyle == .user ? .user : .assistant)
+            typography: skin.typography(for: item.nativeStyle == .user ? .user : .assistant),
+            skin: skin
         ).rowHeight
         if heightCache.count >= 20_000 {
             heightCache.removeAll(keepingCapacity: true)
@@ -1140,9 +1141,9 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                 let rowRect = tableView.rect(ofRow: index)
                 return ProcessCollapseCandidate(id: row.id,
                     frame: CGRect(x: rowRect.minX + 2,
-                                  y: rowRect.minY + row.timeSeparatorHeight + row.replyIdentityHeight,
+                                  y: rowRect.minY + (skin.showsTimelineTimeSeparators ? row.timeSeparatorHeight : 0) + row.replyIdentityHeight,
                                   width: cardWidth,
-                                  height: max(0, rowRect.height - row.timeSeparatorHeight - row.replyIdentityHeight)),
+                                  height: max(0, rowRect.height - (skin.showsTimelineTimeSeparators ? row.timeSeparatorHeight : 0) - row.replyIdentityHeight)),
                     headerHeight: row.processCurrentStepTitle == nil ? 32 : 48)
             }
         guard let placement = ProcessCollapsePlacementPolicy.placement(
