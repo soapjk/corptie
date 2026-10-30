@@ -445,7 +445,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.isReleasedWhenClosed = false
         let resizeState = MainWindowResizeState()
         let hostingView = MainWindowSurfaceContainer(
-            rootView: FirstRunSetupRoot { MainWindowContentView() }.environmentObject(resizeState),
+            rootView: FirstRunSetupRoot { MainWindowContentView() }
+                .background { WindowDragArea() }
+                .environmentObject(resizeState),
             resizeState: resizeState
         )
         // This is a user-resizable AppKit-owned window. The SwiftUI root must
