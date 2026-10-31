@@ -148,7 +148,11 @@ extension UnifiedConsoleView {
                                 workContextMenuContent(for: work)
                             }
                     }
-                    .disclosureGroupStyle(ConsoleWorkOutlineDisclosureStyle())
+                    .disclosureGroupStyle(ConsoleWorkOutlineDisclosureStyle(onCollapseCompleted: {
+                        if outlineFullyExpandedWorkIDs.contains(work.id) {
+                            outlineFullyExpandedWorkIDs.remove(work.id)
+                        }
+                    }))
                     .consoleWorkOutlineGroupCard()
                 }
             }
@@ -165,11 +169,8 @@ extension UnifiedConsoleView {
             action: { showNewSessionCreation = true }
         ) {
             Button {
-                if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    withAnimation(reduceOutlineMotion ? nil : ConsoleWorkOutlineMetrics.disclosureAnimation) {
-                        outlineExpansionPreferences.toggleAssistant()
-                    }
-                }
+                let expanded = outlineAssistantExpandedBinding
+                expanded.wrappedValue = !expanded.wrappedValue
             } label: {
                 HStack(spacing: 7) {
                     ChatGroupIcon()
@@ -245,9 +246,6 @@ extension UnifiedConsoleView {
                 guard searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     return
                 }
-                if !isExpanded {
-                    outlineFullyExpandedWorkIDs.remove(workID)
-                }
                 outlineExpansionPreferences.setWorkExpanded(isExpanded, workID: workID)
             }
         )
@@ -270,13 +268,8 @@ extension UnifiedConsoleView {
             isChatRunning: workChat?.executionTaskStatus == .running,
             hasUnreadChat: workChat.map(isSessionUnread) ?? false,
             toggleExpanded: {
-                guard searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-                withAnimation(reduceOutlineMotion ? nil : ConsoleWorkOutlineMetrics.disclosureAnimation) {
-                    if outlineWorkIsExpanded(work.id) {
-                        outlineFullyExpandedWorkIDs.remove(work.id)
-                    }
-                    outlineExpansionPreferences.toggleWork(workID: work.id)
-                }
+                let expanded = outlineWorkExpandedBinding(work.id)
+                expanded.wrappedValue = !expanded.wrappedValue
             },
             openChat: {
                 // Resolve at invocation: an equal header must not retain an
