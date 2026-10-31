@@ -184,3 +184,16 @@ test("reports context, Provider, and total duration without exposing the transcr
   });
   assert.equal(Object.hasOwn(completed, "text"), false);
 });
+
+test("background completion enters the inbox only when a return Session is explicitly supplied", async () => {
+  const calls = [], deliveries = [];
+  const registry = new AgentProviderRegistry([provider("background", [AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT], calls)]);
+  const service = new BackgroundAgentService({ registry, defaultProviderId: "background", onCompletionDelivery: message => deliveries.push(message) });
+  await service.run({ purpose: "summary", prompt: "hidden", cwd: "/isolated" });
+  assert.equal(deliveries.length, 0);
+  await service.run({ operationId: "background:delivery", purpose: "summary", prompt: "result", cwd: "/isolated",
+    completionDelivery: { recipientSessionId: "session:owner" } });
+  assert.equal(deliveries[0].sourceId, "background:delivery");
+  assert.equal(deliveries[0].authorization.ownerLogicalSessionId, "session:owner");
+  assert.equal(deliveries[0].idempotencyKey, "background:delivery:completed");
+});

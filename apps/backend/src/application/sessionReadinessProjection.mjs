@@ -6,7 +6,7 @@ import { worktreeDispatchBlocker } from "./worktreeExecutionBarrier.mjs";
 // revision stream. Probe ownership remains with the runtime lifecycle.
 export function createSessionReadinessProjection({
   store, agentProviderRegistry, scheduleStateSyncPublish,
-  readBindingProbe, readFallbackBindingReadiness
+  readBindingProbe, readFallbackBindingReadiness, readMailboxSummary
 }) {
   const providerRuntimeReadiness = new Map(agentProviderRegistry.descriptors().map((provider) => [
     provider.id,
@@ -48,6 +48,8 @@ export function createSessionReadinessProjection({
   function decorateSessionForClient(session, options = {}) {
     if (!session) return session;
     const decorated = { ...withResolvedSessionActions(session, agentProviderRegistry) };
+    const mailbox = readMailboxSummary?.(session.id);
+    if (mailbox) { decorated.mailboxPendingCount = mailbox.pendingCount; decorated.mailboxUnreadCount = mailbox.unreadCount; }
     const providerIdentity = decorated.external?.provider ?? decorated.provider ?? null;
     const providerId = providerIdentity ? agentProviderRegistry.resolveId(providerIdentity) : null;
     const logical = decorated.logicalSessionId

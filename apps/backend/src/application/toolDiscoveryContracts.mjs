@@ -7,6 +7,7 @@ const DOMAIN_PROFILES = Object.freeze({
     ["artifact", "artifacts", "artifact management", "work artifact", "产物", "工件", "文档"],
     "corptie_artifact_search"
   ),
+  mailbox: profile(["mailbox", "inbox", "信箱", "收件箱", "外来消息", "领取消息"], "corptie_mailbox_list"),
   collaboration: profile(
     [
       "collaboration", "channel", "peer session", "peer message", "send message", "@session",

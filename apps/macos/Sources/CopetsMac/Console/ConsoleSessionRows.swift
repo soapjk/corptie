@@ -93,6 +93,10 @@ struct ConsoleSessionRow: View {
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
                 Spacer(minLength: 0)
+                if (session.mailboxPendingCount ?? 0) > 0 {
+                    Image(systemName: "envelope.badge").font(.caption2).foregroundStyle(.secondary)
+                        .accessibilityLabel("信箱有待处理消息")
+                }
                 if isSessionUnread(session) {
                     Circle()
                         .fill(Color.red)

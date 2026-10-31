@@ -57,8 +57,11 @@ export class AgentWorkQueueRepository {
 
   getAgentTaskForDelivery(deliveryId) {
     const row = this.selectOne(
-      "SELECT * FROM agent_operations WHERE delivery_id = ? OR channel_delivery_id = ?",
-      [deliveryId, deliveryId]
+      `SELECT op.* FROM agent_operations op
+       JOIN session_collaboration_batches b ON b.operation_id=op.task_id
+       JOIN session_collaboration_batch_items i ON i.batch_id=b.batch_id WHERE i.delivery_id=?`, [deliveryId]
+    ) ?? this.selectOne(
+      "SELECT * FROM agent_operations WHERE delivery_id = ? OR channel_delivery_id = ?", [deliveryId, deliveryId]
     );
     return row ? agentTaskFromRow(row) : null;
   }

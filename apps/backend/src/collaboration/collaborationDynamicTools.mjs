@@ -148,20 +148,24 @@ export const collaborationDynamicTools = Object.freeze([
     title: { type: "string", minLength: 1 },
     body: { type: "string", minLength: 1 },
     message_kind: { type: "string", enum: ["message", "question", "update"] },
+    delivery_intent: { type: "string", enum: ["action_required", "response_required", "notification", "acknowledgement"], description: "Default action_required. Use action_required/response_required for requests. Notifications and acknowledgements are saved but do not wake the recipient; no routine receipt reply is needed." },
     idempotency_key: { type: "string", minLength: 1 }
   }, ["body", "idempotency_key"]),
   tool("corptie_collaboration_channels_list", "List long-lived Channels containing this exact authenticated Session.", {
     status: { type: "array", items: { type: "string", enum: ["active", "revoked", "legacy_unresolved"] } },
     limit: { type: "integer", minimum: 1, maximum: 500 }
   }),
-  tool("corptie_collaboration_channel_get", "Get one Channel and its recent messages.", {
+  tool("corptie_collaboration_channel_get", "Get one Channel and its latest messages in chronological order; use cursors to page history. Reading does not consume queued deliveries.", {
     channel_id: { type: "string", minLength: 1 },
+    before_cursor: { type: "string", pattern: "^[1-9][0-9]*$" },
+    after_cursor: { type: "string", pattern: "^[1-9][0-9]*$" },
     limit: { type: "integer", minimum: 1, maximum: 500 }
   }, ["channel_id"]),
   tool("corptie_collaboration_message_send", "Send a bidirectional message over an active Channel without creating task state or acceptance workflow.", {
     channel_id: { type: "string", minLength: 1 },
     body: { type: "string", minLength: 1 },
     message_kind: { type: "string", enum: ["message", "question", "update"] },
+    delivery_intent: { type: "string", enum: ["action_required", "response_required", "notification", "acknowledgement"], description: "Default action_required. Use action_required/response_required for requests. Notifications and acknowledgements are saved but do not wake the recipient; no routine receipt reply is needed." },
     in_reply_to_message_id: { type: "string", minLength: 1 },
     idempotency_key: { type: "string", minLength: 1 }
   }, ["channel_id", "body", "idempotency_key"]),
@@ -237,7 +241,7 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
       taskId: input.task_id,
       title: input.title,
       body: input.body,
-      messageKind: input.message_kind,
+      messageKind: input.message_kind, deliveryIntent: input.delivery_intent,
       idempotencyKey: input.idempotency_key
     })),
     corptie_collaboration_channels_list: () => client.get("/internal/collaboration/channels", {
@@ -245,11 +249,11 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
     }),
     corptie_collaboration_channel_get: () => client.get(
       `/internal/collaboration/channels/${encodeURIComponent(input.channel_id)}`,
-      { limit: input.limit ?? 100 }
+      { limit: input.limit ?? 100, beforeCursor: input.before_cursor, afterCursor: input.after_cursor }
     ),
     corptie_collaboration_message_send: () => client.post(
       `/internal/collaboration/channels/${encodeURIComponent(input.channel_id)}/messages`,
-      compact({ body: input.body, messageKind: input.message_kind,
+      compact({ body: input.body, messageKind: input.message_kind, deliveryIntent: input.delivery_intent,
         inReplyToMessageId: input.in_reply_to_message_id, idempotencyKey: input.idempotency_key })
     ),
     corptie_collaboration_channel_revoke: () => client.post(
@@ -266,16 +270,19 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
   const value = await handler();
   if (name === "corptie_collaboration_channel_open") requireChannelRequestReceipt(value);
   const pendingConfirmation = value?.request?.status === "pending";
+  const intent = value?.message?.deliveryIntent ?? value?.request?.message?.deliveryIntent ?? input.delivery_intent;
+  const silent = ["notification", "acknowledgement"].includes(intent);
   return afterSendToolNames.has(name)
     ? {
         ...value,
         coordination: {
-          delivery: pendingConfirmation ? "awaiting_user_confirmation" : "push",
+          delivery: pendingConfirmation ? "awaiting_user_confirmation" : silent ? "saved_without_wake" : "push",
           waitRequired: false,
           requiresUserAction: pendingConfirmation,
           nextAction: pendingConfirmation ? "end_current_turn" : "continue_current_turn",
           note: pendingConfirmation
             ? "Corptie will render and resolve confirmation programmatically. Do not write a confirmation message or continue this turn."
+            : silent ? "Message saved without waking the recipient. Continue independent work; no receipt reply or polling is needed."
             : "Continue the current user-requested work when independent steps remain. Sending does not require ending the turn or waiting for a peer reply. Do not resend this message or poll; Corptie pushes peer messages into this Session's unified queue. End normally if the user's request is fulfilled."
         }
       }

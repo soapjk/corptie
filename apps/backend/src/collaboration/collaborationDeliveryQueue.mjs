@@ -5,10 +5,17 @@ import { formatTrustedChannelMessage, formatTrustedCollaborationEvent } from "./
 export function createCollaborationDeliveryQueue({
   store, sessionChannelService, collaborationCore, collaborationDispatcher,
   collaborationDeliveryRouteResolver, registerRuntimeQueuedWork,
-  moveRuntimeQueuedWork, scheduleAgentWorkDrain, emitEvent
+  moveRuntimeQueuedWork, scheduleAgentWorkDrain, emitEvent, channelMailbox
 }) {
   async function syncSessionChannelDeliveriesIntoAgentWorkQueue() {
-    const deliveries = [
+    channelMailbox?.reconcileUncertainBatches();
+    const scheduledSessions = new Set();
+    const wake = (sessionId, taskId) => {
+      if (scheduledSessions.has(sessionId)) return;
+      scheduledSessions.add(sessionId);
+      scheduleAgentWorkDrain(sessionId, null, taskId);
+    };
+    const deliveries = channelMailbox ? channelMailbox.listWakeDeliveries(500, collaborationDispatcher.maxAttempts) : [
       ...sessionChannelService.listPendingDeliveries(100, collaborationDispatcher.maxAttempts),
       ...sessionChannelService.listQueuedDeliveries(100)
     ];
@@ -30,15 +37,26 @@ export function createCollaborationDeliveryQueue({
         });
         continue;
       }
-      const existingWork = store.getAgentTaskForDelivery(delivery.deliveryId);
+      const batch = channelMailbox?.getBatchForDelivery(delivery.deliveryId);
+      const existingWork = batch ? store.getAgentTask(batch.operation_id) : store.getAgentTaskForDelivery(delivery.deliveryId);
+      if (!existingWork && channelMailbox?.findQueuedHead(envelope, route.providerSessionId)) continue;
       if (existingWork) {
+        if (existingWork.source?.batchedInto || existingWork.source?.mailboxDisposition || (batch && batch.status !== "prepared")) continue;
+        if (existingWork.status === "queued") {
+          if (existingWork.sessionId !== route.providerSessionId) {
+            store.updateAgentTask(existingWork.taskId, { sessionId: route.providerSessionId });
+            moveRuntimeQueuedWork(existingWork.sessionId, route.providerSessionId, existingWork.taskId);
+          }
+          registerRuntimeQueuedWork(route.providerSessionId, existingWork.taskId);
+          wake(route.providerSessionId, existingWork.taskId);
+        }
         if (["failed", "cancelled"].includes(existingWork.status)) {
           store.updateAgentTask(existingWork.taskId, {
             status: "queued", sessionId: route.providerSessionId, startedAt: null,
             completedAt: null, targetTurnId: null, lastError: null
           });
           registerRuntimeQueuedWork(route.providerSessionId, existingWork.taskId);
-          scheduleAgentWorkDrain(route.providerSessionId, null, existingWork.taskId);
+          wake(route.providerSessionId, existingWork.taskId);
         }
         continue;
       }
@@ -49,7 +67,7 @@ export function createCollaborationDeliveryQueue({
         agentId: recipientAgent.agentId,
         sessionId: route.providerSessionId,
         kind: "collaboration",
-        priority: 50,
+        priority: channelMailbox?.store.selectOne("SELECT manual_requested FROM session_mailbox_messages WHERE channel_delivery_id=?", [delivery.deliveryId])?.manual_requested ? 90 : 50,
         text: formatTrustedChannelMessage(envelope),
         source: {
           type: "session_channel",
@@ -64,7 +82,7 @@ export function createCollaborationDeliveryQueue({
         },
         localVisibility: "status_only",
         channelDeliveryId: delivery.deliveryId,
-        createdAt: delivery.createdAt
+        createdAt: channelMailbox?.queueCreatedAt(envelope) ?? delivery.createdAt
       });
       registerRuntimeQueuedWork(route.providerSessionId, task.taskId);
       sessionChannelService.updateDelivery(delivery.deliveryId, {
@@ -73,7 +91,7 @@ export function createCollaborationDeliveryQueue({
       emitEvent("AgentWorkQueued", {
         sessionId: route.providerSessionId, task, queuePosition: null, source: task.source
       }, { sessionId: route.providerSessionId, source: task.source });
-      scheduleAgentWorkDrain(route.providerSessionId, null, task.taskId);
+      wake(route.providerSessionId, task.taskId);
     }
   }
 
