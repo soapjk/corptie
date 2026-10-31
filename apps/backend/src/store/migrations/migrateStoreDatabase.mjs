@@ -2,6 +2,7 @@ import { migrateTaskProjectionColumns, migrateTaskCreationOrigins, migrateTaskLi
 import { migrateArtifactTaxonomy } from "./artifactTaxonomyMigrations.mjs";
 import { migrateStartupOperations } from "./startupOperationMigrations.mjs";
 import { migrateTaskHierarchy } from "./taskHierarchyMigrations.mjs";
+import { migrateChildTaskDelivery } from "./childTaskDeliveryMigrations.mjs";
 import { migrateTaskCreationState } from "./taskCreationStateMigrations.mjs";
 import { migrateCollaborationProtocol } from "./collaborationProtocolMigrations.mjs";
 import { migrateSessionEventStorage } from "./sessionEventEvolutionMigrations.mjs";
@@ -317,4 +318,7 @@ export function migrateStoreDatabase({ db, selectAll, selectOne, ensureColumn, r
              AND m.message_type = 'question'
          )`
     );
+    // Rebuilding the intent CHECK constraint requires all trigger-referenced
+    // Session columns to exist (including on a fresh database).
+    migrateChildTaskDelivery({ db, selectOne, runDataMigrationOnce });
 }

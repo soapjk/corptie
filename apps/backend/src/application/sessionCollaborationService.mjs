@@ -19,6 +19,7 @@ const ARTIFACT_RELATIONS = new Set([
   "handoff", "acceptance_evidence"
 ]);
 const ARTIFACT_VERSION_POLICIES = new Set(["fixed", "latest_approved"]);
+export const MAX_CHILD_TASK_BATCH_SIZE = 10;
 
 export class SessionCollaborationService {
   constructor(options = {}) {
@@ -62,14 +63,15 @@ export class SessionCollaborationService {
       taskId: scope.session.taskId,
       actions: ["sessions.discover", "sessions.get", "channels.open", "channels.list", "channels.get",
         "channels.message_send", "channels.revoke", ...(scope.session.workId ? ["tasks.list", "tasks.get"] : []), ...(canCreate && !requestDenial
-        ? ["tasks.create", ...(!childReason ? ["tasks.create_child"] : []), "tasks.relate", "tasks.share_artifact"]
+        ? ["tasks.create", ...(!childReason ? ["tasks.create_child", "tasks.create_batch"] : []), "tasks.relate", "tasks.share_artifact"]
         : [])],
       denials: { ...(requestDenial ? { "tasks.create": requestDenial } : {}),
         ...(childReason ? { "tasks.create_child": { code: childReason } } : {}) },
       taskHierarchyCapabilities: { ...taskHierarchyCapabilities, createChild: !childReason },
       taskCreation: { independent: canCreate && !requestDenial, child: !childReason,
         parentTaskId: scope.session.sessionKind === "worker" ? scope.session.taskId : null,
-        requiresExplicitUserIntent: true, requiresParentPreflight: true },
+        requiresExplicitUserIntent: true, requiresParentPreflight: true,
+        childCountPolicy: "session_decides", childBatch: !childReason, maxChildBatchSize: MAX_CHILD_TASK_BATCH_SIZE },
       channelPolicy: {
         actor: "authenticated_session",
         firstUse: "user_confirmation",
@@ -126,6 +128,46 @@ export class SessionCollaborationService {
     const item = this.workService.getTask(required(taskId, "task_id"));
     if (!this.#canReadTask(scope, item)) throw coded("TASK_OUTSIDE_SCOPE", "Task is outside the authenticated Session scope.");
     return this.#presentTask(item, undefined, this.#canReadTask(scope, item, false));
+  }
+
+  async createChildTasksBatch(metadata, actorId, input = {}) {
+    assertKnown(input, ["parentTaskId", "expectedParentResourceVersion", "logicalSessionId",
+      "userMessageEventId", "userMessageSequence", "turnId", "items"]);
+    if (!Array.isArray(input.items) || input.items.length < 1 || input.items.length > MAX_CHILD_TASK_BATCH_SIZE) {
+      throw coded("INVALID_TASK_BATCH_SIZE", `Each child Task batch must contain 1-${MAX_CHILD_TASK_BATCH_SIZE} items.`, 400);
+    }
+    const parentTaskId = required(input.parentTaskId, "parentTaskId");
+    const scope = this.#scope(metadata, actorId, { mutation: true });
+    this.#assertCreationSource(scope);
+    this.#authorizeDirectUserTaskCreation(scope, input);
+    this.#assertCreationParent(scope, { ...input, parentTaskId });
+    const keys = new Set();
+    for (const item of input.items) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) throw coded("INVALID_TASK_BATCH_ITEM", "Every batch item must be an object.", 400);
+      assertKnown(item, ["title", "description", "acceptanceCriteria", "verificationCriteria", "priority", "agentId",
+        "providerId", "artifactReference", "fileReference", "idempotencyKey"]);
+      const key = required(item.idempotencyKey, "items[].idempotencyKey");
+      if (keys.has(key)) throw coded("DUPLICATE_TASK_BATCH_KEY", "Each child Task must have a distinct stable idempotency key.", 400);
+      keys.add(key);
+    }
+    const { items, ...shared } = input;
+    const results = [];
+    // One transport call, bounded sequential startup. Each existing Task/startup
+    // receipt is authoritative; no batch journal or batch fingerprint is needed.
+    for (const [index, item] of items.entries()) {
+      try {
+        const result = await this.createTaskAndSession(metadata, actorId, { ...item, ...shared, parentTaskId });
+        results.push({ index, idempotencyKey: item.idempotencyKey, status: "succeeded", result });
+      } catch (error) {
+        results.push({ index, idempotencyKey: item.idempotencyKey, status: "failed", error: {
+          code: error?.code ?? "TASK_CREATION_FAILED", message: String(error?.message ?? "Task creation failed."),
+          ...(error?.creationRecovery ? { creationRecovery: error.creationRecovery } : {})
+        } });
+      }
+    }
+    const succeeded = results.filter(item => item.status === "succeeded").length;
+    return { parentTaskId, total: results.length, succeeded, failed: results.length - succeeded,
+      status: succeeded === results.length ? "completed" : succeeded === 0 ? "failed" : "partial", results };
   }
 
   async createTaskAndSession(metadata, actorId, input = {}) {
@@ -278,7 +320,7 @@ export class SessionCollaborationService {
     if (!TASK_PRIORITIES.includes(priority)) throw coded("INVALID_PRIORITY", `Unsupported Task priority: ${priority}`);
     let item;
     this.store.runInTransaction(() => {
-      if (creationAuthorization) {
+      if (creationAuthorization && !input.parentTaskId) {
         const grant = this.#authorizeDirectUserTaskCreation(scope, input);
         const used = this.store.selectOne("SELECT COUNT(*) AS count FROM task_creation_origins WHERE creator_session_id=? AND creation_context_message_id=?", [scope.logicalSessionId, grant.eventId]).count;
         if (used >= grant.maxTaskCount) throw coded("TASK_CREATION_QUOTA_EXCEEDED", "The direct user request has already created its authorized Task count. Read existing Tasks or obtain an explicit new creation request.", 409);

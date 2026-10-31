@@ -679,6 +679,55 @@ export class GitWorkspaceManager {
     return { committed: true, recovered: false, headOid, legacyHookPollutionRepaired: legacyHookRepair.repaired };
   }
 
+  // Native human acceptance prepares only its exact child. This is a separate
+  // hierarchy operation, not an escape hatch in standalone Git mutation APIs.
+  async prepareChildDeliveryCommit(input) {
+    if(this.directCommitRepositories.has(input.repositoryId)) throw integrationGitError("REPOSITORY_BUSY","Another commit is running.");
+    this.directCommitRepositories.add(input.repositoryId);
+    try {
+      const assertScope=()=>{
+        input.revalidate();
+        const task=this.store.getTask(input.taskId),parent=this.store.getTask(input.parentTaskId);
+        const binding=this.store.getTaskDeliveryBinding(input.taskId),tree=this.store.getGitWorktree(input.worktreeId);
+        if(!task || !parent || task.deletion_status || task.archived || parent.deletion_status || parent.archived
+          || task.parent_task_id!==parent.id || task.work_id!==parent.work_id || tree?.isMain
+          || binding?.repository_id!==input.repositoryId || binding.worktree_id!==input.worktreeId
+          || binding.binding_revision!==input.bindingRevision || (tree?.canonicalPath || tree?.path)!==input.path) {
+          throw integrationGitError("TASK_DELIVERY_BINDING_CHANGED","The child delivery binding changed.");
+        }
+        if(this.store.selectOne("SELECT 1 FROM task_delivery_worktrees WHERE worktree_id=? AND task_id<>? LIMIT 1",[input.worktreeId,task.id])
+          || this.store.selectOne("SELECT 1 FROM child_task_delivery_operations WHERE child_task_id=? AND state IN ('queued','running','waiting') LIMIT 1",[task.id])
+          || this.store.selectOne("SELECT 1 FROM worktree_integration_jobs WHERE repository_id=? AND status IN ('queued','running','paused','replanning','cancellation_requested') LIMIT 1",[input.repositoryId])) {
+          throw integrationGitError("REPOSITORY_BUSY","The child Worktree is already reserved.");
+        }
+        for(const logical of this.store.listLogicalSessionsByWorkspaceId(input.worktreeId)) {
+          if((logical.taskId ?? this.store.getSession(logical.legacySessionId)?.taskId)!==task.id) {
+            throw integrationGitError("WORKTREE_IN_USE","Another Session owns this Worktree.");
+          }
+        }
+      };
+      assertScope();
+      if(await this.integrationOperationState(input.path)) throw integrationGitError("GIT_OPERATION_IN_PROGRESS","Finish the existing Git operation first.");
+      const before=await this.inspectWorktreeCommitPolicy({path:input.path,repositoryId:input.repositoryId,verifyPromotion:input.verifyPromotion});
+      if(before.files.length || before.violations.length) throw integrationGitError("GIT_ARTIFACT_POLICY_REJECTED","交付包含尚未授权入库的文档或不安全路径，请先在 Worktree 提交检查中处理；没有提交或删除文件。");
+      await input.prepareProtection(input.path);
+      const after=await this.inspectWorktreeCommitPolicy({path:input.path,repositoryId:input.repositoryId,verifyPromotion:input.verifyPromotion});
+      if(after.state!==before.state) throw integrationGitError("COMMIT_REVIEW_CHANGED","The child files changed during preparation.");
+      assertScope();
+      await stageValidatedIntegrationTree({cwd:input.path,execFile:this.execFile});
+      assertScope();
+      const staged=await this.inspectWorktreeCommitPolicy({path:input.path,repositoryId:input.repositoryId,verifyPromotion:input.verifyPromotion});
+      if(staged.files.length || staged.violations.length || staged.contentState!==before.contentState) {
+        throw integrationGitError("COMMIT_REVIEW_CHANGED","Files changed while staging; review the child again. No commit was created.");
+      }
+      await input.prepareProtection(input.path);
+      assertScope();
+      if((await this.gitOutput(input.path,["rev-parse","HEAD"])).trim()!==before.headOid) throw integrationGitError("WORKTREE_HEAD_CHANGED","The child HEAD changed during preparation.");
+      await this.runGit(input.path,["commit","-m",`Corptie: prepare accepted child ${input.taskId}`]);
+      return {headOid:(await this.gitOutput(input.path,["rev-parse","HEAD"])).trim()};
+    } finally { this.directCommitRepositories.delete(input.repositoryId); }
+  }
+
   async repairLegacyArtifactHookPollution(path) {
     const head = (await this.gitOutput(path, ["rev-parse", "--verify", "HEAD"])).trim();
     const introduction = (await this.gitOutput(path, [

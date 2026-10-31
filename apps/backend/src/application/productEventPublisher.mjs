@@ -103,7 +103,7 @@ export function createProductEventPublisher({
     if (outbox) store.markEventOutboxPublished(outbox.outbox_id, now());
     invalidateDetail?.(type, payload, sessionId);
     scheduleStateSyncPublish();
-    if (type === "TaskChanged" && payload?.entity?.id) {
+    if (type === "TaskChanged" && payload?.entity?.id && payload.action!=="child-delivery-state") {
       requestTaskSummary(payload.entity.id);
     }
 

@@ -165,6 +165,10 @@ struct CorptieTaskCompletionConfirmationView: View {
                     Text(L10n("无论自动验收结果如何，你都可以将此 CorptieTask 标记为完成。"))
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
+                    if task.parentTaskId != nil {
+                        Text("验收后自动合入父分支、移交 Artifact 并清理子任务，不再重复确认。")
+                            .font(.system(size:11)).foregroundStyle(.secondary)
+                    }
 
                     VStack(alignment: .leading, spacing: 10) {
                         Text(L10n("自动验收结论详情"))

@@ -26,14 +26,21 @@ export class TaskCompletionService {
   }
 
   async issueMacOSIntent(taskId, input = {}, actor = {}) {
-    const requestId = required(input.requestId, "COMPLETION_REQUEST_ID_REQUIRED", "requestId is required.");
-    const existing = this.store.getTaskCompletionIntentByRequest("direct_macos_ui_action", requestId);
-    if (existing) {
-      if (existing.taskId !== taskId) throw completionError("COMPLETION_INTENT_REQUEST_CONFLICT", "The intent request is bound to another Task.");
-      return presentReceipt(existing);
+    if(actor.type!=="user" || actor.id!=="user:local-macos") throw completionError("DIRECT_USER_INTENT_REQUIRED","Only the local user may issue a macOS intent.",403);
+    return this.issueUserIntent(taskId,input,actor);
+  }
+
+  async issueUserIntent(taskId, input = {}, actor = {}, { revalidate = () => {} } = {}) {
+    revalidate();
+    if(actor.type!=="user" || !(actor.id==="user:local-macos" || /^user:paired-device:[A-Za-z0-9_:-]{1,128}$/.test(String(actor.id)))) {
+      throw completionError("DIRECT_USER_INTENT_REQUIRED","A native authenticated user action is required.",403);
     }
-    if (actor.type !== "user" || actor.id !== "user:local-macos") {
-      throw completionError("DIRECT_USER_INTENT_REQUIRED", "Only the authenticated local macOS user may issue this intent.", 403);
+    const sourceType=actor.id==="user:local-macos" ? "direct_macos_ui_action" : "direct_user_ui_action";
+    const requestId = required(input.requestId, "COMPLETION_REQUEST_ID_REQUIRED", "requestId is required.");
+    const existing = this.store.getTaskCompletionIntentByRequest(sourceType, requestId);
+    if (existing) {
+      if (existing.taskId !== taskId || (existing.metadata?.actor && existing.metadata.actor.id!==actor.id)) throw completionError("COMPLETION_INTENT_REQUEST_CONFLICT", "The intent request is bound to another Task or user.");
+      return presentReceipt(existing);
     }
     const task = this.#task(taskId, true);
     const interactionId = required(input.interactionId, "UI_INTERACTION_ID_REQUIRED", "interactionId is required.");
@@ -44,6 +51,8 @@ export class TaskCompletionService {
     }
     const issuedAt = this.now();
     await this.integrationAcceptance.assertCompletionAllowed(task);
+    const childDelivery=task.parent_task_id && this.childDelivery ? await this.childDelivery.prepareVersion(task.id,{revalidate}) : null;
+    revalidate();
     this.#assertUnchanged(task);
     const receiptId = `completion_intent:${randomUUID()}`;
     const nonce = randomBytes(32).toString("base64url");
@@ -53,7 +62,7 @@ export class TaskCompletionService {
       tokenHash: sha256(token),
       taskId: task.id,
       workId: task.work_id,
-      sourceType: "direct_macos_ui_action",
+      sourceType,
       interactionId,
       uiSurface,
       requestId,
@@ -64,15 +73,21 @@ export class TaskCompletionService {
         displayedTaskId: task.id,
         displayedTaskTitle: task.title,
         displayedAcceptanceStatus: input.displayedAcceptanceStatus ?? null,
-        purpose: "task_completion"
+        purpose: "task_completion", actor, ...(childDelivery ? {childDelivery} : {})
       }
     });
     return presentReceipt(intent);
   }
 
   async completeFromMacOS(taskId, input = {}) {
-    const sourceType = "direct_macos_ui_action";
-    const task = this.#task(taskId, true);
+    return this.completeFromUser(taskId,input,{type:"user",id:"user:local-macos"});
+  }
+
+  async completeFromUser(taskId,input={},actor={}, {revalidate=()=>{}}={}) {
+    revalidate();
+    if(actor.type!=="user" || !(actor.id==="user:local-macos" || /^user:paired-device:[A-Za-z0-9_:-]{1,128}$/.test(String(actor.id)))) throw completionError("DIRECT_USER_INTENT_REQUIRED","Authenticated user required.",403);
+    const sourceType = actor.id==="user:local-macos" ? "direct_macos_ui_action" : "direct_user_ui_action";
+    let task = this.store.getTask(taskId);
     const fallbackAttemptId = `invalid-completion-attempt:${randomUUID()}`;
     let idempotencyKey = optionalText(input.idempotencyKey) ?? fallbackAttemptId;
     let requestId = optionalText(input.requestId) ?? fallbackAttemptId;
@@ -82,24 +97,43 @@ export class TaskCompletionService {
       requestId = required(input.requestId, "COMPLETION_REQUEST_ID_REQUIRED", "requestId is required.");
       const token = required(input.intentToken, "COMPLETION_INTENT_REQUIRED", "A completion intent token is required.");
       const existing = this.store.getTaskCompletionOperationByIdempotency(sourceType, idempotencyKey);
-      if (existing) return this.#replay(existing, taskId, requestId);
+      if (existing) {
+        if(existing.details?.actor && existing.details.actor.id!==actor.id) throw completionError("COMPLETION_INTENT_TARGET_MISMATCH","Completion belongs to another user.",403);
+        const original=this.store.getTaskCompletionIntentByTokenHash(sha256(token));
+        if(!original || original.receiptId!==existing.uiReceiptId) throw completionError("COMPLETION_INTENT_INVALID","Completion replay requires its original intent.",403);
+        return this.#replay(existing, taskId, requestId);
+      }
+      task=this.#task(taskId,true);
       intent = this.store.getTaskCompletionIntentByTokenHash(sha256(token));
       if (!intent) throw completionError("COMPLETION_INTENT_INVALID", "Completion intent token is invalid.", 403);
       if (token !== `${intent.receiptId}.${intent.nonce}`) throw completionError("COMPLETION_INTENT_INVALID", "Completion intent token is invalid.", 403);
       if (intent.sourceType !== sourceType || intent.taskId !== task.id || intent.workId !== task.work_id) {
         throw completionError("COMPLETION_INTENT_TARGET_MISMATCH", "Completion intent does not match this Task.", 403);
       }
+      if(intent.metadata?.actor && intent.metadata.actor.id!==actor.id) throw completionError("COMPLETION_INTENT_TARGET_MISMATCH","Intent belongs to another user.",403);
       if (intent.requestId !== requestId) throw completionError("COMPLETION_INTENT_REQUEST_MISMATCH", "Completion request does not match its intent.", 403);
       if (intent.consumedOperationId) throw completionError("COMPLETION_INTENT_REPLAYED", "Completion intent was already consumed.", 409);
       if (Date.parse(intent.expiresAt) <= this.now().getTime()) throw completionError("COMPLETION_INTENT_EXPIRED", "Completion intent has expired.", 410);
       await this.integrationAcceptance.assertCompletionAllowed(task);
+      const childSnapshot=intent.metadata?.childDelivery;
+      if(task.parent_task_id && this.childDelivery) {
+        if(!childSnapshot || JSON.stringify(await this.childDelivery.captureVersion(task.id))!==JSON.stringify(childSnapshot)) {
+          throw completionError("CHILD_DELIVERY_VERSION_CHANGED","子任务交付版本已变化，请重新验收。");
+        }
+      }
+      revalidate();
       this.#assertUnchanged(task);
-      const result = this.store.completeTaskWithAuthorization(this.#operationInput({
+      const result = this.store.runInTransaction(()=>{
+        const completed=this.store.completeTaskWithAuthorization(this.#operationInput({
         task, sourceType, idempotencyKey, requestId, nonce: intent.nonce,
         receiptId: intent.receiptId, interactionId: intent.interactionId,
-        callSurface: intent.uiSurface, details: { purpose: "task_completion" }
-      }));
+        callSurface: intent.uiSurface, details: { purpose: "task_completion",actor,...(childSnapshot ? {childDelivery:childSnapshot} : {}) }
+        }));
+        const delivery=childSnapshot && this.childDelivery.recordApproval(completed.operation,childSnapshot,actor);
+        return {...completed,...(delivery ? {childDelivery:this.childDelivery.present(delivery)} : {})};
+      });
       this.onCompleted?.(result.task, result.operation);
+      if(result.childDelivery) void this.childDelivery.wake(result.childDelivery.operationId);
       return result;
     } catch (error) {
       this.#auditRejection({ error, task, sourceType, idempotencyKey, requestId,
@@ -153,16 +187,23 @@ export class TaskCompletionService {
       if (!mentionsTarget(message, task)) throw completionError("USER_MESSAGE_TARGET_AMBIGUOUS", "The direct user message does not unambiguously identify this Task.", 403);
       const nonce = `session:${logicalSessionId}:${event.eventId}:${event.sequence}:${turnId}`;
       await this.integrationAcceptance.assertCompletionAllowed(task);
+      const childSnapshot=task.parent_task_id && this.childDelivery ? await this.childDelivery.captureVersion(task.id) : null;
       this.#assertUnchanged(task);
       if (!sessionCanOperate(this.store.getSession(logical.legacySessionId), task)) {
         throw completionError("TASK_SESSION_UNAUTHORIZED", "The Session binding changed during validation.", 403);
       }
-      const result = this.store.completeTaskWithAuthorization(this.#operationInput({
+      const result = this.store.runInTransaction(()=>{
+        const actor={type:"user",id:`user:session:${logicalSessionId}`,sourceMessageId:event.eventId};
+        const completed=this.store.completeTaskWithAuthorization(this.#operationInput({
         task, sourceType, idempotencyKey, requestId, nonce, logicalSessionId,
         userMessageEventId: event.eventId, userMessageSequence: event.sequence, turnId,
-        callSurface: "provider_neutral_tool_host", details: { purpose: "task_completion" }
-      }));
+        callSurface: "provider_neutral_tool_host", details: { purpose: "task_completion",actor,...(childSnapshot ? {childDelivery:childSnapshot} : {}) }
+        }));
+        const delivery=childSnapshot && this.childDelivery.recordApproval(completed.operation,childSnapshot,actor);
+        return {...completed,...(delivery ? {childDelivery:this.childDelivery.present(delivery)} : {})};
+      });
       this.onCompleted?.(result.task, result.operation);
+      if(result.childDelivery) void this.childDelivery.wake(result.childDelivery.operationId);
       return result;
     } catch (error) {
       this.#auditRejection({ error, task, sourceType, idempotencyKey, requestId,
@@ -209,7 +250,11 @@ export class TaskCompletionService {
       throw completionError("COMPLETION_IDEMPOTENCY_CONFLICT", "Idempotency key is bound to another completion request.");
     }
     if (operation.result === "rejected") throw completionError(operation.errorCode ?? "COMPLETION_REJECTED", "The original completion attempt was rejected.", 403);
-    return { operation, task: this.store.getTask(taskId), idempotentReplay: true };
+    const deliveryId=this.childDelivery && this.store.selectOne("SELECT operation_id FROM child_task_delivery_operations WHERE approval_operation_id=?",[operation.operationId])?.operation_id;
+    const delivery=deliveryId ? this.childDelivery.repository.getOperation(deliveryId) : null;
+    if(delivery && ["queued","running","waiting"].includes(delivery.state)) void this.childDelivery.wake(delivery.operationId);
+    return { operation, task: this.store.getTask(taskId), idempotentReplay: true,
+      ...(delivery ? {childDelivery:this.childDelivery.present(delivery)} : {}) };
   }
 
   #operationInput(input) {
@@ -246,6 +291,7 @@ export class TaskCompletionService {
 function presentReceipt(intent) {
   return {
     receiptId: intent.receiptId,
+    requestId: intent.requestId,
     intentToken: `${intent.receiptId}.${intent.nonce}`,
     taskId: intent.taskId,
     workId: intent.workId,
@@ -253,7 +299,7 @@ function presentReceipt(intent) {
     uiSurface: intent.uiSurface,
     issuedAt: intent.issuedAt,
     expiresAt: intent.expiresAt,
-    purpose: "task_completion"
+    purpose: intent.metadata?.childDelivery ? "child_delivery" : "task_completion"
   };
 }
 

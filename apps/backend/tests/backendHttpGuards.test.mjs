@@ -14,6 +14,16 @@ function check(guard, path, method = "GET", overrides = {}) {
   return { blocked, response: responses[0] };
 }
 
+test("child delivery preview reads never permit acceptance or retry writes",()=>{
+  for(const path of ["/tasks/id/child-delivery","/tasks/id/child-deliveries?limit=5","/child-deliveries/id"]) {
+    assert.equal(check(rejectDevelopmentPreviewWrite,path).blocked,false);
+    assert.equal(check(rejectDevelopmentPreviewWrite,path,"POST").blocked,true);
+  }
+  for(const path of ["/tasks/id/completion-intents","/tasks/id/confirm-completion","/child-deliveries/id/retry"]) {
+    assert.equal(check(rejectDevelopmentPreviewWrite,path,"POST").blocked,true);
+  }
+});
+
 test("startup recovery status is preview-readable while retries remain forbidden", () => {
   assert.equal(check(rejectDevelopmentPreviewWrite, "/tasks/task:one/startup-recovery", "GET").blocked, false);
   assert.equal(check(rejectDevelopmentPreviewWrite, "/tasks/task:one/startup-recovery", "POST").blocked, true);

@@ -198,8 +198,8 @@ test("child tool schema and HTTP adapter preserve parent, CAS and exact authenti
 });
 
 test("explicit subtask authorization recognizes bilingual commands but not plans or quoted instructions", () => {
-  for (const text of ["请创建两个子任务", "把这项工作拆成两个子Task", "create a subtask", "Please split this into subtasks"]) assert.equal(containsExplicitTaskCreationIntent(text), true, text);
-  for (const text of ["给我一个完整方案", "不要创建子任务", "How to create subtasks?", "给我一个创建子任务的方案", "示例：\"create a subtask\"", "```create a subtask``` "]) assert.equal(containsExplicitTaskCreationIntent(text), false, text);
+  for (const text of ["请创建两个子任务", "把这项工作拆成两个子Task", "create a subtask", "Please split this into subtasks", "Please create child tasks as needed"]) assert.equal(containsExplicitTaskCreationIntent(text), true, text);
+  for (const text of ["给我一个完整方案", "不要创建子任务", "How to create subtasks?", "How to create child tasks?", "Don't create child tasks", "给我一个创建子任务的方案", "示例：\"create a subtask\"", "```create a subtask``` "]) assert.equal(containsExplicitTaskCreationIntent(text), false, text);
 });
 
 test("ordinary Session discovers the child-capable tool but not platform administration", async t => {
@@ -209,6 +209,7 @@ test("ordinary Session discovers the child-capable tool but not platform adminis
     getProjectCodeApplicationService: () => null, getPlatformOperationService: () => platform });
   const names = catalog.definitions({ actorId: f.agent.agentId, metadata: f.source }).map(tool => tool.name);
   assert.ok(names.includes("corptie_collaboration_tasks_create"));
+  assert.ok(names.includes("corptie_collaboration_tasks_create_batch"));
   assert.equal(names.some(name => name.startsWith("corptie_platform_")), false);
   platform.canAccess = () => true;
   assert.ok(catalog.definitions({ actorId: f.agent.agentId, metadata: f.source }).some(tool => tool.name === "corptie_platform_tasks_manage"));
@@ -251,15 +252,122 @@ test("Git preflight rejection is not downgraded to an independent Task", async t
   } finally { TaskWorktreeHierarchyService.prototype.validateCreate = original; }
 });
 
-test("one direct-user request cannot silently create more Tasks than requested", async t => {
+test("parent Sessions decide child count without a natural-language numeric quota", async t => {
   const f = await fixture(t), input = f.input();
   await f.service.createTaskAndSession(f.source, f.agent.agentId, input);
-  await assert.rejects(f.service.createTaskAndSession(f.source, f.agent.agentId,
-    { ...input, title: "Unexpected_extra_child", idempotencyKey: "child:extra" }), { code: "TASK_CREATION_QUOTA_EXCEEDED" });
-  assert.equal(f.store.listTasks().length, 2);
+  await f.service.createTaskAndSession(f.source, f.agent.agentId,
+    { ...input, title: "Another_child", idempotencyKey: "child:extra" });
+  assert.equal(f.store.listTasks().length, 3);
   const batch = { ...f.input(), ...f.evidence(f.source, "请创建两个子任务"), idempotencyKey: "batch:one", title: "Batch_one" };
   await f.service.createTaskAndSession(f.source, f.agent.agentId, batch);
   await f.service.createTaskAndSession(f.source, f.agent.agentId, { ...batch, title: "Batch_two", idempotencyKey: "batch:two" });
-  await assert.rejects(f.service.createTaskAndSession(f.source, f.agent.agentId, { ...batch, title: "Batch_three", idempotencyKey: "batch:three" }), { code: "TASK_CREATION_QUOTA_EXCEEDED" });
-  assert.equal(f.store.listTasks().length, 4);
+  await f.service.createTaskAndSession(f.source, f.agent.agentId, { ...batch, title: "Batch_three", idempotencyKey: "batch:three" });
+  assert.equal(f.store.listTasks().length, 6);
+});
+
+function batchInput(f, count = 3, prefix = "batch") {
+  return { parentTaskId: f.root.id, expectedParentResourceVersion: f.store.getTask(f.root.id).resource_version,
+    ...f.evidence(f.source, "请创建子任务来分工，具体数量你决定"),
+    items: Array.from({ length: count }, (_, index) => ({ title: `Child_${prefix}_${index}`, agentId: f.agent.agentId,
+      idempotencyKey: `${prefix}:${index}`, verificationCriteria: "Run_tests" })) };
+}
+
+test("batch schema, dynamic tool and HTTP endpoint create multiple children in one request", async t => {
+  const f = await fixture(t), input = batchInput(f), definition = collaborationDynamicTools.find(tool => tool.name === "corptie_collaboration_tasks_create_batch");
+  const wire = { parent_task_id: input.parentTaskId, expected_parent_resource_version: input.expectedParentResourceVersion,
+    logical_session_id: input.logicalSessionId, user_message_event_id: input.userMessageEventId,
+    user_message_sequence: input.userMessageSequence, turn_id: input.turnId,
+    items: input.items.map(item => ({ title: item.title, agent_id: item.agentId, idempotency_key: item.idempotencyKey,
+      verification_criteria: item.verificationCriteria })) };
+  const validate = new Ajv({ strict: false }).compile(definition.inputSchema);
+  assert.equal(validate(wire), true);
+  assert.equal(validate({ ...wire, items: [] }), false);
+  assert.equal(validate({ ...wire, items: Array.from({ length: 11 }, () => wire.items[0]) }), false);
+  let requests = 0;
+  const client = { post: (path, body) => new Promise(resolve => {
+    requests++;
+    assert.equal(path, "/internal/collaboration/tasks/batch");
+    const request = Readable.from([Buffer.from(JSON.stringify(body))]);
+    Object.assign(request, { method: "POST", headers: { "x-corptie-agent-id": f.agent.agentId, "x-corptie-session-id": f.source.sessionId } });
+    const response = { writeHead(status) { this.status = status; }, end(text) { resolve({ status: this.status, body: JSON.parse(text) }); } };
+    handleCollaborationHttpRequest({ request, response, url: new URL(path, "http://localhost"), core: f.core, sessionCollaborationService: f.service });
+  }) };
+  const created = await callCollaborationDynamicTool(client, definition.name, wire);
+  assert.equal(created.status, 200, JSON.stringify(created.body));
+  assert.equal(created.body.succeeded, 3); assert.equal(f.starts.length, 3); assert.equal(requests, 1);
+  assert.ok(created.body.results.every(result => result.result.task.verification_criteria === "Run_tests"));
+  const before = f.store.listTasks().length;
+  const denied = await client.post("/internal/collaboration/tasks/batch", { ...input, items: Array(11).fill(input.items[0]) });
+  assert.equal(denied.status, 400);
+  assert.equal(f.store.listTasks().length, before);
+});
+
+test("batch items preserve configured defaults and explicit Provider override", async t => {
+  const f = await fixture(t), input = batchInput(f, 2);
+  await f.store.updateSettings({ newSessionDefaults: { taskCreation: { providerId: "claude-sdk", model: "configured-model", reasoningLevel: "high" } } });
+  input.items[1].providerId = "openclacky";
+  const result = await f.service.createChildTasksBatch(f.source, f.agent.agentId, input);
+  assert.equal(result.succeeded, 2);
+  assert.equal(f.starts[0].providerId, "claude-sdk"); assert.equal(f.starts[0].model, "configured-model");
+  assert.equal(f.starts[0].reasoningLevel, "high"); assert.equal(f.starts[1].providerId, "openclacky");
+});
+
+test("one batch creates up to ten children on every Provider and replay is per item, not batch position", async t => {
+  for (const provider of ["codex-app-server", "claude-sdk", "openclacky"]) await t.test(provider, async t => {
+    const f = await fixture(t, provider), input = batchInput(f, 10);
+    const [first, duplicate] = await Promise.all([f.service.createChildTasksBatch(f.source, f.agent.agentId, input),
+      f.service.createChildTasksBatch(f.source, f.agent.agentId, input)]);
+    assert.equal(first.status, "completed"); assert.equal(first.succeeded, 10); assert.equal(duplicate.succeeded, 10);
+    assert.equal(f.starts.length, 10); assert.equal(f.store.listTasks().length, 11);
+    assert.deepEqual(first.results.map(r => r.result.task.id), duplicate.results.map(r => r.result.task.id));
+    assert.ok(first.results.every(r => r.result.task.parentTaskId === f.root.id && r.result.startupStatus === "ready"));
+    const replay = await f.service.createChildTasksBatch(f.source, f.agent.agentId, { ...input, items: [...input.items].reverse() });
+    assert.equal(replay.succeeded, 10); assert.equal(f.starts.length, 10);
+    assert.deepEqual(replay.results.map(r => r.result.task.id), first.results.map(r => r.result.task.id).reverse());
+    const more = await f.service.createChildTasksBatch(f.source, f.agent.agentId, { ...input, items: [{
+      title: "Extra_child", agentId: f.agent.agentId, idempotencyKey: "extra:eleven" }] });
+    assert.equal(more.succeeded, 1); assert.equal(f.starts.length, 11);
+    const caps = f.service.capabilities(f.source, f.agent.agentId);
+    assert.equal(caps.taskCreation.maxChildBatchSize, 10); assert.equal(caps.taskCreation.childCountPolicy, "session_decides");
+    assert.ok(caps.actions.includes("tasks.create_batch"));
+  });
+});
+
+test("invalid batch envelopes, duplicate keys and foreign parents reject before creating anything", async t => {
+  const f = await fixture(t), input = batchInput(f);
+  for (const items of [[], Array.from({ length: 11 }, () => input.items[0]), [null]]) {
+    await assert.rejects(f.service.createChildTasksBatch(f.source, f.agent.agentId, { ...input, items }));
+  }
+  await assert.rejects(f.service.createChildTasksBatch(f.source, f.agent.agentId, { ...input,
+    items: [input.items[0], input.items[0]] }), { code: "DUPLICATE_TASK_BATCH_KEY" });
+  await assert.rejects(f.service.createChildTasksBatch(f.source, f.agent.agentId, { ...input,
+    parentTaskId: "task:outside" }), { code: "TASK_PARENT_OUTSIDE_SCOPE" });
+  await assert.rejects(f.service.createChildTasksBatch(f.source, f.agent.agentId, { ...input,
+    ...f.evidence(f.source, "给我一个完整方案") }), { code: "USER_MESSAGE_TASK_CREATION_INTENT_MISSING" });
+  assert.equal(f.store.listTasks().length, 1); assert.equal(f.starts.length, 0);
+});
+
+test("batch partial startup failure retries the same child without restarting successful siblings", async t => {
+  const f = await fixture(t), input = batchInput(f), original = f.starter.start;
+  let failed = false;
+  f.starter.start = async command => {
+    if (f.store.getTask(command.taskId).title.endsWith("_1") && !failed) {
+      failed = true;
+      throw Object.assign(new Error("Temporary Provider failure"), { code: "PROVIDER_UNAVAILABLE" });
+    }
+    return original(command);
+  };
+  const first = await f.service.createChildTasksBatch(f.source, f.agent.agentId, input);
+  assert.equal(first.status, "partial"); assert.equal(first.succeeded, 2); assert.equal(first.failed, 1);
+  const failure = first.results[1];
+  assert.equal(failure.error.code, "PROVIDER_UNAVAILABLE");
+  assert.ok(failure.error.creationRecovery.taskId);
+  assert.equal(f.store.listTasks().length, 3); // failed Task remains hidden but recoverable
+  const retry = await f.service.createChildTasksBatch(f.source, f.agent.agentId, { ...input, items: [input.items[1]] });
+  assert.equal(retry.succeeded, 1); assert.equal(retry.results[0].result.task.id, failure.error.creationRecovery.taskId);
+  assert.equal(f.starts.length, 3); assert.equal(f.store.listTasks().length, 4);
+  const changed = await f.service.createChildTasksBatch(f.source, f.agent.agentId, { ...input,
+    items: [{ ...input.items[0], description: "Changed_definition" }] });
+  assert.equal(changed.results[0].error.code, "IDEMPOTENCY_CONFLICT");
+  assert.equal(f.starts.length, 3);
 });
