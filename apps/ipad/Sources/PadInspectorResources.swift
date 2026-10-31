@@ -74,7 +74,7 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
                         if store.snapshot?.workId != nil { artifacts; memories }
                         references
                     }
-                } else { ProgressView("正在同步详情…") }
+                } else { CorptieBrandProgress("正在同步详情…") }
             } else {
             connectionStatus
             if let providerManagementID {
@@ -157,7 +157,7 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
     }
 
     @ViewBuilder private var connectionStatus: some View {
-        if store.snapshot == nil && store.error == nil { ProgressView("正在连接详情推送…") }
+        if store.snapshot == nil && store.error == nil { CorptieBrandProgress("正在连接详情推送…") }
         if !store.connected && store.snapshot != nil && store.error != nil {
             Label("详情连接中断，保留上次数据", systemImage: "wifi.slash").font(.footnote).foregroundStyle(.orange)
         }
