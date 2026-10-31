@@ -1,0 +1,222 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 620" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0c1017"/>
+      <stop offset="100%" stop-color="#141a24"/>
+    </linearGradient>
+
+    <!-- Card Gradients -->
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1b2332"/>
+      <stop offset="100%" stop-color="#131924"/>
+    </linearGradient>
+    <linearGradient id="taskCardGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e2738"/>
+      <stop offset="100%" stop-color="#171e2c"/>
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#818cf8"/>
+    </linearGradient>
+    <linearGradient id="channelGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#818cf8"/>
+      <stop offset="100%" stop-color="#c084fc"/>
+    </linearGradient>
+    <linearGradient id="mobileGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+
+    <!-- Filters -->
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="115%" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+
+    <!-- Marker Arrow -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#38bdf8"/>
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#a78bfa"/>
+    </marker>
+  </defs>
+
+  <style>
+    .title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-weight: 700; fill: #f8fafc; }
+    .subtitle { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 13px; fill: #94a3b8; }
+    .node-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-weight: 600; font-size: 14px; fill: #f1f5f9; }
+    .node-desc { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 11.5px; fill: #94a3b8; }
+    .badge-text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+    .flow-line { stroke: #38bdf8; stroke-width: 2; fill: none; stroke-dasharray: 4, 3; }
+    .solid-line { stroke: #38bdf8; stroke-width: 2; fill: none; }
+  </style>
+
+  <!-- Background Base -->
+  <rect width="960" height="620" rx="16" fill="url(#bgGrad)" stroke="#1e293b" stroke-width="1.5"/>
+
+  <!-- Top Title Bar -->
+  <g transform="translate(40, 28)">
+    <rect x="0" y="0" width="136" height="22" rx="11" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+    <text x="68" y="15" text-anchor="middle" class="badge-text" fill="#38bdf8">Workflow Architecture</text>
+    <text x="0" y="48" class="title" font-size="20">Corptie 核心工作流：从需求到交付</text>
+    <text x="0" y="70" class="subtitle">全链路任务拆解 · 物理隔离并行开发 · 自动化长任务唤醒 · 跨端随时接续</text>
+  </g>
+
+  <!-- Left Main Pipeline (Width: 590) -->
+  <g transform="translate(40, 115)">
+
+    <!-- 1. Work Planning -->
+    <g filter="url(#shadow)">
+      <rect x="0" y="0" width="580" height="54" rx="10" fill="url(#cardGrad)" stroke="#334155" stroke-width="1"/>
+      <rect x="14" y="14" width="26" height="26" rx="6" fill="#0f172a" stroke="#38bdf8" stroke-width="1.5"/>
+      <text x="27" y="32" text-anchor="middle" font-family="sans-serif" font-weight="bold" font-size="13" fill="#38bdf8">1</text>
+      <text x="50" y="27" class="node-title">Work 需求讨论与方案规划</text>
+      <text x="50" y="44" class="node-desc">关联本地代码仓库 · 在 Work Chat 中统筹架构方案，明确交付目标与验收标准</text>
+    </g>
+
+    <!-- Arrow 1 -> 2 -->
+    <path d="M 290 54 L 290 74" class="solid-line" marker-end="url(#arrow)"/>
+
+    <!-- 2. Task & Child Task Decomposition -->
+    <g transform="translate(0, 78)" filter="url(#shadow)">
+      <rect x="0" y="0" width="580" height="54" rx="10" fill="url(#cardGrad)" stroke="#334155" stroke-width="1"/>
+      <rect x="14" y="14" width="26" height="26" rx="6" fill="#0f172a" stroke="#818cf8" stroke-width="1.5"/>
+      <text x="27" y="32" text-anchor="middle" font-family="sans-serif" font-weight="bold" font-size="13" fill="#818cf8">2</text>
+      <text x="50" y="27" class="node-title">结构化任务拆解（Parent &amp; Child Tasks）</text>
+      <text x="50" y="44" class="node-desc">将大型需求分解为独立 Task 与子任务 · 按需绑定专长 Agent 角色与底层 AI 模型</text>
+    </g>
+
+    <!-- Arrow 2 -> 3 -->
+    <path d="M 290 132 L 290 152" class="solid-line" marker-end="url(#arrow)"/>
+
+    <!-- 3. Parallel Worktree Container -->
+    <g transform="translate(0, 156)" filter="url(#shadow)">
+      <!-- Outer boundary -->
+      <rect x="0" y="0" width="580" height="154" rx="12" fill="#0f172a" stroke="#475569" stroke-width="1.2" stroke-dasharray="6,4"/>
+
+      <!-- Container Tag -->
+      <rect x="14" y="-10" width="232" height="20" rx="10" fill="#1e293b" stroke="#475569" stroke-width="1"/>
+      <text x="130" y="4" text-anchor="middle" class="badge-text" fill="#38bdf8">🌲 并行开发：Git Worktree 物理隔离</text>
+
+      <!-- Task A Card -->
+      <g transform="translate(14, 22)">
+        <rect x="0" y="0" width="260" height="116" rx="8" fill="url(#taskCardGrad)" stroke="#334155" stroke-width="1"/>
+        <circle cx="16" cy="18" r="4" fill="#38bdf8"/>
+        <text x="28" y="22" class="node-title" font-size="13">Task A：前端界面与交互</text>
+        <text x="14" y="44" class="node-desc" fill="#cbd5e1">· 分支：<tspan fill="#38bdf8">task/feature-ui</tspan></text>
+        <text x="14" y="62" class="node-desc" fill="#cbd5e1">· Agent：<tspan fill="#94a3b8">UI Specialist (Claude Code)</tspan></text>
+        <text x="14" y="80" class="node-desc" fill="#cbd5e1">· 独立目录，即时热重载与编译</text>
+        <rect x="14" y="92" width="68" height="16" rx="4" fill="#0f172a"/>
+        <text x="48" y="103" text-anchor="middle" font-size="9.5" fill="#38bdf8" font-weight="600">独立 Worktree</text>
+      </g>
+
+      <!-- Task B Card -->
+      <g transform="translate(306, 22)">
+        <rect x="0" y="0" width="260" height="116" rx="8" fill="url(#taskCardGrad)" stroke="#334155" stroke-width="1"/>
+        <circle cx="16" cy="18" r="4" fill="#a78bfa"/>
+        <text x="28" y="22" class="node-title" font-size="13">Task B：后端服务与业务 API</text>
+        <text x="14" y="44" class="node-desc" fill="#cbd5e1">· 分支：<tspan fill="#a78bfa">task/feature-api</tspan></text>
+        <text x="14" y="62" class="node-desc" fill="#cbd5e1">· Agent：<tspan fill="#94a3b8">Backend Engineer (Codex)</tspan></text>
+        <text x="14" y="80" class="node-desc" fill="#cbd5e1">· 独享数据库迁移与测试环境</text>
+        <rect x="14" y="92" width="68" height="16" rx="4" fill="#0f172a"/>
+        <text x="48" y="103" text-anchor="middle" font-size="9.5" fill="#a78bfa" font-weight="600">独立 Worktree</text>
+      </g>
+
+      <!-- Central Collaboration Channel Badge -->
+      <g transform="translate(205, 52)">
+        <rect x="0" y="0" width="170" height="42" rx="21" fill="#18182b" stroke="url(#channelGrad)" stroke-width="1.5" filter="url(#shadow)"/>
+        <text x="85" y="18" text-anchor="middle" class="badge-text" fill="#c084fc">💬 Channel 原生通信</text>
+        <text x="85" y="32" text-anchor="middle" font-size="9.5" fill="#cbd5e1">自主同步接口契约与数据</text>
+      </g>
+    </g>
+
+    <!-- Arrow 3 -> 4 -->
+    <path d="M 290 310 L 290 330" class="solid-line" marker-end="url(#arrow)"/>
+
+    <!-- 4. Automation & Wakeup -->
+    <g transform="translate(0, 334)" filter="url(#shadow)">
+      <rect x="0" y="0" width="580" height="54" rx="10" fill="url(#cardGrad)" stroke="#334155" stroke-width="1"/>
+      <rect x="14" y="14" width="26" height="26" rx="6" fill="#0f172a" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="27" y="32" text-anchor="middle" font-family="sans-serif" font-weight="bold" font-size="13" fill="#f59e0b">4</text>
+      <text x="50" y="27" class="node-title">长任务自动化休眠与事件唤醒</text>
+      <text x="50" y="44" class="node-desc">执行耗时编译或测试时会话自主休眠 · 进程退出或异常时自动唤醒继续执行</text>
+    </g>
+
+    <!-- Arrow 4 -> 5 -->
+    <path d="M 290 388 L 290 408" class="solid-line" marker-end="url(#arrow)"/>
+
+    <!-- 5. Review & Git Merge -->
+    <g transform="translate(0, 412)" filter="url(#shadow)">
+      <rect x="0" y="0" width="580" height="54" rx="10" fill="url(#cardGrad)" stroke="#10b981" stroke-width="1.2"/>
+      <rect x="14" y="14" width="26" height="26" rx="6" fill="#0f172a" stroke="#10b981" stroke-width="1.5"/>
+      <text x="27" y="32" text-anchor="middle" font-family="sans-serif" font-weight="bold" font-size="13" fill="#10b981">5</text>
+      <text x="50" y="27" class="node-title">Git 审查与交付集成</text>
+      <text x="50" y="44" class="node-desc">审查代码 Diff · 子任务向上集成验收 · 解决冲突并安全合并回主分支</text>
+    </g>
+
+  </g>
+
+  <!-- Right Side Mobile & Ecosystem Card (Width: 260) -->
+  <g transform="translate(650, 115)" filter="url(#shadow)">
+    <!-- Device Frame -->
+    <rect x="0" y="0" width="270" height="466" rx="16" fill="url(#mobileGrad)" stroke="#334155" stroke-width="1.5"/>
+
+    <!-- Top Notch / Status -->
+    <rect x="105" y="12" width="60" height="5" rx="2.5" fill="#334155"/>
+
+    <!-- Header -->
+    <g transform="translate(20, 36)">
+      <rect x="0" y="0" width="100" height="18" rx="9" fill="#1e293b" stroke="#38bdf8" stroke-width="1"/>
+      <text x="50" y="13" text-anchor="middle" class="badge-text" fill="#38bdf8" font-size="9.5">Apple Ecosystem</text>
+      <text x="0" y="42" class="node-title" font-size="16">Mac 执行，移动端接续</text>
+      <text x="0" y="60" class="node-desc">iPhone &amp; iPad 原生支持</text>
+    </g>
+
+    <line x1="20" y1="114" x2="250" y2="114" stroke="#1e293b" stroke-width="1"/>
+
+    <!-- Features on Mobile -->
+    <g transform="translate(20, 126)">
+      <!-- Item 1 -->
+      <circle cx="8" cy="12" r="3" fill="#38bdf8"/>
+      <text x="20" y="16" class="node-title" font-size="12">随时查阅进度与 Diff</text>
+      <text x="20" y="32" class="node-desc" font-size="11">离座时实时关注会话与代码变化</text>
+
+      <!-- Item 2 -->
+      <circle cx="8" cy="54" r="3" fill="#818cf8"/>
+      <text x="20" y="58" class="node-title" font-size="12">即时通知与中断干预</text>
+      <text x="20" y="74" class="node-desc" font-size="11">任务完成、等待审批时推送提醒</text>
+
+      <!-- Item 3 -->
+      <circle cx="8" cy="96" r="3" fill="#c084fc"/>
+      <text x="20" y="100" class="node-title" font-size="12">语音、图片与交互指令</text>
+      <text x="20" y="116" class="node-desc" font-size="11">直接发送界面截图指导 AI 修改</text>
+
+      <!-- Item 4 -->
+      <circle cx="8" cy="138" r="3" fill="#10b981"/>
+      <text x="20" y="142" class="node-title" font-size="12">一键审查集成与合并</text>
+      <text x="20" y="158" class="node-desc" font-size="11">手机上一键批准并合并到 GitHub</text>
+    </g>
+
+    <!-- Connection Methods Box -->
+    <g transform="translate(16, 314)">
+      <rect x="0" y="0" width="238" height="132" rx="10" fill="#090d16" stroke="#1e293b" stroke-width="1"/>
+      <text x="14" y="24" class="badge-text" fill="#94a3b8">连接模式</text>
+
+      <rect x="14" y="36" width="210" height="38" rx="6" fill="#131b28" stroke="#334155" stroke-width="0.8"/>
+      <text x="26" y="52" class="node-title" font-size="11.5">📡 局域网高速配对</text>
+      <text x="26" y="66" class="node-desc" font-size="10.5">工位扫码即连，零延迟本地交互</text>
+
+      <rect x="14" y="82" width="210" height="38" rx="6" fill="#131b28" stroke="#334155" stroke-width="0.8"/>
+      <text x="26" y="98" class="node-title" font-size="11.5">☁️ Cloud 远程连接 (E2EE)</text>
+      <text x="26" y="112" class="node-desc" font-size="10.5">外网安全接入，端到端全程加密</text>
+    </g>
+
+    <!-- Connective Dash Line from Merge to Mobile -->
+    <path d="M -30 350 C -5 350, -5 380, 0 380" stroke="#38bdf8" stroke-width="1.5" stroke-dasharray="4,3" fill="none" marker-end="url(#arrow)"/>
+  </g>
+</svg>
