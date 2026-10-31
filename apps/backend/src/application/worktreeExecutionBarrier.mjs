@@ -4,6 +4,9 @@ export function worktreeDispatchBlocker(store, reference) {
   const logical = reference.logicalSession ?? (reference.logicalSessionId ? store.getLogicalSession?.(reference.logicalSessionId) : null)
     ?? store.getLogicalSessionByLegacySessionId?.(reference.sessionId);
   const taskId = logical?.taskId ?? store.getSession?.(logical?.legacySessionId ?? reference.sessionId)?.taskId;
+  if(taskId && store.selectOne?.("SELECT 1 FROM child_task_delivery_operations WHERE child_task_id=? AND state IN ('queued','running','waiting') LIMIT 1",[taskId])) {
+    return {reason:"CHILD_DELIVERY_IN_PROGRESS",worktreeId:logical?.activeWorkspaceId ?? null,message:"子任务已验收，正在自动交付和清理。"};
+  }
   if (taskId && store.getTask?.(taskId)?.deletion_status === "deleting") return {
     reason: "TASK_DELETION_IN_PROGRESS", worktreeId: logical?.activeWorkspaceId ?? null,
     message: "任务正在删除，暂不启动新的执行。"

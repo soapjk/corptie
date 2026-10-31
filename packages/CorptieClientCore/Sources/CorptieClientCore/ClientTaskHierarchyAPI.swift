@@ -8,6 +8,13 @@ public struct ClientTaskHierarchyAPI: Sendable {
     public init(transport: BackendTransport, surface: Surface) {
         self.transport = transport; self.surface = surface
     }
+    func deliveryRequest<R: Decodable>(path: [String], query: [URLQueryItem] = [], body: Data? = nil) async throws -> R {
+        let prefix = surface == .pairedDevice ? ["client", "v1"] : []
+        var request = try transport.endpoint.request(path:prefix + path,query:query)
+        if let body { request.httpMethod="POST"; request.httpBody=body; request.setValue("application/json",forHTTPHeaderField:"Content-Type") }
+        let (data, _) = try await transport.data(for:request)
+        return try JSONDecoder().decode(R.self,from:data)
+    }
     public func acceptance(taskID: String) async throws -> TaskIntegrationAcceptanceStatus {
         let prefix = surface == .pairedDevice ? ["client", "v1"] : []
         let request = try transport.endpoint.request(path: prefix + ["tasks",taskID,"integration-acceptance"])

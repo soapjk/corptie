@@ -77,6 +77,13 @@ export function handleCollaborationHttpRequest({
         ) });
       }
 
+      if (request.method === "POST" && url.pathname === "/internal/collaboration/tasks/batch") {
+        if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped Task tools are unavailable.", 503);
+        return sendJson(response, 200, await sessionCollaborationService.createChildTasksBatch(
+          sessionMetadata, actorAgentId, await readJson(request)
+        ));
+      }
+
       if (request.method === "POST" && url.pathname === "/internal/collaboration/tasks") {
         if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped Task tools are unavailable.", 503);
         return sendJson(response, 201, await sessionCollaborationService.createTaskAndSession(

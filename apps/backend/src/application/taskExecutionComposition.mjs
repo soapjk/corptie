@@ -20,14 +20,18 @@ export function createTaskExecutionComposition({
       }
       return result;
     },
-    handleArtifacts: ({ task, disposition, actor }) => artifactService.disposeBoundArtifactsForTaskDeletion({
-      kind: "local_user",
-      actorId: actor?.id,
-      workId: task.work_id
-    }, task.id, disposition),
+    handleArtifacts: ({ task, disposition, actor }) => {
+      const delivery=actor?.type==="child_delivery" ? workService.childTaskDeliveryService.assertAuthority(actor.id) : null;
+      return artifactService.disposeBoundArtifactsForTaskDeletion({
+        kind:"local_user",actorId:delivery?.actor.id ?? actor?.id,workId:task.work_id,
+        ...(delivery ? {childDeliveryOperationId:delivery.operationId,
+          revalidateUser:()=>workService.childTaskDeliveryService.assertAuthority(delivery.operationId)} : {})
+      },task.id,disposition);
+    },
     // Device grants are checked by the gateway before this user scope.
-    authorize: ({ actor }) => actor?.type === "user"
-      && (actor.id === "user:local-macos" || /^user:paired-device:[A-Za-z0-9_:-]{1,128}$/.test(String(actor.id ?? ""))),
+    authorize: ({ actor, task }) => actor?.type === "child_delivery"
+      ? workService.childTaskDeliveryService?.authorizesCleanup(task.id,actor.id)===true
+      : actor?.type === "user" && (actor.id === "user:local-macos" || /^user:paired-device:[A-Za-z0-9_:-]{1,128}$/.test(String(actor.id ?? ""))),
     onChanged: (type, payload) => emitEvent(type, payload)
   });
 

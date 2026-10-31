@@ -149,6 +149,9 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
     public let autoTitleLabel: String
     public let autoTitleUpdating: Bool
     public let hierarchy: TaskHierarchySummary?
+    private let deliveryTaskID: String?
+    private let deliveryRefreshID: String
+    private let deliveryAPI: (@MainActor () async throws -> ClientTaskHierarchyAPI)?
     private let onAutoTitleChange: ((Bool) -> Void)?
     private let actions: Actions
     @State private var isExpanded = false
@@ -161,6 +164,8 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
                 autoTitleEnabled: Bool? = nil, autoTitleLabel: String = "自动更新 Task 标题",
                 autoTitleUpdating: Bool = false, onAutoTitleChange: ((Bool) -> Void)? = nil,
                 hierarchy: TaskHierarchySummary? = nil,
+                deliveryTaskID: String? = nil, deliveryRefreshID: String = "",
+                deliveryAPI: (@MainActor () async throws -> ClientTaskHierarchyAPI)? = nil,
                 @ViewBuilder actions: () -> Actions) {
         self.summary = summary
         self.description = description ?? ""
@@ -177,6 +182,7 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
         self.autoTitleUpdating = autoTitleUpdating
         self.onAutoTitleChange = onAutoTitleChange
         self.hierarchy = hierarchy
+        self.deliveryTaskID=deliveryTaskID; self.deliveryRefreshID=deliveryRefreshID; self.deliveryAPI=deliveryAPI
         self.actions = actions()
     }
 
@@ -190,6 +196,10 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     ConversationTaskSummaryView(summary: summary, title: summaryTitle)
+                    if let deliveryTaskID, let deliveryAPI {
+                        ConversationChildDelivery(taskID:deliveryTaskID,refreshID:deliveryRefreshID,api:deliveryAPI)
+                            .id(deliveryTaskID)
+                    }
                     if isExpanded {
                         ConversationTaskDefinition(description: description, acceptance: acceptance,
                             descriptionTitle: descriptionTitle, acceptanceTitle: acceptanceTitle,

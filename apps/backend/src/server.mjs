@@ -148,6 +148,8 @@ import { createCollaborationHttpRoutes } from "./application/collaborationHttpCo
 import { WorkApplicationService } from "./application/workApplicationService.mjs";
 import { createTaskAndSession } from "./application/taskCreationApplicationService.mjs";
 import { TaskCompletionService } from "./application/taskCompletionService.mjs";
+import { ChildTaskDeliveryService } from "./application/childTaskDeliveryService.mjs";
+let childTaskDeliveryService = null;
 import { SessionRuntimeReleaseService } from "./application/sessionRuntimeReleaseService.mjs";
 import { HubService, createOpenAiEmbedder } from "./application/hubService.mjs";
 import { AgentContextService } from "./application/agentContextService.mjs";
@@ -1568,6 +1570,11 @@ worktreeAutoFollowService = new WorktreeAutoFollowService({
   readHead: path => gitWorkspaces.gitOutput(path, ["rev-parse", "--verify", "HEAD"]),
   onEvent: emitEvent
 });
+childTaskDeliveryService = new ChildTaskDeliveryService({store,gitWorkspaces,jobs:worktreeIntegrationJobService,
+  artifactService,deletionService:taskDeletionService,prepareProtection:path=>gitCommitProtection.resolve(path),onEvent:emitEvent});
+taskCompletionService.childDelivery = childTaskDeliveryService;
+workService.childTaskDeliveryService = childTaskDeliveryService;
+workService.taskCompletionService = taskCompletionService;
 const {
   syncSessionChannelDeliveriesIntoAgentWorkQueue,
   syncCollaborationDeliveriesIntoAgentWorkQueue,
@@ -1708,6 +1715,7 @@ function sessionTitleErrorPayload(error, extra = {}) {
 
 
 function emitEvent(type, payload, options = {}) {
+  childTaskDeliveryService?.onRuntimeEvent(type,payload);
   productEventPublisher ??= createProductEventPublisher({
     store, eventLog, sseClients, now,
     getClientDeviceGateway: () => clientDeviceGateway,
@@ -2419,7 +2427,7 @@ function startBackendRuntime() {
     knownActiveWorktrees, worktreeIntegrationJobService, reconcileEntityTasksAtStartup,
     reconcileWorkChatsAtStartup, scheduledSessionTaskService, runtimeActivity,
     tickAgentWorkQueue, emitEvent, artifactService, feishuGateway,
-    skillRegistryService, legacySessionHistoryRepairService
+    skillRegistryService, legacySessionHistoryRepairService, childTaskDeliveryService
   });
 }
 

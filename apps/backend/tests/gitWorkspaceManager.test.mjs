@@ -14,12 +14,64 @@ import {
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { TaskDeletionService } from "../src/application/taskDeletionService.mjs";
 import { createTaskWorktreeOperations } from "../src/application/taskWorktreeOperations.mjs";
+import { ChildTaskDeliveryService } from "../src/application/childTaskDeliveryService.mjs";
+import { TaskCompletionService } from "../src/application/taskCompletionService.mjs";
 import {
   createGitWorkspaceSnapshot,
   inspectGitWorkspace
 } from "../src/utils/gitWorktreeInventory.mjs";
 
 const execFileAsync = promisify(execFile);
+
+test("accepted automatic delivery removes the exact child Worktree and branch, with branch-only retry",async()=>{
+  for(const interruptBranchCleanup of [false,true]) {
+    const f=await createFixture("automatic-child-closeout");
+    try {
+      const manager=new GitWorkspaceManager({store:f.store,transitions:{}});
+      const agent=f.store.createAgent({name:"Delivery",role:"independentContributor"});
+      const work=f.store.createWork({name:"Delivery",workspaceId:f.store.getGitRepository(f.repositoryId).workspaceId,contributorAgentIds:[agent.agentId]});
+      const parent=f.store.createTask({workId:work.id,title:"Parent"});
+      const parentPath=join(f.directory,"parent"),childPath=join(f.directory,"child");
+      await git(["worktree","add","-b","delivery-parent",parentPath],f.repository);
+      const child=f.store.createTask({workId:work.id,title:"Child",parentTaskId:parent.id},{},{expectedParentResourceVersion:f.store.getTask(parent.id).resource_version});
+      await git(["worktree","add","-b","delivery-child",childPath,"delivery-parent"],f.repository);
+      await writeFile(join(childPath,"feature.js"),"export const delivered = true;\n");
+      await git(["add","feature.js"],childPath);await git(["commit","-m","child code"],childPath);
+      await git(["merge","--ff-only","delivery-child"],parentPath);
+      f.store.upsertGitWorkspaceSnapshot(await createGitWorkspaceSnapshot(f.repository));
+      const trees=f.store.listGitWorktrees(f.repositoryId);
+      for(const [task,branch] of [[parent,"delivery-parent"],[child,"delivery-child"]]) {
+        const tree=trees.find(tree=>tree.branchName===branch);
+        f.store.db.run(`INSERT INTO task_delivery_worktrees (task_id,repository_id,worktree_id,startup_operation_id,created_at,updated_at)
+          VALUES (?,?,?,'test:delivery','now','now')`,[task.id,f.repositoryId,tree.worktreeId]);
+      }
+      const ops=createTaskWorktreeOperations({store:f.store,gitWorkspaces:manager,projectApplicationService:{requireProject:async()=>({mainPath:f.repository})},emitEvent(){}});
+      let delivery;
+      const deletion=new TaskDeletionService({store:f.store,
+        authorize:({actor,task})=>actor?.type==="child_delivery" && delivery.authorizesCleanup(task.id,actor.id),
+        inspectWorktree:ops.inspectTaskWorktree,removeWorktree:ops.removeTaskDeletionWorktree,
+        deleteSession:async()=>assert.fail("no Sessions"),handleArtifacts:async()=>({disposition:"retain"})});
+      delivery=new ChildTaskDeliveryService({store:f.store,gitWorkspaces:manager,jobs:{},artifactService:{},deletionService:deletion});
+      const completion=new TaskCompletionService({store:f.store});completion.childDelivery=delivery;
+      const run=manager.runGit.bind(manager);let interrupted=false;
+      manager.runGit=async(path,args,...rest)=>{
+        if(interruptBranchCleanup && args[0]==="branch" && !interrupted) {interrupted=true;throw new Error("temporary branch lock");}
+        return run(path,args,...rest);
+      };
+      const mainBefore=(await gitOutput(["rev-parse","HEAD"],f.repository)).trim();
+      const receipt=await completion.issueMacOSIntent(child.id,{requestId:"automatic:accept",interactionId:"automatic:click",uiSurface:"task_completion_confirmation",
+        displayedTaskId:child.id,displayedTaskTitle:child.title},{type:"user",id:"user:local-macos"});
+      const accepted=await completion.completeFromMacOS(child.id,{requestId:receipt.requestId,intentToken:receipt.intentToken,idempotencyKey:"automatic:complete"});
+      const id=accepted.childDelivery.operationId;await delivery.inFlight.get(id);
+      if(interruptBranchCleanup) {assert.equal(delivery.read(id).state,"blocked");delivery.retry(id);await delivery.inFlight.get(id);}
+      assert.equal(delivery.read(id).state,"completed",delivery.read(id).errorMessage);
+      assert.equal(f.store.getTask(child.id),null);assert.ok(f.store.getTask(parent.id));
+      assert.equal(await manager.gitSucceeds(f.repository,["show-ref","--verify","refs/heads/delivery-child"]),false);
+      assert.equal((await gitOutput(["rev-parse","HEAD"],f.repository)).trim(),mainBefore);
+      assert.equal(await readFile(join(parentPath,"feature.js"),"utf8"),"export const delivered = true;\n");
+    } finally {await f.store.close();await rm(f.directory,{recursive:true,force:true});}
+  }
+});
 
 test("child deletion uses parent delivery and safely retries partial Git cleanup without touching parent or main", async () => {
   for (const mode of ["empty", "delivered", "force", "branch_retry", "changed", "locked"]) {
