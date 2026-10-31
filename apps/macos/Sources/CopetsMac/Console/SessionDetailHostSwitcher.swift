@@ -5,7 +5,6 @@ import CorptieConversation
 
 /// Development-only bounded cache of mounted Detail controls, independent of business data retention.
 struct SessionDetailHostSwitcher: NSViewControllerRepresentable {
-    @Environment(\.sessionChromeCenterY) private var chromeCenterY
     let session: TaskSession
     let scope: ClientDetailBusinessScope
     let repository: ClientDetailBusinessRepository
@@ -18,8 +17,8 @@ struct SessionDetailHostSwitcher: NSViewControllerRepresentable {
         SessionDetailHostController(repository: repository)
     }
     func updateNSViewController(_ controller: SessionDetailHostController, context: Context) {
-        controller.present(session: session, scope: scope, revision: revision, isActive: isActive, chromeCenterY: chromeCenterY) { activity in
-            SessionDetailPanel(session: session, railWidth: railWidth, chromeCenterY: chromeCenterY, activity: activity, detailPresentation: presentation)
+        controller.present(session: session, scope: scope, revision: revision, isActive: isActive) { activity in
+            SessionDetailPanel(session: session, railWidth: railWidth, activity: activity, detailPresentation: presentation)
         }
     }
     func sizeThatFits(_ proposal: ProposedViewSize, nsViewController: SessionDetailHostController, context: Context) -> CGSize? {
@@ -63,7 +62,7 @@ struct SessionDetailHostSwitcher: NSViewControllerRepresentable {
         view = container
         installMemoryPressureHandler()
     }
-    func present(session: TaskSession, scope: ClientDetailBusinessScope, revision: UInt64, isActive: Bool, chromeCenterY: CGFloat? = nil,
+    func present(session: TaskSession, scope: ClientDetailBusinessScope, revision: UInt64, isActive: Bool,
                  buildRoot: (ConversationDetailPresentationActivity) -> SessionDetailPanel) {
         loadViewIfNeeded()
         invalidateBindings(for: scope)
@@ -74,7 +73,7 @@ struct SessionDetailHostSwitcher: NSViewControllerRepresentable {
         if let cached = entries.first(where: { $0.scope == scope && !$0.handle.retired }) {
             entry = cached
             SessionSwitchTrace.shared.mark(.detailHostReused, sessionID: session.id)
-            if cached.revision != revision || cached.session != session || cached.host.rootView.chromeCenterY != chromeCenterY {
+            if cached.revision != revision || cached.session != session {
                 SessionSwitchTrace.shared.mark(.detailHostRootUpdated, sessionID: session.id)
                 cached.host.rootView = buildRoot(cached.activity)
                 cached.session = session; cached.revision = revision
