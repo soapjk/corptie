@@ -138,6 +138,18 @@ export const executionQueueSchemaSql = `      CREATE TABLE IF NOT EXISTS agent_o
       CREATE INDEX IF NOT EXISTS idx_scheduled_session_events_task
       ON scheduled_session_events(task_id, sequence ASC);
 
+      CREATE TABLE IF NOT EXISTS automation_notification_clock (
+        id INTEGER PRIMARY KEY CHECK (id = 1), epoch TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS automation_notification_feed (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE,
+        environment TEXT NOT NULL, created_at TEXT NOT NULL, body_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_automation_notification_environment
+      ON automation_notification_feed(environment, sequence);
+      CREATE INDEX IF NOT EXISTS idx_automation_notification_retention
+      ON automation_notification_feed(created_at);
+
       CREATE TABLE IF NOT EXISTS collaboration_events (
         event_id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,

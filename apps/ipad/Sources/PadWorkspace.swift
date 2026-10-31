@@ -83,12 +83,33 @@ struct PadTimelineReadingPosition: Codable, Equatable {
     let entryID: String?
     let minY: Double
     let updatedAt: Date
+    var sourceMessageID: String? = nil
 
     init(followsLatest: Bool, entryID: String?, minY: Double, updatedAt: Date = Date()) {
         self.followsLatest = followsLatest
         self.entryID = entryID
         self.minY = minY.isFinite ? minY : 0
         self.updatedAt = updatedAt
+    }
+
+    func resolvingRowID(_ resolve: (String) -> String?) -> Self {
+        guard let entryID,
+              let target = Self.resolve(entryID, using: resolve)
+                ?? sourceMessageID.flatMap({ resolve("message:" + $0) }),
+              target != entryID else { return self }
+        var result = Self(followsLatest: followsLatest, entryID: target, minY: minY, updatedAt: updatedAt)
+        result.sourceMessageID = sourceMessageID
+        return result
+    }
+
+    static func resolve(_ rowID: String, using resolve: (String) -> String?) -> String? {
+        if let target = resolve(rowID) { return target }
+        // Commentary-only cards acquire the existing tool card's ID when a
+        // tool arrives. Decode their source identity even if SwiftUI coalesced
+        // more than one projection update before rendering.
+        let prefix = "process:commentary:"
+        guard rowID.hasPrefix(prefix) else { return nil }
+        return resolve("message:" + rowID.dropFirst(prefix.count))
     }
 }
 
@@ -507,38 +528,105 @@ struct PadHistoryAutoLoadGate: Equatable {
     }
 }
 
+/// Precomputed once when inventory/filter/expansion changes; row rendering only
+/// performs dictionary lookups, including the footer after each visible subtree.
+struct PadTaskOutlineHierarchy {
+    var tasks: [ClientTask] = []
+    var taskByID: [String: ClientTask] = [:]
+    var childCountByParent: [String: Int] = [:]
+    var footerParentByRowID: [String: String] = [:]
+
+    init() {}
+
+    init(filtered: [ClientTask], inventory: [ClientTask], expanded: Set<String>, searching: Bool) {
+        let needed = Set(filtered.compactMap(\.parentTaskId)).subtracting(Set(filtered.map(\.id)))
+        let candidates = filtered + inventory.filter { needed.contains($0.id) }
+        taskByID = Dictionary(candidates.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        let nodes = candidates.map { TaskHierarchyIndex.Node(id: $0.id, workId: $0.workId, parentTaskId: $0.parentTaskId) }
+        let index = TaskHierarchyIndex(nodes: nodes)
+        let visibleExpansion = searching ? Set(candidates.map(\.id)) : expanded
+        tasks = TaskHierarchyIndex.visibleOrder(nodes: nodes, expanded: visibleExpansion).compactMap { taskByID[$0] }
+        childCountByParent = index.childrenByParentID.mapValues(\.count)
+        for root in candidates where root.parentTaskId == nil && visibleExpansion.contains(root.id) {
+            footerParentByRowID[index.childrenByParentID[root.id]?.last ?? root.id] = root.id
+        }
+    }
+}
+
 @MainActor @Observable
 final class PadWorkspace {
     var works: [ClientWork] = []
     var tasks: [ClientTask] = []
     private(set) var taskChildrenCursors: [String: String] = [:]
-    @ObservationIgnored private var taskChildrenLoads = Set<String>()
-    func loadTaskChildren(_ parent: ClientTask, connection: PadConnection, more: Bool = false) async {
-        let scope="\(connection.serverID)|\(connection.address)|\(connection.deviceID ?? "")"
-        let key=scope+"|"+parent.id
-        guard taskChildrenLoads.insert(key).inserted else { return }
-        defer { taskChildrenLoads.remove(key) }
+    private(set) var taskChildrenLoading = Set<String>()
+    private(set) var taskChildrenErrors: [String: String] = [:]
+    private(set) var loadedTaskChildrenVersions: [String: Int] = [:]
+    @ObservationIgnored private var taskChildrenScope = ""
+    @ObservationIgnored private var taskChildrenRequests: [String: UUID] = [:]
+    @ObservationIgnored private var loadedTaskChildIDs: [String: Set<String>] = [:]
+
+    func prepareTaskChildrenScope(_ connection: PadConnection) {
+        let scope = "\(connection.automationNotificationScope)|\(connection.address)"
+        guard taskChildrenScope != scope else { return }
+        taskChildrenScope = scope
+        taskChildrenRequests.removeAll()
+        taskChildrenCursors.removeAll()
+        taskChildrenLoading.removeAll()
+        taskChildrenErrors.removeAll()
+        loadedTaskChildrenVersions.removeAll()
+        loadedTaskChildIDs.removeAll()
+    }
+
+    func loadTaskChildren(_ parent: ClientTask, connection: PadConnection, more: Bool = false, force: Bool = false) async {
+        prepareTaskChildrenScope(connection)
+        let scope = taskChildrenScope
+        let version = parent.hierarchy?.revision ?? parent.resourceVersion ?? 0
+        guard taskChildrenRequests[parent.id] == nil else { return }
         if more && taskChildrenCursors[parent.id] == nil { return }
-        let generation=inventoryGeneration
+        if !more && !force && loadedTaskChildrenVersions[parent.id] == version,
+           (loadedTaskChildIDs[parent.id] ?? []).isSubset(of: Set(tasks.map(\.id))) { return }
+        let token = UUID()
+        taskChildrenRequests[parent.id] = token
+        taskChildrenLoading.insert(parent.id)
+        taskChildrenErrors[parent.id] = nil
+        if !more { taskChildrenCursors[parent.id] = nil }
+        defer {
+            if taskChildrenRequests[parent.id] == token {
+                taskChildrenRequests[parent.id] = nil
+                taskChildrenLoading.remove(parent.id)
+            }
+        }
         do {
-            let api=ClientTaskHierarchyAPI(transport:try await connection.transport(),surface:.pairedDevice)
-            let page=try await api.page(workID:parent.workId,parentTaskID:parent.id,
-                cursor:more ? taskChildrenCursors[parent.id] : nil,includeArchived:true)
-            guard !Task.isCancelled, generation == inventoryGeneration,
-                  scope == "\(connection.serverID)|\(connection.address)|\(connection.deviceID ?? "")" else { return }
-            var byID=Dictionary(tasks.map { ($0.id,$0) },uniquingKeysWith: { $1 })
-            var order=tasks.map(\.id)
+            let api = ClientTaskHierarchyAPI(transport: try await connection.transport(), surface: .pairedDevice)
+            let page = try await api.page(workID: parent.workId, parentTaskID: parent.id,
+                cursor: more ? taskChildrenCursors[parent.id] : nil, includeArchived: true)
+            guard !Task.isCancelled, taskChildrenRequests[parent.id] == token,
+                  scope == "\(connection.automationNotificationScope)|\(connection.address)",
+                  let currentParent = tasks.first(where: { $0.id == parent.id }) else { return }
+            let pageVersion = page.ancestors.first(where: { $0.id == parent.id })?.hierarchy?.revision ?? version
+            guard (currentParent.hierarchy?.revision ?? 0) <= pageVersion else {
+                taskChildrenCursors[parent.id] = nil
+                taskChildrenErrors[parent.id] = "子任务列表已更新，请重试。"
+                return
+            }
+            var byID = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { $1 })
+            var seen = Set<String>()
+            var order = tasks.map(\.id).filter { seen.insert($0).inserted }
             for task in page.ancestors+page.tasks {
                 if byID[task.id] == nil { order.append(task.id) }
                 byID[task.id]=task
             }
-            tasks=order.compactMap { byID[$0] }
-            taskChildrenCursors[parent.id]=page.nextCursor
+            tasks = order.compactMap { byID[$0] }
+            taskChildrenCursors[parent.id] = page.nextCursor
+            loadedTaskChildrenVersions[parent.id] = pageVersion
+            if !more { loadedTaskChildIDs[parent.id] = [] }
+            loadedTaskChildIDs[parent.id, default: []].formUnion(page.tasks.map(\.id))
             rebuildGroups()
         } catch {
-            guard !Task.isCancelled, generation == inventoryGeneration,
-                  scope == "\(connection.serverID)|\(connection.address)|\(connection.deviceID ?? "")" else { return }
-            connection.notice="加载子任务失败："+PadConnection.explain(error)
+            guard !Task.isCancelled, taskChildrenRequests[parent.id] == token,
+                  scope == "\(connection.automationNotificationScope)|\(connection.address)" else { return }
+            taskChildrenErrors[parent.id] = "加载子任务失败：" + PadConnection.explain(error)
+            if (error as? ClientServiceFailure)?.code == "INVALID_CURSOR" { taskChildrenCursors[parent.id] = nil }
         }
     }
     var sessions: [ClientSession] = []
@@ -589,6 +677,10 @@ final class PadWorkspace {
     private(set) var processPresentations: [String: ConversationProcessPresentation] = [:]
     private(set) var activeProcessEntryID: String?
     private(set) var processSteps: [String: [ConversationExecutionStep]] = [:]
+    private(set) var processCommentaryIDs: [String: Set<String>] = [:]
+    private(set) var processReplyBounds: [String: ConversationReplyProgressProjection.ReplyBounds] = [:]
+    private(set) var timelineRowAliases: [String: String] = [:]
+    @ObservationIgnored private var projectedSessionID: String?
     @ObservationIgnored private var projectedMessages: [ClientMessage] = []
     @ObservationIgnored private var projectedMessageLimit = 0
     @ObservationIgnored private var totalDisplayEntryCount = 0
@@ -625,8 +717,13 @@ final class PadWorkspace {
     }
 
     func readingPosition(serverID: String, deviceID: String?, sessionID: String) -> PadTimelineReadingPosition? {
-        defaults.data(forKey: readingPositionKey(serverID: serverID, deviceID: deviceID))
+        let saved = defaults.data(forKey: readingPositionKey(serverID: serverID, deviceID: deviceID))
             .flatMap { try? JSONDecoder().decode([String: PadTimelineReadingPosition].self, from: $0) }?[sessionID]
+        return sessionID == selection ? saved?.resolvingRowID(resolveTimelineRowID) : saved
+    }
+
+    func resolveTimelineRowID(_ rowID: String) -> String? {
+        PadTimelineReadingPosition.resolve(rowID) { timelineRowAliases[$0] }
     }
 
     func saveReadingPosition(_ position: PadTimelineReadingPosition,
@@ -636,7 +733,14 @@ final class PadWorkspace {
         let key = readingPositionKey(serverID: serverID, deviceID: deviceID)
         var records = defaults.data(forKey: key)
             .flatMap { try? JSONDecoder().decode([String: PadTimelineReadingPosition].self, from: $0) } ?? [:]
-        records[sessionID] = position
+        var record = position
+        if sessionID == selection, let id = record.entryID, let entry = displayEntryByID[id] {
+            switch entry.kind {
+            case .message(let item): record.sourceMessageID = item.id
+            case .process(_, let items): record.sourceMessageID = items.first?.id
+            }
+        }
+        records[sessionID] = record
         if records.count > 100 {
             records = Dictionary(uniqueKeysWithValues: records.sorted {
                 $0.value.updatedAt > $1.value.updatedAt
@@ -794,7 +898,9 @@ final class PadWorkspace {
 
     private static func sameDisplayedTail(_ lhs: ConversationEntry<ClientMessage>?,
                                           _ rhs: ConversationEntry<ClientMessage>?) -> Bool {
-        switch (lhs?.kind, rhs?.kind) {
+        guard lhs?.processReplyState == rhs?.processReplyState,
+              lhs?.processReplyCompleted == rhs?.processReplyCompleted else { return false }
+        return switch (lhs?.kind, rhs?.kind) {
         case (nil, nil): true
         case (.message(let left)?, .message(let right)?): left == right && lhs?.mediaItems == rhs?.mediaItems
         case (.process(let leftID, let left)?, .process(let rightID, let right)?):
@@ -805,10 +911,14 @@ final class PadWorkspace {
 
     private func refreshDisplayEntries() {
         let source = visibleMessages
-        guard source != projectedMessages || visibleMessageLimit != projectedMessageLimit else { return }
+        guard source != projectedMessages || visibleMessageLimit != projectedMessageLimit
+                || projectedSessionID != selection else { return }
+        let previousEntries = projectedSessionID == selection ? displayEntries : []
+        projectedSessionID = selection
         projectedMessages = source
         projectedMessageLimit = visibleMessageLimit
-        let allEntries = ConversationTimeline.makeEntries(from: source)
+        let projection = ConversationReplyProgressProjection.project(ConversationTimeline.makeEntries(from: source))
+        let allEntries = projection.entries
         totalDisplayEntryCount = allEntries.count
         let visibleEntries = Self.visibleEntries(from: allEntries, limit: visibleMessageLimit)
         var entryPositions: [String: Int] = [:]
@@ -835,6 +945,17 @@ final class PadWorkspace {
         let tailChanged = !Self.sameDisplayedTail(displayEntries.last, nextEntries.last)
         displayEntries = nextEntries
         displayEntryByID = Dictionary(nextEntries.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        // Keep only current source aliases plus one previous visible generation.
+        // Never accumulate aliases across Sessions or historical projections.
+        var aliases = projection.rowIDsBySourceID
+        for entry in previousEntries where aliases[entry.id] == nil {
+            if case .process(_, let items) = entry.kind,
+               let target = items.lazy.compactMap({ aliases["message:" + $0.id] }).first {
+                aliases[entry.id] = target
+            }
+        }
+        if timelineRowAliases != aliases { timelineRowAliases = aliases }
+        if processReplyBounds != projection.boundsByRowID { processReplyBounds = projection.boundsByRowID }
         if tailChanged { tailDisplayRevision &+= 1 }
         let now = Date()
         var previousMessageDate: Date?
@@ -850,13 +971,23 @@ final class PadWorkspace {
             previousMessageDate = date
         }
         timeSeparatorTextByMessageID = separators
+        rebuildProcessPresentations(now: now)
+    }
+
+    private func rebuildProcessPresentations(now: Date) {
         processSteps = Dictionary(displayEntries.compactMap { entry in
             guard case let .process(_, items) = entry.kind else { return nil }
             return (entry.id, ConversationExecutionProjection.steps(for: items))
         }, uniquingKeysWith: { _, latest in latest })
+        processCommentaryIDs = Dictionary(displayEntries.compactMap { entry in
+            guard case let .process(_, items) = entry.kind else { return nil }
+            return (entry.id, Set(items.filter {
+                ConversationPresentationKind.isCommentary(type: $0.type, presentationRole: $0.presentationRole)
+            }.map(\.id)))
+        }, uniquingKeysWith: { _, latest in latest })
         processPresentations = Dictionary(displayEntries.compactMap { entry in
             guard case let .process(_, items) = entry.kind else { return nil }
-            let state = ConversationProcessPresentation.state(for: items)
+            let state = entry.processReplyState ?? ConversationProcessPresentation.state(for: items)
             let currentStepTitle: String? = if state == .running,
                                                let lastStep = processSteps[entry.id]?.last {
                 if let plan = lastStep.plan {
@@ -866,9 +997,16 @@ final class PadWorkspace {
                     lastStep.title
                 }
             } else { nil }
+            let bounds = processReplyBounds[entry.id]
+            let duration = bounds?.startedAt.flatMap { start in
+                (state == .running ? now : bounds?.endedAt).flatMap { end in
+                    ConversationProcessPresentation.durationText(startedAt: start, endingAt: end,
+                        showSeconds: state == .running)
+                }
+            } ?? ConversationProcessPresentation.durationText(for: items, now: now)
             return (entry.id, ConversationProcessPresentation(
                 state: state, count: items.count,
-                duration: ConversationProcessPresentation.durationText(for: items, now: now),
+                duration: duration,
                 currentStepTitle: currentStepTitle))
         }, uniquingKeysWith: { _, latest in latest })
         activeProcessEntryID = displayEntries.last(where: {

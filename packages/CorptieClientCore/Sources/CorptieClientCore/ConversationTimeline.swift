@@ -14,11 +14,13 @@ public protocol ConversationTimelineItem: Sendable {
     var processStartedAt: String? { get set }
     var processEndedAt: String? { get set }
     var timelineHasImages: Bool { get }
+    var timelineMessageOrigin: String? { get }
 }
 
 public extension ConversationTimelineItem {
     var collaborationDirection: String? { nil }
     var timelineHasImages: Bool { false }
+    var timelineMessageOrigin: String? { nil }
 }
 
 public struct ConversationEntry<Item: ConversationTimelineItem>: Identifiable, Sendable {
