@@ -75,9 +75,6 @@ public struct ConversationServerDetail: View {
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     if !displayStore.order.isEmpty {
-                        if !displayStore.isCurrent && displayStore.loadPhase != .failed {
-                            Text("正在校验上次详情，操作暂不可用").font(.caption).foregroundStyle(.secondary)
-                        }
                         ConversationNativeBusinessDetail(store: displayStore, commandStore: store, api: selected, actions: displayStore.isCurrent && isPresentationActive ? actions : nil, context: context,
                             adapters: adapters, handle: handle, arrangement: presentation.arrangement, refresh: refresh,
                             renderState: activity == nil ? nil : renderState, activity: activity,

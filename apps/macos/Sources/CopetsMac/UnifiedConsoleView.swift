@@ -795,13 +795,9 @@ struct UnifiedConsoleView: View {
             return
         }
         if Self.usesPageGateProof || Self.usesResidentPages, pagePresentation.request(sessionID: session.id, title: session.title, activate: {
-            guard let current = backendClient.appState.session(session.id)
-                    ?? backendClient.archivedSessions.first(where: { $0.id == session.id }),
-                  current.hasValidProductClassification, current.taskId == session.taskId,
-                  current.workId == session.workId else { pagePresentation.cancel(); return }
-            commitNavigationSelection(current)
-            viewportController.hydrate(current.id)
-            backendClient.select(session: current, focusComposer: focusComposer)
+            commitNavigationSelection(session)
+            viewportController.hydrate(session.id)
+            backendClient.select(session: session, focusComposer: focusComposer)
         }) { return }
         // Commit the lightweight local selection synchronously. The native
         // row highlight and a warm timeline host can therefore paint in the
