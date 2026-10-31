@@ -439,15 +439,18 @@ public struct ComposerModelMenuLabel: View {
     private let maxWidth: CGFloat
     private let showsSurface: Bool
     private let presentation: ComposerModelMenuPresentation
+    private let showsDisclosureIndicator: Bool
 
     public init(modelLabel: String, reasoningShortLabel: String, isBusy: Bool, maxWidth: CGFloat,
-                showsSurface: Bool = true, presentation: ComposerModelMenuPresentation = .compact) {
+                showsSurface: Bool = true, presentation: ComposerModelMenuPresentation = .compact,
+                showsDisclosureIndicator: Bool = false) {
         self.presentation = presentation
         self.modelLabel = modelLabel
         self.reasoningShortLabel = reasoningShortLabel
         self.isBusy = isBusy
         self.maxWidth = maxWidth
         self.showsSurface = showsSurface
+        self.showsDisclosureIndicator = showsDisclosureIndicator
     }
 
     public var body: some View {
@@ -498,6 +501,12 @@ public struct ComposerModelMenuLabel: View {
                     .foregroundStyle(ComposerPalette.secondaryText)
                     .lineLimit(1)
                     .layoutPriority(1)
+            }
+            if showsDisclosureIndicator {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(ComposerPalette.secondaryText)
+                    .accessibilityHidden(true)
             }
         }
         .foregroundStyle(ComposerPalette.primaryText)

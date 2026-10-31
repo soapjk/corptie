@@ -1666,3 +1666,15 @@
 "仅删除此子任务及所选资源；不影响父任务、兄弟任务或已合入父分支的代码。" = "Deletes only this child task and selected resources. Parent and sibling tasks, and code already merged into the parent, are unaffected.";
 "无法准备当前验收版本，请刷新后重试。" = "Could not prepare this version for approval. Refresh to retry.";
 "无法确认验收，版本可能已变化或确认已过期。请关闭窗口并刷新后重试。" = "Could not confirm approval. The version may have changed or the confirmation expired. Close and refresh to retry.";
+
+"收到" = "Received";
+
+"发出" = "Sent";
+
+"未关联 Work" = "No associated Work";
+
+"来源会话信息不可用" = "Source session information unavailable";
+
+"目标会话信息不可用" = "Target session information unavailable";
+
+"部分协作来源或目标信息不可用。" = "Some collaboration source or destination information is unavailable.";

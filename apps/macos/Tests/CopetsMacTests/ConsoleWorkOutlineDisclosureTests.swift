@@ -13,14 +13,18 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         func makeNSView(context: Context) -> NSView { view }
         func updateNSView(_ nsView: NSView, context: Context) {}
     }
-    private final class Lifetime {
+    private final class GeometryProbe: NSView {
+        override var isFlipped: Bool { true }
+    }
+    @MainActor private final class Lifetime {
+        let view = GeometryProbe()
         var created = 0
         var removed = 0
     }
     private struct LifetimeProbe: NSViewRepresentable {
         let lifetime: Lifetime
         func makeCoordinator() -> Lifetime { lifetime }
-        func makeNSView(context: Context) -> NSView { lifetime.created += 1; return NSView() }
+        func makeNSView(context: Context) -> NSView { lifetime.created += 1; return lifetime.view }
         func updateNSView(_ nsView: NSView, context: Context) {}
         static func dismantleNSView(_ nsView: NSView, coordinator: Lifetime) { coordinator.removed += 1 }
     }
@@ -50,7 +54,7 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
 
     func testExpandedAndCollapsedGroupHeightsHaveIntermediateFrames() throws {
         _ = NSApplication.shared
-        let state = State(), probe = NSView(), lifetime = Lifetime()
+        let state = State(), probe = GeometryProbe(), lifetime = Lifetime()
         let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 300, height: 500),
             styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -62,14 +66,19 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation) { state.expanded = true }
         settle(0.05)
         let expanding = probe.frame.height
+        let enteringTop = probe.convert(lifetime.view.bounds, from: lifetime.view).minY
         settle(0.25)
         let expanded = probe.frame.height
+        let settledTop = probe.convert(lifetime.view.bounds, from: lifetime.view).minY
+        XCTAssertLessThan(enteringTop, settledTop - 1, "Rows must slide down from the Work title edge")
         XCTAssertGreaterThan(expanded, collapsed + 100)
         XCTAssertGreaterThan(expanding, collapsed + 1)
         XCTAssertLessThan(expanding, expanded - 1)
         withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation) { state.expanded = false }
         settle(0.05)
         let collapsing = probe.frame.height
+        // Native child model frames need not follow the removal presentation;
+        // verify the collapsing container and eventual native-view release.
         XCTAssertGreaterThan(collapsing, collapsed + 1)
         XCTAssertLessThan(collapsing, expanded - 1)
         settle(0.25)

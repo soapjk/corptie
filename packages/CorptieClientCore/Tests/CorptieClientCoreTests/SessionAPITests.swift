@@ -286,6 +286,26 @@ struct SessionAPITests {
         #expect(try await api.capabilities(sessionId: "session:test").send.available)
     }
 
+    @Test func collaborationPresentationAllowsMissingWorkAndHistoricEndpoints() throws {
+        for direction in ["inbound", "outbound"] {
+            let data = Data("""
+            {"id":"collaboration","type":"userMessage","text":"Authored text",
+             "presentationRole":"collaboration","collaborationDirection":"\(direction)",
+             "collaborationSourceWorkId":null,"collaborationTargetWorkId":null}
+            """.utf8)
+            let message = try JSONDecoder().decode(ClientMessage.self, from: data)
+            let presentation = try #require(message.collaborationPresentation)
+            #expect(message.presentationKind == .collaborationMessage)
+            #expect(presentation.direction == direction)
+            #expect(presentation.body == "Authored text")
+            #expect(presentation.sourceWork == nil)
+            #expect(presentation.targetWork == nil)
+            #expect(presentation.sourceSession == nil)
+            #expect(presentation.targetSession == nil)
+            #expect(!presentation.isPendingConfirmation)
+        }
+    }
+
     @Test func collaborationPresentationOverridesUserMessageVisualMeaning() throws {
         let message = try JSONDecoder().decode(ClientMessage.self, from: Data(#"""
         {

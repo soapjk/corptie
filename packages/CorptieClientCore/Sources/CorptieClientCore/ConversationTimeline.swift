@@ -19,13 +19,6 @@ public protocol ConversationTimelineItem: Sendable {
 public extension ConversationTimelineItem {
     var collaborationDirection: String? { nil }
     var timelineHasImages: Bool { false }
-
-    /// Media presentation is independent of authored/formal reply semantics.
-    /// Explicit event roles always win, even when an execution item has images.
-    var isStandaloneImage: Bool {
-        type == "imageView" && timelineHasImages
-            && ConversationPresentationKind.resolve(type: type, presentationRole: presentationRole) == .unknown
-    }
 }
 
 public struct ConversationEntry<Item: ConversationTimelineItem>: Identifiable, Sendable {
@@ -378,16 +371,6 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
     }
 
     for (index, item) in items.enumerated() {
-        if item.isStandaloneImage {
-            let hasMoreProcessItems = lastProcessIndex.map { $0 > index } ?? false
-            flushProcessBuffer(isLastInTurn: !hasMoreProcessItems)
-            if index > 0, items[index - 1].isStandaloneImage,
-               let previous = entries.popLast(), case .message(let first) = previous.kind {
-                entries.append(.init(kind: .message(first), mediaItems:
-                    (previous.mediaItems.isEmpty ? [first] : previous.mediaItems) + [item]))
-            } else { entries.append(.init(kind: .message(item), mediaItems: [item])) }
-            continue
-        }
         if isDetailProcessItem(item) {
             processBuffer.append(item)
         } else if item.type == "agentMessage" {
@@ -419,9 +402,7 @@ private static func isTerminalTurnStatus(_ status: String) -> Bool {
 }
 
 private static func isDetailProcessItem<Item: ConversationTimelineItem>(_ item: Item) -> Bool {
-    // Materialized image output must be directly visible, not hidden inside
-    // an execution disclosure. The same shared rule governs every client.
-    if item.isStandaloneImage { return false }
+    // Tool image inspection stays in execution, even when an image was archived.
     let kind = ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole)
     if kind == .collaborationMessage || kind == .collaborationConfirmation
         || kind == .systemEvent || kind == .automationEvent { return false }

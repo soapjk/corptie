@@ -459,7 +459,7 @@ struct ThreadItemView: View {
     }
 
     private var collaborationPresentationText: String {
-        nonEmpty(item.presentationText) ?? "协作消息正文不可用"
+        nonEmpty(item.presentationText) ?? nonEmpty(item.text) ?? L10n("协作消息正文不可用")
     }
 
     private var collaborationSourceSessionName: String {
@@ -485,7 +485,7 @@ struct ThreadItemView: View {
             name: item.collaborationSourceWorkName,
             id: item.collaborationSourceWorkId,
             fallback: L10n("来源 Work")
-        ) ?? L10n("来源 Work")
+        ) ?? L10n("未关联 Work")
     }
 
     private var collaborationTargetWorkName: String {
@@ -493,7 +493,7 @@ struct ThreadItemView: View {
             name: item.collaborationTargetWorkName,
             id: item.collaborationTargetWorkId,
             fallback: L10n("目标 Work")
-        ) ?? L10n("目标 Work")
+        ) ?? L10n("未关联 Work")
     }
 
     private var collaborationKindLabel: String {
